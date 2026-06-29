@@ -147,9 +147,9 @@ def test_start_session_run_routes_to_runtime_service(monkeypatch):
     assert captured["session"] is session
     assert captured["content"] == "hello"
     assert captured["extra_metadata"] == {
-        "permission_mode": "auto",
+        "permission_mode": "bypassPermissions",
         "writable_roots": ["workspace/"],
-        "permission_profile": {"mode": "auto", "allowed_tools": [], "writable_roots": ["workspace/"]},
+        "permission_profile": {"mode": "bypassPermissions", "allowed_tools": [], "writable_roots": ["workspace/"]},
     }
 
 

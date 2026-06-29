@@ -45,6 +45,9 @@ class PermissionMode(str, Enum):
     BYPASS_PERMISSIONS = "bypassPermissions"
 
 
+DEFAULT_CCPLUS_PERMISSION_MODE = PermissionMode.BYPASS_PERMISSIONS
+
+
 class SandboxProfile(str, Enum):
     READ_ONLY = "read_only"
     WORKSPACE_WRITE = "workspace_write"
@@ -57,7 +60,7 @@ DEFAULT_CCPLUS_WRITABLE_ROOTS: tuple[str, ...] = ("workspace/",)
 
 @dataclass(frozen=True, slots=True)
 class PermissionProfileV1:
-    mode: PermissionMode = PermissionMode.AUTO
+    mode: PermissionMode = DEFAULT_CCPLUS_PERMISSION_MODE
     approval_policy: str = "granular"
     writable_roots: tuple[str, ...] = DEFAULT_CCPLUS_WRITABLE_ROOTS
     readable_roots: tuple[str, ...] = ()

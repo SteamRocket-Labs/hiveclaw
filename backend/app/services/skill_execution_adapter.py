@@ -11,7 +11,7 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from app.runtime.ccplus_contracts import PermissionProfileV1
+from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1
 from app.skills.types import ParsedSkill
 
 
@@ -48,7 +48,7 @@ def _execution_mode(skill: ParsedSkill) -> str:
 
 def build_skill_execution_plan(skill: ParsedSkill) -> SkillExecutionPlan:
     """Build the governed execution plan implied by a parsed Skill capsule."""
-    profile = PermissionProfileV1(allowed_tools=tuple(skill.metadata.allowed_tools or ()))
+    profile = PermissionProfileV1(mode=PermissionMode.AUTO, allowed_tools=tuple(skill.metadata.allowed_tools or ()))
     profile_payload = _json_ready(asdict(profile))
     mode = _execution_mode(skill)
     agent_type = str(skill.metadata.agent or "").strip() or None

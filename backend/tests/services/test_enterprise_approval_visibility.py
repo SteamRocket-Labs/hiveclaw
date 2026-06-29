@@ -26,6 +26,14 @@ def test_session_tool_approvals_are_hidden_from_enterprise_surfaces() -> None:
         action_type="enterprise.asset.delete",
         details={"asset_type": "agent", "agent_id": "agent-1", "origin": {"type": "enterprise_admin"}},
     )
+    company_tool_policy_approval = SimpleNamespace(
+        action_type="channel.feishu.message",
+        details={
+            "tool": "send_feishu_message",
+            "args": {"message": "hi"},
+            "origin": {"type": "company_tool_policy", "session_id": "session-1"},
+        },
+    )
 
     assert is_session_tool_approval(accidental_session_tool) is True
     assert is_visible_enterprise_approval(accidental_session_tool) is False
@@ -33,6 +41,8 @@ def test_session_tool_approvals_are_hidden_from_enterprise_surfaces() -> None:
     assert is_visible_enterprise_approval(accidental_legacy_tool) is False
     assert is_session_tool_approval(enterprise_approval) is False
     assert is_visible_enterprise_approval(enterprise_approval) is True
+    assert is_session_tool_approval(company_tool_policy_approval) is False
+    assert is_visible_enterprise_approval(company_tool_policy_approval) is True
 
 
 def test_enterprise_visible_filter_excludes_session_tool_approvals() -> None:

@@ -1,4 +1,4 @@
-"""CCPlus session permission modes must be distinct from enterprise approvals."""
+"""CCPlus session permission modes must not bypass company approval policy."""
 
 from __future__ import annotations
 
@@ -74,8 +74,8 @@ async def _govern(
 
 
 def test_permission_profile_normalizes_cc_mode_names_and_legacy_aliases() -> None:
-    assert PermissionProfileV1().mode == PermissionMode.AUTO
-    assert build_permission_profile().mode == PermissionMode.AUTO
+    assert PermissionProfileV1().mode == PermissionMode.BYPASS_PERMISSIONS
+    assert build_permission_profile().mode == PermissionMode.BYPASS_PERMISSIONS
     assert build_permission_profile({"mode": "acceptEdits"}).mode == PermissionMode.ACCEPT_EDITS
     assert build_permission_profile({"mode": "accept_edits"}).mode == PermissionMode.ACCEPT_EDITS
     assert build_permission_profile({"mode": "dontAsk"}).mode == PermissionMode.DONT_ASK
@@ -83,6 +83,52 @@ def test_permission_profile_normalizes_cc_mode_names_and_legacy_aliases() -> Non
     assert build_permission_profile({"mode": "auto_review"}).mode == PermissionMode.AUTO
     assert build_permission_profile({"mode": "break_glass"}).mode == PermissionMode.BYPASS_PERMISSIONS
     assert build_permission_profile({"mode": "bogus"}).mode == PermissionMode.DEFAULT
+
+
+@pytest.mark.asyncio
+async def test_omitted_session_permission_profile_defaults_to_full_access_for_missing_policy() -> None:
+    approval_calls: list[dict] = []
+    audit_calls: list[dict] = []
+    events: list[dict] = []
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            tenant_id=str(uuid.uuid4()),
+            tool_name="send_email",
+            arguments={"to": "a@example.com", "subject": "x", "body": "x"},
+            permission_profile=None,
+        ),
+        _deps(approval_calls=approval_calls, audit_calls=audit_calls),
+        event_callback=events.append,
+    )
+
+    assert message is None
+    assert approval_calls == []
+    assert audit_calls == []
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_full_access_default_still_honors_explicit_capability_deny() -> None:
+    message, approval_calls, audit_calls, events = await _govern(
+        tool_name="send_email",
+        mode=PermissionMode.BYPASS_PERMISSIONS,
+        arguments={"to": "a@example.com", "subject": "x", "body": "x"},
+        capability_result=CapabilityCheckResult(
+            allowed=False,
+            denied=True,
+            capability="channel.email.send",
+            reason="explicit deny",
+            policy_found=True,
+        ),
+    )
+
+    assert message is not None
+    assert "capability policy denied" in message
+    assert approval_calls == []
+    assert audit_calls and audit_calls[-1]["event_type"] == "capability.denied"
+    assert events[-1]["status"] == "capability_denied"
 
 
 @pytest.mark.asyncio
@@ -104,6 +150,7 @@ async def test_default_mode_allows_core_read_discovery_without_backend_approval(
 async def test_default_mode_asks_session_locally_for_sensitive_missing_policy() -> None:
     message, approval_calls, audit_calls, events = await _govern(
         tool_name="send_email",
+        mode=PermissionMode.DEFAULT,
         arguments={"to": "a@example.com", "subject": "x", "body": "x"},
     )
 
@@ -269,7 +316,7 @@ async def test_bypass_permissions_still_requires_one_time_confirmation_for_delet
 
 
 @pytest.mark.asyncio
-async def test_explicit_approval_policy_asks_session_without_backend_approval() -> None:
+async def test_explicit_approval_policy_creates_company_approval() -> None:
     message, approval_calls, _audit_calls, events = await _govern(
         tool_name="web_search",
         arguments={"query": "github trending"},
@@ -283,8 +330,10 @@ async def test_explicit_approval_policy_asks_session_without_backend_approval() 
     )
 
     assert message is not None
-    assert "requires session permission" in message
-    assert approval_calls == []
-    assert events[-1]["status"] == "session_permission_required"
+    assert "approval_required" in message
+    assert approval_calls
+    assert approval_calls[-1]["tool_name"] == "web_search"
+    assert approval_calls[-1]["capability"] == "external.web.search"
+    assert events[-1]["status"] == "approval_required"
     assert events[-1]["capability"] == "external.web.search"
-    assert "approval_id" not in events[-1]
+    assert events[-1]["approval_id"] == "approval-should-not-exist"

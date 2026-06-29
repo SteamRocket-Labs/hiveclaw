@@ -172,6 +172,24 @@ export interface CapabilityPolicyUpdate {
   conditions?: Record<string, unknown>;
 }
 
+export type CapabilityPolicyQuery = string | { agentId?: string | null; tenantId?: string | null } | undefined;
+
+function capabilityPolicyQuerySuffix(query?: CapabilityPolicyQuery): string {
+  const qs = new URLSearchParams();
+  if (typeof query === 'string') {
+    qs.set('agent_id', query);
+  } else if (query) {
+    if (query.agentId) qs.set('agent_id', query.agentId);
+    if (query.tenantId) qs.set('tenant_id', query.tenantId);
+  }
+  const text = qs.toString();
+  return text ? `?${text}` : '';
+}
+
+function tenantQuerySuffix(tenantId?: string | null): string {
+  return tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : '';
+}
+
 export const enterpriseApi = {
   /** LLM models */
   listLLMModels: (tenantId?: string) => get<LLMModel[]>(`/enterprise/llm-models${tenantId ? `?tenant_id=${tenantId}` : ''}`),
@@ -211,11 +229,12 @@ export const enterpriseApi = {
 
   /** Capability policies */
   listCapabilityDefinitions: () => get<CapabilityDefinition[]>('/enterprise/capabilities/definitions'),
-  listCapabilityPolicies: (agentId?: string) =>
-    get<CapabilityPolicy[]>(`/enterprise/capabilities${agentId ? `?agent_id=${agentId}` : ''}`),
-  upsertCapabilityPolicy: (data: CapabilityPolicyUpdate) =>
-    put<CapabilityPolicy>('/enterprise/capabilities', { conditions: {}, ...data }),
-  deleteCapabilityPolicy: (policyId: string) => del(`/enterprise/capabilities/${policyId}`),
+  listCapabilityPolicies: (query?: CapabilityPolicyQuery) =>
+    get<CapabilityPolicy[]>(`/enterprise/capabilities${capabilityPolicyQuerySuffix(query)}`),
+  upsertCapabilityPolicy: (data: CapabilityPolicyUpdate, tenantId?: string | null) =>
+    put<CapabilityPolicy>(`/enterprise/capabilities${tenantQuerySuffix(tenantId)}`, { conditions: {}, ...data }),
+  deleteCapabilityPolicy: (policyId: string, tenantId?: string | null) =>
+    del(`/enterprise/capabilities/${policyId}${tenantQuerySuffix(tenantId)}`),
 
   /** Invitation codes */
   listInvitationCodes: (params?: string) =>

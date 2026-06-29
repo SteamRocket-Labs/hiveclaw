@@ -101,6 +101,12 @@ describe('AgentDetail session permission state', () => {
         transcript_metadata_json: { permission_mode: 'auto' },
       }),
     ).toBe('auto');
+
+    expect(
+      sessionPermissionModeFromSession({
+        id: 'session-4',
+      }),
+    ).toBe('bypassPermissions');
   });
 });
 

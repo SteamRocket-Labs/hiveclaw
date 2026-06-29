@@ -107,6 +107,8 @@ function normalizeSessionPermissionModeValue(value: unknown): SessionPermissionM
     return null;
 }
 
+const DEFAULT_SESSION_PERMISSION_MODE: SessionPermissionMode = 'bypassPermissions';
+
 function objectValue(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
@@ -121,7 +123,7 @@ export function sessionPermissionModeFromSession(session: unknown): SessionPermi
         normalizeSessionPermissionModeValue(profile.mode) ||
         normalizeSessionPermissionModeValue(transcriptMetadata.permission_mode) ||
         normalizeSessionPermissionModeValue(metadata.permission_mode) ||
-        'auto'
+        DEFAULT_SESSION_PERMISSION_MODE
     );
 }
 
@@ -1002,7 +1004,7 @@ function AgentDetailInner() {
     const [chatMessagesSessionId, setChatMessagesSessionId] = useState<string | null>(null);
     const [chatInput, setChatInput] = useState('');
     const [planModeRequested, setPlanModeRequested] = useState(false);
-    const [sessionPermissionMode, setSessionPermissionMode] = useState<SessionPermissionMode>('auto');
+    const [sessionPermissionMode, setSessionPermissionMode] = useState<SessionPermissionMode>(DEFAULT_SESSION_PERMISSION_MODE);
     const [sessionCommandControl, setSessionCommandControl] = useState<SessionCommandControlState | null>(null);
     const handleSetSessionPermissionMode = async (mode: SessionPermissionMode) => {
         const previous = sessionPermissionMode;

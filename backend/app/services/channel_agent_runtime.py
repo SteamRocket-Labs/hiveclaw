@@ -233,7 +233,7 @@ async def try_handle_channel_permission_mode_command(
 
     from app.api import chat_sessions as chat_sessions_api
     from app.models.runtime_task import RuntimeTask
-    from app.runtime.ccplus_contracts import normalize_permission_mode
+    from app.runtime.ccplus_contracts import DEFAULT_CCPLUS_PERMISSION_MODE, normalize_permission_mode
 
     action, requested_mode = parsed
     session = await _load_channel_session(
@@ -247,7 +247,7 @@ async def try_handle_channel_permission_mode_command(
 
     if action == "show":
         metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
-        mode = normalize_permission_mode(metadata.get("permission_mode") or "auto").value
+        mode = normalize_permission_mode(metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value).value
         allowed_tools = [
             str(item) for item in (metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
         ]
@@ -264,7 +264,7 @@ async def try_handle_channel_permission_mode_command(
     if user is None:
         return "权限模式切换需要可审计的用户身份。请先绑定账号，或到 Web 端会话内切换。"
 
-    mode = normalize_permission_mode(requested_mode or "auto").value
+    mode = normalize_permission_mode(requested_mode or DEFAULT_CCPLUS_PERMISSION_MODE.value).value
     permission_metadata = chat_sessions_api._session_permission_metadata(mode, session)
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
     session_metadata.update(permission_metadata)

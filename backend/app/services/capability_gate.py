@@ -9,10 +9,12 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.capability_policy import CapabilityPolicy
+from app.models.tenant_tool_config import TenantToolConfig
+from app.models.tool import Tool
 from app.services.governance_capability_taxonomy import CAPABILITY_MAP
 
 if TYPE_CHECKING:
@@ -237,6 +239,52 @@ async def _is_hr_system_agent_default_capability(
         return False
 
 
+async def _resolve_tenant_tool_enabled(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    tool_name: str,
+) -> bool | None:
+    """Resolve the product-facing Tools page switch for a tool.
+
+    CapabilityPolicy remains the explicit override layer. When no policy exists,
+    the runtime should honor the same tenant/global tool enabled state that the
+    admin sees in the Tools UI instead of requiring a second hidden policy row.
+    ``None`` means no Tool/TenantToolConfig source was found, so the caller can
+    fall back to session permission semantics.
+    """
+    result = await db.execute(
+        select(Tool)
+        .where(
+            Tool.name == tool_name,
+            or_(Tool.tenant_id == tenant_id, Tool.tenant_id.is_(None)),
+        )
+        .order_by(Tool.tenant_id.is_(None))
+        .limit(1)
+    )
+    tool = result.scalar_one_or_none()
+    if tool is None:
+        return None
+
+    if not bool(getattr(tool, "enabled", True)):
+        return False
+
+    tool_tenant_id = getattr(tool, "tenant_id", None)
+    if tool_tenant_id is not None:
+        return True
+
+    config_result = await db.execute(
+        select(TenantToolConfig).where(
+            TenantToolConfig.tenant_id == tenant_id,
+            TenantToolConfig.tool_id == tool.id,
+        )
+    )
+    tenant_config = config_result.scalar_one_or_none()
+    if tenant_config is not None:
+        return bool(getattr(tenant_config, "enabled", True))
+    return True
+
+
 class CapabilityCheckResult:
     """Result of a capability gate check."""
 
@@ -270,8 +318,9 @@ async def check_capability(
     Lookup order:
     1. Agent-specific policy (tenant_id + agent_id + capability)
     2. Tenant default policy (tenant_id + agent_id=NULL + capability)
-    3. No policy on core read/discovery tools → allow (explicit policies still win)
-    4. No policy on all other mapped tools → mark as session-permission required.
+    3. No explicit policy but tenant/global tool switch exists → honor that switch
+    4. No policy on core read/discovery tools → allow (explicit policies still win)
+    5. No policy on all other mapped tools → mark as session-permission required.
 
     P1-W2-8: tools missing from CAPABILITY_MAP are always counted; under
     `STRICT_CAPABILITY_MAPPING=True` they are denied (fail-closed).
@@ -344,6 +393,51 @@ async def check_capability(
             return CapabilityCheckResult(
                 allowed=True,
                 capability=capability,
+                policy_found=False,
+            )
+        if capability in _HR_SYSTEM_AGENT_DEFAULT_CAPABILITIES:
+            logger.warning(
+                "Capability policy missing for non-HR agent employee capability: tool=%s capability=%s agent=%s tenant=%s — escalating",
+                tool_name,
+                capability,
+                agent_id,
+                tenant_id,
+            )
+            return CapabilityCheckResult(
+                allowed=False,
+                denied=False,
+                escalate_to_l3=True,
+                capability=capability,
+                reason=f"Capability '{capability}' has no capability policy configured; admin approval is required",
+                policy_found=False,
+            )
+        tool_enabled = await _resolve_tenant_tool_enabled(db, tenant_id=tenant_id, tool_name=tool_name)
+        if tool_enabled is True:
+            logger.info(
+                "Capability policy missing but tenant tool is enabled: tool=%s capability=%s agent=%s tenant=%s — allowing",
+                tool_name,
+                capability,
+                agent_id,
+                tenant_id,
+            )
+            return CapabilityCheckResult(
+                allowed=True,
+                capability=capability,
+                policy_found=False,
+            )
+        if tool_enabled is False:
+            logger.info(
+                "Capability policy missing and tenant tool is disabled: tool=%s capability=%s agent=%s tenant=%s — denying",
+                tool_name,
+                capability,
+                agent_id,
+                tenant_id,
+            )
+            return CapabilityCheckResult(
+                allowed=False,
+                denied=True,
+                capability=capability,
+                reason=f"Tool '{tool_name}' is disabled in workspace tool settings",
                 policy_found=False,
             )
         if tool_name in _CAPABILITY_GATE_EXEMPT_TOOLS:

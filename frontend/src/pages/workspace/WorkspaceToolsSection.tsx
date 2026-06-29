@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { customApiConnectorsApi, type CustomApiConnector } from '../../api/domains/customApiConnectors';
+import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from '../../api/domains/enterprise';
 import { extensionsApi, type InstalledPlugin, type McpServerRecord } from '../../api/domains/extensions';
 import { toolsApi } from '../../api/domains/tools';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
@@ -61,6 +62,11 @@ type WorkspaceToolRow = {
   governance_taxonomy?: ToolGovernanceTaxonomy | null;
 };
 
+type WorkspaceToolCapabilityPolicy = Pick<CapabilityPolicy, 'allowed' | 'requires_approval'> | undefined;
+
+export type WorkspaceToolExecutionMode = 'auto' | 'approval';
+export type WorkspaceToolEffectiveStatus = 'disabled' | 'auto_allowed' | 'approval_required' | 'legacy_denied' | 'unmanaged';
+
 export function isExtensionOrAddonTool(tool: Pick<WorkspaceToolRow, 'type' | 'name' | 'governance_taxonomy'>): boolean {
   const taxonomy = tool.governance_taxonomy;
   if (taxonomy?.l2_visible === true && taxonomy?.enterprise_toggleable === true) {
@@ -70,6 +76,50 @@ export function isExtensionOrAddonTool(tool: Pick<WorkspaceToolRow, 'type' | 'na
     return false;
   }
   return tool.type === 'mcp' || tool.type === 'custom_api' || String(tool.name || '').startsWith('custom_api__');
+}
+
+export function resolveWorkspaceToolCapability(
+  tool: Pick<WorkspaceToolRow, 'name'>,
+  definitions: Pick<CapabilityDefinition, 'capability' | 'tools'>[],
+): string | null {
+  const toolName = String(tool.name || '').trim();
+  if (!toolName) return null;
+  for (const definition of definitions) {
+    if (definition.tools.includes(toolName)) {
+      return definition.capability;
+    }
+  }
+  for (const definition of definitions) {
+    if (definition.tools.some((pattern) => pattern.endsWith('*') && toolName.startsWith(pattern.slice(0, -1)))) {
+      return definition.capability;
+    }
+  }
+  return null;
+}
+
+export function getWorkspaceToolGovernanceState({
+  tool,
+  capability,
+  policy,
+}: {
+  tool: Pick<WorkspaceToolRow, 'enabled'>;
+  capability?: string | null;
+  policy?: WorkspaceToolCapabilityPolicy;
+}): { executionMode: WorkspaceToolExecutionMode; effectiveStatus: WorkspaceToolEffectiveStatus } {
+  const executionMode: WorkspaceToolExecutionMode = policy?.allowed === true && policy.requires_approval === true ? 'approval' : 'auto';
+  if (tool.enabled === false) {
+    return { executionMode, effectiveStatus: 'disabled' };
+  }
+  if (!capability) {
+    return { executionMode, effectiveStatus: 'unmanaged' };
+  }
+  if (policy?.allowed === false) {
+    return { executionMode, effectiveStatus: 'legacy_denied' };
+  }
+  if (executionMode === 'approval') {
+    return { executionMode, effectiveStatus: 'approval_required' };
+  }
+  return { executionMode, effectiveStatus: 'auto_allowed' };
 }
 
 export function normalizeToolConfigListValue(value: unknown, options: { preserveEmpty?: boolean } = {}): string[] {
@@ -197,6 +247,9 @@ export default function WorkspaceToolsSection({
   };
 
   const [allTools, setAllTools] = useState<WorkspaceToolRow[]>([]);
+  const [capabilityDefinitions, setCapabilityDefinitions] = useState<CapabilityDefinition[]>([]);
+  const [capabilityPolicies, setCapabilityPolicies] = useState<CapabilityPolicy[]>([]);
+  const [capabilityPolicyBusy, setCapabilityPolicyBusy] = useState<string | null>(null);
   const [showAddMCP, setShowAddMCP] = useState(false);
   const [mcpForm, setMcpForm] = useState({ server_url: '', server_name: '' });
   const [mcpRawInput, setMcpRawInput] = useState('');
@@ -278,6 +331,20 @@ export default function WorkspaceToolsSection({
     setAllTools(data as WorkspaceToolRow[]);
   };
 
+  const loadCapabilityGovernance = async () => {
+    try {
+      const [definitions, policies] = await Promise.all([
+        enterpriseApi.listCapabilityDefinitions(),
+        enterpriseApi.listCapabilityPolicies({ tenantId: selectedTenantId || undefined }),
+      ]);
+      setCapabilityDefinitions(definitions);
+      setCapabilityPolicies(policies);
+    } catch {
+      setCapabilityDefinitions([]);
+      setCapabilityPolicies([]);
+    }
+  };
+
   const loadAgentInstalledTools = async () => {
     try {
       const data = await toolsApi.listAgentInstalled(selectedTenantId || undefined);
@@ -289,8 +356,48 @@ export default function WorkspaceToolsSection({
 
   useEffect(() => {
     loadAllTools();
+    loadCapabilityGovernance();
     loadAgentInstalledTools();
   }, [selectedTenantId]);
+
+  const policyByCapability = new Map(
+    capabilityPolicies
+      .filter((policy) => !policy.agent_id)
+      .map((policy) => [policy.capability, policy] as const),
+  );
+
+  const effectiveStatusLabel = (status: WorkspaceToolEffectiveStatus) => {
+    switch (status) {
+      case 'disabled':
+        return t('enterprise.tools.effectiveDisabled', 'Disabled');
+      case 'approval_required':
+        return t('enterprise.tools.effectiveApprovalRequired', 'Requires company approval');
+      case 'legacy_denied':
+        return t('enterprise.tools.effectiveLegacyDenied', 'Legacy deny policy');
+      case 'unmanaged':
+        return t('enterprise.tools.effectiveUnmanaged', 'Connector policy');
+      case 'auto_allowed':
+      default:
+        return t('enterprise.tools.effectiveAutoAllowed', 'Auto allowed');
+    }
+  };
+
+  const updateToolExecutionMode = async (capability: string, mode: WorkspaceToolExecutionMode) => {
+    setCapabilityPolicyBusy(capability);
+    try {
+      await enterpriseApi.upsertCapabilityPolicy({
+        capability,
+        allowed: true,
+        requires_approval: mode === 'approval',
+        conditions: {},
+      }, selectedTenantId || undefined);
+      await loadCapabilityGovernance();
+    } catch (error: any) {
+      showAppToast(error?.message || t('enterprise.tools.updateFailed', 'Update failed'), 'error');
+    } finally {
+      setCapabilityPolicyBusy(null);
+    }
+  };
 
   return (
     <div>
@@ -944,6 +1051,13 @@ export default function WorkspaceToolsSection({
                           const renderToolRow = (tool: WorkspaceToolRow) => {
                             const hasOwnConfig = (tool.config_schema?.fields?.length ?? 0) > 0 && !hasCategoryConfig;
                             const isEditing = editingToolId === tool.id;
+                            const capability = resolveWorkspaceToolCapability(tool, capabilityDefinitions);
+                            const capabilityPolicy = capability ? policyByCapability.get(capability) : undefined;
+                            const governanceState = getWorkspaceToolGovernanceState({
+                              tool,
+                              capability,
+                              policy: capabilityPolicy,
+                            });
                             // Strip "ServerName: " prefix for MCP tools shown inside a server group
                             const displayName = tool.display_name || tool.name || tool.id;
                             const shortName = tool.type === 'mcp' && tool.mcp_server_name && displayName.startsWith(tool.mcp_server_name + ': ')
@@ -974,6 +1088,59 @@ export default function WorkspaceToolsSection({
                                   </div>
 
                                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                    {capability ? (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                        <select
+                                          className="form-input"
+                                          value={governanceState.executionMode}
+                                          disabled={tool.enabled === false || capabilityPolicyBusy === capability}
+                                          onChange={async (event) => {
+                                            await updateToolExecutionMode(capability, event.target.value as WorkspaceToolExecutionMode);
+                                          }}
+                                          title={t('enterprise.tools.executionMode', 'Execution mode')}
+                                          style={{ width: '120px', height: '28px', padding: '2px 8px', fontSize: '11px' }}
+                                        >
+                                          <option value="auto">{t('enterprise.tools.executionAuto', 'Auto allow')}</option>
+                                          <option value="approval">{t('enterprise.tools.executionApproval', 'Require approval')}</option>
+                                        </select>
+                                        <span
+                                          title={capability}
+                                          style={{
+                                            fontSize: '10px',
+                                            color: governanceState.effectiveStatus === 'legacy_denied'
+                                              ? '#ef4444'
+                                              : governanceState.effectiveStatus === 'approval_required'
+                                                ? '#f59e0b'
+                                                : 'var(--text-tertiary)',
+                                            background: 'var(--bg-tertiary)',
+                                            borderRadius: '4px',
+                                            padding: '2px 6px',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
+                                          {effectiveStatusLabel(governanceState.effectiveStatus)}
+                                        </span>
+                                        {governanceState.effectiveStatus === 'legacy_denied' ? (
+                                          <button
+                                            className="btn btn-secondary"
+                                            style={{ padding: '4px 8px', fontSize: '11px' }}
+                                            disabled={capabilityPolicyBusy === capability}
+                                            onClick={async () => {
+                                              await updateToolExecutionMode(capability, 'auto');
+                                            }}
+                                          >
+                                            {t('enterprise.tools.restoreAutoAllow', 'Restore auto')}
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                    ) : (
+                                      <span
+                                        style={{ fontSize: '10px', color: 'var(--text-tertiary)', background: 'var(--bg-tertiary)', borderRadius: '4px', padding: '2px 6px', whiteSpace: 'nowrap' }}
+                                      >
+                                        {effectiveStatusLabel('unmanaged')}
+                                      </span>
+                                    )}
+
                                     {hasOwnConfig ? (
                                       <button
                                         className="btn btn-secondary"

@@ -407,6 +407,60 @@ async def test_update_global_tool_rejects_agent_base_builtin_disable(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_update_global_tool_builtin_toggle_is_runtime_authority(monkeypatch):
+    import app.api.tools as tools_api
+
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    tool = _make_builtin_tool(name="send_email", category="email", is_default=False)
+    ttc = SimpleNamespace(config={}, enabled=False)
+    db = _FakeDB([_ScalarResult(tool)])
+    calls = {}
+
+    async def fake_update_tenant_tool_config(db_session, tenant, tool_id, *, config, enabled, config_schema):
+        calls["tenant_tool_config"] = {
+            "db": db_session,
+            "tenant_id": tenant,
+            "tool_id": tool_id,
+            "enabled": enabled,
+            "config": config,
+            "config_schema": config_schema,
+        }
+        ttc.enabled = bool(enabled)
+        return ttc
+
+    async def fake_upsert_assignments(db_session, tenant, updated_tool, *, enabled, config):
+        calls["assignments"] = {
+            "db": db_session,
+            "tenant_id": tenant,
+            "tool_id": updated_tool.id,
+            "enabled": enabled,
+            "config": config,
+        }
+
+    async def fake_serialize(db_session, updated_tool, tenant):
+        calls["serialize"] = {"db": db_session, "tool_id": updated_tool.id, "tenant_id": tenant}
+        return {"id": str(updated_tool.id), "enabled": ttc.enabled}
+
+    monkeypatch.setattr(tools_api, "update_tenant_tool_config", fake_update_tenant_tool_config)
+    monkeypatch.setattr(tools_api, "_upsert_tenant_tool_assignments", fake_upsert_assignments)
+    monkeypatch.setattr(tools_api, "_serialize_tool_for_tenant", fake_serialize)
+
+    result = await tools_api.update_global_tool(
+        tool_id=tool.id,
+        data=tools_api.ToolUpdateIn(enabled=True),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result == {"id": str(tool.id), "enabled": True}
+    assert calls["tenant_tool_config"]["enabled"] is True
+    assert calls["tenant_tool_config"]["tenant_id"] == tenant_id
+    assert calls["assignments"]["enabled"] is True
+    assert db.committed is True
+
+
+@pytest.mark.asyncio
 async def test_delete_global_tool_rejects_agent_base_builtin_disable(monkeypatch):
     import app.api.tools as tools_api
 

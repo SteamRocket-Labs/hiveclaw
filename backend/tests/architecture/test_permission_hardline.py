@@ -11,12 +11,14 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = BACKEND_ROOT / "app"
 
 
-def test_governance_has_no_enterprise_approval_call_path_for_tool_permissions() -> None:
+def test_governance_enterprise_approval_path_is_scoped_to_company_tool_policy() -> None:
     source = (APP_ROOT / "tools/governance.py").read_text(encoding="utf-8")
 
     assert "async def _request_approval_compat" not in source
     assert "_request_approval_compat(" not in source
-    assert "deps.request_approval(" not in source
+    assert "async def _emit_enterprise_approval_result" in source
+    assert "deps.request_approval(" in source
+    assert 'approval_origin_type="company_tool_policy"' in source
     assert '"status": "session_permission_required"' in source
 
 

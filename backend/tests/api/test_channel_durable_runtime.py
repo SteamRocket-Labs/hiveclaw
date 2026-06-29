@@ -126,7 +126,7 @@ async def test_channel_reply_resolves_latest_session_permission(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_channel_permission_mode_command_reports_current_profile() -> None:
+async def test_channel_permission_mode_command_reports_full_access_for_missing_profile() -> None:
     from app.services.channel_agent_runtime import try_handle_channel_permission_mode_command
 
     agent_id = uuid4()
@@ -135,10 +135,7 @@ async def test_channel_permission_mode_command_reports_current_profile() -> None
         id=uuid4(),
         agent_id=agent_id,
         user_id=user.id,
-        transcript_metadata_json={
-            "permission_mode": "auto",
-            "session_permission_allowed_tools": ["web_search", "read_file"],
-        },
+        transcript_metadata_json={"session_permission_allowed_tools": ["web_search", "read_file"]},
     )
 
     class _DB:
@@ -156,7 +153,7 @@ async def test_channel_permission_mode_command_reports_current_profile() -> None
     )
 
     assert reply is not None
-    assert "当前权限模式：替我批准（Auto）" in reply
+    assert "当前权限模式：完全访问（Full access）" in reply
     assert "本会话已授权工具：web_search, read_file" in reply
     assert "/permissions ask" in reply
     assert "/permissions auto" in reply

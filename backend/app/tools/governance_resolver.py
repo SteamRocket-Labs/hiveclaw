@@ -92,12 +92,14 @@ class ToolGovernanceResolver:
             capability: str,
             reason: str | None = None,
             session_id: str | None = None,
+            approval_origin_type: str | None = None,
         ) -> dict:
             async with async_session() as db, enter_rls_bypass(db, reason=f"approval request for agent {agent_id}"):
                 result = await db.execute(select(Agent).where(Agent.id == agent_id))
                 agent = result.scalar_one_or_none()
                 if not agent:
                     return {"allowed": False, "message": "Agent not found"}
+                origin_type = approval_origin_type or ("agent_session" if session_id else "approval_request")
                 outcome = await approval_service.request_approval(
                     db,
                     agent,
@@ -109,7 +111,7 @@ class ToolGovernanceResolver:
                         "reason": reason,
                         "session_id": session_id,
                         "origin": {
-                            "type": "agent_session" if session_id else "approval_request",
+                            "type": origin_type,
                             "session_id": session_id,
                         },
                     },

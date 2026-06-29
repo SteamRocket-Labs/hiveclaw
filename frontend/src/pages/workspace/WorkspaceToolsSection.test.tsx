@@ -4,9 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   ToolConfigSecretListField,
+  getWorkspaceToolGovernanceState,
   countToolConfigListValues,
   isExtensionOrAddonTool,
   normalizeToolConfigListValue,
+  resolveWorkspaceToolCapability,
 } from './WorkspaceToolsSection';
 
 vi.mock('react-i18next', () => ({
@@ -76,5 +78,39 @@ describe('WorkspaceToolsSection AnySearch key pool helpers', () => {
     expect(markup).toContain('Calls rotate across saved keys');
     expect(markup).toContain('Add key');
     expect(markup).toContain('Remove');
+  });
+
+  it('derives execution mode and effective status from tool switch plus company policy', () => {
+    const definitions = [
+      { capability: 'external.web.search', tools: ['exa_search'] },
+      { capability: 'external.api.call', tools: ['custom_api__*'] },
+    ];
+
+    expect(resolveWorkspaceToolCapability({ name: 'exa_search' }, definitions)).toBe('external.web.search');
+    expect(resolveWorkspaceToolCapability({ name: 'custom_api__crm_lookup' }, definitions)).toBe('external.api.call');
+
+    expect(getWorkspaceToolGovernanceState({
+      tool: { enabled: false },
+      capability: 'external.web.search',
+      policy: { allowed: true, requires_approval: true },
+    })).toEqual({ executionMode: 'approval', effectiveStatus: 'disabled' });
+
+    expect(getWorkspaceToolGovernanceState({
+      tool: { enabled: true },
+      capability: 'external.web.search',
+      policy: { allowed: true, requires_approval: true },
+    })).toEqual({ executionMode: 'approval', effectiveStatus: 'approval_required' });
+
+    expect(getWorkspaceToolGovernanceState({
+      tool: { enabled: true },
+      capability: 'external.web.search',
+      policy: { allowed: true, requires_approval: false },
+    })).toEqual({ executionMode: 'auto', effectiveStatus: 'auto_allowed' });
+
+    expect(getWorkspaceToolGovernanceState({
+      tool: { enabled: true },
+      capability: 'external.web.search',
+      policy: { allowed: false, requires_approval: false },
+    })).toEqual({ executionMode: 'auto', effectiveStatus: 'legacy_denied' });
   });
 });

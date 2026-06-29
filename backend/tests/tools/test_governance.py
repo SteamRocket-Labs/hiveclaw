@@ -219,10 +219,14 @@ async def test_governance_emits_capability_denied_and_audit():
 
 
 @pytest.mark.asyncio
-async def test_governance_asks_session_when_capability_requires_approval():
+async def test_governance_creates_enterprise_approval_when_capability_policy_requires_approval():
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
 
     events = []
+    approval_calls = []
+    agent_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
 
     async def resolve_security_zone(_agent_id):
         return "standard"
@@ -233,21 +237,37 @@ async def test_governance_asks_session_when_capability_requires_approval():
             escalate_to_l3=True,
             capability="channel.feishu.message",
             reason="Capability 'channel.feishu.message' requires approval",
+            policy_found=True,
         )
 
     async def write_audit(**kwargs):
         return None
 
-    async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
-        raise AssertionError("tool permission approval must stay inside the session")
+    async def request_approval(
+        *, agent_id, user_id, tool_name, arguments, capability, reason=None, session_id=None, approval_origin_type=None
+    ):
+        approval_calls.append(
+            {
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "capability": capability,
+                "reason": reason,
+                "session_id": session_id,
+                "approval_origin_type": approval_origin_type,
+            }
+        )
+        return {"allowed": False, "approval_id": "approval-company-1", "message": "Approval requested from admin"}
 
     message = await run_tool_governance(
         ToolGovernanceContext(
-            agent_id=uuid4(),
-            user_id=uuid4(),
-            tenant_id=str(uuid4()),
+            agent_id=agent_id,
+            user_id=user_id,
+            tenant_id=str(tenant_id),
             tool_name="send_feishu_message",
             arguments={"member_name": "张三", "message": "hi"},
+            session_id="session-1",
         ),
         GovernanceDependencies(
             resolve_security_zone=resolve_security_zone,
@@ -261,11 +281,25 @@ async def test_governance_asks_session_when_capability_requires_approval():
     assert message is not None
     assert "send_feishu_message" in message
     assert "channel.feishu.message" in message
-    assert "requires session permission" in message
-    assert events and events[-1]["status"] == "session_permission_required"
+    assert "approval_required" in message
+    assert approval_calls == [
+        {
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "tool_name": "send_feishu_message",
+            "arguments": {"member_name": "张三", "message": "hi"},
+            "capability": "channel.feishu.message",
+            "reason": "Capability 'channel.feishu.message' requires approval",
+            "session_id": "session-1",
+            "approval_origin_type": "company_tool_policy",
+        }
+    ]
+    assert events and events[-1]["status"] == "approval_required"
     assert events[-1]["tool_name"] == "send_feishu_message"
     assert events[-1]["capability"] == "channel.feishu.message"
-    assert "approval_id" not in events[-1]
+    assert events[-1]["approval_id"] == "approval-company-1"
+    assert events[-1]["approval_required"] is True
+    assert "permission_request" not in events[-1]
 
 
 @pytest.mark.asyncio

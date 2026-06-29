@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
 from app.core.permissions import check_agent_access
+from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
 from app.models.chat_session import ChatSession
 from app.models.capability_policy import CapabilityPolicy
@@ -52,14 +53,14 @@ async def list_capability_definitions(
 @router.get("/enterprise/capabilities")
 async def list_capability_policies(
     agent_id: uuid.UUID | None = None,
+    tenant_id: str | None = None,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """List capability policies for the current tenant, optionally filtered by agent."""
-    if not current_user.tenant_id:
-        return []
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
-    query = select(CapabilityPolicy).where(CapabilityPolicy.tenant_id == current_user.tenant_id)
+    query = select(CapabilityPolicy).where(CapabilityPolicy.tenant_id == target_tenant_id)
     if agent_id is not None:
         query = query.where(CapabilityPolicy.agent_id == agent_id)
 
@@ -70,16 +71,16 @@ async def list_capability_policies(
 @router.put("/enterprise/capabilities")
 async def upsert_capability_policy(
     data: CapabilityPolicyUpdate,
+    tenant_id: str | None = None,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """Create or update a capability policy for the current tenant."""
-    if not current_user.tenant_id:
-        raise HTTPException(status_code=400, detail="No tenant assigned")
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     # Find existing policy
     query = select(CapabilityPolicy).where(
-        CapabilityPolicy.tenant_id == current_user.tenant_id,
+        CapabilityPolicy.tenant_id == target_tenant_id,
         CapabilityPolicy.capability == data.capability,
     )
     if data.agent_id:
@@ -96,7 +97,7 @@ async def upsert_capability_policy(
         policy.conditions = data.conditions
     else:
         policy = CapabilityPolicy(
-            tenant_id=current_user.tenant_id,
+            tenant_id=target_tenant_id,
             agent_id=data.agent_id,
             capability=data.capability,
             allowed=data.allowed,
@@ -114,7 +115,7 @@ async def upsert_capability_policy(
             severity="warn",
             actor_type="user",
             actor_id=current_user.id,
-            tenant_id=current_user.tenant_id,
+            tenant_id=target_tenant_id,
             action="configure_capability",
             details={
                 "capability": data.capability,
@@ -134,14 +135,16 @@ async def upsert_capability_policy(
 @router.delete("/enterprise/capabilities/{policy_id}")
 async def delete_capability_policy(
     policy_id: uuid.UUID,
+    tenant_id: str | None = None,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a capability policy (reverts to default allow)."""
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(
         select(CapabilityPolicy).where(
             CapabilityPolicy.id == policy_id,
-            CapabilityPolicy.tenant_id == current_user.tenant_id,
+            CapabilityPolicy.tenant_id == target_tenant_id,
         )
     )
     policy = result.scalar_one_or_none()

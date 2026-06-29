@@ -67,6 +67,11 @@ const SESSION_PERMISSION_MODE_OPTIONS: Array<{
   description: string;
 }> = [
   {
+    value: 'bypassPermissions',
+    label: 'Full access',
+    description: 'Bypass session prompts, still obey enterprise rules',
+  },
+  {
     value: 'auto',
     label: 'Approve for me',
     description: 'Approve low-risk actions and ask for risky ones',
@@ -75,11 +80,6 @@ const SESSION_PERMISSION_MODE_OPTIONS: Array<{
     value: 'default',
     label: 'Ask first',
     description: 'Ask before sensitive session actions',
-  },
-  {
-    value: 'bypassPermissions',
-    label: 'Full access',
-    description: 'Bypass session prompts, still obey enterprise rules',
   },
 ];
 
@@ -479,6 +479,37 @@ function sessionCheckpointId(checkpoint: Record<string, unknown>): string {
   );
 }
 
+export type SessionScrollCheckpointAnchor = {
+  id: string;
+  top: number;
+};
+
+export function pickFocusedCheckpointIdForScroll(
+  anchors: SessionScrollCheckpointAnchor[],
+  viewportCenterY: number,
+): string | null {
+  const sorted = anchors
+    .filter((anchor) => anchor.id && Number.isFinite(anchor.top))
+    .sort((a, b) => a.top - b.top);
+  if (sorted.length === 0) return null;
+
+  let focused = sorted[0];
+  for (const anchor of sorted) {
+    if (anchor.top > viewportCenterY) break;
+    focused = anchor;
+  }
+  return focused.id;
+}
+
+export type SessionGitLineDensity = 'empty' | 'sparse' | 'regular' | 'scrollable';
+
+export function getSessionGitLineDensity(itemCount: number): SessionGitLineDensity {
+  if (itemCount <= 0) return 'empty';
+  if (itemCount <= 6) return 'sparse';
+  if (itemCount >= 32) return 'scrollable';
+  return 'regular';
+}
+
 function sessionCheckpointLabel(checkpoint: Record<string, unknown>, index: number): string {
   const sequence = checkpoint.sequence ?? checkpoint.turn_index ?? index + 1;
   const role = checkpoint.role ? `${checkpoint.role}: ` : '';
@@ -522,24 +553,61 @@ function SessionGitLine({
   const { t } = useTranslation();
   const navigationLabel = t('sessionWorkbench.gitLine.navigation', 'Session navigation');
   const branchRows = lineage.length > 1 ? buildBranchLineageRows(lineage).filter((row) => row.depth > 0) : [];
+  const density = getSessionGitLineDensity(checkpoints.length + branchRows.length);
+  const densityClass = `is-${density}`;
+  const [hoverPreview, setHoverPreview] = React.useState<{
+    label: string;
+    top: number;
+    left: number;
+  } | null>(null);
+  const openPreview = React.useCallback((
+    event: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>,
+    label: string,
+  ) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setHoverPreview({
+      label,
+      top: rect.top + rect.height / 2,
+      left: rect.right + 8,
+    });
+  }, []);
+  const closePreview = React.useCallback(() => {
+    setHoverPreview(null);
+  }, []);
   if (loading && checkpoints.length === 0 && branchRows.length === 0) {
     return (
-      <aside data-testid="session-gitline" className="session-gitline is-loading" aria-label={navigationLabel}>
+      <aside
+        data-testid="session-gitline"
+        data-density={density}
+        className={`session-gitline is-loading ${densityClass}`}
+        aria-label={navigationLabel}
+      >
         <span className="session-gitline-loading-dot" />
       </aside>
     );
   }
   if (checkpoints.length === 0 && branchRows.length === 0) {
     return (
-      <aside data-testid="session-gitline" className="session-gitline is-empty" aria-label={navigationLabel} />
+      <aside
+        data-testid="session-gitline"
+        data-density={density}
+        className={`session-gitline is-empty ${densityClass}`}
+        aria-label={navigationLabel}
+      />
     );
   }
   return (
-    <aside data-testid="session-gitline" className="session-gitline" aria-label={navigationLabel}>
+    <aside
+      data-testid="session-gitline"
+      data-density={density}
+      className={`session-gitline ${densityClass}`}
+      aria-label={navigationLabel}
+    >
       <div className="session-gitline-track" data-testid="session-gitline-checkpoints">
         {checkpoints.map((checkpoint, index) => {
           const id = sessionCheckpointId(checkpoint);
           const isFocused = Boolean(id && id === focusedCheckpointId);
+          const previewLabel = sessionCheckpointPreview(checkpoint, index);
           return (
             <button
               key={id || index}
@@ -548,13 +616,14 @@ function SessionGitLine({
               data-session-action="navigate-checkpoint"
               data-checkpoint-id={id || undefined}
               className={`session-gitline-node ${isFocused ? 'is-focused' : ''}`}
-              title={sessionCheckpointPreview(checkpoint, index)}
+              title={previewLabel}
+              aria-label={previewLabel}
+              onMouseEnter={(event) => openPreview(event, previewLabel)}
+              onFocus={(event) => openPreview(event, previewLabel)}
+              onMouseLeave={closePreview}
+              onBlur={closePreview}
               onClick={() => onNavigateCheckpoint(checkpoint, index)}
-            >
-              <span className="session-gitline-preview">
-                {sessionCheckpointPreview(checkpoint, index)}
-              </span>
-            </button>
+            />
           );
         })}
       </div>
@@ -564,6 +633,7 @@ function SessionGitLine({
             const isActive = String(row.id) === String(activeSessionId || '');
             const title = row.title || row.id;
             const anchorId = branchAnchorId(row);
+            const previewLabel = `${branchModeLabel(row)} · ${title}`;
             return (
               <button
                 key={row.id}
@@ -573,19 +643,30 @@ function SessionGitLine({
                 data-branch-session-id={row.id}
                 data-checkpoint-id={anchorId || undefined}
                 className={`session-gitline-branch-node ${isActive ? 'is-active' : ''}`}
-                title={`${branchModeLabel(row)} · ${title}`}
+                title={previewLabel}
+                aria-label={previewLabel}
+                onMouseEnter={(event) => openPreview(event, previewLabel)}
+                onFocus={(event) => openPreview(event, previewLabel)}
+                onMouseLeave={closePreview}
+                onBlur={closePreview}
                 onClick={() => onNavigateBranch?.(String(row.id))}
               >
                 <span className="session-gitline-branch-stem" aria-hidden="true" />
                 <span className="session-gitline-branch-dot" aria-hidden="true" />
-                <span className="session-gitline-preview">
-                  {branchModeLabel(row)} · {title}
-                </span>
               </button>
             );
           })}
         </div>
       )}
+      {hoverPreview ? (
+        <div
+          className="session-gitline-preview"
+          style={{ top: `${hoverPreview.top}px`, left: `${hoverPreview.left}px` }}
+          role="tooltip"
+        >
+          {hoverPreview.label}
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -1863,6 +1944,7 @@ export default function AgentChatSection({
   const [permissionMenuOpen, setPermissionMenuOpen] = React.useState(false);
   const [runtimePanelCollapsed, setRuntimePanelCollapsed] = React.useState(false);
   const [focusedGitCheckpointId, setFocusedGitCheckpointId] = React.useState<string | null>(null);
+  const gitScrollFrameRef = React.useRef<number | null>(null);
 
   const runtimeUsageLabel = getRuntimeUsageLabel(runtimeSummary);
   const runtimeUsageTitle = getRuntimeUsageTitle(runtimeSummary, runtimeUsageLabel);
@@ -2513,6 +2595,10 @@ export default function AgentChatSection({
       : [];
     return workbenchCheckpoints;
   }, [sessionIndex, sessionWorkbench]);
+  const checkpointIdSignature = React.useMemo(
+    () => sessionGitCheckpoints.map(sessionCheckpointId).filter(Boolean).join('|'),
+    [sessionGitCheckpoints],
+  );
   const activeRunRecord = sessionWorkbench?.active_run && isRuntimeRecord(sessionWorkbench.active_run)
     ? sessionWorkbench.active_run
     : null;
@@ -2529,18 +2615,88 @@ export default function AgentChatSection({
     if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value);
     return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   }, []);
+  const findCheckpointMessageElement = React.useCallback(
+    (scrollRoot: HTMLElement, checkpoint: Record<string, unknown>, index: number): HTMLElement | null => {
+      const id = sessionCheckpointId(checkpoint);
+      const target = id
+        ? scrollRoot.querySelector<HTMLElement>(`[data-session-message-id="${escapeAttrValue(id)}"]`)
+        : null;
+      if (target) return target;
+
+      const fallbackNodes = scrollRoot.querySelectorAll<HTMLElement>('[data-session-message-index]');
+      return fallbackNodes[Math.max(0, Math.min(index, fallbackNodes.length - 1))] || null;
+    },
+    [escapeAttrValue],
+  );
+  const syncFocusedGitCheckpointFromScroll = React.useCallback(() => {
+    const scrollRoot = isReadOnlySession ? historyContainerRef.current : chatContainerRef.current;
+    if (!scrollRoot || sessionGitCheckpoints.length === 0) return;
+
+    const rootRect = scrollRoot.getBoundingClientRect();
+    const viewportCenterY = rootRect.top + rootRect.height / 2;
+    const anchors = sessionGitCheckpoints
+      .map((checkpoint, index) => {
+        const id = sessionCheckpointId(checkpoint);
+        const element = id ? findCheckpointMessageElement(scrollRoot, checkpoint, index) : null;
+        if (!id || !element) return null;
+        return {
+          id,
+          top: element.getBoundingClientRect().top,
+        };
+      })
+      .filter((anchor): anchor is SessionScrollCheckpointAnchor => Boolean(anchor));
+    const nextFocusedId = pickFocusedCheckpointIdForScroll(anchors, viewportCenterY);
+    if (!nextFocusedId) return;
+    setFocusedGitCheckpointId((current) => (current === nextFocusedId ? current : nextFocusedId));
+  }, [
+    chatContainerRef,
+    findCheckpointMessageElement,
+    historyContainerRef,
+    isReadOnlySession,
+    sessionGitCheckpoints,
+  ]);
+  const trackGitCheckpointFromScroll = React.useCallback(() => {
+    if (gitScrollFrameRef.current !== null) return;
+    if (typeof window === 'undefined') return;
+    const scheduleFrame = typeof window.requestAnimationFrame === 'function'
+      ? window.requestAnimationFrame.bind(window)
+      : (callback: FrameRequestCallback) => window.setTimeout(() => callback(Date.now()), 0);
+    gitScrollFrameRef.current = scheduleFrame(() => {
+      gitScrollFrameRef.current = null;
+      syncFocusedGitCheckpointFromScroll();
+    });
+  }, [syncFocusedGitCheckpointFromScroll]);
+  React.useEffect(() => () => {
+    if (gitScrollFrameRef.current === null || typeof window === 'undefined') return;
+    if (typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(gitScrollFrameRef.current);
+    } else {
+      window.clearTimeout(gitScrollFrameRef.current);
+    }
+    gitScrollFrameRef.current = null;
+  }, []);
+  React.useEffect(() => {
+    if (!checkpointIdSignature) {
+      setFocusedGitCheckpointId(null);
+      return;
+    }
+    trackGitCheckpointFromScroll();
+  }, [activeSessionId, checkpointIdSignature, trackGitCheckpointFromScroll, visibleTimeline.length]);
   const navigateGitCheckpoint = React.useCallback((checkpoint: Record<string, unknown>, index: number) => {
     const id = sessionCheckpointId(checkpoint);
     if (id) setFocusedGitCheckpointId(id);
     const scrollRoot = (isReadOnlySession ? historyContainerRef.current : chatContainerRef.current);
     if (!scrollRoot) return;
-    const target = id
-      ? scrollRoot.querySelector<HTMLElement>(`[data-session-message-id="${escapeAttrValue(id)}"]`)
-      : null;
-    const fallbackNodes = scrollRoot.querySelectorAll<HTMLElement>('[data-session-message-index]');
-    const fallbackTarget = fallbackNodes[Math.max(0, Math.min(index, fallbackNodes.length - 1))];
-    (target || fallbackTarget)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, [chatContainerRef, escapeAttrValue, historyContainerRef, isReadOnlySession]);
+    findCheckpointMessageElement(scrollRoot, checkpoint, index)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [chatContainerRef, findCheckpointMessageElement, historyContainerRef, isReadOnlySession]);
+  const handleHistoryScroll = React.useCallback(() => {
+    onHistoryScroll();
+    trackGitCheckpointFromScroll();
+  }, [onHistoryScroll, trackGitCheckpointFromScroll]);
+  const handleChatScroll = React.useCallback(() => {
+    onChatScroll();
+    trackGitCheckpointFromScroll();
+  }, [onChatScroll, trackGitCheckpointFromScroll]);
   const threadTimelineModel = buildThreadTimeline({
     messages: visibleTimeline,
     activeSession,
@@ -2673,7 +2829,7 @@ export default function AgentChatSection({
           </div>
         ) : isReadOnlySession ? (
           <>
-            <div ref={historyContainerRef} onScroll={onHistoryScroll} className="session-tui-history">
+            <div ref={historyContainerRef} onScroll={handleHistoryScroll} className="session-tui-history">
               {renderHistoryFrame(
                 <>
                   <div
@@ -2732,7 +2888,7 @@ export default function AgentChatSection({
           </>
         ) : (
           <>
-            <div ref={chatContainerRef} onScroll={onChatScroll} className="session-tui-history">
+            <div ref={chatContainerRef} onScroll={handleChatScroll} className="session-tui-history">
               {renderHistoryFrame(
                 <>
                   {activeSessionHydrating ? (

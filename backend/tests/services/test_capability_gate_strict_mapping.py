@@ -10,6 +10,7 @@ Two behaviours pinned:
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -86,8 +87,8 @@ async def test_mapped_tool_does_not_touch_counter(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mapped_tool_without_policy_escalates_instead_of_silent_allow() -> None:
-    """Mapped capabilities must never be silently granted when no admin policy exists."""
+async def test_mapped_tool_without_policy_or_tool_enablement_source_escalates() -> None:
+    """Mapped capabilities without policy or tool-toggle state fall back to session permission."""
 
     async def fake_execute(_stmt):
         class _Result:
@@ -111,6 +112,75 @@ async def test_mapped_tool_without_policy_escalates_instead_of_silent_allow() ->
     assert result.capability == "workspace.file.write"
     assert result.policy_found is False
     assert "no capability policy" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_enabled_workspace_tool_config_allows_mapped_missing_policy() -> None:
+    """The enterprise Tools page is the product-facing policy source.
+
+    If a tenant has enabled a tool there, runtime must not reject the call just
+    because no separate CapabilityPolicy row exists.
+    """
+    tool_id = uuid.uuid4()
+    result = await capability_gate.check_capability(
+        db=_QueuedScalarDB(
+            [
+                None,  # no agent-specific CapabilityPolicy
+                None,  # no tenant-default CapabilityPolicy
+                SimpleNamespace(id=tool_id, enabled=True, tenant_id=None),  # global Tool row
+                SimpleNamespace(enabled=True),  # TenantToolConfig row from the backend toggle
+            ]
+        ),
+        tenant_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        tool_name="send_email",
+    )
+
+    assert result.allowed is True
+    assert result.denied is False
+    assert result.escalate_to_l3 is False
+    assert result.capability == "channel.email.send"
+    assert result.policy_found is False
+
+
+@pytest.mark.asyncio
+async def test_disabled_workspace_tool_config_denies_mapped_missing_policy() -> None:
+    tool_id = uuid.uuid4()
+    result = await capability_gate.check_capability(
+        db=_QueuedScalarDB(
+            [
+                None,
+                None,
+                SimpleNamespace(id=tool_id, enabled=True, tenant_id=None),
+                SimpleNamespace(enabled=False),
+            ]
+        ),
+        tenant_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        tool_name="send_email",
+    )
+
+    assert result.allowed is False
+    assert result.denied is True
+    assert result.escalate_to_l3 is False
+    assert result.capability == "channel.email.send"
+    assert result.policy_found is False
+    assert "disabled" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_explicit_capability_policy_deny_overrides_enabled_tool_config() -> None:
+    result = await capability_gate.check_capability(
+        db=_QueuedScalarDB([SimpleNamespace(allowed=False, requires_approval=False)]),
+        tenant_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        tool_name="send_email",
+    )
+
+    assert result.allowed is False
+    assert result.denied is True
+    assert result.capability == "channel.email.send"
+    assert result.policy_found is True
 
 
 # ── Strict mode ────────────────────────────────────────────────

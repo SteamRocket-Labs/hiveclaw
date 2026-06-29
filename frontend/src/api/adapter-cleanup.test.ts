@@ -143,26 +143,26 @@ describe('request cleanup adapters', () => {
     vi.mocked(del).mockResolvedValue({ status: 'deleted' });
 
     await enterpriseApi.listCapabilityDefinitions();
-    await enterpriseApi.listCapabilityPolicies('agent-1');
+    await enterpriseApi.listCapabilityPolicies({ agentId: 'agent-1', tenantId: 'tenant-1' });
     await enterpriseApi.upsertCapabilityPolicy({
       capability: 'workspace.file.delete',
       agent_id: 'agent-1',
       allowed: false,
       requires_approval: false,
       conditions: {},
-    });
-    await enterpriseApi.deleteCapabilityPolicy('policy-1');
+    }, 'tenant-1');
+    await enterpriseApi.deleteCapabilityPolicy('policy-1', 'tenant-1');
 
     expect(get).toHaveBeenCalledWith('/enterprise/capabilities/definitions');
-    expect(get).toHaveBeenCalledWith('/enterprise/capabilities?agent_id=agent-1');
-    expect(put).toHaveBeenCalledWith('/enterprise/capabilities', {
+    expect(get).toHaveBeenCalledWith('/enterprise/capabilities?agent_id=agent-1&tenant_id=tenant-1');
+    expect(put).toHaveBeenCalledWith('/enterprise/capabilities?tenant_id=tenant-1', {
       capability: 'workspace.file.delete',
       agent_id: 'agent-1',
       allowed: false,
       requires_approval: false,
       conditions: {},
     });
-    expect(del).toHaveBeenCalledWith('/enterprise/capabilities/policy-1');
+    expect(del).toHaveBeenCalledWith('/enterprise/capabilities/policy-1?tenant_id=tenant-1');
   });
 
   it('routes session message loading through chatApi with abort support', async () => {

@@ -15,9 +15,11 @@ import AgentChatSection, {
   StructuredToolResultBody,
   buildBranchLineageRows,
   extractPlanIdFromPlanModeMessage,
+  getSessionGitLineDensity,
   getArtifactOpenMode,
   isPendingEmptyArtifactPreview,
   isClarificationCardAnsweredByLaterUserMessage,
+  pickFocusedCheckpointIdForScroll,
 } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
@@ -981,6 +983,27 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="branch-lineage-panel"');
     expect(markup).toContain('Original (edit)');
     expect(markup).toContain('edit');
+  });
+
+  it('selects the live checkpoint from the current session scroll position', () => {
+    const anchors = [
+      { id: 'checkpoint-1', top: 120 },
+      { id: 'checkpoint-2', top: 520 },
+      { id: 'checkpoint-3', top: 980 },
+    ];
+
+    expect(pickFocusedCheckpointIdForScroll(anchors, 40)).toBe('checkpoint-1');
+    expect(pickFocusedCheckpointIdForScroll(anchors, 360)).toBe('checkpoint-1');
+    expect(pickFocusedCheckpointIdForScroll(anchors, 660)).toBe('checkpoint-2');
+    expect(pickFocusedCheckpointIdForScroll(anchors, 1200)).toBe('checkpoint-3');
+    expect(pickFocusedCheckpointIdForScroll([], 660)).toBeNull();
+  });
+
+  it('classifies session GitLine density for centered and scrollable checkpoint rails', () => {
+    expect(getSessionGitLineDensity(0)).toBe('empty');
+    expect(getSessionGitLineDensity(4)).toBe('sparse');
+    expect(getSessionGitLineDensity(18)).toBe('regular');
+    expect(getSessionGitLineDensity(50)).toBe('scrollable');
   });
 
   it('renders a session command checkpoint selector as an in-session control panel', () => {

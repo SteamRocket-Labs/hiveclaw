@@ -377,7 +377,7 @@ def _teaching_block_message(
 
 def _permission_mode_for_context(context: ToolGovernanceContext) -> PermissionMode:
     profile = context.permission_profile
-    return normalize_permission_mode(getattr(profile, "mode", None)) if profile is not None else PermissionMode.DEFAULT
+    return normalize_permission_mode(getattr(profile, "mode", None)) if profile is not None else PermissionProfileV1().mode
 
 
 def _session_no_policy_action(context: ToolGovernanceContext) -> str:
@@ -411,11 +411,12 @@ def _session_no_policy_action(context: ToolGovernanceContext) -> str:
 
 
 def _session_explicit_policy_action(context: ToolGovernanceContext) -> str:
-    """Resolve an explicit approval policy through the current session.
+    """Resolve approval-like gates that intentionally remain session-local.
 
-    CCPlus currently has no enterprise approval loop for tool calls. Explicit
-    approval requirements therefore become in-session permission prompts, while
-    bypass/allowed session grants still allow execution and strict modes deny.
+    Company CapabilityPolicy rows with ``requires_approval=True`` use
+    ``_emit_enterprise_approval_result`` instead. This helper covers narrower
+    runtime prompts such as MCP tool approval mode and dangerous-operation
+    confirmations that are still resolved inside the current session.
     """
     profile = context.permission_profile
     allowed_tools = set(getattr(profile, "allowed_tools", ()) or ()) if profile is not None else set()
@@ -425,8 +426,6 @@ def _session_explicit_policy_action(context: ToolGovernanceContext) -> str:
         return "ask"
 
     mode = _permission_mode_for_context(context)
-    if mode == PermissionMode.BYPASS_PERMISSIONS:
-        return "allow"
     if mode in {PermissionMode.DONT_ASK, PermissionMode.PLAN}:
         return "deny"
     return "ask"
@@ -561,6 +560,80 @@ async def _emit_session_no_policy_result(
             "status": "session_permission_required",
             "message": message,
             "permission_request": permission_request,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+async def _emit_enterprise_approval_result(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    *,
+    capability: str | None,
+    reason: str | None,
+    event_callback: EventCallback | None,
+) -> str | None:
+    """Create a company-level approval request for an explicit admin policy.
+
+    This is intentionally separate from session permission. Company policy is
+    above the Session mode layer, so full-access/bypass can skip only missing
+    policy prompts, not an explicit "requires approval" company setting.
+    """
+    approval = await _maybe_await(
+        deps.request_approval(
+            agent_id=context.agent_id,
+            user_id=context.user_id,
+            tool_name=context.tool_name,
+            arguments=dict(context.arguments or {}),
+            capability=capability or context.tool_name,
+            reason=reason,
+            session_id=context.session_id,
+            approval_origin_type="company_tool_policy",
+        )
+    )
+    if approval and approval.get("allowed") is True:
+        await _emit_event(
+            event_callback,
+            {
+                "type": "permission",
+                "tool_name": context.tool_name,
+                "status": "permission_resolved",
+                "decision": "allow",
+                "message": f"Company approval pre-authorized tool '{context.tool_name}'.",
+                "capability": capability,
+            },
+        )
+        return None
+
+    approval_id = str((approval or {}).get("approval_id") or "")
+    message = (
+        f"⏳ Tool '{context.tool_name}' requires company approval"
+        f" [capability: {capability or context.tool_name}]. "
+        f"Reason: {reason or 'company policy requires approval for this capability'}. "
+        "Open the company Approvals page to approve or reject this action."
+    )
+    await _emit_event(
+        event_callback,
+        {
+            "type": "permission",
+            "tool_name": context.tool_name,
+            "status": "approval_required",
+            "message": message,
+            "capability": capability,
+            "approval_id": approval_id or None,
+            "approval_required": True,
+            "reason": reason,
+            "next_step": "Open company Approvals to approve or reject this action.",
+        },
+    )
+    return json.dumps(
+        {
+            "status": "approval_required",
+            "message": message,
+            "approval_id": approval_id or None,
+            "capability": capability,
+            "tool_name": context.tool_name,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -965,11 +1038,11 @@ async def _run_governance_inner(
                     return message
                 cap_escalate = False
             if cap_escalate:
-                message = await _emit_session_no_policy_result(
+                message = await _emit_enterprise_approval_result(
                     context,
+                    deps,
                     capability=getattr(cap_result, "capability", None),
                     reason=getattr(cap_result, "reason", None) or "explicit enterprise approval policy",
-                    action=_session_explicit_policy_action(context),
                     event_callback=event_callback,
                 )
                 if message is not None:
@@ -1271,11 +1344,11 @@ async def _run_governance_inner(
                             return message
                         dangerous_allowed_by_specific_policy = True
                     else:
-                        message = await _emit_session_no_policy_result(
+                        message = await _emit_enterprise_approval_result(
                             context,
+                            deps,
                             capability=getattr(dangerous_result, "capability", None) or dangerous_capability,
                             reason=getattr(dangerous_result, "reason", None) or dangerous_reason,
-                            action=_session_explicit_policy_action(context),
                             event_callback=event_callback,
                         )
                         if message is not None:

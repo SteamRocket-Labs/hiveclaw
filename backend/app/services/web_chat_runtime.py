@@ -26,7 +26,7 @@ from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
-from app.runtime.ccplus_contracts import DEFAULT_CCPLUS_WRITABLE_ROOTS, normalize_permission_mode
+from app.runtime.ccplus_contracts import DEFAULT_CCPLUS_PERMISSION_MODE, DEFAULT_CCPLUS_WRITABLE_ROOTS, normalize_permission_mode
 from app.services.chat_message_parts import (
     SESSION_NATIVE_EVENT_TYPES,
     build_chunk_event,
@@ -1233,7 +1233,9 @@ async def start_channel_chat_run_from_saved_turn(
         str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
     ]
     writable_roots = list(DEFAULT_CCPLUS_WRITABLE_ROOTS)
-    permission_mode = normalize_permission_mode(session_metadata.get("permission_mode") or "auto").value
+    permission_mode = normalize_permission_mode(
+        session_metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value
+    ).value
     metadata = {
         "user_id": str(user.id),
         "session_id": str(session.id),

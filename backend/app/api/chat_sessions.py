@@ -24,6 +24,7 @@ from app.models.agent import Agent
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.runtime.ccplus_contracts import (
+    DEFAULT_CCPLUS_PERMISSION_MODE,
     DEFAULT_CCPLUS_WRITABLE_ROOTS,
     PendingToolFrameV1,
     PermissionCheckpointV1,
@@ -90,7 +91,7 @@ class SessionOut(BaseModel):
     created_at: str
     last_message_at: Optional[str] = None
     message_count: int = 0
-    permission_mode: str = "auto"
+    permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
     permission_profile: dict[str, Any] = Field(default_factory=dict)
     writable_roots: list[str] = Field(default_factory=list)
     # Agent-to-agent session fields
@@ -110,12 +111,12 @@ def _session_contract_fields(session: ChatSession) -> dict[str, Any]:
         "parent_session_id": str(session.parent_session_id) if getattr(session, "parent_session_id", None) else None,
         "root_session_id": str(session.root_session_id) if getattr(session, "root_session_id", None) else None,
         "runtime_task_id": str(session.runtime_task_id) if getattr(session, "runtime_task_id", None) else None,
-        **_session_permission_metadata(str(session_metadata.get("permission_mode") or "auto"), session),
+        **_session_permission_metadata(str(session_metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value), session),
     }
 
 
 def _session_permission_metadata(permission_mode: str | None, session: ChatSession | None = None) -> dict[str, Any]:
-    mode = normalize_permission_mode(permission_mode or "auto").value
+    mode = normalize_permission_mode(permission_mode or DEFAULT_CCPLUS_PERMISSION_MODE.value).value
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {}) if session is not None else {}
     allowed_tools = [
         str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
@@ -623,7 +624,7 @@ class PatchSessionIn(BaseModel):
 
 
 class UpdateSessionPermissionProfileIn(BaseModel):
-    permission_mode: str = "auto"
+    permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
 
 
 class StartSessionRunIn(BaseModel):
@@ -631,7 +632,7 @@ class StartSessionRunIn(BaseModel):
     display_content: str = ""
     file_name: str = ""
     plan_mode_requested: bool = False
-    permission_mode: str = "auto"
+    permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -644,7 +645,7 @@ class BranchSessionIn(BaseModel):
     file_name: str = ""
     title: Optional[str] = None
     start_run: bool = True
-    permission_mode: str = "auto"
+    permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -654,7 +655,7 @@ class SteerSessionTurnIn(BaseModel):
     display_content: str = ""
     file_name: str = ""
     expected_turn_id: Optional[str] = None
-    permission_mode: str = "auto"
+    permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -1456,7 +1457,9 @@ async def resolve_session_permission(
                 ),
                 pending_frame=pending_frame,
                 extra_metadata={
-                    **_session_permission_metadata(str(request_payload.get("permission_mode") or "auto"), session),
+                    **_session_permission_metadata(
+                        str(request_payload.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value), session
+                    ),
                     "source": "session_permission_denied_resume",
                     "latest_user_prompt_overrides_history": True,
                     "resumed_from_permission_request_id": str(permission_request_id),
@@ -1555,7 +1558,9 @@ async def resolve_session_permission(
                 content="Continue after the approved session permission tool result.",
                 pending_frame=pending_frame,
                 extra_metadata={
-                    **_session_permission_metadata(str(request_payload.get("permission_mode") or "auto"), session),
+                    **_session_permission_metadata(
+                        str(request_payload.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value), session
+                    ),
                     "source": "session_permission_resume",
                     "resumed_from_permission_request_id": str(permission_request_id),
                     "resumed_turn_id": pending_frame.turn_id,

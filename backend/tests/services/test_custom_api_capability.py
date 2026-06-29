@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -33,14 +34,16 @@ def test_custom_api_capability_definition_is_visible() -> None:
 async def test_custom_api_tool_maps_to_external_api_capability_without_static_entry() -> None:
     from app.services.capability_gate import check_capability
 
+    tenant_tool = SimpleNamespace(enabled=True, tenant_id=uuid4())
+
     result = await check_capability(
-        _QueuedDB([uuid4(), None, None]),
+        _QueuedDB([uuid4(), None, None, tenant_tool]),
         uuid4(),
         uuid4(),
         "custom_api__alphagbm__analyze_stock",
     )
 
-    assert result.allowed is False
-    assert result.escalate_to_l3 is True
+    assert result.allowed is True
+    assert result.escalate_to_l3 is False
     assert result.capability == "external.api.call"
     assert result.policy_found is False

@@ -415,6 +415,40 @@ vi.mock('@tanstack/react-query', () => ({
         },
       };
     }
+    if (key === 'chat-session-index') {
+      if (!queryKey.includes('runtime-panel-session')) {
+        return { data: undefined, isLoading: false, isError: false, error: null };
+      }
+      return {
+        data: {
+          schema: 'session_index.v1',
+          thread_id: 'runtime-panel-session',
+          session_id: 'runtime-panel-session',
+          agent_id: 'agent-1',
+          dynamic_tools: [],
+          checkpoints: [
+            {
+              checkpoint_event_id: 'checkpoint-user-1',
+              sequence: 1,
+              role: 'user',
+              content: 'Create a runtime report.',
+            },
+            {
+              checkpoint_event_id: 'checkpoint-assistant-2',
+              sequence: 2,
+              role: 'assistant',
+              content: 'Generated a report.',
+            },
+          ],
+          event_count: 2,
+          t0_segments: [],
+          resume_health: { status: 'ok' },
+        },
+        isLoading: false,
+        isError: false,
+        error: null,
+      };
+    }
     if (key === 'chat-session-workbench') {
       if (!queryKey.includes('runtime-panel-session')) {
         return { data: undefined, isLoading: false, isError: false, error: null };
@@ -458,6 +492,11 @@ vi.mock('@tanstack/react-query', () => ({
               status: 'completed',
             },
           ],
+          active_run: {
+            id: 'workflow-run-1',
+            task_type: 'workflow',
+            status: 'running',
+          },
           teams: [
             {
               id: 'team-1',
@@ -493,11 +532,6 @@ vi.mock('@tanstack/react-query', () => ({
             decision_count: 1,
             latest_status: { status: 'ok', utilization_pct: 62 },
             decisions: [{ id: 'context-1', status: 'ok' }],
-          },
-          active_run: {
-            id: 'runtime-task-active',
-            status: 'running',
-            task_type: 'web_chat_turn',
           },
         },
         isLoading: false,
@@ -2921,7 +2955,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('数字员工已创建完成。');
   });
 
-  it('keeps running task todo controls out of the default chat chrome', () => {
+  it('renders running task todos as a composer-adjacent hover strip, not side chrome', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Research Bot' }}
@@ -2992,7 +3026,10 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-workbench-sidebar"');
     expect(markup).not.toContain('data-testid="session-workbench-inspector"');
     expect(markup).not.toContain('data-testid="session-native-controls"');
-    expect(markup).not.toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).toContain('data-testid="chat-work-ledger-summary"');
+    expect(markup).toContain('data-testid="chat-work-ledger-popover"');
+    expect(markup).toContain('Task 1-2 of 2');
     expect(markup).not.toContain('Start goal');
     expect(markup).not.toContain('Create team');
   });
@@ -3074,7 +3111,7 @@ describe('AgentDetail extracted sections', () => {
     }
   });
 
-  it('does not mount the persistent work ledger dock as a permanent chat-side column', () => {
+  it('keeps the persistent work ledger dock inside the composer rail instead of a chat-side column', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Builder Bot' }}
@@ -3143,7 +3180,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-workbench-sidebar"');
     expect(markup).not.toContain('data-testid="session-workbench-inspector"');
     expect(markup).not.toContain('data-testid="session-native-controls"');
-    expect(markup).not.toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).toContain('data-testid="chat-work-ledger-summary"');
+    expect(markup).toContain('data-testid="chat-work-ledger-popover"');
   });
 
   it('renders workspace documents and runtime tables in the right session panel', () => {
@@ -3164,6 +3203,15 @@ describe('AgentDetail extracted sections', () => {
           title: 'Runtime panel session',
           created_at: '2026-06-28T09:00:00Z',
         }}
+        branchLineage={[
+          { id: 'runtime-panel-session', parent_session_id: null, title: 'Main session', branch: {} },
+          {
+            id: 'branch-session-1',
+            parent_session_id: 'runtime-panel-session',
+            title: 'Existing branch',
+            branch: { branch_mode: 'branch', anchor_event_id: 'checkpoint-user-1' },
+          },
+        ]}
         wsConnected
         allSessions={[]}
         allSessionsLoading={false}
@@ -3237,6 +3285,16 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('data-testid="session-runtime-panel"');
+    expect(markup).toContain('data-testid="session-runtime-collapse-toggle"');
+    expect(markup).toContain('data-testid="session-gitline"');
+    expect(markup).toContain('data-testid="session-gitline-checkpoint"');
+    expect(markup).toContain('data-testid="session-gitline-branch"');
+    expect(markup).toContain('data-session-action="navigate-checkpoint"');
+    expect(markup).toContain('data-session-action="navigate-branch"');
+    expect(markup).not.toContain('data-session-command="branch"');
+    expect(markup).toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).toContain('data-testid="chat-work-ledger-summary"');
+    expect(markup).toContain('Task 1-2 of 2');
     expect(markup).toContain('Workspace Documents');
     expect(markup).toContain('runtime-report.md');
     expect(markup).toContain('Runtime');

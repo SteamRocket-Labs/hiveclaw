@@ -23,7 +23,13 @@ const queryHarness = vi.hoisted(() => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_key: string, fallback?: string) => fallback || _key,
+    t: (_key: string, fallback?: string, values?: Record<string, string | number>) => {
+      let output = fallback || _key;
+      Object.entries(values || {}).forEach(([key, value]) => {
+        output = output.replace(new RegExp(`{{\\s*${key}\\s*}}`, 'g'), String(value));
+      });
+      return output;
+    },
   }),
 }));
 
@@ -154,7 +160,7 @@ describe('ChatWorkLedgerDock', () => {
     expect(markup).not.toContain('Loading work state...');
   });
 
-  it('renders only the Claude Code style task list in the persistent dock', () => {
+  it('renders a composer-adjacent task progress strip with hover details only', () => {
     queryHarness.sessionData = {
       schema: 'agent_work_ledger_view.v1',
       runtime_task_id: 'task-current',
@@ -189,7 +195,13 @@ describe('ChatWorkLedgerDock', () => {
     );
 
     expect(markup).toContain('data-testid="agent-task-list"');
+    expect(markup).toContain('data-testid="chat-work-ledger-summary"');
+    expect(markup).toContain('data-testid="chat-work-ledger-popover"');
+    expect(markup).toContain('Task 2-3 of 3');
     expect(markup).toContain('Collecting and grading sources');
+    expect(markup).not.toContain('aria-expanded');
+    expect(markup).not.toContain('chat-work-ledger-toggle');
+    expect(markup).not.toContain('files changed');
     expect(markup).not.toContain('Agent tasks');
     expect(markup).not.toContain('3 tasks');
     expect(markup).not.toContain('Current');
@@ -203,7 +215,7 @@ describe('ChatWorkLedgerDock', () => {
     expect(markup).not.toContain('Temporary source timeout');
   });
 
-  it('can render the persistent todo dock collapsed without task rows', () => {
+  it('keeps task details in the hover popover instead of a click-collapsed panel', () => {
     queryHarness.sessionData = ledger('task-current', 'Collapsible todo');
 
     const markup = renderToStaticMarkup(
@@ -211,14 +223,13 @@ describe('ChatWorkLedgerDock', () => {
         agentId="agent-1"
         sessionId="session-1"
         runtimeTaskId="task-current"
-        initialCollapsed
       />,
     );
 
     expect(markup).toContain('data-testid="chat-work-ledger-dock"');
-    expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain('Todo');
-    expect(markup).not.toContain('data-testid="agent-task-list"');
-    expect(markup).not.toContain('Collapsible todo');
+    expect(markup).toContain('data-testid="agent-task-list"');
+    expect(markup).toContain('Collapsible todo');
+    expect(markup).not.toContain('aria-expanded');
   });
 });

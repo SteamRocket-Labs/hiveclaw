@@ -53,6 +53,9 @@
     "activeMembers": "active members",
     "checkpointList": "Checkpoints",
     "noCheckpoints": "No checkpoints yet",
+    "gitLine": {
+      "navigation": "Session navigation"
+    },
     "rightPanel": {
       "workspace": "Workspace",
       "workspaceDocuments": "Workspace Documents",
@@ -1206,6 +1209,9 @@
         "todoTitle": "Todo",
         "openSuffix": "open",
         "allDone": "All done",
+        "allDoneCount": "{{count}} tasks complete",
+        "singleTaskProgress": "Task {{index}} of {{total}}",
+        "taskRangeProgress": "Task {{start}}-{{end}} of {{total}}",
         "verificationTitle": "Verification",
         "progressTitle": "Progress",
         "blockersTitle": "Blockers",

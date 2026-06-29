@@ -2,6 +2,8 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   IconCalendarTime,
+  IconChevronLeft,
+  IconChevronRight,
   IconChecklist,
   IconCircleDashedCheck,
   IconDownload,
@@ -30,6 +32,7 @@ import CopyMessageButton from './CopyMessageButton';
 import PlanCard from './PlanCard';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
+import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import { buildThreadTimeline, type ThreadTimelineModel } from '../session-workbench/timelineModel';
 import { chatApi, type RecordSessionFeedbackInput } from '../../api/domains/chat';
@@ -463,6 +466,127 @@ export function BranchLineagePanel({
         })}
       </div>
     </div>
+  );
+}
+
+function sessionCheckpointId(checkpoint: Record<string, unknown>): string {
+  return String(
+    checkpoint.checkpoint_event_id
+      || checkpoint.event_id
+      || checkpoint.message_id
+      || checkpoint.id
+      || '',
+  );
+}
+
+function sessionCheckpointLabel(checkpoint: Record<string, unknown>, index: number): string {
+  const sequence = checkpoint.sequence ?? checkpoint.turn_index ?? index + 1;
+  const role = checkpoint.role ? `${checkpoint.role}: ` : '';
+  const content = String(checkpoint.content || checkpoint.title || checkpoint.summary || '').trim();
+  return `${sequence}. ${role}${content || sessionCheckpointId(checkpoint) || 'checkpoint'}`;
+}
+
+function sessionCheckpointPreview(checkpoint: Record<string, unknown>, index: number): string {
+  const label = sessionCheckpointLabel(checkpoint, index);
+  return label.length > 110 ? `${label.slice(0, 107)}...` : label;
+}
+
+function branchAnchorId(item: BranchLineageItem): string {
+  const branch = item.branch || {};
+  return String(
+    branch.anchor_event_id
+      || branch.checkpoint_event_id
+      || branch.event_id
+      || branch.message_id
+      || '',
+  );
+}
+
+function SessionGitLine({
+  activeSessionId,
+  checkpoints,
+  focusedCheckpointId,
+  lineage,
+  loading,
+  onNavigateCheckpoint,
+  onNavigateBranch,
+}: {
+  activeSessionId?: string | null;
+  checkpoints: Array<Record<string, unknown>>;
+  focusedCheckpointId?: string | null;
+  lineage: BranchLineageItem[];
+  loading?: boolean;
+  onNavigateCheckpoint: (checkpoint: Record<string, unknown>, index: number) => void;
+  onNavigateBranch?: (sessionId: string) => void | Promise<unknown>;
+}) {
+  const { t } = useTranslation();
+  const navigationLabel = t('sessionWorkbench.gitLine.navigation', 'Session navigation');
+  const branchRows = lineage.length > 1 ? buildBranchLineageRows(lineage).filter((row) => row.depth > 0) : [];
+  if (loading && checkpoints.length === 0 && branchRows.length === 0) {
+    return (
+      <aside data-testid="session-gitline" className="session-gitline is-loading" aria-label={navigationLabel}>
+        <span className="session-gitline-loading-dot" />
+      </aside>
+    );
+  }
+  if (checkpoints.length === 0 && branchRows.length === 0) {
+    return (
+      <aside data-testid="session-gitline" className="session-gitline is-empty" aria-label={navigationLabel} />
+    );
+  }
+  return (
+    <aside data-testid="session-gitline" className="session-gitline" aria-label={navigationLabel}>
+      <div className="session-gitline-track" data-testid="session-gitline-checkpoints">
+        {checkpoints.map((checkpoint, index) => {
+          const id = sessionCheckpointId(checkpoint);
+          const isFocused = Boolean(id && id === focusedCheckpointId);
+          return (
+            <button
+              key={id || index}
+              type="button"
+              data-testid="session-gitline-checkpoint"
+              data-session-action="navigate-checkpoint"
+              data-checkpoint-id={id || undefined}
+              className={`session-gitline-node ${isFocused ? 'is-focused' : ''}`}
+              title={sessionCheckpointPreview(checkpoint, index)}
+              onClick={() => onNavigateCheckpoint(checkpoint, index)}
+            >
+              <span className="session-gitline-preview">
+                {sessionCheckpointPreview(checkpoint, index)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {branchRows.length > 0 && (
+        <div className="session-gitline-branches" data-testid="session-gitline-branches">
+          {branchRows.map((row) => {
+            const isActive = String(row.id) === String(activeSessionId || '');
+            const title = row.title || row.id;
+            const anchorId = branchAnchorId(row);
+            return (
+              <button
+                key={row.id}
+                type="button"
+                data-testid="session-gitline-branch"
+                data-session-action="navigate-branch"
+                data-branch-session-id={row.id}
+                data-checkpoint-id={anchorId || undefined}
+                className={`session-gitline-branch-node ${isActive ? 'is-active' : ''}`}
+                title={`${branchModeLabel(row)} · ${title}`}
+                onClick={() => onNavigateBranch?.(String(row.id))}
+              >
+                <span className="session-gitline-branch-stem" aria-hidden="true" />
+                <span className="session-gitline-branch-dot" aria-hidden="true" />
+                <span className="session-gitline-preview">
+                  {branchModeLabel(row)} · {title}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </aside>
   );
 }
 
@@ -1067,6 +1191,8 @@ function SessionRuntimePanel({
   sessionWorkbench,
   runtimeSummary,
   activeRunStatus,
+  collapsed = false,
+  onToggleCollapsed,
   onOpenDocument,
   onSelectSession,
 }: {
@@ -1075,6 +1201,8 @@ function SessionRuntimePanel({
   sessionWorkbench: SessionWorkbench | null;
   runtimeSummary: ChatRuntimeSummary | null;
   activeRunStatus?: string | null;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
   onOpenDocument?: (artifact: ChatArtifactPart) => void | Promise<unknown>;
   onSelectSession?: (sessionId: string) => void | Promise<unknown>;
 }) {
@@ -1106,8 +1234,38 @@ function SessionRuntimePanel({
     { key: 'runs', label: t('sessionWorkbench.rightPanel.runs', 'Runs'), count: runTasks.length + backgroundTasks.length + (activeRunRow ? 1 : 0) },
   ];
 
+  if (collapsed) {
+    return (
+      <aside data-testid="session-runtime-panel" className="session-runtime-panel is-collapsed">
+        <button
+          type="button"
+          data-testid="session-runtime-collapse-toggle"
+          className="session-runtime-collapse-toggle"
+          aria-label={t('sessionWorkbench.rightPanel.expandRuntime', 'Expand runtime panel')}
+          title={t('sessionWorkbench.rightPanel.expandRuntime', 'Expand runtime panel')}
+          onClick={onToggleCollapsed}
+        >
+          <IconChevronLeft size={15} stroke={1.8} />
+        </button>
+        <div className="session-runtime-collapsed-label">
+          {t('sessionWorkbench.rightPanel.runtime', 'Runtime')}
+        </div>
+      </aside>
+    );
+  }
+
   return (
     <aside data-testid="session-runtime-panel" className="session-runtime-panel">
+      <button
+        type="button"
+        data-testid="session-runtime-collapse-toggle"
+        className="session-runtime-collapse-toggle"
+        aria-label={t('sessionWorkbench.rightPanel.collapseRuntime', 'Collapse runtime panel')}
+        title={t('sessionWorkbench.rightPanel.collapseRuntime', 'Collapse runtime panel')}
+        onClick={onToggleCollapsed}
+      >
+        <IconChevronRight size={15} stroke={1.8} />
+      </button>
       <section
         className="session-runtime-section session-runtime-documents"
         aria-label={t('sessionWorkbench.rightPanel.workspaceDocuments', 'Workspace Documents')}
@@ -1778,6 +1936,8 @@ export default function AgentChatSection({
   const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
   const [composerMenuOpen, setComposerMenuOpen] = React.useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = React.useState(false);
+  const [runtimePanelCollapsed, setRuntimePanelCollapsed] = React.useState(false);
+  const [focusedGitCheckpointId, setFocusedGitCheckpointId] = React.useState<string | null>(null);
 
   const runtimeUsageLabel = getRuntimeUsageLabel(runtimeSummary);
   const runtimeUsageTitle = getRuntimeUsageTitle(runtimeSummary, runtimeUsageLabel);
@@ -2085,6 +2245,8 @@ export default function AgentChatSection({
         return (
           <div
             key={i}
+            data-session-message-id={msg.id || undefined}
+            data-session-message-index={i}
             className={`session-tui-message-row ${isLeft ? 'session-tui-message-row-assistant' : 'session-tui-message-row-user'}`}
           >
             <div className="session-tui-message-avatar">
@@ -2418,6 +2580,42 @@ export default function AgentChatSection({
   });
   const sessionIndex = sessionIndexData && !Array.isArray(sessionIndexData) ? sessionIndexData : null;
   const sessionWorkbench = sessionWorkbenchData && !Array.isArray(sessionWorkbenchData) ? sessionWorkbenchData : null;
+  const sessionGitCheckpoints = React.useMemo<Array<Record<string, unknown>>>(() => {
+    const indexCheckpoints = Array.isArray(sessionIndex?.checkpoints) ? sessionIndex.checkpoints : [];
+    if (indexCheckpoints.length > 0) return indexCheckpoints;
+    const workbenchCheckpoints = Array.isArray(sessionWorkbench?.turn?.checkpoints)
+      ? sessionWorkbench.turn.checkpoints
+      : [];
+    return workbenchCheckpoints;
+  }, [sessionIndex, sessionWorkbench]);
+  const activeRunRecord = sessionWorkbench?.active_run && isRuntimeRecord(sessionWorkbench.active_run)
+    ? sessionWorkbench.active_run
+    : null;
+  const runtimeRecord = runtimeSummary?.runtime as Record<string, unknown> | undefined;
+  const activeRuntimeTaskId = stringValue(
+    activeRunRecord?.runtime_task_id
+      || activeRunRecord?.id
+      || runtimeRecord?.runtime_task_id
+      || runtimeRecord?.task_id,
+  );
+  const liveRunStatus = String(activeRunRecord?.status || activeRunStatus || '').toLowerCase();
+  const sessionWorkLedgerLive = isWaiting || isStreaming || ['running', 'pending', 'queued'].includes(liveRunStatus);
+  const escapeAttrValue = React.useCallback((value: string) => {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value);
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }, []);
+  const navigateGitCheckpoint = React.useCallback((checkpoint: Record<string, unknown>, index: number) => {
+    const id = sessionCheckpointId(checkpoint);
+    if (id) setFocusedGitCheckpointId(id);
+    const scrollRoot = (isReadOnlySession ? historyContainerRef.current : chatContainerRef.current);
+    if (!scrollRoot) return;
+    const target = id
+      ? scrollRoot.querySelector<HTMLElement>(`[data-session-message-id="${escapeAttrValue(id)}"]`)
+      : null;
+    const fallbackNodes = scrollRoot.querySelectorAll<HTMLElement>('[data-session-message-index]');
+    const fallbackTarget = fallbackNodes[Math.max(0, Math.min(index, fallbackNodes.length - 1))];
+    (target || fallbackTarget)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [chatContainerRef, escapeAttrValue, historyContainerRef, isReadOnlySession]);
   const threadTimelineModel = buildThreadTimeline({
     messages: visibleTimeline,
     activeSession,
@@ -2432,6 +2630,22 @@ export default function AgentChatSection({
   const showDetailAuditBrowser = !sessionOnly && isAdmin;
   const detailSessionRows = allSessions;
   const detailSessionsLoading = allSessionsLoading;
+  const renderHistoryFrame = (children: React.ReactNode) => (
+    <div className="session-tui-history-frame">
+      <SessionGitLine
+        activeSessionId={activeSessionId}
+        checkpoints={sessionGitCheckpoints}
+        focusedCheckpointId={focusedGitCheckpointId}
+        lineage={branchLineage}
+        loading={branchLineageLoading}
+        onNavigateCheckpoint={navigateGitCheckpoint}
+        onNavigateBranch={onSelectBranchSession}
+      />
+      <div className="session-tui-history-content">
+        {children}
+      </div>
+    </div>
+  );
   const formatDetailSessionTime = (session: any) => {
     const raw = session.last_message_at || session.updated_at || session.created_at;
     if (!raw) return '';
@@ -2535,30 +2749,34 @@ export default function AgentChatSection({
         ) : isReadOnlySession ? (
           <>
             <div ref={historyContainerRef} onScroll={onHistoryScroll} className="session-tui-history">
-              <div
-                style={{
-                  fontSize: '11px',
-                  color: 'var(--text-tertiary)',
-                  marginBottom: '12px',
-                  padding: '4px 8px',
-                  background: 'var(--bg-secondary)',
-                  borderRadius: '4px',
-                  display: 'inline-block',
-                }}
-              >
-                {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
-              </div>
-              {activeSessionHydrating ? (
-                <SessionHydratingState label={t('common.loading', 'Loading')} />
-              ) : (() => {
-                  const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
-                  const thisAgentName = agent?.name;
-                  const thisAgentPid = isA2A && thisAgentName ? visibleHistoryMsgs.find((message) => message.sender_name === thisAgentName)?.participant_id : null;
-                  return renderConversationMessages(
-                    visibleHistoryMsgs,
-                    (message) => (isA2A && thisAgentPid ? message.participant_id !== thisAgentPid : message.role === 'assistant'),
-                  );
-                })()}
+              {renderHistoryFrame(
+                <>
+                  <div
+                    style={{
+                      fontSize: '11px',
+                      color: 'var(--text-tertiary)',
+                      marginBottom: '12px',
+                      padding: '4px 8px',
+                      background: 'var(--bg-secondary)',
+                      borderRadius: '4px',
+                      display: 'inline-block',
+                    }}
+                  >
+                    {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
+                  </div>
+                  {activeSessionHydrating ? (
+                    <SessionHydratingState label={t('common.loading', 'Loading')} />
+                  ) : (() => {
+                      const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
+                      const thisAgentName = agent?.name;
+                      const thisAgentPid = isA2A && thisAgentName ? visibleHistoryMsgs.find((message) => message.sender_name === thisAgentName)?.participant_id : null;
+                      return renderConversationMessages(
+                        visibleHistoryMsgs,
+                        (message) => (isA2A && thisAgentPid ? message.participant_id !== thisAgentPid : message.role === 'assistant'),
+                      );
+                    })()}
+                </>,
+              )}
             </div>
             {showHistoryScrollBtn && (
               <button
@@ -2590,17 +2808,21 @@ export default function AgentChatSection({
         ) : (
           <>
             <div ref={chatContainerRef} onScroll={onChatScroll} className="session-tui-history">
-              {activeSessionHydrating ? (
-                <SessionHydratingState label={t('common.loading', 'Loading')} />
-              ) : visibleChatMessages.length === 0 && (
-                <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
-                  <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>
-                  <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agent.name })}</div>
-                  <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
-                </div>
+              {renderHistoryFrame(
+                <>
+                  {activeSessionHydrating ? (
+                    <SessionHydratingState label={t('common.loading', 'Loading')} />
+                  ) : visibleChatMessages.length === 0 && (
+                    <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
+                      <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>
+                      <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agent.name })}</div>
+                      <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
+                    </div>
+                  )}
+                  {renderConversationMessages(visibleChatMessages, (message) => message.role === 'assistant', threadTimelineModel)}
+                  <div ref={chatEndRef} />
+                </>,
               )}
-              {renderConversationMessages(visibleChatMessages, (message) => message.role === 'assistant', threadTimelineModel)}
-              <div ref={chatEndRef} />
             </div>
             {showScrollBtn && (
               <button
@@ -2678,6 +2900,14 @@ export default function AgentChatSection({
               data-testid="session-composer"
               className="session-tui-composer"
             >
+              {effectiveAgentId && activeSession?.id && (
+                <ChatWorkLedgerDock
+                  agentId={effectiveAgentId}
+                  sessionId={String(activeSession.id)}
+                  runtimeTaskId={activeRuntimeTaskId || undefined}
+                  live={sessionWorkLedgerLive}
+                />
+              )}
               {artifactPreview && (
                 <ArtifactPreviewPanel
                   preview={artifactPreview}
@@ -3159,6 +3389,8 @@ export default function AgentChatSection({
           sessionWorkbench={sessionWorkbench}
           runtimeSummary={runtimeSummary}
           activeRunStatus={activeRunStatus}
+          collapsed={runtimePanelCollapsed}
+          onToggleCollapsed={() => setRuntimePanelCollapsed((value) => !value)}
           onOpenDocument={openArtifact}
           onSelectSession={onSelectBranchSession}
         />

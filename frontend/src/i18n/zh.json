@@ -53,6 +53,9 @@
     "activeMembers": "活跃成员",
     "checkpointList": "检查点",
     "noCheckpoints": "还没有检查点",
+    "gitLine": {
+      "navigation": "会话导航"
+    },
     "rightPanel": {
       "workspace": "工作区",
       "workspaceDocuments": "工作区文档",
@@ -1206,6 +1209,9 @@
         "todoTitle": "待办",
         "openSuffix": "未完成",
         "allDone": "已全部完成",
+        "allDoneCount": "{{count}} 个任务已完成",
+        "singleTaskProgress": "第 {{index}} 个任务",
+        "taskRangeProgress": "第 {{start}}-{{end}} 个任务",
         "verificationTitle": "验证",
         "progressTitle": "进展",
         "blockersTitle": "阻塞",

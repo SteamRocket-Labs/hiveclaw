@@ -1,7 +1,6 @@
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { IconCheck, IconChevronDown, IconChevronRight, IconSquare, IconSquareFilled } from '@tabler/icons-react';
+import { IconCheck, IconSquare, IconSquareFilled } from '@tabler/icons-react';
 
 import { autonomyApi, type RuntimeWorkLedgerItem, type RuntimeWorkLedgerView } from '../../api/domains/autonomy';
 
@@ -10,6 +9,7 @@ interface ChatWorkLedgerDockProps {
   runtimeTaskId?: string | null;
   sessionId?: string | null;
   live?: boolean;
+  /** Deprecated: task details are now revealed by hover/focus, not click collapse. */
   initialCollapsed?: boolean;
 }
 
@@ -50,15 +50,39 @@ function taskCounts(items: RuntimeWorkLedgerItem[]) {
   return { completed, pending, inProgress, total: items.length };
 }
 
+function taskProgressLabel(
+  items: RuntimeWorkLedgerItem[],
+  t: ReturnType<typeof useTranslation>['t'],
+): string {
+  const sorted = [...items].sort(byTaskIdAsc);
+  const openIndexes = sorted
+    .map((item, index) => (taskStatus(item.status) === 'completed' ? null : index + 1))
+    .filter((value): value is number => typeof value === 'number');
+  if (openIndexes.length === 0) {
+    return t('agent.chat.workLedger.allDoneCount', '{{count}} tasks complete', { count: sorted.length });
+  }
+  const start = Math.min(...openIndexes);
+  const end = Math.max(...openIndexes);
+  if (start === end) {
+    return t('agent.chat.workLedger.singleTaskProgress', 'Task {{index}} of {{total}}', {
+      index: start,
+      total: sorted.length,
+    });
+  }
+  return t('agent.chat.workLedger.taskRangeProgress', 'Task {{start}}-{{end}} of {{total}}', {
+    start,
+    end,
+    total: sorted.length,
+  });
+}
+
 export default function ChatWorkLedgerDock({
   agentId,
   runtimeTaskId,
   sessionId,
   live = false,
-  initialCollapsed = false,
 }: ChatWorkLedgerDockProps) {
   const { t } = useTranslation();
-  const [collapsed, setCollapsed] = useState(initialCollapsed);
   const sessionQuery = useQuery({
     queryKey: ['chat-session-work-ledger', agentId, sessionId],
     queryFn: () => autonomyApi.getSessionWorkLedger(agentId, sessionId as string),
@@ -105,62 +129,19 @@ export default function ChatWorkLedgerDock({
     return null;
   }
   const counts = taskCounts(displayItems);
-  const openCount = counts.pending + counts.inProgress;
-  const countLabel = openCount > 0
-    ? `${openCount}/${counts.total} ${t('agent.chat.workLedger.openSuffix', 'open')}`
-    : t('agent.chat.workLedger.allDone', 'All done');
+  const countLabel = taskProgressLabel(displayItems, t);
 
   return (
-    <div
-      data-testid="chat-work-ledger-dock"
-      style={{
-        borderTop: '1px solid var(--border-subtle)',
-        background: 'var(--bg-elevated)',
-        padding: '8px 16px',
-      }}
-    >
-      <div
-        style={{
-          border: '1px solid var(--border-subtle)',
-          borderRadius: '8px',
-          background: 'var(--bg-secondary)',
-          overflow: 'hidden',
-          padding: '10px 12px',
-        }}
-      >
-        <button
-          type="button"
-          data-testid="chat-work-ledger-toggle"
-          aria-expanded={!collapsed}
-          aria-controls="agent-task-list"
-          onClick={() => setCollapsed((value) => !value)}
-          style={{
-            width: '100%',
-            border: 'none',
-            background: 'transparent',
-            padding: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '8px',
-            cursor: 'pointer',
-            color: 'inherit',
-            textAlign: 'left',
-          }}
-        >
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
-            {collapsed
-              ? <IconChevronRight size={13} stroke={2} color="var(--text-tertiary)" />
-              : <IconChevronDown size={13} stroke={2} color="var(--text-tertiary)" />}
-            <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-tertiary)' }}>
-              {t('agent.chat.workLedger.todoTitle', 'Todo')}
-            </span>
-          </span>
-          <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-            {countLabel}
-          </span>
-        </button>
-        {!collapsed && <TaskList items={displayItems} />}
+    <div data-testid="chat-work-ledger-dock" className="chat-work-ledger-dock" tabIndex={0}>
+      <div data-testid="chat-work-ledger-summary" className="chat-work-ledger-summary">
+        <span className={`chat-work-ledger-dot ${counts.inProgress > 0 ? 'is-running' : ''}`} aria-hidden="true" />
+        <span>{countLabel}</span>
+      </div>
+      <div data-testid="chat-work-ledger-popover" className="chat-work-ledger-popover">
+        <div className="chat-work-ledger-popover-title">
+          {t('agent.chat.workLedger.todoTitle', 'Todo')}
+        </div>
+        <TaskList items={displayItems} />
       </div>
     </div>
   );

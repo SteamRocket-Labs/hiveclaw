@@ -33,7 +33,7 @@ def test_manifest_inherits_recent_files_writes_skills_packs() -> None:
     sc = SessionContext(session_id="s1")
     sc.track_file_read("memory/feedback.md")
     sc.track_file_write("workspace/note.md")
-    sc.track_skill_loaded("memory-guide")
+    sc.track_skill_loaded("web-research")
     sc.active_tool_groups.append({"name": "web_pack", "summary": "search", "tools": []})
     sc.track_pending_item("finish report")
     sc.track_tool_outcome("web_search", "found 3 hits")
@@ -43,7 +43,7 @@ def test_manifest_inherits_recent_files_writes_skills_packs() -> None:
     assert manifest.session_id == "s1"
     assert "memory/feedback.md" in manifest.recent_reads
     assert "workspace/note.md" in manifest.recent_writes
-    assert "memory-guide" in manifest.active_skills
+    assert "web-research" in manifest.active_skills
     assert "web_pack" in manifest.active_tool_groups
     assert "finish report" in manifest.pending_items
     assert any(o.get("tool") == "web_search" for o in manifest.recent_tool_outcomes)

@@ -188,8 +188,8 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
 def test_a2a_prompt_surfaces_do_not_reference_legacy_digital_employee_colleagues() -> None:
     project_root = Path(__file__).resolve().parents[3]
     prompt_surface_paths = [
-        "backend/app/templates/system_skills/delegation-guide/SKILL.md",
         "backend/app/services/agent_seeder.py",
+        "backend/app/runtime/prompt_sections/a2a_collaborators.py",
         "backend/app/tools/handlers/communication.py",
     ]
     combined = "\n".join((project_root / path).read_text(encoding="utf-8") for path in prompt_surface_paths)
@@ -352,8 +352,9 @@ def test_runtime_templates_no_longer_reference_jina() -> None:
     web_research_guide = (app_root / "templates" / "system_skills" / "web-research" / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    find_skills = (app_root / "templates" / "skills" / "find-skills" / "SKILL.md").read_text(encoding="utf-8")
-    skill_vetter = (app_root / "templates" / "skills" / "skill-vetter" / "SKILL.md").read_text(encoding="utf-8")
+    skill_marketplace = (app_root / "templates" / "skills" / "skill-marketplace" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
     heartbeat = (app_root / "templates" / "HEARTBEAT.md").read_text(encoding="utf-8")
 
     assert "jina_" not in web_research_guide.lower()
@@ -366,11 +367,10 @@ def test_runtime_templates_no_longer_reference_jina() -> None:
     assert "anysearch_search" in web_research_guide
     assert "AnySearch MCP" in web_research_guide
     assert "DuckDuckGo fallback" not in web_research_guide
-    assert "jina_" not in find_skills.lower()
-    assert "web_search" in find_skills
-    assert "web_fetch" in find_skills
-    assert "jina_" not in skill_vetter.lower()
-    assert "web_fetch" in skill_vetter
+    assert "jina_" not in skill_marketplace.lower()
+    assert "web_search" in skill_marketplace
+    assert "web_fetch" in skill_marketplace
+    assert "firecrawl_fetch" in skill_marketplace
     assert "jina_" not in heartbeat.lower()
     # P4 candidate lane: heartbeat records skill_candidate signals, never save_skill.
     assert "skill_candidate" in heartbeat
@@ -525,10 +525,6 @@ def test_agent_autonomy_prompt_surfaces_do_not_reference_retired_objective_contr
         "backend/app/services/agent_manager.py",
         "backend/app/templates/HEARTBEAT.md",
         "backend/hr_agent_template/HEARTBEAT.md",
-        "backend/app/templates/system_skills/workspace-guide/SKILL.md",
-        "backend/app/templates/system_skills/trigger-guide/SKILL.md",
-        "backend/app/templates/system_skills/delegation-guide/SKILL.md",
-        "backend/app/templates/system_skills/memory-guide/SKILL.md",
         "backend/app/templates/system_skills/dingtalk-integration/SKILL.md",
         "backend/app/tools/handlers/triggers.py",
         "backend/app/tools/handlers/hr.py",

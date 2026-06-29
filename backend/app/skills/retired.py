@@ -7,6 +7,14 @@ deleted from the agent volume.
 RETIRED_BUILTIN_SKILL_FOLDERS = frozenset(
     {
         "web-research-guide",
+        "complex-task-executor",
+        "workspace-guide",
+        "trigger-guide",
+        "memory-guide",
+        "messaging-guide",
+        "delegation-guide",
+        "find-skills",
+        "skill-vetter",
         "data-analysis",
         "content-writing",
         "competitive-analysis",

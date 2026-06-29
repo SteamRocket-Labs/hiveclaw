@@ -14,6 +14,16 @@ REPO_ROOT = BACKEND_ROOT.parent
 SKILL_ROOT = BACKEND_ROOT / "app" / "templates" / "skills"
 SYSTEM_SKILL_ROOT = BACKEND_ROOT / "app" / "templates" / "system_skills"
 PACK_ROOTS = (REPO_ROOT / "packs", BACKEND_ROOT / "packs")
+OFFICE_PACK_SKILL = BACKEND_ROOT / "packs" / "office_pack" / "skills" / "office-productivity"
+RETIRED_OFFICE_TEMPLATE_SKILLS = (
+    "docx-generator",
+    "xlsx-processor",
+    "pptx-generator",
+    "pdf-generator",
+    "weekly-report-generator",
+    "meeting-minutes",
+    "pitch-deck-generator",
+)
 
 
 def _assert_full_skill_package(skill_dir: Path) -> None:
@@ -23,14 +33,13 @@ def _assert_full_skill_package(skill_dir: Path) -> None:
     assert (skill_dir / "evals" / "eval.yaml").is_file(), f"{skill_dir.name} missing evals/eval.yaml"
 
 
-def test_core_office_skills_have_package_resources():
-    for skill_name in ("docx-generator", "xlsx-processor", "pptx-generator", "pdf-generator"):
-        _assert_full_skill_package(SKILL_ROOT / skill_name)
+def test_office_single_purpose_app_templates_are_retired():
+    for skill_name in RETIRED_OFFICE_TEMPLATE_SKILLS:
+        assert not (SKILL_ROOT / skill_name).exists(), f"{skill_name} should live behind office-productivity pack"
 
 
-def test_office_sop_skills_exist_as_packages():
-    for skill_name in ("weekly-report-generator", "meeting-minutes", "pitch-deck-generator"):
-        _assert_full_skill_package(SKILL_ROOT / skill_name)
+def test_office_productivity_pack_is_the_single_office_skill_entrypoint():
+    _assert_full_skill_package(OFFICE_PACK_SKILL)
 
 
 def test_all_builtin_template_skills_are_full_packages():

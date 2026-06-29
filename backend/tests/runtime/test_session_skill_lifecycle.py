@@ -22,23 +22,23 @@ from app.runtime.session import SessionContext, _DEFAULT_SKILL_TTL_SECONDS
 
 def test_first_load_adds_to_active_skills_with_refcount_1() -> None:
     s = SessionContext()
-    s.track_skill_loaded("memory-guide", now=1000.0)
+    s.track_skill_loaded("web-research", now=1000.0)
 
-    assert s.active_skills == ["memory-guide"]
-    assert s._skill_metadata["memory-guide"]["refcount"] == 1.0
-    assert s._skill_metadata["memory-guide"]["loaded_at"] == 1000.0
-    assert s._skill_metadata["memory-guide"]["last_used_at"] == 1000.0
+    assert s.active_skills == ["web-research"]
+    assert s._skill_metadata["web-research"]["refcount"] == 1.0
+    assert s._skill_metadata["web-research"]["loaded_at"] == 1000.0
+    assert s._skill_metadata["web-research"]["last_used_at"] == 1000.0
 
 
 def test_repeat_load_bumps_refcount_and_refreshes_last_used() -> None:
     s = SessionContext()
-    s.track_skill_loaded("memory-guide", now=1000.0)
-    s.track_skill_loaded("memory-guide", now=1500.0)
-    s.track_skill_loaded("memory-guide", now=2000.0)
+    s.track_skill_loaded("web-research", now=1000.0)
+    s.track_skill_loaded("web-research", now=1500.0)
+    s.track_skill_loaded("web-research", now=2000.0)
 
     # Only one entry in the public list (idempotent surface).
-    assert s.active_skills == ["memory-guide"]
-    meta = s._skill_metadata["memory-guide"]
+    assert s.active_skills == ["web-research"]
+    meta = s._skill_metadata["web-research"]
     assert meta["refcount"] == 3.0
     assert meta["loaded_at"] == 1000.0  # first load wins
     assert meta["last_used_at"] == 2000.0  # latest activity

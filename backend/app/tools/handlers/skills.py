@@ -117,7 +117,7 @@ async def run_skill_tool(workspace: Path, arguments: dict, tenant_id: str | None
         "- Only use this after an approach has succeeded repeatedly and the steps, decision rules, and verification pattern are stable.\n"
         "- Save durable, reusable capsule instructions that will help future runs of a similar task.\n"
         "- If step order must not drift, describe the workflow component the skill should point to; do not turn the skill text itself into an execution bypass.\n"
-        "- Do NOT save one-off notes, transient state, or raw transcripts as skills. Durable user corrections belong in `save_memory` when the Memory Guide qualifies them; operational notes and evidence belong in workspace files.\n"
+        "- Do NOT save one-off notes, transient state, or raw transcripts as skills. Durable user corrections belong in `save_memory` when the memory prompt/tool schema qualifies them; operational notes and evidence belong in workspace files.\n"
         "- Include declared tools/runtime tool groups only as discovery hints for capabilities used by the repeatable approach.\n"
         "- Use `overwrite: true` only when intentionally updating an existing skill."
     ),

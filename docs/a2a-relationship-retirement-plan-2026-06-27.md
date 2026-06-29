@@ -239,9 +239,9 @@ Runtime policy is authoritative; if a target is not callable, the tool returns a
 需要改掉：
 
 ```text
-backend/app/templates/system_skills/delegation-guide/SKILL.md
-backend/app/templates/system_skills/messaging-guide/SKILL.md
-backend/app/templates/system_skills/workspace-guide/SKILL.md
+2026-06-28 update:
+旧 delegation/messaging/workspace guide 已退役；对应语义并入 Core tool schema、
+Work Ledger / messaging runtime / workspace runtime prompt，不再作为可加载 Skill 文件维护。
 ```
 
 目标：

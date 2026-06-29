@@ -329,7 +329,7 @@ class AgentManager:
 
         _bootstrap_evolution_files(agent_dir)
 
-        # Push default builtin skills (web-research, workspace-guide, etc.) into this agent's workspace
+        # Push default builtin skills (web-research, integration playbooks, etc.) into this agent's workspace
         await self._push_default_skills_to_agent(db, agent.id, agent_dir)
 
         logger.info(f"Initialized agent files at {agent_dir}")

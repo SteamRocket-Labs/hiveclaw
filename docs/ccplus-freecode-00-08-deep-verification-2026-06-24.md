@@ -274,7 +274,7 @@
 | CC-06-06 | memory age 人类可读非 ISO | 部分 | '[Nd ago — verify]' 仅 stale 路径>7d（`assembler.py:31-44`）；其他处仍 ISO；memory 在 dynamic suffix 外于 frozen prefix（`invoker.py:476-478`）→age 变不破 cache |
 | CC-06-07 | staleness 警告分级阈值 | hive-native 映射 | `_FRESHNESS_WARNING_DAYS=7`（`assembler.py:14-16`）+lifecycle 抑制 ttl_expired/conflict（`activation.py:91-105`） |
 | CC-06-08 | TRUSTING_RECALL：assert 前验证 | 部分 | 无专用 TRUSTING_RECALL 段；verify-before-assert 分布于 staleness 后缀+scenario（`scenario.py:47/77`）+skill 模板；弱于 CC eval-tuned 段 |
-| CC-06-09 | feedback/project 的 Why/How body | hive-native 映射 | （**前一轮过宽已纠**）`form_lint` 仅查 empty/pronoun/relative-time 非 Why/How；Why LAW 经 `explicit_overlay` 硬编码 why_it_matters+memory-guide+template 软引导满足（`explicit_overlay.py:138/344`） |
+| CC-06-09 | feedback/project 的 Why/How body | hive-native 映射 | （**前一轮过宽已纠**）`form_lint` 仅查 empty/pronoun/relative-time 非 Why/How；Why LAW 经 `explicit_overlay` 硬编码 why_it_matters、runtime memory section 与 memory tool schema 满足（`explicit_overlay.py:138/344`） |
 | CC-06-10 | 不该存：显式排除列表 | 已实现 | live prompt 排除列表（`prompt_sections/memory.py:52-57`），save_memory 限显式命令（`:34-39`），episodic 重定向（`memory.py:126-130`） |
 | CC-06-11 | 异步 prefetch 管线：per-turn 发起 | 部分 | loop 前一次性 await（`engine.py:2219`），4 re-render site 复用不 re-fetch；per-turn-single 满足，async overlap 缺失（Node/TUI 优化，非阻断） |
 | CC-06-12 | 可释放资源 [Symbol.dispose] | 排除 | TS/Node generator 生命周期优化，绑 async prefetch（reranker 已 try/finally+wait_for self-clean，`retriever.py:166-201`） |

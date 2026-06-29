@@ -18,13 +18,7 @@ def _is_seedable_skill_template_file(path: Path) -> bool:
 
 
 _PACK_SKILL_ICONS = {
-    "docx-generator": "📄",
-    "xlsx-processor": "📊",
-    "pptx-generator": "🎞️",
-    "pdf-generator": "📑",
-    "weekly-report-generator": "🗓️",
-    "meeting-minutes": "🗒️",
-    "pitch-deck-generator": "🎯",
+    "office-productivity": "📄",
     "industry-research": "🏭",
     "topic-deep-dive": "🔬",
     "source-ledger-audit": "📒",
@@ -116,7 +110,7 @@ def _load_pack_skill_dicts() -> list[dict]:
                         "category": pack_category,
                         "icon": _PACK_SKILL_ICONS.get(folder_name, "🧠"),
                         "folder_name": folder_name,
-                        "is_default": True,
+                        "is_default": str(manifest.activation.get("default_state") or "").lower() == "active",
                         "files": files,
                     }
                 )
@@ -127,193 +121,6 @@ def _load_pack_skill_dicts() -> list[dict]:
 
 
 BUILTIN_SKILLS = [
-    {
-        "name": "Complex Task Executor",
-        "description": "Structured methodology for decomposing, planning, and executing complex multi-step tasks with progress tracking",
-        "category": "productivity",
-        "icon": "🎯",
-        "folder_name": "complex-task-executor",
-        "is_default": True,
-        "files": [
-            {
-                "path": "SKILL.md",
-                "content": """---
-name: Complex Task Executor
-description: Structured methodology for decomposing, planning, and executing complex multi-step tasks with progress tracking
----
-
-# Complex Task Executor
-
-## When to Use This Skill
-
-Use this skill when a task meets ANY of the following criteria:
-- Requires more than 3 distinct steps to complete
-- Involves multiple tools or information sources
-- Has dependencies between steps (step B needs output from step A)
-- Requires research before execution
-- Could benefit from a documented plan others can review
-- The user explicitly asks for a thorough or systematic approach
-
-**DO NOT use this for simple tasks** like answering a question, reading a single file, or performing one tool call.
-
-## Workflow
-
-### Phase 1: Task Analysis (THINK before acting)
-
-Before creating any files, analyze the task:
-
-1. **Understand the goal**: What is the final deliverable? What does "done" look like?
-2. **Assess complexity**: How many steps? What tools are needed?
-3. **Identify dependencies**: Which steps depend on others?
-4. **Identify risks**: What could go wrong? What information is missing?
-5. **Estimate scope**: Is the task feasible with available tools/skills?
-
-### Phase 2: Create Task Plan
-
-Create a task folder and plan file in the workspace:
-
-```
-workspace/<task-name>/plan.md
-```
-
-The plan.md MUST follow this exact format:
-
-```markdown
-# Task: <Clear title>
-
-## Objective
-<One-sentence description of the desired outcome>
-
-## Steps
-
-- [ ] 1. <First step — verb-noun format>
-  - Details: <What specifically to do>
-  - Output: <What this step produces>
-- [ ] 2. <Second step>
-  - Details: <...>
-  - Depends on: Step 1
-- [ ] 3. <Third step>
-  - Details: <...>
-
-## Status
-- Created: <timestamp>
-- Current Step: Not started
-- Progress: 0/<total>
-
-## Notes
-<Any assumptions, risks, or open questions>
-```
-
-Rules for writing the plan:
-- Each step should be completable in 1-3 tool calls
-- Use verb-noun format: "Research competitors", "Draft report", "Validate data"
-- Mark dependencies explicitly
-- Include expected outputs for each step
-
-### Phase 3: Execute Step-by-Step
-
-For EACH step in the plan:
-
-1. **Read the plan** — Call `read_file` on `workspace/<task>/plan.md` to check current state
-2. **Mark as in-progress** — Update the checkbox from `[ ]` to `[/]` and update the "Current Step" field
-3. **Execute the step** — Do the actual work (tool calls, analysis, writing)
-4. **Record output** — Save results to `workspace/<task>/` (e.g., intermediate files, data)
-5. **Mark as complete** — Update the checkbox from `[/]` to `[x]` and update "Progress" counter
-6. **Proceed to next step** — Move to the next uncompleted step
-
-### Phase 4: Completion
-
-When all steps are done:
-1. Update plan.md status to "✅ Completed"
-2. Create a `workspace/<task>/summary.md` with:
-   - What was accomplished
-   - Key results and deliverables
-   - Any follow-up items
-3. Present the final result to the user
-
-## Adaptive Replanning
-
-If during execution you discover:
-- A step is impossible → Mark it `[!]` with a reason, add alternative steps
-- New steps are needed → Add them to the plan with `[+]` prefix
-- A step produced unexpected results → Add a note and adjust subsequent steps
-- The plan needs major changes → Create a new section "## Revised Plan" and follow it
-
-Always update plan.md BEFORE changing course, so the plan stays the source of truth.
-
-## Error Handling
-
-- If a tool call fails, retry once. If it fails again, mark the step as blocked and note the error.
-- Never silently skip a step. Always update the plan to reflect what happened.
-- If you're stuck, tell the user what's blocking and ask for guidance.
-
-## Example Scenarios
-
-### Example 1: "Research our top 3 competitors and write a comparison report"
-
-Plan would be:
-```
-- [ ] 1. Identify the user's company/product context
-- [ ] 2. Research Competitor A — website, pricing, features
-- [ ] 3. Research Competitor B — website, pricing, features
-- [ ] 4. Research Competitor C — website, pricing, features
-- [ ] 5. Create comparison matrix
-- [ ] 6. Write analysis and recommendations
-- [ ] 7. Compile final report
-```
-
-### Example 2: "Analyze our Q4 sales data and prepare a board presentation"
-
-Plan would be:
-```
-- [ ] 1. Read and understand the sales data files
-- [ ] 2. Calculate key metrics (revenue, growth, trends)
-- [ ] 3. Identify top insights and anomalies
-- [ ] 4. Create data summary tables
-- [ ] 5. Draft presentation outline
-- [ ] 6. Write each presentation section
-- [ ] 7. Add executive summary
-- [ ] 8. Review and polish final document
-```
-
-## Key Principles
-
-1. **Plan is the source of truth** — Always update it before moving on
-2. **One step at a time** — Don't skip ahead or batch too many steps
-3. **Show your work** — Save intermediate results to the task folder
-4. **Communicate progress** — The user can read plan.md at any time to see status
-5. **Be adaptive** — Plans change; that's OK if you update the plan first
-""",
-            },
-            {
-                "path": "examples/plan_template.md",
-                "content": """# Task: [Title]
-
-## Objective
-[One-sentence description of the desired outcome]
-
-## Steps
-
-- [ ] 1. [First step]
-  - Details: [What specifically to do]
-  - Output: [What this step produces]
-- [ ] 2. [Second step]
-  - Details: [...]
-  - Depends on: Step 1
-- [ ] 3. [Third step]
-  - Details: [...]
-
-## Status
-- Created: [timestamp]
-- Current Step: Not started
-- Progress: 0/3
-
-## Notes
-- [Any assumptions, risks, or open questions]
-""",
-            },
-        ],
-    },
     # ─── Skill Creator (mandatory default) ─────────
     {
         "name": "Skill Creator",
@@ -324,52 +131,32 @@ Plan would be:
         "is_default": True,
         "files": [],  # populated at runtime from skill_creator_content
     },
-    # ─── MCP Tool Installer (mandatory default) ──────────────
+    # ─── Optional capability playbooks ──────────────
     {
         "name": "MCP Tool Installer",
         "description": "Discover, import, inspect, and read MCP integrations directly in chat when adding or operating external tools",
         "category": "development",
         "icon": "🔌",
         "folder_name": "mcp-installer",
-        "is_default": True,
+        "is_default": False,
         "files": [],  # populated at runtime from agent_template/skills/mcp-installer/SKILL.md
     },
-    # ─── System operational guides (default — auto-assigned to all agents) ───
     {
-        "name": "Workspace Guide",
-        "description": "Workspace structure, file operations, and artifact handoff guide",
-        "category": "system",
-        "icon": "📂",
-        "folder_name": "workspace-guide",
-        "is_default": True,
-        "files": [],  # populated at runtime from templates/system_skills/
-    },
-    {
-        "name": "Trigger Management Guide",
-        "description": "Trigger creation and management guide",
-        "category": "system",
-        "icon": "⏰",
-        "folder_name": "trigger-guide",
-        "is_default": True,
-        "files": [],  # populated at runtime from templates/system_skills/
-    },
-    {
-        "name": "Web Research",
-        "description": "Web research guide — use core web_search/web_fetch first, then tool_search for advanced search/crawl tools",
+        "name": "Advanced Web Research",
+        "description": "Advanced web research playbook for escalating beyond core web_search/web_fetch into vertical search, source extraction, and crawler tools",
         "category": "system",
         "icon": "🌐",
         "folder_name": "web-research",
-        "is_default": True,
+        "is_default": False,
         "files": [],  # populated at runtime from templates/system_skills/
     },
-    # ─── Standard capability skills (default — every pack has a matching skill) ──
     {
         "name": "Feishu Integration",
         "description": "Feishu/Lark messaging, docs, wiki, sheets, base, approvals, tasks, and calendar guide",
         "category": "system_integration",
         "icon": "🐦",
         "folder_name": "feishu-integration",
-        "is_default": True,
+        "is_default": False,
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
@@ -378,43 +165,16 @@ Plan would be:
         "category": "system",
         "icon": "📢",
         "folder_name": "plaza-guide",
-        "is_default": True,
+        "is_default": False,
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
         "name": "Email Guide",
-        "description": "Email send, read, and reply guide — activates send_email / read_emails / reply_email",
+        "description": "Email send, read, and reply playbook for configured email tools",
         "category": "system",
         "icon": "📧",
         "folder_name": "email-guide",
-        "is_default": True,
-        "files": [],  # populated at runtime from templates/system_skills/
-    },
-    {
-        "name": "Memory Guide",
-        "description": "Authoritative rules for save/update/retire/search memory — categories, T3 routing, correction paths",
-        "category": "system",
-        "icon": "🧠",
-        "folder_name": "memory-guide",
-        "is_default": True,
-        "files": [],  # populated at runtime from templates/system_skills/
-    },
-    {
-        "name": "Messaging Guide",
-        "description": "Decision tree for delivering messages, files, images to humans across channels — which transport, when",
-        "category": "system",
-        "icon": "💬",
-        "folder_name": "messaging-guide",
-        "is_default": True,
-        "files": [],  # populated at runtime from templates/system_skills/
-    },
-    {
-        "name": "Delegation Guide",
-        "description": "Multi-agent delegation decisions, instruction quality, and async task lifecycle",
-        "category": "system",
-        "icon": "🤝",
-        "folder_name": "delegation-guide",
-        "is_default": True,
+        "is_default": False,
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
@@ -435,23 +195,13 @@ Plan would be:
         "is_default": False,
         "files": [],  # populated at runtime from templates/system_skills/
     },
-    # ─── Agent behavioral & discovery skills (default, from templates/skills/) ──
     {
-        "name": "Find Skills",
-        "description": "Discover and install skills from skills.sh and ClawHub with ranking and security vetting",
+        "name": "Skill Marketplace Vetting",
+        "description": "Discover, vet, and install third-party skills only after source review, risk classification, and explicit user confirmation",
         "category": "system",
         "icon": "🔍",
-        "folder_name": "find-skills",
-        "is_default": True,
-        "files": [],  # populated at runtime from templates/skills/
-    },
-    {
-        "name": "Skill Vetter",
-        "description": "Security review protocol for third-party skills — red flag detection, risk classification, vetting report",
-        "category": "system",
-        "icon": "🔒",
-        "folder_name": "skill-vetter",
-        "is_default": True,
+        "folder_name": "skill-marketplace",
+        "is_default": False,
         "files": [],  # populated at runtime from templates/skills/
     },
     # Office document skills (pdf/docx/xlsx/pptx) are now sourced from
@@ -478,21 +228,16 @@ async def seed_skills():
             else:
                 logger.warning("[SkillSeeder] mcp-installer/SKILL.md not found in agent_template/skills/")
 
-        # System operational guides + channel integration skills — load ALL files from templates/system_skills/<folder>/
+        # System/integration skills — load ALL files from templates/system_skills/<folder>/
         elif (
             s["folder_name"]
             in (
-                "workspace-guide",
-                "trigger-guide",
                 "web-research",
                 "feishu-integration",
                 "plaza-guide",
                 "email-guide",
                 "dingtalk-integration",
                 "atlassian-rovo",
-                "memory-guide",
-                "messaging-guide",
-                "delegation-guide",
             )
             and not s["files"]
         ):
@@ -517,12 +262,7 @@ async def seed_skills():
         elif (
             s["folder_name"]
             in (
-                "find-skills",
-                "skill-vetter",
-                "pdf-generator",
-                "docx-generator",
-                "xlsx-processor",
-                "pptx-generator",
+                "skill-marketplace",
             )
             and not s["files"]
         ):

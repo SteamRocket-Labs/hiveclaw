@@ -34,13 +34,10 @@ def test_system_skill_templates_pass_quick_validation():
 
 
 def test_system_skill_templates_reference_supported_runtime_contracts():
-    workspace_skill = (SYSTEM_SKILLS_DIR / "workspace-guide" / "SKILL.md").read_text(encoding="utf-8")
-    trigger_skill = (SYSTEM_SKILLS_DIR / "trigger-guide" / "SKILL.md").read_text(encoding="utf-8")
     dingtalk_skill = (SYSTEM_SKILLS_DIR / "dingtalk-integration" / "SKILL.md").read_text(encoding="utf-8")
     feishu_skill = (SYSTEM_SKILLS_DIR / "feishu-integration" / "SKILL.md").read_text(encoding="utf-8")
     atlassian_skill = (SYSTEM_SKILLS_DIR / "atlassian-rovo" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert "send_dingtalk_message" not in workspace_skill
     assert "send_dingtalk_message" not in dingtalk_skill
     assert "dingtalk_user_search" not in dingtalk_skill
 
@@ -74,14 +71,8 @@ def test_system_skill_templates_reference_supported_runtime_contracts():
     assert "feishu_task_complete" in feishu_skill
     assert "feishu_task_list" in feishu_skill
     assert "feishu_task_create" in feishu_skill
-    assert "from_user_name" not in workspace_skill
-    assert "from_user_identity" in workspace_skill or "reply_to_current_sender" in workspace_skill
-    assert "focus.md" not in workspace_skill
-    assert "work ledger" in workspace_skill
-    assert "workspace artifacts" in workspace_skill
-    assert "from_user_identity" in trigger_skill
-    assert "from_agent_id" in trigger_skill
-    assert "reply_to_current_sender" in trigger_skill
+    assert "Trigger Management Guide" not in dingtalk_skill
+    assert "trigger_class=\"scheduled_job\"" in dingtalk_skill
 
 
 def test_system_skill_templates_declare_non_core_action_tools() -> None:

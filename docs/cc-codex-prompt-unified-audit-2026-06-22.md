@@ -37,7 +37,7 @@
 | Skill | `skills_catalog.py`, `tools/handlers/skills.py`, `templates/skills/**` | progressive-disclosure capsule 语义已存在。 | 缺 "named/matching skill must be loaded before acting" 的统一 contract; loaded skill fragment marker 要稳定。 |
 | System Skills | `templates/system_skills/*/SKILL.md` | delegation/memory/trigger/messaging/web-research 已很强。 | 它们是 first-class prompt assets, 但之前没有进入总清单。需要统一测试 when/use-not-use/boundary/anti-patterns/success criteria。 |
 | Sub-agent | `tools/handlers/subagent.py`, `agents/orchestrator.py` | explorer/worker/critic 与 workflow/delegation 区分已存在。 | 需要 CC-style brief grammar: Goal, Context, Known Facts, Ruled Out, Constraints, Output, Stop Condition。 |
-| Agent Delegation | `tools/handlers/communication.py`, `system_skills/delegation-guide` | sync consult vs async delegation 有边界; guide 很强。 | tool description 比 guide 弱; 要防止模型只看 schema 时写弱 brief 或把 task_id 当完成证据。 |
+| Agent Delegation | `tools/handlers/communication.py`, delegation/runtime prompt contract | sync consult vs async delegation 有边界；旧 delegation guide 已退役。 | tool description / runtime prompt 必须直接承载 brief grammar，不能依赖加载旧 guide。 |
 | Team | command/team/session services | 机制目标是 enterable member sessions。 | prompt contract 要明确: member window, separate context, direct conversation, close/consolidate, no result guessing。 |
 | Workflow | `tools/handlers/workflow.py`, workflow runtime | preview/start、order-is-requirement 已有。 | 缺 authoring grammar: args schema, leaf roles, gates/waits, budget, hash/resume evidence。 |
 | Hooks | `runtime/hooks*.py`, `api/hooks.py`, hook runner/config | stop/pre/post compaction/tool events 已有。 | prompt contract 要覆盖 hook output 如何进入 transcript/context, raw shell/webhook/import 不可绕过治理。 |
@@ -154,7 +154,7 @@ Codex 值得吸收的是:
 | P0 | Plan Mode 文本分裂 | `plan_mode_guidance.py`, `reminder_scheduler.py`, `plan_mode.py` | active reminder/tool handler/guidance 共用同一 canonical text。 |
 | P0 | Command parity 描述薄 | `command_parity.py` | Task/Goal/Team/AdvancedPlan/VerifyPlan 都有 when-to-use + relation-to-primitive。 |
 | P0 | Team prompt contract 不足 | team command/API/session runtime | 明确 enterable windows, member context, direct conversation, close/consolidate。 |
-| P0 | Delegation brief grammar 没完全回灌到 tool schema | `communication.py`, `delegation-guide` | schema 内也能指导好 brief, 不只依赖 loaded system skill。 |
+| P0 | Delegation brief grammar 没完全回灌到 tool schema | `communication.py`, delegation runtime prompt | schema 内也能指导好 brief，不依赖 retired system skill。 |
 | P1 | Frozen prefix 过重 | `system.py`, `executing_actions.py` | 改成 short general work law, memory/permissions/tools 进 dynamic fragments。 |
 | P1 | Dynamic suffix 未 typed 化 | `prompt_builder.py` | fixed fragment order + role markers + conditional rendering tests。 |
 | P1 | Skills 加载语义需更接近 CC | `skills_catalog.py`, `skills.py` | user named/matched skill -> load before acting; load_skill 不解锁 tools。 |

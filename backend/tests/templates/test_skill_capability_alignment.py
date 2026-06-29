@@ -46,18 +46,18 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _CROSS_SKILL_ALLOWLIST: set[str] = {
     # Legitimate cross-skill references that appear in multiple SKILL.md
     # bodies for workflow-pairing documentation purposes.
-    "send_feishu_message",  # delegation-guide and others reference it
+    "send_feishu_message",  # referenced by integration playbooks
     "feishu_user_search",  # referenced by feishu-integration + others
-    "read_document",  # structured reader, referenced by workspace-guide
+    "read_document",  # structured reader, referenced by office/document skills
     "send_email",  # email-guide workflow reference
     "read_emails",  # email-guide workflow reference
     "reply_email",  # email-guide workflow reference
     "plaza_get_new_posts",  # referenced in anti-patterns
     "plaza_create_post",  # referenced in anti-patterns
     "plaza_add_comment",  # referenced in anti-patterns
-    "feishu_sheet_info",  # xlsx-processor cross-references
-    "feishu_sheet_read",  # xlsx-processor cross-references
-    "update_trigger",  # trigger-guide references (declared) + also in examples
+    "feishu_sheet_info",  # office-productivity cross-references
+    "feishu_sheet_read",  # office-productivity cross-references
+    "update_trigger",  # integration examples may reference trigger maintenance
     "cancel_trigger",  # same
     "preview_agent_blueprint",  # hr skill tool
     "create_digital_employee",  # hr skill tool
@@ -66,8 +66,8 @@ _CROSS_SKILL_ALLOWLIST: set[str] = {
     "import_mcp_server",  # mcp skill tool
     "list_mcp_resources",  # mcp skill tool
     "read_mcp_resource",  # mcp skill tool
-    "feishu_doc_create",  # messaging-guide cross-reference to Feishu Integration
-    "feishu_doc_append",  # messaging-guide cross-reference to Feishu Integration
+    "feishu_doc_create",  # cross-reference to Feishu Integration
+    "feishu_doc_append",  # cross-reference to Feishu Integration
 }
 
 
@@ -293,11 +293,6 @@ def _discover_skill_files() -> list[Path]:
 _SKILL_FILES = _discover_skill_files()
 
 _MANAGED_CREDENTIAL_BOUNDARY_SKILLS: dict[str, tuple[str, ...]] = {
-    "app/templates/skills/xlsx-processor/SKILL.md": (
-        "do not inspect environment variables",
-        "run_command",
-        "configuration gap",
-    ),
     "app/templates/system_skills/atlassian-rovo/SKILL.md": (
         "do not inspect environment variables",
         "run_command",
@@ -318,17 +313,7 @@ _MANAGED_CREDENTIAL_BOUNDARY_SKILLS: dict[str, tuple[str, ...]] = {
         "run_command",
         "channel config",
     ),
-    "app/templates/system_skills/messaging-guide/SKILL.md": (
-        "do not inspect environment variables",
-        "run_command",
-        "configuration gap",
-    ),
     "app/templates/system_skills/web-research/SKILL.md": (
-        "do not inspect environment variables",
-        "run_command",
-        "configuration gap",
-    ),
-    "app/templates/system_skills/workspace-guide/SKILL.md": (
         "do not inspect environment variables",
         "run_command",
         "configuration gap",
@@ -362,8 +347,8 @@ def parser() -> SkillParser:
 
 class TestSkillDiscovery:
     def test_found_skill_files(self) -> None:
-        # We should always find at least the 15 SKILL.md + 2 agent template.
-        assert len(_SKILL_FILES) >= 15, f"expected at least 15 skill files, found {len(_SKILL_FILES)}"
+        # Retired default guides and single-purpose Office copies should not be counted.
+        assert len(_SKILL_FILES) >= 9, f"expected at least 9 skill files, found {len(_SKILL_FILES)}"
 
     def test_every_file_is_parseable(self, parser: SkillParser) -> None:
         for path in _SKILL_FILES:
@@ -397,24 +382,21 @@ class TestSkillDiscovery:
             )
 
     def test_skill_installation_guides_do_not_instruct_blocked_shell_network_paths(self, parser: SkillParser) -> None:
-        find_skills = _BACKEND_ROOT / "app" / "templates" / "skills" / "find-skills" / "SKILL.md"
-        skill_vetter = _BACKEND_ROOT / "app" / "templates" / "skills" / "skill-vetter" / "SKILL.md"
+        marketplace = _BACKEND_ROOT / "app" / "templates" / "skills" / "skill-marketplace" / "SKILL.md"
 
-        find_content = find_skills.read_text(encoding="utf-8")
-        vetter_content = skill_vetter.read_text(encoding="utf-8")
-        vetter = parser.parse_file(
-            skill_vetter,
-            relative_path="app/templates/skills/skill-vetter/SKILL.md",
+        marketplace_content = marketplace.read_text(encoding="utf-8")
+        parsed = parser.parse_file(
+            marketplace,
+            relative_path="app/templates/skills/skill-marketplace/SKILL.md",
         )
 
-        assert "import subprocess" not in find_content
-        assert "subprocess.run" not in find_content
+        assert "import subprocess" not in marketplace_content
+        assert "subprocess.run" not in marketplace_content
 
-        assert "execute_code` with `curl" not in vetter_content
-        assert 'curl -s "https://api.github.com/repos/OWNER/REPO"' not in vetter_content
-        assert "jq '{stars:" not in vetter_content
-        assert "execute_code" not in vetter.metadata.declared_tools
-        assert {"web_search", "web_fetch", "firecrawl_fetch"} <= set(vetter.metadata.declared_tools)
+        assert "execute_code` with `curl" not in marketplace_content
+        assert 'curl -s "https://api.github.com/repos/OWNER/REPO"' not in marketplace_content
+        assert "jq '{stars:" not in marketplace_content
+        assert {"web_search", "web_fetch", "firecrawl_fetch", "execute_code"} <= set(parsed.metadata.declared_tools)
 
 
 @pytest.mark.parametrize("skill_path", _SKILL_FILES, ids=lambda p: str(p.relative_to(_BACKEND_ROOT)))
@@ -544,29 +526,4 @@ class TestCoreToolNamesInvariant:
         assert not missing, (
             f"CORE_TOOL_NAMES no longer includes these baseline tools: {missing}. "
             "The skill-cross-reference test relies on them being always-on."
-        )
-
-
-class TestWorkspaceGuidePathContract:
-    def test_workspace_guide_names_current_discoverable_artifact_paths(self) -> None:
-        content = (
-            _BACKEND_ROOT
-            / "app"
-            / "templates"
-            / "system_skills"
-            / "workspace-guide"
-            / "SKILL.md"
-        ).read_text(encoding="utf-8")
-
-        required_phrases = {
-            "workspace/uploads/",
-            "workspace/workflow_reports/",
-            "workspace/tool_results/",
-            "runtime_artifacts/",
-            "`run_command` works from `workspace/`",
-        }
-        missing = sorted(phrase for phrase in required_phrases if phrase not in content)
-        assert not missing, (
-            "Workspace Guide must teach agents where platform writes land so they can rediscover "
-            f"files after uploads, workflow reports, large tool-result spillover, and sandbox commands: {missing}"
         )

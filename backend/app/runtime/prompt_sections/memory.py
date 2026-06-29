@@ -11,7 +11,7 @@ You have a 4-layer memory pyramid. Higher layers are more refined and permanent.
   (`summary.md`, `labels.md`, `review.md`, `manifest.json`) built from sealed T0 session segments
 - **T2 Episodes** (`memory/t2/sessions/<session_id>/episodes/<episode_id>/`): reviewed Episode Stitch Packages
   (`synthesis.md`, `review.md`, `manifest.json`) that join adjacent broken/continuing Segment Packages before T3
-- **Explicit Overlay** (`memory/explicit/`): user-commanded "remember this" facts, immediately activatable
+- **Explicit Overlay** (`memory/explicit/`): user-commanded "remember this" facts available to future context assembly
 - **T3** (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`): accepted long-term semantic wiki blocks
 
 Your conversations and runtime events automatically produce T0 ledger events. \
@@ -40,7 +40,7 @@ memory index. Prefer this over asking for broad memory dumps.
 - `save_memory(category, content)` — **Explicit memory only.** This writes to `memory/explicit/`, \
 not accepted T3. Use ONLY when:
   * The user issues a direct imperative to remember something ("remember this", "never do X again", or an equivalent phrase in the user's language)
-  * You need the memory to be immediately activatable before the next T3 consolidation batch
+  * The user gives a direct correction that must change future behavior ("that is wrong", "do not do that again", "from now on...")
   Everything else flows automatically: conversation/runtime event → T0 ledger → sealed T0 session segment \
 → reviewed T2 Segment Package → optional reviewed T2 Episode → T3 consolidation batch → accepted T3. Do not pre-empt that pipeline.
 - `submit_t3_consolidation_pitch`, `submit_t3_memory_gate_review`, `submit_t3_revised_patch` — \
@@ -52,8 +52,9 @@ Consolidator -> Memory Gate -> Platform Gate.
 - `retire_memory(memory_id, reason)` — Use for explicit overlay retirement. If the target is accepted \
 T3, retirement also requires a T3 revised patch and Platform Gate commit.
 
-**For category routing (legacy categories → explicit overlay target hints → 4 accepted T3 files), worked examples, and anti-patterns, \
-load the `memory-guide` system skill before your first memory write/update/retire call.**
+Category routing is fixed here and in the memory tool schemas: manual writes go to the Explicit Overlay, \
+accepted T3 changes require Consolidator -> Memory Gate -> Platform Gate, and task-local state belongs in \
+the Work Ledger or workspace artifacts rather than durable memory.
 
 ### TRUSTING_RECALL
 - Treat memory as a pointer to evidence, not as current workspace truth.
@@ -61,12 +62,10 @@ load the `memory-guide` system skill before your first memory write/update/retir
 - If source_refs are present, prefer loading the referenced evidence before acting on a high-impact claim.
 - If current files or runtime evidence conflict with memory, current evidence wins and the stale memory should be treated as advisory only.
 
-### What's Worth Remembering
-- User corrections and preferences (highest value)
-- Project decisions and constraints
-- Strategies that worked or failed
-- NOT: code patterns, file paths, debugging steps (these are in the workspace)
-- NOT: ephemeral task details (in-flight work belongs in your work ledger; artifacts and notes belong in workspace files)
+### Explicit Memory Criteria
+- DO save explicit user-commanded corrections, preferences, constraints, or future-behavior rules.
+- NOT: inferred preferences, routine observations, tool output, code facts, file paths, debugging steps, or task-local state.
+- Task-local state belongs in your work ledger; artifacts and operational notes belong in workspace files.
 
 ### Current Memory State
 {memory_snapshot}\

@@ -7,6 +7,7 @@ _TOOLS_SECTION = """\
 better results:
   - Read files: `read_file` (or `fs_read` with mode=text/document/glob/grep) instead of cat/head/tail
   - Write files: `write_file` (or `fs_write` with mode=write/edit/delete) instead of echo redirection
+  - Delete files: `delete_file` only when the user explicitly asks to remove a workspace artifact
   - List files: `list_files` (or `fs_list`) instead of find -type f
   - Search by name/content: use file search tools instead of find/grep
 - For user-facing reports, research notes, plans, and session deliverables, default to Markdown files \
@@ -37,7 +38,7 @@ Use `tool_search` for missing capabilities.
 and verification pattern are stable. A skill may package context plus workflow/subagent/script component \
 guidance, but executable components still run through their governed runtimes. Do not save one-off notes, \
 transient state, or raw transcripts as skills. Durable user corrections go through `save_memory` only when \
-the Memory Guide says they qualify; operational notes and evidence belong in workspace artifacts.
+the memory prompt/tool schema qualifies them; operational notes and evidence belong in workspace artifacts.
 - Use `pin_skill` to protect a still-useful skill that the skill-evolution digest flags as nearing \
 auto-archival, or to unpin one you no longer need.
 - Work board: use `track_todo` / `read_ledger` to maintain your todo list and findings. \

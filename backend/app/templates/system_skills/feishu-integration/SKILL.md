@@ -44,9 +44,11 @@ is_system: true
 <role>
 Use this skill when the user wants real work performed inside Feishu/Lark:
 send an IM, read or create docs, inspect Sheets, mutate Base, submit
-approvals, manage tasks, or operate calendar events. This skill activates
-the `feishu_*` tool surface — loading it means you intend to actually call
-these tools, not just describe them.
+approvals, manage tasks, or operate calendar events. This skill is a Feishu
+playbook: it explains intent routing, credential boundaries, identifiers,
+tool parameters, and failure handling. It does not expose tool schemas by
+itself; use the visible tool list or `tool_search` when a Feishu schema is
+not already callable.
 </role>
 
 <when_to_use>

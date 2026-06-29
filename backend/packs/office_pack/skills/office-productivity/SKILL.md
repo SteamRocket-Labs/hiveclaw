@@ -1,6 +1,6 @@
 ---
 name: Office Productivity
-description: "Use when Codex needs one entrypoint for office artifacts, including DOCX, XLSX, PPTX, PDF, meeting minutes, weekly reports, pitch decks, and delivery workflows."
+description: "Use when the agent needs one governed entrypoint for office artifacts, including DOCX, XLSX, PPTX, PDF, meeting minutes, weekly reports, pitch decks, and delivery workflows."
 license: Proprietary
 tools:
   - read_file
@@ -33,7 +33,7 @@ metadata:
 # Office Productivity
 
 <role>
-Use when Codex needs one entrypoint for office artifacts, including DOCX, XLSX, PPTX, PDF, meeting minutes, weekly reports, pitch decks, and delivery workflows.
+Use when the agent needs one governed entrypoint for office artifacts, including DOCX, XLSX, PPTX, PDF, meeting minutes, weekly reports, pitch decks, and delivery workflows.
 </role>
 
 <when_to_use>

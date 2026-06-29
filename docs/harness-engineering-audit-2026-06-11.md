@@ -171,7 +171,7 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 | P1-3 | **输出 cap continuation 已接入(2026-06-12)**:kernel 现在读取 `finish_reason in {"length","max_tokens"}`,在无 tool_call 时用 assistant partial + resume prompt 续写,最多 3 次,续写 cap 65536;普通工具轮次/PTL fallback/max_output_tokens 回归已覆盖。证据见 §12.13 | `kernel/engine.py` / `tests/kernel/test_engine.py` | 后续可把 continuation attempt 写入 runtime event/trace;不再静默截断最终回答 |
 | P1-4 | **旧 T2/understanding prompt lane 已退役(2026-06-19)**:`MemoryRetriever` 不再读取 `memory/learnings/*.md` 或 `understandings.md` 作为 prompt semantic memory；`include_legacy_sources` / `include_derived_sources` 不能把这些兼容面重新注入主 prompt。canonical prompt memory 走 explicit overlay + accepted T3 + episodic recall + generated navigation map。 | `memory/retriever.py` / `memory/t2_store.py` / `memory/understanding_store.py` / `tests/memory/test_retrieval_pipeline.py` / `tests/memory/test_understanding_store.py` | 避免旧 compatibility view、relationship projection 和 Segment Package/T3 双源漂移 |
 | P1-5 | **技能 patch 通路已接入并去平台重渲染(2026-06-12, 2026-06-19 收紧)**:`skill_distiller` 的 patch 决策现在进入 `skill_patch` candidate → `skill_guard` verification → eval → promotion decision → exact LLM-authored `SKILL.md.draft` commit,不再停在人工建议,也不再由平台 `_save_skill()` 重组语义正文。证据见 §12.19 | `skill_distiller.py` / `evolution_validation.py` / `tests/services/test_skill_distiller.py` | patch 终态纳入 ledger validator 的 promoted 类终态;仍由 `skill_guard` 和 promotion decision gate 阻断不安全草稿 |
-| P1-6 | **错误记忆纠正工具已接入(2026-06-12)**:新增 governed `update_memory`/`retire_memory`;update 通过 write gate 写新 T3,再按 entry_id 退休旧 T3 并记录 supersedes/superseded_by;retire 只归档不物理删除。证据见 §12.20 | `tools/handlers/memory.py` / `memory/t3_store.py` / `memory/lifecycle_store.py` / `capability_gate.py` | 两个工具进入 CORE tool surface 和 `agent.memory.write` 能力门;`memory-guide`/prompt section 已同步 |
+| P1-6 | **错误记忆纠正工具已接入(2026-06-12)**:新增 governed `update_memory`/`retire_memory`;update 通过 write gate 写新 T3,再按 entry_id 退休旧 T3 并记录 supersedes/superseded_by;retire 只归档不物理删除。证据见 §12.20 | `tools/handlers/memory.py` / `memory/t3_store.py` / `memory/lifecycle_store.py` / `capability_gate.py` | 两个工具进入 CORE tool surface 和 `agent.memory.write` 能力门；runtime memory section 与 tool schema 已同步 |
 | P1-7 | **once trigger ack 语义已接入(2026-06-12)**:tick 不再预先递增 `fire_count` 或禁用 once;只写 `config._fire_inflight`。成功 invocation ack 后才更新 `last_fired_at/fire_count/is_enabled`;失败 path 清理 inflight 并走 backoff。证据见 §12.15 | `trigger_daemon.py` / `tests/services/test_trigger_daemon.py` | fresh inflight 会抑制重复触发;stale inflight 超时后可重试,不再静默蒸发 |
 | P1-8 | **web chat startup resume 已接入(2026-06-12)**:startup 现在调用 `resume_persisted_web_chat_runs()`,把仍处 active 的 `web_chat_turn` 重新调度,并将 resumed ids 传给 orphan reconciler 排除,避免刚恢复即标 failed。证据见 §12.16 | `web_chat_runtime.py` / `main.py` / `runtime_task_service.py` | queued plan handoff 的 terminal cleanup 已由恢复后的 `execute_web_chat_run()` 继续执行;不再永久卡死 |
 | P1-9 | **长任务 resume context 已接入 P1-8(2026-06-12)**:恢复 web-chat run 时构造 `build_long_task_resume_context()`,写入 `RuntimeTask.metadata_json.restart_resume_context`;执行时把 `resume_prompt` 注入 `system_prompt_suffix`。证据见 §12.16 | `web_chat_runtime.py` / `long_task_runtime.py` / `tests/services/test_web_chat_runtime.py` | 缺失 artifact 时记录 `restart_resume_context_error`,但恢复泵仍继续执行原 run |
@@ -1080,7 +1080,7 @@ ruff check app/services/skill_distiller.py app/services/evolution_validation.py 
 - `update_memory(memory_id, content, category?, reason?)` 先加载旧 T3 entry 并校验可见性;replacement 通过 `append_t3_memory_candidate()` 的 privacy/form/write gate 写入;随后按 exact `entry_id` 退休旧 entry,写入 `memory/archive.md` 和 `memory/control/lifecycle.json` 的 `supersedes/superseded_by` 边。
 - `retire_memory(memory_id, reason)` 按 exact `entry_id` 把旧 entry 从活跃 T3 文件移入 archive;不物理删除 evidence,并立即 rebuild 唯一 generated map `memory/indexes/wiki_map.md`，同时清理旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md`。
 - `append_t3_memory_candidate()` 支持 `parent_id/supersedes/superseded_by/dedup_exclude_entry_ids`,让显式 correction 不会被“与旧 entry 相似”误拦。
-- `CapabilityGate` 把 `update_memory/retire_memory` 映射到 `agent.memory.write`;tool registry/catalog 把它们归入 Memory 分组;runtime memory section 与 `memory-guide` system skill 已同步。
+- `CapabilityGate` 把 `update_memory/retire_memory` 映射到 `agent.memory.write`;tool registry/catalog 把它们归入 Memory 分组;runtime memory section 与 memory tool schema 已同步。
 
 **代码证据**
 - `backend/app/tools/handlers/memory.py`:新增两个敏感写工具;update 失败时会回滚 replacement,避免新旧两个 active facts 并存;mutation 后 best-effort 走可选增强 adapter。
@@ -1088,7 +1088,7 @@ ruff check app/services/skill_distiller.py app/services/evolution_validation.py 
 - `backend/app/memory/md_store.py`:near-duplicate hits 增加 `id`,支撑 update 排除旧 entry。
 - `backend/app/memory/lifecycle_store.py`:active lifecycle 写入结构化 `parent_id/supersedes/superseded_by`,不再只塞进 metadata 文本。
 - `backend/app/services/agent_tools.py`、`backend/app/services/capability_gate.py`、`backend/app/tools/registry.py`、`backend/app/tools/catalog.py`:统一首轮 core、权限和目录分类。
-- `backend/app/runtime/prompt_sections/memory.py`、`backend/app/templates/system_skills/memory-guide/SKILL.md`、`backend/app/services/skill_seeder.py`:运行时指南同步 update/retire 语义。
+- `backend/app/runtime/prompt_sections/memory.py`、`backend/app/tools/handlers/memory.py`、`backend/app/services/skill_seeder.py`:运行时指南同步 update/retire 语义。
 
 **回归测试**
 
@@ -2256,14 +2256,14 @@ cd /Users/rocky243/vc-saas/hiveclaw-main
 - 全量 backend pytest 暴露的旧测试/契约漂移全部收口,不留下“聚焦测试绿、全量测试红”的断点。
 - Kernel 对旧 `RuntimeConfig` 测试桩与外部调用保持兼容:`turn_token_budget` 缺省时按 `None` 处理,不因新增预算字段崩溃。
 - 可选增强 adapter trigger policy 文档与 allowlist 同步新增 governed memory mutation tools;`update_memory` / `retire_memory` 后的 active/archive 边界可立即同步,且不再被策略测试判为未登记旁路。
-- memory-guide 中 supersession metadata 不再被 skill capability scanner 误判成未声明工具名;subagent generation、extract/session/dream/skill-distiller 测试桩同步到当前 usage-aware helper 签名。
+- Runtime memory section 中 supersession metadata 不再被 skill capability scanner 误判成未声明工具名;subagent generation、extract/session/dream/skill-distiller 测试桩同步到当前 usage-aware helper 签名。
 - migration single-head contract 更新到当前链尾 `web_chat_active_run_unique_0612`,与本轮新增 token usage / active web-chat unique migrations 一致。
 
 **代码证据**
 - `backend/app/kernel/engine.py`:读取 `turn_token_budget` 改为 `getattr(runtime_config, "turn_token_budget", None)`。
 - `backend/app/memory/enhancement.py`:canonical trigger boundary 保留 governed mutation window。
 - `backend/tests/architecture/test_native_t3_memory_boundary.py`:断言 T3 链路不再硬编码具体外部记忆程序。
-- `backend/app/templates/system_skills/memory-guide/SKILL.md`:把 backtick metadata key 改为普通 supersession 描述,避免 capability scanner 误报。
+- `backend/app/runtime/prompt_sections/memory.py`:把 backtick metadata key 改为普通 supersession 描述,避免 capability scanner 误报。
 - `backend/tests/migrations/test_workflow_migration.py`:single-head 断言更新到当前 Alembic head。
 
 **验收命令**

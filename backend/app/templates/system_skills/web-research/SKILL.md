@@ -1,6 +1,6 @@
 ---
-name: Web Research
-description: "Use when you need current web research, source retrieval, citation-backed answers, contradiction checks, and exact date handling for facts that may have changed."
+name: Advanced Web Research
+description: "Use when core web_search/web_fetch is insufficient and the task needs vertical search, source extraction, crawler escalation, contradiction checks, or exact date handling."
 tools:
   - web_search
   - web_fetch
@@ -15,28 +15,27 @@ tools:
 is_system: true
 ---
 
-# Web Research
+# Advanced Web Research
 
 <role>
-Use this skill when the user asks a factual question whose answer may have
-changed since your training cutoff, OR when they want you to read a specific
-page/document on the web. Your training data goes stale fast; searching is
-almost always the right first move for anything time-sensitive (news,
-releases, prices, people, current stats, APIs that evolved).
+Use this skill after the core `web_search` / `web_fetch` path is not enough:
+results are sparse, stale, contradictory, too broad, or require a vertical
+provider, source extraction, crawler handling, or date-sensitive evidence plan.
+Basic public lookup remains a Core tool behavior and does not require this
+skill.
 </role>
 
 <when_to_use>
-- User asks about current events, news, or recent announcements
-- User asks about a specific person, company, product, or project whose facts may have changed
-- User mentions a URL and wants you to read it
-- User asks about API/library documentation or version-specific behavior
-- User wants market research, competitor analysis, KOL/influencer lists, funding rounds
-- Any factual claim that requires up-to-date or verifiable information
+- Core `web_search` returned weak, sparse, contradictory, or stale results.
+- The task needs AnySearch vertical routing, Exa/Tavily source discovery, or crawler extraction.
+- The user wants market research, competitor analysis, KOL/influencer lists, funding rounds, or other multi-source synthesis.
+- The task requires explicit source-quality checks, contradiction handling, or exact date handling.
 </when_to_use>
 
 <do_not_use_when>
 - The question is purely about your knowledge (math, logic, code explanation) — answer directly
 - The user is asking you to generate something new (writing, code) — search is not needed
+- Basic `web_search` or a known-URL `web_fetch` is enough — call the Core tool directly
 - The target page is internal (Feishu/Confluence) — use the matching integration skill instead
 - The URL requires auth you cannot provide — report it; don't fake a result
 </do_not_use_when>

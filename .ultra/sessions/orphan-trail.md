@@ -4,6 +4,15 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-06-29T00:24Z [sid:862bd3c4]; branch:main; 128 files (orphan-trail.md, executing_actions.py, memory.py, +125); last commit: 71b773e2 feat(frontend): split session workbench responsibil
+- 2026-06-28T20:50Z [sid:76692e24]; branch:main; 3 files (orphan-trail.md, ccplus-session-checkpoint-branch-ui-upgrade-plan-2026-06-27.md, ccplus-session-tui-unified-expression-plan-2026-06-28.md); last commit: 45173dd3 docs: align ccplus closure ledger
+- 2026-06-28T20:40Z [sid:8e909eb3]; branch:main; 3 files (orphan-trail.md, ccplus-session-checkpoint-branch-ui-upgrade-plan-2026-06-27.md, ccplus-session-tui-unified-expression-plan-2026-06-28.md); last commit: fe92bdf1 ccplus: close residual tool governance gaps
+- 2026-06-28T19:52Z [sid:862bd3c4]; branch:main; 9 files (orphan-trail.md, engine.py, recovery_manifest.py, +6); last commit: 12bb68a9 ccplus: preserve permission origin channel
+- 2026-06-28T19:36Z [sid:8e909eb3]; branch:main; 3 files (orphan-trail.md, ccplus-session-checkpoint-branch-ui-upgrade-plan-2026-06-27.md, ccplus-session-tui-unified-expression-plan-2026-06-28.md); last commit: 12bb68a9 ccplus: preserve permission origin channel
+- 2026-06-28T18:16Z [sid:862bd3c4]; branch:main; 19 files (orphan-trail.md, chat_sessions.py, engine.py, +16); last commit: 84462390 docs: clarify workflow leaf tui boundary
+- 2026-06-28T18:15Z [sid:8e909eb3]; branch:main; 18 files (orphan-trail.md, chat_sessions.py, engine.py, +15); last commit: 84462390 docs: clarify workflow leaf tui boundary
+- 2026-06-28T17:24Z [sid:862bd3c4]; branch:main; 1 files (orphan-trail.md); last commit: 89201dd1 docs: refine agent session switching ui
+- 2026-06-28T16:49Z [sid:be44261b]; branch:main; 12 files (tools.py, web_mcp.py, SKILL.md, +9); last commit: d4b53e00 docs: specify git-like checkpoint rail
 - 2026-06-27T16:40Z [sid:76692e24]; branch:main; 20 files (orphan-trail.md, main.py, __init__.py, +17); last commit: 08a026a4 Propagate permission profiles through delegation an
 - 2026-06-27T14:26Z [sid:bb60cd5d]; branch:main; 4 files (a2a-relationship-group-collaboration-plan-2026-06-20.md, a2a-session-substrate-design-2026-06-24.md, a2a-workflow-orchestration-design-2026-06-24.md, +1); last commit: 08a026a4 Propagate permission profiles through delegation an
 - 2026-06-26T15:57Z [sid:ba922815]; branch:main; 34 files (orphan-trail.md, desktop_agents.py, local_agent_channel.py, +31); last commit: a005a6fe Refactor memory and workflow runtime boundaries
@@ -95,12 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-05T00:27Z [sid:26c03780]; branch:main; 1 files (orphan-trail.md); last commit: 35dea5c9 docs(memory): agent memory 研究 + MD-first 记忆引擎合并规格（施
 - 2026-06-04T22:02Z [sid:8cf70fc1]; branch:main; 1 files (orphan-trail.md); last commit: e69c606f docs: 知识容器边界 — 封存状态:全部未拍板,下 session 续
 - 2026-06-04T21:50Z [sid:27e1f4c6]; branch:main; 2 files (orphan-trail.md, knowledge-container-boundaries.md); last commit: 862c31ee feat(workflow): DR-5 前置 — 全链四步集成钉死（除真 LLM 外全真）
-- 2026-06-04T21:49Z [sid:8cf70fc1]; branch:main; 1 files (knowledge-container-boundaries.md); last commit: 862c31ee feat(workflow): DR-5 前置 — 全链四步集成钉死（除真 LLM 外全真）
-- 2026-06-04T18:35Z [sid:27e1f4c6]; branch:main; 25 files (compact-snapshot.md, orphan-trail.md, coordination_rls_0604.py, +22); last commit: 09f8e52e Refine plan mode and agent work ledger flows
-- 2026-06-04T04:44Z [sid:3f97d3a5]; branch:main; 1 files (orphan-trail.md); last commit: 61153d3 docs(workflow): 轴2 v0.6 — P0-P15 全量唯一权威路线 + review 缺
-- 2026-06-04T03:32Z [sid:7abb3cd3]; branch:main; 2 files (orphan-trail.md, workflow-source-capability.md); last commit: a5ae9ec fix(work-ledger): blocked_pattern evidence 改 agent_l
-- 2026-06-04T03:28Z [sid:3f97d3a5]; branch:main; 2 files (orphan-trail.md, workflow-source-capability.md); last commit: a5ae9ec fix(work-ledger): blocked_pattern evidence 改 agent_l
-- 2026-06-03T16:56Z [sid:70005673]; branch:main; 2 files (orphan-trail.md, test_feishu_identity_resolution.py); last commit: 1159197 feat(work-ledger): 切口④ ledger verified findings → 长期
-- 2026-06-03T13:53Z [sid:8a0e09ba]; branch:main; 1 files (orphan-trail.md); last commit: 2eee9e8 refactor(plan-mode): 切口① 拆 chat/Feishu 的 regex 任务 au
-- 2026-06-03T13:32Z [sid:3f97d3a5]; branch:main; 3 files (orphan-trail.md, feishu.py, web_chat_runtime.py); last commit: 97bac1c fix(subagent): 源能力加固 — fail-closed/path 边界/治理接线/记忆闭环
-- 2026-06-03T13:15Z [sid:8a0e09ba]; branch:main; 17 files (orphan-trail.md, coordination.py, subagent.py, +14); last commit: 90f325e feat(subagent): 切口⑥ tenant 记忆.md + 阉割版进化（governed wr

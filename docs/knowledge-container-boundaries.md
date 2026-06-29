@@ -234,7 +234,7 @@ T0 session ledger ──extract──▶ T2 learnings ──heartbeat──▶ T
 | ③归档（选 T3 文件） | heartbeat LLM | 5 路文件选择；**核实：knowledge/strategies 在 retriever 零运行时差异**（同 0.80 权重、同检索路径、过滤只区分 feedback/blocked），边界纯分类学 | 🔴 模糊 |
 | ④索引 | md_store / prompt assembly | T3 entry manifest 已由 Memory Navigation 消费；`memory/indexes/wiki_map.md` 是唯一 generated persistent map；旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役 | ✅ 已转正为导航索引 |
 | ⑤系统检索（被动注入） | retriever 机械初筛 + LLM rerank（A3 已接线） | 权重表+keyword+激活上下文；**注入的记忆不带选择理由**——AI 不知道"为什么是这几条"，无法校准信任 | ⚠️ 半明确 |
-| ⑥AI 主动调用 | agent LLM | 工具说明完整（search→filter→load_memory 协议、save_memory 仅逃生舱、memory-guide skill 路由）；**缺"何时该主动查"的触发判据**（现状仅 scenario 一句"重建过去决策时先查"） | ⚠️ 半明确 |
+| ⑥AI 主动调用 | agent LLM | 工具说明完整（search→filter→load_memory 协议、save_memory 限显式用户命令，路由由 runtime memory section 与 tool schema 承担）；**缺"何时该主动查"的触发判据**（现状仅 scenario 一句"重建过去决策时先查"） | ⚠️ 半明确 |
 | ⑦维护（dedup/降级） | dream LLM + soft dream 机械 | promote/dedup/cap 有，降级通道规划中（§8.3 P1）；**清理决策无 usage 数据**——靠内容判断，不知道"这条到底有没有被用过" | ⚠️ 半明确 |
 | ⑧退役 | 仅 T0（auto_dream 调 cleanup_old_logs，30 天） | **T3 条目级退役无判据无数据**——孤儿条目永生 | 🔴 缺失（烂泥最终形成地） |
 

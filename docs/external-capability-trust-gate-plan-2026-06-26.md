@@ -61,7 +61,7 @@ Source = 可追溯来源
 
 当前 Skill、MCP、Plugin 已经有各自的安装路径，但缺统一安装门：
 
-- Skill：已有 `SkillGuard`、`find-skills`、`skill-vetter`，但外部 Skill 仍可从不同入口被写入 active `skills/`。
+- Skill：已有 `SkillGuard` 和统一的 `skill-marketplace` 发现/审查入口；外部 Skill 仍必须通过受治理的 active `skills/` 写入路径。
 - MCP：已有 server-first 管理、per-agent assignment、tool policy，但导入、凭据、连接测试、工具暴露、撤销记录需要统一到外部能力总账。
 - Plugin：`pack.yaml` / `TenantInstalledPlugin` / `AgentPluginAssignment` 已经形成插件系统方向，但远程 source 仍应在签名、hash、sandbox materializer、lockfile provenance 未完成时 fail-closed。
 

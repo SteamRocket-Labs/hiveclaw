@@ -889,6 +889,11 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('data-testid="session-command-control-panel"');
     expect(markup).toContain('data-testid="session-checkpoint-row"');
+    expect(markup).toContain('data-session-action="focus-checkpoint"');
+    expect(markup).toContain('data-testid="session-checkpoint-rewind-action"');
+    expect(markup).toContain('data-testid="session-checkpoint-branch-action"');
+    expect(markup).toContain('Rewind here');
+    expect(markup).toContain('Branch here');
     expect(markup).toContain('第一次输入');
     expect(markup).toContain('第二次输入');
   });

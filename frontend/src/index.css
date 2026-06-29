@@ -1224,6 +1224,12 @@ select:focus {
   transform: scale(1.08);
 }
 
+.session-tui-checkpoint-node.is-focused {
+  border-color: var(--session-tui-selected-border);
+  background: var(--text-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--session-tui-selected-border) 18%, transparent);
+}
+
 .session-tui-checkpoint-node:disabled {
   border-color: var(--border-subtle);
   background: var(--bg-tertiary);
@@ -1237,7 +1243,13 @@ select:focus {
   gap: 4px;
 }
 
+.session-tui-checkpoint-row-shell {
+  display: grid;
+  gap: 5px;
+}
+
 .session-tui-checkpoint-row {
+  width: 100%;
   overflow: hidden;
   padding: var(--session-tui-padding-row);
   border: 1px solid var(--border-subtle);
@@ -1259,9 +1271,42 @@ select:focus {
   color: var(--text-primary);
 }
 
+.session-tui-checkpoint-row[aria-pressed="true"] {
+  border-color: var(--session-tui-selected-border);
+  background: var(--session-tui-selected-bg);
+  color: var(--text-primary);
+}
+
 .session-tui-checkpoint-row:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.session-tui-checkpoint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 8px;
+}
+
+.session-tui-checkpoint-actions button {
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-row);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--session-tui-font-meta);
+  font-weight: 650;
+  line-height: var(--session-tui-line-meta);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.session-tui-checkpoint-actions button:hover {
+  border-color: var(--border-default);
+  background: var(--session-tui-hover-bg);
+  color: var(--text-primary);
 }
 
 .session-tui-command-details {

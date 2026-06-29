@@ -1369,6 +1369,17 @@ Shell 稳定后，再切页面职责，否则会继续把 Session Workbench 塞�
 - branch 后续 checkpoint 是 branch-local，不回写 main。
 - 切回 main / branch 时 active path、Chat、composer context 一致。
 
+实施证据（2026-06-28 / Step 4）：
+
+- 已将 `frontend/src/pages/agent-detail/AgentChatSection.tsx::SessionCommandControlPanel` 的 checkpoint rail node / row click 从直接执行 `rewind` 改为 `focus-checkpoint`：点击 checkpoint 只定位/选中，不再直接回滚。
+- 已在选中 checkpoint 的 action bar 中提供显式 `Rewind here` / `Branch here`：`Rewind here` 调用 `/rewind` 并传 `checkpoint_event_id`；`Branch here` 调用 `/branch` 并传 `anchor_event_id`，对齐后端 `session_command_runtime.py` 当前 command 语义。
+- 已默认聚焦最新 checkpoint，并在 checkpoint 列表变化时保持 active checkpoint 有效；GitLine node/row 使用 `aria-pressed` 和 `is-focused` class 表达当前定位点。
+- 已在 `frontend/src/index.css` 增加 focused checkpoint node、row、action bar 的克制 TUI 样式，复用 Session TUI token，不引入第二套视觉体系。
+- 红测：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "checkpoint selector"` 在实现前失败，失败点是 checkpoint selector 只输出 row/node，没有 `focus-checkpoint`、`Rewind here`、`Branch here`。
+- 绿测：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "checkpoint selector|branch lineage"` -> 2 passed / 69 skipped。
+- 回归：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx` -> 71 passed。
+- 构建：`cd frontend && npm run build` -> `tsc && vite build` exit 0。
+
 ### 10.5 Step 5：右侧 Runtime / Workspace 收敛
 
 核心 session timeline 成型后，再把分散状态收进右侧。

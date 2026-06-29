@@ -582,8 +582,20 @@ export function SessionCommandControlPanel({
   onDismiss: () => void;
   onRunCommand: (command: string, args?: Record<string, unknown>) => void | Promise<unknown>;
 }) {
+  const checkpoints = control?.checkpoints || [];
+  const checkpointIds = checkpoints.map(checkpointId);
+  const availableCheckpointIds = checkpointIds.filter(Boolean);
+  const defaultFocusedCheckpointId = availableCheckpointIds.length
+    ? availableCheckpointIds[availableCheckpointIds.length - 1]
+    : null;
+  const [focusedCheckpointId, setFocusedCheckpointId] = React.useState<string | null>(defaultFocusedCheckpointId);
+  React.useEffect(() => {
+    setFocusedCheckpointId((current) => {
+      if (current && checkpointIds.includes(current)) return current;
+      return defaultFocusedCheckpointId;
+    });
+  }, [defaultFocusedCheckpointId, checkpointIds.join('|')]);
   if (!control) return null;
-  const checkpoints = control.checkpoints || [];
   const details = payloadSummary(control.payload);
   return (
     <section data-testid="session-command-control-panel" className="session-tui-command-panel">
@@ -615,14 +627,18 @@ export function SessionCommandControlPanel({
           <div data-testid="session-checkpoint-rail" className="session-tui-checkpoint-rail">
             {checkpoints.map((checkpoint, index) => {
               const id = checkpointId(checkpoint);
+              const isFocused = Boolean(id && id === focusedCheckpointId);
               return (
                 <button
                   key={id || index}
                   type="button"
+                  data-session-action="focus-checkpoint"
+                  data-checkpoint-id={id || undefined}
+                  aria-pressed={isFocused}
                   title={checkpointLabel(checkpoint, index)}
                   disabled={!id}
-                  onClick={() => id && onRunCommand('rewind', { checkpoint_event_id: id })}
-                  className="session-tui-checkpoint-node"
+                  onClick={() => id && setFocusedCheckpointId(id)}
+                  className={`session-tui-checkpoint-node ${isFocused ? 'is-focused' : ''}`}
                 />
               );
             })}
@@ -630,17 +646,42 @@ export function SessionCommandControlPanel({
           <div className="session-tui-checkpoint-list">
             {checkpoints.map((checkpoint, index) => {
               const id = checkpointId(checkpoint);
+              const isFocused = Boolean(id && id === focusedCheckpointId);
               return (
-                <button
-                  key={id || index}
-                  type="button"
-                  data-testid="session-checkpoint-row"
-                  disabled={!id}
-                  onClick={() => id && onRunCommand('rewind', { checkpoint_event_id: id })}
-                  className="session-tui-checkpoint-row"
-                >
-                  {checkpointLabel(checkpoint, index)}
-                </button>
+                <div key={id || index} className={`session-tui-checkpoint-row-shell ${isFocused ? 'is-focused' : ''}`}>
+                  <button
+                    type="button"
+                    data-testid="session-checkpoint-row"
+                    data-session-action="focus-checkpoint"
+                    data-checkpoint-id={id || undefined}
+                    aria-pressed={isFocused}
+                    disabled={!id}
+                    onClick={() => id && setFocusedCheckpointId(id)}
+                    className="session-tui-checkpoint-row"
+                  >
+                    {checkpointLabel(checkpoint, index)}
+                  </button>
+                  {isFocused && id ? (
+                    <div className="session-tui-checkpoint-actions">
+                      <button
+                        type="button"
+                        data-testid="session-checkpoint-rewind-action"
+                        data-session-command="rewind"
+                        onClick={() => onRunCommand('rewind', { checkpoint_event_id: id })}
+                      >
+                        Rewind here
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="session-checkpoint-branch-action"
+                        data-session-command="branch"
+                        onClick={() => onRunCommand('branch', { anchor_event_id: id })}
+                      >
+                        Branch here
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               );
             })}
           </div>

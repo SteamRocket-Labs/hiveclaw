@@ -6,7 +6,16 @@ from uuid import uuid4
 import pytest
 
 
-def _agent(*, agent_id=None, tenant_id=None, owner_user_id=None, creator_id=None, name="agent", status="running"):
+def _agent(
+    *,
+    agent_id=None,
+    tenant_id=None,
+    owner_user_id=None,
+    creator_id=None,
+    name="agent",
+    status="running",
+    agent_class="internal_tenant",
+):
     creator = creator_id or uuid4()
     return SimpleNamespace(
         id=agent_id or uuid4(),
@@ -17,6 +26,7 @@ def _agent(*, agent_id=None, tenant_id=None, owner_user_id=None, creator_id=None
         role_description="",
         status=status,
         agent_type="native",
+        agent_class=agent_class,
     )
 
 
@@ -48,6 +58,65 @@ async def test_same_owner_policy_allows_without_explicit_group(monkeypatch):
     assert result.allowed is True
     assert result.reason == "same_owner"
     assert result.approval_required is False
+
+
+@pytest.mark.asyncio
+async def test_system_hr_target_is_never_a2a_collaborator(monkeypatch):
+    from app.services import a2a_collaboration_policy as mod
+
+    tenant_id = uuid4()
+    owner_id = uuid4()
+    source = _agent(tenant_id=tenant_id, owner_user_id=owner_id, name="source")
+    target = _agent(
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        name="__system_hr__",
+        agent_class="internal_system",
+    )
+
+    async def fake_is_public(*_args, **_kwargs):
+        raise AssertionError("system HR target must be denied before public A2A lookup")
+
+    async def fake_find_edge(*_args, **_kwargs):
+        raise AssertionError("system HR target must be denied before group lookup")
+
+    monkeypatch.setattr(mod, "_is_public_agent", fake_is_public)
+    monkeypatch.setattr(mod, "_find_active_collaboration_edge", fake_find_edge)
+
+    result = await mod.resolve_a2a_collaboration_policy(None, source, target, action="delegate")
+
+    assert result.allowed is False
+    assert result.reason == "system_hr_a2a_disabled"
+    assert "System HR" in result.message
+
+
+@pytest.mark.asyncio
+async def test_system_hr_source_cannot_initiate_a2a(monkeypatch):
+    from app.services import a2a_collaboration_policy as mod
+
+    tenant_id = uuid4()
+    owner_id = uuid4()
+    source = _agent(
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        name="__system_hr__",
+        agent_class="internal_system",
+    )
+    target = _agent(tenant_id=tenant_id, owner_user_id=owner_id, name="target")
+
+    async def fake_is_public(*_args, **_kwargs):
+        raise AssertionError("system HR source must be denied before public A2A lookup")
+
+    async def fake_find_edge(*_args, **_kwargs):
+        raise AssertionError("system HR source must be denied before group lookup")
+
+    monkeypatch.setattr(mod, "_is_public_agent", fake_is_public)
+    monkeypatch.setattr(mod, "_find_active_collaboration_edge", fake_find_edge)
+
+    result = await mod.resolve_a2a_collaboration_policy(None, source, target, action="message")
+
+    assert result.allowed is False
+    assert result.reason == "system_hr_a2a_disabled"
 
 
 @pytest.mark.asyncio
@@ -178,20 +247,58 @@ async def test_a2a_read_model_includes_public_agents(monkeypatch):
 
     source = _agent(name="source")
     same_owner = _agent(tenant_id=source.tenant_id, owner_user_id=source.owner_user_id, name="same")
+    system_hr = _agent(
+        tenant_id=source.tenant_id,
+        owner_user_id=source.owner_user_id,
+        name="__system_hr__",
+        agent_class="internal_system",
+    )
     public_peer = _agent(tenant_id=source.tenant_id, owner_user_id=uuid4(), name="public")
+    public_system_hr = _agent(
+        tenant_id=source.tenant_id,
+        owner_user_id=uuid4(),
+        name="__system_hr__",
+        agent_class="internal_system",
+    )
+    group_hr_member = SimpleNamespace(
+        agent_id=system_hr.id,
+        name="__system_hr__",
+        role_description="",
+        status="active",
+        role="member",
+        owner_user_id=source.owner_user_id,
+        agent_class="internal_system",
+    )
+    group_public_member = SimpleNamespace(
+        agent_id=public_peer.id,
+        name="public",
+        role_description="",
+        status="active",
+        role="member",
+        owner_user_id=public_peer.owner_user_id,
+        agent_class="internal_tenant",
+    )
 
     class FakeDb:
         async def get(self, model, agent_id):  # noqa: ARG002
             return source
 
     async def fake_same_owner(*_args, **_kwargs):
-        return [same_owner]
+        return [same_owner, system_hr]
 
     async def fake_public(*_args, **_kwargs):
-        return [public_peer]
+        return [public_peer, public_system_hr]
 
     async def fake_groups(*_args, **_kwargs):
-        return []
+        return [
+            SimpleNamespace(
+                group_id=uuid4(),
+                group_name="group",
+                purpose="",
+                status="active",
+                members=[group_hr_member, group_public_member],
+            )
+        ]
 
     monkeypatch.setattr(mod, "list_same_owner_agents", fake_same_owner)
     monkeypatch.setattr(mod, "list_public_agents", fake_public)
@@ -201,4 +308,44 @@ async def test_a2a_read_model_includes_public_agents(monkeypatch):
 
     assert [agent["name"] for agent in read_model["same_owner_agents"]] == ["same"]
     assert [agent["name"] for agent in read_model["public_agents"]] == ["public"]
-    assert read_model["collaboration_groups"] == []
+    assert read_model["collaboration_groups"][0]["members"] == [
+        {
+            "agent_id": str(group_public_member.agent_id),
+            "id": str(group_public_member.agent_id),
+            "name": "public",
+            "role_description": "",
+            "status": "active",
+            "role": "member",
+            "owner_user_id": str(group_public_member.owner_user_id),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_system_hr_source_read_model_is_empty(monkeypatch):
+    from app.services import a2a_collaboration_policy as mod
+
+    source = _agent(name="__system_hr__", agent_class="internal_system")
+
+    class FakeDb:
+        async def get(self, model, agent_id):  # noqa: ARG002
+            return source
+
+    async def fake_same_owner(*_args, **_kwargs):
+        raise AssertionError("system HR source must not load same-owner A2A candidates")
+
+    async def fake_public(*_args, **_kwargs):
+        raise AssertionError("system HR source must not load public A2A candidates")
+
+    async def fake_groups(*_args, **_kwargs):
+        raise AssertionError("system HR source must not load A2A groups")
+
+    monkeypatch.setattr(mod, "list_same_owner_agents", fake_same_owner)
+    monkeypatch.setattr(mod, "list_public_agents", fake_public)
+    monkeypatch.setattr(mod, "list_active_collaboration_groups_for_agent", fake_groups)
+
+    assert await mod.build_a2a_collaboration_read_model(FakeDb(), source.id) == {
+        "same_owner_agents": [],
+        "public_agents": [],
+        "collaboration_groups": [],
+    }

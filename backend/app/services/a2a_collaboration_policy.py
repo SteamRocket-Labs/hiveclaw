@@ -19,6 +19,7 @@ from sqlalchemy.orm import aliased
 
 from app.models.agent import Agent, AgentPermission
 from app.models.agent_collaboration import AgentCollaborationGroup, AgentCollaborationGroupMember
+from app.services.tool_visibility import HR_AGENT_CLASS, HR_AGENT_NAME, is_hr_agent
 
 ACTIVE_AGENT_STATUSES = {"running", "idle", "creating"}
 ACTIVE_GROUP_STATUS = "active"
@@ -57,6 +58,21 @@ def _is_expired(expires_at: datetime | None) -> bool:
 
 def _agent_status(agent: Any | None) -> str:
     return str(getattr(agent, "status", "") or "").strip().lower()
+
+
+def is_a2a_participating_agent(agent: Any | None) -> bool:
+    """Return whether an agent is allowed to participate in A2A.
+
+    The tenant System HR agent is a company-level onboarding tool, not a
+    colleague identity. It must never be source, target, prompt context, or
+    collaboration-group member for A2A.
+    """
+
+    return not is_hr_agent(agent)
+
+
+def _a2a_agent_sql_filter():
+    return ~and_(Agent.agent_class == HR_AGENT_CLASS, Agent.name == HR_AGENT_NAME)
 
 
 async def _find_active_collaboration_edge(
@@ -144,6 +160,12 @@ async def resolve_a2a_collaboration_policy(
         return A2ACollaborationPolicyResult(False, "source_not_found", "Source agent not found.")
     if target_agent is None:
         return A2ACollaborationPolicyResult(False, "target_not_found", "Target agent not found.")
+    if not is_a2a_participating_agent(source_agent) or not is_a2a_participating_agent(target_agent):
+        return A2ACollaborationPolicyResult(
+            False,
+            "system_hr_a2a_disabled",
+            "System HR is reserved for digital employee onboarding and cannot participate in A2A collaboration.",
+        )
     if getattr(source_agent, "id", None) == getattr(target_agent, "id", None):
         return A2ACollaborationPolicyResult(False, "self", "An agent cannot send A2A work to itself.")
     if getattr(source_agent, "tenant_id", None) != getattr(target_agent, "tenant_id", None):
@@ -229,6 +251,7 @@ async def list_same_owner_agents(db: AsyncSession, source_agent: Agent) -> list[
             Agent.tenant_id == source_agent.tenant_id,
             Agent.deleted_at.is_(None),
             Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
+            _a2a_agent_sql_filter(),
             or_(Agent.owner_user_id == owner_id, and_(Agent.owner_user_id.is_(None), Agent.creator_id == owner_id)),
         )
         .order_by(Agent.name.asc())
@@ -252,6 +275,7 @@ async def list_public_agents(db: AsyncSession, source_agent: Agent) -> list[Agen
         Agent.tenant_id == source_agent.tenant_id,
         Agent.deleted_at.is_(None),
         Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
+        _a2a_agent_sql_filter(),
         AgentPermission.scope_type == "company",
         or_(AgentPermission.tenant_id == source_agent.tenant_id, AgentPermission.tenant_id.is_(None)),
     ]
@@ -293,6 +317,7 @@ async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_ag
                 Agent.id != source_agent.id,
                 Agent.deleted_at.is_(None),
                 Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
+                _a2a_agent_sql_filter(),
             )
             .order_by(Agent.name.asc())
         )
@@ -304,8 +329,10 @@ async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_ag
                 status=member.status,
                 role=member.role,
                 owner_user_id=member.agent_owner_user_id,
+                agent_class=agent.agent_class,
             )
             for agent, member in member_rows.all()
+            if is_a2a_participating_agent(agent)
         ]
         if members:
             groups.append(
@@ -324,10 +351,14 @@ async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UU
     source_agent = await db.get(Agent, agent_id)
     if source_agent is None:
         return {"same_owner_agents": [], "public_agents": [], "collaboration_groups": []}
+    if not is_a2a_participating_agent(source_agent):
+        return {"same_owner_agents": [], "public_agents": [], "collaboration_groups": []}
 
     same_owner_agents = await list_same_owner_agents(db, source_agent)
     public_agents = await list_public_agents(db, source_agent)
     collaboration_groups = await list_active_collaboration_groups_for_agent(db, source_agent)
+    same_owner_agents = [agent for agent in same_owner_agents if is_a2a_participating_agent(agent)]
+    public_agents = [agent for agent in public_agents if is_a2a_participating_agent(agent)]
     return {
         "same_owner_agents": [serialize_agent_for_a2a(agent, relation="same_owner") for agent in same_owner_agents],
         "public_agents": [serialize_agent_for_a2a(agent, relation="public") for agent in public_agents],
@@ -348,8 +379,10 @@ async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UU
                         "owner_user_id": str(member.owner_user_id),
                     }
                     for member in group.members
+                    if is_a2a_participating_agent(member)
                 ],
             }
             for group in collaboration_groups
+            if any(is_a2a_participating_agent(member) for member in group.members)
         ],
     }

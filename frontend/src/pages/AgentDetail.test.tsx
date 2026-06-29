@@ -1,9 +1,16 @@
 import React from 'react';
-import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const queryCalls: Array<{ key: unknown[]; enabled: unknown }> = [];
+
+async function readSource(relativePath: string): Promise<string> {
+  const fsModuleId = 'node:fs';
+  const { readFileSync } = (await import(/* @vite-ignore */ fsModuleId)) as {
+    readFileSync: (path: URL, encoding: string) => string;
+  };
+  return readFileSync(new URL(relativePath, import.meta.url), 'utf8');
+}
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -98,8 +105,8 @@ describe('AgentDetail session permission state', () => {
 });
 
 describe('AgentDetail realtime refresh contract', () => {
-  it('refreshes durable session history after terminal websocket events', () => {
-    const source = readFileSync(new URL('./AgentDetail.tsx', import.meta.url), 'utf8');
+  it('refreshes durable session history after terminal websocket events', async () => {
+    const source = await readSource('./AgentDetail.tsx');
 
     expect(source).toContain('isTerminalRealtimeChatEvent');
     expect(source).toContain('applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime)');

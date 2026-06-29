@@ -20,7 +20,11 @@ from app.database import get_db
 from app.models.agent import Agent
 from app.models.agent_collaboration import AgentCollaborationGroup, AgentCollaborationGroupMember
 from app.models.user import User
-from app.services.a2a_collaboration_policy import build_a2a_collaboration_read_model, resolve_agent_owner_id
+from app.services.a2a_collaboration_policy import (
+    build_a2a_collaboration_read_model,
+    is_a2a_participating_agent,
+    resolve_agent_owner_id,
+)
 from app.services.workspace_sync_dirty import mark_agent_dirty
 
 router = APIRouter(prefix="/agents/{agent_id}/a2a", tags=["a2a"])
@@ -67,6 +71,8 @@ async def create_a2a_group(
     source_agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level != "manage":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manage access required")
+    if not is_a2a_participating_agent(source_agent):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="System HR cannot create A2A groups")
 
     owner_id = resolve_agent_owner_id(source_agent) or current_user.id
     group = AgentCollaborationGroup(
@@ -118,6 +124,8 @@ async def invite_a2a_group_member(
     source_agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level != "manage":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manage access required")
+    if not is_a2a_participating_agent(source_agent):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="System HR cannot invite A2A members")
 
     group = await db.get(AgentCollaborationGroup, group_id)
     if not group or group.tenant_id != source_agent.tenant_id or group.status != "active":
@@ -148,6 +156,8 @@ async def invite_a2a_group_member(
     target_agent = target_result.scalar_one_or_none()
     if target_agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target agent not found")
+    if not is_a2a_participating_agent(target_agent):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="System HR cannot participate in A2A")
 
     target_owner_id = resolve_agent_owner_id(target_agent)
     if target_owner_id is None:

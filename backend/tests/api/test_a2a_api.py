@@ -71,3 +71,21 @@ def test_get_a2a_collaborators_uses_canonical_read_model(monkeypatch):
     assert body["same_owner_agents"][0]["name"] == "Same Owner"
     assert body["public_agents"][0]["name"] == "Public Agent"
     assert body["collaboration_groups"][0]["members"][0]["name"] == "Group Peer"
+
+
+def test_system_hr_cannot_create_a2a_group(monkeypatch):
+    client, fake_db, current_user = _client()
+    agent_id = uuid4()
+
+    async def fake_check_agent_access(db_session, user, target_agent_id):
+        assert db_session is fake_db
+        assert user is current_user
+        assert target_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, name="__system_hr__", agent_class="internal_system"), "manage"
+
+    monkeypatch.setattr(a2a_mod, "check_agent_access", fake_check_agent_access)
+
+    response = client.post(f"/agents/{agent_id}/a2a/groups", json={"name": "HR should not A2A"})
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "System HR cannot create A2A groups"

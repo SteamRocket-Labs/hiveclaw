@@ -293,11 +293,6 @@ def _discover_skill_files() -> list[Path]:
 _SKILL_FILES = _discover_skill_files()
 
 _MANAGED_CREDENTIAL_BOUNDARY_SKILLS: dict[str, tuple[str, ...]] = {
-    "app/templates/system_skills/atlassian-rovo/SKILL.md": (
-        "do not inspect environment variables",
-        "run_command",
-        "configuration gap",
-    ),
     "app/templates/system_skills/dingtalk-integration/SKILL.md": (
         "do not inspect environment variables",
         "run_command",
@@ -348,7 +343,7 @@ def parser() -> SkillParser:
 class TestSkillDiscovery:
     def test_found_skill_files(self) -> None:
         # Retired default guides and single-purpose Office copies should not be counted.
-        assert len(_SKILL_FILES) >= 9, f"expected at least 9 skill files, found {len(_SKILL_FILES)}"
+        assert len(_SKILL_FILES) >= 8, f"expected at least 8 skill files, found {len(_SKILL_FILES)}"
 
     def test_every_file_is_parseable(self, parser: SkillParser) -> None:
         for path in _SKILL_FILES:
@@ -430,9 +425,8 @@ class TestCapabilityAlignment:
             and name not in CORE_TOOL_NAMES
             and name not in _CROSS_SKILL_ALLOWLIST
         ]
-        # Allow one explicit escape hatch: prefix-based dynamic tools
-        # (e.g. `atlassian_rovo_*` MCP tools) — those are marked by appearing
-        # with a trailing "*" elsewhere in the body.
+        # Allow one explicit escape hatch: prefix-based dynamic tools. Those are
+        # marked by appearing with a trailing "*" elsewhere in the body.
         dynamic_prefixes = {m.group(1) for m in re.finditer(r"`([a-z][a-z0-9_]*)_\*`", body)}
         suspicious = [
             name for name in suspicious if not any(name.startswith(prefix + "_") for prefix in dynamic_prefixes)

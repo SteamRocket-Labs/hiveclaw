@@ -1858,14 +1858,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         if ".run.tools" in mcp_url and merged_config:
             return await _execute_via_smithery_connect(mcp_url, mcp_name, arguments, merged_config, agent_id=agent_id)
 
-        direct_api_key = merged_config.get("api_key") or merged_config.get("atlassian_api_key")
-        if not direct_api_key and tool.mcp_server_name == "Atlassian Rovo" and agent_id is not None:
-            try:
-                from app.api.atlassian import get_atlassian_api_key_for_agent
-
-                direct_api_key = await get_atlassian_api_key_for_agent(agent_id)
-            except Exception as e:
-                logger.debug("Suppressed: %s", e)
+        direct_api_key = merged_config.get("api_key")
         client = MCPClient(mcp_url, api_key=direct_api_key)
         return await client.call_tool(mcp_name, arguments)
     except Exception as e:

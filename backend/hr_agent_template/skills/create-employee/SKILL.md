@@ -164,7 +164,6 @@ Add platform skills only when mandatory on day one:
 |-----------|----------------|
 | Feishu / Lark messages, docs, sheets, Base, tasks | `feishu-integration` |
 | DingTalk | `dingtalk-integration` |
-| Jira / Confluence | `atlassian-rovo` |
 
 Do not front-load MCP / ClawHub / marketplace installs when the first version
 can already run with builtin/default capabilities. For external packages:

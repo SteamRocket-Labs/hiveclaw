@@ -287,10 +287,10 @@ def test_build_blueprint_preview_payload_auto_recommends_platform_skills() -> No
         }
     )
 
-    assert payload["recommended_skill_names"] == ["feishu-integration", "atlassian-rovo"]
+    assert payload["recommended_skill_names"] == ["feishu-integration"]
     assert payload["blueprint"]["skill_names"] == []
     assert payload["blueprint"]["effective_skill_names"] == []
-    assert payload["blueprint"]["deferred_skill_names"] == ["feishu-integration", "atlassian-rovo"]
+    assert payload["blueprint"]["deferred_skill_names"] == ["feishu-integration"]
     assert payload["will_install"] == []
     assert any(
         "defer extra installs until a builtin/default dry run proves a real gap" in step

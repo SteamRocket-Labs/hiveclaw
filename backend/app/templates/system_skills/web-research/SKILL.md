@@ -36,7 +36,7 @@ skill.
 - The question is purely about your knowledge (math, logic, code explanation) — answer directly
 - The user is asking you to generate something new (writing, code) — search is not needed
 - Basic `web_search` or a known-URL `web_fetch` is enough — call the Core tool directly
-- The target page is internal (Feishu/Confluence) — use the matching integration skill instead
+- The target page is internal or authenticated (for example Feishu) — use the matching configured integration skill instead
 - The URL requires auth you cannot provide — report it; don't fake a result
 </do_not_use_when>
 

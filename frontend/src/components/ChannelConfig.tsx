@@ -55,7 +55,7 @@ interface ChannelDef {
     editOnly?: boolean;
     // Custom fields for websocket mode (wecom)
     wsFields?: ChannelField[];
-    // Atlassian-specific test connection feature
+    // Optional connection test action for API-backed channels.
     hasTestConnection?: boolean;
     // QR scan mode (no form fields, renders a QR scan component instead)
     qrScanMode?: boolean;
@@ -89,8 +89,6 @@ const TeamsIcon = <img src="/teams.png" alt="Teams" width="20" height="20" style
 const WeComIcon = <img src="/wecom.png" alt="WeCom" width="20" height="20" style={{ borderRadius: '4px' }} />;
 
 const DingTalkIcon = <img src="/dingtalk.png" alt="DingTalk" width="20" height="20" style={{ borderRadius: '4px' }} />;
-
-const AtlassianIcon = <img src="/atlassian.png" alt="Atlassian" width="20" height="20" style={{ borderRadius: '4px' }} />;
 
 const WeChatIcon = <svg width="20" height="20" viewBox="0 0 24 24" fill="#07C160"><path d="M9.5 4C5.36 4 2 6.69 2 10c0 1.89 1.08 3.56 2.78 4.66l-.7 2.1 2.45-1.23c.78.22 1.6.35 2.47.37-.17-.53-.25-1.1-.25-1.68 0-3.45 3.36-6.24 7.5-6.24.26 0 .51.01.76.04C16.13 5.64 13.1 4 9.5 4zm-3 4.5a1 1 0 110-2 1 1 0 010 2zm5 0a1 1 0 110-2 1 1 0 010 2zM22 14.22c0-2.8-2.9-5.06-6.5-5.06S9 11.42 9 14.22c0 2.8 2.9 5.06 6.5 5.06.7 0 1.38-.1 2.02-.27l2 1-.57-1.7C20.98 17.33 22 15.88 22 14.22zm-8.5-1a.88.88 0 110-1.75.88.88 0 010 1.75zm4 0a.88.88 0 110-1.75.88.88 0 010 1.75z"/></svg>;
 const AgentBayIcon = <span style={{ fontSize: '16px' }}>🌩️</span>;
@@ -205,20 +203,6 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         guide: { prefix: 'channelGuide.dingtalk', steps: 6 },
     },
     {
-        id: 'atlassian',
-        icon: AtlassianIcon,
-        nameKey: 'common.channels.atlassian',
-        nameFallback: 'Atlassian',
-        desc: 'Jira / Confluence / Compass (Rovo MCP)',
-        apiSlug: 'atlassian-channel',
-        hasTestConnection: true,
-        fields: [
-            { key: 'api_key', label: 'API Key', type: 'password', required: true },
-            { key: 'cloud_id', label: 'Cloud ID', placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' },
-        ],
-        guide: { prefix: 'channelGuide.atlassian', steps: 5 },
-    },
-    {
         id: 'agentbay',
         icon: AgentBayIcon,
         nameKey: 'common.channels.agentbay',
@@ -276,7 +260,7 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
 ];
 
 // Channels hidden from UI (kept in registry for future use)
-const HIDDEN_CHANNELS = new Set(['teams', 'atlassian', 'agentbay']);
+const HIDDEN_CHANNELS = new Set(['teams', 'agentbay']);
 const VISIBLE_CHANNELS = CHANNEL_REGISTRY.filter(ch => !HIDDEN_CHANNELS.has(ch.id));
 
 // ─── Feishu Permission JSON ─────────────────────────────
@@ -380,10 +364,6 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const togglePwd = (fieldId: string) => setShowPwds(p => ({ ...p, [fieldId]: !p[fieldId] }));
     const [feishuPermissionPreset, setFeishuPermissionPreset] = useState<'basic' | 'full'>('full');
 
-    // Atlassian test connection state
-    const [atlassianTesting, setAtlassianTesting] = useState(false);
-    const [atlassianTestResult, setAtlassianTestResult] = useState<{ ok: boolean; message?: string; tool_count?: number; error?: string } | null>(null);
-
     // AgentBay test connection state
     const [agentbayTesting, setAgentbayTesting] = useState(false);
     const [agentbayTestResult, setAgentbayTestResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null);
@@ -447,11 +427,6 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         queryFn: () => channelApi.getChannelWebhook(agentId!, 'wecom-channel'),
         enabled: enabled,
     });
-    const { data: atlassianConfig } = useQuery({
-        queryKey: ['atlassian-channel', agentId],
-        queryFn: () => channelApi.getChannelConfig(agentId!, 'atlassian-channel'),
-        enabled: enabled,
-    });
     const { data: agentbayConfig } = useQuery({
         queryKey: ['agentbay-channel', agentId],
         queryFn: () => channelApi.getChannelConfig(agentId!, 'agentbay-channel'),
@@ -483,7 +458,6 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             case 'teams': return teamsConfig;
             case 'dingtalk': return dingtalkConfig;
             case 'wecom': return wecomConfig;
-            case 'atlassian': return atlassianConfig;
             case 'agentbay': return agentbayConfig;
             case 'telegram': return telegramConfig;
             default: return null;
@@ -534,22 +508,9 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 ? [['channel', agentId]]
                 : [[`${ch.apiSlug}`, agentId]];
             keys.forEach(k => queryClient.invalidateQueries({ queryKey: k }));
-            if (ch.id === 'atlassian') setAtlassianTestResult(null);
             if (ch.id === 'agentbay') setAgentbayTestResult(null);
         },
     });
-
-    const testAtlassian = async () => {
-        setAtlassianTesting(true);
-        setAtlassianTestResult(null);
-        try {
-            const res = await channelApi.testChannelConfig(agentId!, 'atlassian-channel') as { ok: boolean; message?: string; tool_count?: number; error?: string };
-            setAtlassianTestResult(res);
-        } catch (e: any) {
-            setAtlassianTestResult({ ok: false, error: String(e) });
-        }
-        setAtlassianTesting(false);
-    };
 
     const testAgentBay = async () => {
         setAgentbayTesting(true);
@@ -940,7 +901,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 )}
 
                                 {/* Webhook URL (non-websocket channels) */}
-                                {ch.webhookLabel && !(ch.connectionMode && configConnMode === 'websocket') && ch.id !== 'dingtalk' && ch.id !== 'atlassian' && (
+                                {ch.webhookLabel && !(ch.connectionMode && configConnMode === 'websocket') && ch.id !== 'dingtalk' && (
                                     <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
                                         <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>{ch.webhookLabel}</div>
                                         <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
@@ -971,22 +932,6 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     </div>
                                 )}
 
-                                {/* Atlassian status */}
-                                {ch.id === 'atlassian' && (
-                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
-                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>Status</div>
-                                        <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>API Key configured — Jira / Confluence / Compass tools available</div>
-                                        {config.cloud_id && <div style={{ color: 'var(--text-tertiary)', marginTop: '4px', fontSize: '11px' }}>Cloud ID: <code>{config.cloud_id}</code></div>}
-                                    </div>
-                                )}
-                                {ch.id === 'atlassian' && atlassianTestResult && (
-                                    <div style={{ padding: '8px 12px', borderRadius: '6px', fontSize: '12px', marginBottom: '10px', background: atlassianTestResult.ok ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${atlassianTestResult.ok ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`, color: atlassianTestResult.ok ? 'rgb(5,150,105)' : 'rgb(220,38,38)' }}>
-                                        {atlassianTestResult.ok
-                                            ? `${atlassianTestResult.message || `Connected — ${atlassianTestResult.tool_count} tools available`}`
-                                            : `${atlassianTestResult.error}`}
-                                    </div>
-                                )}
-
                                 {/* AgentBay status */}
                                 {ch.id === 'agentbay' && (
                                     <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
@@ -1008,11 +953,6 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
 
                                 {/* Action buttons */}
                                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                                    {ch.hasTestConnection && ch.id === 'atlassian' && (
-                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAtlassian} disabled={atlassianTesting}>
-                                            {atlassianTesting ? 'Testing...' : 'Test Connection'}
-                                        </button>
-                                    )}
                                     {ch.hasTestConnection && ch.id === 'agentbay' && (
                                         <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAgentBay} disabled={agentbayTesting}>
                                             {agentbayTesting ? 'Testing...' : 'Test Connection'}
@@ -1064,9 +1004,6 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             } else if (ch.id === 'dingtalk') {
                                                 prefill.app_key = config.app_id || '';
                                                 prefill.app_secret = config.app_secret || '';
-                                            } else if (ch.id === 'atlassian') {
-                                                prefill.api_key = '';
-                                                prefill.cloud_id = config.cloud_id || '';
                                             } else if (ch.id === 'agentbay') {
                                                 prefill.api_key = '';
                                                 prefill.base_url = config.base_url || '';
@@ -1109,16 +1046,6 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 {/* Form fields */}
                                 {formFields.map(field =>
                                     renderField(field, ch.id, form[field.key] || '', (val) => setFormField(ch.id, field.key, val))
-                                )}
-
-                                {/* Atlassian extra hints */}
-                                {ch.id === 'atlassian' && (
-                                    <>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '-4px' }}>
-                                            Service account key starts with <code>ATSTT</code>. Personal API token: base64-encode <code>email:token</code> and prefix with <code>Basic </code>
-                                        </div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Required for multi-site setups. Find it at <code>your-site.atlassian.net/_edge/tenant_info</code></div>
-                                    </>
                                 )}
 
                                 {/* AgentBay extra hints */}

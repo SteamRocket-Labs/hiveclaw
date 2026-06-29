@@ -39,3 +39,11 @@ def test_stale_builtin_cleanup_uses_current_seed_surface() -> None:
     stale = _names_of_stale_builtin_tools({"legacy_search", "web_search", "read_file"})
 
     assert stale == {"legacy_search"}
+
+
+def test_atlassian_rovo_mcp_config_tool_is_retired() -> None:
+    import app.services.tool_seeder as tool_seeder
+
+    assert not hasattr(tool_seeder, "ATLASSIAN_ROVO_CONFIG_TOOL")
+    assert not hasattr(tool_seeder, "seed_atlassian_rovo_config")
+    assert not hasattr(tool_seeder, "get_atlassian_api_key")

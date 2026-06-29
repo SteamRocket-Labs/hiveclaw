@@ -36,16 +36,9 @@ def test_system_skill_templates_pass_quick_validation():
 def test_system_skill_templates_reference_supported_runtime_contracts():
     dingtalk_skill = (SYSTEM_SKILLS_DIR / "dingtalk-integration" / "SKILL.md").read_text(encoding="utf-8")
     feishu_skill = (SYSTEM_SKILLS_DIR / "feishu-integration" / "SKILL.md").read_text(encoding="utf-8")
-    atlassian_skill = (SYSTEM_SKILLS_DIR / "atlassian-rovo" / "SKILL.md").read_text(encoding="utf-8")
 
     assert "send_dingtalk_message" not in dingtalk_skill
     assert "dingtalk_user_search" not in dingtalk_skill
-
-    assert "atlassian_list_available_tools" not in atlassian_skill
-    assert "atlassian_jira_" not in atlassian_skill
-    assert "atlassian_confluence_" not in atlassian_skill
-    assert "atlassian_compass_" not in atlassian_skill
-    assert "atlassian_rovo_" in atlassian_skill
 
     send_feishu_row = next(
         line for line in feishu_skill.splitlines() if "| `send_feishu_message` |" in line

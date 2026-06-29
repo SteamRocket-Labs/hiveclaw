@@ -23,6 +23,7 @@ RETIRED_BUILTIN_SKILL_FOLDERS = frozenset(
         "deep-research",
         "topic-deep-dive",
         "industry-research",
+        "atlassian-rovo",
         "source-ledger-audit",
         "docx-generator",
         "xlsx-processor",

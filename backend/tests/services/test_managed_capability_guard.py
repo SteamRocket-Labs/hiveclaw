@@ -62,7 +62,6 @@ def test_detects_managed_integration_secret_export_guidance(prefix: str, family:
 def test_dedicated_tool_examples_are_not_treated_as_env_guidance() -> None:
     content = """
 feishu_sheet_info(spreadsheet_url="https://example.feishu.cn/sheets/shtcxxxx")
-atlassian_rovo_get_jira_issue(issue_key="PROJ-142")
 send_email(to="ops@example.com", subject="hello")
 """
 

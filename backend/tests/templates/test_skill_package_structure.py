@@ -127,7 +127,7 @@ def test_package_resource_files_do_not_reference_unknown_tool_like_names():
         "preview_",
         "fs_",
     )
-    dynamic_prefixes = ("atlassian_rovo_",)
+    dynamic_prefixes: tuple[str, ...] = ()
     non_tool_identifiers = {
         "allowed_by_tool_config",
         "build_peer_multiple_table",

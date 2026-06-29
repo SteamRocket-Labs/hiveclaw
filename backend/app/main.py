@@ -11,7 +11,6 @@ from app.api.a2a import router as a2a_router
 from app.api.admin import router as admin_router
 from app.api.advanced import router as advanced_router
 from app.api.agents import router as agents_router
-from app.api.atlassian import router as atlassian_router
 from app.api.auth import router as auth_router
 from app.api.autonomy import router as autonomy_router
 from app.api.capabilities import router as capabilities_router
@@ -207,7 +206,7 @@ async def lifespan(app: FastAPI):
 
             await conn.run_sync(apply_rls_policies)
             # Add enum values to channel_type_enum if they don't exist yet (idempotent)
-            for _ch_val in ("atlassian", "telegram"):
+            for _ch_val in ("telegram",):
                 await conn.execute(
                     __import__("sqlalchemy").text(f"ALTER TYPE channel_type_enum ADD VALUE IF NOT EXISTS '{_ch_val}'")
                 )
@@ -374,19 +373,6 @@ async def lifespan(app: FastAPI):
             logger.warning("[startup] Reconciled {} orphaned runtime task(s) after restart", reconciled)
     except Exception as e:
         logger.warning(f"[startup] Runtime task reconciliation failed: {e}")
-
-    try:
-        from app.services.tool_seeder import seed_atlassian_rovo_config, get_atlassian_api_key
-
-        await seed_atlassian_rovo_config()
-        # Auto-import Atlassian Rovo tools if an API key is already configured
-        _rovo_key = await get_atlassian_api_key()
-        if _rovo_key:
-            from app.services.resource_discovery import seed_atlassian_rovo_tools
-
-            await seed_atlassian_rovo_tools(_rovo_key)
-    except Exception as e:
-        logger.warning(f"[startup] Atlassian tools seed failed: {e}")
 
     try:
         from app.services.skill_seeder import (
@@ -597,7 +583,6 @@ _api_routers = [
     teams_router,
     telegram_router,
     email_channel_router,
-    atlassian_router,
     notification_router,
     config_history_router,
     custom_api_connectors_router,

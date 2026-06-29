@@ -20,7 +20,7 @@ class ChannelConfig(Base):
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), index=True)
     channel_type: Mapped[str] = mapped_column(
         Enum(
-            "feishu", "wecom", "dingtalk", "slack", "discord", "atlassian",
+            "feishu", "wecom", "dingtalk", "slack", "discord",
             "microsoft_teams", "telegram", "wechat_personal",
             name="channel_type_enum",
         ),

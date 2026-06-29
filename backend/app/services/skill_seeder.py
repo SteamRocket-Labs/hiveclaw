@@ -33,7 +33,6 @@ DEFAULT_BUILTIN_SKILL_FOLDERS = frozenset(
         "plaza-guide",
         "email-guide",
         "dingtalk-integration",
-        "atlassian-rovo",
         "skill-marketplace",
     }
 )
@@ -203,15 +202,6 @@ BUILTIN_SKILLS = [
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
-        "name": "Atlassian Rovo",
-        "description": "Jira / Confluence / Compass tool integration guide",
-        "category": "system_integration",
-        "icon": "🔷",
-        "folder_name": "atlassian-rovo",
-        "is_default": True,
-        "files": [],  # populated at runtime from templates/system_skills/
-    },
-    {
         "name": "Skill Marketplace Vetting",
         "description": "Discover, vet, and install third-party skills only after source review, risk classification, and explicit user confirmation",
         "category": "system",
@@ -253,7 +243,6 @@ async def seed_skills():
                 "plaza-guide",
                 "email-guide",
                 "dingtalk-integration",
-                "atlassian-rovo",
             )
             and not s["files"]
         ):

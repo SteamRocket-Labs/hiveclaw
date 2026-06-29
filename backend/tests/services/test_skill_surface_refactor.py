@@ -6,8 +6,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def test_builtin_skill_defaults_are_agent_preinstalled_platform_capsules():
     from app.services.skill_seeder import BUILTIN_SKILLS
+    from app.skills.retired import RETIRED_BUILTIN_SKILL_FOLDERS
 
     by_folder = {skill["folder_name"]: skill for skill in BUILTIN_SKILLS}
+    retired = set(RETIRED_BUILTIN_SKILL_FOLDERS)
 
     expected_builtin_folders = {
         "skill-creator",
@@ -17,13 +19,14 @@ def test_builtin_skill_defaults_are_agent_preinstalled_platform_capsules():
         "plaza-guide",
         "email-guide",
         "dingtalk-integration",
-        "atlassian-rovo",
         "skill-marketplace",
     }
     assert set(by_folder) == expected_builtin_folders
     assert {folder for folder, skill in by_folder.items() if skill.get("is_default")} == expected_builtin_folders
     assert by_folder["web-research"]["name"] == "Advanced Web Research"
     assert by_folder["skill-marketplace"]["is_default"] is True
+    assert not (REPO_ROOT / "backend" / "app" / "templates" / "system_skills" / "atlassian-rovo").exists()
+    assert "atlassian-rovo" in retired
 
 
 def test_removed_skill_marketplace_split_brain_is_retired():

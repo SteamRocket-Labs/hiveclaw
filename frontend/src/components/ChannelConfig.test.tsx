@@ -52,7 +52,12 @@ vi.mock('@tanstack/react-query', () => ({
 }));
 
 vi.mock('../api/domains/channels', () => ({
-  channelApi: {},
+  channelApi: {
+    get: vi.fn(),
+    webhookUrl: vi.fn(),
+    getChannelConfig: vi.fn(),
+    getChannelWebhook: vi.fn(),
+  },
 }));
 
 describe('ChannelConfig', () => {
@@ -77,5 +82,15 @@ describe('ChannelConfig', () => {
     expect(markup).toContain('Platform');
     expect(markup).toContain('Feishu (China)');
     expect(markup).toContain('Lark (Global)');
+  });
+
+  it('does not expose the retired Atlassian Rovo channel', async () => {
+    const { channelApi } = await import('../api/domains/channels');
+    const markup = renderToStaticMarkup(<ChannelConfig mode="edit" agentId="agent-1" />);
+
+    expect(markup).not.toContain('Atlassian');
+    expect(markup).not.toContain('Jira / Confluence / Compass');
+    expect(markup).not.toContain('Rovo MCP');
+    expect(channelApi.getChannelConfig).not.toHaveBeenCalledWith('agent-1', 'atlassian-channel');
   });
 });

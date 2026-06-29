@@ -503,13 +503,13 @@ describe('request cleanup adapters', () => {
     await channelApi.getChannelConfig('agent-1', 'slack-channel');
     await channelApi.getChannelWebhook('agent-1', 'slack-channel');
     await channelApi.createChannelConfig('agent-1', 'slack-channel', { bot_token: 'x' });
-    await channelApi.testChannelConfig('agent-1', 'atlassian-channel');
+    await channelApi.testChannelConfig('agent-1', 'agentbay-channel');
     await channelApi.deleteChannelConfig('agent-1', 'slack-channel');
 
     expect(get).toHaveBeenCalledWith('/agents/agent-1/slack-channel');
     expect(get).toHaveBeenCalledWith('/agents/agent-1/slack-channel/webhook-url');
     expect(post).toHaveBeenCalledWith('/agents/agent-1/slack-channel', { bot_token: 'x' });
-    expect(post).toHaveBeenCalledWith('/agents/agent-1/atlassian-channel/test', undefined);
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/agentbay-channel/test', undefined);
     expect(del).toHaveBeenCalledWith('/agents/agent-1/slack-channel');
   });
 

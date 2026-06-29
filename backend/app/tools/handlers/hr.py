@@ -105,10 +105,6 @@ _PLATFORM_SKILL_RULES = (
         "skill_name": "dingtalk-integration",
         "keywords": ("钉钉", "dingtalk"),
     },
-    {
-        "skill_name": "atlassian-rovo",
-        "keywords": ("jira", "confluence", "atlassian", "compass"),
-    },
 )
 
 _OFFICE_DELIVERABLE_KEYWORDS = (

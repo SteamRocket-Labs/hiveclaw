@@ -251,6 +251,31 @@ describe('request cleanup adapters', () => {
     expect(post).toHaveBeenCalledWith('/agents/agent-1/sessions/session-1/runs/run-1/cancel', {});
   });
 
+  it('routes session feedback through chatApi', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        post: vi.fn(),
+      };
+    });
+    const { chatApi } = await import('./domains/chat');
+    const { post } = await import('./core/request');
+    vi.mocked(post).mockResolvedValue({ ok: true });
+
+    await chatApi.recordSessionFeedback('agent-1', 'session-1', {
+      label: 'useful',
+      reason: 'message action bar',
+      message_id: '11111111-1111-4111-8111-111111111111',
+    });
+
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/sessions/session-1/feedback', {
+      label: 'useful',
+      reason: 'message action bar',
+      message_id: '11111111-1111-4111-8111-111111111111',
+    });
+  });
+
   it('routes notification center queries through notificationsApi with query params', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

@@ -2,7 +2,6 @@ import React from 'react';
 
 import FileBrowser, { type FileBrowserApi } from '../../components/FileBrowser';
 import { fileApi } from '../../api/domains/files';
-import TeamMemorySummaryCard from './TeamMemorySummaryCard';
 
 type AgentWorkspaceSectionProps = {
   agentId: string;
@@ -20,7 +19,6 @@ export default function AgentWorkspaceSection({ agentId }: AgentWorkspaceSection
 
   return (
     <div style={{ padding: '20px 24px' }}>
-      <TeamMemorySummaryCard agentId={agentId} section="workspace" />
       <FileBrowser
         api={adapter}
         rootPath="workspace"

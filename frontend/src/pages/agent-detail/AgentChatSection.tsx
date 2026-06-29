@@ -7,12 +7,16 @@ import {
   IconDownload,
   IconExternalLink,
   IconFileText,
+  IconGitBranch,
+  IconHistory,
   IconLoader2,
   IconPaperclip,
   IconPlus,
   IconSend2,
   IconShieldCheck,
   IconTargetArrow,
+  IconThumbDown,
+  IconThumbUp,
   IconTrash,
   IconX,
 } from '@tabler/icons-react';
@@ -28,10 +32,11 @@ import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import { buildThreadTimeline, type ThreadTimelineModel } from '../session-workbench/timelineModel';
-import { chatApi } from '../../api/domains/chat';
+import { chatApi, type RecordSessionFeedbackInput } from '../../api/domains/chat';
 import { ccParityApi, type SessionWorkbench } from '../../api/domains/ccParity';
 import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
+import { showAppToast } from '../../components/AppDialogs';
 import { composerShortcutText } from './sessionComposerShortcuts';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
@@ -107,6 +112,10 @@ function getRuntimeUsageTitle(runtimeSummary: ChatRuntimeSummary | null, usageLa
     typeof remaining === 'number' ? `remaining ${formatCompactTokenCount(remaining)} tokens` : null,
   ].filter(Boolean);
   return parts.join(' · ');
+}
+
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function getSessionPermissionModeLabel(
@@ -199,12 +208,6 @@ export interface BranchLineageItem {
 
 export interface BranchLineageRow extends BranchLineageItem {
   depth: number;
-}
-
-export interface BranchComposeDraft {
-  mode: ConversationBranchMode;
-  message: AgentChatMessage;
-  content: string;
 }
 
 export interface SessionCommandCheckpoint {
@@ -458,74 +461,6 @@ export function BranchLineagePanel({
             </button>
           );
         })}
-      </div>
-    </div>
-  );
-}
-
-export function BranchComposePanel({
-  draft,
-  busy,
-  onChange,
-  onCancel,
-  onSubmit,
-}: {
-  draft: BranchComposeDraft | null;
-  busy: boolean;
-  onChange: (content: string) => void;
-  onCancel: () => void;
-  onSubmit: () => void | Promise<unknown>;
-}) {
-  const { t } = useTranslation();
-  if (!draft) return null;
-  const modeLabel = draft.mode.replace(/_/g, ' ');
-  const canSubmit = draft.content.trim().length > 0 && !busy;
-  return (
-    <div
-      data-testid="branch-compose-panel"
-      style={{
-        borderTop: '1px solid var(--border-subtle)',
-        background: 'var(--bg-secondary)',
-        padding: '10px 12px',
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', marginBottom: '8px' }}>
-        <div>
-          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
-            {t('agent.chat.branch.composeTitle', 'Create branch')}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-            {modeLabel}
-          </div>
-        </div>
-        <button type="button" onClick={onCancel} disabled={busy} style={{ border: 'none', background: 'transparent', color: 'var(--text-tertiary)', cursor: busy ? 'not-allowed' : 'pointer' }}>
-          {t('common.cancel', 'Cancel')}
-        </button>
-      </div>
-      <textarea
-        data-testid="branch-compose-input"
-        value={draft.content}
-        onChange={(event) => onChange(event.target.value)}
-        rows={4}
-        style={{
-          width: '100%',
-          boxSizing: 'border-box',
-          resize: 'vertical',
-          minHeight: '84px',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: '6px',
-          padding: '8px 10px',
-          background: 'var(--bg-primary)',
-          color: 'var(--text-primary)',
-          font: 'inherit',
-          fontSize: '12px',
-          lineHeight: 1.5,
-        }}
-      />
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
-        <button type="button" className="btn btn-primary" disabled={!canSubmit} onClick={onSubmit} style={{ fontSize: '12px', padding: '5px 10px' }}>
-          {busy ? t('common.saving', 'Saving...') : t('agent.chat.branch.createBranch', 'Create branch')}
-        </button>
       </div>
     </div>
   );
@@ -1362,23 +1297,61 @@ function MessageBranchActions({
   message,
   isLeft,
   onBranchMessage,
+  onFeedbackMessage,
+  onRewindMessage,
 }: {
   message: AgentChatMessage;
   isLeft: boolean;
-  onBranchMessage?: (message: AgentChatMessage, mode: ConversationBranchMode) => void | Promise<unknown>;
+  onBranchMessage?: (message: AgentChatMessage) => void | Promise<unknown>;
+  onFeedbackMessage?: (message: AgentChatMessage, label: RecordSessionFeedbackInput['label']) => void | Promise<unknown>;
+  onRewindMessage?: (message: AgentChatMessage) => void | Promise<unknown>;
 }) {
-  if (!message.id || !onBranchMessage) return null;
+  const { t } = useTranslation();
+  if (!message.id) return null;
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
   if (!isUser && !isAssistant) return null;
 
-  const actions: Array<{ mode: ConversationBranchMode; label: string; testId: string }> = [
-    { mode: 'fork', label: 'Fork', testId: 'message-action-fork' },
-    ...(isUser ? [{ mode: 'edit' as ConversationBranchMode, label: 'Edit', testId: 'message-action-edit' }] : []),
-    { mode: 'insert_before', label: 'Insert before', testId: 'message-action-insert-before' },
-    { mode: 'insert_after', label: 'Insert after', testId: 'message-action-insert-after' },
-    { mode: 'reply', label: 'Reply', testId: 'message-action-reply' },
-    ...(isAssistant ? [{ mode: 'regenerate' as ConversationBranchMode, label: 'Regenerate', testId: 'message-action-regenerate' }] : []),
+  const actions: Array<{
+    key: string;
+    label: string;
+    testId: string;
+    icon: React.ReactNode;
+    onClick: () => void;
+    disabled?: boolean;
+  }> = [
+    {
+      key: 'like',
+      label: t('agent.chat.actions.like', 'Like'),
+      testId: 'message-action-like',
+      icon: <IconThumbUp size={12} />,
+      disabled: !onFeedbackMessage,
+      onClick: () => void onFeedbackMessage?.(message, 'useful'),
+    },
+    {
+      key: 'dislike',
+      label: t('agent.chat.actions.dislike', 'Dislike'),
+      testId: 'message-action-dislike',
+      icon: <IconThumbDown size={12} />,
+      disabled: !onFeedbackMessage,
+      onClick: () => void onFeedbackMessage?.(message, 'misleading'),
+    },
+    {
+      key: 'branch',
+      label: t('agent.chat.actions.branch', 'Branch'),
+      testId: 'message-action-branch',
+      icon: <IconGitBranch size={12} />,
+      disabled: !onBranchMessage,
+      onClick: () => void onBranchMessage?.(message),
+    },
+    {
+      key: 'rewind',
+      label: t('agent.chat.actions.rewind', 'Rewind'),
+      testId: 'message-action-rewind',
+      icon: <IconHistory size={12} />,
+      disabled: !onRewindMessage,
+      onClick: () => void onRewindMessage?.(message),
+    },
   ];
 
   return (
@@ -1394,23 +1367,30 @@ function MessageBranchActions({
     >
       {actions.map((action) => (
         <button
-          key={action.mode}
+          key={action.key}
           type="button"
           data-testid={action.testId}
+          aria-label={action.label}
           title={action.label}
-          onClick={() => onBranchMessage(message, action.mode)}
+          disabled={action.disabled}
+          onClick={action.onClick}
           style={{
             border: '1px solid var(--border-subtle)',
-            background: 'var(--bg-secondary)',
-            color: 'var(--text-tertiary)',
+            background: 'transparent',
+            color: action.disabled ? 'var(--text-disabled)' : 'var(--text-tertiary)',
             borderRadius: '4px',
             fontSize: '10px',
             lineHeight: 1,
-            padding: '3px 5px',
-            cursor: 'pointer',
+            padding: '3px',
+            width: '20px',
+            height: '20px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: action.disabled ? 'not-allowed' : 'pointer',
           }}
         >
-          {action.label}
+          {action.icon}
         </button>
       ))}
     </div>
@@ -1796,8 +1776,6 @@ export default function AgentChatSection({
       activeSession.participant_type === 'agent');
 
   const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
-  const [branchDraft, setBranchDraft] = React.useState<BranchComposeDraft | null>(null);
-  const [branchBusy, setBranchBusy] = React.useState(false);
   const [composerMenuOpen, setComposerMenuOpen] = React.useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = React.useState(false);
 
@@ -1854,31 +1832,50 @@ export default function AgentChatSection({
         : t('chat.placeholder');
 
   const startBranchAction = React.useCallback(
-    async (message: AgentChatMessage, mode: ConversationBranchMode) => {
+    async (message: AgentChatMessage) => {
       if (!onBranchMessage) return;
-      if (mode === 'fork' || mode === 'regenerate') {
-        await onBranchMessage(message, mode);
-        return;
-      }
-      setBranchDraft({
-        mode,
-        message,
-        content: mode === 'edit' ? message.content || '' : '',
-      });
+      await onBranchMessage(message, 'fork');
     },
     [onBranchMessage],
   );
 
-  const submitBranchDraft = React.useCallback(async () => {
-    if (!branchDraft || !onBranchMessage || !branchDraft.content.trim()) return;
-    setBranchBusy(true);
-    try {
-      await onBranchMessage(branchDraft.message, branchDraft.mode, branchDraft.content.trim());
-      setBranchDraft(null);
-    } finally {
-      setBranchBusy(false);
-    }
-  }, [branchDraft, onBranchMessage]);
+  const submitMessageFeedback = React.useCallback(
+    async (message: AgentChatMessage, label: RecordSessionFeedbackInput['label']) => {
+      const sessionId = activeSession?.id ? String(activeSession.id) : null;
+      if (!effectiveAgentId || !sessionId || !message.id) return;
+      const messageId = String(message.id);
+      const input: RecordSessionFeedbackInput = {
+        label,
+        reason: 'message action bar',
+      };
+      if (isUuidLike(messageId)) {
+        input.message_id = messageId;
+      } else {
+        input.decision_id = `message:${messageId}`;
+      }
+
+      try {
+        await chatApi.recordSessionFeedback(effectiveAgentId, sessionId, input);
+        showAppToast(t('agent.chat.feedback.recorded', 'Feedback recorded.'), 'success');
+      } catch (error: any) {
+        showAppToast(
+          t('agent.chat.feedback.failed', 'Failed to record feedback: {{message}}', {
+            message: error?.message || String(error),
+          }),
+          'error',
+        );
+      }
+    },
+    [activeSession?.id, effectiveAgentId, t],
+  );
+
+  const rewindFromMessage = React.useCallback(
+    async (message: AgentChatMessage) => {
+      if (!message.id || !onRunSessionCommand) return;
+      await onRunSessionCommand('rewind', { checkpoint_event_id: String(message.id) });
+    },
+    [onRunSessionCommand],
+  );
 
   const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
     if (!effectiveAgentId) return;
@@ -2074,7 +2071,13 @@ export default function AgentChatSection({
             >
               {timeStr}
               {msg.content && <CopyMessageButton text={msg.content} />}
-              <MessageBranchActions message={msg} isLeft={isLeft} onBranchMessage={startBranchAction} />
+              <MessageBranchActions
+                message={msg}
+                isLeft={isLeft}
+                onBranchMessage={startBranchAction}
+                onFeedbackMessage={submitMessageFeedback}
+                onRewindMessage={rewindFromMessage}
+              />
             </div>
           );
         })();
@@ -2156,8 +2159,8 @@ export default function AgentChatSection({
           </div>
         );
       }),
-		    [effectiveAgentId, startBranchAction, openArtifact, t],
-	  );
+    [effectiveAgentId, openArtifact, rewindFromMessage, startBranchAction, submitMessageFeedback, t],
+  );
 
   const renderToolCall = (msg: AgentChatMessage, index: number, running = false) => {
     const permissionActions = msg.sessionPermissionRequest ? (
@@ -2698,13 +2701,6 @@ export default function AgentChatSection({
                 control={sessionCommandControl}
                 onDismiss={onDismissSessionCommandControl || (() => undefined)}
                 onRunCommand={onRunSessionCommand || (() => undefined)}
-              />
-              <BranchComposePanel
-                draft={branchDraft}
-                busy={branchBusy}
-                onChange={(content) => setBranchDraft((draft) => (draft ? { ...draft, content } : draft))}
-                onCancel={() => setBranchDraft(null)}
-                onSubmit={submitBranchDraft}
               />
               {attachedFiles.length > 0 && (
                 <div

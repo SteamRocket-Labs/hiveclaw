@@ -1022,7 +1022,20 @@
       "cancel": "取消",
       "toolName": "操作名称",
       "enabled": "已激活",
-      "disabled": "已停用"
+      "disabled": "已停用",
+      "installedTitle": "已安装技能",
+      "installedDescription": "当前 Agent 可见的内部、导入、URL/ClawHub 与 Agent 级技能。",
+      "noInstalledSkills": "暂无已安装技能。",
+      "sourceInternal": "内部",
+      "sourceAgent": "Agent/导入",
+      "sourceClawhub": "ClawHub",
+      "sourceUrl": "URL",
+      "sourceUnknown": "未知来源",
+      "mcpBackedCapabilities": "MCP 支撑能力",
+      "noMcpCapabilities": "暂无 MCP 支撑能力。",
+      "plugins": "插件",
+      "noPlugins": "暂无已分配插件。",
+      "toolsUnit": "工具"
     },
     "toolMgmt": {
       "title": "可用操作",
@@ -1124,6 +1137,16 @@
         "deny": "拒绝",
         "deleteOnceOnly": "删除类操作只能本次允许。",
         "updateFailed": "更新会话权限模式失败"
+      },
+      "actions": {
+        "like": "喜欢",
+        "dislike": "不喜欢",
+        "branch": "分支",
+        "rewind": "回溯"
+      },
+      "feedback": {
+        "recorded": "反馈已记录。",
+        "failed": "记录反馈失败：{{message}}"
       },
       "thinking": "思考中...",
       "continuingRun": "Agent 正在继续执行...",

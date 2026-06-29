@@ -1418,7 +1418,7 @@ Shell 稳定后，再切页面职责，否则会继续把 Session Workbench 塞�
 
 - Workspace tab 删除“团队共享记忆”前端入口。
 - Skills 页恢复 installed inventory：internal/platform、agent/imported、ClawHub/URL、MCP-backed capabilities、plugins。
-- 消息底部 action bar 收敛为 Copy / Like / Dislike / Branch or Batch / Rewind。
+- 消息底部 action bar 收敛为 Copy / Like / Dislike / Branch / Rewind。
 - Hook / Enter / insert / reply / regenerate 移出普通消息底部。
 - 清理不再使用的旧组件、旧测试和旧兼容路径。
 
@@ -1426,6 +1426,22 @@ Shell 稳定后，再切页面职责，否则会继续把 Session Workbench 塞�
 
 - 不保留两套 UI 体系。
 - 用户能看到已安装 skill / MCP skill，而不是只看到导入按钮。
+
+实施证据（2026-06-28 / Step 6）：
+
+- `frontend/src/pages/agent-detail/AgentWorkspaceSection.tsx` 已删除 `TeamMemorySummaryCard` import/render，Workspace tab 只保留 `FileBrowser` 工作区入口；`TeamMemorySummaryCard` 仍只在 `AgentAwareSection` 被引用，没有误删仍有入口的组件。
+- `frontend/src/pages/agent-detail/AgentSkillsSection.tsx` 已接入 `extensionsApi.getAgentExtensions(agentId)`，并在导入按钮下方恢复 installed inventory：Installed skills、MCP-backed capabilities、Plugins；内部/导入/URL/ClawHub skill、MCP server、plugin 均从 `/agents/{id}/extensions` 同一 truth source 渲染。
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx` 的普通消息底部 action bar 已收敛为图标化 Like / Dislike / Branch / Rewind；`Fork/Edit/Insert before/Insert after/Reply/Regenerate` 不再在普通消息底部渲染。
+- `BranchComposePanel`、`BranchComposeDraft`、`branchDraft` / `branchBusy` / `submitBranchDraft` 已从 `AgentChatSection` 删除，避免保留旧 edit/insert/reply/regenerate 分叉路径；Branch 按钮仍调用现有 `onBranchMessage(message, 'fork')`，用户端表达为 Branch，后端语义不重写。
+- `frontend/src/api/domains/chat.ts` 新增 `recordSessionFeedback()`，Like / Dislike 通过 `POST /agents/{agentId}/sessions/{sessionId}/feedback` 写入 session feedback；UUID message 写 `message_id`，非 UUID transcript/event anchor 写 `decision_id`。
+- `frontend/src/i18n/en.json` / `frontend/src/i18n/zh.json` 已补 Skills installed inventory、消息动作、feedback 状态文案。
+- 红测 1：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "transcript-anchored conversation branch actions|standalone skills module|standalone workspace module"` 在实现前失败，失败点分别是缺少 `message-action-like`、缺少 `Installed skills`、Workspace 仍出现 `Deploy Playbook` / shared memory 文案。
+- 红测 2：`cd frontend && npm test -- --run src/api/adapter-cleanup.test.ts -t "session feedback"` 在实现前失败，失败点是 `chatApi.recordSessionFeedback is not a function`。
+- 绿测 1：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "transcript-anchored conversation branch actions|standalone skills module|standalone workspace module"` -> 3 passed / 68 skipped。
+- 绿测 2：`cd frontend && npm test -- --run src/api/adapter-cleanup.test.ts -t "session feedback"` -> 1 passed / 22 skipped。
+- 回归 1：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx` -> 71 passed。
+- 回归 2：`cd frontend && npm test -- --run src/api/adapter-cleanup.test.ts` -> 23 passed。
+- 构建：`cd frontend && npm run build` -> `tsc && vite build` exit 0。
 
 ### 10.7 Step 7：总体验收与视觉回归
 

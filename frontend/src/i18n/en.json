@@ -1022,7 +1022,20 @@
       "cancel": "Cancel",
       "toolName": "Action Name",
       "enabled": "Active",
-      "disabled": "Inactive"
+      "disabled": "Inactive",
+      "installedTitle": "Installed skills",
+      "installedDescription": "Internal, imported, URL/ClawHub and agent skills currently visible to this agent.",
+      "noInstalledSkills": "No installed skills.",
+      "sourceInternal": "Internal",
+      "sourceAgent": "Agent/imported",
+      "sourceClawhub": "ClawHub",
+      "sourceUrl": "URL",
+      "sourceUnknown": "Unknown source",
+      "mcpBackedCapabilities": "MCP-backed capabilities",
+      "noMcpCapabilities": "No MCP-backed capabilities.",
+      "plugins": "Plugins",
+      "noPlugins": "No plugins assigned.",
+      "toolsUnit": "tools"
     },
     "toolMgmt": {
       "title": "Available Actions",
@@ -1124,6 +1137,16 @@
         "deny": "Deny",
         "deleteOnceOnly": "Delete actions can only be allowed once.",
         "updateFailed": "Failed to update session permission mode"
+      },
+      "actions": {
+        "like": "Like",
+        "dislike": "Dislike",
+        "branch": "Branch",
+        "rewind": "Rewind"
+      },
+      "feedback": {
+        "recorded": "Feedback recorded.",
+        "failed": "Failed to record feedback: {{message}}"
       },
       "thinking": "Thinking...",
       "continuingRun": "Agent is continuing this run...",

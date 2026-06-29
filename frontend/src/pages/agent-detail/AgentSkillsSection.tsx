@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
+import { extensionsApi, type AgentExtensions } from '../../api/domains/extensions';
 import { fileApi } from '../../api/domains/files';
 import { skillApi } from '../../api/domains/skills';
 import { showAppToast } from '../../components/AppDialogs';
@@ -9,6 +10,27 @@ import { showAppToast } from '../../components/AppDialogs';
 type AgentSkillsSectionProps = {
   agentId: string;
 };
+
+function skillSourceLabel(t: ReturnType<typeof useTranslation>['t'], source?: string | null): string {
+  const normalized = String(source || '').toLowerCase();
+  if (normalized === 'internal' || normalized === 'system' || normalized === 'platform') {
+    return t('agent.skills.sourceInternal', 'Internal');
+  }
+  if (normalized === 'agent' || normalized === 'imported') {
+    return t('agent.skills.sourceAgent', 'Agent/imported');
+  }
+  if (normalized === 'clawhub') {
+    return t('agent.skills.sourceClawhub', 'ClawHub');
+  }
+  if (normalized === 'url' || normalized === 'github') {
+    return t('agent.skills.sourceUrl', 'URL');
+  }
+  return source || t('agent.skills.sourceUnknown', 'Unknown source');
+}
+
+function pluginName(plugin: NonNullable<AgentExtensions['plugins']>[number]): string {
+  return plugin.plugin_key || plugin.id;
+}
 
 export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps) {
   const { t } = useTranslation();
@@ -29,6 +51,15 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
     queryFn: () => skillApi.list(),
     enabled: showImportSkillModal,
   });
+  const { data: agentExtensions, isLoading: agentExtensionsLoading } = useQuery({
+    queryKey: ['agent-extensions', agentId],
+    queryFn: () => extensionsApi.getAgentExtensions(agentId),
+    enabled: Boolean(agentId),
+  });
+
+  const installedSkills = agentExtensions?.skills ?? [];
+  const mcpServers = agentExtensions?.mcp_servers ?? [];
+  const plugins = agentExtensions?.plugins ?? [];
 
   return (
     <div>
@@ -91,6 +122,159 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
           'agent.skills.governedNotice',
           'Active skill packages are governed by Skill promotion. Use imports and Evolution candidates instead of editing active skill files directly.',
         )}
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+          gap: '12px',
+          marginBottom: '16px',
+        }}
+      >
+        <section
+          style={{
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '8px',
+            background: 'var(--bg-primary)',
+            padding: '12px',
+            minHeight: '116px',
+          }}
+        >
+          <h4 style={{ margin: '0 0 4px', fontSize: '13px', color: 'var(--text-primary)' }}>
+            {t('agent.skills.installedTitle', 'Installed skills')}
+          </h4>
+          <p style={{ margin: '0 0 10px', fontSize: '11px', color: 'var(--text-tertiary)', lineHeight: 1.45 }}>
+            {t(
+              'agent.skills.installedDescription',
+              'Internal, imported, URL/ClawHub and agent skills currently visible to this agent.',
+            )}
+          </p>
+          {agentExtensionsLoading ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              {t('common.loading', 'Loading...')}
+            </div>
+          ) : installedSkills.length === 0 ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              {t('agent.skills.noInstalledSkills', 'No installed skills.')}
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gap: '6px' }}>
+              {installedSkills.map((skill) => (
+                <div
+                  key={skill.id || skill.name}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '10px',
+                    minWidth: 0,
+                    fontSize: '12px',
+                  }}
+                >
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {skill.name}
+                  </span>
+                  <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>
+                    {skillSourceLabel(t, skill.source)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section
+          style={{
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '8px',
+            background: 'var(--bg-primary)',
+            padding: '12px',
+            minHeight: '116px',
+          }}
+        >
+          <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: 'var(--text-primary)' }}>
+            {t('agent.skills.mcpBackedCapabilities', 'MCP-backed capabilities')}
+          </h4>
+          {agentExtensionsLoading ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              {t('common.loading', 'Loading...')}
+            </div>
+          ) : mcpServers.length === 0 ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              {t('agent.skills.noMcpCapabilities', 'No MCP-backed capabilities.')}
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gap: '6px' }}>
+              {mcpServers.map((server) => (
+                <div
+                  key={server.id || server.name}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '10px',
+                    minWidth: 0,
+                    fontSize: '12px',
+                  }}
+                >
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {server.name}
+                  </span>
+                  <span style={{ color: server.enabled ? 'var(--accent-text)' : 'var(--text-tertiary)', flexShrink: 0 }}>
+                    {server.status} · {server.tool_count} {t('agent.skills.toolsUnit', 'tools')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section
+          style={{
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '8px',
+            background: 'var(--bg-primary)',
+            padding: '12px',
+            minHeight: '116px',
+          }}
+        >
+          <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: 'var(--text-primary)' }}>
+            {t('agent.skills.plugins', 'Plugins')}
+          </h4>
+          {agentExtensionsLoading ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              {t('common.loading', 'Loading...')}
+            </div>
+          ) : plugins.length === 0 ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              {t('agent.skills.noPlugins', 'No plugins assigned.')}
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gap: '6px' }}>
+              {plugins.map((plugin) => (
+                <div
+                  key={plugin.id || plugin.plugin_key}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '10px',
+                    minWidth: 0,
+                    fontSize: '12px',
+                  }}
+                >
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {pluginName(plugin)}
+                  </span>
+                  <span style={{ color: plugin.enabled ? 'var(--accent-text)' : 'var(--text-tertiary)', flexShrink: 0 }}>
+                    {plugin.enabled ? t('agent.skills.enabled', 'Enabled') : t('agent.skills.disabled', 'Disabled')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       </div>
 
       {showAgentClawhub && (

@@ -10,7 +10,6 @@ import AgentAwareSection, {
   workflowDefinitionOptionKey,
 } from './AgentAwareSection';
 import AgentChatSection, {
-  BranchComposePanel,
   BranchLineagePanel,
   SessionCommandControlPanel,
   StructuredToolResultBody,
@@ -330,6 +329,41 @@ vi.mock('@tanstack/react-query', () => ({
           path: 'shared_memory/tenant/workspace/deploy-playbook.md',
           absolute_path: '/tmp/shared_memory/tenant/workspace/deploy-playbook.md',
         },
+      };
+    }
+    if (key === 'agent-extensions') {
+      return {
+        data: {
+          skills: [
+            { id: 'skill-internal-1', name: 'web-research', source: 'internal', status: 'installed' },
+            { id: 'skill-agent-1', name: 'market-research', source: 'agent', status: 'installed' },
+            { id: 'skill-url-1', name: 'github-briefing', source: 'url', status: 'installed' },
+          ],
+          mcp_servers: [
+            {
+              id: 'mcp-1',
+              name: 'filesystem-mcp',
+              status: 'connected',
+              enabled: true,
+              tool_count: 4,
+              default_tool_mode: 'approval',
+              always_load: false,
+            },
+          ],
+          plugins: [
+            {
+              id: 'plugin-1',
+              plugin_key: 'paperclip',
+              version: '1.0.0',
+              status: 'installed',
+              source_kind: 'plugin',
+              enabled: true,
+            },
+          ],
+        },
+        isLoading: false,
+        isError: false,
+        error: null,
       };
     }
     if (key === 'agent-plan-inline') {
@@ -813,14 +847,22 @@ describe('AgentDetail extracted sections', () => {
         onHandlePaste={vi.fn()}
         onSendChatMsg={vi.fn()}
         onBranchMessage={vi.fn()}
+        onRunSessionCommand={vi.fn()}
         isStreaming={false}
         onAbortGeneration={vi.fn()}
       />,
     );
 
-    expect(markup).toContain('data-testid="message-action-fork"');
-    expect(markup).toContain('data-testid="message-action-edit"');
-    expect(markup).toContain('data-testid="message-action-insert-after"');
+    expect(markup).toContain('data-testid="message-action-like"');
+    expect(markup).toContain('data-testid="message-action-dislike"');
+    expect(markup).toContain('data-testid="message-action-branch"');
+    expect(markup).toContain('data-testid="message-action-rewind"');
+    expect(markup).not.toContain('data-testid="message-action-fork"');
+    expect(markup).not.toContain('data-testid="message-action-edit"');
+    expect(markup).not.toContain('data-testid="message-action-insert-before"');
+    expect(markup).not.toContain('data-testid="message-action-insert-after"');
+    expect(markup).not.toContain('data-testid="message-action-reply"');
+    expect(markup).not.toContain('data-testid="message-action-regenerate"');
   });
 
   it('renders chat messages through Session TUI density classes instead of legacy colored bubbles', () => {
@@ -928,26 +970,6 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="branch-lineage-panel"');
     expect(markup).toContain('Original (edit)');
     expect(markup).toContain('edit');
-  });
-
-  it('renders an in-app branch compose panel instead of relying on browser prompts', () => {
-    const markup = renderToStaticMarkup(
-      <BranchComposePanel
-        draft={{
-          mode: 'edit',
-          message: { id: 'event-1', role: 'user', content: 'Original request' },
-          content: 'Edited request',
-        }}
-        busy={false}
-        onChange={vi.fn()}
-        onCancel={vi.fn()}
-        onSubmit={vi.fn()}
-      />,
-    );
-
-    expect(markup).toContain('data-testid="branch-compose-panel"');
-    expect(markup).toContain('Edited request');
-    expect(markup).toContain('Create branch');
   });
 
   it('renders a session command checkpoint selector as an in-session control panel', () => {
@@ -1197,6 +1219,14 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Import from URL');
     expect(markup).toContain('Browse ClawHub');
     expect(markup).toContain('Skill Format:');
+    expect(markup).toContain('Installed skills');
+    expect(markup).toContain('web-research');
+    expect(markup).toContain('market-research');
+    expect(markup).toContain('github-briefing');
+    expect(markup).toContain('MCP-backed capabilities');
+    expect(markup).toContain('filesystem-mcp');
+    expect(markup).toContain('Plugins');
+    expect(markup).toContain('paperclip');
     expect(markup).not.toContain('root=skills');
   });
 
@@ -1204,12 +1234,12 @@ describe('AgentDetail extracted sections', () => {
     const markup = renderToStaticMarkup(<AgentWorkspaceSection agentId="agent-1" />);
 
     expect(markup).toContain('File Browser Mock');
-    expect(markup).toContain('Deploy Playbook');
-    expect(markup).toContain('canary rollout');
-    expect(markup).toContain('Search shared memory');
-    expect(markup).toContain('Save to shared memory');
-    expect(markup).toContain('Delete entry');
-    expect(markup).toContain('Document rollback before the final promotion.');
+    expect(markup).not.toContain('Deploy Playbook');
+    expect(markup).not.toContain('canary rollout');
+    expect(markup).not.toContain('Search shared memory');
+    expect(markup).not.toContain('Save to shared memory');
+    expect(markup).not.toContain('Delete entry');
+    expect(markup).not.toContain('Document rollback before the final promotion.');
   });
 
   it('renders AgentAwareSection as a standalone aware module', () => {

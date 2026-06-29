@@ -116,6 +116,13 @@ export type ConversationBranchMode =
   | 'rewind'
   | 'side_question';
 
+export interface RecordSessionFeedbackInput {
+  label: 'useful' | 'misleading';
+  reason?: string;
+  message_id?: string | null;
+  decision_id?: string | null;
+}
+
 export interface BranchSessionInput {
   mode: ConversationBranchMode;
   anchor_event_id: string;
@@ -215,6 +222,8 @@ export const chatApi = {
     post<SessionRun>(`/agents/${agentId}/sessions/${sessionId}/runs`, input),
   branchSession: (agentId: string, sessionId: string, input: BranchSessionInput) =>
     post<BranchSessionResponse>(`/agents/${agentId}/sessions/${sessionId}/branches`, input),
+  recordSessionFeedback: (agentId: string, sessionId: string, input: RecordSessionFeedbackInput) =>
+    post<unknown>(`/agents/${agentId}/sessions/${sessionId}/feedback`, input),
   listSessionBranches: (agentId: string, sessionId: string) =>
     get<ChatSession[]>(`/agents/${agentId}/sessions/${sessionId}/branches`),
   getSessionLineage: (agentId: string, sessionId: string) =>

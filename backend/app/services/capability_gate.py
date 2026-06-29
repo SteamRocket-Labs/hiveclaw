@@ -31,6 +31,8 @@ DYNAMIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
     "external.api.call": ["custom_api__*"],
 }
 
+_HR_SYSTEM_AGENT_DEFAULT_CAPABILITIES: frozenset[str] = frozenset({"agent.employee.create"})
+
 
 # P1-W2-8: counter exposed via /api/admin/metrics for unmapped tool drift.
 # Per-tool because it lets operators see *which* tool is missing — a single
@@ -195,6 +197,46 @@ async def _resolve_dynamic_capability(
     return "external.api.call"
 
 
+async def _is_hr_system_agent_default_capability(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    capability: str,
+) -> bool:
+    """Return True for platform-owned company HR capabilities before policy setup.
+
+    HR onboarding is a built-in company creation lane: a fresh company often has
+    no CapabilityPolicy rows yet, but its dedicated ``__system_hr__`` agent must
+    still be able to create digital employees. Explicit CapabilityPolicy rows are
+    evaluated before this helper, so tenant/admin deny or approval policies still
+    override the platform default.
+    """
+    if capability not in _HR_SYSTEM_AGENT_DEFAULT_CAPABILITIES:
+        return False
+
+    from app.models.agent import Agent
+    from app.services.tool_visibility import is_hr_agent
+
+    try:
+        result = await db.execute(
+            select(Agent).where(
+                Agent.id == agent_id,
+                Agent.tenant_id == tenant_id,
+            )
+        )
+        return is_hr_agent(result.scalar_one_or_none())
+    except Exception as exc:
+        logger.warning(
+            "Failed to resolve HR system-agent default capability: capability=%s agent=%s tenant=%s error=%s",
+            capability,
+            agent_id,
+            tenant_id,
+            exc,
+        )
+        return False
+
+
 class CapabilityCheckResult:
     """Result of a capability gate check."""
 
@@ -286,6 +328,24 @@ async def check_capability(
         policy = result.scalar_one_or_none()
 
     if not policy:
+        if await _is_hr_system_agent_default_capability(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            capability=capability,
+        ):
+            logger.info(
+                "Capability policy missing for HR system-agent default: tool=%s capability=%s agent=%s tenant=%s — allowing",
+                tool_name,
+                capability,
+                agent_id,
+                tenant_id,
+            )
+            return CapabilityCheckResult(
+                allowed=True,
+                capability=capability,
+                policy_found=False,
+            )
         if tool_name in _CAPABILITY_GATE_EXEMPT_TOOLS:
             logger.info(
                 "Capability policy missing for exempt read/discovery tool: tool=%s capability=%s agent=%s tenant=%s — allowing",

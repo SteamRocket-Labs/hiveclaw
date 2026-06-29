@@ -160,6 +160,119 @@ def test_settings_default_is_strict() -> None:
     assert get_settings().STRICT_CAPABILITY_MAPPING is True
 
 
+# ── Company HR system-agent default lane ───────────────────────
+
+
+class _QueuedScalarDB:
+    def __init__(self, values) -> None:
+        self.values = list(values)
+
+    async def execute(self, _stmt):
+        value = self.values.pop(0)
+
+        class _Result:
+            def scalar_one_or_none(self):
+                return value
+
+        return _Result()
+
+
+@pytest.mark.asyncio
+async def test_company_hr_agent_create_employee_missing_policy_is_allowed_by_platform_default() -> None:
+    """The company HR system agent is the platform's built-in hiring lane.
+
+    A company/workspace with no explicit CapabilityPolicy rows must still be able to
+    use create_digital_employee; otherwise every new company loses HR hiring.
+    """
+    from types import SimpleNamespace
+
+    tenant_id = uuid.uuid4()
+    result = await capability_gate.check_capability(
+        db=_QueuedScalarDB(
+            [
+                None,  # no agent-specific CapabilityPolicy
+                None,  # no company-default CapabilityPolicy
+                SimpleNamespace(name="__system_hr__", agent_class="internal_system", tenant_id=tenant_id),
+            ]
+        ),
+        tenant_id=tenant_id,
+        agent_id=uuid.uuid4(),
+        tool_name="create_digital_employee",
+    )
+
+    assert result.allowed is True
+    assert result.denied is False
+    assert result.escalate_to_l3 is False
+    assert result.capability == "agent.employee.create"
+    assert result.policy_found is False
+
+
+@pytest.mark.asyncio
+async def test_non_hr_agent_create_employee_missing_policy_still_escalates() -> None:
+    from types import SimpleNamespace
+
+    tenant_id = uuid.uuid4()
+    result = await capability_gate.check_capability(
+        db=_QueuedScalarDB(
+            [
+                None,
+                None,
+                SimpleNamespace(name="regular-agent", agent_class="internal_tenant", tenant_id=tenant_id),
+            ]
+        ),
+        tenant_id=tenant_id,
+        agent_id=uuid.uuid4(),
+        tool_name="create_digital_employee",
+    )
+
+    assert result.allowed is False
+    assert result.denied is False
+    assert result.escalate_to_l3 is True
+    assert result.capability == "agent.employee.create"
+    assert result.policy_found is False
+
+
+@pytest.mark.asyncio
+async def test_create_employee_missing_policy_does_not_allow_without_company_hr_agent_row() -> None:
+    tenant_id = uuid.uuid4()
+    result = await capability_gate.check_capability(
+        db=_QueuedScalarDB(
+            [
+                None,  # no agent-specific CapabilityPolicy
+                None,  # no company-default CapabilityPolicy
+                None,  # agent is not the current company's __system_hr__
+            ]
+        ),
+        tenant_id=tenant_id,
+        agent_id=uuid.uuid4(),
+        tool_name="create_digital_employee",
+    )
+
+    assert result.allowed is False
+    assert result.denied is False
+    assert result.escalate_to_l3 is True
+    assert result.capability == "agent.employee.create"
+    assert result.policy_found is False
+
+
+@pytest.mark.asyncio
+async def test_hr_agent_explicit_create_employee_deny_still_wins() -> None:
+    from types import SimpleNamespace
+
+    result = await capability_gate.check_capability(
+        db=_QueuedScalarDB([SimpleNamespace(allowed=False, requires_approval=False)]),
+        tenant_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        tool_name="create_digital_employee",
+    )
+
+    assert result.allowed is False
+    assert result.denied is True
+    assert result.escalate_to_l3 is False
+    assert result.capability == "agent.employee.create"
+    assert result.policy_found is True
+
+
 # ── P1-W2-9 — startup reconciliation ──────────────────────────
 
 

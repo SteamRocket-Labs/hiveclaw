@@ -1450,6 +1450,115 @@ async def test_recovered_pending_tool_frame_fails_closed_for_mutating_tool(monke
 
 
 @pytest.mark.asyncio
+async def test_recovery_manifest_reloads_recovered_mcp_deferred_tool_schema(tmp_path: Path, monkeypatch):
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.kernel.engine import ToolExpansionResult
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id)
+    manifest_path = workspace / "runtime_artifacts" / "recovery_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-mcp-recover",
+                "discovered_tools": ["mcp__docs__search"],
+                "mcp_assignments": [{"server": "docs", "tools": ["search"]}],
+                "active_tool_groups": ["mcp_runtime"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.kernel.engine._agent_workspace_root", lambda _agent_id: workspace)
+
+    core_tool = {
+        "type": "function",
+        "function": {"name": "tool_search", "description": "", "parameters": {"type": "object"}},
+    }
+    mcp_tool = {
+        "type": "function",
+        "function": {"name": "mcp__docs__search", "description": "", "parameters": {"type": "object"}},
+    }
+    expansion_queries: list[str] = []
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+                finish_reason="stop",
+            )
+        ]
+    )
+
+    async def resolve_tool_expansion(request, tool_name, args):
+        expansion_queries.append(str(args.get("query") or ""))
+        assert tool_name == "tool_search"
+        if args.get("query") == "select:mcp__docs__search":
+            request.session_context.track_discovered_tools(["mcp__docs__search"])
+            return ToolExpansionResult(
+                tools=[core_tool, mcp_tool],
+                active_tool_groups=[
+                    {
+                        "name": "mcp_runtime",
+                        "summary": "Recovered MCP runtime tools",
+                        "tools": ["mcp__docs__search"],
+                    }
+                ],
+            )
+        return None
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=3,
+                quota_message=None,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [core_tool],
+            resolve_tool_expansion=resolve_tool_expansion,
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+    session = SessionContext(session_id="session-mcp-recover", metadata={})
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test", base_url=None),
+            messages=[{"role": "user", "content": "continue"}],
+            agent_name="Agent",
+            role_description="role",
+            agent_id=agent_id,
+            user_id=uuid4(),
+            session_context=session,
+            memory_session_id="session-mcp-recover",
+            core_tools_only=True,
+            expand_tools=True,
+        )
+    )
+
+    assert result.content == "done"
+    assert "select:mcp__docs__search" in expansion_queries
+    sent_tool_names = [tool["function"]["name"] for tool in fake_client.calls[0]["tools"]]
+    assert sent_tool_names == ["tool_search", "mcp__docs__search"]
+    assert session.metadata["mcp_server_refs"] == ["docs"]
+    assert session.metadata["recovered_from_manifest"] is True
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkeypatch):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _execute_tool_with_hooks

@@ -44,6 +44,7 @@ from app.services.chat_artifact_delivery import tool_session_write_paths
 from app.services.llm_error_policy import classify_llm_error, should_surface_without_model_fallback
 from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
 from app.services.llm_utils import LLMError, LLMMessage, LLMResponse, STREAM_RETRY_TOMBSTONE
+from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES
 from app.memory.metrics import record_prompt_cache_metrics
 from app.services.prompt_cache import PROMPT_CACHE_BOUNDARY, extract_cache_metrics
 from app.services.invocation_trace import (
@@ -687,6 +688,161 @@ def _merge_active_tool_groups(
         existing_names.add(name)
     session_context.active_tool_groups = existing
     return new_tool_groups
+
+
+_GENERIC_MCP_TOOL_NAMES = frozenset(
+    {
+        "call_mcp_tool",
+        "discover_resources",
+        "import_mcp_server",
+        "list_mcp_resources",
+        "read_mcp_resource",
+        "mcp_list_resources",
+        "mcp_read_resource",
+        "mcp_list_prompts",
+        "mcp_get_prompt",
+        "mcp_auth_status",
+    }
+)
+
+
+def _openai_tool_names(tools: list[dict[str, Any]] | None) -> set[str]:
+    names: set[str] = set()
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def _merge_openai_tool_schemas(
+    current: list[dict[str, Any]] | None,
+    additions: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    merged = list(current or [])
+    seen = _openai_tool_names(merged)
+    for tool in additions or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        merged.append(tool)
+        seen.add(name)
+    return merged
+
+
+def _append_recovered_tool_name(names: list[str], seen: set[str], value: Any) -> None:
+    name = str(value or "").strip()
+    if not name or name in CORE_TOOL_NAMES or name in seen:
+        return
+    names.append(name)
+    seen.add(name)
+
+
+def _recovered_mcp_assignment_tool_names(assignments: Any) -> list[str]:
+    if isinstance(assignments, dict):
+        assignments = [assignments]
+    if not isinstance(assignments, list):
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    try:
+        from app.services.mcp_naming import build_mcp_tool_name
+    except Exception:
+        build_mcp_tool_name = None  # type: ignore[assignment]
+
+    for item in assignments:
+        if not isinstance(item, dict):
+            continue
+        server = str(
+            item.get("server")
+            or item.get("server_name")
+            or item.get("name")
+            or item.get("server_key")
+            or ""
+        ).strip()
+        raw_values: list[Any] = [item.get("tool"), item.get("tool_name"), item.get("mcp_tool_name")]
+        for key in ("tools", "tool_names", "mcp_tool_names"):
+            value = item.get(key)
+            if isinstance(value, (list, tuple, set)):
+                raw_values.extend(value)
+        for raw in raw_values:
+            tool_name = str(raw or "").strip()
+            if not tool_name:
+                continue
+            if tool_name.startswith("mcp__") or tool_name in _GENERIC_MCP_TOOL_NAMES:
+                _append_recovered_tool_name(names, seen, tool_name)
+                continue
+            if server and build_mcp_tool_name is not None:
+                try:
+                    _append_recovered_tool_name(names, seen, build_mcp_tool_name(server, tool_name))
+                    continue
+                except Exception:
+                    pass
+            _append_recovered_tool_name(names, seen, tool_name)
+    return names
+
+
+def _recovered_deferred_tool_names(session_context: Any | None) -> list[str]:
+    metadata = getattr(session_context, "metadata", None) if session_context is not None else None
+    if not isinstance(metadata, dict):
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in getattr(session_context, "discovered_tools", []) or []:
+        _append_recovered_tool_name(names, seen, value)
+    for value in metadata.get("discovered_tools") or []:
+        _append_recovered_tool_name(names, seen, value)
+    for value in _recovered_mcp_assignment_tool_names(metadata.get("mcp_assignments")):
+        _append_recovered_tool_name(names, seen, value)
+    return names
+
+
+async def _restore_recovered_deferred_tool_schemas(
+    *,
+    request: InvocationRequest,
+    tools_for_llm: list[dict[str, Any]],
+    resolve_tool_expansion: ResolveToolExpansion | None,
+) -> list[dict[str, Any]]:
+    """Reload schemas for tools restored from RecoveryManifest state.
+
+    Recovery hydrate revives machine state before the next model request. This
+    function makes restored deferred/MCP tools callable again by routing each
+    recovered name through the same ``tool_search select:<tool>`` expansion path
+    used during normal discovery, preserving DB assignment and policy gating.
+    """
+    if request.agent_id is None or request.session_context is None or resolve_tool_expansion is None:
+        return tools_for_llm
+    recovered_names = _recovered_deferred_tool_names(request.session_context)
+    if not recovered_names:
+        return tools_for_llm
+
+    restored = list(tools_for_llm or [])
+    loaded_names = _openai_tool_names(restored)
+    for tool_name in recovered_names:
+        if tool_name in loaded_names:
+            continue
+        expansion_payload = await _maybe_await(
+            resolve_tool_expansion(request, "tool_search", {"query": f"select:{tool_name}"})
+        )
+        if isinstance(expansion_payload, ToolExpansionResult):
+            restored = _merge_openai_tool_schemas(restored, expansion_payload.tools)
+            loaded_names = _openai_tool_names(restored)
+            if request.session_context is not None:
+                _merge_active_tool_groups(request.session_context, expansion_payload.active_tool_groups)
+        elif isinstance(expansion_payload, list):
+            restored = _merge_openai_tool_schemas(restored, expansion_payload)
+            loaded_names = _openai_tool_names(restored)
+    return restored
 
 
 # D1 (docs/agent-lifecycle-cc-alignment.md 主题 D): aligned with CC's default
@@ -3081,6 +3237,12 @@ class AgentKernel:
             if _is_coordinator:
                 tools_for_llm = filter_tools_for_coordinator(tools_for_llm)
                 logger.info("[Kernel] Coordinator mode active for agent %s", request.agent_id)
+
+            tools_for_llm = await _restore_recovered_deferred_tool_schemas(
+                request=request,
+                tools_for_llm=tools_for_llm,
+                resolve_tool_expansion=self._deps.resolve_tool_expansion,
+            )
 
             if session_ctx is not None:
                 dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix)

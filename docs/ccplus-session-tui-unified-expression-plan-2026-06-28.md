@@ -1461,6 +1461,17 @@ Shell 稳定后，再切页面职责，否则会继续把 Session Workbench 塞�
 - 视觉闭环：字体、间距、选中态、GitLine、branch stack 都服从同一套 Codex-like density。
 - 清理闭环：旧 inspector、无效 TeamMemorySummaryCard、旧 action bar、重复入口不再残留。
 
+实施证据（2026-06-28 / Step 7）：
+
+- 前端总回归：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/api/adapter-cleanup.test.ts src/pages/Chat.test.tsx src/pages/AgentDetail.test.tsx src/pages/AgentDetail.query-gating.test.tsx` -> 5 files passed / 102 tests passed。
+- 构建：`cd frontend && npm run build` -> `tsc && vite build` exit 0。
+- Browser smoke：临时启动 `cd frontend && npm run dev -- --host 127.0.0.1 --port 3018`，用 Playwright 打开真实 Vite app + route-mocked `/api`：
+  - `/agents/:agentId?session_id=:sessionId#chat` 成功挂载 `.session-tui-shell`、`data-testid="session-runtime-panel"`、`message-action-like`、`message-action-branch`、`message-action-rewind`。
+  - 桌面视口 `1440x900` 下测得 `shellWidth=1076`、`runtimePanelWidth=346`，三栏 shell 和右侧 runtime panel 均可见。
+  - `/agents/:agentId#skills` 成功显示 `Installed skills`、`web-research`、`filesystem-mcp`、`paperclip`。
+  - `/agents/:agentId#workspace` body text 不再包含 `Shared Team Memory` / `团队共享记忆`。
+  - 该 smoke 在无真实后端场景下出现 Vite WS proxy `ECONNREFUSED` 日志，属于 mock 环境没有后端 websocket 的预期副作用；DOM 验收通过。
+
 ## 11. 完成口径
 
 只有满足以下条件，才能说 Web/TUI 统一表达完成：

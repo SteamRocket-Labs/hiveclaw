@@ -1,707 +1,733 @@
-# Hive Engineering Documentation
+# Hive Engineering
 
-Current snapshot: 2026-06-13
+Current snapshot: 2026-06-28
 Product version: 1.7.0 (`backend/VERSION`, `frontend/VERSION`)
-Stack: FastAPI + React 19 + PostgreSQL + Redis + Railway
+Stack: FastAPI, React 19, PostgreSQL, Redis
 
-This document describes the current engineering shape of Hive. It is the main
-technical reference for architecture, runtime contracts, deployment, and the
-recent product surface changes.
+This document is the engineering map for Hive. It is organized around the real execution path of one agent session, because that is the easiest way to understand the system without getting lost in module lists.
 
-## Current Closure Baseline
+Hive should be understood as an **AI-Native Organization OS**:
 
-The current engineering baseline is the post-harness, post-round2 closure state:
+1. A self-evolving agent runtime with enterprise-grade access control.
+2. A company control plane for creating, operating, auditing, and improving AI digital employees.
 
-- Canonical review evidence lives in `docs/harness-engineering-audit-2026-06-11.md` and `docs/round2-sota-benchmark-2026.md`.
-- Runtime self-evolution is treated as a governed harness problem: hard verification, source evidence, rollback metadata, audit records, and replay/eval gates are part of the promotion path.
-- Production-grade runtime contracts now include restart-resumable `RuntimeTask` execution, DB-backed `invocation_spans`, provider retry/overload fallback, token budget gates, Anthropic thinking-signature preservation, prompt-cache anchoring, and unified sandboxing for agent-controlled subprocesses.
-- Enterprise-control contracts now include per-agent identity/sponsor lifecycle, fail-closed principal retrieval for memory, MCP token-passthrough rejection, A2A-style Agent Cards, machine-readable interoperability profile, and memory hygiene startup repair.
-- Most recent full backend verification before this documentation pass: `cd backend && source .venv/bin/activate && pytest tests -q` -> `4223 passed, 7 skipped, 4 warnings`.
+The runtime goal is not "make the model answer once." The runtime goal is to keep an agent's identity, session state, tool authority, memory, artifacts, and governance evidence coherent across turns, branches, workflows, subagents, channels, and restarts.
 
-## System Shape
+## 1. Core Invariants
 
+These invariants are more important than any individual implementation detail.
+
+| Invariant | Meaning |
+|-----------|---------|
+| Session is the runtime container | A user-facing conversation is not just chat history. It owns checkpoints, permission profile, runtime metadata, active runs, child sessions, branch lineage, and transcript evidence. |
+| RuntimeTask is the active run handle | WebSocket connections, channel callbacks, workflows, and continuations should not be the source of truth for active work. Durable work is represented as `RuntimeTask`. |
+| Kernel is stateless and injected | `AgentKernel` does not own database access. Runtime I/O enters through `KernelDependencies`. |
+| Tools never bypass governance | All model-called tools must go through `ToolRuntimeService.execute()`. |
+| Context is layered | Stable identity belongs in a frozen prefix; changing memory, skills, tools, retrieval, permissions, and runtime state belong in a dynamic suffix. |
+| Memory writes are governed | Durable memory and skill evolution require evidence, review, and platform gates. |
+| Governance constrains action, not intelligence | Policies decide what an agent may do. They must not replace model reasoning or silently starve context. |
+| T0 evidence is replay substrate | Transcript and T0 events are the basis for replay, branch, rewind, compaction, memory, and audit. |
+
+## 2. Top-Level Architecture
+
+```text
+Frontend
+  React 19, Vite, React Router, TanStack Query, Zustand
+  Agent detail, Session Workbench, Company Admin, Platform Admin
+
+Backend
+  FastAPI routers
+  Web chat runtime
+  Unified invoker
+  Stateless kernel
+  Governed tool runtime
+  Memory / Skill / Workflow / Agent Team services
+
+Persistence
+  PostgreSQL: tenant-scoped product and runtime state
+  Redis: cache, pubsub, coordination support
+  Agent filesystem: soul.md, workspace, memory, skills, artifacts
 ```
-Frontend (React 19, Vite, React Router 7)
-  - App surface: /plaza, /agents/:id, /messages
-  - Workspace surface: /enterprise/*, including /enterprise/dashboard
-  - Admin surface: /admin/*
-        |
-        | /api, /api/v1, /ws/chat/:agent_id
-        v
-Backend (FastAPI, SQLAlchemy async)
-  - Agent kernel and runtime invoker
-  - Tool governance and capability packs
-  - Memory Control Plane
-  - Web chat durable RuntimeTask runs
-  - Invocation trace spine and provider fallback
-  - Channel stream managers
-  - Interoperability profile and A2A-style Agent Cards
-        |
-        +-- PostgreSQL 15, tenant-scoped models and RLS
-        +-- Redis 7, cache/pubsub/session support
-        +-- Agent workspace filesystem under AGENT_DATA_DIR
-        +-- ONLYOFFICE document server for browser editing
+
+Important entry paths:
+
+| Layer | Primary files |
+|-------|---------------|
+| Chat/session API | `backend/app/api/chat_sessions.py` |
+| WebSocket API | `backend/app/api/websocket.py` |
+| Durable web chat runtime | `backend/app/services/web_chat_runtime.py` |
+| Unified invocation | `backend/app/runtime/invoker.py` |
+| Kernel loop | `backend/app/kernel/engine.py` |
+| Tool runtime | `backend/app/tools/service.py` |
+| Tool governance | `backend/app/tools/governance.py` |
+| Agent context | `backend/app/services/agent_context.py` |
+| Prompt assembly | `backend/app/runtime/prompt_builder.py` |
+| Memory services | `backend/app/memory/`, `backend/app/services/memory_service.py` |
+| Workspace skill tools | `backend/app/services/agent_tool_domains/workspace.py` |
+| Workflow tools | `backend/app/tools/handlers/workflow.py` |
+| Agent Team runtime | `backend/app/services/agent_team_runtime_service.py` |
+| Session control projection | `backend/app/services/session_control_plane.py` |
+| Frontend session UI | `frontend/src/pages/AgentDetail.tsx`, `frontend/src/pages/agent-detail/` |
+
+## 3. One Session Lifecycle
+
+This is the main loop.
+
+```text
+1. User chooses or creates a ChatSession
+2. User submits a turn
+3. Backend creates or reuses a RuntimeTask
+4. Runtime loads session history and projection state
+5. Invoker builds execution request
+6. Context is assembled
+7. AgentKernel runs the model/tool loop
+8. Tools execute through ToolRuntimeService
+9. Events, messages, artifacts, spans, and T0 evidence are persisted
+10. RuntimeTask reaches terminal state or remains resumable
+11. Session can branch, rewind, compact, resume, or continue
 ```
 
-## Current Code Map
+### 3.1 Session Selection
 
-Counts are from the current tree, not historical docs.
+The product surface is `AgentDetail`, but the engineering object is `ChatSession`.
 
-| Area | Current Size | Notes |
-|------|--------------|-------|
-| API routers | 62 files | Mounted under both `/api` and `/api/v1`, except public webhooks and WebSocket. |
-| ORM models | 43 files | Tenant-scoped SQLAlchemy models, including runtime tasks, coordination, objectives, identity, pending replies, channel config, invocation spans, and session feedback. |
-| Services | 163 files | Runtime, channel delivery, memory, extraction, evolution, office, Feishu, triggers, skills, governance, trace, MCP authz, interoperability. |
-| Tool domain services | 21 files | Feishu office domains, workspace, messaging, objectives, web MCP, code exec, image upload. |
-| Memory modules | 25 files | write gate, activation, retriever, T2 store, lifecycle, retention, access log, replay corpus, hygiene, optional backends. |
-| Runtime modules | 17 files | invoker, prompt builder, context engines, hooks, session, recovery manifest, coordinator, workflow compiler/engine, eval helpers. |
-| Alembic migrations | 79 files | `alembic heads` must stay single-head before new migrations. |
-| Frontend pages | 16 page entry files | App, workspace, admin, login/setup, agent detail, Agent Circle. |
-| Frontend nested page/section helpers | 40 files | Agent detail, workspace admin, admin companies, layout helpers. |
+`ChatSession` carries:
 
-## Product Surfaces
+- `agent_id`, `user_id`, source channel, title, timestamps.
+- branch lineage: root session, parent session, branch metadata.
+- active projection metadata for rewind or compaction.
+- permission profile metadata.
+- session kind for normal chat, team member, channel, or other runtime sources.
 
-### App Surface
+The frontend may show different surfaces such as "my conversations" and management views, but all current user turns must resolve to one concrete `ChatSession`.
 
-The authenticated app surface lives under `/`.
+### 3.2 User Turn Admission
 
-| Route | Surface |
-|-------|---------|
-| `/` | Redirects to `/plaza`. |
-| `/plaza` | Agent Circle. Backend and tool names still use `plaza` for compatibility. |
-| `/agents/new` | Agent creation entry; redirects into HR agent flow. |
-| `/agents/:id` | Agent detail hub. |
-| `/agents/:id/chat` | Legacy chat route that redirects to the agent chat tab. |
-| `/messages` | Message center. |
-| `/dashboard` | Legacy redirect to `/enterprise/dashboard`. |
+HTTP start path:
 
-### Workspace Surface
-
-Company-scale control plane routes live under `/enterprise` and require
-`WorkspaceGuard`.
-
-| Route | Section |
-|-------|---------|
-| `/enterprise` | Redirects to `/enterprise/dashboard`. |
-| `/enterprise/dashboard` | Workbench dashboard inside Company Admin. |
-| `/enterprise/info` | Company info. |
-| `/enterprise/llm` | Model configuration. |
-| `/enterprise/memory` | Workspace memory controls. |
-| `/enterprise/hr` | HR agent controls. |
-| `/enterprise/tools` | Tool registry and policies. |
-| `/enterprise/skills` | Skill library. |
-| `/enterprise/quotas` | Usage quotas. |
-| `/enterprise/users` | User management. |
-| `/enterprise/org` | Organization structure. |
-| `/enterprise/approvals` | Approval workflows. |
-| `/enterprise/audit` | Audit logs. |
-| `/enterprise/invitations` | Invite codes. |
-
-### Admin Surface
-
-`/admin/platform-settings` is guarded by `AdminGuard` and reserved for platform
-administrators.
-
-## Backend Startup
-
-`backend/app/main.py` owns process startup. Startup work is intentionally
-best-effort where possible so one optional subsystem does not prevent the core
-API from booting.
-
-1. Configure logging and intercept standard logging.
-2. Validate production secrets when `DEBUG=false`.
-3. Initialize the secrets provider with `SECRETS_MASTER_KEY`.
-4. Run idempotent `Base.metadata.create_all()`.
-5. Apply compatibility enum/table patches where required.
-6. Migrate legacy workspace files and objective ledger projections.
-7. Seed built-in tools, default company, Atlassian/Rovo tools, skills, and default agents.
-8. Run tool coverage and capability mapping audits.
-9. Apply workspace memory hygiene repair when an agent workspace is bootstrapped; the standalone `python -m app.scripts.repair_memory_hygiene --apply --confirm` path is available for fleet repair.
-10. Resume persisted async delegations and reconcile orphaned runtime tasks.
-11. Register runtime memory hooks for the canonical T0 session ledger and T0->T2 Segment Package builder.
-12. Leave legacy learnings extraction and queue replay disabled unless `HIVE_ENABLE_LEGACY_T2_BACKFILL=1` and `HIVE_ENABLE_LEGACY_EXTRACT_REPLAY=1` are explicitly set for migration.
-13. Backfill legacy trigger reply contexts.
-14. Start background tasks:
-    - `trigger_daemon`
-    - `evolution_daemon`
-    - `feishu_ws`
-    - `dingtalk_stream`
-    - `wecom_stream`
-    - `wechat_personal_stream`
-15. Start optional `ss-local` SOCKS5 proxy for Discord.
-16. On shutdown, stop WeChat personal streams, close Redis, and close optional connector clients.
-
-## API Routing
-
-Most routers are mounted twice:
-
-- `/api/...` for backward compatibility
-- `/api/v1/...` for versioned clients
-
-`webhooks_router` is mounted without `/api` for public provider callbacks.
-`ws_router` is mounted without `/api` for `/ws/chat/{agent_id}`.
-
-Important routers added or promoted in the current architecture:
-
-- `chat_sessions.py`: web chat sessions and durable run endpoints.
-- `office.py`: ONLYOFFICE editor config, download/callback/force-save endpoints.
-- `interoperability.py`: machine-readable platform interoperability profile.
-- `tenant_channels.py`, `email_channel.py`, `telegram.py`, `wechat_personal.py`: per-channel configuration and runtime surfaces.
-- `objectives.py`, `autonomy.py`: durable objectives and autonomy overview/repair.
-- `desktop_auth.py`, `desktop_sync.py`, `desktop_agents.py`, `desktop_audit.py`: desktop sync foundation.
-
-## Agent Kernel Runtime
-
-All agent execution must enter through:
-
+```text
+POST /agents/{agent_id}/sessions/{session_id}/runs
+  -> chat_sessions.start_session_run()
+  -> web_chat_runtime.start_web_chat_run()
 ```
+
+`StartSessionRunIn` includes:
+
+- user content and display content.
+- attachments and message parts.
+- permission mode.
+- optional Plan Mode request.
+
+`start_web_chat_run()` is responsible for the first durable boundary:
+
+- reject expired agents.
+- reject empty content.
+- check whether another active run already exists for the session.
+- queue mid-run user messages when a run is already active.
+- create a `RuntimeTask`.
+- persist the user message and transcript event when needed.
+- capture a checkpoint workspace snapshot for the user turn.
+- spawn `execute_web_chat_run()` as background work.
+
+The WebSocket is not the run. It is a subscriber to this durable work.
+
+### 3.3 RuntimeTask Shape
+
+Normal web chat creates:
+
+```text
+RuntimeTask(
+  task_type="web_chat_turn",
+  status="running",
+  parent_agent_id=agent.id,
+  child_agent_id=agent.id,
+  parent_session_id=session.id,
+  child_session_id=session.id,
+  trace_id="web_chat_turn:<run_id>",
+  metadata_json={session_id, runtime_task_id, turn_id, intent_id, permission data, source}
+)
+```
+
+Other executable chat task types include:
+
+- `goal_continuation`
+- `team_member`
+- `advanced_plan`
+
+Workflows use `task_type="workflow"` and have their own step/leaf journal semantics, but they still project into the session control plane when attached to a session.
+
+### 3.4 History Projection
+
+Before a run enters the model loop, runtime history can be projected.
+
+Two important projections:
+
+- `compact`: replaces old history with a compacted representation plus later tail messages.
+- `rewind`: rebuilds the visible history up to a checkpoint event and keeps later projection tail when appropriate.
+
+This is why clicking a checkpoint in the UI must not automatically execute rewind. Checkpoint selection is navigation. Rewind and Branch are explicit actions from that selected point.
+
+### 3.5 Invocation Request
+
+`execute_web_chat_run()` loads:
+
+- `RuntimeTask`
+- `Agent`
+- `User`
+- primary and fallback `LLMModel`
+- `ChatMessage` history
+- `ChatSession`
+
+It then builds an `AgentInvocationRequest` for `invoke_agent()`.
+
+Important fields include:
+
+- `model`, `fallback_model`
+- `messages`
+- `agent_id`, `user_id`
+- callbacks for chunk, thinking, tool call, and runtime event streaming
+- `session_context`
+- `memory_session_id`
+- permission metadata
+- max tool rounds
+- selected tool lists and exclusions
+- cancellation event
+
+## 4. Context Assembly
+
+Context assembly is split across stable and dynamic layers.
+
+### 4.1 Frozen Prefix
+
+Built through:
+
+```text
+runtime/invoker.py::_build_system_prompt()
+  -> services/agent_context.py::build_agent_context()
+  -> runtime/prompt_builder.py::build_frozen_prompt_prefix()
+```
+
+The frozen prefix is designed to be session-stable. It can include:
+
+- agent identity and role.
+- `soul.md`.
+- operating contract.
+- tone and style.
+- subagent listing.
+- company information.
+- organization structure.
+- configured channel notices.
+- A2A collaborator context when applicable.
+
+Important rule: canonical T3 memory is not directly loaded in `build_agent_context()`. It flows through the retrieval/memory pipeline and dynamic suffix. This avoids double-injecting the same semantic memory.
+
+### 4.2 Dynamic Suffix
+
+Built through `build_dynamic_prompt_suffix()`.
+
+The dynamic suffix changes every turn and can include:
+
+- memory snapshot from `build_memory_context()`.
+- memory navigation.
+- Truth Search / retrieval context.
+- skill catalog.
+- runtime metadata.
+- permission context.
+- active tool groups.
+- available deferred tool names.
+- system prompt suffixes from hooks or runtime attachments.
+- channel and session state.
+
+This split lets Hive cache stable identity while still refreshing memory, skills, permissions, retrieval, and tool availability every turn.
+
+### 4.3 Context Budget
+
+The invoker computes a `ContextBudget` using model window, query shape, message history, and active tool groups. The budget is stored in session metadata and reused by prompt assembly, memory, skills, runtime metadata, and compaction logic.
+
+### 4.4 Subagent Context Isolation
+
+When `standalone_system_prompt` is set, it replaces the host prompt. This is the CC-style subagent semantic: a spawned worker is a clean specialist, not the host agent plus a suffix. Host memory should not leak into this standalone prompt path.
+
+## 5. Kernel Loop
+
+All normal agent execution enters:
+
+```text
 runtime/invoker.py::invoke_agent()
   -> kernel/engine.py::AgentKernel.handle()
-  -> tools/service.py::ToolRuntimeService.execute()
 ```
 
-The kernel stays DB-free. Platform I/O is injected through `KernelDependencies`.
-Current dependency wiring includes runtime config, memory context, retrieval
-context, tools, tool expansion, compaction, LLM client creation, governed tool
-execution, memory persistence, token tracking, vision transforms, and provider
-cache hints.
+The invoker does admission and dependency wiring:
 
-Runtime facts:
+- normalize session context.
+- check token quota.
+- resolve smart model routing.
+- build `KernelDependencies`.
+- provide tool discovery callbacks.
+- provide memory, retrieval, runtime metadata, prompt cache, provider, token, and span callbacks.
 
-- Default per-agent `max_tool_rounds` is 200 (`Agent.max_tool_rounds`).
-- Heartbeat uses its own lower round budget.
-- Mid-loop compaction checks every 3 rounds and triggers at 75% context use.
-- Prompt-too-long retries use reactive compaction for provider rejections.
-- Tool result eviction threshold is 50,000 characters.
-- Evicted tool result previews keep 4,000 characters inline.
-- Per-round aggregate tool result budget is 200,000 characters.
-- Microcompaction clears old tool results after 60 minutes, or after 10 minutes once context pressure is at or above 60%.
-- Prompt prefix caching uses `SessionContext` and an explicit prompt cache version.
-- Anthropic list content blocks preserve signed thinking blocks and `cache_control` hints through provider formatting.
-- Provider retry/fallback handles transient network failures, 429/5xx retryable responses, and overload failover without changing the kernel entry contract.
-- `record_invocation_span` persists invocation, generation, and tool spans to PostgreSQL while also preserving file-backed JSONL compatibility.
+The kernel does the model loop:
 
-## Web Chat Runtime
+- resolve runtime config.
+- abort fail-closed if tenant resolution fails.
+- resolve memory, retrieval, memory navigation, runtime metadata, permissions, and current user.
+- assemble system prompt with frozen prefix and dynamic suffix.
+- load tools.
+- apply coordinator-mode filtering when needed.
+- restore deferred tool schemas if recovered from session state.
+- record prompt assembly manifest.
+- call model.
+- stream chunks and thinking.
+- parse tool calls.
+- execute tools, parallelizing safe batches.
+- apply loop guard.
+- compact when context pressure requires it.
+- return terminal result.
 
-Web chat is no longer tied to one browser WebSocket lifetime.
+### 5.1 Compaction
 
-Current flow:
+Compaction has multiple paths:
 
-```
-AgentDetail chat UI
-  -> WebSocket /ws/chat/{agent_id}?session_id=...
-  -> user message
-  -> chat_sessions / web_chat_runtime creates RuntimeTask(task_type="web_chat_turn")
-  -> background execute_web_chat_run()
-  -> web_chat_broker broadcasts run_started/chunk/tool_call/done events
-  -> frontend polls active run as recovery path
-```
+- request preflight compaction before model call when context is already too large.
+- initial context compaction.
+- mid-loop compaction at the configured threshold.
+- reactive prompt-too-long retry when provider rejects the prompt.
+- microcompaction for old tool results under context pressure.
 
-Key files:
+Compaction emits lifecycle events so the UI and transcript can distinguish normal turns from context-management events.
 
-| File | Responsibility |
-|------|----------------|
-| `backend/app/api/websocket.py` | WebSocket subscription, auth, control messages, idle handling, run start compatibility path. |
-| `backend/app/api/chat_sessions.py` | HTTP session list/history plus start/active/cancel run endpoints. |
-| `backend/app/services/web_chat_runtime.py` | Creates and executes durable `RuntimeTask(task_type="web_chat_turn")`. |
-| `backend/app/services/web_chat_broker.py` | Session-scoped WebSocket broadcast and runtime session cache. |
-| `frontend/src/pages/AgentDetail.tsx` | Session state, socket reconnect, active run polling, chat UI orchestration. |
-| `frontend/src/pages/agent-detail/chatRuntime.ts` | Chat runtime helpers and transport notice normalization. |
+### 5.2 Tool Result Pressure
 
-Operational contracts:
+Tool result management is part of context correctness:
 
-- Closing or refreshing the page does not cancel the background run.
-- Only explicit stop/cancel should kill the active run.
-- Frontend sends a keepalive ping every 30 seconds while a run is waiting or streaming.
-- Backend replies to `{"type":"ping"}` with `{"type":"pong"}` and does not treat it as a chat message.
-- Backend default `WS_IDLE_TIMEOUT_SECONDS` is 3600.
-- If a WebSocket idle timeout fires while the session still has an active web chat run, the backend defers closing and sends `pong`.
-- `WS_IDLE_DREAM_SECONDS` defaults to 180 for session idle hook work.
+- per-tool result char limits come from tool metadata.
+- global inline result pressure is enforced.
+- large tool results can be evicted to workspace-backed artifacts.
+- old tool results are cleared only when pressure justifies it.
 
-## Memory System Closed Loop
+## 6. Tool Calling Layer
 
-Hive's memory system is not a passive RAG folder. It is a closed control loop
-that turns runtime behavior into durable, permission-aware future behavior:
+All governed model tool calls enter:
 
-1. Capture what happened in the append-only T0 session ledger.
-2. Distill each eligible session segment into a reviewed T2 Segment Package.
-3. Curate stable cross-session T3 memory through candidate packages and gates.
-4. Activate only the right memory for the current principal, goal, and company.
-5. Let the agent act with governed tools.
-6. Feed outcomes and owner feedback back into the next cycle.
-7. Promote only proven behavior into identity, skills, or policy.
-
-The storage shape is still Markdown-first, but the important system boundary is
-the control loop around those files.
-
-```mermaid
-flowchart LR
-    Run["Agent run\nweb chat / channel / trigger / delegation / heartbeat / dream"]
-    Hooks["Runtime hooks\nT0 append / SESSION_IDLE / SESSION_CLOSE"]
-    T0["T0 session ledger\nmemory/t0/sessions/<session>/segments/<segment>/source.md"]
-    T2Job["T2 build job\nmemory/.staging/t2_jobs/<job>/source_bundle.json"]
-    T2["T2 Segment Package\nsummary.md / labels.md / review.md / manifest.json"]
-    T3Job["T3 Consolidation Batch\nLLM pitch + gate review + exact patch"]
-    T3["Accepted T3\nmemory/t3/{episodes,user,worker,capabilities}.md"]
-    WikiMap["Generated read model\nmemory/wiki_map.md"]
-    Explicit["Explicit Memory Overlay\nmemory/explicit/<scope>/..."]
-    Activate["Activation gate\nPrincipalStack + goal/company/owner scoring"]
-    Prompt["Prompt memory section\nbudgeted, sensitivity-stripped"]
-    Tools["Governed tool execution\ncapability gate + action preflight"]
-    Feedback["Outcome + owner feedback\ndecision trace / pending reply / T0"]
-    SkillCandidate["Skill Candidate Package\nevolution/skill_candidates/<id>/"]
-    SoulCandidate["Soul Candidate Package\nevolution/soul_candidates/<id>/"]
-    Soul["soul.md\nreviewed soul.md.next exact commit"]
-
-    Run --> Hooks --> T0 --> T2Job --> T2 --> T3Job --> T3 --> WikiMap
-    T3 --> Activate --> Prompt --> Run
-    Explicit --> Activate
-    Explicit --> T3Job
-    Prompt --> Tools --> Feedback --> Hooks
-    T3 --> SkillCandidate
-    T3 --> SoulCandidate --> Soul --> Run
-    SkillCandidate --> Prompt
+```text
+tools/service.py::ToolRuntimeService.execute()
 ```
 
-Current cadence is configuration-backed, not the old fixed-timer diagram:
-`evolution_daemon` wakes every `HEARTBEAT_TICK_SECONDS` (default 60s), then
-eligible runnable agents use the managed `HEARTBEAT_DEFAULT_INTERVAL_MINUTES`
-cadence (default 120 minutes). Full Dream requires `MIN_HOURS_BETWEEN_DREAMS`
-(24h) and either 3 sessions or 2 productive heartbeat ticks. Soft Dream is a
-6h deterministic maintenance path when T3 approaches the 100-entry pressure
-threshold.
+Execution order:
 
-### Storage Layers
-
-| Layer | Storage | Writer | Purpose |
-|-------|---------|--------|---------|
-| Working | objective ledger, work ledger, runtime/session memory | objective services, runtime recovery, Work Ledger tools | Current intent, open loops, and recovery state. This is not long-term memory. |
-| T0 session ledger | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` + `index.json` | `memory/t0/ledger.py` via web chat, task executor, trigger/delegation, heartbeat, dream hooks | Append-only replayable raw evidence aligned with Claude Code transcript / Codex rollout semantics. |
-| T0 legacy/import logs | `logs/YYYY-MM-DD/{behavior,system}/` | `services/t0_logger.py` only for import/operator compatibility | Legacy evidence import and operator audit. Not the canonical runtime T0 truth. |
-| T2 Segment Package | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | `memory/t2/segment_package.py` | LLM-authored summary/labels plus independent review and manifest-backed `source_refs`. |
-| Explicit Memory Overlay | `memory/explicit/<scope>/...` | `save_memory` through `memory/explicit_overlay.py` and write gate | User-commanded explicit memory that activates immediately and may later be absorbed into accepted T3. |
-| Accepted T3 | `memory/t3/{episodes.md,user.md,worker.md,capabilities.md}` | T3 Consolidator + Memory Gate + Platform Gate exact commit | Cross-session semantic XML blocks. This is the only accepted T3 truth surface. |
-| Generated memory map | `memory/wiki_map.md` | `memory/md_store.py::rebuild_index()` / workspace bootstrap | Rebuildable navigation read model. It is not semantic truth and not always-on prompt memory. |
-| Skill candidates | `evolution/skill_candidates/<candidate_id>/` | `save_skill`, fast reflection, Skill Distiller | Inactive `SKILL.md.draft` / `candidate_signal.md` packages. Active skills require Skill Gate promotion and exact draft commit. |
-| Identity | `soul.md` | Dream/Soul Writer -> Soul Memory Gate -> Platform Soul Gate | Stable self-model, mission, role, boundaries, and operating constitution. Promotion requires evidence and rollback metadata. |
-| Evolution evidence | `workspace/evolution/evolution_ledger.jsonl` and candidate package manifests | heartbeat, dream, evolution services | Candidate, eval, promotion/hold decisions, source refs, and rollback strategy. |
-| Session feedback | PostgreSQL `session_feedback_events` + explicit overlay / T2/T3 governed absorption | chat session feedback API | Useful/misleading labels and calibration notes tied to agent/session/decision context. |
-
-Legacy `memory/learnings/*.md`, `memory/understandings.md`, root
-`memory/INDEX.md`, lower-case `memory/index.md`, and `.derived/t3_index.md` are
-retired or compatibility surfaces. They must not become prompt semantic memory or
-canonical write targets. Optional knowledge connectors such as OpenViking can
-serve file/knowledge retrieval, but cannot become the T3 source of truth.
-The legacy `extract_agent.extract()` / `schedule_extract()` learnings writer is
-fail-closed by default and only runs when `HIVE_ENABLE_LEGACY_T2_BACKFILL=1` is
-set for an operator-led migration or compatibility repair.
-
-### Capture Loop
-
-Runtime lifecycle events are the intake bus:
-
-| Hook | Memory role |
-|------|-------------|
-| `RESPONSE_COMPLETE` | Appends accepted runtime evidence into the T0 session ledger and can route fast-reflection candidate signals. It no longer schedules the legacy `memory/learnings` hot path. |
-| `PRE_COMPACTION` | Preserves evidence needed before context is summarized away; semantic writes still go through T2/T3 packages. |
-| `SESSION_IDLE` | Seals or advances T0 session ledger segments without duplicating already-flushed messages. |
-| `SESSION_CLOSE` | Finalizes the T0 segment and triggers canonical T0->T2 package construction for eligible user-facing segments. |
-| `TRIGGER_END` / `DELEGATION_END` | Writes autonomous work evidence into the same T0 ledger. |
-| `HEARTBEAT_TICK_END` / `DREAM_END` | Writes system/maintenance evidence into the same append-only T0 substrate; system-only logs do not bypass T2/T3 governance. |
-| `POST_TOOL_USE` | Captures outbound pending replies so later owner feedback can be tied to the action. |
-
-T0 has a privacy gate before disk persistence. Large tool results are spilled to
-artifacts and referenced from `source.md`; accepted raw events are append-only,
-per-session, replayable, and segment-sealed. `t0_logger.py` remains an import and
-operator compatibility surface, not the runtime truth writer.
-
-### Extraction And Curation
-
-The canonical T0->T2 path is package based:
-
-1. A sealed T0 segment is bundled into `memory/.staging/t2_jobs/<job_id>/source_bundle.json`.
-2. LLM summary and label agents create `summary.md` and `labels.md`.
-3. An independent review agent writes `review.md` with rubric-backed scoring.
-4. Platform Gate validates refs, schema, permissions, and atomicity, then commits the package manifest.
-5. If review routes `allowed_next=episode_stitching`, the Continuity/Episode Agent writes
-   `memory/sessions/<session_id>/episodes/<episode_id>/{synthesis.md,review.md,manifest.json}` from adjacent reviewed Segment Packages.
-6. T3 Consolidator reads only reviewed standalone Segment Packages, reviewed Episode Stitch Packages, and explicit overlay entries; legacy `load_t2_entries()` is not a T3 intake source.
-
-T2 Segment Packages are one-to-one with source session segments. T2 Episode
-Stitch Packages are still session-local synthesis, not accepted T3 truth.
-T3 is where cross-session semantic convergence happens. Heartbeat is the
-orchestrator for T2->T3 intake and self-evolution tick; it reads canonical T2
-Package snapshots plus accepted T3, asks the LLM to produce a pitch/revised
-patch, then lets Memory Gate review and Platform Gate exact-commit accepted XML
-blocks. Heartbeat does not rewrite `soul.md` or active skills.
-
-Dream reads accepted T3 and proposes soul-level reconsolidation through Soul
-Candidate Packages. It writes `soul_pitch.md`, `soul_patch.md`, and
-`soul.md.next`; an independent Soul Memory Gate must approve the candidate, then
-Platform Soul Gate validates frozen sections, base revision, rollback refs, and
-atomic commit. Inferred, ephemeral, or weakly evidenced identity changes are held
-instead of silently changing the agent.
-
-### Write Safety
-
-Every durable memory write must preserve the intelligence/governance split:
-LLM agents judge, summarize, tag, synthesize, and draft candidates; platform code
-validates evidence refs, permissions, schemas, dedupe/conflict state, rollback,
-audit, and exact commit. Platform code must not author semantic memory prose.
-
-| Gate | Effect |
-|------|--------|
-| Privacy classification | Classifies PL1/PL2/PL3/PL4 and masks sensitive text. |
-| PL4 zero retention | Credentials are rejected from durable memory. |
-| Form lint | Rejects entries that are too vague, relative, or malformed to be useful later. |
-| Metadata envelope | Adds `entry_id`, `sensitivity`, `status`, `version`, `evidence_refs`, supersession, expiry, access telemetry, and reinforcement counters in the lifecycle sidecar. |
-| Near-dedup | Semantic duplicate handling belongs to Memory Gate/T3 Consolidator feedback; mechanical checks can detect exact path/base conflicts and require rebase. |
-
-This gate is what keeps memory from becoming a transcript dump while preserving
-LLM judgment. Durable entries must be concise, evidence-backed, scoped, and safe
-to activate later; if a semantic decision is needed, the candidate returns to an
-LLM writer/reviewer rather than being mechanically rewritten.
-
-Memory hygiene is part of the write-safety surface, not a one-off migration.
-`memory/hygiene.py` retires legacy `memory.sqlite3` / `memory.json` shadow stores,
-quarantines dead `reflections.md` stubs, backfills missing lifecycle metadata,
-and writes a report for operator review. Startup workspace bootstrapping applies
-the repair per agent, while `app.scripts.repair_memory_hygiene` provides a dry-run
-and explicit `--apply --confirm` fleet path.
-
-### Activation Loop
-
-Prompt memory is selected at invocation time. The retriever does not blindly
-dump every Markdown file into context.
-
-Current retrieval sources:
-
-1. Frozen identity from `soul.md`.
-2. Explicit memory overlay for user-commanded memories that are not yet absorbed into T3.
-3. Accepted T3 entries from `memory/t3/user.md` and `memory/t3/worker.md` when policy allows.
-4. Accepted T3 entries from `memory/t3/episodes.md` and `memory/t3/capabilities.md` by objective/query relevance.
-5. Rebuildable navigation from `memory/wiki_map.md` or live T3 entry manifest when needed.
-6. Episodic context for the current/previous session.
-
-`runtime/invoker.py` builds an `ActivationContext` around:
-
-- the current query,
-- direct owner and company terms,
-- creator/current user/delegating-agent accountability from `PrincipalStack`,
-- current goal/objective terms.
-
-`ActivationScorer` then:
-
-- strips memories the current principal cannot access,
-- boosts goal, owner, company, open-loop, retention, and high-confidence matches,
-- writes `activation_score` and `activation_reasons` into metadata,
-- bumps `access_count` and `last_accessed` for prompt-included entries.
-
-Access writeback closes the loop: memory that repeatedly helps the agent gets a
-stronger retention signal; memory that is never activated decays into lower
-priority during later curation.
-
-### Action And Feedback Loop
-
-Memory changes behavior only through governed execution:
-
-1. Activated memory enters the prompt.
-2. The agent chooses an action or tool.
-3. `ToolRuntimeService.execute()` applies capability policy and action
-   preflight.
-4. External-visible, sensitive, irreversible, or company-boundary actions may
-   become `prepare_only`, `ask`, `refuse`, or `escalate`.
-5. Decision traces and pending replies make later feedback attributable.
-6. Owner feedback, tool outcomes, failures, and corrections re-enter T0/T2.
-
-This is the closed-loop safety model: the agent can learn from feedback, but the
-next behavioral change still has to pass memory write gates, activation gates,
-tool governance, and promotion/eval gates.
-
-### Policy And Self-Evolution Loop
-
-Memory policy itself is not allowed to drift silently.
-
-| Component | Role |
-|-----------|------|
-| `memory/replay_corpus.py` | Stores anonymized activation cases with expected memory hits. |
-| `memory/policy_replay.py` | Compares baseline vs candidate activation policies and rejects quality drops. |
-| `services/evolution_ledger.py` | Records candidates, eval runs, promotion decisions, source refs, and rollback strategy. |
-| `services/heartbeat.py` | Produces evolution file writeback and skill candidates under runtime governance. |
-| `services/auto_dream.py` | Consolidates memory and decides which memory/soul promotions are strong enough to apply. |
-| `services/session_feedback.py` | Persists useful/misleading feedback events and feeds calibrated durable memory through governed write paths. |
-
-The intended promotion path is:
-
-```
-runtime evidence -> candidate -> replay/eval -> promote or hold -> rollback-capable artifact
+```text
+Plan Mode read-only block
+  -> Plan Mode action gate
+  -> runtime context resolution
+  -> tool lifecycle created
+  -> runtime-owned argument injection
+  -> pre-tool hook
+  -> input validation
+  -> L2 extension policy
+  -> governance context
+  -> capability / permission / MCP / session policy checks
+  -> ActionPreflight
+  -> timeout-wrapped execution backend
+  -> activity log
+  -> post-tool hook
+  -> lifecycle completion or failure frame
 ```
 
-No prompt, skill, memory policy, or identity change should become durable simply
-because a single run produced a plausible idea. Verified promotion requires
-hard evidence where available, explicit eval/verification records, and rollback
-metadata.
+### 6.1 Tool Families
 
-### Memory Invariants
+Hive tools include:
 
-- Markdown remains the canonical source of truth for T0/T2/T3/soul memory:
-  T0 session ledger, T2 Segment Packages, accepted T3 files, and `soul.md`.
-- Runtime state, task progress, and temporary debugging evidence belong in the
-  objective ledger or workspace artifacts, not durable memory.
-- PL4 credentials must never be retained in any durable memory layer.
-- Legacy `logs/YYYY-MM-DD/**` can be imported or audited, but new runtime T0
-  truth is `memory/t0/sessions/**/source.md`.
-- Every T2/T3 durable write must carry source refs, sensitivity classification,
-  review status, and rollback/audit metadata.
-- `memory/learnings/*.md`, `understandings.md`, and old memory indexes are not
-  prompt semantic sources and are not canonical write targets.
-- Prompt memory must be selected by `ActivationContext`, not static inclusion.
-- Principal context must include owner/company/current-user/delegation posture
-  when available.
-- Activated memory must update access evidence so retention and curation can
-  learn from actual use.
-- Owner feedback should link to a decision or action whenever possible.
-- Self-evolution must leave candidate/eval/promotion records with rollback
-  information before durable promotion.
+- filesystem and workspace tools.
+- web search and web fetch tools.
+- Office/document tools.
+- communication and channel tools.
+- memory tools.
+- skill tools: `load_skill`, `tool_search`, `save_skill`.
+- MCP tools: import, inspect, list resources, read resources, call tools.
+- workflow tools: `propose_dynamic_workflow`, `preview_workflow`, `start_workflow`.
+- subagent and Agent Team tools.
+- work ledger tools.
+- triggers and task tools.
 
-## Tool Governance And Packs
+The important distinction is not the tool name. The important distinction is whether the tool is core, L2 extension, MCP-backed, deferred, session-local, external-visible, or destructive. Governance decides the actual authority.
 
-Every tool call must pass through `ToolRuntimeService.execute()`.
+### 6.2 Deferred Tools and ToolSearch
 
-Core path:
+Core tools can be always visible. Heavy or optional tools should be deferred:
 
-1. Resolve agent security zone.
-2. Apply capability policies and managed capability guards.
-3. Create approval request when required.
-4. Run action preflight for external-visible, sensitive, irreversible, or company-boundary actions.
-5. Execute through the registry only after governance passes.
-6. Audit the outcome.
+1. The model sees that more tools may exist.
+2. It calls `tool_search`.
+3. The runtime resolves matching schemas.
+4. The session records active tool groups.
+5. Future turns can recover or restore those schemas.
 
-Static tool packs currently include:
+This keeps the base prompt smaller while still allowing broad tool capability.
 
-- `web_pack`
-- `feishu_pack`
-- `plaza_pack` (product label: Agent Circle)
-- `email_pack`
-- `mcp_admin_pack`
-- `finance_pack` (experimental, tenant-enabled)
-- `office_pack`
+### 6.3 MCP
 
-MCP server imports generate dynamic pack names such as `mcp_server:{slug}`.
-MCP auth is intentionally conservative: registry URLs with userinfo,
-`access_token`, or passthrough credentials are rejected; legacy `apiKey` query
-parameters are normalized into an authorization header before execution. This
-prevents agent-controlled tool configuration from smuggling bearer tokens into
-remote URLs or subprocess environments.
+MCP import and execution are not blind pass-through:
 
-Agent-controlled code execution must be launched through `services/code_execution/`.
-Local or trusted Linux hosts may use `bubblewrap`; macOS development may use
-`sandbox-exec`. Railway standard containers cannot create the namespaces required
-by `bubblewrap`, so Railway production uses `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox`
-with Vercel Sandbox credentials. All providers use the shared environment builder
-and fail closed when the configured isolation plane is unavailable.
+- imported tools are represented as Hive `Tool` rows.
+- canonical names can follow the `mcp__server__tool` style.
+- `list_mcp_tools` and `inspect_mcp_tool` expose imported tool state.
+- protocol resources use list/read resource handlers.
+- execution checks MCP mode: allow, approval, deny.
+- token passthrough and unsafe cloud transport patterns are rejected by MCP authz.
 
-## Office Editing Runtime
+## 7. Session Operations
 
-Hive now has a browser editing runtime, not only thin document tools.
+Session operations must match backend semantics. The frontend serves the backend contract, not the reverse.
 
-Key files:
+### 7.1 Checkpoint
 
-| File | Responsibility |
-|------|----------------|
-| `backend/app/api/office.py` | Document create, editor config, download token, callback token, force-save, ONLYOFFICE command proxy. |
-| `backend/app/services/office_document_service.py` | Workspace path safety, document templates, atomic saves, revision manifest. |
-| `backend/app/services/officecli_adapter.py` | OfficeCLI integration for agent-side processing. |
-| `frontend/src/pages/agent-detail/OfficeWorkbenchSection.tsx` | Agent detail office workbench UI. |
-| `frontend/src/api/domains/office.ts` | Typed frontend API adapter. |
+A checkpoint is a navigation and state anchor.
 
-Runtime contracts:
+When the user submits a turn, the runtime captures a checkpoint workspace snapshot tied to the user transcript event. The UI can show a Git-line style timeline, but clicking a checkpoint should only move the session viewport/focus to that point. It should not run rewind.
 
-- Agent workspace remains the source of truth for files.
-- ONLYOFFICE handles browser WYSIWYG editing.
-- Download and callback URLs are scoped JWTs.
-- Callback tokens last 12 hours.
-- `editorConfig.user` is tenant-scoped: `{tenant_id}:{user_id}` when tenant exists.
-- Saved document revisions are tracked under the document service manifest.
-- Production Railway includes `onlyoffice-documentserver` as a separate service.
+### 7.2 Rewind
 
-Required production env:
+Rewind means: project the current session back to the selected checkpoint state.
 
-- `ONLYOFFICE_DOCS_URL`
-- `ONLYOFFICE_INTERNAL_DOCS_URL` when the backend should call the internal document-server URL
-- `ONLYOFFICE_JWT_SECRET`
-- `ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS` optional, default 300
-- `BASE_URL` or `PUBLIC_BASE_URL` for signed document URLs
+The backend projection uses the checkpoint transcript event, rebuilds history up to that event, and keeps projection metadata. Rewind is explicit. It is not the same thing as hovering or clicking a timeline marker.
 
-## Interoperability Surface
+### 7.3 Branch
 
-Hive exposes machine-readable interoperability descriptors without pretending
-that unimplemented standards are complete:
+Branch is non-destructive. It creates another `ChatSession` from an anchor event:
 
-- `GET /api/v1/interoperability/profile` returns the platform profile, including MCP hardening status and A2A/OAuth support boundaries.
-- `GET /api/v1/agents/{agent_id}/a2a-card` returns an A2A-style Agent Card guarded by `check_agent_access()`.
-- The card declares implemented Hive surfaces such as OpenClaw gateway poll/report/send-message, tenant-scoped messages, and agent identity/sponsor/security-zone metadata.
-- OAuth delegation and A2A JSON-RPC task surfaces are explicitly marked `not_exposed` until they are implemented end to end.
-
-## Channels
-
-Channel configuration is per agent unless explicitly tenant-scoped.
-
-| Channel | Key code paths | Runtime notes |
-|---------|----------------|---------------|
-| Feishu/Lark | `api/feishu.py`, `services/feishu_ws.py`, Feishu tool domains | WebSocket + webhook, SSO, approval cards, office tools. Agent-level `channel_configs` are the production truth source for bot credentials. |
-| Slack | `api/slack.py` | Bot API chat. |
-| Discord | `api/discord_bot.py` | Bot gateway, optional SOCKS5 proxy. |
-| DingTalk | `api/dingtalk.py`, `services/dingtalk_stream.py` | Stream SDK. |
-| WeChat Work | `api/wecom.py`, `services/wecom_stream.py` | WebSocket/webhook, encrypted callbacks. |
-| WeChat Personal | `api/wechat_personal.py`, `services/wechat_personal_stream.py` | Personal channel bridge. |
-| Telegram | `api/telegram.py` | Telegram channel bridge. |
-| Microsoft Teams | `api/teams.py` | Bot Framework. |
-| Email | `api/email_channel.py`, `services/email_service.py` | SMTP/IMAP style email channel. |
-
-Unified delivery uses channel/session metadata so outbound replies can return to
-the originating channel when a run was triggered outside the web UI.
-
-## Frontend Architecture
-
-Frontend stack:
-
-- React 19
-- TypeScript 5
-- Vite 6
-- React Router 7
-- TanStack Query 5
-- Zustand 5
-- i18next with `en.json` and `zh.json`
-- Tabler Icons
-
-Important current files:
-
-| File | Responsibility |
-|------|----------------|
-| `frontend/src/App.tsx` | Surface route tree and redirects. |
-| `frontend/src/surfaces/app/AppLayout.tsx` | App shell. |
-| `frontend/src/surfaces/workspace/WorkspaceLayout.tsx` | Company Admin shell. |
-| `frontend/src/surfaces/workspace/sections.ts` | Workspace section registry and legacy redirects. |
-| `frontend/src/pages/layout/AppSidebar.tsx` | Shared sidebar and bottom actions. |
-| `frontend/src/pages/Dashboard.tsx` | Workbench dashboard, now under Company Admin. |
-| `frontend/src/pages/Plaza.tsx` | Agent Circle feed. |
-| `frontend/src/pages/AgentDetail.tsx` | Agent management hub, chat runtime, workspace tabs. |
-| `frontend/src/pages/EnterpriseSettings.tsx` | Workspace settings section host. |
-
-UI naming contracts:
-
-- "Dashboard" as a top-level app item is deprecated.
-- Workbench lives inside Company Admin at `/enterprise/dashboard`.
-- Plaza remains the backend/API route name, but user-facing product copy is Agent Circle / Agent圈.
-- Workspace settings sections exclude the dashboard from `WORKSPACE_SETTINGS_SECTIONS`.
-
-## Deployment
-
-Local:
-
-```bash
-bash setup.sh --dev
-bash restart.sh
+```text
+POST /agents/{agent_id}/sessions/{session_id}/branches
+  -> create_conversation_branch()
+  -> optionally start_web_chat_run() in the new branch session
 ```
+
+The new branch has its own session ID and lineage metadata. Future messages in that branch create checkpoints on that branch, not on the original line.
+
+### 7.4 Compact
+
+Compaction replaces part of the projected history with a smaller representation. It should be visible as a session/runtime event and must preserve enough identity, memory, work ledger, recent files, and recovery state to continue safely.
+
+### 7.5 Permission Resume
+
+Pending tool permission is represented as a runtime frame. User resolution can resume the same session/run path through the session permission continuation flow. The resolved permission profile is carried in session/runtime metadata.
+
+## 8. Memory
+
+Hive memory is a governed evidence pipeline.
+
+```text
+Runtime event / transcript
+  -> T0 raw evidence
+  -> T2 segment package
+  -> optional T2 episode stitching
+  -> T3 accepted semantic memory
+  -> soul.md / skill candidate / prompt activation
+```
+
+### 8.1 T0
+
+T0 is the raw session evidence layer. It stores what happened: user, assistant, tools, hooks, runtime events, task events, channel events, workflow events, and boundaries.
+
+T0 matters because it is the replay and audit substrate. Later summaries must point back to evidence; they cannot become ungrounded platform-authored memory.
+
+### 8.2 T2
+
+T2 segment packages summarize and label bounded pieces of T0. They carry source refs, review metadata, and enough evidence to support later T3 decisions.
+
+### 8.3 T3
+
+T3 is accepted semantic memory. It should contain durable user, worker, episode, and capability knowledge. T3 is not a scratchpad and not a vector-store dump.
+
+### 8.4 Memory Gate and Platform Gate
+
+The LLM can judge, summarize, extract, and propose. The platform enforces:
+
+- evidence refs.
+- sensitivity classification.
+- permission and principal boundaries.
+- dedupe and lifecycle metadata.
+- rollback and audit.
+- exact commit paths.
+
+This keeps memory AI-native without letting the model bypass governance.
+
+## 9. Skill System
+
+Skills are progressive capability capsules.
+
+A skill can contain:
+
+- `SKILL.md` instructions.
+- references.
+- templates.
+- scripts.
+- evals.
+- workflow definitions.
+- subagent definitions.
+
+Loading a skill adds guidance and context. It does not magically grant execution authority. Executable parts still run through governed tools, workflow, subagent, delegation, or sandbox/code execution.
+
+### 9.1 Active Skills
+
+Active skills live in the agent workspace and are discoverable by `load_skill`. The skill catalog is injected dynamically so updated skills do not invalidate the frozen prompt prefix.
+
+### 9.2 Skill Candidates
+
+Direct active skill mutation is retired. `save_skill` creates inactive candidate packages. Promotion requires guard checks and verification before activation.
+
+### 9.3 External Skills
+
+Imported skills must pass the installer/guard path before becoming active. Imported files are materialized into controlled workspace paths and should fail closed on unsafe package shape.
+
+## 10. Workflow, Subagent, and Agent Team
+
+These three concepts are related but not equivalent.
+
+### 10.1 Subagent
+
+`spawn_subagent` creates a session-local worker with isolated context. It is appropriate for parallel investigation, verification, critique, or specialist work inside the current session.
+
+### 10.2 Agent Team
+
+Agent Team is a session-local team container.
+
+Current semantic:
+
+```text
+team_create -> creates the Team container only
+spawn_subagent(team_name + name) -> creates a teammate child session
+enter_agent_team_member -> returns or opens the member ChatSession
+```
+
+Agent Team members are addressable sessions. The UI should allow switching into those sessions, not just viewing a summary.
+
+### 10.3 Dynamic Workflow
+
+Dynamic Workflow is a structured run:
+
+```text
+propose_dynamic_workflow
+  -> preview_workflow
+  -> start_workflow
+  -> RuntimeTask(task_type="workflow")
+  -> workflow steps / leaves
+  -> status projection
+```
+
+Workflow leaf execution commonly uses subagent-style workers, but a workflow run is not the same as Agent Team. The UI should primarily show workflow phase, step, leaf status, prompt, token/tool usage, result, and error. Only leaf nodes with a real child session should support session entry.
+
+### 10.4 A2A Collaboration
+
+A2A-style collaboration is the cross-agent layer. It should be understood separately from session-local subagents and deterministic workflows:
+
+- relationship and authorization decide who may collaborate.
+- message/delegation surfaces carry the work.
+- process graph and artifacts can be built on top.
+
+## 11. Governance Architecture
+
+Hive governance has several layers.
+
+### 11.1 Identity and Tenant Boundary
+
+- User, tenant, owner, and company are explicit runtime facts.
+- PostgreSQL RLS enforces tenant isolation.
+- Runtime paths must fail closed when tenant resolution fails.
+- Agent lifecycle state can block invocation.
+
+### 11.2 Session Permission
+
+Each session can carry a permission profile:
+
+- mode.
+- allowed tools.
+- writable roots.
+- pending permission frames.
+- allow once / allow session / deny resolution.
+
+This is the UI-level expression of runtime authority.
+
+### 11.3 Capability and Pack Policy
+
+Tools are not allowed only because they exist. Capability and pack policy decide whether the tenant and agent may use them.
+
+### 11.4 Action Preflight
+
+External-visible, sensitive, irreversible, or company-boundary actions require preflight. Preflight can allow, block, or require confirmation.
+
+### 11.5 Hooks
+
+Hooks surround runtime events:
+
+- prompt submit.
+- pre-tool.
+- post-tool.
+- tool failure.
+- session idle.
+- session close.
+- permission request.
+- compaction lifecycle.
+
+Hooks can add context, block, modify arguments, rewrite output, or emit audit events depending on their type.
+
+### 11.6 Audit and Trace
+
+Important evidence surfaces:
+
+- `ChatTranscriptEvent`
+- `ChatMessage`
+- `RuntimeTask`
+- `invocation_spans`
+- tool lifecycle records.
+- tool execution frames.
+- session control projection.
+- T0 memory events.
+
+## 12. Frontend Session Workbench
+
+The frontend should express backend runtime truth.
+
+Fixed high-level layout:
+
+```text
+Left navigation      Center session workbench        Right runtime/workspace rail
+existing app nav     active ChatSession view         docs, runtime, agents, workflows
+```
+
+Important constraints:
+
+- Do not move the existing left navigation unless product direction changes.
+- The center panel is the current session.
+- The right rail is for session-native supporting state, not unrelated management widgets.
+- Left and right sidebars can resize; the chat/workbench must adapt.
+- The bottom composer keeps its core frame and should sit close enough to the session content to avoid dead space.
+
+### 12.1 Checkpoint Timeline
+
+The Git-line style checkpoint UI is navigation first:
+
+- hover shows checkpoint summary.
+- click focuses the session at that checkpoint.
+- explicit actions at that point can run Rewind or Branch.
+- branch lines should be visually restrained: enough color/marking to identify lineage, not a fake full Git client.
+
+### 12.2 Agent Team UI
+
+Agent Team is session switching:
+
+- running member list can live in the right runtime panel.
+- clicking a member switches the center panel into that member session.
+- active tab color should show which session is currently focused.
+- member status, tool count, tokens, and elapsed time should be visible.
+
+### 12.3 Dynamic Workflow UI
+
+Workflow is status inspection first:
+
+- root node opens workflow run overview.
+- phase/step/leaf list shows progress.
+- leaf detail shows prompt, status, tokens, tool count, result, sources, error.
+- enter child session only when `child_session_id` exists.
+
+### 12.4 Command UI
+
+Slash commands and command menus should map to backend command semantics:
+
+- `load_skill` starts a skill-guided turn.
+- `tool_search` discovers deferred tools.
+- `workflow` opens workflow preview/start path.
+- Agent Team commands create containers or members according to backend rules.
+- `rewind` and `branch` operate on selected checkpoint anchors, not arbitrary message buttons.
+
+## 13. Startup and Background Work
+
+Backend startup is responsible for:
+
+- loading settings and validating production secrets.
+- initializing secrets provider.
+- creating or migrating database structures.
+- seeding tools, skills, default agents, and default company records.
+- running compatibility and hygiene repair where configured.
+- resuming active web chat runs after restart.
+- starting trigger, channel, heartbeat, dream, evolution, and workflow-related daemons.
+
+Runtime recovery matters because long-running agent work should survive browser disconnects and process restarts.
+
+## 14. Development Commands
 
 Backend:
 
 ```bash
 cd backend
 source .venv/bin/activate
-ruff check app/ tests/
+ruff check app/ --fix && ruff format app/
 pytest
 alembic heads
 alembic upgrade head
-uvicorn app.main:app --host 0.0.0.0 --port 8008 --reload
 ```
 
 Frontend:
 
 ```bash
 cd frontend
-npm run test
-npm run build
 npm run dev
-```
-
-Railway production services currently include:
-
-- `backend`
-- `frontend`
-- `Postgres`
-- `Redis`
-- `onlyoffice-documentserver`
-
-Deployment checks should include service status plus external health:
-
-```bash
-railway service status --all --environment production --json
-node -e "fetch('https://frontend-production-0346.up.railway.app/api/health').then(r=>r.text()).then(console.log)"
-```
-
-## High-Value Regression Commands
-
-For web chat durable run changes:
-
-```bash
-cd backend
-pytest tests/services/test_web_chat_runtime.py tests/api/test_chat_session_runs.py tests/api/test_websocket_call_llm.py -q
-```
-
-```bash
-cd frontend
-npx vitest run src/pages/agent-detail/chatRuntime.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx
-```
-
-For Office runtime changes:
-
-```bash
-cd backend
-pytest tests/services/test_office_document_service.py tests/api/test_office_editor.py tests/tools/test_office_tools.py -q
-```
-
-```bash
-cd frontend
-npx vitest run src/pages/agent-detail/OfficeWorkbenchSection.test.tsx src/api/domains/office.test.ts
-```
-
-For broad release confidence:
-
-```bash
-cd backend
-ruff check app/ tests/
-pytest
-```
-
-```bash
-cd frontend
-npm run test
 npm run build
+npm test
 ```
 
-For current harness/control-plane closure checks:
+Full local stack:
 
 ```bash
-cd backend
-pytest tests/services/test_invocation_trace_service.py tests/kernel/test_invocation_trace.py tests/services/test_session_feedback.py tests/services/test_interoperability.py tests/api/test_interoperability_api.py tests/memory/test_hygiene.py tests/architecture/test_deployment_contracts.py -q
+bash restart.sh
 ```
 
-## Non-Negotiable Invariants
+Docker:
 
-- All LLM execution goes through `invoke_agent()` and `AgentKernel.handle()`.
-- All tool execution goes through `ToolRuntimeService.execute()`.
-- All external-visible, sensitive, irreversible, or company-boundary actions go through action preflight.
-- Durable T2/T3 memory writes go through `prepare_memory_write()` or a wrapper that calls it.
-- Prompt memory activation must preserve principal and sensitivity context when known.
-- Agent creation must render first-person accountability plus frozen company/owner charter sections in `soul.md`.
-- WebSocket disconnects must not cancel durable web chat runs.
-- Office document saves must preserve path safety and revision history.
-- Agent-controlled code execution must use `services/code_execution/`; Railway production must use `vercel_sandbox`, and no provider may inherit host secrets or fall back to raw subprocesses.
-- MCP imports and execution must go through `mcp_authz`; URL userinfo and token passthrough are forbidden.
-- A2A/interoperability descriptors must be honest machine-readable contracts; unsupported OAuth delegation or JSON-RPC task surfaces must stay marked `not_exposed`.
-- Invocation trace spans are append-only runtime evidence and must carry tenant/runtime join keys.
-- Memory hygiene repair must be reversible, reportable, and applied through the shared hygiene path rather than ad hoc workspace edits.
-- UI text changes must update both English and Chinese i18n files.
-- Migrations require a single Alembic head.
+```bash
+docker compose up -d --build
+```
+
+## 15. How to Read or Modify the System
+
+For a session/runtime bug, follow this order:
+
+1. Start with `backend/app/api/chat_sessions.py` or `backend/app/api/websocket.py`.
+2. Trace to `backend/app/services/web_chat_runtime.py`.
+3. Check `RuntimeTask` metadata and `ChatSession` metadata.
+4. Trace `AgentInvocationRequest` into `backend/app/runtime/invoker.py`.
+5. Check context assembly in `agent_context.py` and `prompt_builder.py`.
+6. Trace model/tool behavior in `kernel/engine.py`.
+7. Trace tool authority in `tools/service.py` and `tools/governance.py`.
+8. Confirm transcript, T0, spans, and runtime events.
+9. Only then change frontend projection.
+
+For a governance bug, start at the call site but prove the result at the governance layer:
+
+```text
+frontend action / model tool call
+  -> ToolRuntimeService
+  -> ToolGovernanceContext
+  -> capability / session permission / MCP / preflight
+  -> lifecycle frame / transcript event / audit span
+```
+
+For a memory or skill bug, never fix only the prompt. Verify the evidence path:
+
+```text
+T0 evidence
+  -> candidate package
+  -> review/gate
+  -> accepted file or rejected candidate
+  -> prompt activation
+```
+
+## 16. Documentation Boundary
+
+The local `docs/` directory is intentionally ignored by Git. Remote-facing engineering documentation should live in:
+
+- `README.md`
+- `README.zh-CN.md`
+- `ENGINEERING.md`
+- `AGENTS.md`
+- `CLAUDE.md`
+
+Use local `docs/` for planning, audits, and working notes. Do not link README or ENGINEERING to ignored docs as canonical remote documentation.

@@ -7,7 +7,7 @@ tools:
   - firecrawl_fetch
   - execute_code
 is_system: false
-is_default: false
+is_default: true
 ---
 
 # Skill Marketplace Vetting

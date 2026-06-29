@@ -41,6 +41,10 @@ def test_active_skill_workspace_writes_use_unified_installer() -> None:
             "fp.write_text(sf.content",
             "skill_folder = skills_dir / skill.folder_name",
         ],
+        "app/tools/workspace.py": [
+            "shutil.copy2(str(f), str(dest / rel))",
+            'Path(__file__).resolve().parent.parent / "templates" / "skills"',
+        ],
         "app/tools/handlers/hr.py": [
             "file_path.write_text(sf.content)",
             "skill_folder = skills_dir / skill.folder_name",

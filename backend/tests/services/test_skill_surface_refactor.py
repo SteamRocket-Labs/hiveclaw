@@ -4,13 +4,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_builtin_skill_defaults_are_minimal_and_optional_playbooks_are_not_default():
+def test_builtin_skill_defaults_are_agent_preinstalled_platform_capsules():
     from app.services.skill_seeder import BUILTIN_SKILLS
 
     by_folder = {skill["folder_name"]: skill for skill in BUILTIN_SKILLS}
 
-    assert {folder for folder, skill in by_folder.items() if skill.get("is_default")} == {"skill-creator"}
-    assert set(by_folder) == {
+    expected_builtin_folders = {
         "skill-creator",
         "mcp-installer",
         "web-research",
@@ -21,8 +20,10 @@ def test_builtin_skill_defaults_are_minimal_and_optional_playbooks_are_not_defau
         "atlassian-rovo",
         "skill-marketplace",
     }
+    assert set(by_folder) == expected_builtin_folders
+    assert {folder for folder, skill in by_folder.items() if skill.get("is_default")} == expected_builtin_folders
     assert by_folder["web-research"]["name"] == "Advanced Web Research"
-    assert by_folder["skill-marketplace"]["is_default"] is False
+    assert by_folder["skill-marketplace"]["is_default"] is True
 
 
 def test_removed_skill_marketplace_split_brain_is_retired():
@@ -35,6 +36,8 @@ def test_removed_skill_marketplace_split_brain_is_retired():
     assert not (templates_dir / "find-skills").exists()
     assert not (templates_dir / "skill-vetter").exists()
     assert (templates_dir / "skill-marketplace" / "SKILL.md").is_file()
+    skill_marketplace_md = (templates_dir / "skill-marketplace" / "SKILL.md").read_text(encoding="utf-8")
+    assert "is_default: false" not in skill_marketplace_md
 
 
 def test_default_agent_skill_lists_do_not_reference_retired_skill_slugs():
@@ -45,13 +48,17 @@ def test_default_agent_skill_lists_do_not_reference_retired_skill_slugs():
     assert assigned.isdisjoint(RETIRED_BUILTIN_SKILL_FOLDERS)
 
 
-def test_pack_skill_entrypoints_are_not_global_defaults():
+def test_pack_skill_entrypoints_are_agent_preinstalled_without_unlocking_pack_tools():
+    import yaml
+
     from app.services.skill_seeder import _load_pack_skill_dicts
 
     pack_skills = {skill["folder_name"]: skill for skill in _load_pack_skill_dicts()}
+    office_manifest = yaml.safe_load((REPO_ROOT / "backend" / "packs" / "office_pack" / "pack.yaml").read_text())
 
     assert set(pack_skills) == {"office-productivity"}
-    assert pack_skills["office-productivity"]["is_default"] is False
+    assert pack_skills["office-productivity"]["is_default"] is True
+    assert office_manifest["activation"]["default_state"] == "inactive"
 
 
 def test_office_single_purpose_template_copies_are_removed():

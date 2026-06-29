@@ -24,6 +24,22 @@ _PACK_SKILL_ICONS = {
     "source-ledger-audit": "📒",
 }
 
+DEFAULT_BUILTIN_SKILL_FOLDERS = frozenset(
+    {
+        "skill-creator",
+        "mcp-installer",
+        "web-research",
+        "feishu-integration",
+        "plaza-guide",
+        "email-guide",
+        "dingtalk-integration",
+        "atlassian-rovo",
+        "skill-marketplace",
+    }
+)
+
+DEFAULT_PACK_SKILL_FOLDERS = frozenset({"office-productivity"})
+
 
 def _extract_skill_frontmatter(content: str, *, fallback: str) -> tuple[str, str]:
     """Parse YAML frontmatter from a SKILL.md and return (name, description).
@@ -110,7 +126,7 @@ def _load_pack_skill_dicts() -> list[dict]:
                         "category": pack_category,
                         "icon": _PACK_SKILL_ICONS.get(folder_name, "🧠"),
                         "folder_name": folder_name,
-                        "is_default": str(manifest.activation.get("default_state") or "").lower() == "active",
+                        "is_default": folder_name in DEFAULT_PACK_SKILL_FOLDERS,
                         "files": files,
                     }
                 )
@@ -121,7 +137,7 @@ def _load_pack_skill_dicts() -> list[dict]:
 
 
 BUILTIN_SKILLS = [
-    # ─── Skill Creator (mandatory default) ─────────
+    # ─── Agent-preinstalled platform skill capsules ─────────
     {
         "name": "Skill Creator",
         "description": "Create new skills, modify and improve existing skills, and measure skill performance",
@@ -138,7 +154,7 @@ BUILTIN_SKILLS = [
         "category": "development",
         "icon": "🔌",
         "folder_name": "mcp-installer",
-        "is_default": False,
+        "is_default": True,
         "files": [],  # populated at runtime from agent_template/skills/mcp-installer/SKILL.md
     },
     {
@@ -147,7 +163,7 @@ BUILTIN_SKILLS = [
         "category": "system",
         "icon": "🌐",
         "folder_name": "web-research",
-        "is_default": False,
+        "is_default": True,
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
@@ -156,7 +172,7 @@ BUILTIN_SKILLS = [
         "category": "system_integration",
         "icon": "🐦",
         "folder_name": "feishu-integration",
-        "is_default": False,
+        "is_default": True,
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
@@ -165,7 +181,7 @@ BUILTIN_SKILLS = [
         "category": "system",
         "icon": "📢",
         "folder_name": "plaza-guide",
-        "is_default": False,
+        "is_default": True,
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
@@ -174,7 +190,7 @@ BUILTIN_SKILLS = [
         "category": "system",
         "icon": "📧",
         "folder_name": "email-guide",
-        "is_default": False,
+        "is_default": True,
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
@@ -183,7 +199,7 @@ BUILTIN_SKILLS = [
         "category": "system_integration",
         "icon": "💬",
         "folder_name": "dingtalk-integration",
-        "is_default": False,
+        "is_default": True,
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
@@ -192,7 +208,7 @@ BUILTIN_SKILLS = [
         "category": "system_integration",
         "icon": "🔷",
         "folder_name": "atlassian-rovo",
-        "is_default": False,
+        "is_default": True,
         "files": [],  # populated at runtime from templates/system_skills/
     },
     {
@@ -201,7 +217,7 @@ BUILTIN_SKILLS = [
         "category": "system",
         "icon": "🔍",
         "folder_name": "skill-marketplace",
-        "is_default": False,
+        "is_default": True,
         "files": [],  # populated at runtime from templates/skills/
     },
     # Office document skills (pdf/docx/xlsx/pptx) are now sourced from

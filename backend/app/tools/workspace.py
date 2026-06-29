@@ -393,31 +393,6 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
             )
         (ws / "HEARTBEAT.md").write_text(hb_content, encoding="utf-8")
 
-    # Pre-install system skills from templates (skip is_default: false)
-    templates_dir = Path(__file__).resolve().parent.parent / "templates" / "skills"
-    if templates_dir.is_dir():
-        for skill_tmpl in templates_dir.iterdir():
-            if not skill_tmpl.is_dir():
-                continue
-            if (ws / "skills" / skill_tmpl.name / "SKILL.md").exists():
-                continue
-            # Check if the skill template is marked is_default: false — skip if so
-            _skill_md = skill_tmpl / "SKILL.md"
-            if _skill_md.exists():
-                try:
-                    _content = _skill_md.read_text(encoding="utf-8")
-                    if "is_default: false" in _content:
-                        continue
-                except Exception as exc:
-                    logger.debug("[workspace] Could not read SKILL.md for %s: %s", skill_tmpl.name, exc)
-            dest = ws / "skills" / skill_tmpl.name
-            dest.mkdir(parents=True, exist_ok=True)
-            for f in skill_tmpl.rglob("*"):
-                if f.is_file():
-                    rel = f.relative_to(skill_tmpl)
-                    (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(str(f), str(dest / rel))
-
     await _sync_tasks_to_file(agent_id, ws)
     return ws
 

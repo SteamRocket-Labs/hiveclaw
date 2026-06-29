@@ -21,7 +21,7 @@ from app.services.capability_reuse_service import reuse_existing_skill_for_agent
 from app.services import plan_mode_core
 from app.services.subprocess_env import build_agent_subprocess_env
 from app.services.code_execution.service import execute_agent_command
-from app.services.skill_seeder import BUILTIN_SKILLS
+from app.services.skill_seeder import DEFAULT_BUILTIN_SKILL_FOLDERS, DEFAULT_PACK_SKILL_FOLDERS
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
 
@@ -86,7 +86,7 @@ def _stamp_hr_blueprint_trigger_exemption(config: dict | None) -> dict:
 
 
 def _default_skill_count() -> int:
-    return sum(1 for skill in BUILTIN_SKILLS if skill.get("is_default"))
+    return len(DEFAULT_BUILTIN_SKILL_FOLDERS) + len(DEFAULT_PACK_SKILL_FOLDERS)
 
 
 def _default_ready_now() -> list[str]:
@@ -1447,7 +1447,7 @@ def _build_create_employee_result(
     message = (
         f"Successfully created digital employee '{agent_name}' (ID: {agent_id}). "
         f"Config: {', '.join(features)}. "
-        f"{_default_skill_count()} default skills auto-installed. "
+        f"{_default_skill_count()} default platform skill capsules are auto-installed. "
         f"Skills directory: {skills_dir}. "
         "The employee is now being initialized and will be ready shortly."
     )
@@ -1587,7 +1587,7 @@ def _append_hr_creation_t0_event(
                 "skill_names": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": f"ONLY platform-registered skill folder_names. Available: feishu-integration, dingtalk-integration, atlassian-rovo. {_default_skill_count()} default skills are auto-installed. Only include extra platform skills that are mandatory on day one; otherwise let the agent evolve later. Do NOT put ClawHub or external skills here — use clawhub_slugs instead.",
+                    "description": f"ONLY non-default platform-registered skill folder_names. {_default_skill_count()} default platform skill capsules are auto-installed, including web, MCP, marketplace, channel, and office playbooks. Only include extra platform skills that are mandatory on day one; otherwise let the agent evolve later. Do NOT put ClawHub or external skills here — use clawhub_slugs instead.",
                 },
                 "external_skill_urls": {
                     "type": "array",

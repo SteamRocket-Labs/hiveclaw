@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { extensionsApi, type AgentExtensions } from '../../api/domains/extensions';
@@ -30,6 +30,14 @@ function skillSourceLabel(t: ReturnType<typeof useTranslation>['t'], source?: st
 
 function pluginName(plugin: NonNullable<AgentExtensions['plugins']>[number]): string {
   return plugin.plugin_key || plugin.id;
+}
+
+export function invalidateAgentSkillQueries(
+  queryClient: Pick<QueryClient, 'invalidateQueries'>,
+  agentId: string,
+) {
+  queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
+  queryClient.invalidateQueries({ queryKey: ['agent-extensions', agentId] });
 }
 
 export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps) {
@@ -345,7 +353,7 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
                       try {
                         const response = await skillApi.agentImport.fromClawhub(agentId, result.slug);
                         showAppToast(`Installed "${result.displayName || result.slug}" (${response.files_written} files)`, 'success');
-                        queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
+                        invalidateAgentSkillQueries(queryClient, agentId);
                       } catch (error: any) {
                         showAppToast(`Import failed: ${error?.message || error}`, 'error');
                       } finally {
@@ -389,7 +397,7 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
                   try {
                     const response = await skillApi.agentImport.fromUrl(agentId, agentUrlInput.trim());
                     showAppToast(`Imported ${response.files_written} files`, 'success');
-                    queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
+                    invalidateAgentSkillQueries(queryClient, agentId);
                     setShowAgentUrlImport(false);
                   } catch (error: any) {
                     showAppToast(`Import failed: ${error?.message || error}`, 'error');
@@ -461,7 +469,7 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
                         try {
                           const response = await fileApi.importSkill(agentId, skill.id);
                           showAppToast(`Imported "${skill.name}" (${response.files_written} files)`, 'success');
-                          queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
+                          invalidateAgentSkillQueries(queryClient, agentId);
                           setShowImportSkillModal(false);
                         } catch (error: any) {
                           showAppToast(`Import failed: ${error?.message || error}`, 'error');

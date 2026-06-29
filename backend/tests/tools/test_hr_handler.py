@@ -73,6 +73,13 @@ def test_hr_role_description_prompt_guard_trims_to_tool_limit():
     assert len(result) == ROLE_DESCRIPTION_MAX_CHARS
 
 
+def test_hr_default_skill_count_includes_builtin_and_pack_skill_capsules():
+    from app.services.skill_seeder import DEFAULT_BUILTIN_SKILL_FOLDERS, DEFAULT_PACK_SKILL_FOLDERS
+    from app.tools.handlers.hr import _default_skill_count
+
+    assert _default_skill_count() == len(DEFAULT_BUILTIN_SKILL_FOLDERS) + len(DEFAULT_PACK_SKILL_FOLDERS)
+
+
 def test_build_blueprint_preview_payload_trims_role_description_to_prompt_guard():
     from app.tools.handlers.hr import ROLE_DESCRIPTION_MAX_CHARS, _build_blueprint_preview_payload
 

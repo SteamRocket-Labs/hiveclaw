@@ -21,7 +21,7 @@ import AgentChatSection, {
 } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
-import AgentSkillsSection from './AgentSkillsSection';
+import AgentSkillsSection, { invalidateAgentSkillQueries } from './AgentSkillsSection';
 import AgentStatusSection from './AgentStatusSection';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
 import CopyMessageButton from './CopyMessageButton';
@@ -1230,6 +1230,25 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Plugins');
     expect(markup).toContain('paperclip');
     expect(markup).not.toContain('root=skills');
+  });
+
+  it('refreshes installed skill read models after agent skill imports', () => {
+    const calls: unknown[] = [];
+
+    invalidateAgentSkillQueries(
+      {
+        invalidateQueries: (args: unknown) => {
+          calls.push(args);
+          return Promise.resolve();
+        },
+      },
+      'agent-1',
+    );
+
+    expect(calls).toEqual([
+      { queryKey: ['files', 'agent-1', 'skills'] },
+      { queryKey: ['agent-extensions', 'agent-1'] },
+    ]);
   });
 
   it('renders AgentWorkspaceSection as a standalone workspace module', () => {

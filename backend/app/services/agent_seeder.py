@@ -81,11 +81,11 @@ MEESEEKS_SOUL = """# Soul — Mr. Meeseeks
 
 MORTY_SKILLS = [
     "web-research",
-    # defaults (auto-included): skill-creator
+    # default platform skill capsules are auto-included by the registry seeder.
 ]
 
 MEESEEKS_SKILLS = [
-    # defaults (auto-included): skill-creator
+    # default platform skill capsules are auto-included by the registry seeder.
 ]
 
 

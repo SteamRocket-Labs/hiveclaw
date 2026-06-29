@@ -3185,7 +3185,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="chat-work-ledger-popover"');
   });
 
-  it('renders workspace documents and runtime tables in the right session panel', () => {
+  it('renders workspace documents and collaboration status without governance or tool statistics in the right panel', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Runtime Bot' }}
@@ -3297,13 +3297,23 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Task 1-2 of 2');
     expect(markup).toContain('Workspace Documents');
     expect(markup).toContain('runtime-report.md');
-    expect(markup).toContain('Runtime');
-    expect(markup).toContain('data-testid="session-runtime-tab-agents"');
+    expect(markup).toContain('data-testid="session-runtime-divider"');
+    expect(markup).toContain('data-testid="session-runtime-collaboration"');
     expect(markup).toContain('Research Team');
     expect(markup).toContain('Reviewer');
+    expect(markup).toContain('data-testid="session-runtime-workflow"');
     expect(markup).toContain('workflow-run-1');
-    expect(markup).toContain('Checks');
-    expect(markup).toContain('data-testid="session-runtime-checks"');
+    expect(markup).toContain('data-testid="session-runtime-notifications"');
+    expect(markup).toContain('notify user when run completes');
+    expect(markup).not.toContain('data-testid="session-runtime-tabs"');
+    expect(markup).not.toContain('data-testid="session-runtime-tab-tasks"');
+    expect(markup).not.toContain('data-testid="session-runtime-tab-checks"');
+    expect(markup).not.toContain('data-testid="session-runtime-tab-runs"');
+    expect(markup).not.toContain('data-testid="session-runtime-checks"');
+    expect(markup).not.toContain('data-testid="session-runtime-commands"');
+    expect(markup).not.toContain('Commands / Tools');
+    expect(markup).not.toContain('Tool calls');
+    expect(markup).not.toContain('Checks');
     expect(markup).not.toContain('data-testid="session-workbench-inspector"');
     expect(markup).not.toContain('data-testid="session-native-controls"');
   });

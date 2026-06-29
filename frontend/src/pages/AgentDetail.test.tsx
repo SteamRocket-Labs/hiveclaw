@@ -1,4 +1,5 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -93,6 +94,17 @@ describe('AgentDetail session permission state', () => {
         transcript_metadata_json: { permission_mode: 'auto' },
       }),
     ).toBe('auto');
+  });
+});
+
+describe('AgentDetail realtime refresh contract', () => {
+  it('refreshes durable session history after terminal websocket events', () => {
+    const source = readFileSync(new URL('./AgentDetail.tsx', import.meta.url), 'utf8');
+
+    expect(source).toContain('isTerminalRealtimeChatEvent');
+    expect(source).toContain('applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime)');
+    expect(source).toContain('if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent))');
+    expect(source).toContain('void selectSession(sess)');
   });
 });
 

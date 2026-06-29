@@ -265,6 +265,11 @@ export function shouldClearStaleRuntimeState({
   return now - lastRuntimeActivityAt >= graceMs;
 }
 
+export function isTerminalRealtimeChatEvent(payload: any): boolean {
+  const eventType = String(payload?.event_type || payload?.type || '').trim();
+  return ['assistant_message', 'done', 'error', 'quota_exceeded', 'run_cancelled', 'run_completed'].includes(eventType);
+}
+
 function normalizedUserContent(message: AgentChatMessage): string {
   return String(message.content || '').replace(/\s+/g, ' ').trim();
 }

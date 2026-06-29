@@ -40,6 +40,7 @@ import {
     getRuntimeEventMessage,
     getTerminalRunIdFromTranscriptEvent,
     getTransportNotice,
+    isTerminalRealtimeChatEvent,
     mergePendingUserMessages,
     filterSessionsForAgent,
     normalizeRuntimeEventMessage,
@@ -1335,12 +1336,17 @@ function AgentDetailInner() {
                 && (typeof d.sequence === 'number' || d.transcript_event_id || d.metadata?.transcript_event_id)
                 && (d.event_type || d.type)
             ) {
-                applyTranscriptToSession(agentId, sessionId, {
+                const transcriptEvent = {
                     ...d,
                     id: d.id || d.transcript_event_id || d.metadata?.transcript_event_id,
                     event_type: d.event_type || d.type,
                     metadata: d.metadata || d.metadata_json || {},
-                }, isActiveRuntime);
+                };
+                applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+                if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent)) {
+                    void selectSession(sess);
+                    fetchMySessions(true, agentId);
+                }
                 return;
             }
             if (d.type === 'run_started' && d.run_id) {
@@ -1358,6 +1364,7 @@ function AgentDetailInner() {
                 if (isActiveRuntime) {
                     setIsWaiting(false);
                     setIsStreaming(false);
+                    void selectSession(sess);
                 }
                 fetchMySessions(true, agentId);
                 return;
@@ -1445,6 +1452,7 @@ function AgentDetailInner() {
             } else if (d.type === 'done') {
                 setChatMessages(prev => applyRuntimeDoneEvent(prev, d).map(parseChatMsg));
                 fetchMySessions(true, agentId);
+                void selectSession(sess);
             } else if (d.type === 'error' || d.type === 'quota_exceeded') {
                 const msg = d.content || d.detail || d.message || 'Request denied';
                 setChatMessages(prev => {
@@ -1452,6 +1460,7 @@ function AgentDetailInner() {
                     if (last && last.role === 'assistant' && last.content === `⚠️ ${msg}`) return prev;
                     return [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })];
                 });
+                void selectSession(sess);
                 if (msg.includes('expired') || msg.includes('Setup failed') || msg.includes('no LLM model') || msg.includes('No model')) {
                     reconnectDisabledRef.current[key] = true;
                     if (msg.includes('expired')) setAgentExpired(true);

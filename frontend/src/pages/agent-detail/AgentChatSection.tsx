@@ -1130,6 +1130,7 @@ function runtimeRowTitle(row: RuntimeRecord, fallback: string): string {
     stringValue(row.name) ||
     stringValue(row.member_name) ||
     stringValue(row.objective) ||
+    stringValue(row.reason) ||
     stringValue(row.id) ||
     fallback
   );
@@ -1186,21 +1187,15 @@ function renderRuntimeMiniRow(row: RuntimeRecord, fallback: string) {
 }
 
 function SessionRuntimePanel({
-  agentId,
   messages,
   sessionWorkbench,
-  runtimeSummary,
-  activeRunStatus,
   collapsed = false,
   onToggleCollapsed,
   onOpenDocument,
   onSelectSession,
 }: {
-  agentId?: string | null;
   messages: AgentChatMessage[];
   sessionWorkbench: SessionWorkbench | null;
-  runtimeSummary: ChatRuntimeSummary | null;
-  activeRunStatus?: string | null;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   onOpenDocument?: (artifact: ChatArtifactPart) => void | Promise<unknown>;
@@ -1211,28 +1206,9 @@ function SessionRuntimePanel({
   const teams = sessionWorkbench?.teams || [];
   const runtimeTasks = asRuntimeRows(sessionWorkbench?.runtime_tasks);
   const workflowTasks = runtimeTasks.filter((task) => runtimeTaskGroup(task) === 'workflow');
-  const backgroundTasks = runtimeTasks.filter((task) => runtimeTaskGroup(task) === 'background');
-  const runTasks = runtimeTasks.filter((task) => runtimeTaskGroup(task) === 'run');
-  const approvals = asRuntimeRows(sessionWorkbench?.approvals);
-  const hooks = asRuntimeRows(sessionWorkbench?.hooks);
-  const goals = asRuntimeRows(sessionWorkbench?.goals);
-  const contextDecisions = asRuntimeRows(sessionWorkbench?.context_window?.decisions);
   const wakes = asRuntimeRows(sessionWorkbench?.completion_wakes);
-  const checksCount = approvals.length + hooks.length + goals.length + contextDecisions.length;
-  const runtimeOverview = [...workflowTasks, ...backgroundTasks, ...runTasks].slice(0, 4);
   const agentRows = teams.flatMap((team) => team.members || []);
-  const usedTools = runtimeSummary?.used_tools || [];
-  const activeRunRow = sessionWorkbench?.active_run && isRuntimeRecord(sessionWorkbench.active_run)
-    ? sessionWorkbench.active_run
-    : null;
-
-  const tabs = [
-    { key: 'agents', label: t('sessionWorkbench.rightPanel.agents', 'Agents'), count: teams.length + agentRows.length },
-    { key: 'workflow', label: t('sessionWorkbench.rightPanel.workflow', 'Workflow'), count: workflowTasks.length },
-    { key: 'tasks', label: t('sessionWorkbench.rightPanel.tasks', 'Tasks'), count: runtimeTasks.length + wakes.length },
-    { key: 'checks', label: t('sessionWorkbench.rightPanel.checks', 'Checks'), count: checksCount },
-    { key: 'runs', label: t('sessionWorkbench.rightPanel.runs', 'Runs'), count: runTasks.length + backgroundTasks.length + (activeRunRow ? 1 : 0) },
-  ];
+  const collaborationCount = teams.length + agentRows.length + workflowTasks.length + wakes.length;
 
   if (collapsed) {
     return (
@@ -1248,7 +1224,7 @@ function SessionRuntimePanel({
           <IconChevronLeft size={15} stroke={1.8} />
         </button>
         <div className="session-runtime-collapsed-label">
-          {t('sessionWorkbench.rightPanel.runtime', 'Runtime')}
+          {t('sessionWorkbench.rightPanel.workspace', 'Workspace')}
         </div>
       </aside>
     );
@@ -1310,42 +1286,20 @@ function SessionRuntimePanel({
         )}
       </section>
 
+      <div data-testid="session-runtime-divider" className="session-runtime-divider" aria-hidden="true" />
+
       <section
+        data-testid="session-runtime-collaboration"
         className="session-runtime-section session-runtime-lower"
-        aria-label={t('sessionWorkbench.rightPanel.runtime', 'Runtime')}
+        aria-label={t('sessionWorkbench.rightPanel.collaboration', 'Collaboration')}
       >
         <div className="session-runtime-section-header">
           <div>
             <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.session', 'Session')}</div>
-            <h3>{t('sessionWorkbench.rightPanel.runtime', 'Runtime')}</h3>
+            <h3>{t('sessionWorkbench.rightPanel.collaboration', 'Collaboration')}</h3>
           </div>
-          <span>{activeRunStatus || statusLabel(activeRunRow || {})}</span>
+          <span>{collaborationCount}</span>
         </div>
-        <div
-          className="session-runtime-tabs"
-          role="tablist"
-          aria-label={t('sessionWorkbench.rightPanel.runtimeTables', 'Runtime tables')}
-        >
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              data-testid={`session-runtime-tab-${tab.key}`}
-              className="session-runtime-tab"
-            >
-              <span>{tab.label}</span>
-              <strong>{tab.count}</strong>
-            </button>
-          ))}
-        </div>
-
-        {runtimeOverview.length > 0 ? (
-          <div className="session-runtime-card" data-testid="session-runtime-overview">
-            <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.activeRuntime', 'Active Runtime')}</div>
-            {runtimeOverview.map((task, index) => renderRuntimeMiniRow(task, `task-${index + 1}`))}
-          </div>
-        ) : null}
 
         <div className="session-runtime-card" data-testid="session-runtime-agents">
           <div className="session-runtime-card-title">
@@ -1396,54 +1350,25 @@ function SessionRuntimePanel({
           )}
         </div>
 
-        <div className="session-runtime-card" data-testid="session-runtime-checks">
-          <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.checks', 'Checks')}</div>
-          {checksCount === 0 ? (
+        <div className="session-runtime-card" data-testid="session-runtime-workflow">
+          <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.workflowRuns', 'Workflow runs')}</div>
+          {workflowTasks.length === 0 ? (
             <div className="session-runtime-empty">
-              {t('sessionWorkbench.rightPanel.noChecks', 'No pending session checks.')}
+              {t('sessionWorkbench.rightPanel.noWorkflows', 'No active workflows.')}
             </div>
           ) : (
-            <>
-              <div className="session-runtime-metric-row">
-                <span>{t('sessionWorkbench.rightPanel.approvals', 'Approvals')}</span>
-                <strong>{approvals.length}</strong>
-              </div>
-              <div className="session-runtime-metric-row">
-                <span>{t('sessionWorkbench.rightPanel.hooks', 'Hooks')}</span>
-                <strong>{hooks.length}</strong>
-              </div>
-              <div className="session-runtime-metric-row">
-                <span>{t('sessionWorkbench.rightPanel.goals', 'Goals')}</span>
-                <strong>{goals.length}</strong>
-              </div>
-              <div className="session-runtime-metric-row">
-                <span>{t('sessionWorkbench.rightPanel.contextDecisions', 'Context decisions')}</span>
-                <strong>{contextDecisions.length}</strong>
-              </div>
-            </>
+            workflowTasks.map((task, index) => renderRuntimeMiniRow(task, `workflow-${index + 1}`))
           )}
         </div>
 
-        <div className="session-runtime-card" data-testid="session-runtime-commands">
-          <div className="session-runtime-card-title">
-            {t('sessionWorkbench.rightPanel.commandsTools', 'Commands / Tools')}
-          </div>
-          <div className="session-runtime-metric-row">
-            <span>{t('sessionWorkbench.rightPanel.toolCalls', 'Tool calls')}</span>
-            <strong>{sessionWorkbench?.tool_calls?.length || usedTools.length || 0}</strong>
-          </div>
-          <div className="session-runtime-metric-row">
-            <span>{t('sessionWorkbench.rightPanel.background', 'Background')}</span>
-            <strong>{backgroundTasks.length}</strong>
-          </div>
-          <div className="session-runtime-metric-row">
-            <span>{t('sessionWorkbench.rightPanel.completionWakes', 'Completion wakes')}</span>
-            <strong>{wakes.length}</strong>
-          </div>
-          {agentId ? null : (
-            <span className="session-runtime-empty">
-              {t('sessionWorkbench.rightPanel.noAgentId', 'No agent id bound.')}
-            </span>
+        <div className="session-runtime-card" data-testid="session-runtime-notifications">
+          <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.completionWakes', 'Completion wakes')}</div>
+          {wakes.length === 0 ? (
+            <div className="session-runtime-empty">
+              {t('sessionWorkbench.rightPanel.noCompletionWakes', 'No completion notifications.')}
+            </div>
+          ) : (
+            wakes.map((wake, index) => renderRuntimeMiniRow(wake, `wake-${index + 1}`))
           )}
         </div>
       </section>
@@ -3384,11 +3309,8 @@ export default function AgentChatSection({
       </div>
       {activeSession ? (
         <SessionRuntimePanel
-          agentId={effectiveAgentId}
           messages={visibleTimeline}
           sessionWorkbench={sessionWorkbench}
-          runtimeSummary={runtimeSummary}
-          activeRunStatus={activeRunStatus}
           collapsed={runtimePanelCollapsed}
           onToggleCollapsed={() => setRuntimePanelCollapsed((value) => !value)}
           onOpenDocument={openArtifact}

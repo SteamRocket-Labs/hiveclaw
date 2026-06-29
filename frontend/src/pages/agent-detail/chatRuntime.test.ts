@@ -22,6 +22,7 @@ import {
   mergePendingUserMessages,
   replayTranscriptEvents,
   sessionBelongsToAgent,
+  isTerminalRealtimeChatEvent,
   shouldClearStaleRuntimeState,
 } from './chatRuntime';
 
@@ -481,6 +482,21 @@ describe('chatRuntime helpers', () => {
       now: 19_000,
       graceMs: 8_000,
     })).toBe(true);
+  });
+
+  it('identifies realtime terminal events that must refresh durable session history', () => {
+    expect(isTerminalRealtimeChatEvent({ type: 'done' })).toBe(true);
+    expect(isTerminalRealtimeChatEvent({ type: 'error' })).toBe(true);
+    expect(isTerminalRealtimeChatEvent({ type: 'quota_exceeded' })).toBe(true);
+    expect(isTerminalRealtimeChatEvent({ type: 'run_cancelled' })).toBe(true);
+    expect(isTerminalRealtimeChatEvent({ type: 'assistant_message' })).toBe(true);
+    expect(isTerminalRealtimeChatEvent({ type: 'run_completed' })).toBe(true);
+    expect(isTerminalRealtimeChatEvent({ event_type: 'done' })).toBe(true);
+
+    expect(isTerminalRealtimeChatEvent({ type: 'run_started' })).toBe(false);
+    expect(isTerminalRealtimeChatEvent({ type: 'thinking' })).toBe(false);
+    expect(isTerminalRealtimeChatEvent({ type: 'chunk' })).toBe(false);
+    expect(isTerminalRealtimeChatEvent({ type: 'tool_call' })).toBe(false);
   });
 
   it('extracts terminal run ids from replayed assistant transcript events', () => {

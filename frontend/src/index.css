@@ -1167,13 +1167,27 @@ select:focus {
 }
 
 .session-runtime-documents {
-  flex: 0 0 min(34%, 270px);
-  border-bottom: 1px solid var(--border-subtle);
+  flex: 0 0 42%;
+  min-height: 180px;
   overflow: auto;
 }
 
+.session-runtime-divider {
+  flex: 0 0 8px;
+  margin: 0 12px;
+  border-top: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-subtle);
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--border-default) 24%, transparent),
+    transparent
+  );
+}
+
 .session-runtime-lower {
-  flex: 1;
+  flex: 1 1 58%;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -1257,41 +1271,6 @@ select:focus {
   color: var(--text-tertiary);
   font-size: var(--session-tui-font-meta);
   line-height: var(--session-tui-line-meta);
-}
-
-.session-runtime-tabs {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 4px;
-  margin-bottom: 8px;
-}
-
-.session-runtime-tab {
-  display: grid;
-  gap: 1px;
-  min-width: 0;
-  min-height: 34px;
-  padding: 5px 4px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--session-tui-radius-row);
-  background: var(--bg-primary);
-  color: var(--text-secondary);
-  font-size: var(--session-tui-font-tiny);
-  line-height: 1.2;
-  cursor: default;
-}
-
-.session-runtime-tab span,
-.session-runtime-tab strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-runtime-tab strong {
-  color: var(--text-primary);
-  font-size: var(--session-tui-font-meta);
-  font-weight: 700;
 }
 
 .session-runtime-card {

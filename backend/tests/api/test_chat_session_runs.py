@@ -771,7 +771,7 @@ def test_session_permission_event_broadcast_delivers_im_realtime_copy(monkeypatc
             "db": db,
             "agent_id": agent_id,
             "reply_target": {"channel": "feishu", "receive_id": "chat-1"},
-            "text": "Tool `read_file` completed after permission approval.",
+            "text": "Tool `read_file` completed after permission approval.\n\nok",
             "delivery_mode": "live",
             "extra_detail": {
                 "source": "session_permission_event",

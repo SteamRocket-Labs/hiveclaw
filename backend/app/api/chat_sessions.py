@@ -556,7 +556,13 @@ async def _broadcast_session_permission_event(
     await broadcast_web_chat_event(agent_id, session_id, payload)
     source_channel = str(getattr(session, "source_channel", None) or "web").strip().lower() or "web"
     target = getattr(session, "delivery_target_json", None)
-    if source_channel == "web" or not isinstance(target, dict) or not channel_text:
+    delivery_text = channel_text
+    if str(payload.get("event_type") or payload.get("type") or "") == "tool_result" and payload.get("result") is not None:
+        delivery_text = _session_permission_tool_result_channel_text(
+            str(payload.get("name") or payload.get("tool_name") or "unknown_tool"),
+            payload.get("result"),
+        )
+    if source_channel == "web" or not isinstance(target, dict) or not delivery_text:
         return
     try:
         from app.services.channel_delivery_service import ChannelDeliveryService
@@ -565,7 +571,7 @@ async def _broadcast_session_permission_event(
             db=db,
             agent_id=agent_id,
             reply_target=target,
-            text=channel_text,
+            text=delivery_text,
             delivery_mode="live",
             extra_detail={
                 "source": "session_permission_event",
@@ -580,6 +586,22 @@ async def _broadcast_session_permission_event(
             session_id,
             exc,
         )
+
+
+def _session_permission_tool_result_channel_text(tool_name: str, tool_result: Any, *, limit: int = 1800) -> str:
+    """Render the IM live copy for an approved permission tool result.
+
+    Web already receives the full structured event payload. Channel users need
+    the same result signal, but bounded so a large file/search result does not
+    flood the IM thread.
+    """
+    name = str(tool_name or "unknown_tool").strip() or "unknown_tool"
+    text = str(tool_result or "").strip()
+    if not text:
+        return f"Tool `{name}` completed after permission approval."
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "\n\n[Result truncated for live channel delivery.]"
+    return f"Tool `{name}` completed after permission approval.\n\n{text}"
 
 
 def _permission_request_allows_session_scope(request_payload: dict[str, Any]) -> bool:
@@ -1521,7 +1543,7 @@ async def resolve_session_permission(
                 "sequence": persisted_tool_event.sequence if persisted_tool_event else None,
                 "metadata": persisted_tool_event.transcript_event.metadata_json if persisted_tool_event else {},
             },
-            channel_text=f"Tool `{tool_name}` completed after permission approval.",
+            channel_text=_session_permission_tool_result_channel_text(tool_name, tool_result),
         )
 
         try:

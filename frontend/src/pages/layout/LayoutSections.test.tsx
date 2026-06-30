@@ -2,7 +2,13 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import AppSidebar, { getSessionTag, sidebarSessionFromLocalAgentChannelSession } from './AppSidebar';
+import AppSidebar, {
+  buildSidebarSessionFamilies,
+  displaySessionTitle,
+  getSessionTag,
+  getSessionTags,
+  sidebarSessionFromLocalAgentChannelSession,
+} from './AppSidebar';
 import NotificationCenter from './NotificationCenter';
 
 const routeState = vi.hoisted(() => ({
@@ -40,6 +46,47 @@ describe('Layout extracted sections', () => {
       session_kind: 'delegation_run',
       title: 'Lead ↔ Researcher',
     }, t)).toBe('A2A');
+    expect(getSessionTag({
+      source_channel: 'web',
+      session_kind: 'agent_chat',
+      title: 'Lead ↔ Researcher',
+    }, t)).toBe('A2A');
+    expect(getSessionTag({
+      source_channel: 'web',
+      session_kind: 'delegation_run',
+      title: 'Delegation: Researcher',
+    }, t)).toBe('A2A');
+  });
+
+  it('groups branch sessions under their root and uses badges instead of title suffixes', () => {
+    const t = (key: string, fallback?: string) => fallback || key;
+    const root = {
+      id: 'session-root',
+      agent_id: 'agent-1',
+      title: '你能干嘛?',
+      created_at: '2026-06-29T08:00:00Z',
+      updated_at: '2026-06-29T08:00:00Z',
+    } as any;
+    const branch = {
+      id: 'session-branch',
+      agent_id: 'agent-1',
+      title: '你能干嘛? (branch)',
+      parent_session_id: 'session-root',
+      root_session_id: 'session-root',
+      session_kind: 'agent_chat',
+      transcript_metadata_json: { branch_mode: 'branch' },
+      created_at: '2026-06-29T08:01:00Z',
+      updated_at: '2026-06-29T08:01:00Z',
+    } as any;
+
+    const families = buildSidebarSessionFamilies([branch, root]);
+
+    expect(families).toHaveLength(1);
+    expect(families[0].root.id).toBe('session-root');
+    expect(families[0].children.map((item) => item.id)).toEqual(['session-branch']);
+    expect(displaySessionTitle(branch, t)).toBe('你能干嘛?');
+    expect(getSessionTags(branch, t)).toEqual(['A2A', 'Branch']);
+    expect(getSessionTag(branch, t)).toBe('A2A');
   });
 
   it('binds main content width to the collapsed sidebar state at the app layout scope', async () => {
@@ -342,6 +389,66 @@ describe('Layout extracted sections', () => {
     expect(markup).toMatch(/class="sidebar-session-row active"[\s\S]*class="sidebar-session-item active"[\s\S]*class="sidebar-session-action"/);
     expect(markup).not.toContain('My Conversations');
     expect(markup).not.toContain('All Users');
+  });
+
+  it('renders branch conversations as collapsible children of the root session row', () => {
+    routeState.location = { pathname: '/agents/agent-1', search: '?session_id=session-branch', hash: '#chat' };
+    const markup = renderToStaticMarkup(
+      <AppSidebar
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        theme="light"
+        isSidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
+        tenants={[{ id: 'tenant-1', name: 'Company A' }]}
+        currentTenant="tenant-1"
+        onSwitchTenant={vi.fn()}
+        agents={[{ id: 'agent-1', name: 'AI 产品经理', created_at: '2026-03-27T00:00:00Z', status: 'running', agent_type: 'native' }]}
+        agentSessionsByAgentId={{
+          'agent-1': [
+            {
+              id: 'session-root',
+              agent_id: 'agent-1',
+              title: '你能干嘛?',
+              created_at: '2026-06-29T08:00:00Z',
+              updated_at: '2026-06-29T08:00:00Z',
+            },
+            {
+              id: 'session-branch',
+              agent_id: 'agent-1',
+              title: '你能干嘛? (branch)',
+              parent_session_id: 'session-root',
+              root_session_id: 'session-root',
+              created_at: '2026-06-29T08:01:00Z',
+              updated_at: '2026-06-29T08:01:00Z',
+              transcript_metadata_json: { branch_mode: 'branch' },
+            } as any,
+          ],
+        }}
+        pinnedAgents={new Set()}
+        onTogglePin={vi.fn()}
+        isChinese={false}
+        sidebarSearch=""
+        onSetSidebarSearch={vi.fn()}
+        onToggleTheme={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        unreadCount={0}
+        accountMenuRef={React.createRef<HTMLDivElement>()}
+        showAccountMenu={false}
+        onToggleAccountMenu={vi.fn()}
+        onToggleLang={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onLogout={vi.fn()}
+        versionDisplay={null}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="sidebar-session-family-session-root"');
+    expect(markup).toContain('data-testid="sidebar-session-children-session-root"');
+    expect(markup).toContain('href="/agents/agent-1?session_id=session-root#chat"');
+    expect(markup).toContain('href="/agents/agent-1?session_id=session-branch#chat"');
+    expect(markup).toContain('Branch');
+    expect(markup).toContain('data-testid="sidebar-session-branch-count"');
+    expect(markup).not.toContain('你能干嘛? (branch)');
   });
 
   it('renders local agents as normal agent rows with local session dropdowns', () => {

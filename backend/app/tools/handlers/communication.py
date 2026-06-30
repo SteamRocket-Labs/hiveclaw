@@ -132,8 +132,11 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "msg_type": {
                     "type": "string",
-                    "enum": ["notify", "consult", "task_delegate"],
-                    "description": "Message type: notify (notification), consult (ask a question), task_delegate (delegate a task). Defaults to notify.",
+                    "enum": ["notify", "consult"],
+                    "description": (
+                        "Message type: notify (notification) or consult (ask a short synchronous question). "
+                        "Defaults to notify. Use delegate_to_agent for task delegation, background work, or artifacts."
+                    ),
                 },
             },
             "required": ["agent_name", "message"],
@@ -164,6 +167,8 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
             "- Use this for coordinator-style delegation when the worker should continue in the background.\n"
             f"- Brief format: {DELEGATION_BRIEF_CONTRACT}\n"
             "- Provide a precise task with the outcome you expect, any constraints, and the evidence the worker should return.\n"
+            "- For cross-workspace artifact work, pass `target_artifacts` (or `target_artifact_path` shorthand) "
+            "so the worker updates/delivers the exact target path instead of inventing a replacement artifact.\n"
             "- The result includes session_id/child_session_id. Continue through `send_agent_session_message`; use `check_async_task` only as a fallback status inspection.\n"
             "- Do NOT use this for quick back-and-forth questions — use `send_message_to_agent` for synchronous collaboration.\n"
             "- Do NOT use this for session-local worker fan-out, context isolation, or independent verification inside the same session — use `spawn_subagent` for To Session Worker."
@@ -193,6 +198,68 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
                 "parent_session_id": {
                     "type": "string",
                     "description": "Optional parent session/task identifier for tracing",
+                },
+                "target_artifact_path": {
+                    "type": "string",
+                    "description": (
+                        "Backward-compatible shorthand for a single primary workspace artifact path the worker "
+                        "must update or deliver, for example `workspace/report.md`, `workspace/deck.pptx`, "
+                        "or `workspace/src/app.py`. Use target_artifacts for multi-file or cross-workspace work."
+                    ),
+                },
+                "target_artifacts": {
+                    "type": "array",
+                    "description": (
+                        "Structured cross-workspace artifact contract. Use this whenever the task references "
+                        "one or more existing files/artifacts across agent workspaces."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Workspace-relative path that must be updated or delivered.",
+                            },
+                            "workspace_scope": {
+                                "type": "string",
+                                "enum": [
+                                    "target_agent_workspace",
+                                    "source_agent_workspace",
+                                    "external_workspace",
+                                ],
+                                "description": (
+                                    "Where this artifact lives. Defaults to target_agent_workspace for A2A workers."
+                                ),
+                            },
+                            "owner_agent_id": {
+                                "type": "string",
+                                "description": "Optional agent id that owns the artifact workspace.",
+                            },
+                            "source_session_id": {
+                                "type": "string",
+                                "description": "Optional session where the artifact was surfaced or selected.",
+                            },
+                            "revision_id": {
+                                "type": "string",
+                                "description": "Optional artifact revision/version identifier.",
+                            },
+                            "expected_action": {
+                                "type": "string",
+                                "enum": ["modify_existing", "create_or_update", "create_new", "review_only"],
+                                "description": "Expected action for this artifact.",
+                            },
+                        },
+                        "required": ["path"],
+                    },
+                },
+                "edit_mode": {
+                    "type": "string",
+                    "enum": ["create_or_update", "modify_existing", "create_new"],
+                    "description": (
+                        "Default artifact intent across target_artifacts. Use modify_existing when the user asks "
+                        "to update current/existing artifacts; completion is blocked if required target paths are not delivered. "
+                        "Use create_new only when the user asked for a separate new deliverable."
+                    ),
                 },
                 "tool_profile": {
                     "type": "string",

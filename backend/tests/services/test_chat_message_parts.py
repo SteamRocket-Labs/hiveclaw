@@ -53,6 +53,39 @@ def test_serialize_assistant_message_with_thinking_includes_reasoning_part():
     ]
 
 
+def test_runtime_action_started_is_session_native_event():
+    from app.services.chat_message_parts import build_session_native_event
+
+    event = build_session_native_event(
+        {
+            "type": "runtime_action_started",
+            "message": "Delegated to Web3 researcher.",
+            "status": "running",
+            "action_kind": "a2a_delegation",
+            "tool_name": "delegate_to_agent",
+            "runtime_task_id": "task-1",
+            "child_session_id": "child-1",
+            "parent_session_id": "parent-1",
+            "target_agent_name": "Web3 researcher",
+        }
+    )
+
+    assert event["type"] == "runtime_action_started"
+    assert event["part"] == {
+        "type": "event",
+        "event_type": "runtime_action_started",
+        "title": "Action Started",
+        "text": "Delegated to Web3 researcher.",
+        "status": "running",
+        "tool_name": "delegate_to_agent",
+        "runtime_task_id": "task-1",
+        "child_session_id": "child-1",
+        "parent_session_id": "parent-1",
+        "action_kind": "a2a_delegation",
+        "target_agent_name": "Web3 researcher",
+    }
+
+
 def test_split_inline_tools_creates_structured_parts():
     from app.services.chat_message_parts import split_inline_tools
 

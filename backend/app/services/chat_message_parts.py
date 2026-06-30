@@ -34,6 +34,11 @@ SESSION_NATIVE_EVENT_TITLES: dict[str, str] = {
     "memory_candidate": "Memory Candidate",
     "artifact_update": "Artifact Update",
     "artifact_delivery": "Artifact Delivery",
+    "runtime_action_started": "Action Started",
+    "runtime_action_progress": "Action Progress",
+    "runtime_action_completed": "Action Completed",
+    "runtime_action_blocked": "Action Blocked",
+    "runtime_action_failed": "Action Failed",
 }
 SESSION_NATIVE_EVENT_TYPES = set(SESSION_NATIVE_EVENT_TITLES)
 
@@ -87,6 +92,13 @@ SESSION_NATIVE_EVENT_METADATA_KEYS = (
     "source_agent_id",
     "download_agent_id",
     "delivery_agent_id",
+    "action_kind",
+    "target_agent_name",
+    "target_artifact_path",
+    "target_artifact_paths",
+    "target_artifacts",
+    "edit_mode",
+    "artifact_contract_mismatch",
 )
 
 

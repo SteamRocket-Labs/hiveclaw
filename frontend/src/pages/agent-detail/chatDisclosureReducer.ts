@@ -80,6 +80,11 @@ const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
   'memory_candidate',
   'artifact_update',
   'artifact_delivery',
+  'runtime_action_started',
+  'runtime_action_progress',
+  'runtime_action_completed',
+  'runtime_action_blocked',
+  'runtime_action_failed',
 ]);
 
 function compactText(text: string, limit = 160): string {
@@ -142,6 +147,10 @@ function stepIdForMessage(message: AgentChatMessage, index: number): string {
 }
 
 function eventTitle(message: AgentChatMessage): string {
+  if (String(message.eventType || '').startsWith('runtime_action_')) {
+    const suffix = String(message.eventType).replace('runtime_action_', '');
+    return `Action ${suffix.charAt(0).toUpperCase()}${suffix.slice(1)}`;
+  }
   if (message.eventType === 'child_session' && String(message.eventReason || '').startsWith('delegation_')) {
     return 'A2A session';
   }
@@ -227,6 +236,13 @@ function titleForToolMessage(message: AgentChatMessage): string {
 function kindForEventMessage(message: AgentChatMessage): RunStepKind {
   if (message.eventType === 'session_compact') return 'compaction';
   if (message.eventType === 'permission') return 'permission';
+  if (String(message.eventType || '').startsWith('runtime_action_')) {
+    const source = String(message.eventNotificationSource || '').toLowerCase();
+    if (source.includes('workflow')) return 'workflow';
+    if (source.includes('subagent') || source.includes('agent_team') || source.includes('team_member')) return 'subagent';
+    if (source.includes('a2a')) return 'a2a';
+    return 'event';
+  }
   if (message.eventType === 'tool_group_activation' || message.eventType === 'pack_activation') return 'tool';
   if (message.eventType === 'workflow_run' || message.eventType === 'workflow_step' || message.eventType === 'dynamic_workflow') return 'workflow';
   if (
@@ -264,7 +280,7 @@ function statusForMessage(message: AgentChatMessage): RunStepStatus {
 
 export function isDisclosureStepMessage(message: AgentChatMessage): boolean {
   if (message.role === 'tool_call') return true;
-  if (message.role === 'assistant') return Boolean(!message.content?.trim() && message.thinking?.trim());
+  if (message.role === 'assistant') return Boolean(message.thinking?.trim());
   if (message.role === 'event') {
     return Boolean(message.eventType && SESSION_NATIVE_DISCLOSURE_EVENTS.has(message.eventType));
   }

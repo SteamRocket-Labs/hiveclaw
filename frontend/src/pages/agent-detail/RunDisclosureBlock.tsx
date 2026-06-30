@@ -131,7 +131,14 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
 }
 
 function shouldExpandTimeline(timeline: RunTimelineSnapshot): boolean {
-  return timeline.status === 'running' || timeline.status === 'blocked' || timeline.status === 'failed';
+  if (timeline.status === 'running' || timeline.status === 'blocked' || timeline.status === 'failed') return true;
+  if (timeline.status !== 'done') return false;
+  return timeline.steps.some((step) => (
+    step.kind === 'reasoning'
+    || step.kind === 'a2a'
+    || step.kind === 'workflow'
+    || step.kind === 'subagent'
+  ));
 }
 
 function CompactStepSummary({ steps }: { steps: RunStepSnapshot[] }) {

@@ -213,6 +213,57 @@ async def test_delegate_to_agent_async_passes_tool_profile(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delegate_to_agent_async_threads_cross_workspace_target_artifacts(monkeypatch):
+    from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
+
+    from_agent_id = uuid4()
+    source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
+    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
+    target_model = SimpleNamespace(
+        provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+    )
+    captured = {}
+    target_artifacts = [
+        {
+            "path": "workspace/board-review.pptx",
+            "workspace_scope": "target_agent_workspace",
+            "expected_action": "modify_existing",
+        },
+        {
+            "path": "workspace/src/forecast.py",
+            "workspace_scope": "target_agent_workspace",
+            "expected_action": "modify_existing",
+        },
+    ]
+
+    async def fake_resolve(_from_agent_id, _agent_name, **_kwargs):
+        return source_agent, target, target_model, None
+
+    async def fake_delegate_async(**kwargs):
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(task_id="task-1", trace_id="trace-1", target_name="Target Agent")
+
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging._resolve_target_agent_runtime", fake_resolve)
+    monkeypatch.setattr("app.agents.orchestrator.delegate_async", fake_delegate_async)
+
+    result = await _delegate_to_agent_async(
+        from_agent_id,
+        {
+            "agent_name": "Target Agent",
+            "message": "Update the deck and code file.",
+            "target_artifacts": target_artifacts,
+            "edit_mode": "modify_existing",
+        },
+    )
+
+    payload = json.loads(result)
+    assert payload["target_artifacts"] == target_artifacts
+    assert payload["edit_mode"] == "modify_existing"
+    assert captured["kwargs"]["target_artifacts"] == target_artifacts
+    assert captured["kwargs"]["edit_mode"] == "modify_existing"
+
+
+@pytest.mark.asyncio
 async def test_delegate_to_agent_async_defaults_to_peer_agent_tool_surface(monkeypatch):
     from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
 

@@ -31,7 +31,12 @@ export type RuntimeEventType =
   | 'once'
   | 'memory_candidate'
   | 'artifact_update'
-  | 'artifact_delivery';
+  | 'artifact_delivery'
+  | 'runtime_action_started'
+  | 'runtime_action_progress'
+  | 'runtime_action_completed'
+  | 'runtime_action_blocked'
+  | 'runtime_action_failed';
 
 export interface AgentChatMessage {
   role: 'user' | 'assistant' | 'tool_call' | 'event';
@@ -46,10 +51,12 @@ export interface AgentChatMessage {
   toolResult?: string;
   toolRawResult?: string;
   toolMeta?: ToolCallMeta | null;
-  timestamp?: string;
-  participant_id?: string | null;
-  id?: string;
-  eventType?: RuntimeEventType;
+	  timestamp?: string;
+	  participant_id?: string | null;
+	  id?: string;
+	  messageId?: string | null;
+	  transcriptEventId?: string | null;
+	  eventType?: RuntimeEventType;
   eventTitle?: string;
   eventStatus?: string;
   eventToolName?: string;
@@ -177,6 +184,26 @@ export type ChatTranscriptEventPayload = {
   message_id?: string | null;
 };
 
+function messageIdentityFromTranscriptEvent(event: ChatTranscriptEventPayload): Pick<AgentChatMessage, 'id' | 'messageId' | 'transcriptEventId'> {
+  const messageId = event.message_id ? String(event.message_id) : null;
+  const transcriptEventId = event.id ? String(event.id) : null;
+  return {
+    id: messageId || transcriptEventId || undefined,
+    messageId,
+    transcriptEventId,
+  };
+}
+
+function messageIdentityFromStoredPayload(payload: any): Pick<AgentChatMessage, 'messageId' | 'transcriptEventId'> {
+  const metadata = payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};
+  const messageId = payload?.message_id || payload?.id || null;
+  const transcriptEventId = payload?.transcript_event_id || metadata?.transcript_event_id || null;
+  return {
+    messageId: messageId ? String(messageId) : null,
+    transcriptEventId: transcriptEventId ? String(transcriptEventId) : null,
+  };
+}
+
 export interface SessionRunState {
   runId: string;
   status: string;
@@ -191,10 +218,18 @@ export type AgentOwnedSession = {
   id?: unknown;
   agent_id?: unknown;
   agentId?: unknown;
+  user_id?: unknown;
+  userId?: unknown;
   peer_agent_id?: unknown;
   peerAgentId?: unknown;
   source_channel?: unknown;
+  thread_source?: unknown;
   participant_type?: unknown;
+  session_kind?: unknown;
+  read_only?: unknown;
+  readOnly?: unknown;
+  is_pending_session_lookup?: unknown;
+  isPendingSessionLookup?: unknown;
 };
 
 export interface TranscriptReplayState {
@@ -211,12 +246,36 @@ export interface PendingUserMessage {
 
 export const ACTIVE_RUN_ABSENCE_GRACE_MS = 8_000;
 
+export function isA2ASession(session: AgentOwnedSession | null | undefined): boolean {
+  if (!session) return false;
+  const source = String(session.source_channel ?? session.thread_source ?? '').toLowerCase();
+  const participantType = String(session.participant_type ?? '').toLowerCase();
+  const sessionKind = String(session.session_kind ?? '').toLowerCase();
+  return (
+    source === 'agent'
+    || participantType === 'agent'
+    || sessionKind === 'agent_chat'
+    || sessionKind === 'delegation_run'
+  );
+}
+
+export function isReadOnlySessionForCurrentUser(
+  session: AgentOwnedSession | null | undefined,
+  currentUserId: string | number | null | undefined,
+): boolean {
+  if (!session) return false;
+  if (session.read_only === true || session.readOnly === true) return true;
+  if (session.is_pending_session_lookup === true || session.isPendingSessionLookup === true) return true;
+  if (isA2ASession(session)) return true;
+  const ownerUserId = session.user_id ?? session.userId;
+  return ownerUserId != null && currentUserId != null && String(ownerUserId) !== String(currentUserId);
+}
+
 export function sessionBelongsToAgent(session: AgentOwnedSession | null | undefined, agentId: string | null | undefined): boolean {
   if (!session || !agentId) return false;
   const sessionAgentId = session.agent_id ?? session.agentId;
   const peerAgentId = session.peer_agent_id ?? session.peerAgentId;
-  const isAgentSession = session.source_channel === 'agent' || session.participant_type === 'agent';
-  if (isAgentSession && peerAgentId != null && String(peerAgentId) === String(agentId)) return true;
+  if (isA2ASession(session) && peerAgentId != null && String(peerAgentId) === String(agentId)) return true;
   return sessionAgentId == null || String(sessionAgentId) === String(agentId);
 }
 
@@ -260,6 +319,17 @@ export function applySessionActiveRunObservedState(
         : { isWaiting: true, isStreaming: false },
     },
   };
+}
+
+export function shouldIgnoreObservedActiveRun(input: {
+  key: string;
+  run?: Partial<SessionRunState> & { run_id?: string | null } | null;
+  terminalRunIds: Set<string>;
+  terminalSessionKeys: Set<string>;
+}): boolean {
+  if (input.terminalSessionKeys.has(input.key)) return true;
+  const runId = input.run?.runId ?? input.run?.run_id;
+  return Boolean(runId && input.terminalRunIds.has(String(runId)));
 }
 
 export function shouldClearStaleRuntimeState({
@@ -409,6 +479,7 @@ export function applyRuntimeDoneEvent(
 ): AgentChatMessage[] {
   const content = typeof event?.content === 'string' ? event.content : '';
   const artifacts = extractArtifactParts(event);
+  const thinkingFromParts = extractThinkingFromParts(event?.parts);
   const last = messages[messages.length - 1];
 
   if (!content.trim() && artifacts.length === 0) {
@@ -421,7 +492,9 @@ export function applyRuntimeDoneEvent(
   const assistantMessage: AgentChatMessage = {
     role: 'assistant',
     content,
-    thinking: (last && last.role === 'assistant' && (last as any)._streaming) ? last.thinking : undefined,
+    thinking: (last && last.role === 'assistant' && (last as any)._streaming)
+      ? (last.thinking || thinkingFromParts)
+      : thinkingFromParts,
     artifacts: artifacts.length > 0 ? artifacts : undefined,
     timestamp: new Date().toISOString(),
   };
@@ -686,16 +759,49 @@ export function applyTranscriptEvent(
     };
   }
 
+  if (eventType !== 'artifact_delivery') {
+    const eventDisplayContent =
+      (typeof event.metadata?.message === 'string' && event.metadata.message) ||
+      (typeof event.metadata?.display_content === 'string' && event.metadata.display_content) ||
+      content;
+    const runtimeEvent = getRuntimeEventMessage({
+      ...(event.metadata || {}),
+      ...event,
+      content: eventDisplayContent,
+      message: eventDisplayContent,
+      type: eventType,
+      timestamp,
+    });
+    if (runtimeEvent) {
+      const pendingRequestId = sessionPermissionRequestId(runtimeEvent);
+      if (runtimeEvent.eventStatus === 'session_permission_required' && pendingRequestId) {
+        const nextPendingSessionPermissions = upsertSessionPermissionQueue(pendingSessionPermissions, runtimeEvent);
+        return {
+          messages: renderSessionPermissionQueue(state.messages, nextPendingSessionPermissions),
+          seenEventIds,
+          ui: { isWaiting: false, isStreaming: false },
+          pendingSessionPermissions: nextPendingSessionPermissions,
+        };
+      }
+      return {
+        messages: [...state.messages, runtimeEvent],
+        seenEventIds,
+        ui: { isWaiting: false, isStreaming: false },
+        pendingSessionPermissions,
+      };
+    }
+  }
+
   if (eventType === 'user_message' || event.role === 'user') {
     return {
       messages: [
         ...state.messages,
-        {
-          role: 'user',
-          content,
-          timestamp,
-          id: event.message_id || event.id,
-        },
+	        {
+	          role: 'user',
+	          content,
+	          timestamp,
+	          ...messageIdentityFromTranscriptEvent(event),
+	        },
       ],
       seenEventIds,
       ui: state.ui,
@@ -718,11 +824,11 @@ export function applyTranscriptEvent(
       created_at: timestamp,
     });
     return {
-      messages: messages.map((message, index, arr) => (
-        index === arr.length - 1 && message.role === 'assistant'
-          ? { ...message, timestamp, id: event.message_id || event.id }
-          : message
-      )),
+	      messages: messages.map((message, index, arr) => (
+	        index === arr.length - 1 && message.role === 'assistant'
+	          ? { ...message, timestamp, ...messageIdentityFromTranscriptEvent(event) }
+	          : message
+	      )),
       seenEventIds,
       ui: state.ui,
       pendingSessionPermissions,
@@ -747,10 +853,10 @@ export function applyTranscriptEvent(
       toolResult: normalized.displayResult,
       toolRawResult: normalized.raw,
       toolMeta,
-      artifacts: artifacts.length > 0 ? artifacts : undefined,
-      timestamp,
-      id: event.message_id || event.id,
-    };
+	      artifacts: artifacts.length > 0 ? artifacts : undefined,
+	      timestamp,
+	      ...messageIdentityFromTranscriptEvent(event),
+	    };
     return {
       messages: appendToolCallMessage(state.messages, toolMessage),
       seenEventIds,
@@ -769,11 +875,11 @@ export function applyTranscriptEvent(
       created_at: timestamp,
     });
     return {
-      messages: messages.map((message, index, arr) => (
-        index === arr.length - 1 && message.role === 'assistant'
-          ? { ...message, timestamp, id: event.message_id || event.id }
-          : message
-      )),
+	      messages: messages.map((message, index, arr) => (
+	        index === arr.length - 1 && message.role === 'assistant'
+	          ? { ...message, timestamp, ...messageIdentityFromTranscriptEvent(event) }
+	          : message
+	      )),
       seenEventIds,
       ui: { isWaiting: false, isStreaming: false },
       pendingSessionPermissions,
@@ -910,6 +1016,11 @@ const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
   'memory_candidate',
   'artifact_update',
   'artifact_delivery',
+  'runtime_action_started',
+  'runtime_action_progress',
+  'runtime_action_completed',
+  'runtime_action_blocked',
+  'runtime_action_failed',
 ]);
 const RAW_COMPACTION_SECTION_LABELS = [
   'Task Ledger',
@@ -996,6 +1107,17 @@ export function extractArtifactParts(payload: any): ChatArtifactPart[] {
     artifacts.push(artifact);
   }
   return artifacts;
+}
+
+function extractThinkingFromParts(parts: unknown): string | undefined {
+  if (!Array.isArray(parts)) return undefined;
+  const chunks = parts
+    .filter((part: any) => part?.type === 'reasoning' || part?.type === 'thinking')
+    .map((part: any) => (
+      typeof part?.text === 'string' ? part.text : typeof part?.content === 'string' ? part.content : ''
+    ))
+    .filter((text: string) => text.trim().length > 0);
+  return chunks.length > 0 ? chunks.join('') : undefined;
 }
 
 function messageAlreadyContainsArtifacts(message: AgentChatMessage | undefined, artifacts: ChatArtifactPart[]): boolean {
@@ -1277,21 +1399,23 @@ export function normalizeStoredChatMessage(payload: any): AgentChatMessage {
       toolMeta,
       artifacts: artifacts.length > 0 ? artifacts : undefined,
       thinking: payload?.thinking,
-      timestamp: payload?.created_at || payload?.timestamp,
-      sender_name: payload?.sender_name,
-      participant_id: payload?.participant_id,
-      id: payload?.id,
-    };
+	      timestamp: payload?.created_at || payload?.timestamp,
+	      sender_name: payload?.sender_name,
+	      participant_id: payload?.participant_id,
+	      id: payload?.id,
+	      ...messageIdentityFromStoredPayload(payload),
+	    };
   }
 
   return {
     role: payload?.role === 'assistant' ? 'assistant' : 'user',
     content: payload?.content || '',
     artifacts: artifacts.length > 0 ? artifacts : undefined,
-    thinking: payload?.thinking,
-    timestamp: payload?.created_at || payload?.timestamp,
-    sender_name: payload?.sender_name,
-    participant_id: payload?.participant_id,
-    id: payload?.id,
-  };
+    thinking: payload?.thinking || extractThinkingFromParts(payload?.parts),
+	    timestamp: payload?.created_at || payload?.timestamp,
+	    sender_name: payload?.sender_name,
+	    participant_id: payload?.participant_id,
+	    id: payload?.id,
+	    ...messageIdentityFromStoredPayload(payload),
+	  };
 }

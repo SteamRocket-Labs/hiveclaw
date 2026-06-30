@@ -922,6 +922,7 @@ async def execute_session_command(
             "projection_reason": "rewind",
             "checkpoint_event_id": checkpoint["checkpoint_event_id"],
             "ledger_event_id": checkpoint.get("ledger_event_id"),
+            "draft_content": checkpoint.get("content") or "",
             "turn_index": turn_index,
             "applied_at": datetime.now(timezone.utc).isoformat(),
             "truth_source": truth_source,
@@ -949,6 +950,7 @@ async def execute_session_command(
                 "session_id": str(session.id),
                 "projection_reason": "rewind",
                 "checkpoint_event_id": checkpoint["checkpoint_event_id"],
+                "draft_content": checkpoint.get("content") or "",
                 **(
                     {"message": "Session projection and workspace snapshot restored."}
                     if workspace_restore_payload is not None

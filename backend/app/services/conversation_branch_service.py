@@ -74,17 +74,26 @@ def _event_t0_role(event: ChatTranscriptEvent, role: str | None) -> str | None:
     return t0_role if isinstance(t0_role, str) and t0_role else role
 
 
-def _prefix_includes_anchor(mode: str) -> bool:
+def _prefix_includes_anchor(mode: str, *, anchor: ChatTranscriptEvent | None = None) -> bool:
+    if anchor is not None and _event_role(anchor) == "user" and mode in {"fork", "branch", "rewind"}:
+        return False
     return mode in {"fork", "branch", "insert_after", "reply", "side_question"}
+
+
+def _draft_content_for_anchor(mode: str, anchor: ChatTranscriptEvent) -> str:
+    if _event_role(anchor) == "user" and mode in {"fork", "branch", "rewind"}:
+        return (getattr(anchor, "content", None) or "").strip()
+    return ""
 
 
 def _branch_title(source_session: ChatSession, mode: str, title: str | None) -> str:
     if title and title.strip():
         return title.strip()[:200]
     source_title = (getattr(source_session, "title", None) or "Conversation").strip()
+    if mode == "branch":
+        return source_title[:200]
     suffix = {
         "fork": "fork",
-        "branch": "branch",
         "edit": "edit",
         "insert_before": "insert",
         "insert_after": "insert",
@@ -283,7 +292,7 @@ async def create_conversation_branch(
         db=db,
         source_session_id=source_session.id,
         anchor=anchor,
-        include_anchor=_prefix_includes_anchor(mode_text),
+        include_anchor=_prefix_includes_anchor(mode_text, anchor=anchor),
     )
     root_session_id = getattr(source_session, "root_session_id", None) or source_session.id
     now = datetime.now(timezone.utc)
@@ -385,6 +394,8 @@ async def create_conversation_branch(
             },
         )
 
+    draft_content = _draft_content_for_anchor(mode_text, anchor)
+
     return ConversationBranchResult(
         session=branch_session,
         branch={
@@ -393,6 +404,7 @@ async def create_conversation_branch(
             "root_session_id": str(root_session_id),
             "session_id": str(branch_session.id),
             "anchor_event_id": str(anchor.id),
+            "draft_content": draft_content,
             "copied_event_ids": copied_event_ids,
         },
         run_request=run_request,

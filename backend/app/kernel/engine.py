@@ -2348,10 +2348,14 @@ def _mid_run_items_to_user_messages(items: Any) -> list[LLMMessage]:
         return []
     messages: list[LLMMessage] = []
     for item in items:
+        role = "user"
         if isinstance(item, dict):
+            raw_role = str(item.get("role") or "user").strip().lower()
+            if raw_role in {"user", "system"}:
+                role = raw_role
             structured_parts = item.get("llm_parts") or item.get("parts")
             if isinstance(structured_parts, list) and structured_parts:
-                messages.append(LLMMessage(role="user", content=structured_parts))
+                messages.append(LLMMessage(role=role, content=structured_parts))
                 continue
             content: Any = item.get("llm_content") or item.get("content")
         else:
@@ -2361,7 +2365,7 @@ def _mid_run_items_to_user_messages(items: Any) -> list[LLMMessage]:
         text = str(content).strip()
         if not text:
             continue
-        messages.append(LLMMessage(role="user", content=text))
+        messages.append(LLMMessage(role=role, content=text))
     return messages
 
 

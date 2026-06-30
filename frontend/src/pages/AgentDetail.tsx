@@ -40,6 +40,7 @@ import {
     getRuntimeEventMessage,
     getTerminalRunIdFromTranscriptEvent,
     getTransportNotice,
+    isReadOnlySessionForCurrentUser,
     isTerminalRealtimeChatEvent,
     mergePendingUserMessages,
     filterSessionsForAgent,
@@ -47,6 +48,7 @@ import {
     normalizeStoredChatMessage,
     replayTranscriptEvents,
     sessionBelongsToAgent,
+    shouldIgnoreObservedActiveRun,
     shouldClearStaleRuntimeState,
     type AgentChatMessage,
     type ChatTranscriptEventPayload,
@@ -111,6 +113,60 @@ const DEFAULT_SESSION_PERMISSION_MODE: SessionPermissionMode = 'bypassPermission
 
 function objectValue(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function stringValueFromUnknown(value: unknown): string {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function draftContentFromCheckpointPayload(actionResult: Record<string, unknown> | null, uiAction?: Record<string, unknown>): string {
+    const checkpoint = objectValue(actionResult?.checkpoint);
+    return (
+        stringValueFromUnknown(uiAction?.draft_content)
+        || stringValueFromUnknown(actionResult?.draft_content)
+        || stringValueFromUnknown(checkpoint.content)
+    );
+}
+
+function checkpointEventIdFromPayload(actionResult: Record<string, unknown> | null, uiAction?: Record<string, unknown>): string {
+    const checkpoint = objectValue(actionResult?.checkpoint);
+    return (
+        stringValueFromUnknown(uiAction?.checkpoint_event_id)
+        || stringValueFromUnknown(actionResult?.checkpoint_event_id)
+        || stringValueFromUnknown(checkpoint.checkpoint_event_id)
+        || stringValueFromUnknown(checkpoint.id)
+        || stringValueFromUnknown(checkpoint.event_id)
+    );
+}
+
+function trimMessagesBeforeTranscriptEvent(messages: AgentChatMessage[], checkpointEventId: string): AgentChatMessage[] {
+    if (!checkpointEventId) return messages;
+    const index = messages.findIndex((message) => message.transcriptEventId === checkpointEventId);
+    return index >= 0 ? messages.slice(0, index) : messages;
+}
+
+export function applySessionActiveProjection(
+    session: unknown,
+    messages: AgentChatMessage[],
+): { messages: AgentChatMessage[]; draftContent: string; checkpointEventId: string; shouldScrollToProjectionTail: boolean } {
+    const sessionRecord = objectValue(session);
+    const transcriptMetadata = objectValue(sessionRecord.transcript_metadata_json);
+    const metadata = objectValue(sessionRecord.metadata);
+    const activeProjection = objectValue(transcriptMetadata.active_projection || metadata.active_projection);
+    if (stringValueFromUnknown(activeProjection.projection_reason) !== 'rewind') {
+        return { messages, draftContent: '', checkpointEventId: '', shouldScrollToProjectionTail: false };
+    }
+    const checkpointEventId = stringValueFromUnknown(activeProjection.checkpoint_event_id);
+    return {
+        messages: trimMessagesBeforeTranscriptEvent(messages, checkpointEventId),
+        draftContent: stringValueFromUnknown(activeProjection.draft_content),
+        checkpointEventId,
+        shouldScrollToProjectionTail: Boolean(checkpointEventId),
+    };
+}
+
+function branchDraftContent(response: { branch?: Record<string, unknown> } | null | undefined, fallback: string): string {
+    return stringValueFromUnknown(response?.branch?.draft_content) || fallback;
 }
 
 export function sessionPermissionModeFromSession(session: unknown): SessionPermissionMode {
@@ -409,6 +465,7 @@ function AgentDetailInner() {
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
     const locallyTerminalRunIdsRef = useRef<Set<string>>(new Set());
+    const locallyTerminalSessionKeysRef = useRef<Set<string>>(new Set());
     const [activeRunStateBySession, setActiveRunStateBySession] = useState<Record<SessionRuntimeKey, SessionRunState>>({});
 
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
@@ -421,7 +478,11 @@ function AgentDetailInner() {
     };
 
     const setActiveRunState = (key: SessionRuntimeKey, run: SessionRunState | null) => {
-        if (run) runtimeActivityAtRef.current[key] = Date.now();
+        if (run) {
+            runtimeActivityAtRef.current[key] = Date.now();
+            locallyTerminalSessionKeysRef.current.delete(key);
+            if (run.runId) locallyTerminalRunIdsRef.current.delete(String(run.runId));
+        }
         const next = applySessionActiveRunState(activeRunStateRef.current, sessionUiStateRef.current, key, run);
         activeRunStateRef.current = next.activeRuns;
         sessionUiStateRef.current = next.uiStates;
@@ -438,6 +499,7 @@ function AgentDetailInner() {
     };
 
     const markActiveRunTerminal = (key: SessionRuntimeKey, terminalRunId?: string | null) => {
+        locallyTerminalSessionKeysRef.current.add(key);
         const runId = terminalRunId || activeRunStateRef.current[key]?.runId;
         if (runId) locallyTerminalRunIdsRef.current.add(String(runId));
         setActiveRunState(key, null);
@@ -567,10 +629,7 @@ function AgentDetailInner() {
 
     const isWritableSession = (sess: any) => {
         if (!sess) return false;
-        const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
-        if (isAgentSession) return false;
-        if (sess.user_id && currentUser && sess.user_id !== String(currentUser.id)) return false;
-        return true;
+        return !isReadOnlySessionForCurrentUser(sess, currentUser?.id);
     };
 
     const syncActiveSocketState = (sess: any | null = activeSession, agentId: string | undefined = id) => {
@@ -665,6 +724,23 @@ function AgentDetailInner() {
                     ...createEmptyTranscriptReplayState(),
                     messages: preParsed,
                 };
+            }
+            const activeProjection = applySessionActiveProjection(sess, preParsed);
+            preParsed = activeProjection.messages;
+            if (activeProjection.checkpointEventId) {
+                const replay = transcriptReplayStateRef.current[runtimeKey];
+                if (replay) {
+                    transcriptReplayStateRef.current[runtimeKey] = {
+                        ...replay,
+                        messages: activeProjection.messages,
+                    };
+                }
+                if (activeProjection.draftContent) {
+                    setChatInput(activeProjection.draftContent);
+                }
+                if (activeProjection.shouldScrollToProjectionTail) {
+                    setProjectionTailScrollNonce(prev => prev + 1);
+                }
             }
             
             if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
@@ -763,6 +839,7 @@ function AgentDetailInner() {
             const targetSession = actionResult?.session && typeof actionResult.session === 'object'
                 ? actionResult.session as any
                 : null;
+            const draftContent = branchDraftContent({ branch: objectValue(actionResult?.branch) }, '');
             const targetSessionId = String(uiAction.session_id || targetSession?.id || '');
             if (targetSessionId) {
                 if (targetSession) {
@@ -789,6 +866,7 @@ function AgentDetailInner() {
             if (targetSessionId) {
                 ensureSessionWorkbenchRoute(targetSessionId);
             }
+            if (draftContent) setChatInput(draftContent);
             return true;
         }
 
@@ -864,6 +942,33 @@ function AgentDetailInner() {
             || uiAction.type === 'install_active_projection_with_workspace'
         ) {
             const workspaceRestore = uiAction.type === 'install_workspace_snapshot' || uiAction.type === 'install_active_projection_with_workspace';
+            const isRewindProjection = uiAction.type === 'install_active_projection' || uiAction.type === 'install_active_projection_with_workspace';
+            if (isRewindProjection) {
+                const checkpointEventId = checkpointEventIdFromPayload(actionResult, uiAction);
+                const draftContent = draftContentFromCheckpointPayload(actionResult, uiAction);
+                if (draftContent) setChatInput(draftContent);
+                if (checkpointEventId) {
+                    const activeKey = buildSessionRuntimeKey(id, currentSessionId);
+                    const replay = transcriptReplayStateRef.current[activeKey];
+                    if (replay) {
+                        transcriptReplayStateRef.current[activeKey] = {
+                            ...replay,
+                            messages: trimMessagesBeforeTranscriptEvent(replay.messages, checkpointEventId),
+                        };
+                    }
+                    setChatMessages(prev => (
+                        chatMessagesSessionId === currentSessionId
+                            ? trimMessagesBeforeTranscriptEvent(prev, checkpointEventId)
+                            : prev
+                    ));
+                    setHistoryMsgs(prev => (
+                        historyMessagesSessionId === currentSessionId
+                            ? trimMessagesBeforeTranscriptEvent(prev, checkpointEventId)
+                            : prev
+                    ));
+                    setProjectionTailScrollNonce(prev => prev + 1);
+                }
+            }
             openSessionCommandControl({
                 type: 'projection_status',
                 title: message || (uiAction.type === 'install_compacted_context' ? 'Context compacted' : workspaceRestore ? 'Workspace restored' : 'Session projection installed'),
@@ -1006,6 +1111,7 @@ function AgentDetailInner() {
     const [planModeRequested, setPlanModeRequested] = useState(false);
     const [sessionPermissionMode, setSessionPermissionMode] = useState<SessionPermissionMode>(DEFAULT_SESSION_PERMISSION_MODE);
     const [sessionCommandControl, setSessionCommandControl] = useState<SessionCommandControlState | null>(null);
+    const [projectionTailScrollNonce, setProjectionTailScrollNonce] = useState(0);
     const handleSetSessionPermissionMode = async (mode: SessionPermissionMode) => {
         const previous = sessionPermissionMode;
         setSessionPermissionMode(mode);
@@ -1228,10 +1334,11 @@ function AgentDetailInner() {
                 selectSession({
                     id: requestedSessionId,
                     agent_id: id,
-                    user_id: currentUser?.id ? String(currentUser.id) : undefined,
                     title: t('agent.chat.session', 'Session'),
-                    source_channel: 'web',
+                    source_channel: 'unknown',
                     listed_surface: 'chat',
+                    read_only: true,
+                    is_pending_session_lookup: true,
                 });
                 return;
             }
@@ -1255,10 +1362,11 @@ function AgentDetailInner() {
         selectSession({
             id: requestedSessionId,
             agent_id: id,
-            user_id: currentUser?.id ? String(currentUser.id) : undefined,
             title: t('agent.chat.session', 'Session'),
-            source_channel: 'web',
+            source_channel: 'unknown',
             listed_surface: 'chat',
+            read_only: true,
+            is_pending_session_lookup: true,
         });
     }, [canLoadAgentScopedData, activeTab, requestedSessionId, id, sessions, allSessions]);
 
@@ -1558,6 +1666,16 @@ function AgentDetailInner() {
         setShowScrollBtn(false);
     };
     useEffect(() => {
+        if (!projectionTailScrollNonce) return;
+        const frame = window.requestAnimationFrame(() => {
+            chatEndRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior, block: 'end' });
+            isNearBottom.current = true;
+            setShowScrollBtn(false);
+            window.setTimeout(() => chatInputRef.current?.focus(), 0);
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [projectionTailScrollNonce]);
+    useEffect(() => {
         if (!chatEndRef.current) return;
         if (isFirstLoad.current && chatMessages.length > 0) {
             // First load: instant jump to bottom, no animation
@@ -1814,7 +1932,8 @@ function AgentDetailInner() {
     };
 
     const handleBranchMessage = async (message: AgentChatMessage, mode: ConversationBranchMode, branchContent = '') => {
-        if (!id || !activeSession?.id || !message.id) return;
+        const anchorEventId = message.transcriptEventId;
+        if (!id || !activeSession?.id || !anchorEventId) return;
         const sessionId = String(activeSession.id);
         const content = branchContent.trim();
         const displayContent = content;
@@ -1823,10 +1942,10 @@ function AgentDetailInner() {
         try {
             const response = await chatApi.branchSession(id, sessionId, {
                 mode,
-                anchor_event_id: String(message.id),
+                anchor_event_id: String(anchorEventId),
                 content,
                 display_content: displayContent,
-                start_run: mode !== 'fork',
+                start_run: !['fork', 'branch', 'rewind'].includes(mode),
                 permission_mode: sessionPermissionMode,
             });
             const branchSession = response.session;
@@ -1840,6 +1959,8 @@ function AgentDetailInner() {
             });
             await selectSession(branchSession);
             ensureSessionWorkbenchRoute(String(branchSession.id));
+            const draftContent = branchDraftContent(response, message.content || '');
+            if (draftContent) setChatInput(draftContent);
             if (response.run?.run_id) {
                 const branchKey = buildSessionRuntimeKey(id, String(branchSession.id));
                 setActiveRunState(branchKey, { runId: response.run.run_id, status: response.run.status || 'running' });
@@ -1984,7 +2105,15 @@ function AgentDetailInner() {
         if (!id || !activeSession?.id || !isWritableSession(activeSession)) return;
         const key = buildSessionRuntimeKey(id, String(activeSession.id));
         if (activeSessionRun && isLiveRun(activeSessionRun)) {
-            if (locallyTerminalRunIdsRef.current.has(String(activeSessionRun.run_id))) {
+            if (shouldIgnoreObservedActiveRun({
+                key,
+                run: {
+                    runId: activeSessionRun.run_id,
+                    status: activeSessionRun.status,
+                },
+                terminalRunIds: locallyTerminalRunIdsRef.current,
+                terminalSessionKeys: locallyTerminalSessionKeysRef.current,
+            })) {
                 invalidateSessionRuntimeQueries(id, String(activeSession.id), false);
                 return;
             }

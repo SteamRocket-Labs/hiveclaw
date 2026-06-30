@@ -45,6 +45,8 @@ import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
   getCompactionDisplayContent,
+  isA2ASession,
+  isReadOnlySessionForCurrentUser,
   type AgentChatMessage,
   type ChatArtifactPart,
   type ChatRuntimeSummary,
@@ -192,6 +194,7 @@ function SessionPermissionActions({
 
 type ConversationBranchMode =
   | 'fork'
+  | 'branch'
   | 'edit'
   | 'insert_before'
   | 'insert_after'
@@ -607,8 +610,22 @@ function SessionGitLine({
   const { t } = useTranslation();
   const navigationLabel = t('sessionWorkbench.gitLine.navigation', 'Session navigation');
   const branchRows = lineage.length > 1 ? buildBranchLineageRows(lineage).filter((row) => row.depth > 0) : [];
+  const checkpointIds = new Set(checkpoints.map((checkpoint) => sessionCheckpointId(checkpoint)).filter(Boolean));
+  const branchesByAnchorId = new Map<string, BranchLineageRow[]>();
+  const orphanBranchRows: BranchLineageRow[] = [];
+  branchRows.forEach((row) => {
+    const anchorId = branchAnchorId(row);
+    if (!anchorId || !checkpointIds.has(anchorId)) {
+      orphanBranchRows.push(row);
+      return;
+    }
+    const rows = branchesByAnchorId.get(anchorId) || [];
+    rows.push(row);
+    branchesByAnchorId.set(anchorId, rows);
+  });
   const density = getSessionGitLineDensity(checkpoints.length + branchRows.length);
   const densityClass = `is-${density}`;
+  const [expandedBranchAnchorId, setExpandedBranchAnchorId] = React.useState<string | null>(null);
   const [hoverPreview, setHoverPreview] = React.useState<{
     label: string;
     top: number;
@@ -628,6 +645,33 @@ function SessionGitLine({
   const closePreview = React.useCallback(() => {
     setHoverPreview(null);
   }, []);
+  const renderBranchButton = (row: BranchLineageRow, compact = false) => {
+    const isActive = String(row.id) === String(activeSessionId || '');
+    const title = row.title || row.id;
+    const anchorId = branchAnchorId(row);
+    const previewLabel = `${branchModeLabel(row)} · ${title}`;
+    return (
+      <button
+        key={row.id}
+        type="button"
+        data-testid="session-gitline-branch"
+        data-session-action="navigate-branch"
+        data-branch-session-id={row.id}
+        data-checkpoint-id={anchorId || undefined}
+        className={`session-gitline-branch-node ${compact ? 'is-compact' : ''} ${isActive ? 'is-active' : ''}`}
+        title={previewLabel}
+        aria-label={previewLabel}
+        onMouseEnter={(event) => openPreview(event, previewLabel)}
+        onFocus={(event) => openPreview(event, previewLabel)}
+        onMouseLeave={closePreview}
+        onBlur={closePreview}
+        onClick={() => onNavigateBranch?.(String(row.id))}
+      >
+        <span className="session-gitline-branch-stem" aria-hidden="true" />
+        <span className="session-gitline-branch-dot" aria-hidden="true" />
+      </button>
+    );
+  };
   if (loading && checkpoints.length === 0 && branchRows.length === 0) {
     return (
       <aside
@@ -662,54 +706,68 @@ function SessionGitLine({
           const id = sessionCheckpointId(checkpoint);
           const isFocused = Boolean(id && id === focusedCheckpointId);
           const previewLabel = sessionCheckpointPreview(checkpoint, index);
+          const anchoredBranches = id ? branchesByAnchorId.get(id) || [] : [];
+          const hasActiveBranch = anchoredBranches.some((row) => String(row.id) === String(activeSessionId || ''));
+          const isExpandedBranchAnchor = Boolean(id && expandedBranchAnchorId === id);
+          const showCluster = anchoredBranches.length > 2 && !isExpandedBranchAnchor;
+          const branchClusterLabel = anchoredBranches
+            .map((row) => row.title || row.id)
+            .slice(0, 4)
+            .join(' · ');
           return (
-            <button
+            <div
               key={id || index}
-              type="button"
-              data-testid="session-gitline-checkpoint"
-              data-session-action="navigate-checkpoint"
-              data-checkpoint-id={id || undefined}
-              className={`session-gitline-node ${isFocused ? 'is-focused' : ''}`}
-              title={previewLabel}
-              aria-label={previewLabel}
-              onMouseEnter={(event) => openPreview(event, previewLabel)}
-              onFocus={(event) => openPreview(event, previewLabel)}
-              onMouseLeave={closePreview}
-              onBlur={closePreview}
-              onClick={() => onNavigateCheckpoint(checkpoint, index)}
-            />
-          );
-        })}
-      </div>
-      {branchRows.length > 0 && (
-        <div className="session-gitline-branches" data-testid="session-gitline-branches">
-          {branchRows.map((row) => {
-            const isActive = String(row.id) === String(activeSessionId || '');
-            const title = row.title || row.id;
-            const anchorId = branchAnchorId(row);
-            const previewLabel = `${branchModeLabel(row)} · ${title}`;
-            return (
+              className={`session-gitline-node-wrap ${anchoredBranches.length ? 'has-branches' : ''} ${hasActiveBranch ? 'has-active-branch' : ''}`}
+            >
               <button
-                key={row.id}
                 type="button"
-                data-testid="session-gitline-branch"
-                data-session-action="navigate-branch"
-                data-branch-session-id={row.id}
-                data-checkpoint-id={anchorId || undefined}
-                className={`session-gitline-branch-node ${isActive ? 'is-active' : ''}`}
+                data-testid="session-gitline-checkpoint"
+                data-session-action="navigate-checkpoint"
+                data-checkpoint-id={id || undefined}
+                className={`session-gitline-node ${isFocused ? 'is-focused' : ''}`}
                 title={previewLabel}
                 aria-label={previewLabel}
                 onMouseEnter={(event) => openPreview(event, previewLabel)}
                 onFocus={(event) => openPreview(event, previewLabel)}
                 onMouseLeave={closePreview}
                 onBlur={closePreview}
-                onClick={() => onNavigateBranch?.(String(row.id))}
-              >
-                <span className="session-gitline-branch-stem" aria-hidden="true" />
-                <span className="session-gitline-branch-dot" aria-hidden="true" />
-              </button>
-            );
-          })}
+                onClick={() => onNavigateCheckpoint(checkpoint, index)}
+              />
+              {anchoredBranches.length > 0 && (
+                <div className={`session-gitline-branch-group ${isExpandedBranchAnchor ? 'is-expanded' : ''}`}>
+                  {showCluster ? (
+                    <button
+                      type="button"
+                      data-testid="session-gitline-branch-cluster"
+                      data-session-action="expand-branches"
+                      data-checkpoint-id={id || undefined}
+                      className={`session-gitline-branch-cluster ${hasActiveBranch ? 'is-active' : ''}`}
+                      title={branchClusterLabel}
+                      aria-label={branchClusterLabel || t('agent.chat.branch.branches', 'Branches')}
+                      onMouseEnter={(event) => openPreview(event, branchClusterLabel || t('agent.chat.branch.branches', 'Branches'))}
+                      onFocus={(event) => openPreview(event, branchClusterLabel || t('agent.chat.branch.branches', 'Branches'))}
+                      onMouseLeave={closePreview}
+                      onBlur={closePreview}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setExpandedBranchAnchorId(id || null);
+                      }}
+                    >
+                      +{anchoredBranches.length}
+                    </button>
+                  ) : (
+                    anchoredBranches.map((row) => renderBranchButton(row, isExpandedBranchAnchor))
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {orphanBranchRows.length > 0 && (
+        <div className="session-gitline-branches" data-testid="session-gitline-branches">
+          {orphanBranchRows.map((row) => renderBranchButton(row))}
         </div>
       )}
       {hoverPreview ? (
@@ -1521,12 +1579,14 @@ function SessionRuntimePanel({
 
 function MessageBranchActions({
   message,
+  checkpointMessage,
   isLeft,
   onBranchMessage,
   onFeedbackMessage,
   onRewindMessage,
 }: {
   message: AgentChatMessage;
+  checkpointMessage?: AgentChatMessage | null;
   isLeft: boolean;
   onBranchMessage?: (message: AgentChatMessage) => void | Promise<unknown>;
   onFeedbackMessage?: (message: AgentChatMessage, label: RecordSessionFeedbackInput['label']) => void | Promise<unknown>;
@@ -1534,9 +1594,8 @@ function MessageBranchActions({
 }) {
   const { t } = useTranslation();
   if (!message.id) return null;
-  const isUser = message.role === 'user';
-  const isAssistant = message.role === 'assistant';
-  if (!isUser && !isAssistant) return null;
+  if (message.role !== 'assistant') return null;
+  const checkpointReady = Boolean(checkpointMessage?.transcriptEventId);
 
   const actions: Array<{
     key: string;
@@ -1567,16 +1626,22 @@ function MessageBranchActions({
       label: t('agent.chat.actions.branch', 'Branch'),
       testId: 'message-action-branch',
       icon: <IconGitBranch size={12} />,
-      disabled: !onBranchMessage,
-      onClick: () => void onBranchMessage?.(message),
+      disabled: !onBranchMessage || !checkpointReady,
+      onClick: () => {
+        if (!checkpointMessage) return;
+        void onBranchMessage?.(checkpointMessage);
+      },
     },
     {
       key: 'rewind',
       label: t('agent.chat.actions.rewind', 'Rewind'),
       testId: 'message-action-rewind',
       icon: <IconHistory size={12} />,
-      disabled: !onRewindMessage,
-      onClick: () => void onRewindMessage?.(message),
+      disabled: !onRewindMessage || !checkpointReady,
+      onClick: () => {
+        if (!checkpointMessage) return;
+        void onRewindMessage?.(checkpointMessage);
+      },
     },
   ];
 
@@ -1621,6 +1686,14 @@ function MessageBranchActions({
       ))}
     </div>
   );
+}
+
+function previousUserCheckpointForMessage(messages: AgentChatMessage[], index: number): AgentChatMessage | null {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const candidate = messages[cursor];
+    if (candidate?.role === 'user' && candidate.transcriptEventId) return candidate;
+  }
+  return null;
 }
 
 function RawToolResultBlock({ text }: { text: string }) {
@@ -1997,9 +2070,7 @@ export default function AgentChatSection({
 
   const isReadOnlySession =
     !!activeSession &&
-    (((activeSession.user_id && currentUser && activeSession.user_id !== String(currentUser.id)) as boolean) ||
-      activeSession.source_channel === 'agent' ||
-      activeSession.participant_type === 'agent');
+    isReadOnlySessionForCurrentUser(activeSession as any, currentUser?.id);
 
   const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
   const [composerMenuOpen, setComposerMenuOpen] = React.useState(false);
@@ -2060,13 +2131,13 @@ export default function AgentChatSection({
         ? t('agent.chat.askAboutFile', { name: attachedFiles.length === 1 ? attachedFiles[0].name : `${attachedFiles.length} files` })
         : t('chat.placeholder');
 
-  const startBranchAction = React.useCallback(
-    async (message: AgentChatMessage) => {
-      if (!onBranchMessage) return;
-      await onBranchMessage(message, 'fork');
-    },
-    [onBranchMessage],
-  );
+	  const startBranchAction = React.useCallback(
+	    async (message: AgentChatMessage) => {
+	      if (!onBranchMessage) return;
+	      await onBranchMessage(message, 'branch');
+	    },
+	    [onBranchMessage],
+	  );
 
   const submitMessageFeedback = React.useCallback(
     async (message: AgentChatMessage, label: RecordSessionFeedbackInput['label']) => {
@@ -2098,13 +2169,13 @@ export default function AgentChatSection({
     [activeSession?.id, effectiveAgentId, t],
   );
 
-  const rewindFromMessage = React.useCallback(
-    async (message: AgentChatMessage) => {
-      if (!message.id || !onRunSessionCommand) return;
-      await onRunSessionCommand('rewind', { checkpoint_event_id: String(message.id) });
-    },
-    [onRunSessionCommand],
-  );
+	  const rewindFromMessage = React.useCallback(
+	    async (message: AgentChatMessage) => {
+	      if (!message.transcriptEventId || !onRunSessionCommand) return;
+	      await onRunSessionCommand('rewind', { checkpoint_event_id: String(message.transcriptEventId) });
+	    },
+	    [onRunSessionCommand],
+	  );
 
   const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
     const artifactAgentId = artifactWorkspaceAgentId(artifact, effectiveAgentId);
@@ -2267,9 +2338,9 @@ export default function AgentChatSection({
     [onResolveSessionPermission, t],
   );
 
-  const ChatMessageItem = React.useMemo(
-    () =>
-      React.memo(({ msg, i, isLeft }: { msg: AgentChatMessage; i: number; isLeft: boolean }) => {
+	  const ChatMessageItem = React.useMemo(
+	    () =>
+	      React.memo(({ msg, i, isLeft, checkpointMessage }: { msg: AgentChatMessage; i: number; isLeft: boolean; checkpointMessage?: AgentChatMessage | null }) => {
         const extension = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
         const fileIcon =
           extension === 'pdf'
@@ -2301,10 +2372,11 @@ export default function AgentChatSection({
             >
               {timeStr}
               {msg.content && <CopyMessageButton text={msg.content} />}
-              <MessageBranchActions
-                message={msg}
-                isLeft={isLeft}
-                onBranchMessage={startBranchAction}
+	              <MessageBranchActions
+	                message={msg}
+	                checkpointMessage={checkpointMessage}
+	                isLeft={isLeft}
+	                onBranchMessage={startBranchAction}
                 onFeedbackMessage={submitMessageFeedback}
                 onRewindMessage={rewindFromMessage}
               />
@@ -2315,7 +2387,7 @@ export default function AgentChatSection({
         return (
           <div
             key={i}
-            data-session-message-id={msg.id || undefined}
+	            data-session-message-id={msg.transcriptEventId || msg.id || undefined}
             data-session-message-index={i}
             className={`session-tui-message-row ${isLeft ? 'session-tui-message-row-assistant' : 'session-tui-message-row-user'}`}
           >
@@ -2550,19 +2622,27 @@ export default function AgentChatSection({
     )
   );
 
-  const renderConversationMessage = (message: AgentChatMessage, index: number, isLeft: boolean) => {
-    if (message.role === 'event') {
-      return renderEventMessage(message, index);
+	  const renderConversationMessage = (message: AgentChatMessage, index: number, isLeft: boolean, timelineMessages: AgentChatMessage[]) => {
+	    if (message.role === 'event') {
+	      return renderEventMessage(message, index);
     }
     if (message.role === 'tool_call') {
       if (isInlineToolCardMessage(message)) return renderInlinePlanToolCall(message, index);
       return null;
     }
-    if (message.role === 'assistant' && !message.content?.trim()) {
-      return null;
-    }
-    return <ChatMessageItem key={index} msg={message} i={index} isLeft={isLeft} />;
-  };
+	    if (message.role === 'assistant' && !message.content?.trim()) {
+	      return null;
+	    }
+	    return (
+	      <ChatMessageItem
+	        key={index}
+	        msg={message}
+	        i={index}
+	        isLeft={isLeft}
+	        checkpointMessage={message.role === 'assistant' ? previousUserCheckpointForMessage(timelineMessages, index) : null}
+	      />
+	    );
+	  };
 
   const renderConversationMessages = (
     messages: AgentChatMessage[],
@@ -2581,11 +2661,11 @@ export default function AgentChatSection({
 
     model.cells.forEach((cell) => {
       if (cell.kind === 'user_turn') {
-        nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index)));
-        return;
-      }
-      if (cell.kind === 'assistant_final') {
-        nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index)));
+	        nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index), messages));
+	        return;
+	      }
+	      if (cell.kind === 'assistant_final') {
+	        nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index), messages));
         return;
       }
       if (cell.kind === 'active_run') {
@@ -2599,7 +2679,7 @@ export default function AgentChatSection({
                   ? renderInlinePlanToolCall(entry.message, entry.index)
                   : null
             ))}
-            {cell.answer ? renderConversationMessage(cell.answer, cell.answerIndex ?? 0, resolveIsLeft(cell.answer, cell.answerIndex ?? 0)) : null}
+	            {cell.answer ? renderConversationMessage(cell.answer, cell.answerIndex ?? 0, resolveIsLeft(cell.answer, cell.answerIndex ?? 0), messages) : null}
           </div>,
         );
         return;
@@ -2906,12 +2986,12 @@ export default function AgentChatSection({
                       display: 'inline-block',
                     }}
                   >
-                    {activeSession.source_channel === 'agent' ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
+                    {isA2ASession(activeSession as any) ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
                   </div>
                   {activeSessionHydrating ? (
                     <SessionHydratingState label={t('common.loading', 'Loading')} />
                   ) : (() => {
-                      const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
+                      const isA2A = isA2ASession(activeSession as any);
                       const thisAgentName = agent?.name;
                       const thisAgentPid = isA2A && thisAgentName ? visibleHistoryMsgs.find((message) => message.sender_name === thisAgentName)?.participant_id : null;
                       return renderConversationMessages(

@@ -70,6 +70,87 @@ def test_artifact_policy_preserves_a2a_producer_as_download_owner(tmp_path):
     assert part["delivery_agent_id"] == str(parent_agent_id)
 
 
+def test_a2a_delivery_projects_child_artifact_ref_without_copying_parent_workspace(tmp_path):
+    from app.agents.orchestrator import _project_a2a_artifact_refs_to_parent_session
+
+    parent_agent_id = uuid4()
+    child_agent_id = uuid4()
+    parent_session_id = uuid4()
+    runtime_task_id = uuid4()
+    child_workspace = tmp_path / str(child_agent_id)
+    child_report = child_workspace / "workspace" / "chapter9.md"
+    child_report.parent.mkdir(parents=True)
+    child_report.write_text("# Chapter 9\n", encoding="utf-8")
+
+    projected = _project_a2a_artifact_refs_to_parent_session(
+        artifact_parts=[
+            {
+                "type": "artifact",
+                "artifact_id": "child-artifact-1",
+                "path": "workspace/chapter9.md",
+                "name": "chapter9.md",
+                "owner_agent_id": str(child_agent_id),
+                "source_agent_id": str(child_agent_id),
+                "download_agent_id": str(child_agent_id),
+            }
+        ],
+        data_root=tmp_path,
+        parent_agent_id=parent_agent_id,
+        parent_session_id=parent_session_id,
+        runtime_task_id=runtime_task_id,
+    )
+
+    parent_report = tmp_path / str(parent_agent_id) / "workspace" / "chapter9.md"
+    assert not parent_report.exists()
+    assert len(projected) == 1
+    assert projected[0]["path"] == "workspace/chapter9.md"
+    assert projected[0]["owner_agent_id"] == str(child_agent_id)
+    assert projected[0]["download_agent_id"] == str(child_agent_id)
+    assert projected[0]["source_agent_id"] == str(child_agent_id)
+    assert projected[0]["delivery_agent_id"] == str(parent_agent_id)
+    assert projected[0]["source"] == "a2a_delivery_ref"
+    assert projected[0]["source_artifact_id"] == "child-artifact-1"
+    assert projected[0]["preview_snapshot_content"] == "# Chapter 9\n"
+
+
+def test_a2a_delivery_projects_latest_duplicate_child_artifact_ref_only(tmp_path):
+    from app.agents.orchestrator import _project_a2a_artifact_refs_to_parent_session
+
+    parent_agent_id = uuid4()
+    child_agent_id = uuid4()
+    child_workspace = tmp_path / str(child_agent_id)
+    child_report = child_workspace / "workspace" / "chapter9.md"
+    child_report.parent.mkdir(parents=True)
+    child_report.write_text("# Latest Chapter 9\n", encoding="utf-8")
+
+    projected = _project_a2a_artifact_refs_to_parent_session(
+        artifact_parts=[
+            {
+                "type": "artifact",
+                "artifact_id": "old-artifact",
+                "path": "workspace/chapter9.md",
+                "owner_agent_id": str(child_agent_id),
+            },
+            {
+                "type": "artifact",
+                "artifact_id": "latest-artifact",
+                "path": "workspace/chapter9.md",
+                "owner_agent_id": str(child_agent_id),
+            },
+        ],
+        data_root=tmp_path,
+        parent_agent_id=parent_agent_id,
+        parent_session_id=uuid4(),
+        runtime_task_id=uuid4(),
+    )
+
+    assert len(projected) == 1
+    assert projected[0]["source_artifact_id"] == "latest-artifact"
+    assert projected[0]["download_agent_id"] == str(child_agent_id)
+    assert projected[0]["preview_snapshot_content"] == "# Latest Chapter 9\n"
+    assert not (tmp_path / str(parent_agent_id) / "workspace" / "chapter9.md").exists()
+
+
 @pytest.mark.parametrize(
     "path",
     [

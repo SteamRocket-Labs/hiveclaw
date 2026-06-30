@@ -418,6 +418,66 @@ def _tool_step_contract(data: dict[str, Any], *, fallback_run_id: uuid.UUID | st
     return payload
 
 
+def _runtime_action_event_from_tool_result(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a session-visible action lifecycle event from terminal tool output."""
+    if str(data.get("status") or "") != "done":
+        return None
+    tool_name = str(data.get("name") or "")
+
+    raw_result = data.get("result")
+    if isinstance(raw_result, dict):
+        payload = raw_result
+    else:
+        try:
+            maybe_payload = json.loads(str(raw_result or "{}"))
+            payload = maybe_payload if isinstance(maybe_payload, dict) else {}
+        except Exception:
+            payload = {}
+
+    args = data.get("args") if isinstance(data.get("args"), dict) else {}
+    child_session_id = str(payload.get("child_session_id") or payload.get("session_id") or "").strip()
+
+    if tool_name == "delegate_to_agent":
+        runtime_task_id = str(payload.get("runtime_task_id") or payload.get("task_id") or "").strip()
+        if not child_session_id and not runtime_task_id:
+            return None
+        target_agent_name = str(args.get("agent_name") or payload.get("agent_name") or "target agent").strip()
+        return {
+            "type": "runtime_action_started",
+            "message": f"已委派给 {target_agent_name}，后台执行中。",
+            "status": "running",
+            "action_kind": "a2a_delegation",
+            "tool_name": tool_name,
+            "target_agent_name": target_agent_name,
+            "runtime_task_id": runtime_task_id or None,
+            "child_session_id": child_session_id or None,
+            "session_id": child_session_id or None,
+            "parent_session_id": data.get("parent_session_id"),
+            "notification_source": "a2a",
+        }
+
+    if tool_name == "spawn_subagent":
+        runtime_task_id = str(payload.get("runtime_task_id") or payload.get("run_id") or payload.get("task_id") or "").strip()
+        if not runtime_task_id and not child_session_id:
+            return None
+        subagent_name = str(payload.get("subagent") or args.get("name") or args.get("type") or "subagent").strip()
+        return {
+            "type": "runtime_action_started",
+            "message": f"Subagent {subagent_name} is running in the background.",
+            "status": str(payload.get("status") or "running"),
+            "action_kind": "subagent",
+            "tool_name": tool_name,
+            "target_agent_name": subagent_name,
+            "runtime_task_id": runtime_task_id or None,
+            "child_session_id": child_session_id or None,
+            "session_id": child_session_id or None,
+            "parent_session_id": data.get("parent_session_id"),
+            "notification_source": "subagent",
+        }
+
+    return None
+
+
 def _terminal_status_from_transcript_event(event: ChatTranscriptEvent) -> str | None:
     event_type = getattr(event, "event_type", None)
     if event_type not in _TERMINAL_TRANSCRIPT_EVENT_TYPES:
@@ -561,7 +621,7 @@ async def _queue_mid_run_user_message(
     return queued
 
 
-async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[dict[str, str]]:
+async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[dict[str, Any]]:
     run_uuid = _run_id(run_id)
     async with (
         _async_session() as db,
@@ -584,9 +644,12 @@ async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[
         content = item.get("llm_content") or item.get("content")
         if not content:
             continue
+        role = str(item.get("role") or "user").strip().lower()
+        if role not in {"user", "system"}:
+            role = "user"
         drained.append(
             {
-                "role": "user",
+                "role": role,
                 "content": content,
                 "display_content": item.get("display_content") or item.get("content") or content,
                 "attachments": item.get("attachments") or [],
@@ -762,7 +825,7 @@ async def _rewind_projected_history(
         select(ChatTranscriptEvent.message_id)
         .where(
             ChatTranscriptEvent.session_id == session.id,
-            ChatTranscriptEvent.sequence <= anchor.sequence,
+            ChatTranscriptEvent.sequence < anchor.sequence,
             ChatTranscriptEvent.listed_surface == "chat",
             ChatTranscriptEvent.message_id.is_not(None),
         )
@@ -1130,7 +1193,11 @@ async def _queue_saved_mid_run_user_message(
     message_already_in_t0: bool = False,
     attachments: list[dict[str, Any]] | None = None,
     parts: list[dict[str, Any]] | None = None,
+    role: str = "user",
 ) -> dict[str, Any]:
+    queued_role = str(role or "user").strip().lower()
+    if queued_role not in {"user", "system"}:
+        queued_role = "user"
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     metadata = dict(getattr(active_run, "metadata_json", None) or {})
     pending = list(metadata.get("pending_user_messages") or [])
@@ -1139,6 +1206,7 @@ async def _queue_saved_mid_run_user_message(
         "content": saved_content,
         "llm_content": content,
         "display_content": display_content if display_content else saved_content,
+        "role": queued_role,
         "file_name": file_name,
         "attachments": attachments or [],
         "parts": parts or [],
@@ -1156,9 +1224,9 @@ async def _queue_saved_mid_run_user_message(
             tenant_id=getattr(agent, "tenant_id", None),
             session_id=session.id,
             run_id=getattr(active_run, "id", None),
-            actor_type="user",
-            event_type="user_message",
-            role="user",
+            actor_type="user" if queued_role == "user" else "system",
+            event_type="user_message" if queued_role == "user" else "agent_session_message",
+            role=queued_role,
             user_id=user.id,
             content=saved_content,
             message_id=queued["id"],
@@ -1169,6 +1237,7 @@ async def _queue_saved_mid_run_user_message(
                 "source": source_channel,
                 "queued": True,
                 "existing_user_message_saved": True,
+                "runtime_mailbox_role": queued_role,
                 "display_content": display_content,
                 "file_name": file_name,
                 "llm_content_present": bool(content and content != saved_content),
@@ -2589,7 +2658,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             session_metadata=getattr(session, "transcript_metadata_json", None) if session is not None else None,
         )
         terminal_runtime_metadata = metadata
-        if metadata.get("latest_user_prompt_overrides_history") and prompt:
+        runtime_mailbox_role = str(metadata.get("runtime_mailbox_role") or "").strip().lower()
+        internal_runtime_context_turn = bool(metadata.get("task_notification")) or runtime_mailbox_role == "system"
+        if metadata.get("latest_user_prompt_overrides_history") and prompt and not internal_runtime_context_turn:
             for idx in range(len(conversation) - 1, -1, -1):
                 if conversation[idx].get("role") == "user":
                     conversation[idx]["content"] = prompt
@@ -2630,15 +2701,17 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             history_messages=history_messages,
         )
 
-        plan_mode_response = await _maybe_handle_plan_mode_entry(
-            agent_id=agent.id,
-            user_id=getattr(user, "id", None),
-            session_id=session_id,
-            content=prompt,
-            classification_content=str(metadata.get("display_content") or prompt),
-            plan_mode_requested=bool(metadata.get("plan_mode_requested")),
-            runtime_session_context=runtime_session_context,
-        )
+        plan_mode_response = None
+        if not internal_runtime_context_turn:
+            plan_mode_response = await _maybe_handle_plan_mode_entry(
+                agent_id=agent.id,
+                user_id=getattr(user, "id", None),
+                session_id=session_id,
+                content=prompt,
+                classification_content=str(metadata.get("display_content") or prompt),
+                plan_mode_requested=bool(metadata.get("plan_mode_requested")),
+                runtime_session_context=runtime_session_context,
+            )
         if plan_mode_response is not None:
             finalized = await _finalize_web_chat_run_with_assistant(
                 run_uuid=run_uuid,
@@ -2725,6 +2798,13 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         except Exception as exc:
             logger.warning("[WebChatRun] Pending reply injection failed (non-fatal): {}", exc)
 
+        if internal_runtime_context_turn and prompt:
+            runtime_suffix = (
+                "Runtime continuation context (system generated, not a user message):\n"
+                f"{prompt}"
+            )
+            pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, runtime_suffix) if part)
+
         restart_resume_context = metadata.get("restart_resume_context")
         if isinstance(restart_resume_context, dict):
             resume_prompt = str(restart_resume_context.get("resume_prompt") or "").strip()
@@ -2738,11 +2818,13 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         if channel_delivery_suffix:
             pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, channel_delivery_suffix) if part)
 
-        trusted_decline = plan_mode_core.trusted_decline_metadata(
-            content=str(metadata.get("display_content") or prompt),
-            messages=history_messages,
-            explicit=bool(metadata.get("plan_mode_requested")),
-        )
+        trusted_decline = None
+        if not internal_runtime_context_turn:
+            trusted_decline = plan_mode_core.trusted_decline_metadata(
+                content=str(metadata.get("display_content") or prompt),
+                messages=history_messages,
+                explicit=bool(metadata.get("plan_mode_requested")),
+            )
         if trusted_decline:
             try:
                 from app.services.plan_mode_recommendation_service import decline_latest_recommendation_for_user
@@ -2891,6 +2973,15 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     }
                 )
             await broadcast_web_chat_event(agent.id, session_id, ws_event)
+            runtime_action_event = _runtime_action_event_from_tool_result(data)
+            if runtime_action_event:
+                await _persist_runtime_event(
+                    agent_id=agent.id,
+                    user_id=user.id,
+                    session_id=session_id,
+                    data=runtime_action_event,
+                )
+                await broadcast_web_chat_event(agent.id, session_id, build_session_native_event(runtime_action_event))
             if data.get("status") == "done":
                 if _tool_result_exits_plan_mode(data):
                     plan_mode_submitted = True

@@ -146,11 +146,18 @@ async def test_start_run_projects_workflow_progress_into_parent_session(service,
     assert event_types[0] == "workflow_run"
     assert event_types[-1] == "workflow_run"
     assert event_types.count("workflow_step") >= 4
+    assert "runtime_action_started" in event_types
+    assert "runtime_action_completed" in event_types
+    assert event_types.count("runtime_action_progress") >= 4
     assert {call["session_id"] for call in recorded} == {str(session_id)}
     assert payloads[0]["status"] == "running"
     assert payloads[-1]["status"] == "completed"
     assert payloads[-1]["workflow_run_id"] == str(handle.run_id)
     assert payloads[-1]["runtime_task_id"] == str(handle.run_id)
+    action_payloads = [payload for payload in payloads if payload["type"].startswith("runtime_action_")]
+    assert {payload["action_kind"] for payload in action_payloads} == {"workflow"}
+    assert {payload["notification_source"] for payload in action_payloads} == {"workflow"}
+    assert all(payload["workflow_run_id"] == str(handle.run_id) for payload in action_payloads)
     step_payloads = [payload for payload in payloads if payload["type"] == "workflow_step"]
     assert {payload["workflow_step_id"] for payload in step_payloads} == {"scan", "report"}
     assert any(payload["status"] == "running" for payload in step_payloads)

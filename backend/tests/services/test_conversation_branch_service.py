@@ -239,6 +239,84 @@ async def test_rewind_branch_copies_prefix_before_user_checkpoint(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_branch_from_user_checkpoint_copies_prefix_before_checkpoint_and_returns_draft(monkeypatch):
+    from app.models.chat_session import ChatSession
+    from app.services.conversation_branch_service import create_conversation_branch
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    source_session_id = uuid4()
+    first_user = _event(session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="first")
+    assistant_event = _event(
+        session_id=source_session_id,
+        sequence=20,
+        event_type="assistant_message",
+        role="assistant",
+        content="answer",
+    )
+    branch_target = _event(
+        session_id=source_session_id,
+        sequence=30,
+        event_type="user_message",
+        role="user",
+        content="selected prompt should become composer draft",
+    )
+
+    class _BoundaryDB(_FakeDB):
+        def __init__(self):
+            super().__init__(anchor=branch_target, prefix=[])
+
+        async def execute(self, stmt):
+            if len(self._results) == 2:
+                return self._results.pop(0)
+            sql = str(stmt)
+            prefix = [first_user, assistant_event, branch_target] if "<=" in sql else [first_user, assistant_event]
+            return _ScalarResult(values=prefix)
+
+    db = _BoundaryDB()
+    copied = []
+
+    async def fake_append_session_event(**kwargs):
+        copied.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id"))
+
+    monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
+
+    result = await create_conversation_branch(
+        db=db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        user=SimpleNamespace(id=user_id),
+        source_session=SimpleNamespace(
+            id=source_session_id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            title="Original",
+            parent_session_id=None,
+            root_session_id=None,
+            source_channel="web",
+            session_kind="human_chat",
+            actor_type="user",
+            runtime_source="web_chat",
+            visibility_scope="direct_user",
+            listed_surface="chat",
+            last_message_at=None,
+        ),
+        mode="branch",
+        anchor_event_id=branch_target.id,
+    )
+
+    assert [item["content"] for item in copied] == ["first", "answer"]
+    branch_session = next(item for item in db.added if isinstance(item, ChatSession))
+    assert branch_session.title == "Original"
+    assert result.run_request is None
+    assert result.branch["mode"] == "branch"
+    assert result.branch["anchor_event_id"] == str(branch_target.id)
+    assert result.branch["draft_content"] == "selected prompt should become composer draft"
+
+
+@pytest.mark.asyncio
 async def test_regenerate_branch_runs_from_previous_user_without_appending_duplicate(monkeypatch):
     from app.services.conversation_branch_service import create_conversation_branch
 

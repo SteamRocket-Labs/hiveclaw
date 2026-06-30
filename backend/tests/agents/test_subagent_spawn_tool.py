@@ -769,6 +769,107 @@ async def test_send_agent_session_message_appends_child_mailbox_event(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_send_agent_session_message_accepts_a2a_peer_child_session(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.user import User
+
+    def _criterion_has_column_value(expr, column_name: str, value) -> bool:
+        if getattr(expr, "clauses", None) is not None:
+            return any(_criterion_has_column_value(clause, column_name, value) for clause in expr.clauses)
+        left = getattr(expr, "left", None)
+        right = getattr(expr, "right", None)
+        if getattr(left, "name", None) != column_name:
+            return False
+        return getattr(right, "value", None) == value
+
+    def _statement_has_column_value(stmt, column_name: str, value) -> bool:
+        return any(_criterion_has_column_value(criteria, column_name, value) for criteria in getattr(stmt, "_where_criteria", ()))
+
+    class _ScalarResult:
+        def __init__(self, row):
+            self._row = row
+
+        def scalar_one_or_none(self):
+            return self._row
+
+    source_agent_id = uuid.uuid4()
+    target_agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    fake_session = SimpleNamespace(
+        id=child_session_id,
+        agent_id=target_agent_id,
+        peer_agent_id=source_agent_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        parent_session_id=parent_session_id,
+        root_session_id=parent_session_id,
+        source_channel="agent",
+        session_kind="delegation_run",
+        visibility_scope="agent_owner",
+        listed_surface="chat",
+    )
+    target_agent = SimpleNamespace(id=target_agent_id, name="Target")
+    user = SimpleNamespace(id=user_id)
+
+    class _FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, stmt):
+            entity = stmt.column_descriptions[0].get("entity")
+            if entity is ChatSession:
+                assert _statement_has_column_value(stmt, "id", child_session_id)
+                assert _statement_has_column_value(stmt, "peer_agent_id", source_agent_id)
+                assert _statement_has_column_value(stmt, "source_channel", "agent")
+                return _ScalarResult(fake_session)
+            if entity is Agent:
+                assert _statement_has_column_value(stmt, "id", target_agent_id)
+                return _ScalarResult(target_agent)
+            if entity is User:
+                assert _statement_has_column_value(stmt, "id", user_id)
+                return _ScalarResult(user)
+            return _ScalarResult(None)
+
+    captured: dict = {}
+
+    async def fake_continue_agent_session_from_mailbox(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "status": "queued", "consumer": "mid_run_message_drain", "run_id": "run-a2a"}
+
+    monkeypatch.setattr(handler_mod, "tenant_scoped_session", lambda _tenant_id: _FakeDB())
+    monkeypatch.setattr(handler_mod, "continue_agent_session_from_mailbox", fake_continue_agent_session_from_mailbox)
+
+    request = ToolExecutionRequest(
+        tool_name="send_agent_session_message",
+        arguments={"child_session_id": str(child_session_id), "message": "continue from the peer handoff"},
+        context=ToolExecutionContext(
+            agent_id=source_agent_id,
+            user_id=user_id,
+            tenant_id=str(tenant_id),
+            workspace=Path("/tmp"),
+            session_id=str(parent_session_id),
+        ),
+    )
+
+    out = await handler_mod.send_agent_session_message(request)
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["child_session_id"] == str(child_session_id)
+    assert captured["agent"] is target_agent
+    assert captured["session"] is fake_session
+    assert captured["message"] == "continue from the peer handoff"
+
+
+@pytest.mark.asyncio
 async def test_send_agent_session_message_routes_agent_team_by_name_without_child_session(monkeypatch):
     import app.tools.handlers.subagent as handler_mod
 

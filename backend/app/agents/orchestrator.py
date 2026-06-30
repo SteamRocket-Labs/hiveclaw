@@ -515,6 +515,9 @@ class AgentDelegationRequest:
     runtime_task_id: str | None = None
     restart_replay_contract: dict[str, Any] | None = None
     permission_profile: Any | None = None
+    target_artifact_path: str | None = None
+    target_artifacts: list[dict[str, Any]] = field(default_factory=list)
+    edit_mode: str | None = None
 
 
 def _delegation_coordination_key(request: AgentDelegationRequest) -> str:
@@ -523,6 +526,173 @@ def _delegation_coordination_key(request: AgentDelegationRequest) -> str:
     prompt = request.conversation_messages[-1].get("content", "") if request.conversation_messages else ""
     digest = hashlib.sha256(str(prompt).strip().encode("utf-8")).hexdigest()[:16]
     return f"delegation:{parent}:{target}:{digest}"
+
+
+def _normalize_delegation_artifact_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    normalized = str(path).strip().replace("\\", "/")
+    if not normalized:
+        return None
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lstrip("/")
+    parts = [part for part in normalized.split("/") if part and part != "."]
+    if not parts or any(part == ".." for part in parts):
+        return None
+    return "/".join(parts)
+
+
+def _normalize_delegation_edit_mode(mode: str | None) -> str:
+    value = str(mode or "").strip().lower()
+    if value in {"modify_existing", "create_new", "create_or_update"}:
+        return value
+    return "create_or_update"
+
+
+_DELEGATION_ARTIFACT_WORKSPACE_SCOPES = {
+    "target_agent_workspace",
+    "source_agent_workspace",
+    "external_workspace",
+}
+_DELEGATION_ARTIFACT_ACTIONS = {
+    "modify_existing",
+    "create_or_update",
+    "create_new",
+    "review_only",
+}
+
+
+def _normalize_delegation_target_artifact(
+    artifact: Any,
+    *,
+    default_expected_action: str | None = None,
+) -> dict[str, Any] | None:
+    if isinstance(artifact, str):
+        raw: dict[str, Any] = {"path": artifact}
+    elif isinstance(artifact, dict):
+        raw = artifact
+    else:
+        return None
+    path = _normalize_delegation_artifact_path(str(raw.get("path") or ""))
+    if not path:
+        return None
+    normalized: dict[str, Any] = {"path": path}
+    scope = str(raw.get("workspace_scope") or "").strip().lower()
+    normalized["workspace_scope"] = scope if scope in _DELEGATION_ARTIFACT_WORKSPACE_SCOPES else "target_agent_workspace"
+    action = str(raw.get("expected_action") or raw.get("action") or default_expected_action or "").strip().lower()
+    if action in _DELEGATION_ARTIFACT_ACTIONS:
+        normalized["expected_action"] = action
+    for key in (
+        "owner_agent_id",
+        "source_agent_id",
+        "download_agent_id",
+        "source_session_id",
+        "root_session_id",
+        "revision_id",
+        "artifact_id",
+        "name",
+        "mime_type",
+    ):
+        value = raw.get(key)
+        if value is not None and str(value).strip():
+            normalized[key] = str(value).strip()
+    return normalized
+
+
+def _normalized_delegation_target_artifacts(request: AgentDelegationRequest) -> list[dict[str, Any]]:
+    edit_mode = _normalize_delegation_edit_mode(request.edit_mode)
+    artifacts: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+
+    shorthand = _normalize_delegation_target_artifact(
+        request.target_artifact_path,
+        default_expected_action=edit_mode,
+    )
+    if shorthand:
+        artifacts.append(shorthand)
+        seen_paths.add(shorthand["path"])
+
+    for raw_artifact in request.target_artifacts or []:
+        artifact = _normalize_delegation_target_artifact(raw_artifact, default_expected_action=edit_mode)
+        if not artifact or artifact["path"] in seen_paths:
+            continue
+        artifacts.append(artifact)
+        seen_paths.add(artifact["path"])
+    return artifacts
+
+
+def _delegation_target_artifact_paths(request: AgentDelegationRequest) -> list[str]:
+    return [artifact["path"] for artifact in _normalized_delegation_target_artifacts(request)]
+
+
+def _required_delegation_modified_artifact_paths(request: AgentDelegationRequest) -> list[str]:
+    edit_mode = _normalize_delegation_edit_mode(request.edit_mode)
+    required: list[str] = []
+    for artifact in _normalized_delegation_target_artifacts(request):
+        action = str(artifact.get("expected_action") or edit_mode).strip().lower()
+        if edit_mode == "modify_existing" or action == "modify_existing":
+            required.append(artifact["path"])
+    return required
+
+
+def _delegation_artifact_contract_metadata(request: AgentDelegationRequest) -> dict[str, Any]:
+    artifacts = _normalized_delegation_target_artifacts(request)
+    if not artifacts:
+        return {}
+    paths = [artifact["path"] for artifact in artifacts]
+    return {
+        "target_artifact_path": paths[0],
+        "target_artifact_paths": paths,
+        "target_artifacts": artifacts,
+        "edit_mode": _normalize_delegation_edit_mode(request.edit_mode),
+    }
+
+
+def _artifact_contract_mismatch_summary(
+    request: AgentDelegationRequest,
+    artifact_parts: list[dict[str, Any]],
+) -> str | None:
+    required_paths = _required_delegation_modified_artifact_paths(request)
+    if not required_paths:
+        return None
+    delivered_paths = {
+        path
+        for path in (_normalize_delegation_artifact_path(str(part.get("path") or "")) for part in artifact_parts)
+        if path
+    }
+    missing_paths = [path for path in required_paths if path not in delivered_paths]
+    if not missing_paths:
+        return None
+    missing = ", ".join(missing_paths)
+    delivered = ", ".join(sorted(delivered_paths)) or "none"
+    return (
+        f"Delegation artifact contract mismatch: expected the worker to modify target artifact path(s) "
+        f"`{missing}`, but delivered artifact paths were: {delivered}. Treating this completion as blocked "
+        "so the parent agent can reconcile rather than report a false delivery."
+    )
+
+
+def _delegation_runtime_action_event_type(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized == "completed":
+        return "runtime_action_completed"
+    if normalized == "blocked":
+        return "runtime_action_blocked"
+    return "runtime_action_failed"
+
+
+def _delegation_runtime_action_message(*, target_name: str, status: str, summary: str) -> str:
+    normalized = str(status or "").strip().lower()
+    clean_target = str(target_name or "Target agent").strip() or "Target agent"
+    clean_summary = str(summary or "").strip()
+    if normalized == "completed":
+        return f"{clean_target} 已完成委派任务。"
+    if normalized == "blocked":
+        suffix = f"：{clean_summary}" if clean_summary else "。"
+        return f"{clean_target} 的委派任务需要处理{suffix}"
+    suffix = f"：{clean_summary}" if clean_summary else "。"
+    return f"{clean_target} 的委派任务失败{suffix}"
 
 
 @dataclass(slots=True)
@@ -605,6 +775,7 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
         )
     if request.plan_exempt_reason:
         metadata["plan_exempt_reason"] = request.plan_exempt_reason
+    metadata.update(_delegation_artifact_contract_metadata(request))
     permission_profile = _permission_profile_metadata(request.permission_profile)
     if permission_profile:
         metadata["permission_profile"] = permission_profile
@@ -749,6 +920,9 @@ async def delegate_to_agent(
     tenant_id: uuid.UUID | str | None = None,
     ledger_todo_id: str | None = None,
     permission_profile: Any | None = None,
+    target_artifact_path: str | None = None,
+    target_artifacts: list[dict[str, Any]] | None = None,
+    edit_mode: str | None = None,
 ) -> str:
     """Delegate one conversational turn to another agent through the runtime."""
     request = AgentDelegationRequest(
@@ -771,6 +945,16 @@ async def delegate_to_agent(
         tenant_id=tenant_id,
         ledger_todo_id=ledger_todo_id,
         permission_profile=permission_profile,
+        target_artifact_path=_normalize_delegation_artifact_path(target_artifact_path),
+        target_artifacts=[
+            artifact
+            for artifact in (
+                _normalize_delegation_target_artifact(raw, default_expected_action=edit_mode)
+                for raw in (target_artifacts or [])
+            )
+            if artifact
+        ],
+        edit_mode=_normalize_delegation_edit_mode(edit_mode),
     )
     result = await _delegate(request)
     return result.content
@@ -930,10 +1114,34 @@ async def _delegate_after_cycle_check(
             logger.debug("[Orchestrator] DELEGATION_START hook failed (non-fatal): %s", _hook_err)
 
     delegation_user_message = _delegation_user_message(request.conversation_messages)
+    artifact_contract = _delegation_artifact_contract_metadata(request)
+    target_artifacts = artifact_contract.get("target_artifacts") or []
+    edit_mode = _normalize_delegation_edit_mode(request.edit_mode)
+    artifact_contract_suffix = ""
+    if target_artifacts:
+        target_lines = "\n".join(
+            "- path: {path}; workspace_scope: {scope}; expected_action: {action}".format(
+                path=artifact["path"],
+                scope=artifact.get("workspace_scope", "target_agent_workspace"),
+                action=artifact.get("expected_action") or edit_mode,
+            )
+            for artifact in target_artifacts
+        )
+        artifact_contract_suffix = (
+            "<artifact_contract>\n"
+            f"- edit_mode: {edit_mode}\n"
+            "- target_artifacts:\n"
+            f"{target_lines}\n"
+            "- If a target artifact's expected_action is modify_existing, update and deliver that exact workspace path. "
+            "Do not create a replacement artifact as the primary deliverable.\n"
+            "- Supporting files are allowed only as secondary artifacts; required target artifact paths must still be delivered.\n"
+            "</artifact_contract>"
+        )
     combined_suffix = "\n\n".join(
         part.strip()
         for part in [
             request.system_prompt_suffix,
+            artifact_contract_suffix,
             _build_delegated_worker_prompt(tool_profile, parent_name=request.parent_agent_name),
         ]
         if part and part.strip()
@@ -950,6 +1158,7 @@ async def _delegate_after_cycle_check(
             session_metadata["permission_mode"] = permission_mode
     if request.runtime_task_id:
         session_metadata["runtime_task_id"] = request.runtime_task_id
+    session_metadata.update(artifact_contract)
     if request.restart_replay_contract:
         session_metadata["restart_replay_contract"] = dict(request.restart_replay_contract)
     if is_delegation:
@@ -1124,6 +1333,7 @@ async def _delegate_after_cycle_check(
                         "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
                         "to_agent": str(request.target.id),
                         "to_agent_name": request.target.name,
+                        **artifact_contract,
                         **(
                             {
                                 "permission_profile": permission_profile,
@@ -1163,6 +1373,7 @@ async def _delegate_after_cycle_check(
                     "to_agent": str(request.target.id),
                     "to_agent_name": request.target.name,
                     "runtime_task_id": request.runtime_task_id,
+                    **artifact_contract,
                     "semantic_memory_eligible": True,
                 },
             )
@@ -1365,6 +1576,85 @@ async def _collect_delegation_child_artifact_parts(
         return parts
 
 
+def _project_a2a_artifact_refs_to_parent_session(
+    *,
+    artifact_parts: list[dict[str, Any]],
+    data_root: Path,
+    parent_agent_id: uuid.UUID,
+    parent_session_id: uuid.UUID,
+    runtime_task_id: str | uuid.UUID | None,
+) -> list[dict[str, Any]]:
+    """Project child A2A artifacts into the parent session without copying files.
+
+    The artifact remains owned by the producer agent's workspace. The parent
+    timeline receives a session-native artifact part with a snapshot preview and
+    download metadata that point back to the producer workspace.
+    """
+
+    if not artifact_parts:
+        return []
+
+    from app.services.chat_artifact_delivery import build_artifact_candidate
+
+    latest_by_path: dict[str, dict[str, Any]] = {}
+    for part in artifact_parts:
+        path = str(part.get("path") or "").strip()
+        if path:
+            latest_by_path[path] = part
+
+    projected: list[dict[str, Any]] = []
+    for path, part in latest_by_path.items():
+        source_agent_raw = (
+            part.get("download_agent_id")
+            or part.get("owner_agent_id")
+            or part.get("source_agent_id")
+        )
+        try:
+            source_agent_id = uuid.UUID(str(source_agent_raw))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        source_root = data_root / str(source_agent_id)
+        source_candidate = build_artifact_candidate(
+            agent_id=source_agent_id,
+            session_id=parent_session_id,
+            runtime_task_id=runtime_task_id,
+            path=path,
+            workspace_root=source_root,
+            source=str(part.get("source") or "a2a_workspace_write"),
+        )
+        if not source_candidate:
+            continue
+        projected_part = {
+            "type": "artifact",
+            "artifact_id": str(source_candidate.get("artifact_id") or source_candidate.get("id")),
+            "path": source_candidate["path"],
+            "name": source_candidate["name"],
+            "mime_type": source_candidate.get("mime_type"),
+            "size": source_candidate.get("size"),
+            "modified_at": source_candidate.get("modified_at"),
+            "preview_kind": source_candidate.get("preview_kind", "download"),
+            "source": "a2a_delivery_ref",
+            "runtime_task_id": str(runtime_task_id) if runtime_task_id else None,
+            "owner_agent_id": str(source_agent_id),
+            "source_agent_id": str(source_agent_id),
+            "download_agent_id": str(source_agent_id),
+            "delivery_agent_id": str(parent_agent_id),
+            "created_at": source_candidate.get("created_at"),
+            "revision_id": source_candidate.get("revision_id"),
+            "action": "delivered",
+            "tool_call_id": source_candidate.get("tool_call_id"),
+            "diff_summary": source_candidate.get("diff_summary"),
+            "preview_snapshot_content": source_candidate.get("preview_snapshot_content"),
+            "preview_snapshot_truncated": source_candidate.get("preview_snapshot_truncated"),
+            "source_artifact_id": part.get("artifact_id") or part.get("id"),
+            "producer_agent_id": str(source_agent_id),
+            "source_session_id": str(part.get("session_id") or part.get("source_session_id") or ""),
+            "root_session_id": str(parent_session_id),
+        }
+        projected.append(projected_part)
+    return projected
+
+
 async def _project_delegation_completion_to_parent(
     *,
     request: AgentDelegationRequest,
@@ -1401,6 +1691,18 @@ async def _project_delegation_completion_to_parent(
             child_session_id=child_session_uuid,
             delivery_agent_id=parent_agent_uuid,
         )
+        if artifact_parts:
+            from app.config import get_settings
+
+            projected_artifact_parts = _project_a2a_artifact_refs_to_parent_session(
+                artifact_parts=artifact_parts,
+                data_root=Path(get_settings().AGENT_DATA_DIR),
+                parent_agent_id=parent_agent_uuid,
+                parent_session_id=parent_session_uuid,
+                runtime_task_id=task_id,
+            )
+            if projected_artifact_parts:
+                artifact_parts = projected_artifact_parts
     except Exception as exc:
         logger.warning(
             "[Orchestrator] Failed to collect delegation artifacts for child session %s (task=%s): %s",
@@ -1409,11 +1711,23 @@ async def _project_delegation_completion_to_parent(
             exc,
         )
         artifact_parts = []
-    reason = "delegation_completed" if status == "completed" else "delegation_failed"
+    projected_status = status
+    projected_summary = summary
+    contract_mismatch = _artifact_contract_mismatch_summary(request, artifact_parts)
+    artifact_contract = _delegation_artifact_contract_metadata(request)
+    if status == "completed" and contract_mismatch:
+        projected_status = "blocked"
+        projected_summary = contract_mismatch
+    if projected_status == "completed":
+        reason = "delegation_completed"
+    elif projected_status == "blocked":
+        reason = "delegation_artifact_contract_mismatch"
+    else:
+        reason = "delegation_failed"
     parent_event_payload = {
         "type": "child_session",
-        "message": summary,
-        "status": status,
+        "message": projected_summary,
+        "status": projected_status,
         "runtime_task_id": task_id,
         "child_session_id": str(child_session_uuid),
         "parent_session_id": str(parent_session_uuid),
@@ -1427,11 +1741,62 @@ async def _project_delegation_completion_to_parent(
         "artifacts": artifact_parts,
         "artifact_paths": [part.get("path") for part in artifact_parts if part.get("path")],
         "artifact_ids": [part.get("artifact_id") for part in artifact_parts if part.get("artifact_id")],
+        "artifact_contract_mismatch": bool(contract_mismatch),
+        **artifact_contract,
     }
     parent_event = build_session_native_event(parent_event_payload)
 
     try:
         async with tenant_scoped_session(tenant_uuid) as db:
+            runtime_event_type = _delegation_runtime_action_event_type(projected_status)
+            runtime_event_message = _delegation_runtime_action_message(
+                target_name=request.target.name,
+                status=projected_status,
+                summary=projected_summary,
+            )
+            runtime_event_payload = {
+                "type": runtime_event_type,
+                "message": runtime_event_message,
+                "status": projected_status,
+                "runtime_task_id": task_id,
+                "task_id": task_id,
+                "action_kind": "a2a_delegation",
+                "notification_source": "a2a",
+                "child_session_id": str(child_session_uuid),
+                "parent_session_id": str(parent_session_uuid),
+                "root_session_id": str(parent_session_uuid),
+                "reason": reason,
+                "target_agent_name": request.target.name,
+                "artifact_paths": [part.get("path") for part in artifact_parts if part.get("path")],
+                "artifact_ids": [part.get("artifact_id") for part in artifact_parts if part.get("artifact_id")],
+                "artifact_contract_mismatch": bool(contract_mismatch),
+                **artifact_contract,
+            }
+            runtime_event = build_session_native_event(runtime_event_payload)
+            await append_session_event(
+                db=db,
+                agent_id=parent_agent_uuid,
+                tenant_id=tenant_uuid,
+                session_id=parent_session_uuid,
+                actor_type="system",
+                event_type=runtime_event_type,
+                content=runtime_event_message,
+                role="system",
+                user_id=request.owner_id,
+                run_id=task_id,
+                runtime_task_id=task_id,
+                root_session_id=parent_session_uuid,
+                parent_session_id=parent_session_uuid,
+                parts=[runtime_event["part"]],
+                metadata={
+                    **runtime_event_payload,
+                    "source": "agent",
+                    "delegation_session_state": projected_status,
+                },
+                visibility_scope="team",
+                listed_surface="chat",
+                source="agent",
+            )
             await append_session_event(
                 db=db,
                 agent_id=parent_agent_uuid,
@@ -1439,7 +1804,7 @@ async def _project_delegation_completion_to_parent(
                 session_id=parent_session_uuid,
                 actor_type="system",
                 event_type="child_session",
-                content=summary,
+                content=projected_summary,
                 role="system",
                 user_id=request.owner_id,
                 run_id=task_id,
@@ -1450,7 +1815,7 @@ async def _project_delegation_completion_to_parent(
                 metadata={
                     **parent_event_payload,
                     "source": "agent",
-                    "delegation_session_state": status,
+                    "delegation_session_state": projected_status,
                 },
                 visibility_scope="team",
                 listed_surface="chat",
@@ -1460,8 +1825,8 @@ async def _project_delegation_completion_to_parent(
         await _wake_parent_session_from_delegation_completion(
             request=request,
             task_id=task_id,
-            status=status,
-            summary=summary,
+            status=projected_status,
+            summary=projected_summary,
             artifacts=artifact_parts,
         )
     except Exception as exc:
@@ -1682,6 +2047,9 @@ async def delegate_async(
     plan_exempt_reason: str | None = None,
     ledger_todo_id: str | None = None,
     permission_profile: Any | None = None,
+    target_artifact_path: str | None = None,
+    target_artifacts: list[dict[str, Any]] | None = None,
+    edit_mode: str | None = None,
 ) -> AsyncDelegationHandle:
     """Launch a child agent in the background and return immediately.
 
@@ -1719,6 +2087,16 @@ async def delegate_async(
         ledger_todo_id=ledger_todo_id,
         runtime_task_id=task_id,
         permission_profile=permission_profile,
+        target_artifact_path=_normalize_delegation_artifact_path(target_artifact_path),
+        target_artifacts=[
+            artifact
+            for artifact in (
+                _normalize_delegation_target_artifact(raw, default_expected_action=edit_mode)
+                for raw in (target_artifacts or [])
+            )
+            if artifact
+        ],
+        edit_mode=_normalize_delegation_edit_mode(edit_mode),
     )
     plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
     if not plan_allowed:
@@ -2147,6 +2525,9 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
             if isinstance(metadata.get("restart_replay_contract"), dict)
             else None,
             permission_profile=metadata.get("permission_profile"),
+            target_artifact_path=metadata.get("target_artifact_path"),
+            target_artifacts=metadata.get("target_artifacts") if isinstance(metadata.get("target_artifacts"), list) else [],
+            edit_mode=metadata.get("edit_mode"),
         )
 
         _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)

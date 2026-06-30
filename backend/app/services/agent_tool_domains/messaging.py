@@ -33,6 +33,16 @@ A2A_SYSTEM_PROMPT_SUFFIX = (
     "- If you cannot complete the request: explain specifically what is missing,\n"
     "  blocked, or outside your scope. Don't fabricate a partial answer.\n"
     "</reply_format>\n\n"
+    "<workspace_delivery_contract>\n"
+    "- If the peer request names existing workspace artifacts or says to update\n"
+    "  current/existing work, modify and deliver those same workspace paths. This\n"
+    "  applies to documents, presentations, spreadsheets, code files, images, and\n"
+    "  other artifacts.\n"
+    "- Do not create a replacement artifact unless the peer explicitly asks for a\n"
+    "  separate deliverable.\n"
+    "- If you need supporting notes, write them only as secondary artifacts and\n"
+    "  still update the requested primary artifact path(s).\n"
+    "</workspace_delivery_contract>\n\n"
     "<privacy_boundary>\n"
     "- Treat the delegated brief and attached request as the authoritative context.\n"
     "- Do NOT share private workspace data (memory/*.md, tasks.json, soul.md,\n"
@@ -1222,6 +1232,7 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
     agent_name = args.get("agent_name", "").strip()
     message_text = args.get("message", "").strip()
     tool_profile = _normalize_delegate_tool_profile(args.get("tool_profile"))
+    target_artifacts_arg = args.get("target_artifacts") if isinstance(args.get("target_artifacts"), list) else []
     target_agent_id_raw = args.get("target_agent_id")
     target_agent_id = None
     if target_agent_id_raw:
@@ -1292,6 +1303,9 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             confirmed_plan_hash=args.get("confirmed_plan_hash"),
             ledger_todo_id=str(args.get("ledger_todo_id") or "").strip() or None,
             permission_profile=args.get("_permission_profile"),
+            target_artifact_path=str(args.get("target_artifact_path") or "").strip() or None,
+            target_artifacts=target_artifacts_arg,
+            edit_mode=str(args.get("edit_mode") or "").strip() or None,
         )
         return json.dumps(
             {
@@ -1302,6 +1316,9 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
                 "status": getattr(handle, "status", "running"),
                 "target_agent": handle.target_name,
                 "target_agent_id": str(target.id),
+                "target_artifact_path": str(args.get("target_artifact_path") or "").strip() or None,
+                "target_artifacts": target_artifacts_arg,
+                "edit_mode": str(args.get("edit_mode") or "").strip() or None,
                 "trace_id": handle.trace_id,
                 "continuation_tool": "send_agent_session_message",
                 "next_action": (
@@ -1333,6 +1350,7 @@ async def _delegate_to_local_agent_channel(
     owner_id = getattr(source_agent, "creator_id", None)
     if owner_id is None:
         raise ValueError("source agent has no creator_id for local-agent delegation")
+    target_artifacts_arg = args.get("target_artifacts") if isinstance(args.get("target_artifacts"), list) else []
 
     async with tenant_scoped_session(tenant_id) as db:
         session = await local_agent_channel_service.create_channel_session(
@@ -1359,6 +1377,9 @@ async def _delegate_to_local_agent_channel(
                 "expected_output": str(args.get("expected_output") or "").strip() or None,
                 "parent_session_id": args.get("parent_session_id"),
                 "ledger_todo_id": str(args.get("ledger_todo_id") or "").strip() or None,
+                "target_artifact_path": str(args.get("target_artifact_path") or "").strip() or None,
+                "target_artifacts": target_artifacts_arg,
+                "edit_mode": str(args.get("edit_mode") or "").strip() or None,
             },
         )
         try:

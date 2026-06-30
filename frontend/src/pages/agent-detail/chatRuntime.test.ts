@@ -15,6 +15,8 @@ import {
   appendToolCallMessage,
   applyRuntimeDoneEvent,
   extractArtifactParts,
+  isA2ASession,
+  isReadOnlySessionForCurrentUser,
   normalizeStoredChatMessage,
   applyTranscriptEvent,
   createEmptyTranscriptReplayState,
@@ -24,6 +26,7 @@ import {
   sessionBelongsToAgent,
   isTerminalRealtimeChatEvent,
   shouldClearStaleRuntimeState,
+  shouldIgnoreObservedActiveRun,
 } from './chatRuntime';
 
 describe('chatRuntime helpers', () => {
@@ -47,6 +50,64 @@ describe('chatRuntime helpers', () => {
     expect(fromHistory.messages).toHaveLength(1);
     expect(fromSocket.messages).toEqual(fromHistory.messages);
     expect(fromSocket.ui).toEqual({ isWaiting: false, isStreaming: false });
+  });
+
+  it('preserves transcript event id separately from durable message id during replay', () => {
+    const state = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-user-1',
+      message_id: 'msg-user-1',
+      sequence: 11,
+      type: 'user_message',
+      event_type: 'user_message',
+      actor_type: 'user',
+      role: 'user',
+      content: 'Run the rewind checkpoint test.',
+      created_at: '2026-06-29T12:00:00Z',
+    });
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: 'user',
+      id: 'msg-user-1',
+      messageId: 'msg-user-1',
+      transcriptEventId: 'evt-user-1',
+    });
+  });
+
+  it('restores reasoning from persisted assistant parts during transcript replay', () => {
+    const state = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-reasoning-answer',
+      sequence: 12,
+      type: 'assistant_message',
+      event_type: 'assistant_message',
+      actor_type: 'assistant',
+      role: 'assistant',
+      content: 'Report is ready.',
+      parts: [
+        { type: 'reasoning', text: 'Checked the worker output and verified artifact metadata.' },
+        { type: 'text', text: 'Report is ready.' },
+      ],
+      created_at: '2026-06-29T12:00:00Z',
+    });
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: 'Report is ready.',
+      thinking: 'Checked the worker output and verified artifact metadata.',
+    });
+
+    expect(normalizeStoredChatMessage({
+      role: 'assistant',
+      content: 'Report is ready.',
+      parts: [
+        { type: 'reasoning', text: 'Checked persisted parts.' },
+        { type: 'text', text: 'Report is ready.' },
+      ],
+    })).toMatchObject({
+      role: 'assistant',
+      thinking: 'Checked persisted parts.',
+    });
   });
 
   it('treats blocking tool-card transcript events as terminal user-awaiting states', () => {
@@ -426,6 +487,29 @@ describe('chatRuntime helpers', () => {
     expect(result.uiStates).toEqual({ 'agent-1:session-1': { isWaiting: false, isStreaming: true } });
   });
 
+  it('ignores observed active runs once a terminal event closed the same session', () => {
+    expect(shouldIgnoreObservedActiveRun({
+      key: 'agent-1:session-1',
+      run: { runId: 'run-1', status: 'running' },
+      terminalRunIds: new Set(['run-1']),
+      terminalSessionKeys: new Set(),
+    })).toBe(true);
+
+    expect(shouldIgnoreObservedActiveRun({
+      key: 'agent-1:session-1',
+      run: { runId: 'run-late-without-terminal-id', status: 'running' },
+      terminalRunIds: new Set(),
+      terminalSessionKeys: new Set(['agent-1:session-1']),
+    })).toBe(true);
+
+    expect(shouldIgnoreObservedActiveRun({
+      key: 'agent-1:session-2',
+      run: { runId: 'run-2', status: 'running' },
+      terminalRunIds: new Set(['run-1']),
+      terminalSessionKeys: new Set(['agent-1:session-1']),
+    })).toBe(false);
+  });
+
   it('keeps an optimistic user prompt visible until transcript replay confirms it', () => {
     const merged = mergePendingUserMessages(
       [
@@ -513,14 +597,19 @@ describe('chatRuntime helpers', () => {
   });
 
   it('filters sessions that belong to a different route agent', () => {
+    expect(isA2ASession({ source_channel: 'agent' })).toBe(true);
+    expect(isA2ASession({ participant_type: 'agent' })).toBe(true);
+    expect(isA2ASession({ session_kind: 'agent_chat' })).toBe(true);
+    expect(isA2ASession({ session_kind: 'delegation_run' })).toBe(true);
+    expect(isA2ASession({ session_kind: 'human_chat', source_channel: 'web' })).toBe(false);
+
     expect(sessionBelongsToAgent({ id: 'session-1', agent_id: 'agent-1' }, 'agent-1')).toBe(true);
     expect(sessionBelongsToAgent({ id: 'session-1', agent_id: 'agent-2' }, 'agent-1')).toBe(false);
     expect(sessionBelongsToAgent({
       id: 'a2a-session-1',
       agent_id: 'agent-b',
       peer_agent_id: 'agent-a',
-      source_channel: 'agent',
-      participant_type: 'agent',
+      session_kind: 'delegation_run',
     }, 'agent-a')).toBe(true);
     expect(sessionBelongsToAgent({ id: 'legacy-session-without-agent-id' }, 'agent-1')).toBe(true);
     expect(filterSessionsForAgent([
@@ -533,6 +622,14 @@ describe('chatRuntime helpers', () => {
       { id: 'a2a-session-1', agent_id: 'agent-b', peer_agent_id: 'agent-1', source_channel: 'agent' },
       { id: 'session-3' },
     ]);
+  });
+
+  it('treats A2A and pending session lookups as read-only until canonical metadata loads', () => {
+    expect(isReadOnlySessionForCurrentUser({ source_channel: 'agent' }, 'user-1')).toBe(true);
+    expect(isReadOnlySessionForCurrentUser({ read_only: true }, 'user-1')).toBe(true);
+    expect(isReadOnlySessionForCurrentUser({ is_pending_session_lookup: true, source_channel: 'unknown' }, 'user-1')).toBe(true);
+    expect(isReadOnlySessionForCurrentUser({ user_id: 'user-2', source_channel: 'web' }, 'user-1')).toBe(true);
+    expect(isReadOnlySessionForCurrentUser({ user_id: 'user-1', source_channel: 'web' }, 'user-1')).toBe(false);
   });
 
   it('resets the streaming assistant when a chunk tombstone arrives', () => {
@@ -902,6 +999,38 @@ describe('chatRuntime helpers', () => {
         },
       ],
     });
+  });
+
+  it('replays task notification transcript events as runtime events even when legacy role is user', () => {
+    const next = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-task-notification',
+      sequence: 44,
+      type: 'agent_task_notification',
+      event_type: 'agent_task_notification',
+      actor_type: 'agent',
+      role: 'user',
+      content: '<task-notification><task-id>task-1</task-id></task-notification>',
+      metadata: {
+        message: 'Web3研究员 completed: report ready',
+        status: 'completed',
+        notification_source: 'a2a_delegation',
+        task_id: 'task-1',
+        task_type: 'a2a_delegation',
+        child_session_id: 'child-session-1',
+      },
+      created_at: '2026-06-25T12:00:00Z',
+    });
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({
+      role: 'event',
+      eventType: 'agent_task_notification',
+      eventStatus: 'completed',
+      eventNotificationSource: 'a2a_delegation',
+      eventChildSessionId: 'child-session-1',
+      content: 'Web3研究员 completed: report ready',
+    });
+    expect(next.messages[0].content).not.toContain('<task-notification>');
   });
 
   it('attaches artifact parts from tool result transcript events to the tool card', () => {

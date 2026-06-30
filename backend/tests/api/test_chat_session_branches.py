@@ -126,3 +126,64 @@ def test_branch_endpoint_starts_run_with_branch_runtime_contract(monkeypatch):
     assert captured_run["session"] is branch_session
     assert captured_run["content"] == "replacement"
     assert captured_run["append_user_message"] is True
+
+
+def test_branch_endpoint_accepts_branch_mode_without_starting_run(monkeypatch):
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    branch_session_id = uuid4()
+    anchor_event_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    source_session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
+    branch_session = SimpleNamespace(
+        id=branch_session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        source_channel="web",
+        session_kind="human_chat",
+        actor_type="user",
+        runtime_source="web_chat",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        parent_session_id=session_id,
+        root_session_id=session_id,
+        runtime_task_id=None,
+        title="Original session",
+        created_at=SimpleNamespace(isoformat=lambda: "2026-06-22T00:00:00+00:00"),
+        last_message_at=None,
+        peer_agent_id=None,
+    )
+    db = _FakeDB(source_session)
+    captured_branch = {}
+
+    async def fake_create_branch(**kwargs):
+        captured_branch.update(kwargs)
+        return SimpleNamespace(
+            session=branch_session,
+            branch={"mode": kwargs["mode"], "anchor_event_id": str(kwargs["anchor_event_id"])},
+            run_request=None,
+        )
+
+    monkeypatch.setattr(chat_sessions_api, "create_conversation_branch", fake_create_branch)
+    client = _client(monkeypatch, db=db, user=user, agent=agent)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/{session_id}/branches",
+        json={
+            "mode": "branch",
+            "anchor_event_id": str(anchor_event_id),
+            "start_run": False,
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["session"]["id"] == str(branch_session_id)
+    assert payload["session"]["title"] == "Original session"
+    assert payload["branch"]["mode"] == "branch"
+    assert payload["run"] is None
+    assert db.commits == 1
+    assert captured_branch["mode"] == "branch"
+    assert captured_branch["anchor_event_id"] == anchor_event_id

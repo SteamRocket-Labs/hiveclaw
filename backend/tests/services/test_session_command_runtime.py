@@ -490,11 +490,13 @@ async def test_rewind_with_checkpoint_updates_active_projection_without_new_sess
         "session_id": str(session.id),
         "projection_reason": "rewind",
         "checkpoint_event_id": str(first.id),
+        "draft_content": "first",
     }
     assert result["control_event"]["event_type"] == "session_rewind"
     assert appended[0]["event_type"] == "session_rewind"
     assert session.transcript_metadata_json["active_projection"]["projection_reason"] == "rewind"
     assert session.transcript_metadata_json["active_projection"]["checkpoint_event_id"] == str(first.id)
+    assert session.transcript_metadata_json["active_projection"]["draft_content"] == "first"
     assert db.added == []
     assert db.flushes == 1
 

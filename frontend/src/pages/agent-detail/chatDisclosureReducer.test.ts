@@ -67,6 +67,28 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps[0].summary).not.toContain('query:');
   });
 
+  it('keeps final-answer reasoning as a first-class visible process step', () => {
+    const finalAnswer: AgentChatMessage = {
+      role: 'assistant',
+      content: 'Report is ready.',
+      thinking: 'Verified the delegated artifact and prepared the final handoff.',
+      timestamp: '2026-06-29T12:00:00Z',
+    };
+
+    expect(isDisclosureStepMessage(finalAnswer)).toBe(true);
+
+    const timeline = buildRunTimelineFromMessages([finalAnswer]);
+
+    expect(timeline.steps).toHaveLength(1);
+    expect(timeline.steps[0]).toMatchObject({
+      kind: 'reasoning',
+      title: 'Thinking',
+      status: 'done',
+      summary: 'Verified the delegated artifact and prepared the final handoff.',
+    });
+    expect(timeline.answerMessageId).toBe('answer-0');
+  });
+
   it('adds a turn-level aggregate summary for repeated tool groups', () => {
     const timeline = buildRunTimelineFromMessages([
       {
@@ -188,6 +210,28 @@ describe('chatDisclosureReducer', () => {
       ['subagent', 'Sub-agent step'],
       ['a2a', 'A2A session'],
     ]);
+  });
+
+  it('classifies runtime action lifecycle events as visible A2A steps', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'event',
+        content: '已委派给 Web3研究员，后台执行中。',
+        eventType: 'runtime_action_started',
+        eventStatus: 'running',
+        eventNotificationSource: 'a2a',
+        eventRuntimeTaskId: 'task-1',
+        eventChildSessionId: 'child-1',
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.status).toBe('running');
+    expect(timeline.steps[0]).toMatchObject({
+      kind: 'a2a',
+      title: 'Action Started',
+      status: 'running',
+      summary: '已委派给 Web3研究员，后台执行中。 · child:child-1 · run:task-1',
+    });
   });
 
   it('classifies task notifications by their completion source', () => {

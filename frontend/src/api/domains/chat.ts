@@ -15,6 +15,17 @@ export interface ChatSession {
   parent_session_id?: string | null;
   root_session_id?: string | null;
   runtime_task_id?: string | null;
+  peer_agent_id?: string | null;
+  participant_id?: string | null;
+  participant_type?: string | null;
+  username?: string | null;
+  source_channel?: string | null;
+  thread_source?: string | null;
+  session_kind?: string | null;
+  actor_type?: string | null;
+  runtime_source?: string | null;
+  visibility_scope?: string | null;
+  listed_surface?: string | null;
   permission_mode?: string | null;
   permission_profile?: {
     mode?: string | null;
@@ -107,8 +118,9 @@ export interface UpdateSessionPermissionProfileInput {
 }
 
 export type ConversationBranchMode =
-  | 'fork'
-  | 'edit'
+	  | 'fork'
+	  | 'branch'
+	  | 'edit'
   | 'insert_before'
   | 'insert_after'
   | 'reply'

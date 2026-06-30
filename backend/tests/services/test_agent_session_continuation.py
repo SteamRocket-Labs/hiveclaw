@@ -122,7 +122,7 @@ async def test_agent_session_continuation_inactive_open_session_starts_turn(monk
 
 
 @pytest.mark.asyncio
-async def test_task_notification_continuation_uses_hidden_cc_envelope(monkeypatch):
+async def test_task_notification_continuation_is_system_runtime_context_not_user_turn(monkeypatch):
     import app.services.agent_session_continuation as svc
 
     db = _DB()
@@ -163,17 +163,79 @@ async def test_task_notification_continuation_uses_hidden_cc_envelope(monkeypatc
 
     assert result["status"] == "started"
     assert captured["append"]["event_type"] == "agent_task_notification"
-    assert captured["append"]["role"] == "user"
+    assert captured["append"]["role"] == "system"
     assert captured["append"]["materialize_chat_message"] is False
     assert captured["append"]["metadata"]["mailbox_kind"] == "task_notification"
     assert captured["append"]["metadata"]["task_type"] == "a2a_delegation"
     assert captured["append"]["metadata"]["trace_id"] == "trace-1"
-    assert "<task-notification>" in captured["append"]["content"]
-    assert "<task-id>task-1</task-id>" in captured["append"]["content"]
-    assert "<child-session-id>child-session-1</child-session-id>" in captured["append"]["content"]
+    assert captured["append"]["content"] == "Researcher completed: Research is complete."
+    assert "<task-notification>" not in captured["append"]["content"]
+    assert "<task-notification>" in captured["append"]["metadata"]["task_notification_envelope"]
+    assert "<task-id>task-1</task-id>" in captured["append"]["metadata"]["task_notification_envelope"]
+    assert "<child-session-id>child-session-1</child-session-id>" in captured["append"]["metadata"][
+        "task_notification_envelope"
+    ]
     assert captured["start"]["append_user_message"] is False
+    assert "<task-notification>" not in captured["start"]["content"]
+    assert "Runtime task notification" in captured["start"]["content"]
+    assert "This is not a user message" in captured["start"]["content"]
     assert captured["start"]["extra_metadata"]["source"] == "task_notification"
     assert captured["start"]["extra_metadata"]["task_notification"] is True
+    assert captured["start"]["extra_metadata"]["runtime_mailbox_role"] == "system"
+    assert captured["start"]["extra_metadata"]["latest_user_prompt_overrides_history"] is False
+
+
+@pytest.mark.asyncio
+async def test_task_notification_projects_runtime_action_before_mailbox(monkeypatch):
+    import app.services.agent_session_continuation as svc
+
+    db = _DB()
+    session = _agent_session(state="open")
+    agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id, name="Lead")
+    user = SimpleNamespace(id=session.user_id)
+    appended: list[dict] = []
+    captured: dict = {}
+
+    async def fake_append(**kwargs):
+        appended.append(kwargs)
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_find_active(**kwargs):
+        return None
+
+    async def fake_start(**kwargs):
+        captured["start"] = kwargs
+        return {"run_id": "run-task-notification", "status": "running"}
+
+    monkeypatch.setattr(svc, "append_session_event", fake_append)
+    monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
+    monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
+
+    result = await svc.continue_parent_session_with_task_notification(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        task_id="workflow-run-1",
+        task_type="workflow",
+        status="completed",
+        summary="Workflow delivered the report.",
+        source="workflow",
+        metadata={"workflow_run_id": "workflow-run-1"},
+    )
+
+    assert result["status"] == "started"
+    assert [call["event_type"] for call in appended] == ["runtime_action_completed", "agent_task_notification"]
+    runtime_event = appended[0]
+    assert runtime_event["role"] == "system"
+    assert runtime_event["materialize_chat_message"] is False
+    assert runtime_event["metadata"]["type"] == "runtime_action_completed"
+    assert runtime_event["metadata"]["action_kind"] == "workflow"
+    assert runtime_event["metadata"]["notification_source"] == "workflow"
+    assert runtime_event["metadata"]["runtime_task_id"] == "workflow-run-1"
+    assert runtime_event["metadata"]["workflow_run_id"] == "workflow-run-1"
+    assert runtime_event["metadata"]["status"] == "completed"
+    assert runtime_event["content"] == "Workflow delivered the report."
 
 
 @pytest.mark.asyncio
@@ -232,8 +294,13 @@ async def test_task_notification_carries_a2a_artifact_refs_to_parent_turn(monkey
     assert captured["append"]["parts"] == artifact_parts
     assert captured["append"]["metadata"]["artifacts"] == artifact_parts
     assert captured["start"]["extra_metadata"]["artifacts"] == artifact_parts
-    assert "<artifact-path>workspace/web3-report.md</artifact-path>" in captured["append"]["content"]
-    assert "<download-agent-id>agent-b</download-agent-id>" in captured["append"]["content"]
+    assert "<artifact-path>workspace/web3-report.md</artifact-path>" in captured["append"]["metadata"][
+        "task_notification_envelope"
+    ]
+    assert "<download-agent-id>agent-b</download-agent-id>" in captured["append"]["metadata"][
+        "task_notification_envelope"
+    ]
+    assert "workspace/web3-report.md" in captured["start"]["content"]
 
 
 @pytest.mark.asyncio
@@ -285,10 +352,13 @@ async def test_task_notification_active_parent_run_queues_to_midrun_consumer(mon
     assert result["status"] == "queued"
     assert result["consumer"] == "mid_run_message_drain"
     assert captured["append"]["event_type"] == "agent_task_notification"
+    assert captured["append"]["role"] == "system"
     assert captured["append"]["materialize_chat_message"] is False
     assert captured["queue"]["source_channel"] == "task_notification"
     assert captured["queue"]["message_already_in_t0"] is True
-    assert "<task-id>task-2</task-id>" in captured["queue"]["content"]
+    assert captured["queue"]["role"] == "system"
+    assert "<task-id>task-2</task-id>" not in captured["queue"]["content"]
+    assert "Runtime task notification" in captured["queue"]["content"]
 
 
 @pytest.mark.asyncio

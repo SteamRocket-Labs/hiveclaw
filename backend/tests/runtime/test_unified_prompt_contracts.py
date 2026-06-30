@@ -33,18 +33,37 @@ def test_delegation_tool_descriptions_require_structured_briefs() -> None:
         DELEGATION_BRIEF_CONTRACT
     )
     assert "Do not ask the worker to infer missing scope silently" in DELEGATION_BRIEF_CONTRACT
+    assert "cross-workspace artifact contract" in DELEGATION_BRIEF_CONTRACT
+    assert "presentations, spreadsheets, code files, and documents" in DELEGATION_BRIEF_CONTRACT
 
     sync_description = send_message_to_agent.meta.description
     async_description = delegate_to_agent.meta.description
 
     assert "short consults" in sync_description
     assert "Do NOT use this for long-running delegated work" in sync_description
+    assert "task_delegate" not in sync_description
+    assert "task_delegate" not in send_message_to_agent.meta.parameters["properties"]["msg_type"]["enum"]
+    assert "task_delegate" not in send_message_to_agent.meta.parameters["properties"]["msg_type"]["description"]
     assert "Goal / Context / Known facts / Constraints / Evidence needed / Output / Stop condition" in (
         async_description
     )
     assert "session_id/child_session_id" in async_description
     assert "use `check_async_task` only as a fallback status inspection" in async_description
     assert "Do not ask the worker to infer missing scope silently" in async_description
+    assert "cross-workspace artifact contract" in async_description
+    async_params = delegate_to_agent.meta.parameters["properties"]
+    assert async_params["target_artifact_path"]["type"] == "string"
+    assert async_params["target_artifacts"]["type"] == "array"
+    target_artifact_item = async_params["target_artifacts"]["items"]
+    assert target_artifact_item["type"] == "object"
+    assert target_artifact_item["properties"]["path"]["type"] == "string"
+    assert target_artifact_item["properties"]["workspace_scope"]["enum"] == [
+        "target_agent_workspace",
+        "source_agent_workspace",
+        "external_workspace",
+    ]
+    assert async_params["edit_mode"]["enum"] == ["create_or_update", "modify_existing", "create_new"]
+    assert "modify_existing" in async_params["edit_mode"]["description"]
 
 
 def test_command_parity_tools_explain_command_layer_semantics() -> None:

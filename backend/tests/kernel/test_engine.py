@@ -477,6 +477,24 @@ def test_mid_run_drain_prefers_structured_llm_content_over_display_text() -> Non
     assert messages[0].content == "[File: bank.pdf]\nFull extracted text\n\nQuestion: Summarize it."
 
 
+def test_mid_run_drain_preserves_system_runtime_notifications() -> None:
+    from app.kernel.engine import _mid_run_items_to_user_messages
+
+    messages = _mid_run_items_to_user_messages(
+        [
+            {
+                "role": "system",
+                "content": "Runtime task notification: the delegated worker completed.",
+                "display_content": "Worker completed.",
+            }
+        ]
+    )
+
+    assert len(messages) == 1
+    assert messages[0].role == "system"
+    assert messages[0].content == "Runtime task notification: the delegated worker completed."
+
+
 def test_split_concatenated_json_splits_double_object():
     """T1-4: DeepSeek-V4 style {"a":1}{"b":2} concatenation is split into separate payloads."""
     from app.kernel.engine import _split_concatenated_json

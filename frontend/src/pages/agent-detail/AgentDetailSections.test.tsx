@@ -33,6 +33,7 @@ import AgentA2ASection from './AgentA2ASection';
 import ToolsManager from './ToolsManager';
 import {
   AGENT_DETAIL_TABS,
+  applySessionActiveProjection,
   buildAgentDetailTabNavigation,
   buildSessionWorkbenchNavigation,
   getAgentDetailHashTab,
@@ -625,6 +626,31 @@ describe('AgentDetail extracted sections', () => {
     expect(getAgentDetailHashTab('#unknown', AGENT_DETAIL_TABS)).toBeNull();
   });
 
+  it('applies active rewind projection before the selected user checkpoint and returns that prompt as draft', () => {
+    const result = applySessionActiveProjection(
+      {
+        transcript_metadata_json: {
+          active_projection: {
+            projection_reason: 'rewind',
+            checkpoint_event_id: 'evt-user-2',
+            draft_content: 'Selected prompt returns to composer.',
+          },
+        },
+      },
+      [
+        { id: 'msg-user-1', transcriptEventId: 'evt-user-1', role: 'user', content: 'Earlier prompt.' },
+        { id: 'msg-assistant-1', transcriptEventId: 'evt-assistant-1', role: 'assistant', content: 'Earlier answer.' },
+        { id: 'msg-user-2', transcriptEventId: 'evt-user-2', role: 'user', content: 'Selected prompt returns to composer.' },
+        { id: 'msg-assistant-2', transcriptEventId: 'evt-assistant-2', role: 'assistant', content: 'Tail answer.' },
+      ],
+    );
+
+    expect(result.messages.map((message) => message.transcriptEventId)).toEqual(['evt-user-1', 'evt-assistant-1']);
+    expect(result.draftContent).toBe('Selected prompt returns to composer.');
+    expect(result.checkpointEventId).toBe('evt-user-2');
+    expect(result.shouldScrollToProjectionTail).toBe(true);
+  });
+
   it('keeps only the All Users conversation audit browser inside Agent Detail', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
@@ -804,7 +830,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('<button');
   });
 
-  it('renders transcript-anchored conversation branch actions on messages', () => {
+  it('does not render branch or rewind actions on user prompts', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agentId="agent-1"
@@ -838,7 +864,79 @@ describe('AgentDetail extracted sections', () => {
         onScrollHistoryToBottom={vi.fn()}
         chatContainerRef={React.createRef<HTMLDivElement>()}
         onChatScroll={vi.fn()}
-        chatMessages={[{ id: 'event-1', role: 'user', content: 'Use the Railway logs.' }]}
+        chatMessages={[{ id: 'msg-user-1', transcriptEventId: 'evt-user-1', role: 'user', content: 'Use the Railway logs.' }]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        onBranchMessage={vi.fn()}
+        onRunSessionCommand={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).not.toContain('data-testid="message-action-like"');
+    expect(markup).not.toContain('data-testid="message-action-dislike"');
+    expect(markup).not.toContain('data-testid="message-action-branch"');
+    expect(markup).not.toContain('data-testid="message-action-rewind"');
+  });
+
+  it('renders transcript-anchored conversation branch actions on assistant replies', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agentId="agent-1"
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Branchable run',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          { id: 'msg-user-1', transcriptEventId: 'evt-user-1', role: 'user', content: 'Use the Railway logs.' },
+          { id: 'msg-assistant-1', transcriptEventId: 'evt-assistant-1', role: 'assistant', content: 'I checked them.' },
+        ]}
         chatMessagesSessionId="session-1"
         runtimeSummary={null}
         transportNotice={null}
@@ -952,7 +1050,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('session-tui-message-row session-tui-message-row-user');
     expect(markup).toContain('session-tui-message-row session-tui-message-row-assistant');
     expect(markup).toContain('session-tui-message-bubble');
-    expect(markup).toContain('session-tui-thinking');
+    expect(markup).toContain('data-testid="run-disclosure-block"');
+    expect(markup).toContain('I checked the current branch state.');
     expect(markup).not.toContain('rgba(16,185,129');
     expect(markup).not.toContain('147, 130, 220');
   });
@@ -3269,6 +3368,24 @@ describe('AgentDetail extracted sections', () => {
             title: 'Existing branch',
             branch: { branch_mode: 'branch', anchor_event_id: 'checkpoint-user-1' },
           },
+          {
+            id: 'branch-session-2',
+            parent_session_id: 'runtime-panel-session',
+            title: 'Second branch',
+            branch: { branch_mode: 'branch', anchor_event_id: 'checkpoint-user-1' },
+          },
+          {
+            id: 'branch-session-3',
+            parent_session_id: 'runtime-panel-session',
+            title: 'Third branch',
+            branch: { branch_mode: 'branch', anchor_event_id: 'checkpoint-user-1' },
+          },
+          {
+            id: 'branch-session-4',
+            parent_session_id: 'runtime-panel-session',
+            title: 'Assistant side branch',
+            branch: { branch_mode: 'branch', anchor_event_id: 'checkpoint-assistant-2' },
+          },
         ]}
         wsConnected
         allSessions={[]}
@@ -3347,6 +3464,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-gitline"');
     expect(markup).toContain('data-testid="session-gitline-checkpoint"');
     expect(markup).toContain('data-testid="session-gitline-branch"');
+    expect(markup).toContain('data-testid="session-gitline-branch-cluster"');
+    expect(markup).toContain('+3');
     expect(markup).toContain('data-session-action="navigate-checkpoint"');
     expect(markup).toContain('data-session-action="navigate-branch"');
     expect(markup).not.toContain('data-session-command="branch"');
@@ -3706,8 +3825,7 @@ describe('AgentDetail extracted sections', () => {
           user_id: 'user-1',
           title: 'A2A handoff',
           username: 'Researcher ↔ Lead Agent',
-          source_channel: 'agent',
-          participant_type: 'agent',
+          session_kind: 'agent_chat',
           created_at: '2026-06-29T09:00:00Z',
         }}
         wsConnected

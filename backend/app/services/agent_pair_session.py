@@ -21,6 +21,55 @@ def session_conversation_id(session: ChatSession) -> str:
     return str(session.id)
 
 
+def _normalize_agent_pair_session_contract(
+    session: ChatSession,
+    *,
+    source_agent_id: uuid.UUID | str,
+    target_agent_id: uuid.UUID | str,
+    tenant_id: uuid.UUID | str | None = None,
+    owner_user_id: uuid.UUID | str,
+    source_agent_name: str,
+    target_agent_name: str,
+    source_participant_id: uuid.UUID | None = None,
+) -> None:
+    """Repair any existing pair session into the canonical A2A read-model shape."""
+    source_uuid = uuid.UUID(str(source_agent_id))
+    target_uuid = uuid.UUID(str(target_agent_id))
+    tenant_uuid = uuid.UUID(str(tenant_id)) if tenant_id else None
+    owner_uuid = uuid.UUID(str(owner_user_id))
+    session_agent_id, peer_agent_id = canonicalize_agent_pair_ids(source_uuid, target_uuid)
+
+    session.agent_id = session_agent_id
+    session.peer_agent_id = peer_agent_id
+    if tenant_uuid is not None:
+        session.tenant_id = tenant_uuid
+    session.user_id = owner_uuid
+    if not getattr(session, "title", None):
+        session.title = f"{source_agent_name} ↔ {target_agent_name}"
+    session.source_channel = "agent"
+    session.session_kind = "agent_chat"
+    session.actor_type = "agent"
+    session.runtime_source = "agent_to_agent_chat"
+    session.visibility_scope = "agent_owner"
+    session.listed_surface = "chat"
+    if source_participant_id is not None:
+        session.participant_id = source_participant_id
+
+    metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
+    metadata.update(
+        {
+            "source": "agent",
+            "interaction_type": "agent_message",
+            "a2a_session": True,
+            "from_agent_id": str(source_uuid),
+            "to_agent_id": str(target_uuid),
+            "from_agent_name": source_agent_name,
+            "to_agent_name": target_agent_name,
+        }
+    )
+    session.transcript_metadata_json = metadata
+
+
 async def get_or_create_agent_participant_id(
     db: AsyncSession,
     *,
@@ -83,9 +132,6 @@ async def find_or_create_agent_pair_session(
             )
         )
         session = result.scalar_one_or_none()
-    if session is not None and tenant_uuid and session.tenant_id is None:
-        session.tenant_id = tenant_uuid
-
     if session is None:
         session = ChatSession(
             id=session_uuid,
@@ -108,4 +154,14 @@ async def find_or_create_agent_pair_session(
         if flush:
             await flush()
 
+    _normalize_agent_pair_session_contract(
+        session,
+        source_agent_id=source_uuid,
+        target_agent_id=target_uuid,
+        tenant_id=tenant_uuid,
+        owner_user_id=owner_uuid,
+        source_agent_name=source_agent_name,
+        target_agent_name=target_agent_name,
+        source_participant_id=source_participant_id,
+    )
     return session

@@ -31,6 +31,33 @@ describe('session workbench timeline model', () => {
     expect(model.header.status).toBe('complete');
   });
 
+  it('keeps an assistant answer visible when reasoning and content share one transcript message', () => {
+    const messages: AgentChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'Check the checkpoint behavior.' },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'The checkpoint should point before the selected prompt.',
+        thinking: 'Need to compare branch and rewind semantics.',
+      },
+    ];
+
+    const model = buildThreadTimeline({
+      messages,
+      activeSession: { id: 'session-1', title: 'Checkpoint semantics' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run']);
+    const runCell = model.cells[1];
+    expect(runCell.kind).toBe('active_run');
+    if (runCell.kind !== 'active_run') throw new Error('expected active run cell');
+    expect(runCell.timeline.steps.map((step) => step.kind)).toEqual(['reasoning']);
+    expect(runCell.answer?.content).toContain('point before the selected prompt');
+  });
+
   it('marks question and plan tool calls as blocking active run steps', () => {
     const messages: AgentChatMessage[] = [
       { id: 'u1', role: 'user', content: 'Make a plan first.' },

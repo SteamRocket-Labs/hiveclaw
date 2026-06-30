@@ -274,6 +274,21 @@ function isRenderableAssistantAnswer(message: AgentChatMessage): boolean {
   return message.role === 'assistant' && Boolean(message.content?.trim());
 }
 
+function assistantReasoningStepMessage(message: AgentChatMessage): AgentChatMessage {
+  return {
+    ...message,
+    id: message.id ? `${message.id}:reasoning` : message.id,
+    content: '',
+  };
+}
+
+function assistantAnswerMessage(message: AgentChatMessage): AgentChatMessage {
+  return {
+    ...message,
+    thinking: '',
+  };
+}
+
 function buildRunCell(
   runIndex: number,
   sourceMessages: Array<{ message: AgentChatMessage; index: number }>,
@@ -340,12 +355,17 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
   };
 
   messages.forEach((message, index) => {
-    if (isDisclosureStepMessage(message)) {
-      pendingRun.push({ message, index });
-      return;
-    }
-
     if (isRenderableAssistantAnswer(message)) {
+      if (message.thinking?.trim()) {
+        const sourceMessages = [
+          ...pendingRun,
+          { message: assistantReasoningStepMessage(message), index },
+        ];
+        cells.push(buildRunCell(runIndex, sourceMessages, { message: assistantAnswerMessage(message), index }));
+        runIndex += 1;
+        pendingRun.length = 0;
+        return;
+      }
       if (pendingRun.length > 0) {
         cells.push(buildRunCell(runIndex, [...pendingRun], { message, index }));
         runIndex += 1;
@@ -358,6 +378,11 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
         message,
         index,
       });
+      return;
+    }
+
+    if (isDisclosureStepMessage(message)) {
+      pendingRun.push({ message, index });
       return;
     }
 

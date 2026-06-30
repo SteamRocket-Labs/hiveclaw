@@ -1743,8 +1743,13 @@ async def test_delegation_completion_projects_child_session_event_to_parent(monk
 
     import uuid as _uuid
 
-    assert len(captured) == 1, "expected exactly one parent-session projection event"
-    event = captured[0]
+    assert len(captured) == 2, "expected runtime completion feedback plus child-session projection"
+    runtime_event = captured[0]
+    assert runtime_event["event_type"] == "runtime_action_completed"
+    assert runtime_event["metadata"]["status"] == "completed"
+    assert runtime_event["metadata"]["action_kind"] == "a2a_delegation"
+    assert runtime_event["metadata"]["child_session_id"]
+    event = captured[1]
     assert _uuid.UUID(str(event["session_id"])) == _uuid.UUID(parent_session_id)
     assert event["event_type"] == "child_session"
     assert _uuid.UUID(event["metadata"]["child_session_id"]) == _uuid.UUID(child_session_id)
@@ -1822,11 +1827,178 @@ async def test_delegation_completion_projects_a2a_artifact_refs_to_parent(monkey
         summary="Report is ready.",
     )
 
-    assert captured[0]["parts"][0]["type"] == "event"
-    assert captured[0]["parts"][1:] == artifact_parts
-    assert captured[0]["metadata"]["artifacts"] == artifact_parts
-    assert captured[0]["metadata"]["artifact_paths"] == ["workspace/web3-report.md"]
+    runtime_event = captured[0]
+    parent_event = captured[1]
+    assert runtime_event["event_type"] == "runtime_action_completed"
+    assert runtime_event["metadata"]["artifact_paths"] == ["workspace/web3-report.md"]
+    assert parent_event["parts"][0]["type"] == "event"
+    assert parent_event["parts"][1:] == artifact_parts
+    assert parent_event["metadata"]["artifacts"] == artifact_parts
+    assert parent_event["metadata"]["artifact_paths"] == ["workspace/web3-report.md"]
     assert wakeups[0]["artifacts"] == artifact_parts
+
+
+@pytest.mark.asyncio
+async def test_modify_existing_delegation_blocks_when_target_artifact_path_not_delivered(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, _project_delegation_completion_to_parent
+
+    captured = _capture_parent_session_events(monkeypatch)
+    wakeups: list[dict] = []
+
+    async def fake_collect_delegation_child_artifact_parts(**kwargs):
+        return [
+            {
+                "type": "artifact",
+                "artifact_id": "artifact-new",
+                "path": "workspace/new-report.md",
+                "name": "new-report.md",
+                "owner_agent_id": "agent-b",
+                "source_agent_id": "agent-b",
+                "download_agent_id": "agent-b",
+            }
+        ]
+
+    async def fake_wake_parent_session_from_delegation_completion(**kwargs):
+        wakeups.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator._collect_delegation_child_artifact_parts",
+        fake_collect_delegation_child_artifact_parts,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.agents.orchestrator._wake_parent_session_from_delegation_completion",
+        fake_wake_parent_session_from_delegation_completion,
+        raising=False,
+    )
+
+    parent_session_id = uuid4().hex
+    child_session_id = uuid4().hex
+    parent_agent_id = uuid4()
+    tenant_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Researcher", tenant_id=tenant_id)
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "Update the current report"}],
+        owner_id=uuid4(),
+        session_id=child_session_id,
+        parent_agent_id=parent_agent_id,
+        parent_session_id=parent_session_id,
+        trace_id="trace-artifacts",
+        depth=1,
+        tenant_id=tenant_id,
+        runtime_task_id="task-1",
+        target_artifact_path="workspace/current-report.md",
+        edit_mode="modify_existing",
+    )
+
+    await _project_delegation_completion_to_parent(
+        request=request,
+        task_id="task-1",
+        status="completed",
+        summary="Report is ready.",
+    )
+
+    runtime_event = captured[0]
+    parent_event = captured[1]
+    assert runtime_event["event_type"] == "runtime_action_blocked"
+    assert runtime_event["metadata"]["status"] == "blocked"
+    assert runtime_event["metadata"]["reason"] == "delegation_artifact_contract_mismatch"
+    assert runtime_event["metadata"]["target_artifact_path"] == "workspace/current-report.md"
+    assert parent_event["metadata"]["status"] == "blocked"
+    assert parent_event["metadata"]["reason"] == "delegation_artifact_contract_mismatch"
+    assert parent_event["metadata"]["target_artifact_path"] == "workspace/current-report.md"
+    assert wakeups[0]["status"] == "blocked"
+    assert "workspace/current-report.md" in wakeups[0]["summary"]
+
+
+@pytest.mark.asyncio
+async def test_modify_existing_delegation_blocks_when_any_cross_workspace_target_artifact_missing(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, _project_delegation_completion_to_parent
+
+    captured = _capture_parent_session_events(monkeypatch)
+    wakeups: list[dict] = []
+
+    async def fake_collect_delegation_child_artifact_parts(**kwargs):
+        return [
+            {
+                "type": "artifact",
+                "artifact_id": "artifact-deck",
+                "path": "workspace/board-review.pptx",
+                "name": "board-review.pptx",
+                "owner_agent_id": "agent-b",
+                "source_agent_id": "agent-b",
+                "download_agent_id": "agent-b",
+            }
+        ]
+
+    async def fake_wake_parent_session_from_delegation_completion(**kwargs):
+        wakeups.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator._collect_delegation_child_artifact_parts",
+        fake_collect_delegation_child_artifact_parts,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.agents.orchestrator._wake_parent_session_from_delegation_completion",
+        fake_wake_parent_session_from_delegation_completion,
+        raising=False,
+    )
+
+    parent_session_id = uuid4().hex
+    child_session_id = uuid4().hex
+    parent_agent_id = uuid4()
+    tenant_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Builder", tenant_id=tenant_id)
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "Update the deck and source file"}],
+        owner_id=uuid4(),
+        session_id=child_session_id,
+        parent_agent_id=parent_agent_id,
+        parent_session_id=parent_session_id,
+        trace_id="trace-artifacts",
+        depth=1,
+        tenant_id=tenant_id,
+        runtime_task_id="task-1",
+        target_artifacts=[
+            {
+                "path": "workspace/board-review.pptx",
+                "workspace_scope": "target_agent_workspace",
+                "expected_action": "modify_existing",
+            },
+            {
+                "path": "workspace/src/forecast.py",
+                "workspace_scope": "target_agent_workspace",
+                "expected_action": "modify_existing",
+            },
+        ],
+        edit_mode="modify_existing",
+    )
+
+    await _project_delegation_completion_to_parent(
+        request=request,
+        task_id="task-1",
+        status="completed",
+        summary="Deck is ready.",
+    )
+
+    runtime_event = captured[0]
+    parent_event = captured[1]
+    assert runtime_event["event_type"] == "runtime_action_blocked"
+    assert runtime_event["metadata"]["reason"] == "delegation_artifact_contract_mismatch"
+    assert runtime_event["metadata"]["target_artifact_paths"] == [
+        "workspace/board-review.pptx",
+        "workspace/src/forecast.py",
+    ]
+    assert parent_event["metadata"]["target_artifact_paths"] == [
+        "workspace/board-review.pptx",
+        "workspace/src/forecast.py",
+    ]
+    assert "workspace/src/forecast.py" in wakeups[0]["summary"]
 
 
 def test_delegation_child_session_is_listed_as_readable_a2a_chat() -> None:
@@ -1883,9 +2055,14 @@ async def test_delegation_failure_projects_failed_child_session_event_to_parent(
         summary="It broke.",
     )
 
-    assert len(captured) == 1
-    assert captured[0]["metadata"]["status"] == "failed"
-    assert captured[0]["metadata"]["reason"] == "delegation_failed"
+    assert len(captured) == 2
+    runtime_event = captured[0]
+    parent_event = captured[1]
+    assert runtime_event["event_type"] == "runtime_action_failed"
+    assert runtime_event["metadata"]["status"] == "failed"
+    assert runtime_event["metadata"]["reason"] == "delegation_failed"
+    assert parent_event["metadata"]["status"] == "failed"
+    assert parent_event["metadata"]["reason"] == "delegation_failed"
 
 
 @pytest.mark.asyncio

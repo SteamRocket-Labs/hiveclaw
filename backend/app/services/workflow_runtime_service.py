@@ -53,6 +53,53 @@ from app.runtime.workflow_engine import (
 logger = logging.getLogger(__name__)
 
 _RESUMABLE_STATUSES = ("running", "suspended")
+_WORKFLOW_RUNTIME_ACTION_BY_RUN_STATUS = {
+    "running": "runtime_action_started",
+    "completed": "runtime_action_completed",
+    "failed": "runtime_action_failed",
+    "killed": "runtime_action_failed",
+    "suspended": "runtime_action_blocked",
+}
+
+
+def _workflow_runtime_action_payload(
+    *,
+    run_id: str,
+    status: str,
+    parent_session_id: str | None,
+    root_session_id: str | None,
+    definition_source: str | None = None,
+    definition_hash: str | None = None,
+    reason: str | None = None,
+    step_id: str | None = None,
+    result_ref: str | None = None,
+) -> dict[str, Any]:
+    event_type = "runtime_action_progress" if step_id else _WORKFLOW_RUNTIME_ACTION_BY_RUN_STATUS.get(
+        status, "runtime_action_progress"
+    )
+    subject = f"Workflow step {step_id}" if step_id else "Workflow run"
+    payload: dict[str, Any] = {
+        "type": event_type,
+        "status": status,
+        "message": f"{subject} {status}",
+        "action_kind": "workflow",
+        "notification_source": "workflow",
+        "tool_name": "start_workflow",
+        "workflow_run_id": run_id,
+        "runtime_task_id": run_id,
+        "parent_session_id": parent_session_id,
+        "root_session_id": root_session_id or parent_session_id,
+        "reason": reason,
+    }
+    if step_id:
+        payload["workflow_step_id"] = step_id
+    if definition_source:
+        payload["definition_source"] = definition_source
+    if definition_hash:
+        payload["definition_hash"] = definition_hash
+    if result_ref is not None:
+        payload["result_ref"] = result_ref
+    return payload
 
 
 class WorkflowRunNotFound(LookupError):
@@ -207,27 +254,38 @@ class _PGWorkflowJournal:
             "reason": reason,
             "result_ref": result_ref,
         }
-        event = build_session_native_event(payload)
+        runtime_payload = _workflow_runtime_action_payload(
+            run_id=run_id,
+            status=status,
+            parent_session_id=self._parent_session_id,
+            root_session_id=self._root_session_id or self._parent_session_id,
+            reason=reason,
+            step_id=step_id,
+            result_ref=result_ref,
+        )
+        payloads = (payload, runtime_payload)
         try:
             async with self._session() as session:
-                await append_session_event(
-                    db=session,
-                    agent_id=self._agent_id,
-                    tenant_id=self._tenant_id,
-                    session_id=self._parent_session_id,
-                    actor_type="system",
-                    event_type="workflow_step",
-                    role="system",
-                    user_id=self._user_id,
-                    run_id=run_id,
-                    runtime_task_id=run_id,
-                    root_session_id=self._root_session_id or self._parent_session_id,
-                    parent_session_id=self._parent_session_id,
-                    content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                    source="workflow_runtime",
-                    parts=[event["part"]] if isinstance(event.get("part"), dict) else None,
-                    metadata={"source": "workflow_runtime", **payload},
-                )
+                for event_payload in payloads:
+                    event = build_session_native_event(event_payload)
+                    await append_session_event(
+                        db=session,
+                        agent_id=self._agent_id,
+                        tenant_id=self._tenant_id,
+                        session_id=self._parent_session_id,
+                        actor_type="system",
+                        event_type=str(event_payload["type"]),
+                        role="system",
+                        user_id=self._user_id,
+                        run_id=run_id,
+                        runtime_task_id=run_id,
+                        root_session_id=self._root_session_id or self._parent_session_id,
+                        parent_session_id=self._parent_session_id,
+                        content=json.dumps(event_payload, ensure_ascii=False, sort_keys=True),
+                        source="workflow_runtime",
+                        parts=[event["part"]] if isinstance(event.get("part"), dict) else None,
+                        metadata={"source": "workflow_runtime", **event_payload},
+                    )
                 await session.commit()
         except Exception as exc:
             logger.warning("[Workflow] session event projection for step %s failed (non-fatal): %s", step_id, exc)
@@ -919,27 +977,42 @@ class WorkflowRuntimeService:
             # so a session reader sees WHAT the run produced, not just a status.
             payload["outputs"] = outputs
             payload["deliverable_step_ids"] = sorted(str(key) for key in outputs)
-        event = build_session_native_event(payload)
+        runtime_payload = _workflow_runtime_action_payload(
+            run_id=str(run_id),
+            status=status,
+            parent_session_id=session_id,
+            root_session_id=str(root_session_id or parent_session_id),
+            definition_source=definition_source,
+            definition_hash=definition_hash,
+            reason=reason,
+        )
+        payloads = (
+            (payload, runtime_payload)
+            if status == "running"
+            else (runtime_payload, payload)
+        )
         try:
             async with self._session(tenant_id) as session:
-                await append_session_event(
-                    db=session,
-                    agent_id=agent_id,
-                    tenant_id=tenant_id,
-                    session_id=session_id,
-                    actor_type="system",
-                    event_type="workflow_run",
-                    role="system",
-                    user_id=user_id,
-                    run_id=run_id,
-                    runtime_task_id=run_id,
-                    root_session_id=root_session_id or parent_session_id,
-                    parent_session_id=parent_session_id,
-                    content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                    source="workflow_runtime",
-                    parts=[event["part"]] if isinstance(event.get("part"), dict) else None,
-                    metadata={"source": "workflow_runtime", **payload},
-                )
+                for event_payload in payloads:
+                    event = build_session_native_event(event_payload)
+                    await append_session_event(
+                        db=session,
+                        agent_id=agent_id,
+                        tenant_id=tenant_id,
+                        session_id=session_id,
+                        actor_type="system",
+                        event_type=str(event_payload["type"]),
+                        role="system",
+                        user_id=user_id,
+                        run_id=run_id,
+                        runtime_task_id=run_id,
+                        root_session_id=root_session_id or parent_session_id,
+                        parent_session_id=parent_session_id,
+                        content=json.dumps(event_payload, ensure_ascii=False, sort_keys=True),
+                        source="workflow_runtime",
+                        parts=[event["part"]] if isinstance(event.get("part"), dict) else None,
+                        metadata={"source": "workflow_runtime", **event_payload},
+                    )
                 await session.commit()
         except Exception as exc:
             logger.warning("[Workflow] session event projection for run %s failed (non-fatal): %s", run_id, exc)

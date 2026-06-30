@@ -40,6 +40,38 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('RAW FILE CONTENT');
   });
 
+  it('expands completed runs when they contain visible reasoning or A2A lifecycle feedback', () => {
+    const markup = renderToStaticMarkup(
+      <RunDisclosureBlock
+        timeline={{
+          ...baseTimeline,
+          steps: [
+            {
+              id: 'reasoning-1',
+              kind: 'reasoning',
+              title: 'Thinking',
+              status: 'done',
+              summary: 'Verified the delegated artifact and prepared the handoff.',
+              visibility: 'collapsed',
+            },
+            {
+              id: 'a2a-1',
+              kind: 'a2a',
+              title: 'Action Started',
+              status: 'done',
+              summary: 'Delegated to Web3 researcher.',
+              visibility: 'collapsed',
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain('Verified the delegated artifact');
+    expect(markup).toContain('Action Started');
+  });
+
   it('expands active runs by default so the running step remains in the thread', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock

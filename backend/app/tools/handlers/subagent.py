@@ -17,7 +17,7 @@ import json
 import uuid
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import and_, desc, or_, select
 
 from app.agents.subagent import (
     PUBLIC_BUILTIN_SUBAGENT_TYPES,
@@ -770,14 +770,20 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
         result = await db.execute(
             select(ChatSession).where(
                 ChatSession.id == child_session_uuid,
-                ChatSession.agent_id == request.context.agent_id,
+                or_(
+                    ChatSession.agent_id == request.context.agent_id,
+                    and_(
+                        ChatSession.peer_agent_id == request.context.agent_id,
+                        ChatSession.source_channel == "agent",
+                    ),
+                ),
             )
         )
         session = result.scalar_one_or_none()
         if session is None:
             return _json({"ok": False, "error": "child agent session not found for this agent"})
 
-        agent = (await db.execute(select(Agent).where(Agent.id == request.context.agent_id))).scalar_one_or_none()
+        agent = (await db.execute(select(Agent).where(Agent.id == session.agent_id))).scalar_one_or_none()
         user_id = _uuid_or_none(getattr(session, "user_id", None)) or _uuid_or_none(request.context.user_id)
         user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none() if user_id else None
         if agent is None or user is None:

@@ -117,6 +117,8 @@ def test_a2a_prompt_defines_status_and_result_contract() -> None:
     assert "still working" in normalized
     assert "cannot complete" in normalized
     assert "file path" in normalized
+    assert "same workspace path" in normalized
+    assert "do not create a replacement" in normalized
     assert "nested delegation" in normalized
     assert "delegate_to_agent" in A2A_SYSTEM_PROMPT_SUFFIX
 

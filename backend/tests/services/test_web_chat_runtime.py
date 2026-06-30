@@ -385,14 +385,15 @@ async def test_active_compact_projection_replaces_prior_history_and_keeps_later_
 
 
 @pytest.mark.asyncio
-async def test_active_rewind_projection_truncates_history_to_checkpoint_and_keeps_later_tail():
+async def test_active_rewind_projection_excludes_selected_user_checkpoint_and_keeps_later_tail():
     import app.services.web_chat_runtime as runtime
 
     session_id = uuid4()
     applied_at = datetime(2026, 6, 27, 12, 5, tzinfo=timezone.utc)
     checkpoint_event_id = uuid4()
     kept_message_id = uuid4()
-    dropped_message_id = uuid4()
+    checkpoint_message_id = uuid4()
+    dropped_answer_message_id = uuid4()
     tail_message_id = uuid4()
     session = SimpleNamespace(
         id=session_id,
@@ -405,18 +406,37 @@ async def test_active_rewind_projection_truncates_history_to_checkpoint_and_keep
         },
     )
     anchor_event = SimpleNamespace(id=checkpoint_event_id, session_id=session_id, sequence=10)
+
+    class _ProjectionBoundaryDB:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, stmt):
+            self.calls += 1
+            if self.calls == 1:
+                return _QueuedScalarResult(anchor_event)
+            sql = str(stmt)
+            selected_ids = [kept_message_id, checkpoint_message_id] if "<=" in sql else [kept_message_id]
+            return _QueuedScalarResult(selected_ids)
+
     history = [
         _history_msg(
             msg_id=kept_message_id,
             role="user",
-            content="original prompt",
+            content="prior prompt",
             created_at=datetime(2026, 6, 27, 12, 1, tzinfo=timezone.utc),
         ),
         _history_msg(
-            msg_id=dropped_message_id,
+            msg_id=checkpoint_message_id,
+            role="user",
+            content="selected prompt should return to composer",
+            created_at=datetime(2026, 6, 27, 12, 2, tzinfo=timezone.utc),
+        ),
+        _history_msg(
+            msg_id=dropped_answer_message_id,
             role="assistant",
             content="discarded answer",
-            created_at=datetime(2026, 6, 27, 12, 2, tzinfo=timezone.utc),
+            created_at=datetime(2026, 6, 27, 12, 3, tzinfo=timezone.utc),
         ),
         _history_msg(
             msg_id=tail_message_id,
@@ -427,14 +447,14 @@ async def test_active_rewind_projection_truncates_history_to_checkpoint_and_keep
     ]
 
     projected = await runtime._apply_active_projection_to_history(
-        _QueuedDB(anchor_event, [kept_message_id]),
+        _ProjectionBoundaryDB(),
         session,
         history,
     )
     conversation = runtime.conversation_from_history_messages(projected)
 
     assert conversation == [
-        {"role": "user", "content": "original prompt"},
+        {"role": "user", "content": "prior prompt"},
         {"role": "user", "content": "new prompt after rewind"},
     ]
 
@@ -634,6 +654,86 @@ async def test_persist_runtime_event_writes_session_native_part(monkeypatch):
     ]
     assert captured["metadata"]["runtime_event_type"] == "hook_progress"
     assert captured["metadata"]["hook_event"] == "PreToolUse"
+
+
+def test_delegate_tool_result_builds_runtime_action_started_event():
+    import json
+
+    import app.services.web_chat_runtime as runtime
+
+    event = runtime._runtime_action_event_from_tool_result(
+        {
+            "name": "delegate_to_agent",
+            "status": "done",
+            "args": {"agent_name": "Web3研究员"},
+            "result": json.dumps(
+                {
+                    "runtime_task_id": "task-1",
+                    "child_session_id": "child-1",
+                    "session_id": "child-1",
+                    "status": "running",
+                },
+                ensure_ascii=False,
+            ),
+            "runtime_task_id": "root-run",
+            "parent_session_id": "parent-1",
+        }
+    )
+
+    assert event == {
+        "type": "runtime_action_started",
+        "message": "已委派给 Web3研究员，后台执行中。",
+        "status": "running",
+        "action_kind": "a2a_delegation",
+        "tool_name": "delegate_to_agent",
+        "target_agent_name": "Web3研究员",
+        "runtime_task_id": "task-1",
+        "child_session_id": "child-1",
+        "session_id": "child-1",
+        "parent_session_id": "parent-1",
+        "notification_source": "a2a",
+    }
+
+
+def test_spawn_subagent_tool_result_builds_runtime_action_started_event():
+    import json
+
+    import app.services.web_chat_runtime as runtime
+
+    event = runtime._runtime_action_event_from_tool_result(
+        {
+            "name": "spawn_subagent",
+            "status": "done",
+            "args": {"name": "scout", "run_in_background": True},
+            "result": json.dumps(
+                {
+                    "ok": True,
+                    "mode": "background",
+                    "run_id": "subagent-run-1",
+                    "child_session_id": "child-session-1",
+                    "subagent": "scout",
+                    "status": "running",
+                },
+                ensure_ascii=False,
+            ),
+            "runtime_task_id": "root-run",
+            "parent_session_id": "parent-1",
+        }
+    )
+
+    assert event == {
+        "type": "runtime_action_started",
+        "message": "Subagent scout is running in the background.",
+        "status": "running",
+        "action_kind": "subagent",
+        "tool_name": "spawn_subagent",
+        "target_agent_name": "scout",
+        "runtime_task_id": "subagent-run-1",
+        "child_session_id": "child-session-1",
+        "session_id": "child-session-1",
+        "parent_session_id": "parent-1",
+        "notification_source": "subagent",
+    }
 
 
 @pytest.mark.asyncio

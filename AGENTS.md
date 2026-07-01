@@ -89,6 +89,53 @@ Hive is an open-source **multi-agent collaboration platform** — enterprise "di
 - **Stack:** FastAPI (Python 3.12) + React 19 (TypeScript 5) + PostgreSQL 15 + Redis 7
 - **Deployment:** Docker / Railway
 
+## Railway Deployment Rule — Use Only the Archive-Root Path
+
+For Hive production/product and eval deployments, **always deploy both backend and frontend with the archive-root shape below**. Railway services are configured with `rootDirectory=backend` and `rootDirectory=frontend`, so the uploaded archive must preserve a top-level `backend/` or `frontend/` directory.
+
+Do **not** use these commands for this repo:
+
+```bash
+railway up --service backend --environment eval
+railway up backend --path-as-root --service backend --environment eval
+railway up frontend --path-as-root --service frontend --environment eval
+railway redeploy --from-source --service backend --environment eval
+```
+
+Those paths can make Railway read `/railway.json` while still looking for `snapshot-target-unpack/backend` or `snapshot-target-unpack/frontend`, causing build failures.
+
+Use this exact pattern from the repo root:
+
+```bash
+PROJECT_ID=dd959a13-19f9-497a-9704-42c310eae230
+tmp_root=$(mktemp -d /tmp/hiveclaw-railway-upload.XXXXXX)
+mkdir -p "$tmp_root/backend-root" "$tmp_root/frontend-root"
+git archive --format=tar HEAD backend | tar -xf - -C "$tmp_root/backend-root"
+git archive --format=tar HEAD frontend | tar -xf - -C "$tmp_root/frontend-root"
+
+cd "$tmp_root/backend-root"
+railway up --service backend --environment eval --project "$PROJECT_ID" --detach -m "deploy latest backend eval archive-root"
+railway up --service backend --environment production --project "$PROJECT_ID" --detach -m "deploy latest backend production archive-root"
+
+cd "$tmp_root/frontend-root"
+railway up --service frontend --environment eval --project "$PROJECT_ID" --detach -m "deploy latest frontend eval archive-root"
+railway up --service frontend --environment production --project "$PROJECT_ID" --detach -m "deploy latest frontend production archive-root"
+```
+
+After submit, poll deployment status by service/environment until each target is `SUCCESS`, and then verify public health:
+
+```bash
+railway deployment list --service backend --environment eval --limit 1 --json
+railway deployment list --service backend --environment production --limit 1 --json
+railway deployment list --service frontend --environment eval --limit 1 --json
+railway deployment list --service frontend --environment production --limit 1 --json
+
+curl -fsS https://backend-eval.up.railway.app/api/health
+curl -fsS https://backend-production-326d.up.railway.app/api/health
+curl -I -fsS https://frontend-eval.up.railway.app/
+curl -I -fsS https://frontend-production-0346.up.railway.app/
+```
+
 ## Current Engineering Baseline (2026-06-15)
 
 Treat these documents as the current truth surface before making architecture claims:

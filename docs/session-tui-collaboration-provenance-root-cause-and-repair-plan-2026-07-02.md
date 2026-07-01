@@ -786,3 +786,41 @@ cd frontend && npm test -- --run \
   src/pages/session-workbench/timelineModel.test.ts
 # 2 passed, 90 passed
 ```
+
+### Part 8 — Workspace provenance hint for `list_files` / `read_file`（2026-07-02）
+
+红测：
+
+- `test_list_files_and_read_file_results_carry_provenance_hint`：通过 artifact delivery 生成 `workspace/report.md` 后，`list_files("workspace")` 与 `read_file("workspace/report.md")` 仍只返回裸文件内容/目录项，没有告诉模型该文件最近由哪个 session/run 交付，导致模型容易把其他任务产物当作当前任务素材。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/tools/test_workspace.py::test_list_files_and_read_file_results_carry_provenance_hint \
+  -q
+# failed: list_files/read_file output did not contain "Provenance hint"
+```
+
+变更：
+
+- `chat_artifact_delivery` 在 artifact delivery / session artifact part 创建时维护 `runtime_artifacts/chat_artifact_provenance_index.json`，记录 path -> artifact/session/runtime_task/source/action/snapshot 的最近交付归属。
+- `workspace_artifact_provenance_hint()` 从该 index 为单文件或目录生成 prompt-time provenance hint；最多展示最近 5 条，避免刷屏。
+- `_list_files()` 与 `_read_file()` 的成功结果追加 provenance hint；image envelope 的 text fallback 也追加同一提示。
+- 该机制不做机械过滤、不隐藏文件、不替模型裁决，只明确：workspace 文件可能属于其他 session/run，只有用户引用或当前任务需要时才作为当前素材。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/tools/test_workspace.py::test_list_files_and_read_file_results_carry_provenance_hint \
+  -q
+# 1 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_chat_artifact_delivery.py \
+  tests/tools/test_workspace.py::test_workspace_tool_paths_reject_sibling_prefix_escape \
+  tests/tools/test_tool_content_envelope.py \
+  -q
+# 38 passed, 3 warnings
+```

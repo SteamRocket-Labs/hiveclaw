@@ -129,6 +129,38 @@ def test_workspace_tool_paths_reject_sibling_prefix_escape(tmp_path):
     assert (sibling / "secret.txt").read_text(encoding="utf-8") == "secret token\n"
 
 
+def test_list_files_and_read_file_results_carry_provenance_hint(tmp_path):
+    from app.services.agent_tool_domains.workspace import _list_files, _read_file
+    from app.services.chat_artifact_delivery import build_session_artifact_parts
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    runtime_task_id = uuid4()
+    target = tmp_path / "workspace" / "report.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("# Report\n\nCurrent contents.\n", encoding="utf-8")
+
+    parts = build_session_artifact_parts(
+        agent_id=agent_id,
+        session_id=session_id,
+        runtime_task_id=runtime_task_id,
+        paths=["workspace/report.md"],
+        workspace_root=tmp_path,
+        source="workspace_write",
+        action="created",
+    )
+
+    assert parts
+    listing = _list_files(tmp_path, "workspace")
+    content = _read_file(tmp_path, "workspace/report.md")
+
+    for result in (listing, content):
+        assert "Provenance hint" in result
+        assert "may belong to another session" in result
+        assert str(session_id) in result
+        assert str(runtime_task_id) in result
+
+
 def test_load_skill_rejects_sibling_prefix_escape(tmp_path):
     from app.services.agent_tool_domains.workspace import _load_skill
 

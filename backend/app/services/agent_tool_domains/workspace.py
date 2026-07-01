@@ -56,6 +56,22 @@ def _is_within_path(path: Path, root: Path) -> bool:
     return True
 
 
+def _append_workspace_provenance_hint(
+    result: str,
+    ws: Path,
+    rel_path: str,
+    *,
+    directory: bool,
+) -> str:
+    try:
+        from app.services.chat_artifact_delivery import workspace_artifact_provenance_hint
+
+        hint = workspace_artifact_provenance_hint(ws, rel_path, directory=directory)
+    except Exception:
+        hint = ""
+    return f"{result}\n\n{hint}" if hint else result
+
+
 def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name: str = "list_files") -> str:
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
@@ -105,10 +121,15 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name
             items.append(f"  📄 {p.name} ({size_str})")
 
     if not items:
-        return f"📂 {rel_path or 'root'}: Empty directory (0 files, 0 folders)"
+        return _append_workspace_provenance_hint(
+            f"📂 {rel_path or 'root'}: Empty directory (0 files, 0 folders)",
+            ws,
+            rel_path,
+            directory=True,
+        )
 
     header = f"📂 {rel_path or 'root'}: {dir_count} folder(s), {file_count} file(s)\n"
-    return header + "\n".join(items)
+    return _append_workspace_provenance_hint(header + "\n".join(items), ws, rel_path, directory=True)
 
 
 def _read_file(
@@ -150,8 +171,14 @@ def _read_file(
                     "operation_failed",
                     f"Image too large ({len(raw)} bytes; max {_MAX_IMAGE_BYTES}).",
                 )
+            image_text = _append_workspace_provenance_hint(
+                f"[image: {rel_path} ({image_media}, {len(raw)} bytes)]",
+                ws,
+                rel_path,
+                directory=False,
+            )
             return ToolContentEnvelope.image(
-                text=f"[image: {rel_path} ({image_media}, {len(raw)} bytes)]",
+                text=image_text,
                 media_type=image_media,
                 data=base64.b64encode(raw).decode("ascii"),
             )
@@ -164,7 +191,7 @@ def _read_file(
             content = content[:16000] + f"\n\n...[truncated, {len(content)} chars total]"
         if _is_skill_instruction_file(ws, file_path):
             content = sanitize_managed_credential_guidance(content)
-        return content
+        return _append_workspace_provenance_hint(content, ws, rel_path, directory=False)
     except Exception as e:
         return _workspace_error(tool_name, "operation_failed", f"Read failed: {e}")
 

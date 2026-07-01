@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 import uuid
 from datetime import datetime, timezone
@@ -25,6 +26,9 @@ PDF_EXTENSIONS = {".pdf"}
 OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"}
 TEXT_PREVIEW_SNAPSHOT_MAX_BYTES = 64 * 1024
 CHAT_ARTIFACT_SNAPSHOT_DIR = Path("runtime_artifacts") / "chat_artifact_snapshots"
+CHAT_ARTIFACT_PROVENANCE_INDEX = Path("runtime_artifacts") / "chat_artifact_provenance_index.json"
+CHAT_ARTIFACT_PROVENANCE_ENTRY_LIMIT = 20
+CHAT_ARTIFACT_PROVENANCE_HINT_LIMIT = 5
 
 
 def tool_session_write_paths(tool_name: str, args: dict[str, Any]) -> list[str]:
@@ -63,6 +67,147 @@ def _safe_workspace_relative_path(path: str) -> PurePosixPath | None:
     if len(rel.parts) > 1 and rel.parts[1] == "workspace":
         return None
     return rel
+
+
+def _provenance_index_path(workspace_root: Path) -> Path:
+    return workspace_root.resolve() / CHAT_ARTIFACT_PROVENANCE_INDEX
+
+
+def _load_provenance_index(workspace_root: Path) -> dict[str, Any]:
+    path = _provenance_index_path(workspace_root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {"version": 1, "paths": {}}
+    if not isinstance(data, dict):
+        return {"version": 1, "paths": {}}
+    paths = data.get("paths")
+    if not isinstance(paths, dict):
+        data["paths"] = {}
+    data["version"] = 1
+    return data
+
+
+def _write_provenance_index(workspace_root: Path, payload: dict[str, Any]) -> None:
+    path = _provenance_index_path(workspace_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f"{path.suffix}.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _provenance_entry_from_candidate(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    rel = _safe_workspace_relative_path(str(candidate.get("path") or ""))
+    if rel is None:
+        return None
+    artifact_id = str(candidate.get("artifact_id") or candidate.get("id") or "").strip()
+    return {
+        "path": rel.as_posix(),
+        "artifact_id": artifact_id or None,
+        "agent_id": str(candidate.get("agent_id") or "").strip() or None,
+        "session_id": str(candidate.get("session_id") or "").strip() or None,
+        "runtime_task_id": str(candidate.get("runtime_task_id") or "").strip() or None,
+        "source_agent_id": str(candidate.get("source_agent_id") or "").strip() or None,
+        "owner_agent_id": str(candidate.get("owner_agent_id") or "").strip() or None,
+        "delivery_agent_id": str(candidate.get("delivery_agent_id") or "").strip() or None,
+        "source": str(candidate.get("source") or "").strip() or None,
+        "action": str(candidate.get("action") or "").strip() or None,
+        "snapshot_hash": str(candidate.get("snapshot_hash") or candidate.get("revision_id") or "").strip() or None,
+        "content_hash": str(candidate.get("content_hash") or "").strip() or None,
+        "created_at": str(candidate.get("created_at") or "").strip() or None,
+    }
+
+
+def record_workspace_artifact_provenance(workspace_root: Path, candidate: dict[str, Any]) -> None:
+    """Persist a lightweight path -> latest delivered artifact index.
+
+    The index is a prompt-time hint only. It does not hide files or authorize
+    reads; it gives the model enough provenance to avoid treating another
+    session's artifact as current-task evidence by accident.
+    """
+    entry = _provenance_entry_from_candidate(candidate)
+    if not entry:
+        return
+    try:
+        index = _load_provenance_index(workspace_root)
+        paths = index.setdefault("paths", {})
+        path_key = entry["path"]
+        existing = paths.get(path_key)
+        if not isinstance(existing, list):
+            existing = []
+        artifact_id = entry.get("artifact_id")
+        retained = [
+            item
+            for item in existing
+            if isinstance(item, dict) and (not artifact_id or item.get("artifact_id") != artifact_id)
+        ]
+        paths[path_key] = [entry, *retained][:CHAT_ARTIFACT_PROVENANCE_ENTRY_LIMIT]
+        _write_provenance_index(workspace_root, index)
+    except OSError:
+        return
+
+
+def _path_is_inside_directory(path: PurePosixPath, directory: PurePosixPath | None) -> bool:
+    if directory is None:
+        return True
+    if path == directory:
+        return True
+    directory_parts = directory.parts
+    return len(path.parts) > len(directory_parts) and path.parts[: len(directory_parts)] == directory_parts
+
+
+def _latest_provenance_entries_for_path(
+    workspace_root: Path,
+    rel_path: str,
+    *,
+    directory: bool,
+) -> list[dict[str, Any]]:
+    rel = _safe_workspace_relative_path(rel_path)
+    if rel is None:
+        if directory and not str(rel_path or "").strip():
+            rel = None
+        else:
+            return []
+    index = _load_provenance_index(workspace_root)
+    paths = index.get("paths") if isinstance(index, dict) else {}
+    if not isinstance(paths, dict):
+        return []
+    entries: list[dict[str, Any]] = []
+    for path_key, path_entries in paths.items():
+        key_rel = _safe_workspace_relative_path(str(path_key))
+        if key_rel is None:
+            continue
+        if directory:
+            if not _path_is_inside_directory(key_rel, rel):
+                continue
+        elif key_rel != rel:
+            continue
+        if isinstance(path_entries, list):
+            entries.extend(item for item in path_entries if isinstance(item, dict))
+    entries.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return entries[:CHAT_ARTIFACT_PROVENANCE_HINT_LIMIT]
+
+
+def workspace_artifact_provenance_hint(workspace_root: Path, rel_path: str, *, directory: bool = False) -> str:
+    entries = _latest_provenance_entries_for_path(workspace_root, rel_path, directory=directory)
+    if not entries:
+        return ""
+    lines = [
+        "Provenance hint: workspace files may belong to another session or run. "
+        "Use them as current task material only if the user referenced them or this task requires them."
+    ]
+    for entry in entries:
+        details = [
+            f"path={entry.get('path')}",
+            f"session={entry.get('session_id') or 'unknown'}",
+            f"runtime_task={entry.get('runtime_task_id') or 'none'}",
+            f"artifact={entry.get('artifact_id') or 'unknown'}",
+            f"source={entry.get('source') or 'unknown'}",
+            f"action={entry.get('action') or 'unknown'}",
+            f"created_at={entry.get('created_at') or 'unknown'}",
+        ]
+        lines.append(f"- {'; '.join(details)}")
+    return "\n".join(lines)
 
 
 def _preview_kind_for_path(path: PurePosixPath) -> str:
@@ -362,6 +507,7 @@ def build_session_artifact_parts(
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
+        record_workspace_artifact_provenance(workspace_root, candidate)
         parts.append(_artifact_part_from_candidate(candidate))
     return parts
 
@@ -480,7 +626,9 @@ async def create_chat_artifacts_for_message(
         )
         existing = existing_result.scalar_one_or_none()
         if existing is not None:
-            parts.append(artifact_part_from_model(existing))
+            part = artifact_part_from_model(existing)
+            record_workspace_artifact_provenance(workspace_root, part)
+            parts.append(part)
             continue
         artifact_id = uuid.UUID(str(candidate["artifact_id"]))
         artifact = ChatArtifact(
@@ -501,6 +649,7 @@ async def create_chat_artifacts_for_message(
             snapshot_json=candidate.get("snapshot"),
         )
         db.add(artifact)
+        record_workspace_artifact_provenance(workspace_root, candidate)
         parts.append(_artifact_part_from_candidate(candidate))
     return parts
 

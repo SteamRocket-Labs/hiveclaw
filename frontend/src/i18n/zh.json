@@ -84,6 +84,17 @@
       "rawEvents": "原始事件",
       "noRawEvents": "当前没有原始 runtime 事件。"
     },
+    "workflowRunWindow": {
+      "title": "Workflow Run Window",
+      "breadcrumb": "Main > Dynamic Workflow",
+      "close": "关闭 Workflow 运行",
+      "steps": "步骤",
+      "leafCalls": "Leaf 调用",
+      "stepFallback": "步骤 {{index}}",
+      "leafFallback": "Leaf {{index}}",
+      "noSteps": "还没有记录 Workflow 步骤。",
+      "noLeafCalls": "还没有记录 leaf 调用。"
+    },
     "status": {
       "idle": "空闲",
       "running": "运行中",

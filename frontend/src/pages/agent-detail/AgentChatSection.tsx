@@ -1453,6 +1453,7 @@ function SessionRuntimePanel({
   onToggleCollapsed,
   onOpenDocument,
   onSelectSession,
+  onSelectWorkflowRun,
 }: {
   messages: AgentChatMessage[];
   sessionWorkbench: SessionWorkbench | null;
@@ -1460,6 +1461,7 @@ function SessionRuntimePanel({
   onToggleCollapsed?: () => void;
   onOpenDocument?: (artifact: ChatArtifactPart) => void | Promise<unknown>;
   onSelectSession?: (sessionId: string) => void | Promise<unknown>;
+  onSelectWorkflowRun?: (workflow: RuntimeSectionItemModel) => void | Promise<unknown>;
 }) {
   const { t } = useTranslation();
   const docs = collectWorkspaceDocuments(messages);
@@ -1490,6 +1492,35 @@ function SessionRuntimePanel({
       </button>
     ) : (
       <div key={item.id} className="session-runtime-row">
+        {content}
+      </div>
+    );
+  };
+
+  const renderWorkflowRoot = (workflow: RuntimeSectionItemModel, fallback: string) => {
+    const meta = [workflow.id, workflow.runtimeKind, workflow.summary].filter(Boolean).join(' · ');
+    const content = (
+      <>
+        <span className="session-runtime-row-main">
+          <span className="session-runtime-row-title">{workflow.label || fallback}</span>
+          <span className="session-runtime-row-meta">{meta || workflow.id}</span>
+        </span>
+        <span className="session-runtime-status">{workflow.status || 'unknown'}</span>
+      </>
+    );
+    return onSelectWorkflowRun ? (
+      <button
+        key={`${workflow.id}:root`}
+        type="button"
+        data-testid="session-runtime-workflow-open"
+        data-runtime-action="open-workflow-run"
+        className="session-runtime-row session-runtime-row-button"
+        onClick={() => onSelectWorkflowRun(workflow)}
+      >
+        {content}
+      </button>
+    ) : (
+      <div key={`${workflow.id}:root`} className="session-runtime-row">
         {content}
       </div>
     );
@@ -1632,7 +1663,7 @@ function SessionRuntimePanel({
           t('sessionWorkbench.rightPanel.noWorkflows', 'No active workflows.'),
           (workflow, index) => (
             <div key={workflow.id} className="session-runtime-team">
-              {renderRuntimeItem(workflow, `workflow-${index + 1}`)}
+              {renderWorkflowRoot(workflow, `workflow-${index + 1}`)}
               {workflow.steps.map((step, stepIndex) => renderRuntimeItem(step, `workflow-step-${stepIndex + 1}`))}
               {workflow.leafCalls.map((leafCall, leafIndex) => renderRuntimeItem(leafCall, `workflow-leaf-${leafIndex + 1}`))}
             </div>
@@ -1668,6 +1699,133 @@ function SessionRuntimePanel({
         )}
       </section>
     </aside>
+  );
+}
+
+export function WorkflowRunFocusPanel({
+  workflow,
+  onClose,
+  onSelectSession,
+}: {
+  workflow: RuntimeSectionItemModel;
+  onClose: () => void;
+  onSelectSession?: (sessionId: string) => void | Promise<unknown>;
+}) {
+  const { t } = useTranslation();
+  const leafCalls = workflow.leafCalls || [];
+  const steps = workflow.steps || [];
+  const meta = [
+    workflow.id,
+    workflow.runtimeKind,
+    workflow.summary,
+    workflow.childSessionId ? `session:${workflow.childSessionId}` : '',
+  ].filter(Boolean).join(' · ');
+  const renderStep = (step: RuntimeSectionItemModel, index: number) => (
+    <div
+      key={step.id || `step-${index}`}
+      data-testid="session-workflow-step-row"
+      className="session-runtime-row"
+    >
+      <span className="session-runtime-row-main">
+        <span className="session-runtime-row-title">
+          {step.label || t('sessionWorkbench.workflowRunWindow.stepFallback', 'Step {{index}}', { index: index + 1 })}
+        </span>
+        <span className="session-runtime-row-meta">
+          {[step.id, step.runtimeKind, step.summary].filter(Boolean).join(' · ') || step.id}
+        </span>
+      </span>
+      <span className="session-runtime-status">{step.status || 'unknown'}</span>
+    </div>
+  );
+  const renderLeaf = (leaf: RuntimeSectionItemModel, index: number) => {
+    const canEnter = Boolean(leaf.enterable && leaf.childSessionId && onSelectSession);
+    const content = (
+      <>
+        <span className="session-runtime-row-main">
+          <span className="session-runtime-row-title">
+            {leaf.label || t('sessionWorkbench.workflowRunWindow.leafFallback', 'Leaf {{index}}', { index: index + 1 })}
+          </span>
+          <span className="session-runtime-row-meta">
+            {[leaf.id, leaf.runtimeKind, leaf.summary, leaf.childSessionId ? `session:${leaf.childSessionId}` : '']
+              .filter(Boolean)
+              .join(' · ') || leaf.id}
+          </span>
+        </span>
+        <span className="session-runtime-status">{leaf.status || 'unknown'}</span>
+      </>
+    );
+    return canEnter ? (
+      <button
+        key={leaf.id || `leaf-${index}`}
+        type="button"
+        data-testid="session-workflow-leaf-enter"
+        className="session-runtime-row session-runtime-row-button"
+        onClick={() => leaf.childSessionId && onSelectSession?.(leaf.childSessionId)}
+      >
+        {content}
+      </button>
+    ) : (
+      <div
+        key={leaf.id || `leaf-${index}`}
+        data-testid="session-workflow-leaf-detail"
+        className="session-runtime-row"
+      >
+        {content}
+      </div>
+    );
+  };
+
+  return (
+    <section
+      data-testid="session-workflow-run-window"
+      className="session-runtime-section session-runtime-lower"
+      aria-label={t('sessionWorkbench.workflowRunWindow.title', 'Workflow Run Window')}
+    >
+      <div className="session-runtime-section-header">
+        <div>
+          <div className="session-tui-kicker">
+            {t('sessionWorkbench.workflowRunWindow.breadcrumb', 'Main > Dynamic Workflow')}
+          </div>
+          <h3>{workflow.label || workflow.id}</h3>
+          {meta ? <small>{meta}</small> : null}
+        </div>
+        <button
+          type="button"
+          className="session-runtime-collapse-toggle"
+          aria-label={t('sessionWorkbench.workflowRunWindow.close', 'Close workflow run')}
+          title={t('sessionWorkbench.workflowRunWindow.close', 'Close workflow run')}
+          onClick={onClose}
+        >
+          <IconX size={15} stroke={1.8} />
+        </button>
+      </div>
+
+      <div className="session-runtime-card">
+        <div className="session-runtime-card-title">
+          {t('sessionWorkbench.workflowRunWindow.steps', 'Steps')}
+        </div>
+        {steps.length === 0 ? (
+          <div className="session-runtime-empty">
+            {t('sessionWorkbench.workflowRunWindow.noSteps', 'No workflow steps recorded.')}
+          </div>
+        ) : (
+          steps.map(renderStep)
+        )}
+      </div>
+
+      <div className="session-runtime-card">
+        <div className="session-runtime-card-title">
+          {t('sessionWorkbench.workflowRunWindow.leafCalls', 'Leaf calls')}
+        </div>
+        {leafCalls.length === 0 ? (
+          <div className="session-runtime-empty">
+            {t('sessionWorkbench.workflowRunWindow.noLeafCalls', 'No leaf calls recorded.')}
+          </div>
+        ) : (
+          leafCalls.map(renderLeaf)
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -2172,6 +2330,7 @@ export default function AgentChatSection({
   const [composerMenuOpen, setComposerMenuOpen] = React.useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = React.useState(false);
   const [runtimePanelCollapsed, setRuntimePanelCollapsed] = React.useState(false);
+  const [focusedWorkflow, setFocusedWorkflow] = React.useState<RuntimeSectionItemModel | null>(null);
   const [focusedGitCheckpointId, setFocusedGitCheckpointId] = React.useState<string | null>(null);
   const gitScrollFrameRef = React.useRef<number | null>(null);
 
@@ -2815,6 +2974,9 @@ export default function AgentChatSection({
   };
 
   const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
+  React.useEffect(() => {
+    setFocusedWorkflow(null);
+  }, [activeSessionId]);
   const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : [];
   const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : [];
   const activeSessionHydrating = Boolean(activeSessionId) && (
@@ -3151,7 +3313,13 @@ export default function AgentChatSection({
                   >
                     {isA2ASession(activeSession as any) ? `🤖 Agent Conversation · ${activeSession.username || 'Agents'}` : `Read-only · ${activeSession.username || 'User'}`}
                   </div>
-                  {activeSessionHydrating ? (
+                  {focusedWorkflow ? (
+                    <WorkflowRunFocusPanel
+                      workflow={focusedWorkflow}
+                      onClose={() => setFocusedWorkflow(null)}
+                      onSelectSession={onSelectBranchSession}
+                    />
+                  ) : activeSessionHydrating ? (
                     <SessionHydratingState label={t('common.loading', 'Loading')} />
                   ) : (() => {
                       const isA2A = isA2ASession(activeSession as any);
@@ -3197,7 +3365,13 @@ export default function AgentChatSection({
             <div ref={chatContainerRef} onScroll={handleChatScroll} className="session-tui-history">
               {renderHistoryFrame(
                 <>
-                  {activeSessionHydrating ? (
+                  {focusedWorkflow ? (
+                    <WorkflowRunFocusPanel
+                      workflow={focusedWorkflow}
+                      onClose={() => setFocusedWorkflow(null)}
+                      onSelectSession={onSelectBranchSession}
+                    />
+                  ) : activeSessionHydrating ? (
                     <SessionHydratingState label={t('common.loading', 'Loading')} />
                   ) : visibleChatMessages.length === 0 && (
                     <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
@@ -3206,7 +3380,7 @@ export default function AgentChatSection({
                       <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                     </div>
                   )}
-                  {renderConversationMessages(visibleChatMessages, (message) => message.role === 'assistant', threadTimelineModel)}
+                  {!focusedWorkflow && renderConversationMessages(visibleChatMessages, (message) => message.role === 'assistant', threadTimelineModel)}
                   <div ref={chatEndRef} />
                 </>,
               )}
@@ -3779,6 +3953,7 @@ export default function AgentChatSection({
           onToggleCollapsed={() => setRuntimePanelCollapsed((value) => !value)}
           onOpenDocument={openArtifact}
           onSelectSession={onSelectBranchSession}
+          onSelectWorkflowRun={setFocusedWorkflow}
         />
       ) : null}
     </div>

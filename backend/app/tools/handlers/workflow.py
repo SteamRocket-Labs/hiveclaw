@@ -277,6 +277,19 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
 )
 async def start_workflow(request: ToolExecutionRequest) -> str:
     agent_id = request.context.agent_id
+    session_id = request.context.session_id
+    if not session_id:
+        return json.dumps(
+            {
+                "ok": False,
+                "error_code": "missing_workflow_session",
+                "error": (
+                    "start_workflow must run inside the current chat session so the Dynamic Workflow run "
+                    "can be resumed and shown in the session workbench."
+                ),
+            },
+            ensure_ascii=False,
+        )
     arguments = request.arguments
     definition = arguments.get("definition") or {}
     args = arguments.get("args") or {}
@@ -330,8 +343,8 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
             args=args,
             user_id=request.context.user_id,
             ledger_todo_id=ledger_todo_id,
-            parent_session_id=request.context.session_id,
-            root_session_id=request.context.session_id,
+            parent_session_id=session_id,
+            root_session_id=session_id,
             definition_source="dynamic_workflow" if proposal_id or candidate_id else "ephemeral",
             run_metadata=run_metadata,
         )

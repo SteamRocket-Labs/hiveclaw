@@ -741,3 +741,48 @@ cd backend && source .venv/bin/activate && pytest \
 cd frontend && npm test -- --run src/pages/agent-detail/ChatWorkLedgerDock.test.tsx
 # 1 passed, 8 passed
 ```
+
+### Part 7 — Dynamic Workflow session-native run window（2026-07-02）
+
+红测：
+
+- `test_start_workflow_requires_current_session`：`start_workflow` 在没有当前 `session_id` 时仍会启动 `RuntimeTask(workflow)`，导致 workflow run 无法可靠挂回当前 Session TUI / resume 语义。
+- `AgentDetailSections.test.tsx` 的 Workflow Run Window 测试：`WorkflowRunFocusPanel` 未导出/未实现，leaf 无 `child_session_id` 时也没有可验证的 detail-only 表达。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/tools/test_workflow_tool.py::test_start_workflow_requires_current_session \
+  -q
+# failed: sessionless workflow still called start_ephemeral_workflow_for_agent
+
+cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx
+# failed: WorkflowRunFocusPanel was undefined
+```
+
+变更：
+
+- `start_workflow` 增加 `missing_workflow_session` fail-closed：Dynamic Workflow 必须绑定当前 chat session，才能进入 session-native resume / runtime_sections / Workflow Run Window；已有 session-bound workflow 启动路径保持不变。
+- `AgentChatSection.tsx` 新增 `WorkflowRunFocusPanel`：中间区显示 `Main > Dynamic Workflow`、run meta、step rows、leaf detail rows。
+- 右栏 `session-runtime-workflows` 的 workflow root row 改为打开 Workflow Run Window；workflow step/leaf 仍保持独立 runtime item。
+- leaf row 明确按 API 合约处理：只有 `enterable && childSessionId` 时显示 enter action；无 `childSessionId` 时只显示 `session-workflow-leaf-detail`，不冒充 Agent Team/A2A child session。
+- `en.json` / `zh.json` 补齐 Workflow Run Window 文案。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/tools/test_workflow_tool.py::test_start_workflow_requires_current_session \
+  tests/services/test_session_control_plane.py::test_runtime_sections_separate_agent_team_subagent_background_workflow \
+  -q
+# 2 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/tools/test_workflow_tool.py -q
+# 18 passed, 4 warnings
+
+cd frontend && npm test -- --run \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  src/pages/session-workbench/timelineModel.test.ts
+# 2 passed, 90 passed
+```

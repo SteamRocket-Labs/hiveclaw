@@ -84,6 +84,17 @@
       "rawEvents": "Raw",
       "noRawEvents": "No raw runtime events."
     },
+    "workflowRunWindow": {
+      "title": "Workflow Run Window",
+      "breadcrumb": "Main > Dynamic Workflow",
+      "close": "Close workflow run",
+      "steps": "Steps",
+      "leafCalls": "Leaf calls",
+      "stepFallback": "Step {{index}}",
+      "leafFallback": "Leaf {{index}}",
+      "noSteps": "No workflow steps recorded.",
+      "noLeafCalls": "No leaf calls recorded."
+    },
     "status": {
       "idle": "idle",
       "running": "running",

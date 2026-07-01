@@ -378,6 +378,35 @@ async def test_start_workflow_rejects_missing_preview_binding():
     assert "preview_workflow" in payload["error"]
 
 
+async def test_start_workflow_requires_current_session(monkeypatch):
+    from app.tools.handlers import workflow as workflow_handlers
+
+    async def fake_launch(**_kwargs):
+        raise AssertionError("sessionless workflow must not launch")
+
+    monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
+    agent_id = uuid.uuid4()
+    preview = json.loads(
+        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+    )
+
+    result = await workflow_handlers.start_workflow(
+        _start_request(
+            agent_id,
+            {
+                "definition": _low_risk_definition(),
+                "args": {},
+                "preview_id": preview["preview_id"],
+            },
+            session_id=None,
+        )
+    )
+    payload = json.loads(result)
+
+    assert payload["ok"] is False
+    assert payload["error_code"] == "missing_workflow_session"
+
+
 async def test_start_workflow_rejects_mutated_definition_after_preview(monkeypatch):
     from app.tools.handlers import workflow as workflow_handlers
 

@@ -13,6 +13,7 @@ import AgentChatSection, {
   BranchLineagePanel,
   SessionCommandControlPanel,
   StructuredToolResultBody,
+  WorkflowRunFocusPanel,
   buildBranchLineageRows,
   extractPlanIdFromPlanModeMessage,
   getSessionGitLineDensity,
@@ -3578,6 +3579,68 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Checks');
     expect(markup).not.toContain('data-testid="session-workbench-inspector"');
     expect(markup).not.toContain('data-testid="session-native-controls"');
+  });
+
+  it('renders a Dynamic Workflow run window where leaf rows without child sessions are detail-only', () => {
+    const workflow = {
+      id: 'workflow-run-1',
+      label: 'ABS diligence workflow',
+      status: 'running',
+      state: 'running',
+      runtimeKind: 'workflow',
+      summary: 'fanout then critic',
+      childSessionId: null,
+      enterable: false,
+      members: [],
+      steps: [
+        {
+          id: 'step-1',
+          label: 'Collect evidence',
+          status: 'completed',
+          state: 'completed',
+          runtimeKind: 'workflow_step',
+          summary: '',
+          childSessionId: null,
+          enterable: false,
+          members: [],
+          steps: [],
+          leafCalls: [],
+          raw: {},
+        },
+      ],
+      leafCalls: [
+        {
+          id: 'leaf-1',
+          label: 'CLO source review',
+          status: 'completed',
+          state: 'completed',
+          runtimeKind: 'workflow_leaf',
+          summary: 'No child session attached',
+          childSessionId: null,
+          enterable: false,
+          members: [],
+          steps: [],
+          leafCalls: [],
+          raw: {},
+        },
+      ],
+      raw: {},
+    };
+
+    const markup = renderToStaticMarkup(
+      <WorkflowRunFocusPanel
+        workflow={workflow}
+        onClose={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-workflow-run-window"');
+    expect(markup).toContain('ABS diligence workflow');
+    expect(markup).toContain('data-testid="session-workflow-step-row"');
+    expect(markup).toContain('data-testid="session-workflow-leaf-detail"');
+    expect(markup).toContain('CLO source review');
+    expect(markup).not.toContain('data-testid="session-workflow-leaf-enter"');
   });
 
   it('keeps branch GitLine on the root checkpoint axis and exposes a return-to-main node', () => {

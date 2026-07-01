@@ -697,3 +697,47 @@ cd frontend && npm test -- --run \
   src/pages/agent-detail/AgentDetailSections.test.tsx
 # 5 passed, 150 passed
 ```
+
+### Part 6 — Work Ledger WIP、session scope 与 resume 不清零（2026-07-02）
+
+红测：
+
+- `test_latest_session_work_ledger_uses_session_ledger_when_active_task_has_none`：存在 active run 但该 run 尚无 runtime ledger 时，旧逻辑直接返回 `None` 或回退旧 completed run，session-scoped WIP todo 无法显示。
+- `test_track_todo_fails_closed_without_session_plan_or_runtime_scope` / `test_record_finding_fails_closed_without_session_plan_or_runtime_scope`：缺少 session/plan/runtime scope 时，工具会创建 agent 级共享 `runtime_artifacts/work_ledger.json`。
+- `test_long_task_completion_does_not_silently_complete_open_work_ledger_items`：`append_long_task_progress_artifact(status="completed")` 默认把所有 required todo/verification 静默标为 completed，恢复后看不到真实 WIP。
+- `ChatWorkLedgerDock` 在 active run 无 runtime ledger 但 session ledger 存在时，会错误启用 runtime query，导致 session-scoped WIP 被遮掉。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_long_task_runtime.py::test_long_task_completion_does_not_silently_complete_open_work_ledger_items \
+  tests/tools/handlers/test_work_ledger_handler.py::test_track_todo_fails_closed_without_session_plan_or_runtime_scope \
+  tests/tools/handlers/test_work_ledger_handler.py::test_record_finding_fails_closed_without_session_plan_or_runtime_scope \
+  -q
+# 3 failed: terminal completed auto-completed open ledger items; work_ledger writes succeeded without scope
+```
+
+变更：
+
+- `read_latest_session_work_ledger_view()` 在 active task 没有 runtime ledger 时回退读取当前 `session_id` 的 session-scoped ledger，并标记 `task_type=session_work_ledger` / `runtime_status`；不会再拿旧 completed task 冒充当前 WIP。
+- `ChatWorkLedgerDock` 识别 `sessionData.runtime_task_id` 为空的 session-scoped ledger；即使当前有 active `runtimeTaskId`，也不启用 runtime fallback query，保持 session WIP 可见。
+- `track_todo` / `record_finding` 写入口增加 `missing_work_ledger_scope` fail-closed：没有 `session_id`、`plan_id`、`runtime_task_id` 时不写 agent 级共享 ledger。
+- `append_long_task_progress_artifact()` 默认 `auto_complete_ledger=False`；terminal completed 不再静默完成 open todo/verification。需要闭合的测试/调用必须显式传 `completed_todo_ids` / `completed_verification_ids`。
+- 相关 long-task validation 测试同步到显式完成语义，避免把 terminal status 当作 ledger 完成证明。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_agent_work_ledger.py \
+  tests/tools/handlers/test_work_ledger_handler.py \
+  tests/services/test_long_task_runtime.py \
+  tests/services/test_long_task_validation.py \
+  tests/services/test_harness_validation_report.py \
+  -q
+# 37 passed, 3 warnings
+
+cd frontend && npm test -- --run src/pages/agent-detail/ChatWorkLedgerDock.test.tsx
+# 1 passed, 8 passed
+```

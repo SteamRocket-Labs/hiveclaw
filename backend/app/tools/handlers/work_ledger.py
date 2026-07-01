@@ -51,6 +51,20 @@ def _scope(request: ToolExecutionRequest) -> tuple[str | None, str | None, str |
     return plan_id, runtime_task_id, session_id
 
 
+def _missing_scope_error() -> str:
+    return _json(
+        {
+            "ok": False,
+            "error_code": "missing_work_ledger_scope",
+            "error": "Work Ledger writes require a session_id, plan_id, or runtime_task_id scope.",
+        }
+    )
+
+
+def _has_write_scope(plan_id: str | None, runtime_task_id: str | None, session_id: str | None) -> bool:
+    return bool(plan_id or runtime_task_id or session_id)
+
+
 @tool(
     ToolMeta(
         name="track_todo",
@@ -161,6 +175,9 @@ async def track_todo(request: ToolExecutionRequest) -> str:
     else:
         return _json({"ok": False, "error": "`action` must be 'add' or 'update'."})
 
+    if not _has_write_scope(plan_id, runtime_task_id, session_id):
+        return _missing_scope_error()
+
     try:
         result = upsert_agent_work_ledger_todo(
             agent_id=agent_id,
@@ -239,6 +256,8 @@ async def record_finding(request: ToolExecutionRequest) -> str:
         return _json({"ok": False, "error": "`type` must be 'finding', 'open_question', 'failure', or 'replan'."})
     if not summary:
         return _json({"ok": False, "error": "`summary` is required."})
+    if not _has_write_scope(plan_id, runtime_task_id, session_id):
+        return _missing_scope_error()
 
     source_refs = args.get("source_refs")
     if source_refs is not None and not isinstance(source_refs, list):

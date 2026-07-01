@@ -1475,6 +1475,19 @@ async def read_latest_session_work_ledger_view(
     active_task_ids = {id(task) for task in active_tasks}
     inactive_tasks = [task for task in tasks if id(task) not in active_task_ids]
 
+    def session_scoped_view(*, active_task: Any | None = None) -> dict[str, Any] | None:
+        view = read_agent_work_ledger_view(agent_id=agent_id, session_id=session_key, data_root=data_root)
+        if view is None:
+            return None
+        view["session_id"] = session_key
+        view["task_type"] = "session_work_ledger"
+        if active_task is not None:
+            view["active_runtime_task_id"] = str(getattr(active_task, "id", "") or "")
+            view["runtime_status"] = getattr(active_task, "status", None)
+        else:
+            view["runtime_status"] = view.get("status")
+        return view
+
     for task in active_tasks:
         view = read_agent_work_ledger_view(
             agent_id=agent_id,
@@ -1487,6 +1500,9 @@ async def read_latest_session_work_ledger_view(
             view["runtime_status"] = getattr(task, "status", None)
             return view
     if active_tasks:
+        view = session_scoped_view(active_task=active_tasks[0])
+        if view is not None:
+            return view
         return None
 
     for task in inactive_tasks:
@@ -1500,11 +1516,8 @@ async def read_latest_session_work_ledger_view(
             view["task_type"] = getattr(task, "task_type", None)
             view["runtime_status"] = getattr(task, "status", None)
             return view
-    view = read_agent_work_ledger_view(agent_id=agent_id, session_id=session_key, data_root=data_root)
+    view = session_scoped_view()
     if view is not None:
-        view["session_id"] = session_key
-        view["task_type"] = "session_work_ledger"
-        view["runtime_status"] = view.get("status")
         return view
     return None
 

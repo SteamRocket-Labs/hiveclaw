@@ -48,6 +48,36 @@ def test_long_task_runtime_writes_plan_progress_and_resume_context(tmp_path):
     assert "pytest tests/services/test_report.py" in resume["resume_prompt"]
 
 
+def test_long_task_completion_does_not_silently_complete_open_work_ledger_items(tmp_path):
+    from app.services.agent_work_ledger import load_agent_work_ledger
+    from app.services.long_task_runtime import append_long_task_progress_artifact, write_long_task_plan_artifact
+
+    agent_id = uuid4()
+    runtime_task_id = uuid4()
+    write_long_task_plan_artifact(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        spec="Ship the final report",
+        acceptance_criteria=["write report", "attach evidence"],
+        verification_commands=["pytest"],
+        risk_gates=[],
+        data_root=tmp_path,
+    )
+
+    append_long_task_progress_artifact(
+        agent_id=agent_id,
+        runtime_task_id=runtime_task_id,
+        status="completed",
+        delta="The runtime reached terminal status before every ledger item was closed.",
+        data_root=tmp_path,
+    )
+
+    ledger = load_agent_work_ledger(agent_id=agent_id, runtime_task_id=runtime_task_id, data_root=tmp_path)
+    assert ledger is not None
+    assert [item["status"] for item in ledger["todo_items"]] == ["pending", "pending"]
+    assert [item["status"] for item in ledger["verification"]] == ["pending"]
+
+
 @pytest.mark.asyncio
 async def test_record_long_task_plan_updates_runtime_task_metadata(monkeypatch, tmp_path):
     from app.services import long_task_runtime

@@ -110,7 +110,7 @@ def append_long_task_progress_artifact(
     blocked_reason: str | None = None,
     completed_todo_ids: list[str] | None = None,
     completed_verification_ids: list[str] | None = None,
-    auto_complete_ledger: bool = True,
+    auto_complete_ledger: bool = False,
     data_root: str | Path | None = None,
 ) -> dict[str, Any]:
     artifact_dir = _artifact_dir(agent_id, runtime_task_id, data_root=data_root)

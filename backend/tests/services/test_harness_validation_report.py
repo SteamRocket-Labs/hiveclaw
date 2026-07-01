@@ -51,6 +51,8 @@ def test_harness_validation_report_detects_complete_h4_h5_evidence(tmp_path):
         status="completed",
         delta="Report complete",
         output_paths=["workspace/report.md"],
+        completed_todo_ids=["acceptance-1"],
+        completed_verification_ids=["verify-1"],
         data_root=tmp_path,
     )
     validate_long_task_run(

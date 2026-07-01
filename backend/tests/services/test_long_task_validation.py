@@ -27,6 +27,8 @@ def test_validate_long_task_run_passes_for_complete_artifacts(tmp_path):
         status="completed",
         delta="Report completed and verified",
         output_paths=["workspace/report.md"],
+        completed_todo_ids=["acceptance-1", "acceptance-2"],
+        completed_verification_ids=["verify-1"],
         data_root=tmp_path,
     )
 
@@ -197,6 +199,8 @@ async def test_record_long_task_validation_updates_runtime_task_metadata(monkeyp
         status="completed",
         delta="Done",
         output_paths=["workspace/output.md"],
+        completed_todo_ids=["acceptance-1"],
+        completed_verification_ids=["verify-1"],
         data_root=tmp_path,
     )
 

@@ -96,8 +96,9 @@ export default function ChatWorkLedgerDock({
   const runtimeTaskKey = runtimeTaskId ? String(runtimeTaskId) : '';
   const sessionData = sessionQuery.data;
   const sessionRuntimeTaskKey = sessionData?.runtime_task_id ? String(sessionData.runtime_task_id) : '';
+  const sessionScopedLedger = Boolean(sessionData && !sessionRuntimeTaskKey);
   const sessionMatchesRuntime = !runtimeTaskKey || sessionRuntimeTaskKey === runtimeTaskKey;
-  const preferRuntimeLedger = Boolean(runtimeTaskKey && sessionData && !sessionMatchesRuntime);
+  const preferRuntimeLedger = Boolean(runtimeTaskKey && sessionData && !sessionMatchesRuntime && !sessionScopedLedger);
   const runtimeQueryEnabled = Boolean(
     agentId && runtimeTaskKey && (!sessionId || sessionQuery.isError || preferRuntimeLedger),
   );

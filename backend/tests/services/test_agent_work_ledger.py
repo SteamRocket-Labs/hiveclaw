@@ -294,7 +294,7 @@ async def test_latest_session_work_ledger_prefers_active_session_task(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_latest_session_work_ledger_does_not_fallback_to_old_ledger_when_active_task_has_none(monkeypatch):
+async def test_latest_session_work_ledger_uses_session_ledger_when_active_task_has_none(tmp_path):
     from app.services import agent_work_ledger as module
 
     agent_id = uuid4()
@@ -324,22 +324,30 @@ async def test_latest_session_work_ledger_does_not_fallback_to_old_ledger_when_a
         async def execute(self, _stmt):
             return _Result()
 
-    def fake_read_agent_work_ledger_view(*, agent_id, runtime_task_id, data_root=None):
-        if runtime_task_id == older_completed.id:
-            return {
-                "schema": "agent_work_ledger_view.v1",
-                "runtime_task_id": older_completed.id.hex,
-                "status": "completed",
-                "todo_items": [{"id": "todo-old", "title": "Old completed todo", "status": "complete"}],
-            }
-        return None
-
-    monkeypatch.setattr(module, "read_agent_work_ledger_view", fake_read_agent_work_ledger_view)
+    module.initialize_agent_work_ledger_artifact(
+        agent_id=agent_id,
+        runtime_task_id=older_completed.id,
+        source="workflow",
+        status="completed",
+        todo_items=[{"id": "todo-old", "title": "Old completed todo", "status": "complete"}],
+        data_root=tmp_path,
+    )
+    module.upsert_agent_work_ledger_todo(
+        agent_id=agent_id,
+        session_id=session_id,
+        title="Live session todo",
+        status="in_progress",
+        data_root=tmp_path,
+    )
 
     view = await module.read_latest_session_work_ledger_view(
         db=_DB(),
         agent_id=agent_id,
         session_id=session_id,
+        data_root=tmp_path,
     )
 
-    assert view is None
+    assert view is not None
+    assert view["task_type"] == "session_work_ledger"
+    assert view["session_id"] == str(session_id)
+    assert [item["title"] for item in view["todo_items"]] == ["Live session todo"]

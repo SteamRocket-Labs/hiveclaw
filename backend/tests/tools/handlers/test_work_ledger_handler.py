@@ -289,6 +289,52 @@ async def test_general_work_ledger_is_scoped_to_session_by_default(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_track_todo_fails_closed_without_session_plan_or_runtime_scope(tmp_path, monkeypatch):
+    from app.services.agent_work_ledger import load_agent_work_ledger
+    from app.tools.handlers.work_ledger import track_todo
+
+    agent_id = uuid.uuid4()
+    _settings_patch(monkeypatch, tmp_path)
+
+    payload = json.loads(
+        await track_todo(
+            _request(
+                tmp_path,
+                {"action": "add", "title": "This must not create an agent-global ledger"},
+                agent_id=agent_id,
+                session_id=None,
+            )
+        )
+    )
+
+    assert payload["ok"] is False
+    assert payload["error_code"] == "missing_work_ledger_scope"
+    assert load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path) is None
+
+
+@pytest.mark.asyncio
+async def test_record_finding_fails_closed_without_session_plan_or_runtime_scope(tmp_path, monkeypatch):
+    from app.services.agent_work_ledger import load_agent_work_ledger
+    from app.tools.handlers.work_ledger import record_finding
+
+    agent_id = uuid.uuid4()
+    _settings_patch(monkeypatch, tmp_path)
+    request = _request(
+        tmp_path,
+        {"type": "finding", "summary": "This must not create an agent-global ledger"},
+        agent_id=agent_id,
+        session_id=None,
+    )
+    request.tool_name = "record_finding"
+
+    payload = json.loads(await record_finding(request))
+
+    assert payload["ok"] is False
+    assert payload["error_code"] == "missing_work_ledger_scope"
+    assert load_agent_work_ledger(agent_id=agent_id, data_root=tmp_path) is None
+
+
+@pytest.mark.asyncio
 async def test_read_ledger_absent_returns_present_false(tmp_path, monkeypatch):
     from app.tools.handlers.work_ledger import read_ledger
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest

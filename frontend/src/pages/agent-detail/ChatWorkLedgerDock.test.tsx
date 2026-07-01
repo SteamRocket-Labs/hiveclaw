@@ -118,6 +118,31 @@ describe('ChatWorkLedgerDock', () => {
     expect(markup).toContain('Runtime fallback todo');
   });
 
+  it('keeps session-scoped ledger visible while an active run has no runtime ledger', () => {
+    queryHarness.sessionData = {
+      schema: 'agent_work_ledger_view.v1',
+      runtime_task_id: null,
+      session_id: 'session-1',
+      status: 'running',
+      current_phase: 'planning',
+      todo_items: [{ id: 'todo-live', title: 'Live session todo', status: 'in_progress', required: true }],
+      counts: { todos_total: 1, todos_complete: 0, todos_open: 1 },
+    };
+
+    const markup = renderToStaticMarkup(
+      <ChatWorkLedgerDock
+        agentId="agent-1"
+        sessionId="session-1"
+        runtimeTaskId="task-current"
+        live
+      />,
+    );
+
+    expect(markup).toContain('Live session todo');
+    const runtimeCall = queryHarness.calls.find((call) => String(call.queryKey[0]) === 'chat-work-ledger');
+    expect(runtimeCall?.enabled).toBe(false);
+  });
+
   it('does not poll idle session work ledgers', () => {
     queryHarness.sessionData = ledger('task-idle', 'Idle todo');
 

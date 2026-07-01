@@ -16,6 +16,7 @@ from app.models.agent_team import AgentTeam, AgentTeamMember
 from app.models.audit import ApprovalRequest
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
+from app.models.workflow import WorkflowLeafCall, WorkflowStep
 from app.runtime.ccplus_contracts import (
     AgentSessionV1,
     SessionEdgeV1,
@@ -157,6 +158,37 @@ def _runtime_task_payload(task: RuntimeTask) -> dict[str, Any]:
     }
 
 
+def _runtime_task_label(task: RuntimeTask, metadata: dict[str, Any]) -> str:
+    return _completion_task_label(task, metadata)
+
+
+def _runtime_task_runtime_row(task: RuntimeTask, *, runtime_kind: str | None = None) -> dict[str, Any]:
+    metadata = _mapping(getattr(task, "metadata_json", None))
+    child_session_id = getattr(task, "child_session_id", None)
+    row = {
+        "runtime_task_id": str(getattr(task, "id", "")),
+        "task_type": getattr(task, "task_type", None),
+        "runtime_kind": runtime_kind or getattr(task, "task_type", None),
+        "label": _runtime_task_label(task, metadata),
+        "status": getattr(task, "status", None),
+        "state": _completion_state(getattr(task, "status", None)),
+        "parent_session_id": getattr(task, "parent_session_id", None),
+        "child_session_id": child_session_id,
+        "enterable": bool(child_session_id),
+        "trace_id": getattr(task, "trace_id", None),
+        "summary": getattr(task, "result_summary", None) or "",
+        "token_usage": getattr(task, "token_usage", None) or {},
+        "terminal_reason": metadata.get("terminal_reason"),
+        "created_at": _iso(getattr(task, "created_at", None)),
+        "started_at": _iso(getattr(task, "started_at", None)),
+        "completed_at": _iso(getattr(task, "completed_at", None)),
+        "metadata": metadata,
+    }
+    if metadata.get("subagent_type"):
+        row["subagent_type"] = metadata.get("subagent_type")
+    return row
+
+
 def _goal_payload(goal: AgentSessionGoal) -> dict[str, Any]:
     return {
         "id": str(goal.id),
@@ -207,6 +239,25 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict[str, 
         "closed_at": _iso(team.closed_at),
         **teammate_creation_discovery(team.name),
     }
+
+
+def _agent_team_section_item(team: dict[str, Any]) -> dict[str, Any]:
+    item = dict(team)
+    item["runtime_kind"] = "agent_team"
+    item["enterable"] = False
+    item["members"] = []
+    for member in team.get("members", []):
+        if not isinstance(member, dict):
+            continue
+        member_item = dict(member)
+        member_item["runtime_kind"] = "team_member"
+        member_item["enterable"] = bool(member_item.get("chat_session_id"))
+        item["members"].append(member_item)
+    item["running_count"] = sum(1 for member in item["members"] if _completion_state(member.get("status")) == "running")
+    item["terminal_count"] = sum(
+        1 for member in item["members"] if _completion_state(member.get("status")) in {"completed", "failed"}
+    )
+    return item
 
 
 _BACKGROUND_COMPLETION_TASK_TYPES = {
@@ -399,6 +450,201 @@ def _completion_wake_policy_payload() -> dict[str, Any]:
         "busy_polling": False,
         "single_read_model": "session_workbench.completion_wakes",
     }
+
+
+_RUNTIME_SECTION_KEYS = (
+    "agent_teams",
+    "subagents",
+    "workflows",
+    "background",
+    "notifications",
+    "runs",
+    "raw",
+)
+
+_SUBAGENT_TASK_TYPES = {"subagent", "delegation"}
+_WORKFLOW_TASK_TYPES = {"workflow"}
+_AGENT_TEAM_TASK_TYPES = {"team_member"}
+_BACKGROUND_TASK_TYPES = _BACKGROUND_COMPLETION_TASK_TYPES - _SUBAGENT_TASK_TYPES - _WORKFLOW_TASK_TYPES - _AGENT_TEAM_TASK_TYPES
+
+
+def _runtime_section_payload(key: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "schema": "hive.ccplus.runtime_section.v1",
+        "key": key,
+        "count": len(items),
+        "items": items,
+    }
+
+
+def _workflow_step_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": str(getattr(row, "id", "")) if getattr(row, "id", None) else None,
+        "step_id": getattr(row, "step_id", None),
+        "step_type": getattr(row, "step_type", None),
+        "status": getattr(row, "status", None),
+        "input_hash": getattr(row, "input_hash", None),
+        "definition_hash": getattr(row, "definition_hash", None),
+        "result_ref": getattr(row, "result_ref", None),
+        "error": getattr(row, "error", None),
+        "created_at": _iso(getattr(row, "created_at", None)),
+        "started_at": _iso(getattr(row, "started_at", None)),
+        "finished_at": _iso(getattr(row, "finished_at", None)),
+    }
+
+
+def _workflow_leaf_call_payload(row: Any) -> dict[str, Any]:
+    metadata = _mapping(getattr(row, "metadata_json", None))
+    child_session_id = getattr(row, "child_session_id", None) or metadata.get("child_session_id")
+    return {
+        "id": str(getattr(row, "id", "")) if getattr(row, "id", None) else None,
+        "step_id": getattr(row, "step_id", None),
+        "leaf_id": getattr(row, "leaf_id", None),
+        "status": getattr(row, "status", None),
+        "input_hash": getattr(row, "input_hash", None),
+        "definition_hash": getattr(row, "definition_hash", None),
+        "idempotency_key": getattr(row, "idempotency_key", None),
+        "result_ref": getattr(row, "result_ref", None),
+        "token_usage": getattr(row, "token_usage", None) or {},
+        "error": getattr(row, "error", None),
+        "child_session_id": child_session_id,
+        "enterable": bool(child_session_id),
+        "started_at": _iso(getattr(row, "started_at", None)),
+        "finished_at": _iso(getattr(row, "finished_at", None)),
+        "created_at": _iso(getattr(row, "created_at", None)),
+    }
+
+
+async def _list_workflow_journals(
+    db: AsyncSession,
+    *,
+    runtime_tasks: list[RuntimeTask],
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    run_ids = [getattr(task, "id", None) for task in runtime_tasks if getattr(task, "task_type", None) == "workflow"]
+    run_ids = [run_id for run_id in run_ids if run_id]
+    if not run_ids:
+        return {}
+    steps_result = await db.execute(select(WorkflowStep).where(WorkflowStep.run_id.in_(run_ids)))
+    leaf_result = await db.execute(select(WorkflowLeafCall).where(WorkflowLeafCall.run_id.in_(run_ids)))
+    journals: dict[str, dict[str, list[dict[str, Any]]]] = {
+        str(run_id): {"steps": [], "leaf_calls": []} for run_id in run_ids
+    }
+    for row in steps_result.scalars().all():
+        journals.setdefault(str(row.run_id), {"steps": [], "leaf_calls": []})["steps"].append(_workflow_step_payload(row))
+    for row in leaf_result.scalars().all():
+        journals.setdefault(str(row.run_id), {"steps": [], "leaf_calls": []})["leaf_calls"].append(
+            _workflow_leaf_call_payload(row)
+        )
+    for journal in journals.values():
+        journal["steps"].sort(key=lambda item: str(item.get("step_id") or ""))
+        journal["leaf_calls"].sort(key=lambda item: (str(item.get("step_id") or ""), str(item.get("leaf_id") or "")))
+    return journals
+
+
+def _workflow_section_item(task: RuntimeTask, journal: dict[str, Any] | None) -> dict[str, Any]:
+    metadata = _mapping(getattr(task, "metadata_json", None))
+    dynamic_workflow = _mapping(metadata.get("dynamic_workflow"))
+    item = _runtime_task_runtime_row(task, runtime_kind="workflow")
+    item["definition_source"] = metadata.get("definition_source") or dynamic_workflow.get("definition_source")
+    item["dynamic_workflow"] = dynamic_workflow
+    item["proposal_id"] = dynamic_workflow.get("proposal_id") or metadata.get("proposal_id")
+    item["preview_hash"] = dynamic_workflow.get("preview_hash") or metadata.get("preview_hash")
+    item["waiting_for_signal"] = metadata.get("waiting_for_signal")
+    item["repair_plan"] = metadata.get("repair_plan") or dynamic_workflow.get("repair_plan") or {}
+    item["promotion_eligibility"] = metadata.get("promotion_eligibility") or {}
+    journal = _mapping(journal)
+    item["steps"] = list(journal.get("steps") or [])
+    item["leaf_calls"] = [
+        {**leaf, "enterable": bool(leaf.get("child_session_id"))} for leaf in list(journal.get("leaf_calls") or [])
+    ]
+    return item
+
+
+def _runtime_sections_payload(
+    *,
+    runtime_tasks: list[RuntimeTask],
+    teams: list[dict[str, Any]],
+    completion_wakes: list[dict[str, Any]],
+    workflow_journals: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    workflow_journals = _mapping(workflow_journals)
+    agent_teams = [_agent_team_section_item(team) for team in teams]
+    subagents: list[dict[str, Any]] = []
+    workflows: list[dict[str, Any]] = []
+    background: list[dict[str, Any]] = []
+    for task in runtime_tasks:
+        task_type = str(getattr(task, "task_type", "") or "")
+        if task_type in _WORKFLOW_TASK_TYPES:
+            workflows.append(_workflow_section_item(task, workflow_journals.get(str(getattr(task, "id", "")))))
+        elif task_type in _SUBAGENT_TASK_TYPES:
+            subagents.append(_runtime_task_runtime_row(task, runtime_kind="subagent"))
+        elif task_type in _BACKGROUND_TASK_TYPES:
+            background.append(_runtime_task_runtime_row(task, runtime_kind="background_agent"))
+
+    runs = [_runtime_task_payload(task) for task in runtime_tasks]
+    raw = [
+        {
+            "runtime_tasks": runs,
+            "completion_wakes": completion_wakes,
+            "teams": teams,
+        }
+    ]
+    return {
+        "agent_teams": _runtime_section_payload("agent_teams", agent_teams),
+        "subagents": _runtime_section_payload("subagents", subagents),
+        "workflows": _runtime_section_payload("workflows", workflows),
+        "background": _runtime_section_payload("background", background),
+        "notifications": _runtime_section_payload("notifications", completion_wakes),
+        "runs": _runtime_section_payload(
+            "runs",
+            [
+                {
+                    "runtime_task_id": run.get("id"),
+                    **run,
+                }
+                for run in runs
+            ],
+        ),
+        "raw": _runtime_section_payload("raw", raw),
+    }
+
+
+def _resume_health_payload(
+    *,
+    session_index: dict[str, Any],
+    active_run: Any,
+    checkpoint_count: int,
+) -> dict[str, Any]:
+    existing = _mapping(session_index.get("resume_health"))
+    if existing:
+        return existing
+    active_run_id = _active_run_value(active_run, "id") if active_run is not None else None
+    if active_run_id:
+        return {
+            "status": "running",
+            "reason": "active_run_present",
+            "active_run_id": str(active_run_id),
+            "checkpoint_count": checkpoint_count,
+        }
+    return {
+        "status": "ok",
+        "reason": "no_active_run",
+        "active_run_id": None,
+        "checkpoint_count": checkpoint_count,
+    }
+
+
+def _session_index_with_resume_health(
+    *, session_index: Any, active_run: Any, checkpoint_count: int
+) -> dict[str, Any]:
+    payload = _mapping(session_index)
+    payload.setdefault("schema", "hive.session_index.v1")
+    payload["resume_health"] = _resume_health_payload(
+        session_index=payload,
+        active_run=active_run,
+        checkpoint_count=checkpoint_count,
+    )
+    return payload
 
 
 # Run-lifecycle status strings that are not TurnStatus enum values map here so a
@@ -972,8 +1218,10 @@ async def _list_pending_approvals(
             continue
         payload = _approval_payload(approval)
         details = _mapping(payload.get("details"))
-        approval_session = details.get("session_id") or details.get("parent_session_id")
-        if approval_session and str(approval_session) != str(session_id):
+        approval_session = details.get("session_id") or details.get("parent_session_id") or details.get("chat_session_id")
+        if not approval_session:
+            continue
+        if str(approval_session) != str(session_id):
             continue
         if tenant_id and payload.get("tenant_id") and str(payload["tenant_id"]) != str(tenant_id):
             continue
@@ -998,11 +1246,22 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
     latest_event = _event_payload(events[-1]) if events else None
     active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
     active_run_projection = _active_run_with_event_refs(active_run, events)
-    session_index = await read_session_index(db, agent_id=agent.id, session_id=session.id)
     runtime_tasks = await _list_runtime_tasks(db, agent_id=agent.id, session_id=session.id)
     goals = await _list_goals(db, agent_id=agent.id, session_id=session.id)
     teams = await _list_teams(db, agent_id=agent.id, session_id=session.id)
+    workflow_journals = await _list_workflow_journals(db, runtime_tasks=runtime_tasks)
     completion_wakes = _completion_wake_payloads(runtime_tasks=runtime_tasks, teams=teams)
+    session_index = _session_index_with_resume_health(
+        session_index=await read_session_index(db, agent_id=agent.id, session_id=session.id),
+        active_run=active_run_projection,
+        checkpoint_count=len(checkpoints),
+    )
+    runtime_sections = _runtime_sections_payload(
+        runtime_tasks=runtime_tasks,
+        teams=teams,
+        completion_wakes=completion_wakes,
+        workflow_journals=workflow_journals,
+    )
     turn_state = _build_active_turn_state(session=session, active_run=active_run_projection, events=events)
     active_turn = _active_turn_payload(turn_state=turn_state)
     agent_session = _agent_session_payload(session=session, runtime_tasks=runtime_tasks, turn_state=turn_state)
@@ -1061,6 +1320,7 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
         "completion_wake_policy": _completion_wake_policy_payload(),
         "completion_wake_summary": _completion_wake_summary(completion_wakes),
         "completion_wakes": completion_wakes,
+        "runtime_sections": runtime_sections,
         "goals": [_goal_payload(goal) for goal in goals],
         "teams": teams,
         "session_index": session_index,

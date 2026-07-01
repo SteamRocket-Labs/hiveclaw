@@ -560,3 +560,48 @@ cd backend && source .venv/bin/activate && pytest \
   -q
 # 31 passed, 3 warnings
 ```
+
+### Part 3 — Workbench read model、runtime_sections 与 session 污染口子（2026-07-02）
+
+红测：
+
+- `test_runtime_sections_separate_agent_team_subagent_background_workflow`：当前 workbench 无 `runtime_sections`，前端只能从 `runtime_tasks`/`completion_wakes`/`teams` 混合列表猜分类。
+- `test_session_index_reports_resume_health_when_index_omits_it`：当前 `session_index.resume_health` 缺失，前端只能显示 `unknown`。
+- `test_pending_approvals_without_session_binding_do_not_leak_between_sessions`：当前 pending approval 只要没有 `details.session_id` 就会进入该 agent 每个 session 的 workbench。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_session_control_plane.py::test_runtime_sections_separate_agent_team_subagent_background_workflow \
+  tests/services/test_session_control_plane.py::test_session_index_reports_resume_health_when_index_omits_it \
+  tests/services/test_session_control_plane.py::test_pending_approvals_without_session_binding_do_not_leak_between_sessions \
+  -q
+# 3 failed: KeyError(runtime_sections), KeyError(resume_health), leaked approval without session binding
+```
+
+变更：
+
+- `session_control_plane` 新增 typed `runtime_sections`，规范键名固定为 `agent_teams` / `subagents` / `workflows` / `background` / `notifications` / `runs` / `raw`；旧字段 `runtime_tasks`、`completion_wakes`、`teams` 继续保留兼容。
+- Agent Team rows 与 member rows 明确 `runtime_kind=agent_team/team_member`，member 按 `chat_session_id` 标记 `enterable`；普通 `subagent`、`background_agent`、`workflow` 分栏不再互相冒充。
+- Workflow section 从现有 `RuntimeTask(task_type="workflow")` 和 `workflow_steps` / `workflow_leaf_calls` journal 读取 root、steps、leaf_calls；leaf 只有 `child_session_id` 时才 `enterable=true`。
+- `session_index` 统一补 `resume_health`：无 active run 时为 `status=ok, reason=no_active_run`，active run 存在时为 `status=running, reason=active_run_present`。
+- workbench pending approvals 改为必须绑定当前 `session_id` / `parent_session_id` / `chat_session_id`；无 session 归属的 pending approval 不再泄露到任意 session。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_session_control_plane.py::test_runtime_sections_separate_agent_team_subagent_background_workflow \
+  tests/services/test_session_control_plane.py::test_session_index_reports_resume_health_when_index_omits_it \
+  tests/services/test_session_control_plane.py::test_pending_approvals_without_session_binding_do_not_leak_between_sessions \
+  -q
+# 3 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_session_control_plane.py \
+  tests/kernel/test_turn_state_acceptance.py \
+  tests/services/test_session_graph_projection.py \
+  -q
+# 23 passed, 4 warnings
+```

@@ -9,6 +9,7 @@ const ICONS = {
   llm: <IconRobot size={16} stroke={1.5} />,
   eval_ci: <IconChecklist size={16} stroke={1.5} />,
   memory: <IconBrain size={16} stroke={1.5} />,
+  digital_employees: <IconUsers size={16} stroke={1.5} />,
   hr: <IconUserStar size={16} stroke={1.5} />,
   tools: <IconSettings size={16} stroke={1.5} />,
   skills: <IconSettings size={16} stroke={1.5} />,

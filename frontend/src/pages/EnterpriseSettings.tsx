@@ -13,6 +13,7 @@ import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import WorkspaceApprovalsSection from './workspace/WorkspaceApprovalsSection';
 import WorkspaceAuditSection from './workspace/WorkspaceAuditSection';
+import WorkspaceDigitalEmployeesSection from './workspace/WorkspaceDigitalEmployeesSection';
 import WorkspaceEvalCiSection from './workspace/WorkspaceEvalCiSection';
 import WorkspaceInfoSection from './workspace/WorkspaceInfoSection';
 import WorkspaceInvitesSection from './workspace/WorkspaceInvitesSection';
@@ -51,6 +52,13 @@ interface LLMProviderSpec {
 }
 
 export type EnterpriseSettingsTab = WorkspaceSettingsSectionTab;
+
+function enterpriseTabPath(tab: EnterpriseSettingsTab) {
+    if (tab === 'invites') return 'invitations';
+    if (tab === 'eval_ci') return 'eval-ci';
+    if (tab === 'digital_employees') return 'digital-employees';
+    return tab;
+}
 
 interface EnterpriseSettingsProps {
     forcedTab?: EnterpriseSettingsTab;
@@ -709,12 +717,12 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                     <div className="tabs">
                         {([
                             { tabs: ['info', 'org', 'users', 'invites'] as const },
-                            { tabs: ['llm', 'eval_ci', 'tools', 'skills', 'subagents', 'hr'] as const },
+                            { tabs: ['llm', 'eval_ci', 'tools', 'skills', 'subagents', 'digital_employees', 'hr'] as const },
                             { tabs: ['quotas', 'approvals', 'audit'] as const },
                         ]).flatMap((group, gi) => [
                             ...(gi > 0 ? [<div key={`sep-${gi}`} className="tab-separator" />] : []),
                             ...group.tabs.map(tab => (
-                                <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => navigate(`/enterprise/${tab === 'invites' ? 'invitations' : tab}`)}>
+                                <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => navigate(`/enterprise/${enterpriseTabPath(tab)}`)}>
                                     {t(`enterprise.tabs.${tab}`)}
                                 </div>
                             )),
@@ -804,6 +812,9 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
 
                 {/* ── HR Agent Tab ── */}
                 {activeTab === 'hr' && <WorkspaceHrAgentSection selectedTenantId={selectedTenantId} />}
+
+                {/* ── Digital Employee Management Tab ── */}
+                {activeTab === 'digital_employees' && <WorkspaceDigitalEmployeesSection selectedTenantId={selectedTenantId} />}
 
                 {/* ── Skills Tab ── */}
                 {activeTab === 'skills' && <WorkspaceSkillsSection />}

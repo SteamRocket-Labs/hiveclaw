@@ -1833,6 +1833,7 @@
       "quotas": "Usage Quotas",
       "users": "Team Members",
       "invites": "Invitation Codes",
+      "digitalEmployees": "Digital Employees",
       "hr": "Onboarding Assistant",
       "memory": "Memory Settings"
     },
@@ -2260,9 +2261,12 @@
       "resetDefault": "Reset to Default",
       "resetConfirm": "Reset the onboarding assistant to its default template? Your customizations will be lost.",
       "saveFailed": "Could not save: ",
-      "noAgent": "Onboarding assistant is not available. Please configure at least one AI model first.",
-      "employeeManagement": "Digital Employee Management",
-      "employeeManagementDesc": "Company admins can review and remove tenant digital employees from this governed backend surface.",
+      "noAgent": "Onboarding assistant is not available. Please configure at least one AI model first."
+    },
+    "digitalEmployees": {
+      "title": "Digital Employee Management",
+      "description": "Company admins can review and remove tenant digital employees from this governed backend surface.",
+      "adminOnly": "Only company administrators can manage digital employees here.",
       "employeeDeleted": "Digital employee deleted.",
       "employeeDeleteFailed": "Failed to delete digital employee.",
       "deleteEmployeeTitle": "Delete digital employee",

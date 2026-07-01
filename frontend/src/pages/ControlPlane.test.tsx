@@ -47,6 +47,7 @@ describe('ControlPlane', () => {
 
     expect(markup).toContain('Control Plane');
     expect(markup).toContain('Agent Governance');
+    expect(markup).toContain('Digital Employees');
     expect(markup).toContain('Models &amp; Budget');
     expect(markup).toContain('Capabilities &amp; Tools');
     expect(markup).toContain('Team &amp; Delegation');
@@ -57,6 +58,7 @@ describe('ControlPlane', () => {
     expect(markup).toContain('Assets &amp; Automation');
     expect(markup).toContain('Local Agent Channel');
     expect(markup).toContain('href="/enterprise/hr"');
+    expect(markup).toContain('href="/enterprise/digital-employees"');
     expect(markup).toContain('href="/local-agents"');
   });
 

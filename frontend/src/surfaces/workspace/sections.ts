@@ -4,6 +4,7 @@ export type WorkspaceSectionTab =
   | 'llm'
   | 'eval_ci'
   | 'memory'
+  | 'digital_employees'
   | 'hr'
   | 'tools'
   | 'skills'
@@ -31,6 +32,7 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { tab: 'llm', slug: 'llm', path: '/enterprise/llm', labelKey: 'enterprise.tabs.llm', fallbackLabel: 'Models' },
   { tab: 'eval_ci', slug: 'eval-ci', path: '/enterprise/eval-ci', labelKey: 'enterprise.tabs.evalCi', fallbackLabel: 'Eval CI' },
   { tab: 'memory', slug: 'memory', path: '/enterprise/memory', labelKey: 'enterprise.tabs.memory', fallbackLabel: 'Memory' },
+  { tab: 'digital_employees', slug: 'digital-employees', path: '/enterprise/digital-employees', labelKey: 'enterprise.tabs.digitalEmployees', fallbackLabel: 'Digital Employees' },
   { tab: 'hr', slug: 'hr', path: '/enterprise/hr', labelKey: 'enterprise.tabs.hr', fallbackLabel: 'HR Agent' },
   { tab: 'tools', slug: 'tools', path: '/enterprise/tools', labelKey: 'enterprise.tabs.tools', fallbackLabel: 'Tools' },
   { tab: 'skills', slug: 'skills', path: '/enterprise/skills', labelKey: 'enterprise.tabs.skills', fallbackLabel: 'Skills' },

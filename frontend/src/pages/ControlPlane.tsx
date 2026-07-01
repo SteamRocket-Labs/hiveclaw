@@ -40,9 +40,17 @@ const CONTROL_PLANE_CARDS: ControlPlaneCard[] = [
     tab: 'hr',
     to: '/enterprise/hr',
     title: 'Agent Governance',
-    description: 'HR Agent setup, employee creation policy, and company-level employee governance.',
+    description: 'HR Agent setup and employee creation policy.',
     icon: <IconUsers size={18} stroke={1.6} />,
     group: 'governance',
+  },
+  {
+    tab: 'digital_employees',
+    to: '/enterprise/digital-employees',
+    title: 'Digital Employees',
+    description: 'Company-wide employee inventory, lifecycle controls, and admin deletion.',
+    icon: <IconUsers size={18} stroke={1.6} />,
+    group: 'workspace',
   },
   {
     tab: 'llm',

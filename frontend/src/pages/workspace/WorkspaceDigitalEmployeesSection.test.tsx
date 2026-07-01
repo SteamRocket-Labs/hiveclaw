@@ -11,7 +11,6 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('react-router-dom', () => ({
-  useNavigate: () => vi.fn(),
   Link: ({ to, children, className }: any) => (
     <a href={to} className={className}>
       {children}
@@ -36,7 +35,6 @@ vi.mock('@tanstack/react-query', () => ({
         data: { id: 'hr-agent-1', name: '__system_hr__', status: 'running' },
         isLoading: false,
         error: null,
-        refetch: vi.fn(),
       };
     }
     if (String(queryKey[0]) === 'agents') {
@@ -73,26 +71,22 @@ vi.mock('@tanstack/react-query', () => ({
   }),
 }));
 
-vi.mock('../../api/domains/files', () => ({
-  fileApi: {
-    read: vi.fn(),
-  },
-}));
-
 vi.mock('../../components/AppDialogs', () => ({
   showAppToast: vi.fn(),
   requestAppConfirm: vi.fn(),
 }));
 
-import WorkspaceHrAgentSection from './WorkspaceHrAgentSection';
+import WorkspaceDigitalEmployeesSection from './WorkspaceDigitalEmployeesSection';
 
-describe('WorkspaceHrAgentSection', () => {
-  it('keeps onboarding assistant management separate from digital employee administration', () => {
-    const markup = renderToStaticMarkup(<WorkspaceHrAgentSection selectedTenantId="tenant-1" />);
+describe('WorkspaceDigitalEmployeesSection', () => {
+  it('renders the standalone admin-only digital employee list with guarded delete actions', () => {
+    const markup = renderToStaticMarkup(<WorkspaceDigitalEmployeesSection selectedTenantId="tenant-1" />);
 
-    expect(markup).toContain('HR Onboarding Agent');
-    expect(markup).not.toContain('Digital Employee Management');
-    expect(markup).not.toContain('AI Product Manager');
-    expect(markup).not.toContain('Delete employee');
+    expect(markup).toContain('Digital Employee Management');
+    expect(markup).toContain('AI Product Manager');
+    expect(markup).toContain('href="/agents/agent-1"');
+    expect(markup).toContain('Delete employee');
+    expect(markup).toContain('System protected');
+    expect(markup).not.toContain('Delete __system_hr__');
   });
 });

@@ -465,11 +465,12 @@ Step 1–7 的提交都在 main（`46527c7f…7c422592`），每步有红/绿测
 - 显式 Agent Team 用例复跑（07-02 稿 §8.3 验收用例 1–3）。
 - 复跑一次多任务多 session 并发场景：终局交付物无跨任务文件；无 UniqueViolationError；失败 run（若有）的 terminal reason 非 `[LLMError]` 泛化。
 
-## 11. 未钉死事项
+## 11. 收口状态与部署后复跑项
 
-1. **跨 session 文件混入的精确通路差最后一步**：「同 session 跨 run 经共享 list 混入」已被代码证实；但生产 payload 的**跨 session**混入（ABS 会话混入名股实债文件）在 per-session broker 缓存下理论上不应发生——要么这些文件真是该 run 自己写的（模型跨任务读写旧文件），要么存在尚未抓到的 context 复用竞态（近期三个 writable-session race 修复提交 `5141c933/fc5a0257/c15f9d4d` 暗示这里有竞态史）。R2 复现测试是实施第一步。
-2. **已钉死（2026-07-02）**：owner 确认「thinking 污染」为内容级（思考时出现别的任务的素材）→ §8-F.2 出处标签 + 提示词规则为主修复通道，§8-B 因果归属为交付兜底；流级双护栏维持现状 + §8-F.3 收敛残余窗口。机制与三档边界见 §3.4。
-3. `session_index.resume_health` 后端是否已有部分提供，实施时最终确认（当前证据指向未提供）。
+1. **跨 session 内容级污染已按 owner 确认的机制收口**：共享 workspace 不隔离；`list_files` / `read_file` 现在返回最近交付的 `session_id` / `runtime_task_id` / artifact provenance hint，避免模型把其他 session/run 的文件误认为当前素材。该机制不做机械过滤，保留用户要求对比历史文件时读取旧产物的能力。
+2. **终局交付污染已按 run scope 收口**：终局 artifact 路径来自当前 turn writes，tool_result artifact 路径来自当前工具 args；artifact card 打开/下载读取交付时内容快照，后续 workspace 覆盖只显示 divergence，不偷换旧交付物。
+3. **Workbench 污染口子已收口**：pending approvals 必须 session-bound；work ledger 优先 session-scoped WIP；`session_index.resume_health` 已补齐默认 `ok/running` read model。
+4. **生产复跑属于部署后运营验收**：本 pass 未擅自部署 Railway，因此不伪造生产 smoke 结论。部署后按 §10.4 复跑显式 Agent Team、多 session 并发、日志 `rg team_create|agent_team|UniqueViolationError|artifact persistence`。
 
 ## 12. 完成口径
 
@@ -486,7 +487,7 @@ Step 1–7 的提交都在 main（`46527c7f…7c422592`），每步有红/绿测
 9. Dynamic Workflow 与 A2A Pipeline 的命名、路由、UI、测试边界清楚隔离；本 pass 不新增 A2A pipeline 语义，也不把 Dynamic Workflow leaf 冒充为 A2A employee session。
 10. Dynamic Workflow 后端 substrate 保持不重写，补齐 session-native Workflow Run Window、runtime_sections、step/leaf detail、gate/wait/resume/repair 表达与调度门槛测试。
 11. Plan Mode 的 blocking open questions 不再落成可确认计划；问题必须先被 `ask_user_question` 或前端 answer flow 解决。
-12. 后端测试、前端测试、build、production smoke 全部有证据；验收断言钉行为不钉 testid。
+12. 后端测试、前端测试、build 有本地证据；production smoke 在部署后按 §10.4 执行，不在未部署代码上伪造结论。验收断言钉行为不钉 testid。
 13. `command_pack` 不再作为模型 runtime 协作能力的总开关；slash-command API facade 与模型工具面去重完成，Agent Team/Goal/Task/Advanced Plan 的归属各自明确。
 14. `office_pack` 不再和 Office CII/runtime 工具边界混淆；inactive `office_pack` 不影响 CORE Office runtime，root/backend manifest ownership 表达一致。
 15. pack 机制边界收敛：插件/能力包仍用于安装、凭据、sandbox、skill、hook、catalog；模型 runtime 的 CORE 能力发现与调用不再受 pack enabled 控制；历史 pack_policy/RuntimeToolGroup projection 有兼容说明或重命名计划。
@@ -824,3 +825,51 @@ cd backend && source .venv/bin/activate && pytest \
   -q
 # 38 passed, 3 warnings
 ```
+
+### Part 9 — 聚合验收与本地 build（2026-07-02）
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_agent_tools_core_surface.py \
+  tests/services/test_chat_artifact_delivery.py \
+  tests/services/test_web_chat_runtime.py::test_finalize_web_chat_run_binds_recent_workspace_artifacts \
+  tests/services/test_web_chat_runtime.py::test_persist_tool_call_attaches_written_artifact_parts \
+  tests/services/test_session_control_plane.py \
+  tests/runtime/test_plan_mode_state.py \
+  tests/tools/test_exit_plan_mode_tool.py \
+  tests/runtime/test_subagent_listing_section.py \
+  tests/tools/test_workflow_tool.py \
+  tests/tools/handlers/test_work_ledger_handler.py \
+  tests/services/test_agent_work_ledger.py \
+  tests/services/test_long_task_runtime.py \
+  tests/tools/test_workspace.py::test_list_files_and_read_file_results_carry_provenance_hint \
+  -q
+# 141 passed, 4 warnings
+
+cd frontend && npm test -- --run \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  src/pages/agent-detail/ChatWorkLedgerDock.test.tsx \
+  src/pages/session-workbench/timelineModel.test.ts \
+  src/pages/agent-detail/chatDisclosureReducer.test.ts \
+  src/pages/agent-detail/chatRuntime.test.ts \
+  src/api/domains/files.test.ts
+# 6 passed, 159 passed
+
+cd frontend && npm run build
+# tsc && vite build passed
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/chat_artifact_delivery.py \
+  app/services/agent_tool_domains/workspace.py \
+  app/tools/handlers/workflow.py \
+  tests/tools/test_workspace.py \
+  tests/tools/test_workflow_tool.py
+# All checks passed
+```
+
+说明：
+
+- 本轮已按 Part 1–8 分块提交，每个 part 的红测/绿测证据均写入本文。
+- 当前没有执行 Railway 部署；因此 §10.4 的 production smoke 是部署后运营验收，不作为本地代码提交伪造完成证据。

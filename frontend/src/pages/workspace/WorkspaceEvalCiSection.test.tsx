@@ -41,13 +41,35 @@ describe('WorkspaceEvalCiSection', () => {
         selectedModelId="model-1"
         saving={false}
         saved={false}
+        latestReport={{
+          available: true,
+          stored_at: '2026-06-15T00:00:00+00:00',
+          summary: {
+            kind: 'behavior_eval',
+            transport: 'hive_live',
+            benchmark_complete: true,
+            fallback_used: false,
+            runtime: { model: 'deepseek-v4-flash' },
+            scenarios: {
+              coding: { ready: true, score: 100, transcript_chars: 1200 },
+              research: { ready: false, score: 70, transcript_chars: 800 },
+            },
+          },
+        }}
+        latestReportLoading={false}
+        runningBehaviorEval={false}
+        onRunBehaviorEval={() => {}}
         onSelectedModelChange={() => {}}
         onSave={() => {}}
       />,
     );
 
-    expect(markup).toContain('Eval CI');
+    expect(markup).toContain('Behavior Evaluation');
     expect(markup).toContain('Runtime Status');
+    expect(markup).toContain('Latest Behavior Report');
+    expect(markup).toContain('Run Behavior Evaluation');
+    expect(markup).toContain('coding');
+    expect(markup).toContain('research');
     expect(markup).toContain('Live Eval Model');
     expect(markup).toContain('DeepSeek V4 Flash');
     expect(markup).not.toContain('HIVE_EVAL_TENANT_ID');

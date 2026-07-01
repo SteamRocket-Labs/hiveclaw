@@ -134,6 +134,28 @@ export interface EvalRuntimeStatus {
   };
 }
 
+export interface EvalBehaviorScenarioSummary {
+  ready?: boolean;
+  score?: number | string | null;
+  score_breakdown?: Record<string, unknown> | null;
+  transcript_chars?: number;
+}
+
+export interface EvalBehaviorReportSummary {
+  kind?: string | null;
+  transport?: string | null;
+  benchmark_complete: boolean;
+  fallback_used: boolean;
+  runtime: Record<string, unknown>;
+  scenarios: Record<string, EvalBehaviorScenarioSummary>;
+}
+
+export interface EvalBehaviorReport {
+  available: boolean;
+  stored_at?: string | null;
+  summary?: EvalBehaviorReportSummary | null;
+}
+
 export interface EnterpriseStats {
   total_users: number;
   running_agents: number;
@@ -207,6 +229,9 @@ export const enterpriseApi = {
   getEvalRuntimeStatus: () => get<EvalRuntimeStatus>('/enterprise/eval-ci/runtime'),
   syncEvalRuntimeModel: (modelId: string, tenantId?: string) =>
     post<EvalRuntimeStatus>(`/enterprise/eval-ci/runtime/model${tenantId ? `?tenant_id=${tenantId}` : ''}`, { model_id: modelId }),
+  getEvalBehaviorLatest: () => get<EvalBehaviorReport>('/enterprise/eval-ci/behavior/latest'),
+  runEvalBehavior: (scenarios?: string[]) =>
+    post<EvalBehaviorReport>('/enterprise/eval-ci/behavior/run', scenarios?.length ? { scenarios } : {}),
 
   /** Enterprise info */
   getInfo: () => get<EnterpriseInfo[]>('/enterprise/info'),

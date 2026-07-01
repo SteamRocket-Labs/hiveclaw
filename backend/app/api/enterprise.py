@@ -75,6 +75,10 @@ class EvalRuntimeModelSyncRequest(BaseModel):
     model_id: uuid.UUID
 
 
+class EvalBehaviorRunRequest(BaseModel):
+    scenarios: list[str] | None = None
+
+
 def _llm_test_probe_max_tokens(provider: str, model: str | None) -> int:
     from app.services.llm_client import uses_openai_responses_api
 
@@ -153,6 +157,36 @@ def _public_eval_ci_runtime_response(response: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _public_behavior_eval_summary(report: dict[str, Any]) -> dict[str, Any]:
+    source = report.get("summary") if isinstance(report.get("summary"), dict) else report
+    scenarios: dict[str, Any] = {}
+    for name, entry in (source.get("scenarios") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        scenario: dict[str, Any] = {}
+        for key in ("ready", "score", "score_breakdown", "transcript_chars"):
+            if key in entry:
+                scenario[key] = entry[key]
+        scenarios[str(name)] = scenario
+
+    return {
+        "kind": source.get("kind"),
+        "transport": source.get("transport"),
+        "benchmark_complete": bool(source.get("benchmark_complete")),
+        "fallback_used": bool(source.get("fallback_used")),
+        "runtime": source.get("runtime") if isinstance(source.get("runtime"), dict) else {},
+        "scenarios": scenarios,
+    }
+
+
+def _public_behavior_eval_report(response: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "available": bool(response.get("available", True)),
+        "stored_at": response.get("stored_at"),
+        "summary": _public_behavior_eval_summary(response),
+    }
+
+
 def _eval_runtime_model_payload(model: LLMModel, *, tenant_id: uuid.UUID) -> dict[str, Any]:
     return {
         "source_model_id": str(model.id),
@@ -184,6 +218,26 @@ async def get_eval_ci_runtime_status(
 ):
     """Read isolated eval backend runtime status from the unified company backend."""
     return _public_eval_ci_runtime_response(await _call_eval_ci_runtime("GET", "/eval-ci/runtime"))
+
+
+@router.get("/eval-ci/behavior/latest")
+async def get_eval_ci_latest_behavior_report(
+    current_user: User = Depends(get_current_admin),
+):
+    """Read the latest isolated behavior-eval report without exposing CI internals."""
+    response = await _call_eval_ci_runtime("GET", "/eval-ci/behavior/latest?summary=true")
+    return _public_behavior_eval_report(response)
+
+
+@router.post("/eval-ci/behavior/run")
+async def run_eval_ci_behavior_report(
+    data: EvalBehaviorRunRequest | None = None,
+    current_user: User = Depends(get_current_admin),
+):
+    """Run behavior eval through the server-side CI token and return a compact admin summary."""
+    payload = {"scenarios": data.scenarios} if data and data.scenarios else {}
+    response = await _call_eval_ci_runtime("POST", "/eval-ci/behavior", payload=payload)
+    return _public_behavior_eval_report(response)
 
 
 @router.post("/eval-ci/runtime/model")

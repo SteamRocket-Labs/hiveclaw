@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../api/domains/auth';
-import { enterpriseApi, type EvalRuntimeStatus } from '../api/domains/enterprise';
+import { enterpriseApi, type EvalBehaviorReport, type EvalRuntimeStatus } from '../api/domains/enterprise';
 import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
 import { requestAppConfirm, showAppToast } from '../components/AppDialogs';
@@ -413,6 +413,12 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
         enabled: activeTab === 'eval_ci',
         retry: false,
     });
+    const { data: evalBehaviorReport = null, isLoading: evalBehaviorReportLoading } = useQuery<EvalBehaviorReport | null>({
+        queryKey: ['eval-ci-behavior-latest'],
+        queryFn: () => enterpriseApi.getEvalBehaviorLatest(),
+        enabled: activeTab === 'eval_ci',
+        retry: false,
+    });
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
     const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, max_input_tokens: '' as string, temperature: '' as string, reasoning_mode: 'provider_default', reasoning_effort: '', reasoning_budget_tokens: '', reasoning_display: '', preserve_reasoning: false, text_verbosity: '', provider_options: '' });
@@ -469,6 +475,17 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
         },
         onError: (error: any) => {
             showAppToast(error?.message || t('enterprise.evalCi.syncFailed', 'Failed to sync live eval model'), 'error');
+        },
+    });
+    const runEvalBehavior = useMutation({
+        mutationFn: () => enterpriseApi.runEvalBehavior(),
+        onSuccess: () => {
+            showAppToast(t('enterprise.evalCi.runQueued', 'Behavior evaluation completed.'), 'success');
+            qc.invalidateQueries({ queryKey: ['eval-ci-behavior-latest'] });
+            qc.invalidateQueries({ queryKey: ['eval-ci-runtime'] });
+        },
+        onError: (error: any) => {
+            showAppToast(error?.message || t('enterprise.evalCi.runFailed', 'Failed to run behavior evaluation'), 'error');
         },
     });
 
@@ -738,6 +755,10 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                         selectedModelId={evalCiModelId}
                         saving={syncEvalRuntimeModel.isPending}
                         saved={evalCiSaved}
+                        latestReport={evalBehaviorReport}
+                        latestReportLoading={evalBehaviorReportLoading}
+                        runningBehaviorEval={runEvalBehavior.isPending}
+                        onRunBehaviorEval={() => runEvalBehavior.mutate()}
                         onSelectedModelChange={setEvalCiModelId}
                         onSave={() => {
                             if (evalCiModelId) syncEvalRuntimeModel.mutate(evalCiModelId);

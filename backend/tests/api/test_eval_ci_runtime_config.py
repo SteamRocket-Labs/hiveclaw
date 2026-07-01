@@ -244,3 +244,74 @@ def test_eval_runtime_model_config_rejects_above_absolute_output():
             label="Company DeepSeek",
             max_output_tokens=eval_ci_service.EVAL_RUNTIME_MAX_OUTPUT_TOKENS + 1,
         )
+
+
+@pytest.mark.asyncio
+async def test_enterprise_eval_latest_behavior_report_is_proxied_as_summary(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    captured: dict[str, object] = {}
+
+    async def fake_call(method, path, *, payload=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["payload"] = payload
+        return {
+            "available": True,
+            "tenant_id": "eval-internal",
+            "setting_key": "behavior_eval_latest_report",
+            "stored_at": "2026-06-15T00:00:00+00:00",
+            "summary": {
+                "kind": "behavior_eval",
+                "transport": "hive_live",
+                "benchmark_complete": True,
+                "fallback_used": False,
+                "runtime": {"model": "claude-sonnet-4-5"},
+                "scenarios": {"coding": {"ready": True, "score": 100}},
+            },
+        }
+
+    monkeypatch.setattr(enterprise_api, "_call_eval_ci_runtime", fake_call)
+
+    result = await enterprise_api.get_eval_ci_latest_behavior_report(current_user=SimpleNamespace(role="org_admin"))
+
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/eval-ci/behavior/latest?summary=true"
+    assert result["available"] is True
+    assert result["summary"]["transport"] == "hive_live"
+    assert "tenant_id" not in result
+    assert "setting_key" not in result
+
+
+@pytest.mark.asyncio
+async def test_enterprise_eval_behavior_run_proxies_server_side_token(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    captured: dict[str, object] = {}
+
+    async def fake_call(method, path, *, payload=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["payload"] = payload
+        return {
+            "kind": "behavior_eval",
+            "transport": "hive_live",
+            "benchmark_complete": True,
+            "fallback_used": False,
+            "runtime": {"model": "claude-sonnet-4-5"},
+            "scenarios": {"coding": {"ready": True, "score": 100, "transcript": "hidden"}},
+        }
+
+    monkeypatch.setattr(enterprise_api, "_call_eval_ci_runtime", fake_call)
+
+    result = await enterprise_api.run_eval_ci_behavior_report(
+        data=enterprise_api.EvalBehaviorRunRequest(scenarios=["coding"]),
+        current_user=SimpleNamespace(role="platform_admin"),
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/eval-ci/behavior"
+    assert captured["payload"] == {"scenarios": ["coding"]}
+    assert result["summary"]["benchmark_complete"] is True
+    assert result["summary"]["scenarios"]["coding"]["ready"] is True
+    assert "transcript" not in result["summary"]["scenarios"]["coding"]

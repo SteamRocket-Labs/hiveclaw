@@ -1173,7 +1173,7 @@ async def test_finalize_web_chat_run_binds_recent_workspace_artifacts(monkeypatc
     async def fake_resolve_tenant_for_agent(_agent_id):
         return tenant_id
 
-    def fake_create_chat_artifacts_for_message(**kwargs):
+    async def fake_create_chat_artifacts_for_message(**kwargs):
         artifact_calls.append(kwargs)
         return [
             {
@@ -2557,14 +2557,22 @@ async def test_persist_tool_call_attaches_written_artifact_parts(monkeypatch, tm
     added = []
 
     class _Session:
+        def __init__(self):
+            self.existing_artifact = None
+
         async def __aenter__(self):
             return self
 
         async def __aexit__(self, *_args):
             return False
 
+        async def execute(self, _stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: self.existing_artifact)
+
         def add(self, value):
             added.append(value)
+            if isinstance(value, ChatArtifact):
+                self.existing_artifact = value
 
         async def flush(self):
             return None

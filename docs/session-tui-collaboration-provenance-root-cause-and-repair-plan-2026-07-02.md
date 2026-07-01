@@ -532,3 +532,31 @@ cd backend && source .venv/bin/activate && pytest \
   -q
 # 8 passed, 4 warnings
 ```
+
+### Part 2 — Artifact 因果归属、幂等与内容快照（2026-07-02）
+
+变更：
+
+- `create_chat_artifacts_for_message` 改为 async 幂等 helper：创建前按 `(agent_id, session_id, runtime_task_id, path, snapshot_hash)` 查询既有 row；tool_result 与 final 重复投递同一 artifact 时复用旧 row，不再触发唯一约束冲突。
+- artifact candidate 写入交付时内容快照到 `runtime_artifacts/chat_artifact_snapshots/<session>/<run>/<snapshot>`，`snapshot_json` 记录 `content_hash`、`snapshot_storage_path`、retention 标记与原有 preview metadata。
+- 新增 `read_chat_artifact_snapshot_content()`：默认读取交付快照；workspace 当前文件被覆盖时返回 `workspace_changed=true`，但内容仍为交付时版本；legacy 无快照时显式标记 `legacy_current_file_fallback=true`。
+- 新增 artifact-id 读取/下载 API：`/agents/{agent_id}/files/artifacts/{artifact_id}/content` 与 `/download`，后续前端 artifact card 不再需要通过 `agent+path` 读取当前 workspace 文件。
+- 更新 `web_chat_runtime`、A2A orchestrator、local bridge 的 artifact 创建调用点为 async。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_chat_artifact_delivery.py::test_artifact_policy_accepts_workspace_user_artifact \
+  tests/services/test_chat_artifact_delivery.py::test_artifact_open_returns_delivery_snapshot_after_workspace_overwrite \
+  tests/services/test_chat_artifact_delivery.py::test_chat_artifact_delivery_idempotent_for_same_run_path_snapshot \
+  -q
+# 3 passed
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_chat_artifact_delivery.py \
+  tests/services/test_web_chat_runtime.py::test_finalize_web_chat_run_binds_recent_workspace_artifacts \
+  tests/services/test_web_chat_runtime.py::test_persist_tool_call_attaches_written_artifact_parts \
+  -q
+# 31 passed, 3 warnings
+```

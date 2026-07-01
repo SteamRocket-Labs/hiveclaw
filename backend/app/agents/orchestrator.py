@@ -1264,7 +1264,7 @@ async def _delegate_after_cycle_check(
             )
             artifact_parts: list[dict[str, Any]] = []
             if artifact_paths and append_result.message_id:
-                artifact_parts = create_chat_artifacts_for_message(
+                artifact_parts = await create_chat_artifacts_for_message(
                     db=db,
                     agent_id=request.target.id,
                     tenant_id=transcript_tenant_id,

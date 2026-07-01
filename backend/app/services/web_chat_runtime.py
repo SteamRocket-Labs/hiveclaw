@@ -1691,7 +1691,7 @@ async def _finalize_web_chat_run_with_assistant(
                 kernel_persisted_message.thinking_signature = thinking_signature
             artifact_parts = []
             if artifact_paths and getattr(kernel_persisted_message, "id", None):
-                artifact_parts = create_chat_artifacts_for_message(
+                artifact_parts = await create_chat_artifacts_for_message(
                     db=db,
                     agent_id=agent_id,
                     tenant_id=tenant_id,
@@ -1766,7 +1766,7 @@ async def _finalize_web_chat_run_with_assistant(
             return True
 
         assistant_message_id = uuid.uuid4()
-        artifact_parts = create_chat_artifacts_for_message(
+        artifact_parts = await create_chat_artifacts_for_message(
             db=db,
             agent_id=agent_id,
             tenant_id=tenant_id,
@@ -2017,7 +2017,7 @@ async def _persist_tool_call(
             tool_args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
             artifact_paths = tool_session_write_paths(str(data.get("name") or ""), tool_args)
             if artifact_paths:
-                artifact_parts = create_chat_artifacts_for_message(
+                artifact_parts = await create_chat_artifacts_for_message(
                     db=db,
                     agent_id=agent_id,
                     tenant_id=tenant_id,

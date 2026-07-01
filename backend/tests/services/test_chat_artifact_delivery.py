@@ -31,11 +31,123 @@ def test_artifact_policy_accepts_workspace_user_artifact(tmp_path):
     assert artifact["preview_kind"] == "markdown"
     assert artifact["size"] == report.stat().st_size
     assert artifact["snapshot"]["preview_content"] == "# Report\n"
+    assert artifact["snapshot"]["content_hash"]
+    snapshot_path = workspace / artifact["snapshot"]["snapshot_storage_path"]
+    assert snapshot_path.read_text(encoding="utf-8") == "# Report\n"
     assert artifact["preview_snapshot_content"] == "# Report\n"
     assert artifact["owner_agent_id"] == str(agent_id)
     assert artifact["source_agent_id"] == str(agent_id)
     assert artifact["download_agent_id"] == str(agent_id)
     assert artifact["snapshot"]["owner_agent_id"] == str(agent_id)
+
+
+def test_artifact_open_returns_delivery_snapshot_after_workspace_overwrite(tmp_path):
+    from app.models.chat_artifact import ChatArtifact
+    from app.services.chat_artifact_delivery import build_artifact_candidate, read_chat_artifact_snapshot_content
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    runtime_task_id = uuid4()
+    workspace = tmp_path / "agent"
+    report = workspace / "workspace" / "report.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("delivery version\n", encoding="utf-8")
+
+    candidate = build_artifact_candidate(
+        agent_id=agent_id,
+        session_id=session_id,
+        runtime_task_id=runtime_task_id,
+        path="workspace/report.md",
+        workspace_root=workspace,
+        source="workspace_write",
+    )
+    assert candidate is not None
+
+    artifact = ChatArtifact(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=None,
+        session_id=session_id,
+        message_id=uuid4(),
+        runtime_task_id=runtime_task_id,
+        path=candidate["path"],
+        name=candidate["name"],
+        mime_type=candidate.get("mime_type"),
+        size=candidate.get("size"),
+        modified_at=candidate.get("modified_at"),
+        preview_kind=candidate.get("preview_kind", "download"),
+        source=candidate.get("source", "workspace_write"),
+        snapshot_hash=candidate["snapshot_hash"],
+        snapshot_json=candidate["snapshot"],
+    )
+
+    report.write_text("current workspace version\n", encoding="utf-8")
+
+    content = read_chat_artifact_snapshot_content(artifact, workspace)
+
+    assert content["content"] == "delivery version\n"
+    assert content["uses_snapshot"] is True
+    assert content["legacy_current_file_fallback"] is False
+    assert content["workspace_changed"] is True
+
+
+@pytest.mark.asyncio
+async def test_chat_artifact_delivery_idempotent_for_same_run_path_snapshot(tmp_path):
+    from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    runtime_task_id = uuid4()
+    workspace = tmp_path / "agent"
+    report = workspace / "workspace" / "report.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("# Report\n", encoding="utf-8")
+
+    class _Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class _Db:
+        def __init__(self):
+            self.added = []
+            self.existing = None
+
+        async def execute(self, _stmt):
+            return _Result(self.existing)
+
+        def add(self, value):
+            self.added.append(value)
+            self.existing = value
+
+    db = _Db()
+
+    first = await create_chat_artifacts_for_message(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=None,
+        session_id=session_id,
+        message_id=uuid4(),
+        runtime_task_id=runtime_task_id,
+        paths=["workspace/report.md"],
+        workspace_root=workspace,
+    )
+    second = await create_chat_artifacts_for_message(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=None,
+        session_id=session_id,
+        message_id=uuid4(),
+        runtime_task_id=runtime_task_id,
+        paths=["workspace/report.md"],
+        workspace_root=workspace,
+    )
+
+    assert len(db.added) == 1
+    assert first[0]["artifact_id"] == second[0]["artifact_id"]
+    assert first[0]["path"] == second[0]["path"] == "workspace/report.md"
 
 
 def test_artifact_policy_preserves_a2a_producer_as_download_owner(tmp_path):

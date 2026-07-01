@@ -13,7 +13,9 @@ from app.config import get_settings
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
+from app.models.chat_artifact import ChatArtifact
 from app.models.user import User
+from app.services.chat_artifact_delivery import read_chat_artifact_snapshot_content
 from app.services.file_download_tokens import (
     InvalidChannelFileDownloadToken,
     NotChannelFileDownloadToken,
@@ -37,6 +39,11 @@ class FileInfo(BaseModel):
 class FileContent(BaseModel):
     path: str
     content: str
+    uses_snapshot: bool | None = None
+    legacy_current_file_fallback: bool | None = None
+    workspace_changed: bool | None = None
+    snapshot_hash: str | None = None
+    content_hash: str | None = None
 
 
 class FileWrite(BaseModel):
@@ -57,6 +64,14 @@ def _is_within_path(path: Path, root: Path) -> bool:
 
 def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     """Ensure the path is within the agent's directory (no path traversal)."""
+    base = _agent_base_dir(agent_id)
+    full = (base / rel_path).resolve()
+    if not _is_within_path(full, base):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Path traversal not allowed")
+    return full
+
+
+def _safe_agent_relative_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     base = _agent_base_dir(agent_id)
     full = (base / rel_path).resolve()
     if not _is_within_path(full, base):
@@ -279,6 +294,35 @@ async def read_file(
     return FileContent(path=path, content=content)
 
 
+async def _load_chat_artifact_or_404(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    artifact_id: uuid.UUID,
+) -> ChatArtifact:
+    result = await db.execute(
+        select(ChatArtifact).where(ChatArtifact.id == artifact_id, ChatArtifact.agent_id == agent_id).limit(1)
+    )
+    artifact = result.scalar_one_or_none()
+    if artifact is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+    return artifact
+
+
+@router.get("/artifacts/{artifact_id}/content", response_model=FileContent)
+async def read_artifact_content(
+    agent_id: uuid.UUID,
+    artifact_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the delivery-time snapshot for a chat artifact."""
+    await check_agent_access(db, current_user, agent_id)
+    artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)
+    content = read_chat_artifact_snapshot_content(artifact, _agent_base_dir(agent_id))
+    return FileContent(**content)
+
+
 @router.get("/download")
 async def download_file(
     agent_id: uuid.UUID,
@@ -335,6 +379,46 @@ async def download_file(
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(path=str(target), filename=target.name)
+
+
+@router.get("/artifacts/{artifact_id}/download")
+async def download_artifact(
+    agent_id: uuid.UUID,
+    artifact_id: uuid.UUID,
+    token: str = "",
+    credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download the delivery-time artifact snapshot, falling back only for legacy rows."""
+    from app.core.security import decode_access_token
+
+    jwt_token = credentials.credentials if credentials else token
+    if not jwt_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    payload = decode_access_token(jwt_token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+
+    await check_agent_access(db, user, agent_id)
+    artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)
+    snapshot = artifact.snapshot_json or {}
+    storage_rel = str(snapshot.get("snapshot_storage_path") or "").strip()
+    target: Path | None = None
+    if storage_rel:
+        candidate = _safe_agent_relative_path(agent_id, storage_rel)
+        if candidate.exists() and candidate.is_file():
+            target = candidate
+    if target is None:
+        target = _safe_path(agent_id, artifact.path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact file not found")
+    return FileResponse(path=str(target), filename=artifact.name or target.name)
 
 
 @router.put("/content")

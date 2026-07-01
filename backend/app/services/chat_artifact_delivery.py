@@ -24,6 +24,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 PDF_EXTENSIONS = {".pdf"}
 OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"}
 TEXT_PREVIEW_SNAPSHOT_MAX_BYTES = 64 * 1024
+CHAT_ARTIFACT_SNAPSHOT_DIR = Path("runtime_artifacts") / "chat_artifact_snapshots"
 
 
 def tool_session_write_paths(tool_name: str, args: dict[str, Any]) -> list[str]:
@@ -84,6 +85,49 @@ def _snapshot_hash(*, rel_path: PurePosixPath, stat_data: Any | None) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _content_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_storage_rel_path(
+    *,
+    session_id: str | uuid.UUID,
+    runtime_task_id: str | uuid.UUID | None,
+    snapshot_hash: str,
+    rel_path: PurePosixPath,
+) -> Path:
+    suffix = rel_path.suffix.lower()
+    filename = f"{snapshot_hash}{suffix}" if suffix else snapshot_hash
+    run_key = str(runtime_task_id) if runtime_task_id else "no-runtime-task"
+    return CHAT_ARTIFACT_SNAPSHOT_DIR / str(session_id) / run_key / filename
+
+
+def _write_content_snapshot(
+    *,
+    source_path: Path,
+    workspace_root: Path,
+    session_id: str | uuid.UUID,
+    runtime_task_id: str | uuid.UUID | None,
+    snapshot_hash: str,
+    rel_path: PurePosixPath,
+) -> str:
+    storage_rel = _snapshot_storage_rel_path(
+        session_id=session_id,
+        runtime_task_id=runtime_task_id,
+        snapshot_hash=snapshot_hash,
+        rel_path=rel_path,
+    )
+    target = workspace_root / storage_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        target.write_bytes(source_path.read_bytes())
+    return storage_rel.as_posix()
+
+
 def _read_preview_snapshot(path: Path, preview_kind: str) -> tuple[str | None, bool]:
     if preview_kind not in {"markdown", "text"}:
         return None, False
@@ -94,6 +138,80 @@ def _read_preview_snapshot(path: Path, preview_kind: str) -> tuple[str | None, b
     truncated = len(data) > TEXT_PREVIEW_SNAPSHOT_MAX_BYTES
     content = data[:TEXT_PREVIEW_SNAPSHOT_MAX_BYTES].decode("utf-8", errors="replace")
     return content, truncated
+
+
+def _read_text_or_binary_marker(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError, ValueError):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        return f"[binary artifact snapshot: {path.name}, {size} bytes]"
+
+
+def _workspace_changed(artifact: ChatArtifact, workspace_root: Path) -> bool | None:
+    rel = _safe_workspace_relative_path(getattr(artifact, "path", ""))
+    if rel is None:
+        return None
+    current = workspace_root / rel.as_posix()
+    if not current.exists() or not current.is_file():
+        return True
+    try:
+        current_hash = _snapshot_hash(rel_path=rel, stat_data=current.stat())
+    except OSError:
+        return True
+    return current_hash != getattr(artifact, "snapshot_hash", None)
+
+
+def read_chat_artifact_snapshot_content(artifact: ChatArtifact, workspace_root: Path) -> dict[str, Any]:
+    """Read the delivery-time artifact snapshot, falling back explicitly for legacy rows."""
+    snapshot = artifact.snapshot_json or {}
+    storage_rel = str(snapshot.get("snapshot_storage_path") or "").strip()
+    workspace_root = workspace_root.resolve()
+    if storage_rel:
+        snapshot_path = (workspace_root / storage_rel).resolve()
+        try:
+            snapshot_path.relative_to(workspace_root)
+        except ValueError:
+            snapshot_path = workspace_root / "__invalid_snapshot_path__"
+        if snapshot_path.exists() and snapshot_path.is_file():
+            return {
+                "path": artifact.path,
+                "content": _read_text_or_binary_marker(snapshot_path),
+                "uses_snapshot": True,
+                "legacy_current_file_fallback": False,
+                "workspace_changed": _workspace_changed(artifact, workspace_root),
+                "snapshot_hash": artifact.snapshot_hash,
+                "content_hash": snapshot.get("content_hash"),
+            }
+
+    current = (workspace_root / str(artifact.path or "")).resolve()
+    try:
+        current.relative_to(workspace_root)
+    except ValueError:
+        current = workspace_root / "__invalid_current_path__"
+    if current.exists() and current.is_file():
+        return {
+            "path": artifact.path,
+            "content": _read_text_or_binary_marker(current),
+            "uses_snapshot": False,
+            "legacy_current_file_fallback": True,
+            "workspace_changed": None,
+            "snapshot_hash": artifact.snapshot_hash,
+            "content_hash": snapshot.get("content_hash"),
+        }
+    return {
+        "path": artifact.path,
+        "content": "",
+        "uses_snapshot": False,
+        "legacy_current_file_fallback": True,
+        "workspace_changed": None,
+        "snapshot_hash": artifact.snapshot_hash,
+        "content_hash": snapshot.get("content_hash"),
+        "missing": True,
+    }
 
 
 def build_artifact_candidate(
@@ -136,6 +254,15 @@ def build_artifact_candidate(
     snapshot_hash = _snapshot_hash(rel_path=rel, stat_data=stat_data)
     preview_kind = _preview_kind_for_path(rel)
     preview_snapshot_content, preview_snapshot_truncated = _read_preview_snapshot(absolute, preview_kind)
+    content_hash = _content_hash(absolute)
+    snapshot_storage_path = _write_content_snapshot(
+        source_path=absolute,
+        workspace_root=root,
+        session_id=session_id,
+        runtime_task_id=runtime_task_id,
+        snapshot_hash=snapshot_hash,
+        rel_path=rel,
+    )
     owner_agent = str(owner_agent_id or agent_id)
     source_agent = str(source_agent_id or owner_agent)
     download_agent = str(download_agent_id or owner_agent)
@@ -146,6 +273,9 @@ def build_artifact_candidate(
         "mtime_ns": stat_data.st_mtime_ns,
         "path": rel.as_posix(),
         "revision_id": snapshot_hash,
+        "content_hash": content_hash,
+        "snapshot_storage_path": snapshot_storage_path,
+        "snapshot_retention": "chat_artifact_delivery_snapshot",
         "action": action,
         "tool_call_id": str(tool_call_id) if tool_call_id else None,
         "diff_summary": diff_summary,
@@ -172,6 +302,7 @@ def build_artifact_candidate(
         "preview_kind": preview_kind,
         "source": source,
         "snapshot_hash": snapshot_hash,
+        "content_hash": content_hash,
         "snapshot": snapshot,
         "preview_snapshot_content": preview_snapshot_content,
         "preview_snapshot_truncated": preview_snapshot_truncated if preview_snapshot_content is not None else None,
@@ -280,6 +411,8 @@ def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:
         "delivery_agent_id": snapshot.get("delivery_agent_id"),
         "created_at": artifact.created_at.isoformat() if getattr(artifact, "created_at", None) else None,
         "revision_id": snapshot.get("revision_id") or artifact.snapshot_hash,
+        "content_hash": snapshot.get("content_hash"),
+        "snapshot_storage_path": snapshot.get("snapshot_storage_path"),
         "action": snapshot.get("action"),
         "tool_call_id": snapshot.get("tool_call_id"),
         "diff_summary": snapshot.get("diff_summary"),
@@ -288,7 +421,7 @@ def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:
     }
 
 
-def create_chat_artifacts_for_message(
+async def create_chat_artifacts_for_message(
     *,
     db: AsyncSession,
     agent_id: uuid.UUID,
@@ -334,26 +467,40 @@ def create_chat_artifacts_for_message(
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
-        artifact_id = uuid.UUID(str(candidate["artifact_id"]))
-        db.add(
-            ChatArtifact(
-                id=artifact_id,
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-                session_id=session_uuid,
-                message_id=message_id,
-                runtime_task_id=runtime_uuid,
-                path=candidate["path"],
-                name=candidate["name"],
-                mime_type=candidate.get("mime_type"),
-                size=candidate.get("size"),
-                modified_at=candidate.get("modified_at"),
-                preview_kind=candidate.get("preview_kind", "download"),
-                source=candidate.get("source", source),
-                snapshot_hash=candidate["snapshot_hash"],
-                snapshot_json=candidate.get("snapshot"),
+        existing_result = await db.execute(
+            select(ChatArtifact)
+            .where(
+                ChatArtifact.agent_id == agent_id,
+                ChatArtifact.session_id == session_uuid,
+                ChatArtifact.runtime_task_id == runtime_uuid,
+                ChatArtifact.path == candidate["path"],
+                ChatArtifact.snapshot_hash == candidate["snapshot_hash"],
             )
+            .limit(1)
         )
+        existing = existing_result.scalar_one_or_none()
+        if existing is not None:
+            parts.append(artifact_part_from_model(existing))
+            continue
+        artifact_id = uuid.UUID(str(candidate["artifact_id"]))
+        artifact = ChatArtifact(
+            id=artifact_id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_uuid,
+            message_id=message_id,
+            runtime_task_id=runtime_uuid,
+            path=candidate["path"],
+            name=candidate["name"],
+            mime_type=candidate.get("mime_type"),
+            size=candidate.get("size"),
+            modified_at=candidate.get("modified_at"),
+            preview_kind=candidate.get("preview_kind", "download"),
+            source=candidate.get("source", source),
+            snapshot_hash=candidate["snapshot_hash"],
+            snapshot_json=candidate.get("snapshot"),
+        )
+        db.add(artifact)
         parts.append(_artifact_part_from_candidate(candidate))
     return parts
 

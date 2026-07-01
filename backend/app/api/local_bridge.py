@@ -167,7 +167,7 @@ async def save_bridge_upload(
     )
     db.add(message)
     await db.flush()
-    artifacts = create_chat_artifacts_for_message(
+    artifacts = await create_chat_artifacts_for_message(
         db=db,
         agent_id=context.agent_id,
         tenant_id=context.tenant_id,

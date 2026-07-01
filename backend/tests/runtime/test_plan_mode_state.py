@@ -170,3 +170,24 @@ def test_to_metadata_carries_action_artifact_when_present():
     assert "action_artifact" not in PlanModeState(active=True).to_metadata()
     assert PlanModeState.from_metadata(data).action_artifact == artifact
     assert PlanModeState.from_metadata({"active": True}).action_artifact is None
+
+
+def test_to_metadata_carries_execution_contract_when_present():
+    """Execution contracts must survive the typed state mirror.
+
+    Plan Mode entry may pre-arm a contract from a prior model-authored plan
+    decision; exit_plan_mode reads the interactive ContextVar mirror, so dropping
+    this field silently degrades an Agent Team plan back to current-session work.
+    """
+    contract = {
+        "type": "agent_team",
+        "name": "ABS Review Team",
+        "members": [{"name": "critic", "role": "Review the report"}],
+    }
+    state = PlanModeState(active=True, execution_contract=contract)
+    data = state.to_metadata()
+    assert data["execution_contract"] == contract
+    assert "execution_contract" not in PlanModeState(active=True).to_metadata()
+    restored = PlanModeState.from_metadata(data)
+    assert restored.execution_contract == contract
+    assert PlanModeState.from_metadata({"active": True}).execution_contract is None

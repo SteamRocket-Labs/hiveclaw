@@ -109,6 +109,9 @@ def _execution_contract(args: dict[str, Any], metadata: dict[str, Any]) -> dict[
     explicit = args.get("execution_contract")
     if isinstance(explicit, dict) and explicit:
         return dict(explicit)
+    inherited = metadata.get("execution_contract")
+    if isinstance(inherited, dict) and inherited:
+        return dict(inherited)
     return {}
 
 
@@ -273,6 +276,23 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
             ensure_ascii=False,
         )
 
+    open_questions = _string_list(args.get("open_questions"))
+    if open_questions:
+        return json.dumps(
+            {
+                "status": "error",
+                "error_code": "blocking_open_questions",
+                "message": (
+                    "open_questions are blocking decisions, not confirmable plan content. "
+                    "Use ask_user_question with concrete answer options, wait for the user's reply, "
+                    "then call exit_plan_mode after the questions are answered."
+                ),
+                "open_questions": open_questions,
+                "next_action": "Call ask_user_question now; do not create a PlanCard yet.",
+            },
+            ensure_ascii=False,
+        )
+
     handoff = _handoff(args, metadata)
     execution_contract = _execution_contract(args, metadata)
     intent_type = str(metadata.get("intent_type") or args.get("intent_type") or "in_session_execution")
@@ -303,7 +323,7 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
         "stop_conditions": _string_list(args.get("stop_conditions")),
         "handoff": handoff,
         "assumptions": _string_list(args.get("assumptions")),
-        "open_questions": _string_list(args.get("open_questions")),
+        "open_questions": [],
     }
     if execution_contract:
         fill["execution_contract"] = execution_contract

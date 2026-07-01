@@ -76,6 +76,18 @@ def build_subagent_listing_section(
         description = builtin_type_description(name)
         lines.append(f"- `{name}`: {description}")
     lines.extend(
+        [
+            "",
+            "## Agent Team vs Session Workers",
+            "",
+            "If the user explicitly asks for Agent Team, team, swarm, named teammates, or a multi-role team: Do not silently downgrade to plain one-shot Session Workers.",
+            "Agent Team creation follows deferred-tool discovery: if `team_create` is not currently callable, call `tool_search` with `select:team_create` first, then call `team_create` to create the Team container.",
+            "After the Team container exists, spawn each teammate with `spawn_subagent` using both `team_name` and `name`; that creates enterable Team member sessions.",
+            "Use ordinary `spawn_subagent` without `team_name` only for lightweight one-shot work that does not need persistent named teammate sessions.",
+            "Use Dynamic Workflow instead of Agent Team when the requirement is fixed step order, gate/wait/resume, budgeted fan-out, or deterministic orchestration rather than named teammates.",
+        ]
+    )
+    lines.extend(
         _render_custom_definition_rows(
             agent_id=agent_id,
             tenant_id=tenant_id,

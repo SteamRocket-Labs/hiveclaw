@@ -38,6 +38,9 @@ class PlanModeState:
     # Optional action artifact for explicit Plan Mode handoffs. Tool-result
     # interception no longer populates this field.
     action_artifact: dict[str, Any] | None = None
+    # Optional model-authored execution contract for the confirmed handoff. This
+    # is machine-readable runtime state, not visible plan prose.
+    execution_contract: dict[str, Any] | None = None
     original_request: str | None = None
     handoff_target: str | None = None
     reason: str | None = None
@@ -70,6 +73,8 @@ class PlanModeState:
         # bound action stay byte-compatible with the legacy shape.
         if self.action_artifact:
             data["action_artifact"] = dict(self.action_artifact)
+        if self.execution_contract:
+            data["execution_contract"] = dict(self.execution_contract)
         # Phase 4B: the read-only gate reads the plan file off the ContextVar
         # mirror, so a provisioned plan_file_path must round-trip.
         if self.plan_file_path:
@@ -92,6 +97,9 @@ class PlanModeState:
             action_kind=data.get("action_kind"),
             tool_name=data.get("tool_name"),
             action_artifact=dict(data["action_artifact"]) if isinstance(data.get("action_artifact"), dict) else None,
+            execution_contract=dict(data["execution_contract"])
+            if isinstance(data.get("execution_contract"), dict)
+            else None,
             original_request=data.get("original_request"),
             handoff_target=data.get("handoff_target"),
             reason=data.get("reason"),

@@ -283,6 +283,102 @@ async def test_exit_plan_mode_routes_agent_team_contract_to_agent_team_handoff(m
     assert result["plan_json"]["execution_contract"] == contract
 
 
+@pytest.mark.asyncio
+async def test_exit_plan_mode_preserves_metadata_execution_contract(monkeypatch):
+    """A pre-armed model-authored contract in Plan Mode metadata must not be lost.
+
+    The visible tool args may omit execution_contract when the runtime already
+    carries the typed PlanModeState mirror; exit_plan_mode must still land that
+    contract into plan_json and route the handoff to Agent Team.
+    """
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    contract = {
+        "type": "agent_team",
+        "name": "Metadata Team",
+        "members": [{"name": "researcher", "role": "Collect source evidence"}],
+    }
+    token = set_interactive_plan_mode(
+        {
+            "active": True,
+            "original_request": "Use Agent Team for the report",
+            "intent_type": "in_session_execution",
+            "execution_contract": contract,
+        }
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "Metadata team plan",
+                        "objective": "Run the report with an Agent Team.",
+                        "plan_markdown": "## Plan\nUse the approved team contract and produce the report.",
+                        "steps": ["Create team", "Run member research", "Synthesize"],
+                        "success_criteria": ["Team member session is visible"],
+                        "stop_conditions": ["User rejects"],
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    assert result["plan_json"]["handoff"]["target"] == "agent_team"
+    assert result["plan_json"]["execution_contract"] == contract
+    assert service.calls[0]["fill"]["execution_contract"] == contract
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_rejects_blocking_open_questions(monkeypatch):
+    """Open questions are not confirmable choices.
+
+    The agent must use ask_user_question for blocking decisions instead of
+    creating a PlanCard whose only user actions are confirm / modify / reject.
+    """
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    token = set_interactive_plan_mode(
+        {"active": True, "original_request": "Use Agent Team for ABS report", "intent_type": "in_session_execution"}
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "ABS report plan",
+                        "objective": "Produce the report.",
+                        "plan_markdown": "## Plan\nNeed user choices before this is executable.",
+                        "steps": ["Ask scope", "Run report"],
+                        "success_criteria": ["Report completed"],
+                        "stop_conditions": ["User rejects"],
+                        "open_questions": [
+                            "Which market should be prioritized?",
+                            "Should this be Agent Team or single-agent?",
+                        ],
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "error"
+    assert result["error_code"] == "blocking_open_questions"
+    assert "ask_user_question" in result["message"]
+    assert service.calls == []
+    assert service.generate_calls == []
+
+
 # ── cut ③a: dual-state submission (plan_id armed → fill existing draft) ──
 
 

@@ -605,3 +605,53 @@ cd backend && source .venv/bin/activate && pytest \
   -q
 # 23 passed, 4 warnings
 ```
+
+### Part 4 — Plan Mode / Agent Team 合约、open questions 与提示词触发规则（2026-07-02）
+
+红测：
+
+- `test_to_metadata_carries_execution_contract_when_present`：typed `PlanModeState` 不支持 `execution_contract`，预设模型合约无法进入 ContextVar mirror。
+- `test_exit_plan_mode_preserves_metadata_execution_contract`：`exit_plan_mode` 只读 tool args，metadata 内 Agent Team contract 会丢失，handoff 虽可推断 target 但 `plan_json.execution_contract` 缺失。
+- `test_exit_plan_mode_rejects_blocking_open_questions`：带 `open_questions` 的计划仍创建 `awaiting_confirmation` PlanCard，用户只能确认/修改/拒绝，无法逐项回答开放问题。
+- `test_subagent_listing_section_teaches_agent_team_deferred_create_path`：runtime prompt 只列 Session Worker 类型，没有 Agent Team vs Sub-agent 的 CC-style 触发规则。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/runtime/test_plan_mode_state.py::test_to_metadata_carries_execution_contract_when_present \
+  tests/tools/test_exit_plan_mode_tool.py::test_exit_plan_mode_preserves_metadata_execution_contract \
+  tests/tools/test_exit_plan_mode_tool.py::test_exit_plan_mode_rejects_blocking_open_questions \
+  tests/runtime/test_subagent_listing_section.py::test_subagent_listing_section_teaches_agent_team_deferred_create_path \
+  -q
+# 4 failed: missing execution_contract field/fallback, open_questions became needs_plan, missing Agent Team prompt guidance
+```
+
+变更：
+
+- `PlanModeState` 增加 `execution_contract` 字段，并在 `to_metadata()` / `from_metadata()` 中 round-trip；该字段只承载模型声明的机器合约，不进入用户可见计划正文。
+- `exit_plan_mode._execution_contract()` 改为 args 优先、metadata fallback；metadata 预设 Agent Team contract 不再丢失，plan_json/handoff 均保持 `agent_team`。
+- `exit_plan_mode` 遇到非空 `open_questions` 直接返回 `blocking_open_questions` 结构化错误，要求先 `ask_user_question`，不创建可确认 PlanCard。
+- `build_subagent_listing_section()` 增加 “Agent Team vs Session Workers” 规则：显式 Agent Team 先 `tool_search(select:team_create)`、再 `team_create`、再 `spawn_subagent(team_name + name)`；普通一次性工作才用无 `team_name` 的 Sub-agent；固定顺序/gate/fanout 才用 Dynamic Workflow。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/runtime/test_plan_mode_state.py::test_to_metadata_carries_execution_contract_when_present \
+  tests/tools/test_exit_plan_mode_tool.py::test_exit_plan_mode_preserves_metadata_execution_contract \
+  tests/tools/test_exit_plan_mode_tool.py::test_exit_plan_mode_rejects_blocking_open_questions \
+  tests/runtime/test_subagent_listing_section.py::test_subagent_listing_section_teaches_agent_team_deferred_create_path \
+  -q
+# 4 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/runtime/test_plan_mode_state.py \
+  tests/tools/test_exit_plan_mode_tool.py \
+  tests/runtime/test_subagent_listing_section.py \
+  tests/services/test_plan_mode_agent_team_handoff.py \
+  tests/services/test_plan_mode_session_handoff.py \
+  tests/services/test_plan_mode_service.py::test_ensure_awaiting_plan_from_fill_allows_hidden_execution_contract \
+  -q
+# 46 passed, 4 warnings
+```

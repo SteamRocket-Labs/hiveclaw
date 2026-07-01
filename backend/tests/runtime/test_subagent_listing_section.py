@@ -22,6 +22,23 @@ def test_subagent_listing_section_renders_builtin_types_and_when_to_use() -> Non
     assert "not A2A employees" in section
 
 
+def test_subagent_listing_section_teaches_agent_team_deferred_create_path() -> None:
+    from app.runtime.prompt_sections.subagent_listing import build_subagent_listing_section
+
+    section = build_subagent_listing_section()
+
+    assert "## Agent Team vs Session Workers" in section
+    assert "explicitly asks for Agent Team" in section
+    assert "tool_search" in section
+    assert "select:team_create" in section
+    assert "team_create" in section
+    assert "spawn_subagent" in section
+    assert "team_name" in section
+    assert "name" in section
+    assert "Do not silently downgrade" in section
+    assert "Dynamic Workflow" in section
+
+
 def test_subagent_listing_section_includes_custom_definitions_in_same_spawn_path(tmp_path: Path) -> None:
     from app.agents.subagent import SubagentSpec
     from app.agents.subagent_definition import definition_store_for_agent, definition_store_for_tenant

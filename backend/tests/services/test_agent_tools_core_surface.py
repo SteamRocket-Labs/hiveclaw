@@ -295,6 +295,83 @@ def test_office_runtime_is_core_and_browser_office_is_not_cloud_descriptor():
 
 
 @pytest.mark.asyncio
+async def test_explicit_agent_team_discovers_team_create_without_command_pack(monkeypatch):
+    """Agent Team creation follows CC-style deferred discovery.
+
+    `team_create` must be name-visible/selectable even when the historical
+    command_pack is inactive; otherwise an explicit Agent Team request silently
+    degrades to plain `spawn_subagent`.
+    """
+    from uuid import uuid4
+
+    import app.services.agent_tools as agent_tools
+
+    class _TenantSession:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def fake_resolve_tenant(_agent_id):
+        return uuid4()
+
+    async def fake_get_agent_pack_policies(_db, _tenant_id, _agent_id):
+        return {}
+
+    async def fake_mcp(_agent_id, _query):
+        return []
+
+    monkeypatch.setattr(agent_tools, "resolve_tenant_for_agent", fake_resolve_tenant)
+    monkeypatch.setattr(agent_tools, "tenant_scoped_session", lambda _tenant_id: _TenantSession())
+    monkeypatch.setattr(agent_tools, "get_agent_pack_policies", fake_get_agent_pack_policies)
+    monkeypatch.setattr(agent_tools, "list_agent_mcp_deferred_tools", fake_mcp)
+
+    assert "team_create" in await agent_tools.available_deferred_tool_names_for_agent(uuid4())
+    assert await agent_tools.discoverable_tool_names_for_query(uuid4(), "select:team_create") == ["team_create"]
+
+
+def test_command_pack_no_longer_owns_agent_team_runtime_discovery():
+    """The historical command_pack may remain a slash-command facade, but it
+    must not own the model-visible Agent Team creation path."""
+    from app.services.governance_capability_taxonomy import iter_runtime_l2_capabilities
+    from app.services.pack_policy_service import policy_pack_names_for_tool
+    from app.tools.collector import collect_tools
+
+    command_pack = next(descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack")
+
+    assert "team_create" not in command_pack.tools
+    assert "team_create" not in collect_tools().pack_tool_groups.get("command_pack", [])
+    assert policy_pack_names_for_tool("team_create") == ()
+
+
+def test_command_pack_task_wrappers_do_not_duplicate_work_ledger_runtime_surface():
+    from app.services.agent_tools import CORE_TOOL_NAMES
+    from app.services.governance_capability_taxonomy import iter_runtime_l2_capabilities
+
+    command_pack = next(descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack")
+
+    assert {"track_todo", "record_finding", "read_ledger"} <= CORE_TOOL_NAMES
+    assert not {"track_todo", "record_finding", "read_ledger"} & set(command_pack.tools)
+    assert {"task_create", "task_update", "task_list", "task_get"} <= set(command_pack.tools)
+    assert not {"task_create", "task_update", "task_list", "task_get"} & CORE_TOOL_NAMES
+
+
+def test_all_pack_manifests_root_backend_consistent():
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    backend_packs = repo / "backend" / "packs"
+    root_packs = repo / "packs"
+
+    backend_manifests = {path.parent.name: path.read_text(encoding="utf-8") for path in backend_packs.glob("*/pack.yaml")}
+    root_manifests = {path.parent.name: path.read_text(encoding="utf-8") for path in root_packs.glob("*/pack.yaml")}
+
+    assert root_manifests.keys() == backend_manifests.keys()
+    assert root_manifests == backend_manifests
+
+
+@pytest.mark.asyncio
 async def test_discoverable_l2_tools_fail_closed_when_pack_policy_unavailable(monkeypatch):
     from uuid import uuid4
 

@@ -48,6 +48,8 @@ from app.tools.runtime_tool_groups import normalize_tool_query
 
 logger = logging.getLogger(__name__)
 
+AGENT_TEAM_DEFERRED_TOOL_NAMES: frozenset[str] = frozenset({"team_create"})
+
 _settings = get_settings()
 WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
 
@@ -562,6 +564,15 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
     def _direct_tool_match(tool_name: str) -> bool:
         return bool(normalized) and (tool_name.lower() == normalized or normalize_tool_query(tool_name) == compact)
 
+    if not normalized:
+        requested: list[str] = sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES)
+        seen: set[str] = set(requested)
+    elif any(_direct_tool_match(tool_name) for tool_name in AGENT_TEAM_DEFERRED_TOOL_NAMES):
+        return [next(tool_name for tool_name in sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES) if _direct_tool_match(tool_name))]
+    else:
+        requested = []
+        seen = set()
+
     if normalized:
         for pack in iter_runtime_l2_capabilities():
             if not _pack_enabled(pack.name) and pack_policy_available:
@@ -571,8 +582,6 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
                     return [tool_name]
             if not pack_policy_available:
                 continue
-    requested: list[str] = []
-    seen: set[str] = set()
     for pack in iter_runtime_l2_capabilities_for_query(query):
         if not _pack_enabled(pack.name):
             continue

@@ -306,7 +306,6 @@ async def goal_start(request: ToolExecutionRequest) -> str:
         },
         category="command_team",
         display_name="Team Create",
-        pack="command_pack",
         adapter="request",
     )
 )

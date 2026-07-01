@@ -33,10 +33,6 @@ tools:
     role: owns
     governance:
       security_zone: public
-  - name: team_create
-    role: owns
-    governance:
-      security_zone: restricted
   - name: advanced_plan
     role: owns
     governance:

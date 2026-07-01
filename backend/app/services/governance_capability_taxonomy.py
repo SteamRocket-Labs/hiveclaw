@@ -217,7 +217,6 @@ RUNTIME_L2_CAPABILITY_SPECS: tuple[RuntimeL2CapabilitySpec, ...] = (
             "task_output",
             "task_stop",
             "goal_start",
-            "team_create",
             "advanced_plan",
             "verify_plan",
         ),

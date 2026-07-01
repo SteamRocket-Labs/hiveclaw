@@ -4048,6 +4048,75 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('aria-label="send"');
   });
 
+  it('keeps a backend-confirmed current-user web session writable even when user id hydration differs', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Lead Agent' }}
+        currentUser={{ id: 'client-user-id' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'new-session-2',
+          agent_id: 'agent-1',
+          user_id: 'server-user-id',
+          is_current_user_session: true,
+          title: 'Session',
+          source_channel: 'web',
+          listed_surface: 'chat',
+          created_at: '2026-07-01T02:05:00Z',
+        } as any}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="new-session-2"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).not.toContain('Read-only');
+    expect(markup).toContain('data-testid="session-composer"');
+    expect(markup).toContain('aria-label="send"');
+  });
+
   it('shows Plan Mode as an active switch when the next turn is already in Plan Mode', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection

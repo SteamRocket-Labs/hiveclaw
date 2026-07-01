@@ -94,10 +94,26 @@ class SessionOut(BaseModel):
     permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
     permission_profile: dict[str, Any] = Field(default_factory=dict)
     writable_roots: list[str] = Field(default_factory=list)
+    is_current_user_session: bool = False
+    read_only: bool = False
     # Agent-to-agent session fields
     peer_agent_id: Optional[str] = None
     peer_agent_name: Optional[str] = None
     participant_type: str = "user"  # 'user' | 'agent'
+
+
+def _session_view_flags(session: ChatSession, current_user: User) -> dict[str, bool]:
+    is_current_user_session = str(getattr(session, "user_id", "")) == str(getattr(current_user, "id", ""))
+    source_channel = str(getattr(session, "source_channel", "") or "").lower()
+    participant_type = str(getattr(session, "participant_type", "") or "").lower()
+    session_kind = str(getattr(session, "session_kind", "") or "").lower()
+    is_agent_session = (
+        source_channel == "agent" or participant_type == "agent" or session_kind in {"agent_chat", "delegation_run"}
+    )
+    return {
+        "is_current_user_session": is_current_user_session,
+        "read_only": (not is_current_user_session) or is_agent_session,
+    }
 
 
 def _session_contract_fields(session: ChatSession) -> dict[str, Any]:
@@ -111,7 +127,9 @@ def _session_contract_fields(session: ChatSession) -> dict[str, Any]:
         "parent_session_id": str(session.parent_session_id) if getattr(session, "parent_session_id", None) else None,
         "root_session_id": str(session.root_session_id) if getattr(session, "root_session_id", None) else None,
         "runtime_task_id": str(session.runtime_task_id) if getattr(session, "runtime_task_id", None) else None,
-        **_session_permission_metadata(str(session_metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value), session),
+        **_session_permission_metadata(
+            str(session_metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value), session
+        ),
     }
 
 
@@ -558,7 +576,10 @@ async def _broadcast_session_permission_event(
     source_channel = str(getattr(session, "source_channel", None) or "web").strip().lower() or "web"
     target = getattr(session, "delivery_target_json", None)
     delivery_text = channel_text
-    if str(payload.get("event_type") or payload.get("type") or "") == "tool_result" and payload.get("result") is not None:
+    if (
+        str(payload.get("event_type") or payload.get("type") or "") == "tool_result"
+        and payload.get("result") is not None
+    ):
         delivery_text = _session_permission_tool_result_channel_text(
             str(payload.get("name") or payload.get("tool_name") or "unknown_tool"),
             payload.get("result"),
@@ -821,6 +842,7 @@ async def list_sessions(
                     created_at=session.created_at.isoformat(),
                     last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                     message_count=count,
+                    **_session_view_flags(session, current_user),
                     peer_agent_id=peer_agent_id,
                     peer_agent_name=peer_agent_name,
                     participant_type=participant_type,
@@ -885,8 +907,13 @@ async def list_sessions(
                     )
                 )
             user_msg_count = count_result.scalar() or 0
-            if user_msg_count == 0:
-                continue  # hide empty or orphan sessions
+            is_owned_direct_web_session = (
+                str(session.user_id) == str(current_user.id)
+                and session.source_channel == "web"
+                and (getattr(session, "session_kind", None) in (None, "human_chat"))
+            )
+            if user_msg_count == 0 and not is_owned_direct_web_session:
+                continue  # hide empty channel/A2A/orphan sessions, but keep newly created user web sessions writable.
             # Total message count for display
             if session.source_channel == "agent":
                 total_result = await db.execute(
@@ -922,6 +949,7 @@ async def list_sessions(
                     created_at=session.created_at.isoformat(),
                     last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                     message_count=count,
+                    **_session_view_flags(session, current_user),
                     peer_agent_id=peer_agent_id,
                     peer_agent_name=peer_agent_name,
                     participant_type=participant_type,
@@ -968,6 +996,7 @@ async def create_session(
         created_at=session.created_at.isoformat(),
         last_message_at=None,
         message_count=0,
+        **_session_view_flags(session, current_user),
         **_session_contract_fields(session),
     )
 
@@ -1173,6 +1202,7 @@ async def branch_session(
         created_at=session.created_at.isoformat(),
         last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
         message_count=0,
+        **_session_view_flags(session, current_user),
         **_session_contract_fields(session),
     )
     return BranchSessionOut(session=session_out, branch=branch_result.branch, run=run_payload)
@@ -1212,6 +1242,7 @@ async def list_session_branches(
             created_at=session.created_at.isoformat(),
             last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
             message_count=0,
+            **_session_view_flags(session, current_user),
             **_session_contract_fields(session),
         )
         for session in sessions

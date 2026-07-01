@@ -228,6 +228,8 @@ export type AgentOwnedSession = {
   session_kind?: unknown;
   read_only?: unknown;
   readOnly?: unknown;
+  is_current_user_session?: unknown;
+  isCurrentUserSession?: unknown;
   is_pending_session_lookup?: unknown;
   isPendingSessionLookup?: unknown;
 };
@@ -267,6 +269,7 @@ export function isReadOnlySessionForCurrentUser(
   if (session.read_only === true || session.readOnly === true) return true;
   if (session.is_pending_session_lookup === true || session.isPendingSessionLookup === true) return true;
   if (isA2ASession(session)) return true;
+  if (session.is_current_user_session === true || session.isCurrentUserSession === true) return false;
   const ownerUserId = session.user_id ?? session.userId;
   return ownerUserId != null && currentUserId != null && String(ownerUserId) !== String(currentUserId);
 }

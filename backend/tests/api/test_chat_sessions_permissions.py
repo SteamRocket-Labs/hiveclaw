@@ -144,6 +144,57 @@ async def test_create_session_uses_check_agent_access(monkeypatch):
 
     assert result.title == "Manual Session"
     assert called["args"] == (db, current_user, agent_id)
+    assert result.is_current_user_session is True
+    assert result.read_only is False
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_mine_keeps_empty_owned_web_sessions_writable(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    owner_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=owner_id,
+        source_channel="web",
+        session_kind="human_chat",
+        actor_type="user",
+        runtime_source="web_chat",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        title="Session 07-01 02:46",
+        created_at=SimpleNamespace(isoformat=lambda: "2026-07-01T02:46:00+00:00"),
+        last_message_at=None,
+        peer_agent_id=None,
+        parent_session_id=None,
+        root_session_id=None,
+        runtime_task_id=None,
+        transcript_metadata_json={},
+    )
+    current_user = SimpleNamespace(id=owner_id, role="member")
+    db = _QueryAwareDB(agent=agent, sessions=[session], counts=[0, 0])
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+
+    result = await chat_sessions_api.list_sessions(
+        agent_id=agent_id,
+        scope="mine",
+        current_user=current_user,
+        db=db,
+    )
+
+    assert len(result) == 1
+    assert result[0].id == str(session_id)
+    assert result[0].message_count == 0
+    assert result[0].is_current_user_session is True
+    assert result[0].read_only is False
 
 
 @pytest.mark.asyncio

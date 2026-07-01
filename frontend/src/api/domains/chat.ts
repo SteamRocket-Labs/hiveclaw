@@ -27,6 +27,8 @@ export interface ChatSession {
   visibility_scope?: string | null;
   listed_surface?: string | null;
   permission_mode?: string | null;
+  is_current_user_session?: boolean;
+  read_only?: boolean;
   permission_profile?: {
     mode?: string | null;
     allowed_tools?: string[];

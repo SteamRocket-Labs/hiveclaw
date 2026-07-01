@@ -637,6 +637,12 @@ describe('chatRuntime helpers', () => {
   it('keeps newly created web sessions writable while preserving A2A read-only sessions', () => {
     expect(shouldUseWritableSessionSurface({ id: 'new-session', source_channel: 'web' }, 'user-1')).toBe(true);
     expect(shouldUseWritableSessionSurface({ id: 'new-session', source_channel: 'web', user_id: 'user-1' }, 'user-1')).toBe(true);
+    expect(shouldUseWritableSessionSurface({
+      id: 'new-session',
+      source_channel: 'web',
+      user_id: 'server-user-id',
+      is_current_user_session: true,
+    }, 'client-user-id')).toBe(true);
     expect(shouldUseWritableSessionSurface({ id: 'other-session', source_channel: 'web', user_id: 'user-2' }, 'user-1')).toBe(false);
     expect(shouldUseWritableSessionSurface({ id: 'a2a-session', source_channel: 'agent' }, 'user-1')).toBe(false);
     expect(shouldUseWritableSessionSurface({ id: 'unknown-session', source_channel: 'unknown', is_pending_session_lookup: true }, 'user-1')).toBe(false);

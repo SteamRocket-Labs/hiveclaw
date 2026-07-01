@@ -46,6 +46,7 @@ import {
   computeComposerHeight,
   getCompactionDisplayContent,
   isA2ASession,
+  isDraftHumanChatSession,
   shouldUseWritableSessionSurface,
   type AgentChatMessage,
   type ChatArtifactPart,
@@ -2160,6 +2161,8 @@ export default function AgentChatSection({
   const isReadOnlySession =
     !!activeSession &&
     !shouldUseWritableSessionSurface(activeSession as any, currentUser?.id);
+  const isDraftSession = isDraftHumanChatSession(activeSession as any);
+  const canUseComposer = Boolean(activeSession) && !isReadOnlySession && !agentExpired;
 
   const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
   const [composerMenuOpen, setComposerMenuOpen] = React.useState(false);
@@ -2214,9 +2217,7 @@ export default function AgentChatSection({
   }, [onSendChatMsg]);
 
   const composerPlaceholder =
-    !wsConnected
-      ? 'Connecting...'
-      : attachedFiles.length > 0
+    attachedFiles.length > 0
         ? t('agent.chat.askAboutFile', { name: attachedFiles.length === 1 ? attachedFiles[0].name : `${attachedFiles.length} files` })
         : t('chat.placeholder');
 
@@ -3251,7 +3252,7 @@ export default function AgentChatSection({
               >
                 {transportNotice}
               </div>
-            ) : !wsConnected ? (
+            ) : !wsConnected && !isDraftSession ? (
               <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
                 <span
                   style={{
@@ -3264,14 +3265,14 @@ export default function AgentChatSection({
                     animation: 'pulse 1.2s ease-in-out infinite',
                   }}
                 />
-                Connecting...
+                {t('agent.chat.transport.reconnecting', 'Live updates reconnecting...')}
               </div>
             ) : null}
             <div
               data-testid="session-composer"
               className="session-tui-composer"
             >
-              {effectiveAgentId && activeSession?.id && (
+              {effectiveAgentId && activeSession?.id && !isDraftSession && (
                 <ChatWorkLedgerDock
                   agentId={effectiveAgentId}
                   sessionId={String(activeSession.id)}
@@ -3286,12 +3287,12 @@ export default function AgentChatSection({
                   t={t}
                 />
               )}
-              {effectiveAgentId && activeSession?.id && (
+              {effectiveAgentId && activeSession?.id && !isDraftSession && (
                 <SlashCommandMenu
                   agentId={effectiveAgentId}
                   sessionId={String(activeSession.id)}
                   inputValue={chatInput}
-                  disabled={!wsConnected}
+                  disabled={!canUseComposer}
                   onPickCommand={(_command, template) => {
                     onSetChatInput(template);
                     setTimeout(() => chatInputRef.current?.focus(), 0);
@@ -3391,7 +3392,7 @@ export default function AgentChatSection({
                       label: t('agent.chat.composer.uploadFile', 'Upload file'),
                       description: t('agent.chat.composer.uploadFileDesc', 'Attach files or screenshots to this turn'),
                       icon: uploading ? <IconLoader2 size={16} /> : <IconPaperclip size={16} />,
-                      disabled: !wsConnected || uploading || attachedFiles.length >= 10,
+                      disabled: !canUseComposer || uploading || attachedFiles.length >= 10,
                     },
                     {
                       key: 'plan' as const,
@@ -3401,21 +3402,21 @@ export default function AgentChatSection({
                         : t('agent.chat.composer.planModeDesc', 'Ask the agent to plan before execution'),
                       icon: <IconChecklist size={16} />,
                       checked: planModeRequested,
-                      disabled: !wsConnected || isWaiting || isStreaming,
+                      disabled: !canUseComposer || isWaiting || isStreaming,
                     },
                     {
                       key: 'goal' as const,
                       label: t('agent.chat.composer.goalMode', 'Goal mode'),
                       description: t('agent.chat.composer.goalModeDesc', 'Start a session goal through the command surface'),
                       icon: <IconTargetArrow size={16} />,
-                      disabled: !wsConnected || isWaiting || isStreaming,
+                      disabled: !canUseComposer || isWaiting || isStreaming,
                     },
                     {
                       key: 'schedule' as const,
                       label: t('agent.chat.composer.scheduledTask', 'Scheduled task'),
                       description: t('agent.chat.composer.scheduledTaskDesc', 'Draft a scheduled task request for this agent'),
                       icon: <IconCalendarTime size={16} />,
-                      disabled: !wsConnected || isWaiting || isStreaming,
+                      disabled: !canUseComposer || isWaiting || isStreaming,
                     },
                   ] satisfies Array<{
                     key: ComposerActionKey;
@@ -3489,6 +3490,7 @@ export default function AgentChatSection({
                 </div>
                 <input type="file" multiple ref={fileInputRef} onChange={onHandleChatFile} style={{ display: 'none' }} />
                 <textarea
+                  data-testid="session-composer-input"
                   ref={chatInputRef}
                   className="chat-input"
                   value={chatInput}
@@ -3501,7 +3503,7 @@ export default function AgentChatSection({
                   }}
                   onPaste={onHandlePaste}
                   placeholder={composerPlaceholder}
-                  disabled={!wsConnected}
+                  disabled={!canUseComposer}
                   rows={1}
                   style={{
                     width: '100%',
@@ -3533,7 +3535,7 @@ export default function AgentChatSection({
                     aria-label={t('agent.chat.composer.openMenu', 'Open composer actions')}
                     aria-expanded={composerMenuOpen}
                     title={t('agent.chat.composer.openMenu', 'Open composer actions')}
-                    disabled={!wsConnected}
+                    disabled={!canUseComposer}
                     style={{
                       width: '32px',
                       height: '32px',
@@ -3541,11 +3543,11 @@ export default function AgentChatSection({
                       border: '1px solid transparent',
                       borderRadius: '8px',
                       background: composerMenuOpen ? 'var(--bg-secondary)' : 'transparent',
-                      color: wsConnected ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+                      color: canUseComposer ? 'var(--text-secondary)' : 'var(--text-tertiary)',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      cursor: wsConnected ? 'pointer' : 'not-allowed',
+                      cursor: canUseComposer ? 'pointer' : 'not-allowed',
                       flexShrink: 0,
                     }}
                   >
@@ -3729,9 +3731,10 @@ export default function AgentChatSection({
                     </button>
                   )}
                   <button
+                    data-testid="session-composer-send"
                     className="btn btn-primary"
                     onClick={sendFromComposer}
-                    disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)}
+                    disabled={!canUseComposer || (!chatInput.trim() && attachedFiles.length === 0)}
                     aria-label={t('chat.send')}
                     title={t('chat.send')}
                     style={{

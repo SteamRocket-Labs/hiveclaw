@@ -16,6 +16,7 @@ import {
   applyRuntimeDoneEvent,
   extractArtifactParts,
   isA2ASession,
+  isDraftHumanChatSession,
   isReadOnlySessionForCurrentUser,
   shouldUseWritableSessionSurface,
   shouldPreserveActiveSessionForRequestedId,
@@ -32,6 +33,22 @@ import {
 } from './chatRuntime';
 
 describe('chatRuntime helpers', () => {
+  it('treats draft human sessions as writable local composer state, not read-only A2A state', () => {
+    const draftSession = {
+      id: 'draft:local-session',
+      agent_id: 'agent-1',
+      source_channel: 'web',
+      session_kind: 'human_chat',
+      is_draft: true,
+    };
+
+    expect(isDraftHumanChatSession(draftSession)).toBe(true);
+    expect(isA2ASession(draftSession)).toBe(false);
+    expect(isReadOnlySessionForCurrentUser(draftSession, 'user-1')).toBe(false);
+    expect(shouldUseWritableSessionSurface(draftSession, 'user-1')).toBe(true);
+    expect(shouldPreserveActiveSessionForRequestedId(draftSession, 'draft:local-session')).toBe(false);
+  });
+
   it('replays durable transcript events idempotently across history and websocket', () => {
     const initial = createEmptyTranscriptReplayState();
     const event = {

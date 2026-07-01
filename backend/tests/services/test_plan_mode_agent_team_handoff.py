@@ -18,6 +18,20 @@ class _DB:
         self.flushes += 1
 
 
+class _ScalarNoneResult:
+    def scalar_one_or_none(self):
+        return None
+
+
+class _AgentLoaderProbeDB:
+    def __init__(self) -> None:
+        self.statement = None
+
+    async def execute(self, statement):
+        self.statement = statement
+        return _ScalarNoneResult()
+
+
 def _confirmed_team_plan():
     return SimpleNamespace(
         id=uuid4(),
@@ -106,3 +120,15 @@ async def test_agent_team_handoff_requires_confirmed_plan(monkeypatch):
 
     with pytest.raises(mod.AgentTeamHandoffError):
         await mod.agent_team_handoff(db=_DB(), plan=plan)
+
+
+@pytest.mark.asyncio
+async def test_agent_team_agent_loader_eager_loads_sponsor_for_lifecycle_check():
+    import app.services.plan_mode_agent_team_handoff as mod
+
+    db = _AgentLoaderProbeDB()
+
+    await mod._load_agent(db, uuid4())
+
+    option_paths = [str(getattr(option, "path", "")) for option in getattr(db.statement, "_with_options", ())]
+    assert any("Agent.sponsor" in path for path in option_paths)

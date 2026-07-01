@@ -2,7 +2,7 @@
  * Chat domain adapter — history, sessions, file upload.
  */
 
-import { get, post, patch, del, upload } from '../core';
+import { ApiError, get, post, patch, del, upload } from '../core';
 import type { RequestOptions } from '../core/request';
 import type { ChatMessage } from '../../types';
 
@@ -29,6 +29,8 @@ export interface ChatSession {
   permission_mode?: string | null;
   is_current_user_session?: boolean;
   read_only?: boolean;
+  is_draft?: boolean;
+  draft_client_id?: string;
   permission_profile?: {
     mode?: string | null;
     allowed_tools?: string[];
@@ -113,6 +115,15 @@ export interface StartSessionRunInput {
   permission_mode?: 'auto' | 'default' | 'bypassPermissions';
   attachments?: Array<Record<string, unknown>>;
   parts?: Array<Record<string, unknown>>;
+}
+
+export interface CreateSessionRunInput extends StartSessionRunInput {
+  title?: string;
+}
+
+export interface CreateSessionRunResponse {
+  session: ChatSession;
+  run: SessionRun;
 }
 
 export interface UpdateSessionPermissionProfileInput {
@@ -232,6 +243,8 @@ export const chatApi = {
   },
   getRuntimeSummary: (sessionId: string, options?: RequestOptions) =>
     get<SessionRuntimeSummary>(`/chat/sessions/${sessionId}/runtime-summary`, options),
+  createSessionRun: (agentId: string, input: CreateSessionRunInput) =>
+    post<CreateSessionRunResponse>(`/agents/${agentId}/sessions/runs`, input),
   startSessionRun: (agentId: string, sessionId: string, input: StartSessionRunInput) =>
     post<SessionRun>(`/agents/${agentId}/sessions/${sessionId}/runs`, input),
   branchSession: (agentId: string, sessionId: string, input: BranchSessionInput) =>
@@ -244,8 +257,14 @@ export const chatApi = {
     get<Array<Record<string, unknown>>>(`/agents/${agentId}/sessions/${sessionId}/lineage`),
   getSessionIndex: (agentId: string, sessionId: string) =>
     get<SessionIndex>(`/agents/${agentId}/sessions/${sessionId}/index`),
-  getActiveSessionRun: (agentId: string, sessionId: string) =>
-    get<SessionRun | null>(`/agents/${agentId}/sessions/${sessionId}/runs/active`),
+  getActiveSessionRun: async (agentId: string, sessionId: string) => {
+    try {
+      return await get<SessionRun | null>(`/agents/${agentId}/sessions/${sessionId}/runs/active`);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
   cancelSessionRun: (agentId: string, sessionId: string, runId: string) =>
     post<SessionRun>(`/agents/${agentId}/sessions/${sessionId}/runs/${runId}/cancel`, {}),
   resolveSessionPermission: (

@@ -38,6 +38,26 @@ class _FakeDB:
         return None
 
 
+class _CreateAndRunDB:
+    def __init__(self):
+        self.added = []
+        self.flushes = 0
+        self.commits = 0
+        self.refreshed = []
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def flush(self):
+        self.flushes += 1
+
+    async def commit(self):
+        self.commits += 1
+
+    async def refresh(self, value):
+        self.refreshed.append(value)
+
+
 class _UpdatePermissionModeDB:
     def __init__(self, session, active_run):
         self.session = session
@@ -129,6 +149,7 @@ def test_start_session_run_routes_to_runtime_service(monkeypatch):
 
     async def fake_start(**kwargs):
         captured.update(kwargs)
+        await kwargs["db"].commit()
         return {"run_id": "run-1", "status": "running"}
 
     monkeypatch.setattr(chat_sessions_api, "start_web_chat_run", fake_start)
@@ -146,6 +167,66 @@ def test_start_session_run_routes_to_runtime_service(monkeypatch):
     assert captured["user"] is user
     assert captured["session"] is session
     assert captured["content"] == "hello"
+    assert captured["extra_metadata"] == {
+        "permission_mode": "bypassPermissions",
+        "writable_roots": ["workspace/"],
+        "permission_profile": {"mode": "bypassPermissions", "allowed_tools": [], "writable_roots": ["workspace/"]},
+    }
+
+
+def test_create_session_run_atomically_creates_human_session_and_starts_runtime(monkeypatch):
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id, role="member", tenant_id=tenant_id)
+    db = _CreateAndRunDB()
+    captured = {}
+
+    async def fake_start(**kwargs):
+        captured.update(kwargs)
+        await kwargs["db"].commit()
+        return {"run_id": "run-1", "status": "running"}
+
+    monkeypatch.setattr(chat_sessions_api, "start_web_chat_run", fake_start)
+    client = _client(monkeypatch, db=db, user=user, agent=agent)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/runs",
+        json={
+            "title": "Session 07-01 03:16",
+            "content": "hello",
+            "display_content": "hello",
+            "file_name": "",
+            "permission_mode": "bypassPermissions",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["run"] == {"run_id": "run-1", "status": "running"}
+    assert payload["session"]["id"] == str(captured["session"].id)
+    assert payload["session"]["agent_id"] == str(agent_id)
+    assert payload["session"]["user_id"] == str(user_id)
+    assert payload["session"]["title"] == "Session 07-01 03:16"
+    assert payload["session"]["source_channel"] == "web"
+    assert payload["session"]["session_kind"] == "human_chat"
+    assert payload["session"]["actor_type"] == "user"
+    assert payload["session"]["runtime_source"] == "web_chat"
+    assert payload["session"]["visibility_scope"] == "direct_user"
+    assert payload["session"]["listed_surface"] == "chat"
+    assert payload["session"]["is_current_user_session"] is True
+    assert payload["session"]["read_only"] is False
+    assert db.added == [captured["session"]]
+    assert db.flushes == 1
+    assert db.commits == 1
+    assert db.refreshed == [captured["session"]]
+    assert captured["db"] is db
+    assert captured["agent"] is agent
+    assert captured["user"] is user
+    assert captured["content"] == "hello"
+    assert captured["display_content"] == "hello"
+    assert captured["file_name"] == ""
     assert captured["extra_metadata"] == {
         "permission_mode": "bypassPermissions",
         "writable_roots": ["workspace/"],

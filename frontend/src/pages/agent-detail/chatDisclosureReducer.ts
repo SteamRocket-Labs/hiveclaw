@@ -122,6 +122,28 @@ function summarizeCommandTool(message: AgentChatMessage): string {
   return head ? compactText(`${head}${command.length > head.length ? ' ...' : ''}`, 120) : 'Command execution';
 }
 
+function summarizeToolCompletion(message: AgentChatMessage): string {
+  if (message.toolStatus !== 'done') return '';
+  const result = message.toolResult;
+  if (typeof result !== 'string') return '';
+  const text = result
+    .replace(/^[\s✅✓✔️☑️]+/u, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  const name = (message.toolName || '').toLowerCase();
+  if (COMMAND_TOOLS.has(name)) return '';
+
+  const isFileTool = FILE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix));
+  if (isFileTool) {
+    const isOperationalReceipt =
+      /^(written|wrote|created|updated|edited|patched|deleted|saved|copied|moved|renamed|applied|validated)\b/i.test(text)
+      || /\bworkspace\/[^\s]+ \(\d+ chars\)/i.test(text);
+    return isOperationalReceipt ? compactText(text, 160) : '';
+  }
+  return '';
+}
+
 function summarizeToolMessage(message: AgentChatMessage): string {
   const name = (message.toolName || '').toLowerCase();
   if (message.toolName === 'tool_search') return 'Checking available tools';
@@ -135,6 +157,8 @@ function summarizeToolMessage(message: AgentChatMessage): string {
   if (message.toolMeta?.kind === 'dynamic_workflow_proposal') {
     return message.toolMeta.goal || message.toolMeta.nextAction || '';
   }
+  const completionSummary = summarizeToolCompletion(message);
+  if (completionSummary) return completionSummary;
   if (COMMAND_TOOLS.has(name)) return summarizeCommandTool(message);
   if (FILE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeFileTool(message);
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeSearchTool(message);

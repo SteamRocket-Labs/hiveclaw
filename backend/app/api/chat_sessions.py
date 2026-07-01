@@ -147,6 +147,34 @@ def _session_permission_metadata(permission_mode: str | None, session: ChatSessi
     }
 
 
+def _session_out(
+    session: ChatSession,
+    current_user: User,
+    *,
+    message_count: int = 0,
+    username: str | None = None,
+    peer_agent_id: str | None = None,
+    peer_agent_name: str | None = None,
+    participant_type: str = "user",
+) -> SessionOut:
+    return SessionOut(
+        id=str(session.id),
+        agent_id=str(session.agent_id),
+        user_id=str(session.user_id),
+        username=username,
+        source_channel=session.source_channel,
+        title=session.title,
+        created_at=session.created_at.isoformat(),
+        last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
+        message_count=message_count,
+        **_session_view_flags(session, current_user),
+        peer_agent_id=peer_agent_id,
+        peer_agent_name=peer_agent_name,
+        participant_type=participant_type,
+        **_session_contract_fields(session),
+    )
+
+
 def _json_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -658,6 +686,10 @@ class StartSessionRunIn(BaseModel):
     parts: list[dict[str, Any]] = []
 
 
+class CreateSessionRunIn(StartSessionRunIn):
+    title: Optional[str] = None
+
+
 class BranchSessionIn(BaseModel):
     mode: Literal[
         "fork",
@@ -709,6 +741,11 @@ class BranchSessionOut(BaseModel):
     session: SessionOut
     branch: dict[str, Any]
     run: Optional[dict[str, Any]] = None
+
+
+class CreateSessionRunOut(BaseModel):
+    session: SessionOut
+    run: dict[str, Any]
 
 
 class RecordSessionFeedbackIn(BaseModel):
@@ -988,17 +1025,7 @@ async def create_session(
     db.add(session)
     await db.commit()
     await db.refresh(session)
-    return SessionOut(
-        id=str(session.id),
-        agent_id=str(session.agent_id),
-        user_id=str(session.user_id),
-        title=session.title,
-        created_at=session.created_at.isoformat(),
-        last_message_at=None,
-        message_count=0,
-        **_session_view_flags(session, current_user),
-        **_session_contract_fields(session),
-    )
+    return _session_out(session, current_user, message_count=0)
 
 
 @router.patch("/{agent_id}/sessions/{session_id}")
@@ -1103,6 +1130,54 @@ async def record_feedback_for_session(
     )
     await db.commit()
     return result
+
+
+@router.post("/{agent_id}/sessions/runs", status_code=201, response_model=CreateSessionRunOut)
+async def create_session_run(
+    agent_id: uuid.UUID,
+    body: CreateSessionRunIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new human web session and start its first durable run atomically."""
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+
+    now = datetime.now(tz.utc)
+    session = ChatSession(
+        id=uuid.uuid4(),
+        agent_id=agent_id,
+        tenant_id=getattr(agent, "tenant_id", getattr(current_user, "tenant_id", None)),
+        user_id=current_user.id,
+        title=body.title or f"Session {now.strftime('%m-%d %H:%M')}",
+        created_at=now,
+        source_channel="web",
+        session_kind="human_chat",
+        actor_type="user",
+        runtime_source="web_chat",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+    )
+    db.add(session)
+    await db.flush()
+    try:
+        run = await start_web_chat_run(
+            db=db,
+            agent=agent,
+            user=current_user,
+            session=session,
+            content=body.content,
+            display_content=body.display_content,
+            file_name=body.file_name,
+            plan_mode_requested=body.plan_mode_requested,
+            extra_metadata=_session_permission_metadata(body.permission_mode, session),
+            attachments=body.attachments,
+            parts=body.parts,
+        )
+    except ActiveWebChatRunExists as exc:
+        return JSONResponse(status_code=202, content={"session": _session_out(session, current_user).model_dump(), "run": exc.run})
+
+    await db.refresh(session)
+    return CreateSessionRunOut(session=_session_out(session, current_user, message_count=1), run=run)
 
 
 @router.post("/{agent_id}/sessions/{session_id}/runs", status_code=201)

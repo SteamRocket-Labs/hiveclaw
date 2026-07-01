@@ -67,6 +67,31 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps[0].summary).not.toContain('query:');
   });
 
+  it('surfaces compact tool completion results while keeping raw payloads collapsed', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'write_file',
+        toolArgs: { path: 'workspace/report.md' },
+        toolStatus: 'done',
+        toolResult: '✅ Written to workspace/report.md (1234 chars)',
+        toolRawResult: 'RAW REPORT CONTENT THAT MUST STAY INSIDE DETAILS',
+      },
+    ]);
+
+    expect(timeline.steps[0]).toMatchObject({
+      kind: 'file',
+      title: 'Write file',
+      status: 'done',
+      summary: 'Written to workspace/report.md (1234 chars)',
+    });
+    expect(timeline.steps[0].summary).not.toContain('RAW REPORT CONTENT');
+    expect((timeline.steps[0].details as { rawResult?: unknown }).rawResult).toBe(
+      'RAW REPORT CONTENT THAT MUST STAY INSIDE DETAILS',
+    );
+  });
+
   it('keeps final-answer reasoning as a first-class visible process step', () => {
     const finalAnswer: AgentChatMessage = {
       role: 'assistant',

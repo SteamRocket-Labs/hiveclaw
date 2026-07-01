@@ -232,6 +232,10 @@ export type AgentOwnedSession = {
   isCurrentUserSession?: unknown;
   is_pending_session_lookup?: unknown;
   isPendingSessionLookup?: unknown;
+  is_draft?: unknown;
+  isDraft?: unknown;
+  draft_client_id?: unknown;
+  draftClientId?: unknown;
 };
 
 export interface TranscriptReplayState {
@@ -261,11 +265,19 @@ export function isA2ASession(session: AgentOwnedSession | null | undefined): boo
   );
 }
 
+export function isDraftHumanChatSession(session: AgentOwnedSession | null | undefined): boolean {
+  if (!session) return false;
+  if (session.is_draft === true || session.isDraft === true) return true;
+  const id = session.id == null ? '' : String(session.id);
+  return id.startsWith('draft:') || Boolean(session.draft_client_id || session.draftClientId);
+}
+
 export function isReadOnlySessionForCurrentUser(
   session: AgentOwnedSession | null | undefined,
   currentUserId: string | number | null | undefined,
 ): boolean {
   if (!session) return false;
+  if (isDraftHumanChatSession(session)) return false;
   if (session.read_only === true || session.readOnly === true) return true;
   if (session.is_pending_session_lookup === true || session.isPendingSessionLookup === true) return true;
   if (isA2ASession(session)) return true;
@@ -287,6 +299,7 @@ export function shouldPreserveActiveSessionForRequestedId(
 ): boolean {
   if (!session || requestedSessionId == null) return false;
   if (session.id == null || String(session.id) !== String(requestedSessionId)) return false;
+  if (isDraftHumanChatSession(session)) return false;
   return session.is_pending_session_lookup !== true && session.isPendingSessionLookup !== true;
 }
 

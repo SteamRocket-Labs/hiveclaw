@@ -27,6 +27,7 @@ import logging
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.services.plan_mode_core import build_plan_execution_instruction
 
@@ -57,7 +58,7 @@ def _runtime_run_id(payload: dict[str, Any] | None) -> str | None:
 async def _load_agent(db: Any, agent_id: Any) -> Any | None:
     from app.models.agent import Agent
 
-    return (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+    return (await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))).scalar_one_or_none()
 
 
 async def _load_user(db: Any, user_id: Any) -> Any | None:

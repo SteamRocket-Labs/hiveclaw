@@ -4048,6 +4048,77 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('aria-label="send"');
   });
 
+  it('keeps a writable web session editable while realtime transport is reconnecting', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Lead Agent' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'new-session-transport-pending',
+          agent_id: 'agent-1',
+          user_id: 'user-1',
+          title: 'Session',
+          source_channel: 'web',
+          listed_surface: 'chat',
+          session_kind: 'human_chat',
+          created_at: '2026-07-01T02:05:00Z',
+        }}
+        wsConnected={false}
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="new-session-transport-pending"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput="hello"
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-composer"');
+    expect(markup).not.toContain('Read-only');
+    expect(markup).not.toContain('Connecting...');
+    expect(markup).toMatch(/<textarea[^>]*class="chat-input"(?![^>]*disabled)/);
+    expect(markup).toMatch(/<button[^>]*aria-label="send"(?![^>]*disabled)/);
+  });
+
   it('keeps a backend-confirmed current-user web session writable even when user id hydration differs', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection

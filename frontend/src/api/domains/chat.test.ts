@@ -74,4 +74,32 @@ describe('chat API adapter', () => {
       attachments: [{ name: 'bank.pdf', path: 'workspace/bank.pdf' }],
     });
   });
+
+  it('creates a session and starts its first run through the atomic run endpoint', async () => {
+    vi.doMock('../core', async () => {
+      const actual = await vi.importActual<typeof import('../core')>('../core');
+      return {
+        ...actual,
+        post: vi.fn(),
+      };
+    });
+
+    const { chatApi } = await import('./chat');
+    const { post } = await import('../core');
+    vi.mocked(post).mockResolvedValue({ session: { id: 'session-1' }, run: { run_id: 'run-1' } } as never);
+
+    await chatApi.createSessionRun('agent-1', {
+      title: 'Session 07-01 03:16',
+      content: 'hello',
+      display_content: 'hello',
+      permission_mode: 'bypassPermissions',
+    });
+
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/sessions/runs', {
+      title: 'Session 07-01 03:16',
+      content: 'hello',
+      display_content: 'hello',
+      permission_mode: 'bypassPermissions',
+    });
+  });
 });

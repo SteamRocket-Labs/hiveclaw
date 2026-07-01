@@ -40,6 +40,7 @@ import {
     getRuntimeEventMessage,
     getTerminalRunIdFromTranscriptEvent,
     getTransportNotice,
+    isDraftHumanChatSession,
     isTerminalRealtimeChatEvent,
     mergePendingUserMessages,
     filterSessionsForAgent,
@@ -70,7 +71,7 @@ import { enterpriseApi } from '../api/domains/enterprise';
 import { fileApi } from '../api/domains/files';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
-import { chatApi, type ConversationBranchMode, type SessionRun } from '../api/domains/chat';
+import { chatApi, type ChatSession, type ConversationBranchMode, type SessionRun, type StartSessionRunInput } from '../api/domains/chat';
 import { ccParityApi } from '../api/domains/ccParity';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
@@ -634,7 +635,7 @@ function AgentDetailInner() {
     };
 
     const syncActiveSocketState = (sess: any | null = activeSession, agentId: string | undefined = id) => {
-        if (!sess || !agentId) {
+        if (!sess || !agentId || isDraftHumanChatSession(sess)) {
             wsRef.current = null;
             setWsConnected(false);
             return;
@@ -650,7 +651,12 @@ function AgentDetailInner() {
         if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(true);
         try {
             const data = filterSessionsForAgent(await chatApi.listSessions(agentId, 'mine'), agentId);
-            if (currentAgentIdRef.current === agentId) setSessions(data);
+            if (currentAgentIdRef.current === agentId) {
+                setSessions((prev: any[]) => {
+                    const drafts = prev.filter((session: any) => isDraftHumanChatSession(session));
+                    return [...drafts, ...data];
+                });
+            }
             if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(false);
             return data;
         } catch { }
@@ -682,6 +688,7 @@ function AgentDetailInner() {
         const runtimeState = sessionUiStateRef.current[runtimeKey] || { isWaiting: false, isStreaming: false };
         const activeRunState = activeRunStateRef.current[runtimeKey];
         const writableSession = isWritableSession(sess);
+        const draftSession = isDraftHumanChatSession(sess);
         activeSessionIdRef.current = sessionId;
         setCreatedAgentId(null);
         if (writableSession) {
@@ -699,6 +706,18 @@ function AgentDetailInner() {
         setActiveSession(sess);
         setAgentExpired(false);
         syncActiveSocketState(sess, targetAgentId);
+
+        if (draftSession) {
+            sessionMsgAbortRef.current?.abort();
+            setChatMessages([]);
+            setChatMessagesSessionId(sessionId);
+            setHistoryMsgs([]);
+            setHistoryMessagesSessionId(null);
+            setBranchLineage([]);
+            setIsWaiting(false);
+            setIsStreaming(false);
+            return;
+        }
 
         // Abort any pending message load and increment sequence
         sessionMsgAbortRef.current?.abort();
@@ -1035,18 +1054,87 @@ function AgentDetailInner() {
         }
     };
 
+    const createDraftChatSession = () => {
+        const now = new Date();
+        const pad = (value: number) => String(value).padStart(2, '0');
+        const randomId =
+            typeof globalThis.crypto?.randomUUID === 'function'
+                ? globalThis.crypto.randomUUID()
+                : `${now.getTime()}-${Math.random().toString(36).slice(2)}`;
+        const draftId = `draft:${randomId}`;
+        return {
+            id: draftId,
+            draft_client_id: draftId,
+            is_draft: true,
+            agent_id: id,
+            user_id: currentUser?.id ? String(currentUser.id) : undefined,
+            title: `Session ${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
+            created_at: now.toISOString(),
+            updated_at: now.toISOString(),
+            source_channel: 'web',
+            session_kind: 'human_chat',
+            actor_type: 'user',
+            runtime_source: 'web_chat',
+            visibility_scope: 'direct_user',
+            listed_surface: 'chat',
+            is_current_user_session: true,
+            read_only: false,
+            message_count: 0,
+        };
+    };
+
     const createNewSession = async () => {
         if (!id) return;
-        try {
-            const newSess = await chatApi.createSession(id);
-            setSessions(prev => [newSess, ...prev]);
-            setIsStreaming(false);
-            setIsWaiting(false);
-            await selectSession(newSess);
-        } catch (err: any) {
-            console.error('Failed to create session:', err);
-            showToast(`Failed to create session: ${err.message || err}`, 'error');
+        const draft = createDraftChatSession();
+        const params = new URLSearchParams(location.search);
+        params.delete('session_id');
+        params.delete('manage');
+        navigate(
+            {
+                pathname: location.pathname,
+                search: params.toString() ? `?${params.toString()}` : '',
+                hash: '#chat',
+            },
+            { replace: true },
+        );
+        setSessions(prev => [draft, ...prev.filter((session: any) => !isDraftHumanChatSession(session))]);
+        setIsStreaming(false);
+        setIsWaiting(false);
+        await selectSession(draft);
+    };
+
+    const replaceDraftActiveSession = (draftId: string, created: ChatSession) => {
+        setSessions(prev => [created, ...prev.filter((session: any) => String(session.id) !== draftId)]);
+        activeSessionIdRef.current = String(created.id);
+        setActiveSession(created);
+        setChatMessagesSessionId(String(created.id));
+        setHistoryMessagesSessionId(null);
+        setSessionPermissionMode(sessionPermissionModeFromSession(created));
+        navigate(buildSessionWorkbenchNavigation(location.pathname, location.search, String(created.id)), { replace: true });
+        return created;
+    };
+
+    const ensureDurableActiveSession = async () => {
+        if (!id || !activeSession?.id) return null;
+        if (!isDraftHumanChatSession(activeSession)) return activeSession;
+        const draftId = String(activeSession.id);
+        const created = await chatApi.createSession(id, activeSession.title || undefined);
+        return replaceDraftActiveSession(draftId, created);
+    };
+
+    const startRunForActiveSession = async (input: StartSessionRunInput): Promise<{ session: ChatSession; run: SessionRun } | null> => {
+        if (!id || !activeSession?.id) return null;
+        if (!isDraftHumanChatSession(activeSession)) {
+            const run = await chatApi.startSessionRun(id, String(activeSession.id), input);
+            return { session: activeSession as ChatSession, run };
         }
+        const draftId = String(activeSession.id);
+        const response = await chatApi.createSessionRun(id, {
+            title: activeSession.title || undefined,
+            ...input,
+        });
+        const created = replaceDraftActiveSession(draftId, response.session);
+        return { session: created, run: response.run };
     };
 
     const deleteSession = async (sessionId: string) => {
@@ -1601,7 +1689,7 @@ function AgentDetailInner() {
             return;
         }
         activeSessionIdRef.current = String(activeSession.id);
-        if (!isWritableSession(activeSession)) {
+        if (!isWritableSession(activeSession) || isDraftHumanChatSession(activeSession)) {
             syncActiveSocketState(activeSession, id);
             return;
         }
@@ -1610,7 +1698,7 @@ function AgentDetailInner() {
     }, [canLoadAgentScopedData, id, token, activeTab, activeSession?.id]);
 
     useEffect(() => {
-        if (!canLoadAgentScopedData || activeTab !== 'chat' || !id || !activeSession?.id) {
+        if (!canLoadAgentScopedData || activeTab !== 'chat' || !id || !activeSession?.id || isDraftHumanChatSession(activeSession)) {
             setBranchLineage([]);
             return;
         }
@@ -1707,7 +1795,6 @@ function AgentDetailInner() {
 
     const sendChatMsg = async () => {
         if (!id || !activeSession?.id) return;
-        const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
         if (!chatInput.trim() && attachedFiles.length === 0) return;
         
         let userMsg = chatInput.trim();
@@ -1740,11 +1827,23 @@ function AgentDetailInner() {
             }
 
             if (parsedSlashCommand) {
+                let commandSession: any;
+                try {
+                    commandSession = await ensureDurableActiveSession();
+                } catch (err: any) {
+                    const msg = err?.message || t('agent.chat.sessionCreateFailed', 'Failed to create session');
+                    setChatMessagesSessionId(String(activeSession.id));
+                    setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+                    return;
+                }
+                if (!commandSession?.id) return;
+                const commandSessionId = String(commandSession.id);
+                const activeRuntimeKey = buildSessionRuntimeKey(id, commandSessionId);
                 setIsWaiting(true);
                 setIsStreaming(false);
                 setTransportNotice(null);
                 setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
-                setChatMessagesSessionId(String(activeSession.id));
+                setChatMessagesSessionId(commandSessionId);
                 setChatMessages(prev => [...prev, parseChatMsg({
                     role: 'user',
                     content: userMsg,
@@ -1756,7 +1855,7 @@ function AgentDetailInner() {
                 try {
                     const response = await ccParityApi.executeCommand(id, parsedSlashCommand.name, {
                         arguments: parsedSlashCommand.args,
-                        session_id: String(activeSession.id),
+                        session_id: commandSessionId,
                     });
                     const actionResult = commandResultRecord(response);
                     if (getSessionCommandUiAction(response)) {
@@ -1766,7 +1865,7 @@ function AgentDetailInner() {
                     if (actionResult?.action === 'chat_prompt') {
                         const content = typeof actionResult.content === 'string' ? actionResult.content : userMsg;
                         const displayContent = typeof actionResult.display_content === 'string' ? actionResult.display_content : userMsg;
-                        const run = await chatApi.startSessionRun(id, String(activeSession.id), {
+                        const run = await chatApi.startSessionRun(id, commandSessionId, {
                             content,
                             display_content: displayContent,
                             plan_mode_requested: actionResult.plan_mode_requested === true,
@@ -1775,7 +1874,7 @@ function AgentDetailInner() {
                         commandStartedRun = true;
                         setPlanModeRequested(false);
                         setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
-                        invalidateSessionRuntimeQueries(id, String(activeSession.id));
+                        invalidateSessionRuntimeQueries(id, commandSessionId);
                         return;
                     }
                     if (actionResult?.action === 'open_tab') {
@@ -1785,14 +1884,14 @@ function AgentDetailInner() {
                             role: 'assistant',
                             content: typeof actionResult.message === 'string' ? actionResult.message : formatSlashCommandResult(response),
                         })]);
-                        invalidateSessionRuntimeQueries(id, String(activeSession.id));
+                        invalidateSessionRuntimeQueries(id, commandSessionId);
                         return;
                     }
                     setChatMessages(prev => [...prev, parseChatMsg({
                         role: 'assistant',
                         content: formatSlashCommandResult(response),
                     })]);
-                    invalidateSessionRuntimeQueries(id, String(activeSession.id));
+                    invalidateSessionRuntimeQueries(id, commandSessionId);
                 } catch (err: any) {
                     const msg = err?.message || t('agent.chat.commands.failed', 'Failed to run command');
                     setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
@@ -1838,37 +1937,41 @@ function AgentDetailInner() {
             userMsg = userMsg ? `${displayFiles}\n${userMsg}` : displayFiles;
         }
 
-        setIsWaiting(true);
-        setIsStreaming(false);
-        setTransportNotice(null);
-        setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
-        setChatMessagesSessionId(String(activeSession.id));
-        appendOptimisticUserMessage(activeRuntimeKey, {
-            role: 'user', 
-            content: userMsg, 
-            fileName: attachedFiles.map(f => f.name).join(', '), 
-            imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined, 
-            timestamp: new Date().toISOString() 
-        });
-        setChatInput(''); 
-        setAttachedFiles([]);
+        const fileName = attachedFiles.map(f => f.name).join(', ');
         try {
-            const run = await chatApi.startSessionRun(id, String(activeSession.id), {
+            const started = await startRunForActiveSession({
                 content: contentForLLM,
                 display_content: userMsg,
-                file_name: attachedFiles.map(f => f.name).join(', '),
+                file_name: fileName,
                 attachments: attachmentPayload,
                 plan_mode_requested: planModeRequested,
                 permission_mode: sessionPermissionMode,
             });
+            if (!started?.session?.id) return;
+            const runSessionId = String(started.session.id);
+            const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
+            setIsWaiting(true);
+            setIsStreaming(false);
+            setTransportNotice(null);
+            setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
+            setChatMessagesSessionId(runSessionId);
+            appendOptimisticUserMessage(activeRuntimeKey, {
+                role: 'user',
+                content: userMsg,
+                fileName,
+                imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
+                timestamp: new Date().toISOString(),
+            });
+            setChatInput('');
+            setAttachedFiles([]);
             setPlanModeRequested(false);
-            setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
-            invalidateSessionRuntimeQueries(id, String(activeSession.id));
+            setActiveRunState(activeRuntimeKey, { runId: started.run.run_id, status: started.run.status || 'running' });
+            invalidateSessionRuntimeQueries(id, runSessionId);
         } catch (err: any) {
             setIsWaiting(false);
             setIsStreaming(false);
-            setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
+            setChatMessagesSessionId(String(activeSession.id));
             setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
         }
     };
@@ -1883,32 +1986,33 @@ function AgentDetailInner() {
     const sendChatMessageText = async (text: string, options?: { planMode?: boolean }) => {
         const userMsg = text.trim();
         if (!id || !activeSession?.id || !userMsg) return;
-        const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-
-        setIsWaiting(true);
-        setIsStreaming(false);
-        setTransportNotice(null);
-        setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
-        setChatMessagesSessionId(String(activeSession.id));
-        appendOptimisticUserMessage(activeRuntimeKey, {
-            role: 'user',
-            content: userMsg,
-            timestamp: new Date().toISOString(),
-        });
         try {
-            const run = await chatApi.startSessionRun(id, String(activeSession.id), {
+            const started = await startRunForActiveSession({
                 content: userMsg,
                 display_content: userMsg,
                 ...(options?.planMode ? { plan_mode_requested: true } : {}),
                 permission_mode: sessionPermissionMode,
             });
-            setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
-            invalidateSessionRuntimeQueries(id, String(activeSession.id));
+            if (!started?.session?.id) return;
+            const runSessionId = String(started.session.id);
+            const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
+            setIsWaiting(true);
+            setIsStreaming(false);
+            setTransportNotice(null);
+            setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
+            setChatMessagesSessionId(runSessionId);
+            appendOptimisticUserMessage(activeRuntimeKey, {
+                role: 'user',
+                content: userMsg,
+                timestamp: new Date().toISOString(),
+            });
+            setActiveRunState(activeRuntimeKey, { runId: started.run.run_id, status: started.run.status || 'running' });
+            invalidateSessionRuntimeQueries(id, runSessionId);
         } catch (err: any) {
             setIsWaiting(false);
             setIsStreaming(false);
-            setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
+            setChatMessagesSessionId(String(activeSession.id));
             setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
             throw err;
         }
@@ -2098,15 +2202,15 @@ function AgentDetailInner() {
     const { data: persistedRuntimeSummary } = useQuery({
         queryKey: ['chat-runtime-summary', id, activeSession?.id],
         queryFn: () => chatApi.getRuntimeSummary(String(activeSession!.id)),
-        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id,
-        refetchInterval: activeTab === 'chat' && activeSession?.id ? 10000 : false,
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && !isDraftHumanChatSession(activeSession),
+        refetchInterval: activeTab === 'chat' && activeSession?.id && !isDraftHumanChatSession(activeSession) ? 10000 : false,
     });
 
     const { data: activeSessionRun } = useQuery({
         queryKey: ['chat-active-run', id, activeSession?.id],
         queryFn: () => chatApi.getActiveSessionRun(id!, String(activeSession!.id)),
-        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && !!activeSession && isWritableSession(activeSession),
-        refetchInterval: activeTab === 'chat' && activeSession?.id ? 3000 : false,
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && !!activeSession && isWritableSession(activeSession) && !isDraftHumanChatSession(activeSession),
+        refetchInterval: activeTab === 'chat' && activeSession?.id && !isDraftHumanChatSession(activeSession) ? 3000 : false,
     });
 
     useEffect(() => {

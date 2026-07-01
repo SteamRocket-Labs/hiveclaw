@@ -22,6 +22,20 @@ import pytest
 import app.services.plan_mode_session_handoff as mod
 
 
+class _ScalarNoneResult:
+    def scalar_one_or_none(self):
+        return None
+
+
+class _AgentLoaderProbeDB:
+    def __init__(self) -> None:
+        self.statement = None
+
+    async def execute(self, statement):
+        self.statement = statement
+        return _ScalarNoneResult()
+
+
 def _confirmed_plan(
     *,
     session_id="sess-1",
@@ -205,3 +219,13 @@ async def test_detached_target_creates_once_background_trigger(monkeypatch):
     assert captured["force_once"] is True
     assert captured["db"] == "session"
     assert payload["created_trigger_id"] == "t-1"
+
+
+@pytest.mark.asyncio
+async def test_current_session_agent_loader_eager_loads_sponsor_for_lifecycle_check():
+    db = _AgentLoaderProbeDB()
+
+    await mod._load_agent(db, uuid4())
+
+    option_paths = [str(getattr(option, "path", "")) for option in getattr(db.statement, "_with_options", ())]
+    assert any("Agent.sponsor" in path for path in option_paths)

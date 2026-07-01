@@ -4,7 +4,7 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
-- 2026-07-01T02:23Z [sid:862bd3c4]; branch:main; 5 files (AgentDetail.tsx, AgentChatSection.tsx, AgentDetailSections.test.tsx, +2); last commit: 4f0e425b Document Railway archive-root deployment path
+- 2026-07-01T05:47Z [sid:862bd3c4]; branch:main; 15 files (compact-snapshot.md, orphan-trail.md, plan_mode_agent_team_handoff.py, +12); last commit: fc5a0257 Fix writable new chat sessions
 - 2026-06-28T20:50Z [sid:76692e24]; branch:main; 3 files (orphan-trail.md, ccplus-session-checkpoint-branch-ui-upgrade-plan-2026-06-27.md, ccplus-session-tui-unified-expression-plan-2026-06-28.md); last commit: 45173dd3 docs: align ccplus closure ledger
 - 2026-06-28T20:40Z [sid:8e909eb3]; branch:main; 3 files (orphan-trail.md, ccplus-session-checkpoint-branch-ui-upgrade-plan-2026-06-27.md, ccplus-session-tui-unified-expression-plan-2026-06-28.md); last commit: fe92bdf1 ccplus: close residual tool governance gaps
 - 2026-06-28T19:52Z [sid:862bd3c4]; branch:main; 9 files (orphan-trail.md, engine.py, recovery_manifest.py, +6); last commit: 12bb68a9 ccplus: preserve permission origin channel

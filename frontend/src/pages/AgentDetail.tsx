@@ -47,6 +47,7 @@ import {
     normalizeStoredChatMessage,
     replayTranscriptEvents,
     sessionBelongsToAgent,
+    shouldPreserveActiveSessionForRequestedId,
     shouldUseWritableSessionSurface,
     shouldIgnoreObservedActiveRun,
     shouldClearStaleRuntimeState,
@@ -1334,6 +1335,9 @@ function AgentDetailInner() {
                     selectSession(requested);
                     return;
                 }
+                if (activeSessionIdRef.current && String(activeSessionIdRef.current) === String(requestedSessionId)) {
+                    return;
+                }
                 selectSession({
                     id: requestedSessionId,
                     agent_id: id,
@@ -1356,12 +1360,13 @@ function AgentDetailInner() {
 
     useEffect(() => {
         if (!canLoadAgentScopedData || activeTab !== 'chat' || !requestedSessionId || !id) return;
-        if (activeSession?.id && String(activeSession.id) === String(requestedSessionId)) return;
+        if (shouldPreserveActiveSessionForRequestedId(activeSession, requestedSessionId)) return;
         const known = [...sessions, ...allSessions].find((session: any) => String(session.id) === String(requestedSessionId));
         if (known) {
             selectSession(known);
             return;
         }
+        if (activeSessionIdRef.current && String(activeSessionIdRef.current) === String(requestedSessionId)) return;
         selectSession({
             id: requestedSessionId,
             agent_id: id,
@@ -1371,7 +1376,7 @@ function AgentDetailInner() {
             read_only: true,
             is_pending_session_lookup: true,
         });
-    }, [canLoadAgentScopedData, activeTab, requestedSessionId, id, sessions, allSessions]);
+    }, [canLoadAgentScopedData, activeTab, requestedSessionId, id, activeSession, sessions, allSessions]);
 
     const ensureSessionSocket = (sess: any, agentId: string, authToken: string) => {
         const sessionId = String(sess.id);

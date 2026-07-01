@@ -46,7 +46,7 @@ import {
   computeComposerHeight,
   getCompactionDisplayContent,
   isA2ASession,
-  isReadOnlySessionForCurrentUser,
+  shouldUseWritableSessionSurface,
   type AgentChatMessage,
   type ChatArtifactPart,
   type ChatRuntimeSummary,
@@ -2159,7 +2159,7 @@ export default function AgentChatSection({
 
   const isReadOnlySession =
     !!activeSession &&
-    isReadOnlySessionForCurrentUser(activeSession as any, currentUser?.id);
+    !shouldUseWritableSessionSurface(activeSession as any, currentUser?.id);
 
   const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
   const [composerMenuOpen, setComposerMenuOpen] = React.useState(false);

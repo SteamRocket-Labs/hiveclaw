@@ -278,6 +278,15 @@ export function shouldUseWritableSessionSurface(
   return !isReadOnlySessionForCurrentUser(session, currentUserId);
 }
 
+export function shouldPreserveActiveSessionForRequestedId(
+  session: AgentOwnedSession | null | undefined,
+  requestedSessionId: string | number | null | undefined,
+): boolean {
+  if (!session || requestedSessionId == null) return false;
+  if (session.id == null || String(session.id) !== String(requestedSessionId)) return false;
+  return session.is_pending_session_lookup !== true && session.isPendingSessionLookup !== true;
+}
+
 export function sessionBelongsToAgent(session: AgentOwnedSession | null | undefined, agentId: string | null | undefined): boolean {
   if (!session || !agentId) return false;
   const sessionAgentId = session.agent_id ?? session.agentId;

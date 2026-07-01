@@ -18,6 +18,7 @@ import {
   isA2ASession,
   isReadOnlySessionForCurrentUser,
   shouldUseWritableSessionSurface,
+  shouldPreserveActiveSessionForRequestedId,
   normalizeStoredChatMessage,
   applyTranscriptEvent,
   createEmptyTranscriptReplayState,
@@ -639,6 +640,23 @@ describe('chatRuntime helpers', () => {
     expect(shouldUseWritableSessionSurface({ id: 'other-session', source_channel: 'web', user_id: 'user-2' }, 'user-1')).toBe(false);
     expect(shouldUseWritableSessionSurface({ id: 'a2a-session', source_channel: 'agent' }, 'user-1')).toBe(false);
     expect(shouldUseWritableSessionSurface({ id: 'unknown-session', source_channel: 'unknown', is_pending_session_lookup: true }, 'user-1')).toBe(false);
+  });
+
+  it('preserves an active canonical session during requested-session lookup races', () => {
+    expect(shouldPreserveActiveSessionForRequestedId({
+      id: 'new-session',
+      source_channel: 'web',
+    }, 'new-session')).toBe(true);
+    expect(shouldPreserveActiveSessionForRequestedId({
+      id: 'new-session',
+      source_channel: 'unknown',
+      read_only: true,
+      is_pending_session_lookup: true,
+    }, 'new-session')).toBe(false);
+    expect(shouldPreserveActiveSessionForRequestedId({
+      id: 'other-session',
+      source_channel: 'web',
+    }, 'new-session')).toBe(false);
   });
 
   it('resets the streaming assistant when a chunk tombstone arrives', () => {

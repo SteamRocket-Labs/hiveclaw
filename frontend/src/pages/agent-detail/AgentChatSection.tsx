@@ -34,7 +34,12 @@ import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
-import { buildThreadTimeline, type ThreadTimelineModel } from '../session-workbench/timelineModel';
+import {
+  buildRuntimeSectionsModel,
+  buildThreadTimeline,
+  type RuntimeSectionItemModel,
+  type ThreadTimelineModel,
+} from '../session-workbench/timelineModel';
 import { chatApi, type RecordSessionFeedbackInput } from '../../api/domains/chat';
 import { ccParityApi, type SessionWorkbench } from '../../api/domains/ccParity';
 import { fileApi } from '../../api/domains/files';
@@ -357,6 +362,8 @@ type ArtifactPreviewState = {
   loading?: boolean;
   error?: string;
   usingSnapshot?: boolean;
+  workspaceChanged?: boolean;
+  legacyCurrentFileFallback?: boolean;
 };
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -1190,7 +1197,10 @@ function ArtifactPreviewPanel({
             <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
               {preview.usingSnapshot
                 ? t('agent.chat.artifacts.snapshotPreview', 'Previewing saved session snapshot')
+                : preview.legacyCurrentFileFallback
+                  ? t('agent.chat.artifacts.legacyCurrentFilePreview', 'Previewing current workspace file; no delivery snapshot exists')
                 : t('agent.chat.artifacts.preview', 'Preview')}
+              {preview.workspaceChanged ? ` · ${t('agent.chat.artifacts.workspaceChanged', 'Workspace file changed after delivery')}` : ''}
             </div>
           </div>
           {preview.url && (
@@ -1289,7 +1299,9 @@ function ArtifactCards({
     <div style={{ display: 'grid', gap: '6px', marginTop: '8px' }}>
       {visibleArtifacts.map((artifact) => {
         const downloadAgentId = artifactWorkspaceAgentId(artifact, agentId);
-        const href = downloadAgentId ? fileApi.downloadUrl(downloadAgentId, artifact.path) : '#';
+        const href = downloadAgentId
+          ? (artifact.id ? fileApi.artifactDownloadUrl(downloadAgentId, artifact.id) : fileApi.downloadUrl(downloadAgentId, artifact.path))
+          : '#';
         const size = formatArtifactSize(artifact.size);
         const openArtifact = () => onOpenArtifact?.(artifact);
         return (
@@ -1400,14 +1412,11 @@ type WorkspaceDocumentRow = {
   previewKind?: string;
   size?: number;
   source?: string;
+  artifact: ChatArtifactPart;
 };
 
 function isRuntimeRecord(value: unknown): value is RuntimeRecord {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
-function asRuntimeRows(value: unknown): RuntimeRecord[] {
-  return Array.isArray(value) ? value.filter(isRuntimeRecord) : [];
 }
 
 function stringValue(value: unknown): string {
@@ -1415,24 +1424,12 @@ function stringValue(value: unknown): string {
   return String(value);
 }
 
-function runtimeRowTitle(row: RuntimeRecord, fallback: string): string {
-  return (
-    stringValue(row.title) ||
-    stringValue(row.name) ||
-    stringValue(row.member_name) ||
-    stringValue(row.objective) ||
-    stringValue(row.reason) ||
-    stringValue(row.id) ||
-    fallback
-  );
-}
-
 function collectWorkspaceDocuments(messages: AgentChatMessage[]): WorkspaceDocumentRow[] {
   const docs = new Map<string, WorkspaceDocumentRow>();
   messages.forEach((message) => {
     (message.artifacts || []).forEach((artifact) => {
       if (!artifact.path) return;
-      const key = artifact.path;
+      const key = `${artifact.id || 'workspace-current'}:${artifact.path}`;
       if (docs.has(key)) return;
       docs.set(key, {
         key,
@@ -1441,41 +1438,13 @@ function collectWorkspaceDocuments(messages: AgentChatMessage[]): WorkspaceDocum
         previewKind: artifact.previewKind,
         size: artifact.size,
         source: artifact.source,
+        artifact,
       });
     });
   });
   return Array.from(docs.values()).slice(0, 12);
 }
 
-function runtimeTaskGroup(task: RuntimeRecord): 'workflow' | 'background' | 'run' {
-  const kind = `${stringValue(task.task_type)} ${stringValue(task.type)} ${stringValue(task.source)}`.toLowerCase();
-  if (kind.includes('workflow')) return 'workflow';
-  if (kind.includes('background') || kind.includes('command') || kind.includes('cron') || kind.includes('monitor')) {
-    return 'background';
-  }
-  return 'run';
-}
-
-function statusLabel(row: RuntimeRecord): string {
-  return stringValue(row.status) || stringValue(row.state) || 'unknown';
-}
-
-function renderRuntimeMiniRow(row: RuntimeRecord, fallback: string) {
-  const title = runtimeRowTitle(row, fallback);
-  const id = stringValue(row.id || row.runtime_task_id || row.task_id);
-  const status = statusLabel(row);
-  return (
-    <div key={id || title} className="session-runtime-row">
-      <div className="session-runtime-row-main">
-        <span className="session-runtime-row-title">{title}</span>
-        <span className="session-runtime-row-meta">
-          {[id, stringValue(row.task_type || row.runtime_task_type || row.type)].filter(Boolean).join(' · ')}
-        </span>
-      </div>
-      <span className="session-runtime-status">{status}</span>
-    </div>
-  );
-}
 
 function SessionRuntimePanel({
   messages,
@@ -1494,12 +1463,54 @@ function SessionRuntimePanel({
 }) {
   const { t } = useTranslation();
   const docs = collectWorkspaceDocuments(messages);
-  const teams = sessionWorkbench?.teams || [];
-  const runtimeTasks = asRuntimeRows(sessionWorkbench?.runtime_tasks);
-  const workflowTasks = runtimeTasks.filter((task) => runtimeTaskGroup(task) === 'workflow');
-  const wakes = asRuntimeRows(sessionWorkbench?.completion_wakes);
-  const agentRows = teams.flatMap((team) => team.members || []);
-  const collaborationCount = teams.length + agentRows.length + workflowTasks.length + wakes.length;
+  const runtimeSections = buildRuntimeSectionsModel(sessionWorkbench as Record<string, unknown> | null);
+  const collaborationCount = runtimeSections.summary.total;
+
+  const renderRuntimeItem = (item: RuntimeSectionItemModel, fallback: string) => {
+    const sessionId = item.childSessionId;
+    const clickable = Boolean(item.enterable && sessionId && onSelectSession);
+    const meta = [item.id, item.runtimeKind, item.summary, sessionId ? `session:${sessionId}` : ''].filter(Boolean).join(' · ');
+    const content = (
+      <>
+        <span className="session-runtime-row-main">
+          <span className="session-runtime-row-title">{item.label || fallback}</span>
+          <span className="session-runtime-row-meta">{meta || item.id}</span>
+        </span>
+        <span className="session-runtime-status">{item.status || 'unknown'}</span>
+      </>
+    );
+    return clickable ? (
+      <button
+        key={item.id}
+        type="button"
+        className="session-runtime-row session-runtime-row-button"
+        onClick={() => sessionId && onSelectSession?.(sessionId)}
+      >
+        {content}
+      </button>
+    ) : (
+      <div key={item.id} className="session-runtime-row">
+        {content}
+      </div>
+    );
+  };
+
+  const renderRuntimeSection = (
+    testId: string,
+    title: string,
+    items: RuntimeSectionItemModel[],
+    empty: string,
+    renderItem?: (item: RuntimeSectionItemModel, index: number) => React.ReactNode,
+  ) => (
+    <div className="session-runtime-card" data-testid={testId}>
+      <div className="session-runtime-card-title">{title}</div>
+      {items.length === 0 ? (
+        <div className="session-runtime-empty">{empty}</div>
+      ) : (
+        items.map((item, index) => renderItem?.(item, index) ?? renderRuntimeItem(item, `${title}-${index + 1}`))
+      )}
+    </div>
+  );
 
   if (collapsed) {
     return (
@@ -1535,35 +1546,28 @@ function SessionRuntimePanel({
       </button>
       <section
         className="session-runtime-section session-runtime-documents"
-        aria-label={t('sessionWorkbench.rightPanel.workspaceDocuments', 'Workspace Documents')}
+        aria-label={t('sessionWorkbench.rightPanel.sessionArtifacts', 'Session artifacts')}
       >
         <div className="session-runtime-section-header">
           <div>
-            <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.workspace', 'Workspace')}</div>
-            <h3>{t('sessionWorkbench.rightPanel.workspaceDocuments', 'Workspace Documents')}</h3>
+            <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.session', 'Session')}</div>
+            <h3>{t('sessionWorkbench.rightPanel.sessionArtifacts', 'Session artifacts')}</h3>
           </div>
           <span>{docs.length}</span>
         </div>
         {docs.length === 0 ? (
           <div className="session-runtime-empty">
-            {t('sessionWorkbench.rightPanel.noWorkspaceDocuments', 'No workspace documents in this session yet.')}
+            {t('sessionWorkbench.rightPanel.noSessionArtifacts', 'No delivered artifacts in this session yet.')}
           </div>
         ) : (
           <div className="session-runtime-list">
             {docs.map((doc) => {
-              const artifact: ChatArtifactPart = {
-                name: doc.name,
-                path: doc.path,
-                previewKind: doc.previewKind,
-                size: doc.size,
-                source: doc.source,
-              };
               return (
                 <button
                   key={doc.key}
                   type="button"
                   className="session-runtime-doc-row"
-                  onClick={() => onOpenDocument?.(artifact)}
+                  onClick={() => onOpenDocument?.(doc.artifact)}
                 >
                   <IconFileText size={15} />
                   <span>
@@ -1592,76 +1596,76 @@ function SessionRuntimePanel({
           <span>{collaborationCount}</span>
         </div>
 
-        <div className="session-runtime-card" data-testid="session-runtime-agents">
-          <div className="session-runtime-card-title">
-            {t('sessionWorkbench.rightPanel.agentTeamSubagent', 'Agent Team / Sub-agent')}
-          </div>
-          {teams.length === 0 ? (
-            <div className="session-runtime-empty">
-              {t('sessionWorkbench.rightPanel.noRunningAgents', 'No running agent sessions.')}
-            </div>
-          ) : (
-            teams.map((team) => (
-              <div key={team.id} className="session-runtime-team">
-                <div className="session-runtime-team-header">
-                  <span>{team.name || team.id}</span>
-                  <small>{team.status || 'unknown'}</small>
-                </div>
-                {(team.members || []).map((member) => {
-                  const sessionId = stringValue(member.chat_session_id);
-                  const clickable = Boolean(sessionId && onSelectSession);
-                  const content = (
-                    <>
-                      <span className="session-runtime-row-main">
-                        <span className="session-runtime-row-title">{member.member_name || member.id}</span>
-                        <span className="session-runtime-row-meta">
-                          {[member.member_role, member.runtime_task_id].filter(Boolean).join(' · ')}
-                        </span>
-                      </span>
-                      <span className="session-runtime-status">{member.status || 'unknown'}</span>
-                    </>
-                  );
-                  return clickable ? (
-                    <button
-                      key={member.id}
-                      type="button"
-                      className="session-runtime-row session-runtime-row-button"
-                      onClick={() => onSelectSession?.(sessionId)}
-                    >
-                      {content}
-                    </button>
-                  ) : (
-                    <div key={member.id} className="session-runtime-row">
-                      {content}
-                    </div>
-                  );
-                })}
+        {renderRuntimeSection(
+          'session-runtime-agent-teams',
+          t('sessionWorkbench.rightPanel.agentTeams', 'Agent Teams'),
+          runtimeSections.agentTeams,
+          t('sessionWorkbench.rightPanel.noAgentTeams', 'No Agent Team containers in this session.'),
+          (team) => (
+            <div key={team.id} className="session-runtime-team">
+              <div className="session-runtime-team-header">
+                <span>{team.label || team.id}</span>
+                <small>{team.status || 'unknown'}</small>
               </div>
-            ))
-          )}
-        </div>
-
-        <div className="session-runtime-card" data-testid="session-runtime-workflow">
-          <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.workflowRuns', 'Workflow runs')}</div>
-          {workflowTasks.length === 0 ? (
-            <div className="session-runtime-empty">
-              {t('sessionWorkbench.rightPanel.noWorkflows', 'No active workflows.')}
+              {team.members.length === 0 ? (
+                <div className="session-runtime-empty">
+                  {t('sessionWorkbench.rightPanel.noTeamMembers', 'No team members have started yet.')}
+                </div>
+              ) : (
+                team.members.map((member, index) => renderRuntimeItem(member, `team-member-${index + 1}`))
+              )}
             </div>
-          ) : (
-            workflowTasks.map((task, index) => renderRuntimeMiniRow(task, `workflow-${index + 1}`))
-          )}
-        </div>
+          ),
+        )}
 
-        <div className="session-runtime-card" data-testid="session-runtime-notifications">
-          <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.completionWakes', 'Completion wakes')}</div>
-          {wakes.length === 0 ? (
-            <div className="session-runtime-empty">
-              {t('sessionWorkbench.rightPanel.noCompletionWakes', 'No completion notifications.')}
+        {renderRuntimeSection(
+          'session-runtime-subagents',
+          t('sessionWorkbench.rightPanel.subagents', 'Sub-agents'),
+          runtimeSections.subagents,
+          t('sessionWorkbench.rightPanel.noSubagents', 'No one-shot Sub-agent workers in this session.'),
+        )}
+
+        {renderRuntimeSection(
+          'session-runtime-workflows',
+          t('sessionWorkbench.rightPanel.dynamicWorkflows', 'Dynamic Workflow'),
+          runtimeSections.workflows,
+          t('sessionWorkbench.rightPanel.noWorkflows', 'No active workflows.'),
+          (workflow, index) => (
+            <div key={workflow.id} className="session-runtime-team">
+              {renderRuntimeItem(workflow, `workflow-${index + 1}`)}
+              {workflow.steps.map((step, stepIndex) => renderRuntimeItem(step, `workflow-step-${stepIndex + 1}`))}
+              {workflow.leafCalls.map((leafCall, leafIndex) => renderRuntimeItem(leafCall, `workflow-leaf-${leafIndex + 1}`))}
             </div>
-          ) : (
-            wakes.map((wake, index) => renderRuntimeMiniRow(wake, `wake-${index + 1}`))
-          )}
-        </div>
+          ),
+        )}
+
+        {renderRuntimeSection(
+          'session-runtime-background',
+          t('sessionWorkbench.rightPanel.backgroundAgents', 'Background agents'),
+          runtimeSections.background,
+          t('sessionWorkbench.rightPanel.noBackgroundAgents', 'No background agents running.'),
+        )}
+
+        {renderRuntimeSection(
+          'session-runtime-notifications',
+          t('sessionWorkbench.rightPanel.notifications', 'Notifications'),
+          runtimeSections.notifications,
+          t('sessionWorkbench.rightPanel.noCompletionWakes', 'No completion notifications.'),
+        )}
+
+        {renderRuntimeSection(
+          'session-runtime-runs',
+          t('sessionWorkbench.rightPanel.runs', 'Runs'),
+          runtimeSections.runs,
+          t('sessionWorkbench.rightPanel.noRuns', 'No runtime runs recorded.'),
+        )}
+
+        {renderRuntimeSection(
+          'session-runtime-raw',
+          t('sessionWorkbench.rightPanel.rawEvents', 'Raw'),
+          runtimeSections.raw,
+          t('sessionWorkbench.rightPanel.noRawEvents', 'No raw runtime events.'),
+        )}
       </section>
     </aside>
   );
@@ -2270,7 +2274,9 @@ export default function AgentChatSection({
   const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
     const artifactAgentId = artifactWorkspaceAgentId(artifact, effectiveAgentId);
     if (!artifactAgentId) return;
-    const href = fileApi.downloadUrl(artifactAgentId, artifact.path);
+    const href = artifact.id
+      ? fileApi.artifactDownloadUrl(artifactAgentId, artifact.id)
+      : fileApi.downloadUrl(artifactAgentId, artifact.path);
     if (getArtifactOpenMode(artifact) === 'download') {
       window.open(href, '_blank', 'noopener,noreferrer');
       return;
@@ -2280,8 +2286,17 @@ export default function AgentChatSection({
     if (previewKind === 'markdown' || previewKind === 'text' || !previewKind) {
       setArtifactPreview({ artifact, loading: true });
       try {
-        const response = await fileApi.read(artifactAgentId, artifact.path);
-        setArtifactPreview({ artifact, content: response.content || '', url: href });
+        const response = artifact.id
+          ? await fileApi.readArtifact(artifactAgentId, artifact.id)
+          : await fileApi.read(artifactAgentId, artifact.path);
+        setArtifactPreview({
+          artifact,
+          content: response.content || '',
+          url: href,
+          usingSnapshot: Boolean(response.uses_snapshot || artifact.snapshotHash),
+          workspaceChanged: Boolean(response.workspace_changed),
+          legacyCurrentFileFallback: Boolean(response.legacy_current_file_fallback),
+        });
       } catch (error) {
         if (typeof artifact.previewSnapshotContent === 'string') {
           setArtifactPreview({

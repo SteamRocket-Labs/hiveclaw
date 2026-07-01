@@ -135,6 +135,9 @@ export interface ChatArtifactPart {
   action?: string;
   toolCallId?: string;
   diffSummary?: string;
+  contentHash?: string;
+  snapshotHash?: string;
+  snapshotStoragePath?: string;
   previewSnapshotContent?: string;
   previewSnapshotTruncated?: boolean;
   ownerAgentId?: string;
@@ -1114,6 +1117,11 @@ function normalizeArtifactPart(part: any): ChatArtifactPart | null {
     action: typeof part.action === 'string' ? part.action : undefined,
     toolCallId: typeof part.toolCallId === 'string' ? part.toolCallId : (typeof part.tool_call_id === 'string' ? part.tool_call_id : undefined),
     diffSummary: typeof part.diffSummary === 'string' ? part.diffSummary : (typeof part.diff_summary === 'string' ? part.diff_summary : undefined),
+    contentHash: typeof part.contentHash === 'string' ? part.contentHash : (typeof part.content_hash === 'string' ? part.content_hash : undefined),
+    snapshotHash: typeof part.snapshotHash === 'string' ? part.snapshotHash : (typeof part.snapshot_hash === 'string' ? part.snapshot_hash : undefined),
+    snapshotStoragePath: typeof part.snapshotStoragePath === 'string'
+      ? part.snapshotStoragePath
+      : (typeof part.snapshot_storage_path === 'string' ? part.snapshot_storage_path : undefined),
     previewSnapshotContent: typeof part.previewSnapshotContent === 'string'
       ? part.previewSnapshotContent
       : (typeof part.preview_snapshot_content === 'string' ? part.preview_snapshot_content : undefined),

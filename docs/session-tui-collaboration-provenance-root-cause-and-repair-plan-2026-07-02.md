@@ -655,3 +655,45 @@ cd backend && source .venv/bin/activate && pytest \
   -q
 # 46 passed, 4 warnings
 ```
+
+### Part 5 — 前端 runtime taxonomy、右栏分栏与 artifact snapshot 打开路径（2026-07-02）
+
+红测：
+
+- `buildRuntimeSectionsModel` 缺失：前端无法消费后端 `runtime_sections` 的七个规范键，只能从 `teams` / `runtime_tasks` / `completion_wakes` 混合字段猜分类。
+- `chatDisclosureReducer` 把 `agent_team` / `team_member` 事件降级为 `subagent`，`background_agent` 降级为普通 `event`。
+- `extractArtifactParts` 不透传 `content_hash` / `snapshot_hash` / `snapshot_storage_path`，UI 无法表达交付快照身份。
+- `fileApi` 没有 artifact-id content/download adapter，artifact 卡片只能通过 `agent+path` 读取 mutable workspace 当前文件。
+
+红测验证：
+
+```bash
+cd frontend && npm test -- --run \
+  src/pages/session-workbench/timelineModel.test.ts \
+  src/pages/agent-detail/chatDisclosureReducer.test.ts \
+  src/pages/agent-detail/chatRuntime.test.ts \
+  src/api/domains/files.test.ts
+# 4 failed: missing buildRuntimeSectionsModel/readArtifact, old agent_team=subagent mapping, missing snapshot metadata
+```
+
+变更：
+
+- `timelineModel.ts` 新增 `buildRuntimeSectionsModel()`，优先消费 `runtime_sections.agent_teams/subagents/workflows/background/notifications/runs/raw`，并保留旧字段兼容 fallback；Agent Team member、workflow step、workflow leaf 均保持独立 `runtimeKind` 与 `enterable`。
+- `chatDisclosureReducer.ts` 增加 `agent_team`、`team_member`、`background_agent` step kind；runtime action 与 task notification 不再把 Team/Member/Background 归为 Sub-agent 或普通 event。
+- `chatRuntime.ts` artifact part 透传 `contentHash`、`snapshotHash`、`snapshotStoragePath`，前端交付物有可显示的快照身份。
+- `fileApi` 新增 `readArtifact()` 与 `artifactDownloadUrl()`，artifact 卡片默认走 `/files/artifacts/{artifact_id}/content|download`。
+- `AgentChatSection.tsx` 右栏从旧的三张卡改为 Session artifacts + 七个 runtime section：Agent Teams / Sub-agents / Dynamic Workflow / Background agents / Notifications / Runs / Raw；旧的 “Agent Team / Sub-agent” 合并标题消失。
+- Artifact 打开/下载优先走 artifact-id snapshot endpoint；legacy 无快照时才标记 `legacyCurrentFileFallback`，workspace 内容变化时显示 `workspaceChanged`。
+- `en.json` / `zh.json` 补齐新增 UI 文案。
+
+验证：
+
+```bash
+cd frontend && npm test -- --run \
+  src/pages/session-workbench/timelineModel.test.ts \
+  src/pages/agent-detail/chatDisclosureReducer.test.ts \
+  src/pages/agent-detail/chatRuntime.test.ts \
+  src/api/domains/files.test.ts \
+  src/pages/agent-detail/AgentDetailSections.test.tsx
+# 5 passed, 150 passed
+```

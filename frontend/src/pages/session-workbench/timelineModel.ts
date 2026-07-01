@@ -105,6 +105,50 @@ export interface CompletionWakeModel {
   items: CompletionWakeItemModel[];
 }
 
+export type RuntimeSectionName =
+  | 'agent_teams'
+  | 'subagents'
+  | 'workflows'
+  | 'background'
+  | 'notifications'
+  | 'runs'
+  | 'raw';
+
+export interface RuntimeSectionItemModel {
+  id: string;
+  label: string;
+  status: string;
+  state: string;
+  runtimeKind: string;
+  summary: string;
+  childSessionId: string | null;
+  enterable: boolean;
+  members: RuntimeSectionItemModel[];
+  steps: RuntimeSectionItemModel[];
+  leafCalls: RuntimeSectionItemModel[];
+  raw: Record<string, unknown>;
+}
+
+export interface RuntimeSectionsModel {
+  agentTeams: RuntimeSectionItemModel[];
+  subagents: RuntimeSectionItemModel[];
+  workflows: RuntimeSectionItemModel[];
+  background: RuntimeSectionItemModel[];
+  notifications: RuntimeSectionItemModel[];
+  runs: RuntimeSectionItemModel[];
+  raw: RuntimeSectionItemModel[];
+  summary: {
+    total: number;
+    agentTeams: number;
+    subagents: number;
+    workflows: number;
+    background: number;
+    notifications: number;
+    runs: number;
+    raw: number;
+  };
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
@@ -155,6 +199,135 @@ export function buildCompletionWakeModel(sessionWorkbench?: Record<string, unkno
     },
     items,
   };
+}
+
+function readString(source: Record<string, unknown>, keys: string[], fallback = ''): string {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return fallback;
+}
+
+function readBoolean(source: Record<string, unknown>, key: string): boolean | null {
+  const value = source[key];
+  return typeof value === 'boolean' ? value : null;
+}
+
+function readRuntimeSectionArray(sections: Record<string, unknown> | null, key: RuntimeSectionName): unknown[] {
+  const value = sections?.[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeRuntimeSectionItem(
+  value: unknown,
+  index: number,
+  fallbackKind: string,
+): RuntimeSectionItemModel | null {
+  const item = asRecord(value);
+  if (!item) return null;
+  const runtimeKind = readString(item, ['runtime_kind', 'runtimeKind', 'kind', 'type'], fallbackKind);
+  const id = readString(item, ['id', 'chat_session_id', 'child_session_id', 'runtime_task_id', 'workflow_run_id'], `${fallbackKind}-${index}`);
+  const label = readString(item, ['label', 'name', 'title', 'role', 'runtime_task_id'], id);
+  const status = readString(item, ['status', 'state'], 'unknown');
+  const state = readString(item, ['state', 'status'], status);
+  const childSessionId = readString(item, ['child_session_id', 'childSessionId', 'chat_session_id', 'chatSessionId'], '') || null;
+  const explicitEnterable = readBoolean(item, 'enterable');
+  const members = Array.isArray(item.members)
+    ? item.members
+      .map((member, memberIndex) => normalizeRuntimeSectionItem(member, memberIndex, 'team_member'))
+      .filter((member): member is RuntimeSectionItemModel => Boolean(member))
+    : [];
+  const steps = Array.isArray(item.steps)
+    ? item.steps
+      .map((step, stepIndex) => normalizeRuntimeSectionItem(step, stepIndex, 'workflow_step'))
+      .filter((step): step is RuntimeSectionItemModel => Boolean(step))
+    : [];
+  const leafCallsSource = Array.isArray(item.leaf_calls)
+    ? item.leaf_calls
+    : (Array.isArray(item.leafCalls) ? item.leafCalls : []);
+  const leafCalls = leafCallsSource
+    .map((leafCall, leafIndex) => normalizeRuntimeSectionItem(leafCall, leafIndex, 'workflow_leaf'))
+    .filter((leafCall): leafCall is RuntimeSectionItemModel => Boolean(leafCall));
+
+  return {
+    id,
+    label,
+    status,
+    state,
+    runtimeKind,
+    summary: readString(item, ['summary', 'description', 'content'], ''),
+    childSessionId,
+    enterable: explicitEnterable ?? Boolean(childSessionId),
+    members,
+    steps,
+    leafCalls,
+    raw: item,
+  };
+}
+
+function normalizeRuntimeSectionItems(
+  values: unknown[],
+  fallbackKind: string,
+): RuntimeSectionItemModel[] {
+  return values
+    .map((value, index) => normalizeRuntimeSectionItem(value, index, fallbackKind))
+    .filter((item): item is RuntimeSectionItemModel => Boolean(item));
+}
+
+function legacyRuntimeSections(sessionWorkbench?: Record<string, unknown> | null): RuntimeSectionsModel {
+  const rawTasks = Array.isArray(sessionWorkbench?.runtime_tasks) ? sessionWorkbench.runtime_tasks : [];
+  const teams = normalizeRuntimeSectionItems(Array.isArray(sessionWorkbench?.teams) ? sessionWorkbench.teams : [], 'agent_team');
+  const tasks = normalizeRuntimeSectionItems(rawTasks, 'runtime_task');
+  const workflows = tasks.filter((item) => item.runtimeKind.includes('workflow') || String(item.raw.task_type || '').includes('workflow'));
+  const subagents = tasks.filter((item) => item.runtimeKind.includes('subagent') || String(item.raw.task_type || '').includes('subagent'));
+  const runs = tasks.filter((item) => !workflows.includes(item) && !subagents.includes(item));
+  const background = normalizeRuntimeSectionItems(Array.isArray(sessionWorkbench?.completion_wakes) ? sessionWorkbench.completion_wakes : [], 'background_agent');
+
+  return buildRuntimeSectionsSummary({
+    agentTeams: teams,
+    subagents,
+    workflows,
+    background,
+    notifications: [],
+    runs,
+    raw: [],
+  });
+}
+
+function buildRuntimeSectionsSummary(sections: Omit<RuntimeSectionsModel, 'summary'>): RuntimeSectionsModel {
+  const summary = {
+    agentTeams: sections.agentTeams.length,
+    subagents: sections.subagents.length,
+    workflows: sections.workflows.length,
+    background: sections.background.length,
+    notifications: sections.notifications.length,
+    runs: sections.runs.length,
+    raw: sections.raw.length,
+  };
+  return {
+    ...sections,
+    summary: {
+      ...summary,
+      total: summary.agentTeams + summary.subagents + summary.workflows + summary.background + summary.notifications + summary.runs + summary.raw,
+    },
+  };
+}
+
+export function buildRuntimeSectionsModel(sessionWorkbench?: Record<string, unknown> | null): RuntimeSectionsModel {
+  const runtimeSections = asRecord(sessionWorkbench?.runtime_sections);
+  if (!runtimeSections) return legacyRuntimeSections(sessionWorkbench);
+
+  return buildRuntimeSectionsSummary({
+    agentTeams: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'agent_teams'), 'agent_team'),
+    subagents: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'subagents'), 'subagent'),
+    workflows: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'workflows'), 'workflow'),
+    background: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'background'), 'background_agent'),
+    notifications: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'notifications'), 'notification'),
+    runs: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'runs'), 'runtime_task'),
+    raw: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'raw'), 'raw_event'),
+  });
 }
 
 function messageId(message: AgentChatMessage, fallback: string): string {

@@ -294,8 +294,48 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps.map((step) => step.kind)).toEqual([
       'workflow',
       'subagent',
-      'subagent',
+      'agent_team',
       'a2a',
+    ]);
+  });
+
+  it('keeps agent team, team member, subagent, and background-agent events as distinct step kinds', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'event',
+        content: 'Team container created.',
+        eventType: 'agent_task_notification',
+        eventStatus: 'running',
+        eventNotificationSource: 'agent_team',
+      },
+      {
+        role: 'event',
+        content: 'Team member completed.',
+        eventType: 'team_member',
+        eventStatus: 'completed',
+        eventNotificationSource: 'team_member',
+      },
+      {
+        role: 'event',
+        content: 'Subagent completed.',
+        eventType: 'agent_task_notification',
+        eventStatus: 'completed',
+        eventNotificationSource: 'subagent_wake',
+      },
+      {
+        role: 'event',
+        content: 'Background completion observer running.',
+        eventType: 'runtime_action_started',
+        eventStatus: 'running',
+        eventNotificationSource: 'background_agent',
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps.map((step) => step.kind)).toEqual([
+      'agent_team',
+      'team_member',
+      'subagent',
+      'background_agent',
     ]);
   });
 });

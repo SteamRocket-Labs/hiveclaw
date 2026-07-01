@@ -11,7 +11,10 @@ export type RunStepKind =
   | 'plan'
   | 'compaction'
   | 'workflow'
+  | 'agent_team'
+  | 'team_member'
   | 'subagent'
+  | 'background_agent'
   | 'a2a'
   | 'trigger'
   | 'artifact'
@@ -263,7 +266,10 @@ function kindForEventMessage(message: AgentChatMessage): RunStepKind {
   if (String(message.eventType || '').startsWith('runtime_action_')) {
     const source = String(message.eventNotificationSource || '').toLowerCase();
     if (source.includes('workflow')) return 'workflow';
-    if (source.includes('subagent') || source.includes('agent_team') || source.includes('team_member')) return 'subagent';
+    if (source.includes('agent_team')) return 'agent_team';
+    if (source.includes('team_member')) return 'team_member';
+    if (source.includes('subagent')) return 'subagent';
+    if (source.includes('background') || source.includes('long_task')) return 'background_agent';
     if (source.includes('a2a')) return 'a2a';
     return 'event';
   }
@@ -276,10 +282,14 @@ function kindForEventMessage(message: AgentChatMessage): RunStepKind {
   if (message.eventType === 'agent_task_notification') {
     const source = String(message.eventNotificationSource || '').toLowerCase();
     if (source.includes('workflow')) return 'workflow';
-    if (source.includes('subagent') || source.includes('agent_team') || source.includes('team_member')) return 'subagent';
+    if (source.includes('agent_team')) return 'agent_team';
+    if (source.includes('team_member')) return 'team_member';
+    if (source.includes('subagent')) return 'subagent';
+    if (source.includes('background') || source.includes('long_task')) return 'background_agent';
     return 'a2a';
   }
-  if (message.eventType === 'child_session' || message.eventType === 'subagent' || message.eventType === 'team_member') return 'subagent';
+  if (message.eventType === 'team_member') return 'team_member';
+  if (message.eventType === 'subagent' || message.eventType === 'child_session') return 'subagent';
   if (message.eventType === 'schedule' || message.eventType === 'schedule_fire' || message.eventType === 'once') return 'trigger';
   if (message.eventType === 'artifact_update' || message.eventType === 'artifact_delivery') return 'artifact';
   return 'event';

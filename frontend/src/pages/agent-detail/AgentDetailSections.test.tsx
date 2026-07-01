@@ -531,6 +531,81 @@ vi.mock('@tanstack/react-query', () => ({
           completion_wakes: [
             { id: 'wake-1', status: 'pending', reason: 'notify user when run completes' },
           ],
+          runtime_sections: {
+            agent_teams: [
+              {
+                id: 'team-1',
+                runtime_kind: 'agent_team',
+                label: 'Research Team',
+                status: 'running',
+                chat_session_id: 'team-session-1',
+                enterable: true,
+                members: [
+                  {
+                    id: 'member-1',
+                    runtime_kind: 'team_member',
+                    label: 'Reviewer',
+                    status: 'running',
+                    child_session_id: 'member-session-1',
+                    enterable: true,
+                    summary: 'Checking runtime panel evidence.',
+                  },
+                ],
+              },
+            ],
+            subagents: [
+              {
+                id: 'subagent-1',
+                runtime_kind: 'subagent',
+                label: 'One-shot critic',
+                status: 'completed',
+                child_session_id: 'subagent-session-1',
+                enterable: true,
+              },
+            ],
+            workflows: [
+              {
+                id: 'workflow-run-1',
+                runtime_kind: 'workflow',
+                label: 'ccplus-closure-audit',
+                status: 'running',
+                steps: [{ id: 'workflow-step-1', label: 'Review plan', status: 'completed' }],
+                leaf_calls: [{ id: 'workflow-leaf-1', label: 'Leaf check', status: 'completed', enterable: false }],
+              },
+            ],
+            background: [
+              {
+                id: 'background-run-1',
+                runtime_kind: 'background_agent',
+                label: 'backend verification',
+                status: 'completed',
+              },
+            ],
+            notifications: [
+              {
+                id: 'wake-1',
+                runtime_kind: 'notification',
+                label: 'notify user when run completes',
+                status: 'pending',
+              },
+            ],
+            runs: [
+              {
+                id: 'run-1',
+                runtime_kind: 'runtime_task',
+                label: 'web chat turn',
+                status: 'running',
+              },
+            ],
+            raw: [
+              {
+                id: 'raw-1',
+                runtime_kind: 'raw_event',
+                label: 'runtime_action_completed',
+                status: 'completed',
+              },
+            ],
+          },
           context_window: {
             schema: 'context_window.v1',
             decision_count: 1,
@@ -2302,7 +2377,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Open');
     expect(markup).toContain('Download');
     expect(markup).toContain('data-testid="chat-artifact-row-open"');
-    expect(markup).toContain('/api/agents/agent-1/files/download?path=workspace%2Fmarket-report.md');
+    expect(markup).toContain('/api/agents/agent-1/files/artifacts/artifact-1/download');
   });
 
   it('shows ordinary tool-call steps while keeping raw results collapsed by default', () => {
@@ -3472,16 +3547,26 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="chat-work-ledger-dock"');
     expect(markup).toContain('data-testid="chat-work-ledger-summary"');
     expect(markup).toContain('Task 1-2 of 2');
-    expect(markup).toContain('Workspace Documents');
+    expect(markup).toContain('Session artifacts');
     expect(markup).toContain('runtime-report.md');
     expect(markup).toContain('data-testid="session-runtime-divider"');
     expect(markup).toContain('data-testid="session-runtime-collaboration"');
     expect(markup).toContain('Research Team');
     expect(markup).toContain('Reviewer');
-    expect(markup).toContain('data-testid="session-runtime-workflow"');
+    expect(markup).toContain('data-testid="session-runtime-agent-teams"');
+    expect(markup).toContain('data-testid="session-runtime-subagents"');
+    expect(markup).toContain('One-shot critic');
+    expect(markup).toContain('data-testid="session-runtime-workflows"');
     expect(markup).toContain('workflow-run-1');
+    expect(markup).toContain('data-testid="session-runtime-background"');
+    expect(markup).toContain('backend verification');
     expect(markup).toContain('data-testid="session-runtime-notifications"');
     expect(markup).toContain('notify user when run completes');
+    expect(markup).toContain('data-testid="session-runtime-runs"');
+    expect(markup).toContain('web chat turn');
+    expect(markup).toContain('data-testid="session-runtime-raw"');
+    expect(markup).toContain('runtime_action_completed');
+    expect(markup).not.toContain('Agent Team / Sub-agent');
     expect(markup).not.toContain('data-testid="session-runtime-tabs"');
     expect(markup).not.toContain('data-testid="session-runtime-tab-tasks"');
     expect(markup).not.toContain('data-testid="session-runtime-tab-checks"');

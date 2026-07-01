@@ -17,6 +17,11 @@ export interface FileInfo {
 export interface FileContent {
   path: string;
   content: string;
+  uses_snapshot?: boolean;
+  legacy_current_file_fallback?: boolean;
+  workspace_changed?: boolean;
+  snapshot_hash?: string | null;
+  content_hash?: string | null;
 }
 
 export const fileApi = {
@@ -26,6 +31,8 @@ export const fileApi = {
   },
   read: (agentId: string, path: string) =>
     get<FileContent>(`/agents/${agentId}/files/content?path=${encodeURIComponent(path)}`),
+  readArtifact: (agentId: string, artifactId: string) =>
+    get<FileContent>(`/agents/${agentId}/files/artifacts/${encodeURIComponent(artifactId)}/content`),
   write: (agentId: string, path: string, content: string) =>
     put<void>(`/agents/${agentId}/files/content?path=${encodeURIComponent(path)}`, { content }),
   remove: (agentId: string, path: string) =>
@@ -35,6 +42,10 @@ export const fileApi = {
   downloadUrl: (agentId: string, path: string) => {
     const token = localStorage.getItem('token');
     return `/api/agents/${agentId}/files/download?path=${encodeURIComponent(path)}&token=${token}`;
+  },
+  artifactDownloadUrl: (agentId: string, artifactId: string) => {
+    const token = localStorage.getItem('token');
+    return `/api/agents/${agentId}/files/artifacts/${encodeURIComponent(artifactId)}/download?token=${token}`;
   },
   upload: (agentId: string, file: File, path?: string, onProgress?: (pct: number) => void) => {
     if (onProgress) {

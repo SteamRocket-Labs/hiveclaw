@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCompletionWakeModel, buildThreadTimeline } from './timelineModel';
+import { buildCompletionWakeModel, buildRuntimeSectionsModel, buildThreadTimeline } from './timelineModel';
 import type { AgentChatMessage } from '../agent-detail/chatRuntime';
 import type { SessionIndex } from '../../api/domains/chat';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
@@ -257,5 +257,122 @@ describe('session workbench timeline model', () => {
       'workflow:Release checks:running',
     ]);
     expect(model.items[0].source).toBe('agent_team_read_model');
+  });
+
+  it('keeps agent teams, subagents, workflow leaves, background agents, notifications, runs, and raw events in separate runtime sections', () => {
+    const model = buildRuntimeSectionsModel({
+      runtime_sections: {
+        agent_teams: [
+          {
+            id: 'team-1',
+            runtime_kind: 'agent_team',
+            label: 'ABS research team',
+            status: 'running',
+            enterable: true,
+            chat_session_id: 'team-session',
+            members: [
+              {
+                id: 'member-1',
+                runtime_kind: 'team_member',
+                label: 'CLO analyst',
+                status: 'completed',
+                enterable: true,
+                child_session_id: 'member-session',
+              },
+            ],
+          },
+        ],
+        subagents: [
+          {
+            id: 'subagent-1',
+            runtime_kind: 'subagent',
+            label: 'One-shot reviewer',
+            status: 'completed',
+            enterable: true,
+            child_session_id: 'subagent-session',
+          },
+        ],
+        workflows: [
+          {
+            id: 'workflow-1',
+            runtime_kind: 'workflow',
+            label: 'Dynamic Workflow',
+            status: 'running',
+            steps: [{ id: 'step-1', label: 'Plan', status: 'completed' }],
+            leaf_calls: [
+              {
+                id: 'leaf-1',
+                runtime_kind: 'workflow_leaf',
+                label: 'Fetch market data',
+                status: 'completed',
+                enterable: false,
+              },
+            ],
+          },
+        ],
+        background: [
+          {
+            id: 'background-1',
+            runtime_kind: 'background_agent',
+            label: 'Completion observer',
+            status: 'running',
+          },
+        ],
+        notifications: [
+          {
+            id: 'notification-1',
+            runtime_kind: 'notification',
+            label: 'Subagent completed',
+            status: 'completed',
+          },
+        ],
+        runs: [
+          {
+            id: 'run-1',
+            runtime_kind: 'runtime_task',
+            label: 'web chat turn',
+            status: 'completed',
+          },
+        ],
+        raw: [
+          {
+            id: 'raw-1',
+            runtime_kind: 'raw_event',
+            label: 'runtime_action_completed',
+            status: 'completed',
+          },
+        ],
+      },
+    });
+
+    expect(model.agentTeams).toHaveLength(1);
+    expect(model.agentTeams[0]).toMatchObject({
+      id: 'team-1',
+      runtimeKind: 'agent_team',
+      label: 'ABS research team',
+      childSessionId: 'team-session',
+      enterable: true,
+    });
+    expect(model.agentTeams[0].members).toEqual([
+      expect.objectContaining({
+        id: 'member-1',
+        runtimeKind: 'team_member',
+        childSessionId: 'member-session',
+        enterable: true,
+      }),
+    ]);
+    expect(model.subagents.map((item) => item.runtimeKind)).toEqual(['subagent']);
+    expect(model.workflows[0].leafCalls).toEqual([
+      expect.objectContaining({
+        id: 'leaf-1',
+        runtimeKind: 'workflow_leaf',
+        enterable: false,
+      }),
+    ]);
+    expect(model.background.map((item) => item.runtimeKind)).toEqual(['background_agent']);
+    expect(model.notifications.map((item) => item.runtimeKind)).toEqual(['notification']);
+    expect(model.runs.map((item) => item.runtimeKind)).toEqual(['runtime_task']);
+    expect(model.raw.map((item) => item.runtimeKind)).toEqual(['raw_event']);
+    expect(model.summary.total).toBe(7);
   });
 });

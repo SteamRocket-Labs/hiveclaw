@@ -3495,6 +3495,109 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-native-controls"');
   });
 
+  it('keeps branch GitLine on the root checkpoint axis and exposes a return-to-main node', () => {
+    queryKeyCalls.length = 0;
+
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Runtime Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'branch-session-1',
+          user_id: 'user-1',
+          title: 'Existing branch',
+          root_session_id: 'runtime-panel-session',
+          parent_session_id: 'runtime-panel-session',
+          created_at: '2026-06-28T09:30:00Z',
+          transcript_metadata_json: {
+            branch_mode: 'branch',
+            root_session_id: 'runtime-panel-session',
+            source_session_id: 'runtime-panel-session',
+            anchor_event_id: 'checkpoint-user-1',
+            anchor_sequence: 1,
+          },
+        }}
+        branchLineage={[
+          { id: 'runtime-panel-session', parent_session_id: null, title: 'Main session', branch: {} },
+          {
+            id: 'branch-session-1',
+            parent_session_id: 'runtime-panel-session',
+            root_session_id: 'runtime-panel-session',
+            title: 'Existing branch',
+            branch: {
+              branch_mode: 'branch',
+              root_session_id: 'runtime-panel-session',
+              source_session_id: 'runtime-panel-session',
+              anchor_event_id: 'checkpoint-user-1',
+              anchor_sequence: 1,
+            },
+          },
+        ]}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'assistant',
+            content: 'Branch-local continuation.',
+          },
+        ]}
+        chatMessagesSessionId="branch-session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus="completed"
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        onSelectBranchSession={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(queryKeyCalls).toContainEqual(['chat-session-index', 'agent-1', 'runtime-panel-session', 'gitline-axis']);
+    expect(markup).toContain('data-axis-session-id="runtime-panel-session"');
+    expect(markup).toContain('data-active-session-id="branch-session-1"');
+    expect(markup).toContain('data-session-action="navigate-root-session"');
+    expect(markup).toContain('data-branch-session-id="runtime-panel-session"');
+    expect(markup).toContain('data-session-action="navigate-branch"');
+    expect(markup).toContain('data-checkpoint-id="checkpoint-user-1"');
+    expect(markup).not.toContain('data-testid="session-gitline-branches"');
+  });
+
   it('shows the durable run continuation state while a session run is active', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection

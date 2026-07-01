@@ -17,6 +17,7 @@ import {
   extractArtifactParts,
   isA2ASession,
   isReadOnlySessionForCurrentUser,
+  shouldUseWritableSessionSurface,
   normalizeStoredChatMessage,
   applyTranscriptEvent,
   createEmptyTranscriptReplayState,
@@ -630,6 +631,14 @@ describe('chatRuntime helpers', () => {
     expect(isReadOnlySessionForCurrentUser({ is_pending_session_lookup: true, source_channel: 'unknown' }, 'user-1')).toBe(true);
     expect(isReadOnlySessionForCurrentUser({ user_id: 'user-2', source_channel: 'web' }, 'user-1')).toBe(true);
     expect(isReadOnlySessionForCurrentUser({ user_id: 'user-1', source_channel: 'web' }, 'user-1')).toBe(false);
+  });
+
+  it('keeps newly created web sessions writable while preserving A2A read-only sessions', () => {
+    expect(shouldUseWritableSessionSurface({ id: 'new-session', source_channel: 'web' }, 'user-1')).toBe(true);
+    expect(shouldUseWritableSessionSurface({ id: 'new-session', source_channel: 'web', user_id: 'user-1' }, 'user-1')).toBe(true);
+    expect(shouldUseWritableSessionSurface({ id: 'other-session', source_channel: 'web', user_id: 'user-2' }, 'user-1')).toBe(false);
+    expect(shouldUseWritableSessionSurface({ id: 'a2a-session', source_channel: 'agent' }, 'user-1')).toBe(false);
+    expect(shouldUseWritableSessionSurface({ id: 'unknown-session', source_channel: 'unknown', is_pending_session_lookup: true }, 'user-1')).toBe(false);
   });
 
   it('resets the streaming assistant when a chunk tombstone arrives', () => {

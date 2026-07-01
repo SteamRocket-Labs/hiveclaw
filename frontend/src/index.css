@@ -1720,6 +1720,17 @@ select:focus {
   height: 8px;
 }
 
+.session-gitline-root-node::after {
+  width: 9px;
+  background: color-mix(in srgb, var(--text-primary) 72%, var(--border-default));
+  opacity: 0.92;
+}
+
+.session-gitline-root-node:hover::after,
+.session-gitline-root-node:focus-visible::after {
+  background: var(--text-primary);
+}
+
 .session-gitline-branch-cluster {
   position: relative;
   z-index: 6;

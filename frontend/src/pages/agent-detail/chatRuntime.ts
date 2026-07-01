@@ -271,6 +271,13 @@ export function isReadOnlySessionForCurrentUser(
   return ownerUserId != null && currentUserId != null && String(ownerUserId) !== String(currentUserId);
 }
 
+export function shouldUseWritableSessionSurface(
+  session: AgentOwnedSession | null | undefined,
+  currentUserId: string | number | null | undefined,
+): boolean {
+  return !isReadOnlySessionForCurrentUser(session, currentUserId);
+}
+
 export function sessionBelongsToAgent(session: AgentOwnedSession | null | undefined, agentId: string | null | undefined): boolean {
   if (!session || !agentId) return false;
   const sessionAgentId = session.agent_id ?? session.agentId;

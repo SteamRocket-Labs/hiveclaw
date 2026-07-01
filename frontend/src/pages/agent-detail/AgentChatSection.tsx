@@ -482,6 +482,47 @@ function sessionCheckpointId(checkpoint: Record<string, unknown>): string {
   );
 }
 
+function sessionCheckpointSequence(checkpoint: Record<string, unknown>): string {
+  const metadata = checkpoint.metadata && typeof checkpoint.metadata === 'object' && !Array.isArray(checkpoint.metadata)
+    ? checkpoint.metadata as Record<string, unknown>
+    : {};
+  return String(
+    checkpoint.sequence
+      ?? checkpoint.turn_index
+      ?? metadata.sequence
+      ?? metadata.turn_index
+      ?? '',
+  );
+}
+
+function branchAnchorSequence(item: BranchLineageItem): string {
+  const branch = item.branch || {};
+  return String(
+    branch.anchor_sequence
+      ?? branch.checkpoint_sequence
+      ?? branch.sequence
+      ?? branch.turn_index
+      ?? '',
+  );
+}
+
+function resolveBranchAnchorCheckpointId(
+  item: BranchLineageItem,
+  checkpoints: Array<Record<string, unknown>>,
+  checkpointIds: Set<string>,
+): string {
+  const directAnchorId = branchAnchorId(item);
+  if (directAnchorId && checkpointIds.has(directAnchorId)) return directAnchorId;
+
+  const anchorSequence = branchAnchorSequence(item);
+  if (!anchorSequence) return directAnchorId;
+
+  const matchedCheckpoint = checkpoints.find((checkpoint) => (
+    sessionCheckpointSequence(checkpoint) === anchorSequence
+  ));
+  return matchedCheckpoint ? sessionCheckpointId(matchedCheckpoint) : directAnchorId;
+}
+
 export type SessionScrollCheckpointAnchor = {
   id: string;
   top: number;
@@ -592,6 +633,7 @@ function branchAnchorId(item: BranchLineageItem): string {
 
 function SessionGitLine({
   activeSessionId,
+  axisSessionId,
   checkpoints,
   focusedCheckpointId,
   lineage,
@@ -600,6 +642,7 @@ function SessionGitLine({
   onNavigateBranch,
 }: {
   activeSessionId?: string | null;
+  axisSessionId?: string | null;
   checkpoints: Array<Record<string, unknown>>;
   focusedCheckpointId?: string | null;
   lineage: BranchLineageItem[];
@@ -609,12 +652,14 @@ function SessionGitLine({
 }) {
   const { t } = useTranslation();
   const navigationLabel = t('sessionWorkbench.gitLine.navigation', 'Session navigation');
-  const branchRows = lineage.length > 1 ? buildBranchLineageRows(lineage).filter((row) => row.depth > 0) : [];
+  const lineageRows = lineage.length > 1 ? buildBranchLineageRows(lineage) : [];
+  const rootRow = lineageRows.find((row) => row.depth === 0) || null;
+  const branchRows = lineageRows.filter((row) => row.depth > 0);
   const checkpointIds = new Set(checkpoints.map((checkpoint) => sessionCheckpointId(checkpoint)).filter(Boolean));
   const branchesByAnchorId = new Map<string, BranchLineageRow[]>();
   const orphanBranchRows: BranchLineageRow[] = [];
   branchRows.forEach((row) => {
-    const anchorId = branchAnchorId(row);
+    const anchorId = resolveBranchAnchorCheckpointId(row, checkpoints, checkpointIds);
     if (!anchorId || !checkpointIds.has(anchorId)) {
       orphanBranchRows.push(row);
       return;
@@ -645,10 +690,10 @@ function SessionGitLine({
   const closePreview = React.useCallback(() => {
     setHoverPreview(null);
   }, []);
-  const renderBranchButton = (row: BranchLineageRow, compact = false) => {
+  const renderBranchButton = (row: BranchLineageRow, compact = false, resolvedAnchorId?: string) => {
     const isActive = String(row.id) === String(activeSessionId || '');
     const title = row.title || row.id;
-    const anchorId = branchAnchorId(row);
+    const anchorId = resolvedAnchorId || resolveBranchAnchorCheckpointId(row, checkpoints, checkpointIds);
     const previewLabel = `${branchModeLabel(row)} · ${title}`;
     return (
       <button
@@ -672,10 +717,43 @@ function SessionGitLine({
       </button>
     );
   };
+  const activeBranchRow = branchRows.find((row) => String(row.id) === String(activeSessionId || '')) || null;
+  const activeBranchAnchorId = activeBranchRow
+    ? resolveBranchAnchorCheckpointId(activeBranchRow, checkpoints, checkpointIds)
+    : '';
+  const canReturnToRoot = Boolean(rootRow && activeSessionId && String(rootRow.id) !== String(activeSessionId));
+  const renderRootReturnButton = (anchorId?: string) => {
+    if (!rootRow || !canReturnToRoot) return null;
+    const title = rootRow.title || rootRow.id;
+    const previewLabel = `${t('agent.chat.branch.mainSession', 'Main session')} · ${title}`;
+    return (
+      <button
+        key={`root-${rootRow.id}`}
+        type="button"
+        data-testid="session-gitline-root"
+        data-session-action="navigate-root-session"
+        data-branch-session-id={rootRow.id}
+        data-checkpoint-id={anchorId || undefined}
+        className="session-gitline-branch-node session-gitline-root-node"
+        title={previewLabel}
+        aria-label={previewLabel}
+        onMouseEnter={(event) => openPreview(event, previewLabel)}
+        onFocus={(event) => openPreview(event, previewLabel)}
+        onMouseLeave={closePreview}
+        onBlur={closePreview}
+        onClick={() => onNavigateBranch?.(String(rootRow.id))}
+      >
+        <span className="session-gitline-branch-stem" aria-hidden="true" />
+        <span className="session-gitline-branch-dot" aria-hidden="true" />
+      </button>
+    );
+  };
   if (loading && checkpoints.length === 0 && branchRows.length === 0) {
     return (
       <aside
         data-testid="session-gitline"
+        data-axis-session-id={axisSessionId || undefined}
+        data-active-session-id={activeSessionId || undefined}
         data-density={density}
         className={`session-gitline is-loading ${densityClass}`}
         aria-label={navigationLabel}
@@ -688,6 +766,8 @@ function SessionGitLine({
     return (
       <aside
         data-testid="session-gitline"
+        data-axis-session-id={axisSessionId || undefined}
+        data-active-session-id={activeSessionId || undefined}
         data-density={density}
         className={`session-gitline is-empty ${densityClass}`}
         aria-label={navigationLabel}
@@ -697,6 +777,8 @@ function SessionGitLine({
   return (
     <aside
       data-testid="session-gitline"
+      data-axis-session-id={axisSessionId || undefined}
+      data-active-session-id={activeSessionId || undefined}
       data-density={density}
       className={`session-gitline ${densityClass}`}
       aria-label={navigationLabel}
@@ -709,6 +791,9 @@ function SessionGitLine({
           const anchoredBranches = id ? branchesByAnchorId.get(id) || [] : [];
           const hasActiveBranch = anchoredBranches.some((row) => String(row.id) === String(activeSessionId || ''));
           const isExpandedBranchAnchor = Boolean(id && expandedBranchAnchorId === id);
+          const rootReturnNode = id && canReturnToRoot && activeBranchAnchorId === id
+            ? renderRootReturnButton(id)
+            : null;
           const showCluster = anchoredBranches.length > 2 && !isExpandedBranchAnchor;
           const branchClusterLabel = anchoredBranches
             .map((row) => row.title || row.id)
@@ -733,8 +818,9 @@ function SessionGitLine({
                 onBlur={closePreview}
                 onClick={() => onNavigateCheckpoint(checkpoint, index)}
               />
-              {anchoredBranches.length > 0 && (
+              {(anchoredBranches.length > 0 || rootReturnNode) && (
                 <div className={`session-gitline-branch-group ${isExpandedBranchAnchor ? 'is-expanded' : ''}`}>
+                  {rootReturnNode}
                   {showCluster ? (
                     <button
                       type="button"
@@ -757,7 +843,7 @@ function SessionGitLine({
                       +{anchoredBranches.length}
                     </button>
                   ) : (
-                    anchoredBranches.map((row) => renderBranchButton(row, isExpandedBranchAnchor))
+                    anchoredBranches.map((row) => renderBranchButton(row, isExpandedBranchAnchor, id || undefined))
                   )}
                 </div>
               )}
@@ -767,6 +853,9 @@ function SessionGitLine({
       </div>
       {orphanBranchRows.length > 0 && (
         <div className="session-gitline-branches" data-testid="session-gitline-branches">
+          {activeBranchRow && orphanBranchRows.some((row) => String(row.id) === String(activeSessionId || ''))
+            ? renderRootReturnButton(activeBranchAnchorId || undefined)
+            : null}
           {orphanBranchRows.map((row) => renderBranchButton(row))}
         </div>
       )}
@@ -2716,6 +2805,25 @@ export default function AgentChatSection({
     isReadOnlySession ? historyMessagesSessionId !== activeSessionId : chatMessagesSessionId !== activeSessionId
   );
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
+  const branchLineageRowsForGitLine = React.useMemo(
+    () => (branchLineage.length > 1 ? buildBranchLineageRows(branchLineage) : []),
+    [branchLineage],
+  );
+  const gitLineAxisSessionId = React.useMemo(() => {
+    const activeLineageItem = branchLineage.find((item) => String(item.id) === String(activeSessionId || ''));
+    const activeLineageBranch = activeLineageItem?.branch || {};
+    const activeLineageRootId = activeLineageItem?.root_session_id || stringValue(activeLineageBranch.root_session_id);
+    if (activeLineageRootId) return String(activeLineageRootId);
+    if (activeSession?.root_session_id) return String(activeSession.root_session_id);
+    const rootRow = branchLineageRowsForGitLine.find((row) => row.depth === 0);
+    return rootRow?.id ? String(rootRow.id) : activeSessionId;
+  }, [activeSession?.root_session_id, activeSessionId, branchLineage, branchLineageRowsForGitLine]);
+  const shouldUseGitLineAxisSession = Boolean(
+    branchLineage.length > 1
+      && gitLineAxisSessionId
+      && activeSessionId
+      && String(gitLineAxisSessionId) !== String(activeSessionId),
+  );
   const { data: sessionIndexData } = useQuery({
     queryKey: ['chat-session-index', effectiveAgentId, activeSessionId],
     queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, activeSessionId!),
@@ -2728,16 +2836,54 @@ export default function AgentChatSection({
     enabled: Boolean(effectiveAgentId && activeSessionId),
     staleTime: 10_000,
   });
+  const { data: gitLineAxisSessionIndexData, isLoading: gitLineAxisSessionIndexLoading } = useQuery({
+    queryKey: ['chat-session-index', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis'],
+    queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, gitLineAxisSessionId!),
+    enabled: Boolean(effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession),
+    staleTime: 10_000,
+  });
+  const { data: gitLineAxisSessionWorkbenchData, isLoading: gitLineAxisSessionWorkbenchLoading } = useQuery({
+    queryKey: ['chat-session-workbench', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis'],
+    queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, gitLineAxisSessionId!),
+    enabled: Boolean(effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession),
+    staleTime: 10_000,
+  });
   const sessionIndex = sessionIndexData && !Array.isArray(sessionIndexData) ? sessionIndexData : null;
   const sessionWorkbench = sessionWorkbenchData && !Array.isArray(sessionWorkbenchData) ? sessionWorkbenchData : null;
-  const sessionGitCheckpoints = React.useMemo<Array<Record<string, unknown>>>(() => {
-    const indexCheckpoints = Array.isArray(sessionIndex?.checkpoints) ? sessionIndex.checkpoints : [];
+  const gitLineAxisSessionIndex = gitLineAxisSessionIndexData && !Array.isArray(gitLineAxisSessionIndexData)
+    ? gitLineAxisSessionIndexData
+    : null;
+  const gitLineAxisSessionWorkbench = gitLineAxisSessionWorkbenchData && !Array.isArray(gitLineAxisSessionWorkbenchData)
+    ? gitLineAxisSessionWorkbenchData
+    : null;
+  const getCheckpointsFromSessionSurfaces = React.useCallback((
+    indexData: typeof sessionIndex,
+    workbenchData: SessionWorkbench | null,
+  ): Array<Record<string, unknown>> => {
+    const indexCheckpoints = Array.isArray(indexData?.checkpoints) ? indexData.checkpoints : [];
     if (indexCheckpoints.length > 0) return indexCheckpoints;
-    const workbenchCheckpoints = Array.isArray(sessionWorkbench?.turn?.checkpoints)
-      ? sessionWorkbench.turn.checkpoints
+    const workbenchCheckpoints = Array.isArray(workbenchData?.turn?.checkpoints)
+      ? workbenchData.turn.checkpoints
       : [];
     return workbenchCheckpoints;
-  }, [sessionIndex, sessionWorkbench]);
+  }, []);
+  const activeSessionGitCheckpoints = React.useMemo<Array<Record<string, unknown>>>(() => (
+    getCheckpointsFromSessionSurfaces(sessionIndex, sessionWorkbench)
+  ), [getCheckpointsFromSessionSurfaces, sessionIndex, sessionWorkbench]);
+  const gitLineAxisSessionCheckpoints = React.useMemo<Array<Record<string, unknown>>>(() => (
+    getCheckpointsFromSessionSurfaces(gitLineAxisSessionIndex, gitLineAxisSessionWorkbench)
+  ), [getCheckpointsFromSessionSurfaces, gitLineAxisSessionIndex, gitLineAxisSessionWorkbench]);
+  const sessionGitCheckpoints = React.useMemo<Array<Record<string, unknown>>>(() => {
+    if (shouldUseGitLineAxisSession && gitLineAxisSessionCheckpoints.length > 0) {
+      return gitLineAxisSessionCheckpoints;
+    }
+    return activeSessionGitCheckpoints;
+  }, [activeSessionGitCheckpoints, gitLineAxisSessionCheckpoints, shouldUseGitLineAxisSession]);
+  const sessionGitLineLoading = branchLineageLoading || Boolean(
+    shouldUseGitLineAxisSession
+      && gitLineAxisSessionCheckpoints.length === 0
+      && (gitLineAxisSessionIndexLoading || gitLineAxisSessionWorkbenchLoading),
+  );
   const checkpointIdSignature = React.useMemo(
     () => sessionGitCheckpoints.map(sessionCheckpointId).filter(Boolean).join('|'),
     [sessionGitCheckpoints],
@@ -2858,10 +3004,11 @@ export default function AgentChatSection({
     <div className="session-tui-history-frame">
       <SessionGitLine
         activeSessionId={activeSessionId}
+        axisSessionId={gitLineAxisSessionId || activeSessionId}
         checkpoints={sessionGitCheckpoints}
         focusedCheckpointId={focusedGitCheckpointId}
         lineage={branchLineage}
-        loading={branchLineageLoading}
+        loading={sessionGitLineLoading}
         onNavigateCheckpoint={navigateGitCheckpoint}
         onNavigateBranch={onSelectBranchSession}
       />

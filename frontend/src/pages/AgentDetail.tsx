@@ -40,7 +40,6 @@ import {
     getRuntimeEventMessage,
     getTerminalRunIdFromTranscriptEvent,
     getTransportNotice,
-    isReadOnlySessionForCurrentUser,
     isTerminalRealtimeChatEvent,
     mergePendingUserMessages,
     filterSessionsForAgent,
@@ -48,6 +47,7 @@ import {
     normalizeStoredChatMessage,
     replayTranscriptEvents,
     sessionBelongsToAgent,
+    shouldUseWritableSessionSurface,
     shouldIgnoreObservedActiveRun,
     shouldClearStaleRuntimeState,
     type AgentChatMessage,
@@ -629,7 +629,7 @@ function AgentDetailInner() {
 
     const isWritableSession = (sess: any) => {
         if (!sess) return false;
-        return !isReadOnlySessionForCurrentUser(sess, currentUser?.id);
+        return shouldUseWritableSessionSurface(sess, currentUser?.id);
     };
 
     const syncActiveSocketState = (sess: any | null = activeSession, agentId: string | undefined = id) => {
@@ -709,7 +709,6 @@ function AgentDetailInner() {
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sessionId) return;
-            const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
             let preParsed: AgentChatMessage[];
             if (transcriptEvents.length > 0) {
                 const replay = replayTranscriptEvents(transcriptEvents as ChatTranscriptEventPayload[]);
@@ -743,7 +742,7 @@ function AgentDetailInner() {
                 }
             }
             
-            if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
+            if (writableSession) {
                 setChatMessagesSessionId(sessionId);
                 setChatMessages(mergePendingForSession(runtimeKey, preParsed));
             } else {
@@ -792,6 +791,10 @@ function AgentDetailInner() {
             agent_id: id,
             user_id: currentUser?.id ? String(currentUser.id) : undefined,
             title: branch?.title || 'Branch',
+            created_at: branch?.created_at,
+            parent_session_id: branch?.parent_session_id ?? null,
+            root_session_id: branch?.root_session_id ?? (branch?.branch?.root_session_id ? String(branch.branch.root_session_id) : null),
+            transcript_metadata_json: branch?.branch ?? null,
             source_channel: 'web',
             listed_surface: 'chat',
         });

@@ -39,6 +39,7 @@ import {
   buildThreadTimeline,
   buildWorkflowRunWindowModel,
   type RuntimeSectionItemModel,
+  type WorkflowRunActionModel,
   type WorkspaceDocumentGroupModel,
   type WorkspaceDocumentModel,
   type ThreadTimelineModel,
@@ -47,6 +48,7 @@ import { chatApi, type RecordSessionFeedbackInput } from '../../api/domains/chat
 import { ccParityApi, type SessionWorkbench } from '../../api/domains/ccParity';
 import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
+import { cancelWorkflowRun, promoteWorkflowRun, repairWorkflowRun } from '../../api/domains/workflows';
 import { showAppToast } from '../../components/AppDialogs';
 import { composerShortcutText } from './sessionComposerShortcuts';
 import type { ToolCallMeta } from './toolResultEnvelope';
@@ -1868,10 +1870,12 @@ export function WorkflowRunFocusPanel({
   workflow,
   onClose,
   onSelectSession,
+  onWorkflowAction,
 }: {
   workflow: RuntimeSectionItemModel;
   onClose: () => void;
   onSelectSession?: (sessionId: string) => void | Promise<unknown>;
+  onWorkflowAction?: (action: WorkflowRunActionModel, workflow: RuntimeSectionItemModel) => void | Promise<unknown>;
 }) {
   const { t } = useTranslation();
   const windowModel = buildWorkflowRunWindowModel(workflow);
@@ -1883,6 +1887,31 @@ export function WorkflowRunFocusPanel({
     windowModel.metrics.tokenLabel ? `${windowModel.metrics.tokenLabel} tokens` : '',
     windowModel.metrics.toolUseLabel ? `${windowModel.metrics.toolUseLabel} tools` : '',
   ].filter(Boolean).join(' · ');
+  const controls = windowModel.controls;
+  const actionLabel = (action: WorkflowRunActionModel['action']) => {
+    if (action === 'resume') return t('sessionWorkbench.workflowRunWindow.resume', 'Resume');
+    if (action === 'repair') return t('sessionWorkbench.workflowRunWindow.repair', 'Repair');
+    if (action === 'cancel') return t('sessionWorkbench.workflowRunWindow.cancel', 'Cancel');
+    return t('sessionWorkbench.workflowRunWindow.promote', 'Promote');
+  };
+  const renderWorkflowAction = (action: WorkflowRunActionModel) => (
+    <button
+      key={action.action}
+      type="button"
+      data-testid={`session-workflow-action-${action.action}`}
+      data-workflow-action={action.action}
+      data-workflow-run-id={action.runId || undefined}
+      data-preview-id={action.previewId || undefined}
+      data-proposal-id={action.proposalId || undefined}
+      data-candidate-id={action.candidateId || undefined}
+      disabled={!action.enabled || !onWorkflowAction}
+      title={action.reason || actionLabel(action.action)}
+      onClick={() => void onWorkflowAction?.(action, workflow)}
+      className="session-workflow-action-button"
+    >
+      {actionLabel(action.action)}
+    </button>
+  );
   const renderStep = (step: RuntimeSectionItemModel, index: number) => (
     <div
       key={step.id || `step-${index}`}
@@ -1961,6 +1990,29 @@ export function WorkflowRunFocusPanel({
         >
           <IconX size={15} stroke={1.8} />
         </button>
+      </div>
+
+      <div className="session-runtime-card" data-testid="session-workflow-controls">
+        <div className="session-runtime-card-title">
+          {t('sessionWorkbench.workflowRunWindow.controls', 'Controls')}
+        </div>
+        <div data-testid="session-workflow-gate-status" className="session-runtime-metric-row">
+          <span>{t('sessionWorkbench.workflowRunWindow.gateStatus', 'Gate')}</span>
+          <strong>{controls.gateStatus}</strong>
+        </div>
+        <div data-testid="session-workflow-wait-status" className="session-runtime-metric-row">
+          <span>{t('sessionWorkbench.workflowRunWindow.waitStatus', 'Wait')}</span>
+          <strong>{controls.waitStatus}</strong>
+        </div>
+        <div className="session-workflow-action-row">
+          {controls.actions.length === 0 ? (
+            <span className="session-runtime-empty">
+              {t('sessionWorkbench.workflowRunWindow.noActions', 'No workflow actions available.')}
+            </span>
+          ) : (
+            controls.actions.map(renderWorkflowAction)
+          )}
+        </div>
       </div>
 
       <div className="session-runtime-card">
@@ -2642,6 +2694,30 @@ export default function AgentChatSection({
 
     setArtifactPreview({ artifact, url: href });
   }, [effectiveAgentId, t]);
+
+  const handleWorkflowAction = React.useCallback(
+    async (action: WorkflowRunActionModel) => {
+      if (!effectiveAgentId || !action.runId) return;
+      try {
+        if (action.action === 'cancel') {
+          await cancelWorkflowRun(effectiveAgentId, action.runId);
+        } else if (action.action === 'promote') {
+          await promoteWorkflowRun(effectiveAgentId, action.runId);
+        } else {
+          await repairWorkflowRun(effectiveAgentId, action.runId);
+        }
+        showAppToast(t('sessionWorkbench.workflowRunWindow.actionQueued', 'Workflow action queued.'), 'success');
+      } catch (error: any) {
+        showAppToast(
+          t('sessionWorkbench.workflowRunWindow.actionFailed', 'Workflow action failed: {{message}}', {
+            message: error?.message || String(error),
+          }),
+          'error',
+        );
+      }
+    },
+    [effectiveAgentId, t],
+  );
 
   React.useEffect(() => {
     const input = chatInputRef.current;
@@ -3548,6 +3624,7 @@ export default function AgentChatSection({
                       workflow={focusedWorkflow}
                       onClose={() => setFocusedWorkflow(null)}
                       onSelectSession={onSelectBranchSession}
+                      onWorkflowAction={handleWorkflowAction}
                     />
                   ) : activeSessionHydrating ? (
                     <SessionHydratingState label={t('common.loading', 'Loading')} />
@@ -3601,6 +3678,7 @@ export default function AgentChatSection({
                       workflow={focusedWorkflow}
                       onClose={() => setFocusedWorkflow(null)}
                       onSelectSession={onSelectBranchSession}
+                      onWorkflowAction={handleWorkflowAction}
                     />
                   ) : activeSessionHydrating ? (
                     <SessionHydratingState label={t('common.loading', 'Loading')} />

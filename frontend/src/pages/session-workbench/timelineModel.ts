@@ -239,9 +239,29 @@ export interface WorkflowRunWindowModel {
   meta: string;
   childSessionId: string | null;
   metrics: RuntimeMetricModel;
+  controls: WorkflowRunControlsModel;
   steps: RuntimeSectionItemModel[];
   leafCalls: RuntimeSectionItemModel[];
   raw: RuntimeSectionItemModel;
+}
+
+export interface WorkflowRunActionModel {
+  action: 'resume' | 'repair' | 'cancel' | 'promote';
+  enabled: boolean;
+  runId: string;
+  previewId: string | null;
+  proposalId: string | null;
+  candidateId: string | null;
+  reason: string;
+}
+
+export interface WorkflowRunControlsModel {
+  gateStatus: string;
+  waitStatus: string;
+  repairable: boolean;
+  promotionEligible: boolean;
+  actions: WorkflowRunActionModel[];
+  raw: Record<string, unknown>;
 }
 
 export interface RuntimeSectionsModel {
@@ -379,6 +399,36 @@ function readRuntimeMetrics(item: Record<string, unknown>): RuntimeMetricModel {
     toolUseCount,
     toolUseLabel: toolUseCount === null ? null : String(toolUseCount),
     lastActivityLabel,
+  };
+}
+
+function normalizeWorkflowControls(item: Record<string, unknown>): WorkflowRunControlsModel {
+  const controls = asRecord(item.workflow_controls) ?? asRecord(item.workflowControls) ?? {};
+  const actionRows = Array.isArray(controls.actions) ? controls.actions : [];
+  const actions = actionRows
+    .map((action): WorkflowRunActionModel | null => {
+      const record = asRecord(action);
+      if (!record) return null;
+      const actionName = readString(record, ['action'], '') as WorkflowRunActionModel['action'];
+      if (!['resume', 'repair', 'cancel', 'promote'].includes(actionName)) return null;
+      return {
+        action: actionName,
+        enabled: Boolean(record.enabled),
+        runId: readString(record, ['run_id', 'runId'], ''),
+        previewId: readString(record, ['preview_id', 'previewId'], '') || null,
+        proposalId: readString(record, ['proposal_id', 'proposalId'], '') || null,
+        candidateId: readString(record, ['candidate_id', 'candidateId'], '') || null,
+        reason: readString(record, ['reason'], ''),
+      };
+    })
+    .filter((action): action is WorkflowRunActionModel => Boolean(action));
+  return {
+    gateStatus: readString(controls, ['gate_status', 'gateStatus'], 'clear'),
+    waitStatus: readString(controls, ['wait_status', 'waitStatus'], 'not_waiting'),
+    repairable: Boolean(controls.repairable),
+    promotionEligible: Boolean(controls.promotion_eligible ?? controls.promotionEligible),
+    actions,
+    raw: controls,
   };
 }
 
@@ -724,6 +774,7 @@ export function buildCheckpointTimelineNodes(
 }
 
 export function buildWorkflowRunWindowModel(workflow: RuntimeSectionItemModel): WorkflowRunWindowModel {
+  const workflowControlSource = { ...workflow.raw, ...(workflow as unknown as Record<string, unknown>) };
   return {
     id: workflow.id,
     label: workflow.label || workflow.id,
@@ -734,6 +785,7 @@ export function buildWorkflowRunWindowModel(workflow: RuntimeSectionItemModel): 
       .join(' · '),
     childSessionId: workflow.childSessionId,
     metrics: workflow.metrics,
+    controls: normalizeWorkflowControls(workflowControlSource),
     steps: workflow.steps,
     leafCalls: workflow.leafCalls,
     raw: workflow,

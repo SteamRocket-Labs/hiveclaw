@@ -1028,6 +1028,61 @@ cd frontend && npm run build
 # tsc && vite build passed
 ```
 
+### Part 17 — B5 Workflow gate / wait / resume / repair session-native 表达（2026-07-02）
+
+红测：
+
+- `test_runtime_sections_separate_agent_team_subagent_background_workflow`：旧 `runtime_sections.workflows.items[0]` 没有 `workflow_controls`，前端无法稳定读取 gate/wait/resume/repair/cancel/promote 状态与操作绑定。
+- `AgentDetailSections.test.tsx::renders a Dynamic Workflow run window...`：旧 `WorkflowRunFocusPanel` 只显示 steps / leaf calls，不显示 gate/wait 状态，也没有 resume / repair / cancel / promote 操作按钮。
+- `test_preview_workflow_rejects_over_threshold_fanout_before_start`：补齐 Dynamic Workflow 调度门槛覆盖，确认 fanout 超阈值在 preview/admission 阶段拒绝，不生成 preview_id，也不会进入 start。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_session_control_plane.py::test_runtime_sections_separate_agent_team_subagent_background_workflow \
+  tests/tools/test_workflow_tool.py::test_preview_workflow_rejects_over_threshold_fanout_before_start \
+  -q
+# failed: KeyError('workflow_controls') ; fanout threshold test passed
+
+cd frontend && npm run test -- \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  --run -t "Dynamic Workflow run window"
+# failed: missing data-testid="session-workflow-gate-status"
+```
+
+变更：
+
+- `session_control_plane.py` 为 workflow runtime section 增加 `workflow_controls`：`gate_status`、`wait_status`、`waiting_for_signal`、`repair_plan`、`promotion_eligibility`、以及 `resume` / `repair` / `cancel` / `promote` 四个 action descriptor；每个 action 均带 `run_id`、`preview_id`、`proposal_id`、`candidate_id` 和 disabled reason。
+- `timelineModel.ts` 新增 `WorkflowRunControlsModel` / `WorkflowRunActionModel`，`WorkflowRunWindowModel` 携带 normalized controls。
+- `WorkflowRunFocusPanel` 渲染 Controls 卡片：gate/wait 状态行和四个操作按钮；按钮带 `data-workflow-run-id` / `data-preview-id` / `data-proposal-id` / `data-candidate-id`，并接入 `repairWorkflowRun`、`cancelWorkflowRun`、`promoteWorkflowRun`。
+- 补齐 workflow controls 文案 i18n key 与按钮样式。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_session_control_plane.py::test_runtime_sections_separate_agent_team_subagent_background_workflow \
+  tests/tools/test_workflow_tool.py::test_preview_workflow_rejects_over_threshold_fanout_before_start \
+  -q
+# 2 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/session_control_plane.py \
+  tests/services/test_session_control_plane.py \
+  tests/tools/test_workflow_tool.py
+# All checks passed
+
+cd frontend && npm run test -- \
+  src/pages/session-workbench/timelineModel.test.ts \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  --run
+# 2 passed files, 92 passed tests
+
+cd frontend && npm run build
+# tsc && vite build passed
+```
+
 ### Part 16 — B4 §8-D metrics / named models / Workspace grouping（2026-07-02）
 
 红测：

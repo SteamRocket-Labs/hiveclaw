@@ -113,7 +113,17 @@
       "stepFallback": "步骤 {{index}}",
       "leafFallback": "Leaf {{index}}",
       "noSteps": "还没有记录 Workflow 步骤。",
-      "noLeafCalls": "还没有记录 leaf 调用。"
+      "noLeafCalls": "还没有记录 leaf 调用。",
+      "controls": "控制",
+      "gateStatus": "Gate",
+      "waitStatus": "等待",
+      "resume": "恢复",
+      "repair": "修复",
+      "cancel": "取消",
+      "promote": "固化",
+      "noActions": "当前没有可用的 Workflow 操作。",
+      "actionQueued": "Workflow 操作已提交。",
+      "actionFailed": "Workflow 操作失败：{{message}}"
     },
     "status": {
       "idle": "空闲",

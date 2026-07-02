@@ -562,7 +562,10 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
         metadata_json={
             "workflow_name": "ABS deep research",
             "definition_source": "dynamic_workflow",
-            "dynamic_workflow": {"proposal_id": "proposal-1"},
+            "dynamic_workflow": {"proposal_id": "proposal-1", "candidate_id": "candidate-1", "preview_id": "preview-1"},
+            "waiting_for_signal": {"kind": "gate", "reason": "awaiting approval"},
+            "repair_plan": {"repairable": True, "strategy": "resume_failed_leaves", "failed_leaf_count": 1},
+            "promotion_eligibility": {"eligible": False, "reason": "needs another clean run"},
         },
     )
     team = {
@@ -652,6 +655,18 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
     workflow = sections["workflows"]["items"][0]
     assert workflow["label"] == "ABS deep research"
     assert workflow["definition_source"] == "dynamic_workflow"
+    assert workflow["workflow_controls"]["gate_status"] == "waiting"
+    assert workflow["workflow_controls"]["wait_status"] == "waiting_for_signal"
+    assert workflow["workflow_controls"]["repairable"] is True
+    assert workflow["workflow_controls"]["promotion_eligible"] is False
+    assert {action["action"]: action["enabled"] for action in workflow["workflow_controls"]["actions"]} == {
+        "resume": True,
+        "repair": True,
+        "cancel": True,
+        "promote": False,
+    }
+    assert workflow["workflow_controls"]["actions"][0]["run_id"] == str(workflow_run_id)
+    assert workflow["workflow_controls"]["actions"][0]["preview_id"] == "preview-1"
     assert workflow["steps"][0]["step_id"] == "scan"
     assert workflow["leaf_calls"][0]["leaf_id"] == "case-1"
     assert workflow["leaf_calls"][0]["enterable"] is False

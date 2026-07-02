@@ -3731,9 +3731,22 @@ describe('AgentDetail extracted sections', () => {
         elapsedLabel: null,
         tokenCount: null,
         tokenLabel: null,
-        toolUseCount: null,
-        toolUseLabel: null,
-        lastActivityLabel: null,
+      toolUseCount: null,
+      toolUseLabel: null,
+      lastActivityLabel: null,
+      },
+      workflow_controls: {
+        run_id: 'workflow-run-1',
+        gate_status: 'waiting',
+        wait_status: 'waiting_for_signal',
+        repairable: true,
+        promotion_eligible: false,
+        actions: [
+          { action: 'resume', enabled: true, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'waiting for gate signal' },
+          { action: 'repair', enabled: true, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'resume failed leaves' },
+          { action: 'cancel', enabled: true, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'run is active' },
+          { action: 'promote', enabled: false, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'needs another clean run' },
+        ],
       },
       members: [],
       steps: [
@@ -3800,6 +3813,16 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-workflow-run-window"');
     expect(markup).toContain('ABS diligence workflow');
     expect(markup).toContain('data-testid="session-workflow-step-row"');
+    expect(markup).toContain('data-testid="session-workflow-gate-status"');
+    expect(markup).toContain('waiting');
+    expect(markup).toContain('data-testid="session-workflow-wait-status"');
+    expect(markup).toContain('waiting_for_signal');
+    expect(markup).toContain('data-testid="session-workflow-action-resume"');
+    expect(markup).toContain('data-testid="session-workflow-action-repair"');
+    expect(markup).toContain('data-testid="session-workflow-action-cancel"');
+    expect(markup).toContain('data-testid="session-workflow-action-promote"');
+    expect(markup).toContain('data-workflow-run-id="workflow-run-1"');
+    expect(markup).toContain('data-preview-id="preview-1"');
     expect(markup).toContain('data-testid="session-workflow-leaf-detail"');
     expect(markup).toContain('CLO source review');
     expect(markup).not.toContain('data-testid="session-workflow-leaf-enter"');

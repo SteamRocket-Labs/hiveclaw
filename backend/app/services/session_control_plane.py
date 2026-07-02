@@ -515,6 +515,85 @@ def _workflow_leaf_call_payload(row: Any) -> dict[str, Any]:
     }
 
 
+def _workflow_status_value(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _workflow_gate_status(*, steps: list[dict[str, Any]], waiting_for_signal: dict[str, Any]) -> str:
+    if waiting_for_signal:
+        return "waiting"
+    for step in steps:
+        step_type = _workflow_status_value(step.get("step_type"))
+        status = _workflow_status_value(step.get("status"))
+        if "gate" in step_type and status in {"pending", "running", "waiting", "suspended", "blocked"}:
+            return "waiting"
+    return "clear"
+
+
+def _workflow_controls_payload(
+    *,
+    task: RuntimeTask,
+    metadata: dict[str, Any],
+    dynamic_workflow: dict[str, Any],
+    steps: list[dict[str, Any]],
+) -> dict[str, Any]:
+    status = _workflow_status_value(getattr(task, "status", None))
+    state = _completion_state(status)
+    waiting_for_signal = _mapping(metadata.get("waiting_for_signal"))
+    repair_plan = _mapping(metadata.get("repair_plan") or dynamic_workflow.get("repair_plan"))
+    promotion_eligibility = _mapping(metadata.get("promotion_eligibility") or dynamic_workflow.get("promotion_eligibility"))
+    repairable = bool(repair_plan.get("repairable"))
+    promotion_eligible = bool(
+        promotion_eligibility.get("eligible")
+        or promotion_eligibility.get("promotion_eligible")
+        or metadata.get("promotion_eligible")
+        or dynamic_workflow.get("promotion_eligible")
+    )
+    run_id = str(getattr(task, "id", ""))
+    preview_id = dynamic_workflow.get("preview_id") or metadata.get("preview_id")
+    proposal_id = dynamic_workflow.get("proposal_id") or metadata.get("proposal_id")
+    candidate_id = dynamic_workflow.get("candidate_id") or metadata.get("candidate_id")
+    gate_status = _workflow_gate_status(steps=steps, waiting_for_signal=waiting_for_signal)
+    wait_status = "waiting_for_signal" if waiting_for_signal else ("waiting" if status in {"waiting", "suspended", "blocked"} else "not_waiting")
+    can_resume = bool(waiting_for_signal or status in {"waiting", "suspended", "blocked"} or repairable)
+    can_repair = repairable
+    can_cancel = state in {"pending", "running"} or status in {"waiting", "suspended", "blocked"}
+
+    def action_payload(action: str, *, enabled: bool, reason: Any) -> dict[str, Any]:
+        return {
+            "action": action,
+            "enabled": bool(enabled),
+            "run_id": run_id,
+            "preview_id": preview_id,
+            "proposal_id": proposal_id,
+            "candidate_id": candidate_id,
+            "reason": str(reason or ""),
+        }
+
+    return {
+        "schema": "hive.ccplus.workflow_controls.v1",
+        "run_id": run_id,
+        "status": getattr(task, "status", None),
+        "gate_status": gate_status,
+        "wait_status": wait_status,
+        "waiting_for_signal": waiting_for_signal or None,
+        "repairable": repairable,
+        "repair_plan": repair_plan,
+        "promotion_eligible": promotion_eligible,
+        "promotion_eligibility": promotion_eligibility,
+        "actions": [
+            action_payload("resume", enabled=can_resume, reason=waiting_for_signal.get("reason") or repair_plan.get("strategy")),
+            action_payload("repair", enabled=can_repair, reason=repair_plan.get("strategy") or repair_plan.get("reason")),
+            action_payload("cancel", enabled=can_cancel, reason="run is active" if can_cancel else "run is terminal"),
+            action_payload(
+                "promote",
+                enabled=promotion_eligible,
+                reason=promotion_eligibility.get("reason") or ("eligible" if promotion_eligible else "not eligible"),
+            ),
+        ],
+    }
+
+
 async def _list_workflow_journals(
     db: AsyncSession,
     *,
@@ -557,6 +636,12 @@ def _workflow_section_item(task: RuntimeTask, journal: dict[str, Any] | None) ->
     item["leaf_calls"] = [
         {**leaf, "enterable": bool(leaf.get("child_session_id"))} for leaf in list(journal.get("leaf_calls") or [])
     ]
+    item["workflow_controls"] = _workflow_controls_payload(
+        task=task,
+        metadata=metadata,
+        dynamic_workflow=dynamic_workflow,
+        steps=item["steps"],
+    )
     return item
 
 

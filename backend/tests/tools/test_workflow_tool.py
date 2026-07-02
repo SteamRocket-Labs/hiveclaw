@@ -196,6 +196,31 @@ async def test_preview_workflow_reports_compile_errors():
     assert payload["error"]
 
 
+async def test_preview_workflow_rejects_over_threshold_fanout_before_start():
+    from app.tools.handlers.workflow import preview_workflow
+
+    definition = {
+        "name": "too-wide-fanout",
+        "args_schema": {"targets": {"type": "array", "required": True}},
+        "steps": [
+            {
+                "id": "scan",
+                "type": "fanout_step",
+                "leaf": {"name": "scanner", "type": "explorer"},
+                "items_from": "args.targets",
+                "per_item_task": "Scan {{item}}.",
+                "max_concurrency": 1,
+            }
+        ],
+    }
+    result = await preview_workflow(uuid.uuid4(), {"definition": definition, "args": {"targets": [f"t{i}" for i in range(64)]}})
+    payload = json.loads(result)
+
+    assert payload["ok"] is False
+    assert "fanout" in payload["error"]
+    assert "preview_id" not in payload
+
+
 async def test_propose_dynamic_workflow_lowers_candidates_without_starting_runtime():
     from app.tools.handlers.workflow import propose_dynamic_workflow
 

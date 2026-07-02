@@ -1486,6 +1486,30 @@ select:focus {
   white-space: nowrap;
 }
 
+.session-workflow-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.session-workflow-action-button {
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-meta);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.session-workflow-action-button:disabled {
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+}
+
 .session-runtime-empty {
   padding: 8px 0;
   color: var(--text-tertiary);

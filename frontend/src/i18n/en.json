@@ -113,7 +113,17 @@
       "stepFallback": "Step {{index}}",
       "leafFallback": "Leaf {{index}}",
       "noSteps": "No workflow steps recorded.",
-      "noLeafCalls": "No leaf calls recorded."
+      "noLeafCalls": "No leaf calls recorded.",
+      "controls": "Controls",
+      "gateStatus": "Gate",
+      "waitStatus": "Wait",
+      "resume": "Resume",
+      "repair": "Repair",
+      "cancel": "Cancel",
+      "promote": "Promote",
+      "noActions": "No workflow actions available.",
+      "actionQueued": "Workflow action queued.",
+      "actionFailed": "Workflow action failed: {{message}}"
     },
     "status": {
       "idle": "idle",

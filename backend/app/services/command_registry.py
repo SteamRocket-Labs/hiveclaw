@@ -462,6 +462,7 @@ def build_default_command_registry(
             category="plan",
             execution_mode="runtime",
             permission_mode="plan",
+            visible_to_model=False,
             visible_to_user=False,
             input_schema={
                 "type": "object",
@@ -475,6 +476,7 @@ def build_default_command_registry(
             category="plan",
             execution_mode="runtime",
             permission_mode="read",
+            visible_to_model=False,
             visible_to_user=False,
             input_schema={
                 "type": "object",

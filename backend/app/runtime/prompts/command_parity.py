@@ -30,7 +30,7 @@ TEAM_CREATE_DESCRIPTION = (
 
 ADVANCED_PLAN_DESCRIPTION = (
     "Start a planning-only advanced planning pass for the current session. This is "
-    "the model-visible command handoff; the durable advanced_plan RuntimeTask is "
+    "an explicit command/API handoff; the durable advanced_plan RuntimeTask is "
     "created through the advanced-plan API. It does not execute the plan or perform "
     "side effects until a later approved execution path runs."
 )

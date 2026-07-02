@@ -18,11 +18,12 @@ def test_command_registry_exposes_index_without_full_schema():
         "task_create",
         "task_output",
         "goal_start",
-        "advanced_plan",
         "load_skill",
         "start_workflow",
         "mcp",
     } <= names
+    assert "advanced_plan" not in names
+    assert "verify_plan" not in names
 
     assert all("input_schema" not in entry for entry in index)
     assert all("Claude" not in str(entry) and "Anthropic" not in str(entry) for entry in index)
@@ -34,6 +35,12 @@ def test_command_registry_exposes_index_without_full_schema():
     assert "members" not in team_command.input_schema["properties"]
     assert "spawn_subagent" in team_command.description
     assert "team_name + name" in team_command.description
+    advanced_plan = registry.get("advanced_plan")
+    verify_plan = registry.get("verify_plan")
+    assert advanced_plan.execution_mode == "runtime"
+    assert advanced_plan.visible_to_model is False
+    assert verify_plan.execution_mode == "runtime"
+    assert verify_plan.visible_to_model is False
 
     # Registry must reject ambiguous names across sources unless the later
     # command is an explicit alias to the same canonical handler.

@@ -1428,3 +1428,49 @@ cd frontend && npm run test -- \
 cd frontend && npm run test -- src/pages/agent-detail/AgentDetailSections.test.tsx --run
 # 1 passed file, 85 passed tests
 ```
+
+### Part 24 — C5 goal / advanced_plan / verify_plan 边界复核（2026-07-02）
+
+复核结论：
+
+- `goal_start` 是 session-scoped goal 控制面：默认模型 command index 可见，真实持久化走 Session Goals API / command API，且 `goal_continuation` 是受 active-run guard 保护的 executable chat task type。保留。
+- `advanced_plan` 是重型 detached planning runtime：真实执行面保留为 `/advanced-plan` API 与 `advanced_plan` tool 的 handoff payload，但不应出现在默认 agent prompt command index，避免普通任务被诱导进入第二套 Plan/Workflow 路线。
+- `verify_plan` 是 read-only evidence checker：工具和 API/service 保留；它不是 Dynamic Workflow，也不是 Plan Mode 替代系统，因此不进入默认 agent prompt command index。
+
+红测：
+
+- `test_command_registry_exposes_index_without_full_schema` 改为要求 `advanced_plan` / `verify_plan` 不出现在 `visible_index(surface="agent_prompt")`，但 `registry.get()` 仍可取到两者且 `visible_to_model=False`。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_cc_codex_parity_substrate.py::test_command_registry_exposes_index_without_full_schema \
+  -q
+# failed: advanced_plan still present in agent_prompt index
+```
+
+变更：
+
+- `command_registry.py` 将 `advanced_plan` 与 `verify_plan` 标记为 `visible_to_model=False`，保留 `execution_mode="runtime"`、schema 和 canonical registry lookup。
+- `command_parity.py` 将 `ADVANCED_PLAN_DESCRIPTION` 中的 “model-visible command handoff” 改为 “explicit command/API handoff”，避免描述继续暗示默认模型索引可见。
+- 未删除 `advanced_plan` API、`advanced_plan` tool、`verify_plan` tool，也未改变 `goal_start` 默认索引可见性。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_cc_codex_parity_substrate.py::test_command_registry_exposes_index_without_full_schema \
+  tests/runtime/test_unified_prompt_contracts.py::test_command_parity_tools_explain_command_layer_semantics \
+  tests/tools/test_cc_codex_parity_tools.py::test_advanced_plan_tool_returns_runtime_handoff_payload \
+  tests/tools/test_cc_codex_parity_tools.py::test_verify_plan_tool_checks_criteria_and_evidence \
+  tests/api/test_advanced_plan_api.py::test_advanced_plan_api_starts_advanced_plan_runtime \
+  -q
+# 5 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/command_registry.py \
+  app/runtime/prompts/command_parity.py \
+  tests/services/test_cc_codex_parity_substrate.py
+# All checks passed
+```

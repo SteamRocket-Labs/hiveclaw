@@ -1079,3 +1079,35 @@ cd backend && source .venv/bin/activate && ruff check \
 cd backend && source .venv/bin/activate && alembic heads
 # web_chat_final_message_idempotency_0702 (head)
 ```
+
+### Part 15 — B3 Agent Team member session window（2026-07-02）
+
+红测：
+
+- `renders Agent Team member sessions as enterable child-session windows with composer target`：旧前端把 Agent Team member 当普通 branch session 切换，缺少 `Main > Agent: <name>` breadcrumb、active session tab/status、composer target，也没有 member row 的 Enter / Send follow-up / Resume / Close 生命周期入口。
+- `session runtime panel` 行为断言补强：旧 member row 只有混合 runtime item，没有 `agent-team-member-*` lifecycle actions。
+
+红测验证：
+
+```bash
+cd frontend && npm run test -- \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  --run -t "Agent Team member sessions"
+# failed: missing data-testid="session-team-member-window"
+```
+
+变更：
+
+- `AgentChatSection.tsx` 增加 Agent Team member session metadata 识别：`session_kind=team_member`、`runtime_source=team_member`、`source_channel=agent_team`、或 metadata 中的 `team_id/member_name` 都进入 member window 表达。
+- 中间区新增 Agent Team member window header：breadcrumb `Main > Agent: <name>`、active session tab、状态色、session id；composer footer 明确显示当前目标为 `Agent Team member · <name>`，避免用户误以为仍在主 session 发消息。
+- 右栏 Agent Team member row 增加生命周期入口：`Enter` 可点击进入 child session；`Send follow-up` / `Resume` / `Close` 首轮保留 disabled 状态与原因，不再静默缺席。
+
+验证：
+
+```bash
+cd frontend && npm run test -- src/pages/agent-detail/AgentDetailSections.test.tsx --run
+# 1 passed file, 83 passed tests
+
+cd frontend && npm run build
+# tsc && vite build passed
+```

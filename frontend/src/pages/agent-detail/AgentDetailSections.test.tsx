@@ -3554,6 +3554,11 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-runtime-collaboration"');
     expect(markup).toContain('Research Team');
     expect(markup).toContain('Reviewer');
+    expect(markup).toContain('data-testid="session-agent-team-member-actions"');
+    expect(markup).toContain('data-runtime-action="agent-team-member-enter"');
+    expect(markup).toContain('data-runtime-action="agent-team-member-send"');
+    expect(markup).toContain('data-runtime-action="agent-team-member-resume"');
+    expect(markup).toContain('data-runtime-action="agent-team-member-close"');
     expect(markup).toContain('data-testid="session-runtime-agent-teams"');
     expect(markup).toContain('data-testid="session-runtime-subagents"');
     expect(markup).toContain('One-shot critic');
@@ -3579,6 +3584,96 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Checks');
     expect(markup).not.toContain('data-testid="session-workbench-inspector"');
     expect(markup).not.toContain('data-testid="session-native-controls"');
+  });
+
+  it('renders Agent Team member sessions as enterable child-session windows with composer target', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Runtime Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'member-session-1',
+          user_id: 'user-1',
+          title: 'Research Team / Reviewer',
+          source_channel: 'agent_team',
+          session_kind: 'team_member',
+          runtime_source: 'team_member',
+          parent_session_id: 'parent-session-1',
+          root_session_id: 'parent-session-1',
+          transcript_metadata_json: {
+            team_id: 'team-1',
+            team_name: 'Research Team',
+            member_name: 'Reviewer',
+            member_role: 'audit',
+          },
+        }}
+        branchLineage={[
+          { id: 'parent-session-1', parent_session_id: null, title: 'Main session', branch: {} },
+          {
+            id: 'member-session-1',
+            parent_session_id: 'parent-session-1',
+            root_session_id: 'parent-session-1',
+            title: 'Research Team / Reviewer',
+            branch: {},
+          },
+        ]}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[{ role: 'assistant', content: 'Member evidence.' }]}
+        chatMessagesSessionId="member-session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus="running"
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        onSelectBranchSession={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-team-member-window"');
+    expect(markup).toContain('Main &gt; Agent: Reviewer');
+    expect(markup).toContain('data-testid="session-active-session-tab"');
+    expect(markup).toContain('running');
+    expect(markup).toContain('data-testid="session-composer-target"');
+    expect(markup).toContain('Agent Team member');
+    expect(markup).toContain('Reviewer');
   });
 
   it('renders a Dynamic Workflow run window where leaf rows without child sessions are detail-only', () => {

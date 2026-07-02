@@ -1419,6 +1419,37 @@ function isRuntimeRecord(value: unknown): value is RuntimeRecord {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function sessionMetadata(session: any): Record<string, unknown> {
+  const metadata = session?.transcript_metadata_json ?? session?.metadata_json ?? session?.metadata;
+  return isRuntimeRecord(metadata) ? metadata : {};
+}
+
+function isTeamMemberSession(session: any): boolean {
+  if (!session) return false;
+  const metadata = sessionMetadata(session);
+  return (
+    stringValue(session.session_kind).toLowerCase() === 'team_member'
+    || stringValue(session.runtime_source).toLowerCase() === 'team_member'
+    || stringValue(session.source_channel).toLowerCase() === 'agent_team'
+    || Boolean(metadata.team_id && metadata.member_name)
+  );
+}
+
+function teamMemberSessionLabel(session: any): string {
+  const metadata = sessionMetadata(session);
+  return (
+    stringValue(metadata.member_name)
+    || stringValue(session.member_name)
+    || stringValue(session.title).split('/').pop()?.trim()
+    || stringValue(session.id)
+  );
+}
+
+function teamMemberRoleLabel(session: any): string {
+  const metadata = sessionMetadata(session);
+  return stringValue(metadata.member_role || session.member_role);
+}
+
 function stringValue(value: unknown): string {
   if (value === null || value === undefined) return '';
   return String(value);
@@ -1522,6 +1553,82 @@ function SessionRuntimePanel({
     ) : (
       <div key={`${workflow.id}:root`} className="session-runtime-row">
         {content}
+      </div>
+    );
+  };
+
+  const renderTeamMemberItem = (member: RuntimeSectionItemModel, fallback: string) => {
+    const sessionId = member.childSessionId;
+    const canEnter = Boolean(member.enterable && sessionId && onSelectSession);
+    const actionButton = (
+      action: 'enter' | 'send' | 'resume' | 'close',
+      label: string,
+      disabled: boolean,
+      title: string,
+      onClick?: () => void,
+    ) => (
+      <button
+        key={action}
+        type="button"
+        data-runtime-action={`agent-team-member-${action}`}
+        className="session-runtime-action-button"
+        disabled={disabled}
+        title={title}
+        onClick={onClick}
+        style={{
+          minHeight: '24px',
+          padding: '2px 7px',
+          borderRadius: '6px',
+          border: '1px solid var(--border-subtle)',
+          background: disabled ? 'var(--bg-secondary)' : 'var(--bg-primary)',
+          color: disabled ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+          fontSize: '11px',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {label}
+      </button>
+    );
+    const meta = [member.id, member.runtimeKind, member.summary, sessionId ? `session:${sessionId}` : ''].filter(Boolean).join(' · ');
+    return (
+      <div key={member.id || fallback} className="session-runtime-row" data-testid="session-agent-team-member-row">
+        <span className="session-runtime-row-main">
+          <span className="session-runtime-row-title">{member.label || fallback}</span>
+          <span className="session-runtime-row-meta">{meta || member.id}</span>
+        </span>
+        <span className="session-runtime-status">{member.status || 'unknown'}</span>
+        <span
+          data-testid="session-agent-team-member-actions"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap', justifyContent: 'flex-end' }}
+        >
+          {actionButton(
+            'enter',
+            t('sessionWorkbench.rightPanel.memberEnter', 'Enter'),
+            !canEnter,
+            canEnter
+              ? t('sessionWorkbench.rightPanel.memberEnterTitle', 'Open member session')
+              : t('sessionWorkbench.rightPanel.memberEnterDisabled', 'No member session is available'),
+            canEnter && sessionId ? () => onSelectSession?.(sessionId) : undefined,
+          )}
+          {actionButton(
+            'send',
+            t('sessionWorkbench.rightPanel.memberSend', 'Send'),
+            true,
+            t('sessionWorkbench.rightPanel.memberSendDisabled', 'Enter the member session to send a follow-up from its composer'),
+          )}
+          {actionButton(
+            'resume',
+            t('sessionWorkbench.rightPanel.memberResume', 'Resume'),
+            true,
+            t('sessionWorkbench.rightPanel.memberResumeDisabled', 'Resume is available from the member session active-run controls'),
+          )}
+          {actionButton(
+            'close',
+            t('sessionWorkbench.rightPanel.memberClose', 'Close'),
+            true,
+            t('sessionWorkbench.rightPanel.memberCloseDisabled', 'Team close is available from the Agent Team control surface'),
+          )}
+        </span>
       </div>
     );
   };
@@ -1643,7 +1750,7 @@ function SessionRuntimePanel({
                   {t('sessionWorkbench.rightPanel.noTeamMembers', 'No team members have started yet.')}
                 </div>
               ) : (
-                team.members.map((member, index) => renderRuntimeItem(member, `team-member-${index + 1}`))
+                team.members.map((member, index) => renderTeamMemberItem(member, `team-member-${index + 1}`))
               )}
             </div>
           ),
@@ -3076,6 +3183,14 @@ export default function AgentChatSection({
       || runtimeRecord?.runtime_task_id
       || runtimeRecord?.task_id,
   );
+  const teamMemberWindow = isTeamMemberSession(activeSession)
+    ? {
+        memberName: teamMemberSessionLabel(activeSession),
+        memberRole: teamMemberRoleLabel(activeSession),
+        status: activeRunStatus || stringValue(activeRunRecord?.status) || 'idle',
+        sessionId: activeSessionId || '',
+      }
+    : null;
   const liveRunStatus = String(activeRunRecord?.status || activeRunStatus || '').toLowerCase();
   const sessionWorkLedgerLive = isWaiting || isStreaming || ['running', 'pending', 'queued'].includes(liveRunStatus);
   const escapeAttrValue = React.useCallback((value: string) => {
@@ -3195,6 +3310,64 @@ export default function AgentChatSection({
       </div>
     </div>
   );
+  const renderTeamMemberWindowHeader = () => {
+    if (!teamMemberWindow) return null;
+    const roleSuffix = teamMemberWindow.memberRole ? ` · ${teamMemberWindow.memberRole}` : '';
+    return (
+      <div
+        data-testid="session-team-member-window"
+        style={{
+          display: 'grid',
+          gap: '7px',
+          marginBottom: '12px',
+          padding: '10px 12px',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: '8px',
+          background: 'var(--bg-secondary)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div className="session-tui-kicker">
+              {t('sessionWorkbench.teamMemberWindow.breadcrumb', 'Main > Agent: {{name}}', { name: teamMemberWindow.memberName })}
+            </div>
+            <strong style={{ display: 'block', marginTop: '3px', fontSize: '13px', color: 'var(--text-primary)' }}>
+              {teamMemberWindow.memberName}{roleSuffix}
+            </strong>
+          </div>
+          <span
+            data-testid="session-active-session-tab"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              minHeight: '24px',
+              padding: '3px 8px',
+              borderRadius: '999px',
+              border: '1px solid var(--border-subtle)',
+              background: 'var(--bg-primary)',
+              color: 'var(--text-secondary)',
+              fontSize: '11px',
+              whiteSpace: 'nowrap',
+            }}
+            title={teamMemberWindow.sessionId}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                display: 'inline-block',
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                background: teamMemberWindow.status === 'failed' ? 'rgb(220,38,38)' : 'var(--accent-primary)',
+              }}
+            />
+            {teamMemberWindow.status}
+          </span>
+        </div>
+      </div>
+    );
+  };
   const formatDetailSessionTime = (session: any) => {
     const raw = session.last_message_at || session.updated_at || session.created_at;
     if (!raw) return '';
@@ -3300,6 +3473,7 @@ export default function AgentChatSection({
             <div ref={historyContainerRef} onScroll={handleHistoryScroll} className="session-tui-history">
               {renderHistoryFrame(
                 <>
+                  {renderTeamMemberWindowHeader()}
                   <div
                     style={{
                       fontSize: '11px',
@@ -3365,6 +3539,7 @@ export default function AgentChatSection({
             <div ref={chatContainerRef} onScroll={handleChatScroll} className="session-tui-history">
               {renderHistoryFrame(
                 <>
+                  {renderTeamMemberWindowHeader()}
                   {focusedWorkflow ? (
                     <WorkflowRunFocusPanel
                       workflow={focusedWorkflow}
@@ -3461,6 +3636,26 @@ export default function AgentChatSection({
               data-testid="session-composer"
               className="session-tui-composer"
             >
+              {teamMemberWindow && (
+                <div
+                  data-testid="session-composer-target"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '0 2px 7px',
+                    fontSize: '11px',
+                    color: 'var(--text-tertiary)',
+                  }}
+                >
+                  <span style={{ color: 'var(--text-secondary)', fontWeight: 650 }}>
+                    {t('sessionWorkbench.teamMemberWindow.composerTarget', 'Composer target')}
+                  </span>
+                  <span>
+                    {t('sessionWorkbench.teamMemberWindow.composerTargetValue', 'Agent Team member')} · {teamMemberWindow.memberName}
+                  </span>
+                </div>
+              )}
               {effectiveAgentId && activeSession?.id && !isDraftSession && (
                 <ChatWorkLedgerDock
                   agentId={effectiveAgentId}

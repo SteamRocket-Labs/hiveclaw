@@ -374,6 +374,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Runtime task reconciliation failed: {e}")
 
+    # C9-1: crash recovery for T2 package jobs — stale queued/running manifests
+    # from a dead process are normalized to held so the heartbeat sweep can
+    # retry them. Zero-LLM state normalization only; retries run on heartbeat.
+    try:
+        from pathlib import Path as _T2SweepPath
+
+        from app.config import get_settings as _t2_sweep_settings
+        from app.memory.t2.job_sweep import sweep_all_agents_stale_t2_jobs
+
+        _t2_sweep_reports = sweep_all_agents_stale_t2_jobs(
+            data_root=_T2SweepPath(_t2_sweep_settings().AGENT_DATA_DIR)
+        )
+        _t2_recovered = sum(len(report.recovered_stale) for report in _t2_sweep_reports)
+        if _t2_recovered:
+            logger.info("[startup] T2 job sweep: crash-recovered {} stale job(s) to held", _t2_recovered)
+    except Exception as e:
+        logger.warning(f"[startup] T2 job sweep failed (non-fatal): {e}")
+
     try:
         from app.services.skill_seeder import (
             cleanup_retired_builtin_skills,

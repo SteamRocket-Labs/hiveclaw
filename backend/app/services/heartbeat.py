@@ -1330,6 +1330,14 @@ def _run_memory_lifecycle_maintenance(agent_id: uuid.UUID, *, now: datetime | No
     return run_memory_lifecycle_maintenance(Path(get_settings().AGENT_DATA_DIR), agent_id, now=now)
 
 
+async def _run_t2_job_sweep(agent_id: uuid.UUID):
+    """C9-1: pick up held/failed T2 package jobs on the heartbeat cadence."""
+    from app.config import get_settings
+    from app.memory.t2.job_sweep import sweep_t2_jobs
+
+    return await sweep_t2_jobs(agent_id=agent_id, data_root=Path(get_settings().AGENT_DATA_DIR))
+
+
 async def _execute_heartbeat(
     agent_id: uuid.UUID,
     *,
@@ -1405,6 +1413,20 @@ async def _execute_heartbeat(
                     logger.info("[Heartbeat] Memory lifecycle maintenance for {}: {}", agent_id, lifecycle_report)
             except Exception as _lifecycle_err:
                 logger.warning("[Heartbeat] Memory lifecycle maintenance failed for {}: {}", agent_id, _lifecycle_err)
+
+            try:
+                sweep_report = await _run_t2_job_sweep(agent_id)
+                if sweep_report.recovered_stale or sweep_report.retried or sweep_report.alerted:
+                    logger.info(
+                        "[Heartbeat] T2 job sweep for {}: recovered={} retried={} committed={} exhausted={}",
+                        agent_id,
+                        list(sweep_report.recovered_stale),
+                        list(sweep_report.retried),
+                        list(sweep_report.committed),
+                        list(sweep_report.exhausted),
+                    )
+            except Exception as _sweep_err:
+                logger.warning("[Heartbeat] T2 job sweep failed for {}: {}", agent_id, _sweep_err)
 
             if not (agent.primary_model_id or agent.fallback_model_id):
                 logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")

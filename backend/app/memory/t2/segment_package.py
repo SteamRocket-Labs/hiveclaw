@@ -388,9 +388,10 @@ async def run_t2_segment_package_job(
         "staging_dir": _relative_agent_path(root, agent_id, staging_dir),
         "created_at": _now(),
     }
+    carried = _carry_over_job_fields(manifest_path)
     if not manifest_path.exists():
         _write_json(manifest_path, {**base_manifest, "status": "queued", "updated_at": _now(), "issues": []})
-    _write_json(manifest_path, {**base_manifest, "status": "running", "updated_at": _now(), "issues": []})
+    _write_json(manifest_path, {**base_manifest, **carried, "status": "running", "updated_at": _now(), "issues": []})
     try:
         result = await build_t2_segment_package_with_llm(
             agent_id=agent_id,
@@ -407,6 +408,7 @@ async def run_t2_segment_package_job(
             manifest_path,
             {
                 **base_manifest,
+                **carried,
                 "status": terminal,
                 "package_status": result.status,
                 "issues": list(result.issues),
@@ -428,6 +430,7 @@ async def run_t2_segment_package_job(
             manifest_path,
             {
                 **base_manifest,
+                **carried,
                 "status": "failed",
                 "issues": [issue],
                 "updated_at": _now(),
@@ -1718,6 +1721,22 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+_JOB_CARRY_OVER_KEYS = ("retry_count", "last_retry_at", "retry_exhausted_alerted_at", "recovered_from")
+
+
+def _carry_over_job_fields(manifest_path: Path) -> dict[str, Any]:
+    """Preserve sweep bookkeeping fields across job re-runs (C9-1)."""
+    if not manifest_path.exists():
+        return {}
+    try:
+        existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(existing, dict):
+        return {}
+    return {key: existing[key] for key in _JOB_CARRY_OVER_KEYS if key in existing}
 
 
 def _stable_t2_package_id(*, session_id: uuid.UUID | str, t0_segment_id: str) -> str:

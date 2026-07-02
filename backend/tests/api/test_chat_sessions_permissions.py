@@ -29,6 +29,9 @@ class _ListResult:
     def scalar(self):
         return self._values
 
+    def all(self):
+        return self._values
+
 
 class _QueryAwareDB:
     def __init__(
@@ -40,7 +43,10 @@ class _QueryAwareDB:
         artifacts=None,
         transcript_events=None,
         counts=None,
+        message_counts=None,
+        user_message_counts=None,
         users=None,
+        agent_names=None,
     ):
         self.agent = agent
         self.sessions = sessions or []
@@ -48,7 +54,10 @@ class _QueryAwareDB:
         self.artifacts = artifacts or []
         self.transcript_events = transcript_events or []
         self.counts = list(counts or [])
+        self.message_counts = {str(key): value for key, value in (message_counts or {}).items()}
+        self.user_message_counts = {str(key): value for key, value in (user_message_counts or {}).items()}
         self.users = users or {}
+        self.agent_names = agent_names or {}
         self.statements = []
         self.added = []
         self.deleted = []
@@ -57,6 +66,9 @@ class _QueryAwareDB:
     async def execute(self, stmt):
         self.statements.append(stmt)
         sql = str(stmt)
+        if "count(chat_messages.id)" in sql and "GROUP BY chat_messages.conversation_id" in sql:
+            source = self.user_message_counts if "chat_messages.role" in sql else self.message_counts
+            return _ListResult([(key, value) for key, value in source.items()])
         if "count(chat_messages.id)" in sql:
             if not self.counts:
                 raise AssertionError("No count prepared")
@@ -74,8 +86,12 @@ class _QueryAwareDB:
         if "FROM chat_transcript_events" in sql:
             return _ListResult(self.transcript_events)
         if "coalesce(users.display_name, users.username)" in sql:
+            if " IN " in sql:
+                return _ListResult([(user_id, name) for user_id, name in self.users.items()])
             session = self.sessions[0]
             return _ScalarResult(self.users.get(session.user_id, "Unknown"))
+        if "FROM agents" in sql and "agents.name" in sql and " IN " in sql:
+            return _ListResult([(agent_id, name) for agent_id, name in self.agent_names.items()])
         if "FROM agents" in sql:
             return _ScalarResult(self.agent)
         raise AssertionError(f"Unhandled SQL in fake DB: {sql}")
@@ -177,7 +193,12 @@ async def test_list_sessions_mine_keeps_empty_owned_web_sessions_writable(monkey
         transcript_metadata_json={},
     )
     current_user = SimpleNamespace(id=owner_id, role="member")
-    db = _QueryAwareDB(agent=agent, sessions=[session], counts=[0, 0])
+    db = _QueryAwareDB(
+        agent=agent,
+        sessions=[session],
+        message_counts={session_id: 0},
+        user_message_counts={session_id: 0},
+    )
 
     async def fake_check_agent_access(_db, _user, _agent_id):
         return agent, "use"
@@ -218,7 +239,7 @@ async def test_list_sessions_all_scope_allows_manage_access_for_non_creator(monk
         peer_agent_id=None,
     )
     current_user = SimpleNamespace(id=viewer_id, role="member")
-    db = _QueryAwareDB(agent=agent, sessions=[session], counts=[2], users={owner_id: "Owner"})
+    db = _QueryAwareDB(agent=agent, sessions=[session], message_counts={session_id: 2}, users={owner_id: "Owner"})
 
     async def fake_check_agent_access(_db, _user, _agent_id):
         return agent, "manage"
@@ -259,7 +280,12 @@ async def test_list_sessions_exposes_persisted_session_permission_mode(monkeypat
         },
     )
     current_user = SimpleNamespace(id=owner_id, role="member")
-    db = _QueryAwareDB(agent=agent, sessions=[session], counts=[1, 2])
+    db = _QueryAwareDB(
+        agent=agent,
+        sessions=[session],
+        message_counts={session_id: 2},
+        user_message_counts={session_id: 1},
+    )
 
     async def fake_check_agent_access(_db, _user, _agent_id):
         return agent, "use"
@@ -301,7 +327,12 @@ async def test_list_sessions_mine_scope_uses_canonical_microsoft_teams_channel(m
         peer_agent_id=None,
     )
     current_user = SimpleNamespace(id=owner_id, role="member")
-    db = _QueryAwareDB(agent=agent, sessions=[session], counts=[1, 2])
+    db = _QueryAwareDB(
+        agent=agent,
+        sessions=[session],
+        message_counts={session_id: 2},
+        user_message_counts={session_id: 1},
+    )
 
     async def fake_check_agent_access(_db, _user, _agent_id):
         return agent, "use"
@@ -353,7 +384,13 @@ async def test_list_sessions_mine_includes_owned_a2a_peer_sessions(monkeypatch):
         transcript_metadata_json={},
     )
     current_user = SimpleNamespace(id=owning_user_id, role="member")
-    db = _QueryAwareDB(agent=agent, sessions=[a2a_session], counts=[1, 2], users={owning_user_id: "rocky"})
+    db = _QueryAwareDB(
+        agent=agent,
+        sessions=[a2a_session],
+        message_counts={session_id: 2},
+        user_message_counts={session_id: 1},
+        users={owning_user_id: "rocky"},
+    )
 
     async def fake_check_agent_access(_db, _user, _agent_id):
         return agent, "use"
@@ -368,8 +405,10 @@ async def test_list_sessions_mine_includes_owned_a2a_peer_sessions(monkeypatch):
     )
 
     assert "chat_sessions.peer_agent_id" in str(db.statements[0])
-    a2a_user_message_count_sql = str(db.statements[1])
-    a2a_total_count_sql = str(db.statements[2])
+    count_statements = [str(stmt) for stmt in db.statements if "count(chat_messages.id)" in str(stmt)]
+    assert len(count_statements) == 2
+    a2a_user_message_count_sql = count_statements[0]
+    a2a_total_count_sql = count_statements[1]
     assert "chat_messages.conversation_id" in a2a_user_message_count_sql
     assert "chat_messages.agent_id" not in a2a_user_message_count_sql
     assert "chat_messages.conversation_id" in a2a_total_count_sql
@@ -379,6 +418,68 @@ async def test_list_sessions_mine_includes_owned_a2a_peer_sessions(monkeypatch):
     assert result[0].peer_agent_id == str(requested_agent_id)
     assert result[0].source_channel == "agent"
     assert result[0].session_kind == "delegation_run"
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_mine_batches_message_counts_for_multiple_sessions(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    owner_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    sessions = []
+    message_counts = {}
+    user_message_counts = {}
+    for index in range(3):
+        session_id = uuid4()
+        sessions.append(
+            SimpleNamespace(
+                id=session_id,
+                agent_id=agent_id,
+                user_id=owner_id,
+                source_channel="web",
+                session_kind="human_chat",
+                actor_type="user",
+                runtime_source="web_chat",
+                visibility_scope="direct_user",
+                listed_surface="chat",
+                title=f"Thread {index}",
+                created_at=SimpleNamespace(isoformat=lambda: "2026-07-02T00:00:00+00:00"),
+                last_message_at=None,
+                peer_agent_id=None,
+                parent_session_id=None,
+                root_session_id=None,
+                runtime_task_id=None,
+                transcript_metadata_json={},
+            )
+        )
+        message_counts[session_id] = index + 2
+        user_message_counts[session_id] = index + 1
+
+    current_user = SimpleNamespace(id=owner_id, role="member")
+    db = _QueryAwareDB(
+        agent=agent,
+        sessions=sessions,
+        message_counts=message_counts,
+        user_message_counts=user_message_counts,
+    )
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+
+    result = await chat_sessions_api.list_sessions(
+        agent_id=agent_id,
+        scope="mine",
+        current_user=current_user,
+        db=db,
+    )
+
+    count_statements = [str(stmt) for stmt in db.statements if "count(chat_messages.id)" in str(stmt)]
+    assert len(count_statements) == 2
+    assert all("GROUP BY chat_messages.conversation_id" in sql for sql in count_statements)
+    assert [item.message_count for item in result] == [2, 3, 4]
 
 
 @pytest.mark.asyncio

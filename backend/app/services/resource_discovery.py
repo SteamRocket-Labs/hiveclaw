@@ -1,5 +1,7 @@
 """Resource discovery — search Smithery & ModelScope registries and import MCP servers."""
 
+import asyncio
+import time
 import uuid
 import httpx
 from loguru import logger
@@ -10,6 +12,34 @@ from app.models.tool import Tool, AgentTool
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
 from app.services.mcp_naming import build_mcp_tool_name
 from app.services.tenant_resolver import resolve_tenant_for_agent
+
+
+_PROVIDER_CONFIG_CACHE_TTL_SECONDS = 15.0
+_provider_config_cache: dict[tuple[str, str | None], tuple[float, str]] = {}
+_provider_config_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
+
+
+def clear_provider_config_cache() -> None:
+    _provider_config_cache.clear()
+    _provider_config_locks.clear()
+
+
+async def _cached_provider_config(key: tuple[str, str | None], loader) -> str:
+    now = time.monotonic()
+    entry = _provider_config_cache.get(key)
+    if entry is not None and entry[0] > now:
+        return entry[1]
+
+    lock = _provider_config_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        now = time.monotonic()
+        entry = _provider_config_cache.get(key)
+        if entry is not None and entry[0] > now:
+            return entry[1]
+
+        value = await loader()
+        _provider_config_cache[key] = (time.monotonic() + _PROVIDER_CONFIG_CACHE_TTL_SECONDS, value)
+        return value
 
 
 async def _resolve_agent_tenant_id(agent_id: uuid.UUID) -> uuid.UUID | None:
@@ -44,31 +74,34 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
     global rows stay visible under the policy); without one we audit-bypass for
     the global config read so it does not fail-close under enforced RLS.
     """
-    try:
-        if agent_id:
-            agent_tenant = await resolve_tenant_for_agent(agent_id)
-            async with tenant_scoped_session(agent_tenant) as db:
-                # 1) Per-agent: check AgentTool configs for any MCP tool with a smithery_api_key
-                at_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
-                for at in at_r.scalars().all():
-                    if at.config and at.config.get("smithery_api_key"):
-                        return at.config["smithery_api_key"]
-                # 2) System-level fallback (global tenant_id NULL config rows)
-                for tool_name in ("discover_resources", "import_mcp_server"):
-                    r = await db.execute(select(Tool).where(Tool.name == tool_name))
-                    tool = r.scalar_one_or_none()
-                    if tool and tool.config and tool.config.get("smithery_api_key"):
-                        return tool.config["smithery_api_key"]
-        else:
-            async with async_session() as db, enter_rls_bypass(db, reason="global Smithery API key config read"):
-                for tool_name in ("discover_resources", "import_mcp_server"):
-                    r = await db.execute(select(Tool).where(Tool.name == tool_name))
-                    tool = r.scalar_one_or_none()
-                    if tool and tool.config and tool.config.get("smithery_api_key"):
-                        return tool.config["smithery_api_key"]
-    except Exception as exc:
-        logger.debug(f"[ResourceDiscovery] Could not read Smithery API key: {exc}")
-    return ""
+    async def _load() -> str:
+        try:
+            if agent_id:
+                agent_tenant = await resolve_tenant_for_agent(agent_id)
+                async with tenant_scoped_session(agent_tenant) as db:
+                    # 1) Per-agent: check AgentTool configs for any MCP tool with a smithery_api_key
+                    at_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
+                    for at in at_r.scalars().all():
+                        if at.config and at.config.get("smithery_api_key"):
+                            return at.config["smithery_api_key"]
+                    # 2) System-level fallback (global tenant_id NULL config rows)
+                    for tool_name in ("discover_resources", "import_mcp_server"):
+                        r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                        tool = r.scalar_one_or_none()
+                        if tool and tool.config and tool.config.get("smithery_api_key"):
+                            return tool.config["smithery_api_key"]
+            else:
+                async with async_session() as db, enter_rls_bypass(db, reason="global Smithery API key config read"):
+                    for tool_name in ("discover_resources", "import_mcp_server"):
+                        r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                        tool = r.scalar_one_or_none()
+                        if tool and tool.config and tool.config.get("smithery_api_key"):
+                            return tool.config["smithery_api_key"]
+        except Exception as exc:
+            logger.debug(f"[ResourceDiscovery] Could not read Smithery API key: {exc}")
+        return ""
+
+    return await _cached_provider_config(("smithery_api_key", str(agent_id) if agent_id else None), _load)
 
 
 async def _search_smithery_api(query: str, max_results: int, api_key: str) -> list[dict]:
@@ -112,16 +145,19 @@ async def _get_modelscope_api_token() -> str:
     ``tools`` table — audit-bypass so the read does not fail-close under enforced
     RLS with no tenant in scope.
     """
-    try:
-        async with async_session() as db, enter_rls_bypass(db, reason="global ModelScope API token config read"):
-            for tool_name in ("discover_resources", "import_mcp_server"):
-                r = await db.execute(select(Tool).where(Tool.name == tool_name))
-                tool = r.scalar_one_or_none()
-                if tool and tool.config and tool.config.get("modelscope_api_token"):
-                    return tool.config["modelscope_api_token"]
-    except Exception as exc:
-        logger.debug(f"[ResourceDiscovery] Could not read ModelScope API token: {exc}")
-    return ""
+    async def _load() -> str:
+        try:
+            async with async_session() as db, enter_rls_bypass(db, reason="global ModelScope API token config read"):
+                for tool_name in ("discover_resources", "import_mcp_server"):
+                    r = await db.execute(select(Tool).where(Tool.name == tool_name))
+                    tool = r.scalar_one_or_none()
+                    if tool and tool.config and tool.config.get("modelscope_api_token"):
+                        return tool.config["modelscope_api_token"]
+        except Exception as exc:
+            logger.debug(f"[ResourceDiscovery] Could not read ModelScope API token: {exc}")
+        return ""
+
+    return await _cached_provider_config(("modelscope_api_token", None), _load)
 
 
 async def _search_modelscope_api(query: str, max_results: int) -> list[dict]:

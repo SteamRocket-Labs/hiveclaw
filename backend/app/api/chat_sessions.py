@@ -175,6 +175,80 @@ def _session_out(
     )
 
 
+def _session_id_text(session: ChatSession) -> str:
+    return str(getattr(session, "id"))
+
+
+async def _load_grouped_message_counts(
+    db: AsyncSession,
+    session_ids: list[str],
+    *,
+    agent_id: uuid.UUID | None = None,
+    role: str | None = None,
+) -> dict[str, int]:
+    if not session_ids:
+        return {}
+    stmt = select(ChatMessage.conversation_id, func.count(ChatMessage.id)).where(
+        ChatMessage.conversation_id.in_(session_ids)
+    )
+    if agent_id is not None:
+        stmt = stmt.where(ChatMessage.agent_id == agent_id)
+    if role is not None:
+        stmt = stmt.where(ChatMessage.role == role)
+    stmt = stmt.group_by(ChatMessage.conversation_id)
+    result = await db.execute(stmt)
+    return {str(row[0]): int(row[1] or 0) for row in result.all()}
+
+
+async def _load_mine_message_counts(
+    db: AsyncSession,
+    sessions: list[ChatSession],
+    *,
+    agent_id: uuid.UUID,
+    role: str | None = None,
+) -> dict[str, int]:
+    agent_session_ids = [_session_id_text(session) for session in sessions if session.source_channel == "agent"]
+    direct_session_ids = [_session_id_text(session) for session in sessions if session.source_channel != "agent"]
+    filters = []
+    if agent_session_ids:
+        filters.append(ChatMessage.conversation_id.in_(agent_session_ids))
+    if direct_session_ids:
+        filters.append((ChatMessage.conversation_id.in_(direct_session_ids)) & (ChatMessage.agent_id == agent_id))
+    if not filters:
+        return {}
+    stmt = select(ChatMessage.conversation_id, func.count(ChatMessage.id)).where(or_(*filters))
+    if role is not None:
+        stmt = stmt.where(ChatMessage.role == role)
+    stmt = stmt.group_by(ChatMessage.conversation_id)
+    result = await db.execute(stmt)
+    return {str(row[0]): int(row[1] or 0) for row in result.all()}
+
+
+async def _load_user_display_names(db: AsyncSession, sessions: list[ChatSession]) -> dict[str, str]:
+    user_ids = {getattr(session, "user_id", None) for session in sessions if getattr(session, "user_id", None)}
+    if not user_ids:
+        return {}
+    result = await db.execute(
+        select(User.id, func.coalesce(User.display_name, User.username)).where(User.id.in_(user_ids))
+    )
+    return {str(row[0]): str(row[1] or "Unknown") for row in result.all()}
+
+
+async def _load_agent_names(db: AsyncSession, sessions: list[ChatSession]) -> dict[str, str]:
+    agent_ids = set()
+    for session in sessions:
+        if session.source_channel != "agent":
+            continue
+        if getattr(session, "agent_id", None):
+            agent_ids.add(session.agent_id)
+        if getattr(session, "peer_agent_id", None):
+            agent_ids.add(session.peer_agent_id)
+    if not agent_ids:
+        return {}
+    result = await db.execute(select(Agent.id, Agent.name).where(Agent.id.in_(agent_ids)))
+    return {str(row[0]): str(row[1] or "Agent") for row in result.all()}
+
+
 def _json_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -1013,14 +1087,12 @@ async def list_sessions(
             .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
         )
         sessions = result.scalars().all()
+        message_counts = await _load_grouped_message_counts(db, [_session_id_text(session) for session in sessions])
+        user_names = await _load_user_display_names(db, sessions)
+        agent_names = await _load_agent_names(db, sessions)
         out = []
         for session in sessions:
-            count_result = await db.execute(
-                select(func.count(ChatMessage.id)).where(
-                    ChatMessage.conversation_id == str(session.id),
-                )
-            )
-            count = count_result.scalar() or 0
+            count = message_counts.get(_session_id_text(session), 0)
             if count == 0:
                 continue  # hide empty sessions
 
@@ -1034,19 +1106,12 @@ async def list_sessions(
                 # Agent-to-agent session
                 participant_type = "agent"
                 peer_agent_id = str(session.peer_agent_id)
-                # Get both agent names
-                a1_r = await db.execute(select(Agent.name).where(Agent.id == session.agent_id))
-                a2_r = await db.execute(select(Agent.name).where(Agent.id == session.peer_agent_id))
-                a1_name = a1_r.scalar_one_or_none() or "Agent"
-                a2_name = a2_r.scalar_one_or_none() or "Agent"
+                a1_name = agent_names.get(str(session.agent_id), "Agent")
+                a2_name = agent_names.get(str(session.peer_agent_id), "Agent")
                 peer_agent_name = a2_name
                 display = f"🤖 {a1_name} ↔ {a2_name}"
             else:
-                # Human session — resolve username
-                user_r = await db.execute(
-                    select(func.coalesce(User.display_name, User.username)).where(User.id == session.user_id)
-                )
-                display = user_r.scalar_one_or_none() or "Unknown"
+                display = user_names.get(str(session.user_id), "Unknown")
 
             out.append(
                 SessionOut(
@@ -1105,25 +1170,13 @@ async def list_sessions(
             .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
         )
         sessions = result.scalars().all()
+        user_message_counts = await _load_mine_message_counts(db, sessions, agent_id=agent_id, role="user")
+        message_counts = await _load_mine_message_counts(db, sessions, agent_id=agent_id)
         out = []
         for session in sessions:
             # Count only — skip sessions with no user messages (orphan assistant-only records)
-            if session.source_channel == "agent":
-                count_result = await db.execute(
-                    select(func.count(ChatMessage.id)).where(
-                        ChatMessage.conversation_id == str(session.id),
-                        ChatMessage.role == "user",
-                    )
-                )
-            else:
-                count_result = await db.execute(
-                    select(func.count(ChatMessage.id)).where(
-                        ChatMessage.conversation_id == str(session.id),
-                        ChatMessage.agent_id == agent_id,
-                        ChatMessage.role == "user",
-                    )
-                )
-            user_msg_count = count_result.scalar() or 0
+            session_id_text = _session_id_text(session)
+            user_msg_count = user_message_counts.get(session_id_text, 0)
             is_owned_direct_web_session = (
                 str(session.user_id) == str(current_user.id)
                 and session.source_channel == "web"
@@ -1132,20 +1185,7 @@ async def list_sessions(
             if user_msg_count == 0 and not is_owned_direct_web_session:
                 continue  # hide empty channel/A2A/orphan sessions, but keep newly created user web sessions writable.
             # Total message count for display
-            if session.source_channel == "agent":
-                total_result = await db.execute(
-                    select(func.count(ChatMessage.id)).where(
-                        ChatMessage.conversation_id == str(session.id),
-                    )
-                )
-            else:
-                total_result = await db.execute(
-                    select(func.count(ChatMessage.id)).where(
-                        ChatMessage.conversation_id == str(session.id),
-                        ChatMessage.agent_id == agent_id,
-                    )
-                )
-            count = total_result.scalar() or 0
+            count = message_counts.get(session_id_text, 0)
             peer_agent_id = None
             peer_agent_name = None
             participant_type = "user"

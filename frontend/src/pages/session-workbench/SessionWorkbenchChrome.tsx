@@ -2,6 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   IconActivity,
+  IconShieldCheck,
   IconChecklist,
   IconDatabase,
   IconGitBranch,
@@ -113,6 +114,28 @@ export function SessionWorkbenchHeader({ model }: { model: SessionWorkbenchHeade
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
         <HeaderChip label={t('sessionWorkbench.resumeHealth', 'resume')} value={model.resumeHealth} icon={<IconActivity size={13} />} />
+        {model.permissionMode && (
+          <HeaderChip
+            label={t('sessionWorkbench.permission', 'permission')}
+            value={model.permissionMode}
+            title={model.governanceLabel || undefined}
+            icon={<IconShieldCheck size={13} />}
+          />
+        )}
+        {model.governanceLabel && (
+          <HeaderChip
+            label={t('sessionWorkbench.governance', 'governance')}
+            value={model.governanceLabel}
+            icon={<IconShieldCheck size={13} />}
+          />
+        )}
+        {model.activeProjection && (
+          <HeaderChip
+            label={t('sessionWorkbench.activeProjection', 'projection')}
+            value={model.activeProjection}
+            icon={<IconDatabase size={13} />}
+          />
+        )}
         <HeaderChip label={t('sessionWorkbench.checkpoints', 'checkpoints')} value={model.checkpointCount} icon={<IconGitCommit size={13} />} />
         <HeaderChip label={t('sessionWorkbench.branchDepth', 'branch')} value={model.branchDepth} icon={<IconGitBranch size={13} />} />
         <HeaderChip label={t('sessionWorkbench.compactions', 'compactions')} value={model.compactionCount} icon={<IconDatabase size={13} />} />

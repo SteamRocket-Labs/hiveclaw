@@ -33,6 +33,21 @@ def _event_checkpoint(event: ChatTranscriptEvent) -> dict[str, Any] | None:
     }
 
 
+def _active_projection(meta: dict[str, Any]) -> dict[str, Any] | None:
+    projection = meta.get("active_projection")
+    if not isinstance(projection, dict):
+        return None
+    reason = str(projection.get("projection_reason") or projection.get("command") or "").strip()
+    checkpoint_event_id = projection.get("checkpoint_event_id") or projection.get("anchor_event_id")
+    if not reason and not checkpoint_event_id:
+        return None
+    return {
+        "projection_reason": reason or None,
+        "checkpoint_event_id": str(checkpoint_event_id) if checkpoint_event_id else None,
+        "applied_at": projection.get("applied_at"),
+    }
+
+
 def build_session_index(
     *,
     session: ChatSession,
@@ -68,6 +83,10 @@ def build_session_index(
         "created_at": session.created_at.isoformat() if getattr(session, "created_at", None) else None,
         "last_message_at": session.last_message_at.isoformat() if getattr(session, "last_message_at", None) else None,
         "checkpoints": checkpoints,
+        # Active context projection (rewind/compact soft-projection): the
+        # transcript keeps every event; this tells readers which checkpoint is
+        # the projected head so tails can render as rewound, not vanish.
+        "active_projection": _active_projection(meta),
         "last_event_sequence": int(events[-1].sequence) if events else None,
         "event_count": len(events),
         "t0_segments": indexed_t0_segments,

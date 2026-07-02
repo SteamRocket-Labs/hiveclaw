@@ -1,7 +1,16 @@
 import { Navigate, useLocation, useParams } from 'react-router-dom';
 
 export function buildAgentChatRedirect(agentId: string | undefined, search = '') {
-  return agentId ? `/agents/${agentId}${search}#chat` : '/plaza';
+  if (!agentId) return '/plaza';
+  const params = new URLSearchParams(search);
+  const sessionId = params.get('session_id');
+  if (sessionId) {
+    params.delete('session_id');
+    params.delete('manage');
+    const rest = params.toString();
+    return `/agents/${agentId}/sessions/${sessionId}${rest ? `?${rest}` : ''}`;
+  }
+  return `/agents/${agentId}${search}#chat`;
 }
 
 export default function Chat() {

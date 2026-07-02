@@ -101,7 +101,8 @@
       "memberResume": "Resume",
       "memberResumeDisabled": "Resume is available from the member session active-run controls",
       "memberClose": "Close",
-      "memberCloseDisabled": "Team close is available from the Agent Team control surface"
+      "memberCloseDisabled": "Team close is available from the Agent Team control surface",
+      "resize": "Resize runtime panel"
     },
     "workflowRunWindow": {
       "title": "Workflow Run Window",
@@ -131,7 +132,10 @@
       "streaming": "streaming",
       "complete": "complete",
       "failed": "failed"
-    }
+    },
+    "permission": "permission",
+    "governance": "governance",
+    "activeProjection": "projection"
   },
   "login": {
     "hero": {
@@ -1278,7 +1282,8 @@
         "processing": "Processing",
         "processed": "Processed",
         "waiting": "Waiting for input",
-        "stepCount": "{{count}} steps"
+        "stepCount": "{{count}} steps",
+        "working": "Working"
       },
       "artifacts": {
         "open": "Open",
@@ -1369,7 +1374,10 @@
         "toolGroupsActivated": "{{count}} runtime tool groups activated",
         "permissionNeeded": "The agent needs permission to use {{tool}}."
       },
-      "loadOlderMessages": "Load earlier messages"
+      "loadOlderMessages": "Load earlier messages",
+      "gitline": {
+        "rewoundTail": "rewound — head moved before this point"
+      }
     },
     "office": {
       "title": "Office",

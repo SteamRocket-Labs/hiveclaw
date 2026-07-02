@@ -4,15 +4,24 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconCircleCheck,
-  IconCircleDot,
   IconFileText,
   IconHelp,
+  IconLoader2,
   IconSearch,
   IconTerminal2,
   IconTool,
 } from '@tabler/icons-react';
 
 import type { RunStepKind, RunStepSnapshot, RunTimelineSnapshot } from './chatDisclosureReducer';
+
+// Codex-parity disclosure semantics:
+// - running: shimmering "Working" header + live elapsed seconds, expanded.
+// - done: collapses to one line by default — finished process recedes, the
+//   final answer is the star. blocked/failed stay expanded (they need eyes).
+// - command steps render structured exec output (head/tail clip + exit code),
+//   never a raw JSON blob.
+
+const EXEC_CLIP_LINES = 5;
 
 function formatDuration(durationMs?: number): string {
   if (!durationMs || durationMs < 1000) return '';
@@ -23,9 +32,28 @@ function formatDuration(durationMs?: number): string {
   return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
+function useLiveElapsed(startedAt: string | undefined, running: boolean): string {
+  const parsed = startedAt ? Date.parse(startedAt) : NaN;
+  const compute = React.useCallback(() => {
+    if (!running || Number.isNaN(parsed)) return '';
+    const seconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+    return formatDuration(seconds * 1000) || `${seconds}s`;
+  }, [parsed, running]);
+  const [elapsed, setElapsed] = React.useState<string>(compute);
+  React.useEffect(() => {
+    if (!running || Number.isNaN(parsed)) return undefined;
+    setElapsed(compute());
+    const timer = window.setInterval(() => setElapsed(compute()), 1000);
+    return () => window.clearInterval(timer);
+  }, [compute, parsed, running]);
+  return elapsed;
+}
+
 function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
   const size = 14;
-  if (running) return <IconCircleDot size={size} stroke={2.2} />;
+  if (running) {
+    return <IconLoader2 size={size} stroke={2.2} className="session-tui-step-spinner" />;
+  }
   if (kind === 'search') return <IconSearch size={size} stroke={2.1} />;
   if (kind === 'file') return <IconFileText size={size} stroke={2.1} />;
   if (kind === 'command') return <IconTerminal2 size={size} stroke={2.1} />;
@@ -34,7 +62,104 @@ function StepIcon({ kind, running }: { kind: RunStepKind; running: boolean }) {
   return <IconTool size={size} stroke={2.1} />;
 }
 
+type ExecDetails = {
+  command?: string;
+  output?: string;
+  exit_code?: number;
+  duration_ms?: number;
+};
+
+function asExecDetails(details: unknown): ExecDetails | null {
+  if (!details || typeof details !== 'object') return null;
+  const record = details as Record<string, unknown>;
+  const hasExecShape =
+    typeof record.output === 'string' || typeof record.command === 'string' || typeof record.exit_code === 'number';
+  if (!hasExecShape) return null;
+  return {
+    command: typeof record.command === 'string' ? record.command : undefined,
+    output: typeof record.output === 'string' ? record.output : undefined,
+    exit_code: typeof record.exit_code === 'number' ? record.exit_code : undefined,
+    duration_ms: typeof record.duration_ms === 'number' ? record.duration_ms : undefined,
+  };
+}
+
+function clipLines(text: string, limit: number): { head: string[]; tail: string[]; clipped: number } {
+  const lines = text.split('\n');
+  if (lines.length <= limit * 2) return { head: lines, tail: [], clipped: 0 };
+  return {
+    head: lines.slice(0, limit),
+    tail: lines.slice(lines.length - limit),
+    clipped: lines.length - limit * 2,
+  };
+}
+
+function ExecOutput({ exec }: { exec: ExecDetails }) {
+  const output = exec.output ?? '';
+  const { head, tail, clipped } = clipLines(output, EXEC_CLIP_LINES);
+  const exitCode = exec.exit_code;
+  const duration = formatDuration(exec.duration_ms);
+  return (
+    <div className="session-tui-exec-output" style={{ marginTop: '6px' }}>
+      {(exec.command || exitCode != null || duration) && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '11px',
+            fontFamily: 'var(--font-mono)',
+            color: 'var(--text-secondary)',
+            marginBottom: output ? '4px' : 0,
+            minWidth: 0,
+          }}
+        >
+          {exec.command && (
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+              $ {exec.command}
+            </span>
+          )}
+          {exitCode != null && (
+            <span
+              style={{
+                flexShrink: 0,
+                color: exitCode === 0 ? 'var(--success, #16a34a)' : 'var(--danger, #ef4444)',
+                fontWeight: 600,
+              }}
+            >
+              exit {exitCode}
+            </span>
+          )}
+          {duration && <span style={{ flexShrink: 0, color: 'var(--text-tertiary)' }}>{duration}</span>}
+        </div>
+      )}
+      {output && (
+        <pre
+          style={{
+            margin: 0,
+            padding: '8px 10px',
+            borderRadius: '6px',
+            background: 'var(--bg-secondary)',
+            color: 'var(--text-secondary)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            fontSize: '11px',
+            fontFamily: 'var(--font-mono)',
+          }}
+        >
+          {head.join('\n')}
+          {clipped > 0 && (
+            <span style={{ color: 'var(--text-tertiary)' }}>{`\n… ${clipped} lines …\n`}</span>
+          )}
+          {tail.length > 0 && tail.join('\n')}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
+  const exec = asExecDetails(step.details);
+  if (exec) return <ExecOutput exec={exec} />;
   const detailText = typeof step.details === 'string' ? step.details : JSON.stringify(step.details ?? {}, null, 2);
   if (!detailText || detailText === '{}') return null;
   return (
@@ -59,8 +184,10 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
 }
 
 function RunStepRow({ step }: { step: RunStepSnapshot }) {
-  const [expanded, setExpanded] = React.useState(false);
   const running = step.status === 'running';
+  const exec = asExecDetails(step.details);
+  // exec 步骤直接展示裁剪后的输出（Codex 语义：命令输出即摘要）；其它详情按需展开。
+  const [expanded, setExpanded] = React.useState(Boolean(exec));
   const hasDetails = step.details != null;
   return (
     <div
@@ -131,14 +258,9 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
 }
 
 function shouldExpandTimeline(timeline: RunTimelineSnapshot): boolean {
-  if (timeline.status === 'running' || timeline.status === 'blocked' || timeline.status === 'failed') return true;
-  if (timeline.status !== 'done') return false;
-  return timeline.steps.some((step) => (
-    step.kind === 'reasoning'
-    || step.kind === 'a2a'
-    || step.kind === 'workflow'
-    || step.kind === 'subagent'
-  ));
+  // Codex parity: only live/problem states stay open. A finished run always
+  // recedes to one line — the compact chips still show what happened.
+  return timeline.status === 'running' || timeline.status === 'blocked' || timeline.status === 'failed';
 }
 
 function CompactStepSummary({ steps }: { steps: RunStepSnapshot[] }) {
@@ -194,19 +316,20 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
   const { t } = useTranslation();
   const defaultExpanded = shouldExpandTimeline(timeline);
   const [expanded, setExpanded] = React.useState(defaultExpanded);
+  const running = timeline.status === 'running';
+  const liveElapsed = useLiveElapsed(timeline.startedAt, running);
 
   React.useEffect(() => {
     setExpanded(defaultExpanded);
   }, [defaultExpanded, timeline.id]);
 
   if (timeline.steps.length === 0) return null;
-  const duration = formatDuration(timeline.durationMs);
-  const title =
-    timeline.status === 'running'
-      ? t('agent.chat.disclosure.processing', 'Processing')
-      : timeline.status === 'blocked'
-        ? t('agent.chat.disclosure.waiting', 'Waiting for input')
-        : t('agent.chat.disclosure.processed', 'Processed');
+  const duration = running ? liveElapsed : formatDuration(timeline.durationMs);
+  const title = running
+    ? t('agent.chat.disclosure.working', 'Working')
+    : timeline.status === 'blocked'
+      ? t('agent.chat.disclosure.waiting', 'Waiting for input')
+      : t('agent.chat.disclosure.processed', 'Processed');
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: timeline.steps.length });
 
   return (
@@ -236,8 +359,17 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
           }}
         >
           {expanded ? <IconChevronDown size={14} stroke={2.2} /> : <IconChevronRight size={14} stroke={2.2} />}
-          <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>{title}</span>
-          {duration && <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{duration}</span>}
+          <span
+            className={running ? 'session-tui-shimmer' : undefined}
+            style={{ fontSize: '12px', fontWeight: 700, color: running ? undefined : 'var(--text-primary)' }}
+          >
+            {title}
+          </span>
+          {duration && (
+            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>
+              {duration}
+            </span>
+          )}
           {timeline.summary && (
             <span
               style={{

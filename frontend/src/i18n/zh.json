@@ -101,7 +101,8 @@
       "memberResume": "恢复",
       "memberResumeDisabled": "恢复入口在成员会话的运行控制区",
       "memberClose": "关闭",
-      "memberCloseDisabled": "关闭 Team 的入口在 Agent Team 控制面"
+      "memberCloseDisabled": "关闭 Team 的入口在 Agent Team 控制面",
+      "resize": "拖拽调整右栏宽度"
     },
     "workflowRunWindow": {
       "title": "Workflow Run Window",
@@ -131,7 +132,10 @@
       "streaming": "输出中",
       "complete": "完成",
       "failed": "失败"
-    }
+    },
+    "permission": "权限",
+    "governance": "治理",
+    "activeProjection": "上下文投影"
   },
   "login": {
     "hero": {
@@ -1278,7 +1282,8 @@
         "processing": "处理中",
         "processed": "已处理",
         "waiting": "等待输入",
-        "stepCount": "{{count}} 个步骤"
+        "stepCount": "{{count}} 个步骤",
+        "working": "处理中"
       },
       "artifacts": {
         "open": "打开",
@@ -1369,7 +1374,10 @@
         "toolGroupsActivated": "已激活 {{count}} 个运行时工具组",
         "permissionNeeded": "Agent 需要权限来使用 {{tool}}。"
       },
-      "loadOlderMessages": "加载更早的消息"
+      "loadOlderMessages": "加载更早的消息",
+      "gitline": {
+        "rewoundTail": "已回退 — 当前头在此点之前"
+      }
     },
     "office": {
       "title": "Office",

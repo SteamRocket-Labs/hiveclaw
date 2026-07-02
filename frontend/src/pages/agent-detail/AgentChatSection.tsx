@@ -25,6 +25,8 @@ import {
 import { useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import StreamingMarkdown from '../../components/StreamingMarkdown';
+import ThinkingDisclosure from './ThinkingDisclosure';
 import type { AgentPermissions } from '../../api/domains/agents';
 import AskUserQuestionCard from './AskUserQuestionCard';
 import PlanModeRequestCard from './PlanModeRequestCard';
@@ -654,6 +656,7 @@ function SessionGitLine({
   focusedCheckpointId,
   lineage,
   loading,
+  rewindAnchorCheckpointId,
   onNavigateCheckpoint,
   onNavigateBranch,
 }: {
@@ -663,6 +666,7 @@ function SessionGitLine({
   focusedCheckpointId?: string | null;
   lineage: BranchLineageItem[];
   loading?: boolean;
+  rewindAnchorCheckpointId?: string | null;
   onNavigateCheckpoint: (checkpoint: Record<string, unknown>, index: number) => void;
   onNavigateBranch?: (sessionId: string) => void | Promise<unknown>;
 }) {
@@ -684,21 +688,29 @@ function SessionGitLine({
     rows.push(row);
     branchesByAnchorId.set(anchorId, rows);
   });
+  // Rewound tail (soft projection): checkpoints after the rewind anchor stay
+  // navigable but render dimmed — the transcript keeps them, the head moved.
+  const rewindAnchorIndex = rewindAnchorCheckpointId
+    ? checkpoints.findIndex((checkpoint) => sessionCheckpointId(checkpoint) === rewindAnchorCheckpointId)
+    : -1;
   const density = getSessionGitLineDensity(checkpoints.length + branchRows.length);
   const densityClass = `is-${density}`;
   const [expandedBranchAnchorId, setExpandedBranchAnchorId] = React.useState<string | null>(null);
   const [hoverPreview, setHoverPreview] = React.useState<{
     label: string;
+    meta: string[];
     top: number;
     left: number;
   } | null>(null);
   const openPreview = React.useCallback((
     event: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>,
     label: string,
+    meta: string[] = [],
   ) => {
     const rect = event.currentTarget.getBoundingClientRect();
     setHoverPreview({
       label,
+      meta,
       top: rect.top + rect.height / 2,
       left: rect.right + 8,
     });
@@ -804,6 +816,16 @@ function SessionGitLine({
           const id = sessionCheckpointId(checkpoint);
           const isFocused = Boolean(id && id === focusedCheckpointId);
           const previewLabel = sessionCheckpointPreview(checkpoint, index);
+          const isRewoundTail = rewindAnchorIndex >= 0 && index > rewindAnchorIndex;
+          const nodeState = isRewoundTail
+            ? 'rewound_tail'
+            : rewindAnchorIndex >= 0 && index === rewindAnchorIndex
+              ? 'current_head'
+              : 'past';
+          const previewMeta = [
+            String((checkpoint as Record<string, unknown>).created_at || '').slice(0, 16),
+            isRewoundTail ? t('agent.chat.gitline.rewoundTail', 'rewound — head moved before this point') : '',
+          ].filter(Boolean) as string[];
           const anchoredBranches = id ? branchesByAnchorId.get(id) || [] : [];
           const hasActiveBranch = anchoredBranches.some((row) => String(row.id) === String(activeSessionId || ''));
           const isExpandedBranchAnchor = Boolean(id && expandedBranchAnchorId === id);
@@ -825,11 +847,12 @@ function SessionGitLine({
                 data-testid="session-gitline-checkpoint"
                 data-session-action="navigate-checkpoint"
                 data-checkpoint-id={id || undefined}
-                className={`session-gitline-node ${isFocused ? 'is-focused' : ''}`}
+                className={`session-gitline-node ${isFocused ? 'is-focused' : ''} ${isRewoundTail ? 'is-rewound-tail' : ''}`}
+                data-state={nodeState}
                 title={previewLabel}
                 aria-label={previewLabel}
-                onMouseEnter={(event) => openPreview(event, previewLabel)}
-                onFocus={(event) => openPreview(event, previewLabel)}
+                onMouseEnter={(event) => openPreview(event, previewLabel, previewMeta)}
+                onFocus={(event) => openPreview(event, previewLabel, previewMeta)}
                 onMouseLeave={closePreview}
                 onBlur={closePreview}
                 onClick={() => onNavigateCheckpoint(checkpoint, index)}
@@ -846,8 +869,16 @@ function SessionGitLine({
                       className={`session-gitline-branch-cluster ${hasActiveBranch ? 'is-active' : ''}`}
                       title={branchClusterLabel}
                       aria-label={branchClusterLabel || t('agent.chat.branch.branches', 'Branches')}
-                      onMouseEnter={(event) => openPreview(event, branchClusterLabel || t('agent.chat.branch.branches', 'Branches'))}
-                      onFocus={(event) => openPreview(event, branchClusterLabel || t('agent.chat.branch.branches', 'Branches'))}
+                      onMouseEnter={(event) => openPreview(
+                        event,
+                        t('agent.chat.branch.branches', 'Branches'),
+                        anchoredBranches.map((row) => `${branchModeLabel(row)} · ${row.title || row.id}`),
+                      )}
+                      onFocus={(event) => openPreview(
+                        event,
+                        t('agent.chat.branch.branches', 'Branches'),
+                        anchoredBranches.map((row) => `${branchModeLabel(row)} · ${row.title || row.id}`),
+                      )}
                       onMouseLeave={closePreview}
                       onBlur={closePreview}
                       onClick={(event) => {
@@ -877,11 +908,15 @@ function SessionGitLine({
       )}
       {hoverPreview ? (
         <div
-          className="session-gitline-preview"
+          className="session-gitline-preview session-gitline-hovercard"
           style={{ top: `${hoverPreview.top}px`, left: `${hoverPreview.left}px` }}
           role="tooltip"
+          data-testid="session-gitline-hovercard"
         >
-          {hoverPreview.label}
+          <strong>{hoverPreview.label}</strong>
+          {hoverPreview.meta.map((line, index) => (
+            <div key={index}>{line}</div>
+          ))}
         </div>
       ) : null}
     </aside>
@@ -1474,6 +1509,42 @@ function SessionRuntimePanel({
   onSelectSession?: (sessionId: string) => void | Promise<unknown>;
   onSelectWorkflowRun?: (workflow: RuntimeSectionItemModel) => void | Promise<unknown>;
 }) {
+  const RUNTIME_PANEL_WIDTH_KEY = 'hive.sessionRuntimePanel.width';
+  const [panelWidth, setPanelWidth] = React.useState<number | null>(() => {
+    try {
+      const stored = window.localStorage.getItem(RUNTIME_PANEL_WIDTH_KEY);
+      const parsed = stored ? Number.parseInt(stored, 10) : NaN;
+      return Number.isFinite(parsed) ? Math.min(520, Math.max(280, parsed)) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [resizeDragging, setResizeDragging] = React.useState(false);
+  const startPanelResize = React.useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = (event.currentTarget.parentElement as HTMLElement | null)?.getBoundingClientRect().width ?? 360;
+    setResizeDragging(true);
+    const onMove = (move: MouseEvent) => {
+      const next = Math.min(520, Math.max(280, Math.round(startWidth + (startX - move.clientX))));
+      setPanelWidth(next);
+    };
+    const onUp = (up: MouseEvent) => {
+      const finalWidth = Math.min(520, Math.max(280, Math.round(startWidth + (startX - up.clientX))));
+      setPanelWidth(finalWidth);
+      try {
+        window.localStorage.setItem(RUNTIME_PANEL_WIDTH_KEY, String(finalWidth));
+      } catch {
+        // persistence is best-effort
+      }
+      setResizeDragging(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, []);
+
   const { t } = useTranslation();
   const rightPanel = buildSessionRightPanelModel({
     messages,
@@ -1707,7 +1778,19 @@ function SessionRuntimePanel({
   }
 
   return (
-    <aside data-testid="session-runtime-panel" className="session-runtime-panel">
+    <aside
+      data-testid="session-runtime-panel"
+      className="session-runtime-panel"
+      style={panelWidth ? { flexBasis: `${panelWidth}px`, maxWidth: `${panelWidth}px` } : undefined}
+    >
+      <div
+        data-testid="session-runtime-resize-handle"
+        className={`session-runtime-resize-handle${resizeDragging ? ' is-dragging' : ''}`}
+        onMouseDown={startPanelResize}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={t('sessionWorkbench.rightPanel.resize', 'Resize runtime panel')}
+      />
       <button
         type="button"
         data-testid="session-runtime-collapse-toggle"
@@ -2941,23 +3024,10 @@ export default function AgentChatSection({
                 )
               )}
               {msg.thinking && (
-                <details
-                  className="session-tui-thinking"
-                >
-                  <summary
-                    className="session-tui-thinking-summary"
-                  >
-                    Thinking
-                  </summary>
-                  <div
-                    className="session-tui-thinking-body"
-                  >
-                    {msg.thinking}
-                  </div>
-                </details>
+                <ThinkingDisclosure thinking={msg.thinking} streaming={Boolean((msg as any)._streaming)} />
               )}
               {msg.role === 'assistant' ? (
-                <MarkdownRenderer content={msg.content} />
+                <StreamingMarkdown content={msg.content} streaming={Boolean((msg as any)._streaming)} />
               ) : (
                 <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
               )}
@@ -3077,47 +3147,6 @@ export default function AgentChatSection({
     </div>
   );
 
-  const renderThinkingCard = (thinking: string, key: string | number) => (
-    <div key={key} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-      <details
-        style={{
-          fontSize: '12px',
-          background: 'rgba(147, 130, 220, 0.08)',
-          borderRadius: '6px',
-          border: '1px solid rgba(147, 130, 220, 0.15)',
-        }}
-      >
-        <summary
-          style={{
-            padding: '6px 10px',
-            cursor: 'pointer',
-            color: 'rgba(147, 130, 220, 0.9)',
-            fontWeight: 500,
-            userSelect: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px',
-          }}
-        >
-          Thinking
-        </summary>
-        <div
-          style={{
-            padding: '4px 10px 8px',
-            fontSize: '12px',
-            lineHeight: '1.6',
-            color: 'var(--text-secondary)',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            maxHeight: '300px',
-            overflow: 'auto',
-          }}
-        >
-          {thinking}
-        </div>
-      </details>
-    </div>
-  );
 
   const isInlineToolCardMessage = (message: AgentChatMessage) => (
     message.role === 'tool_call' && (
@@ -3458,6 +3487,15 @@ export default function AgentChatSection({
         focusedCheckpointId={focusedGitCheckpointId}
         lineage={branchLineage}
         loading={sessionGitLineLoading}
+        rewindAnchorCheckpointId={
+          ((sessionIndex as Record<string, unknown> | null)?.active_projection as Record<string, unknown> | null)
+            ?.projection_reason === 'rewind'
+            ? String(
+                ((sessionIndex as Record<string, unknown> | null)?.active_projection as Record<string, unknown>)
+                  ?.checkpoint_event_id || '',
+              ) || null
+            : null
+        }
         onNavigateCheckpoint={navigateGitCheckpoint}
         onNavigateBranch={onSelectBranchSession}
       />

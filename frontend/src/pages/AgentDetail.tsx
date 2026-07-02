@@ -231,13 +231,16 @@ export function buildSessionWorkbenchNavigation(
     search: string,
     sessionId: string,
 ): { pathname: string; search: string; hash: string } {
+    // Canonical Active Session Workbench route (§8.4): /agents/:id/sessions/:sessionId.
+    // The legacy ?session_id=…#chat disguise redirects here on mount.
     const params = new URLSearchParams(search);
-    params.set('session_id', sessionId);
+    params.delete('session_id');
     params.delete('manage');
+    const agentId = pathname.split('/agents/')[1]?.split('/')[0] ?? '';
     return {
-        pathname,
+        pathname: agentId ? `/agents/${agentId}/sessions/${sessionId}` : pathname,
         search: params.toString() ? `?${params.toString()}` : '',
-        hash: '#chat',
+        hash: '',
     };
 }
 
@@ -347,14 +350,25 @@ export function getVisibleAgentDetailTabs(agent: any): AgentDetailTab[] {
 
 function AgentDetailInner() {
     const { t, i18n } = useTranslation();
-    const { id } = useParams<{ id: string }>();
+    const { id, sessionId: routeSessionId } = useParams<{ id: string; sessionId?: string }>();
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const location = useLocation();
     const validTabs = AGENT_DETAIL_TABS as readonly string[];
-    const [activeTab, setActiveTabRaw] = useState<string>(() => getAgentDetailHashTab(location.hash, validTabs) ?? 'status');
-    const requestedSessionId = new URLSearchParams(location.search).get('session_id');
+    const [activeTab, setActiveTabRaw] = useState<string>(() =>
+        routeSessionId ? 'chat' : (getAgentDetailHashTab(location.hash, validTabs) ?? 'status'),
+    );
+    const querySessionId = new URLSearchParams(location.search).get('session_id');
+    const requestedSessionId = routeSessionId ?? querySessionId;
     const isManageMode = new URLSearchParams(location.search).has('manage');
+
+    // Legacy disguise → canonical session route (§8.4 Legacy Session URL row).
+    useEffect(() => {
+        if (routeSessionId || !id || !querySessionId || isManageMode) return;
+        if (!location.hash.startsWith('#chat') && location.hash !== '') return;
+        navigate(buildSessionWorkbenchNavigation(`/agents/${id}`, location.search, querySessionId), { replace: true });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [routeSessionId, id, querySessionId, isManageMode]);
 
     // Sync URL hash when tab changes
     const setActiveTab = (tab: string, options?: { detailChat?: boolean }) => {
@@ -2406,7 +2420,7 @@ function AgentDetailInner() {
     const statusKey = computeStatusKey();
     const isSystemHrRaw = (agent as any).agent_class === 'internal_system';
     const isSystemHr = isSystemHrRaw && !isManageMode;
-    const sessionWorkbenchMode = isSessionWorkbenchRoute(activeTab, location.search);
+    const sessionWorkbenchMode = Boolean(routeSessionId) || isSessionWorkbenchRoute(activeTab, location.search);
 
     // HR system agent: force chat-only mode
     if (isSystemHr && activeTab !== 'chat') {

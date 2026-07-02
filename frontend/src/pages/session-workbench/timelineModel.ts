@@ -45,12 +45,53 @@ export interface SessionWorkbenchHeaderModel {
   modelLabel: string | null;
   providerLabel: string | null;
   resumeHealth: string;
+  permissionMode: string | null;
+  governanceLabel: string | null;
+  activeProjection: string | null;
   checkpointCount: number;
   branchDepth: number;
   compactionCount: number;
   contextWindowStatusLabel: string | null;
   contextWindowTitle: string | null;
   activeRunStatus: string | null;
+}
+
+
+function getHeaderPermissionMode(
+  activeSession: Record<string, unknown> | null | undefined,
+  workbench: unknown,
+): string | null {
+  const record = (workbench && typeof workbench === 'object' ? workbench : {}) as Record<string, unknown>;
+  const profile = record.permission_profile as Record<string, unknown> | null | undefined;
+  const mode =
+    (profile && typeof profile.mode === 'string' && profile.mode) ||
+    (typeof record.permission_mode === 'string' && record.permission_mode) ||
+    (activeSession && typeof activeSession.permission_mode === 'string' && activeSession.permission_mode) ||
+    null;
+  return mode ? String(mode) : null;
+}
+
+function getHeaderGovernanceLabel(workbench: unknown): string | null {
+  const record = (workbench && typeof workbench === 'object' ? workbench : {}) as Record<string, unknown>;
+  const profile = record.permission_profile as Record<string, unknown> | null | undefined;
+  if (!profile) return null;
+  const allowed = Array.isArray(profile.allowed_tools) ? profile.allowed_tools.length : null;
+  const roots = Array.isArray(profile.writable_roots) ? profile.writable_roots.length : null;
+  if (allowed == null && roots == null) return null;
+  const parts: string[] = [];
+  if (allowed != null) parts.push(`${allowed} tools`);
+  if (roots != null) parts.push(`${roots} roots`);
+  return parts.join(' · ') || null;
+}
+
+function getHeaderActiveProjection(runtimeSummary: ChatRuntimeSummary | null | undefined): string | null {
+  const summary = runtimeSummary as unknown as Record<string, unknown> | null | undefined;
+  const compaction = summary?.compaction as Record<string, unknown> | null | undefined;
+  const projection =
+    (compaction && typeof compaction.active_projection === 'string' && compaction.active_projection) ||
+    (summary && typeof summary.active_projection === 'string' && summary.active_projection) ||
+    null;
+  return projection ? String(projection) : null;
 }
 
 export interface SessionWorkbenchInspectorModel {
@@ -1103,6 +1144,9 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       modelLabel: runtimeSummary?.model?.label || runtimeSummary?.model?.name || null,
       providerLabel: runtimeSummary?.model?.provider || null,
       resumeHealth: getResumeHealth(sessionIndex),
+      permissionMode: getHeaderPermissionMode(input.activeSession, input.sessionWorkbench),
+      governanceLabel: getHeaderGovernanceLabel(input.sessionWorkbench),
+      activeProjection: getHeaderActiveProjection(input.runtimeSummary),
       checkpointCount: sessionIndex?.checkpoints?.length ?? 0,
       branchDepth: getBranchDepth(input.activeSession, input.branchLineage),
       compactionCount: runtimeSummary?.compaction_count ?? 0,

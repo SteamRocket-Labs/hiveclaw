@@ -27,13 +27,14 @@ describe('Chat route', () => {
     expect(markup).toContain('/agents/agent-1#chat');
   });
 
-  it('preserves an explicit session query when redirecting legacy chat routes', async () => {
+  it('redirects an explicit session query to the canonical session route (§8.4)', async () => {
     routeSearch.value = '?session_id=session-1';
 
     const { default: Chat } = await import('./Chat');
     const markup = renderToStaticMarkup(<Chat />);
 
-    expect(markup).toContain('/agents/agent-1?session_id=session-1#chat');
+    expect(markup).toContain('/agents/agent-1/sessions/session-1');
+    expect(markup).not.toContain('session_id=');
     routeSearch.value = '';
   });
 });

@@ -5417,3 +5417,126 @@ select:focus {
 .readable-width {
   max-width: 65ch;
 }
+
+/* ── Codex-parity session transcript interactions ── */
+
+/* Shimmering "Working" header: a light band sweeps the text every 2s,
+   matching the codex-rs shimmer semantics (time-synced sweep). */
+.session-tui-shimmer {
+  background: linear-gradient(
+    100deg,
+    var(--text-tertiary) 20%,
+    var(--text-primary) 45%,
+    var(--bg-primary) 50%,
+    var(--text-primary) 55%,
+    var(--text-tertiary) 80%
+  );
+  background-size: 240% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: session-tui-shimmer-sweep 2s linear infinite;
+}
+
+@keyframes session-tui-shimmer-sweep {
+  0% { background-position: 120% 0; }
+  100% { background-position: -120% 0; }
+}
+
+.session-tui-step-spinner {
+  animation: spin 0.9s linear infinite;
+}
+
+/* Thinking summary (Codex ReasoningSummaryCell): dim italic headline visible
+   inline; the full reasoning expands on demand. */
+.session-tui-thinking-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-style: italic;
+  min-width: 0;
+}
+.session-tui-thinking-headline .session-tui-thinking-bullet {
+  flex-shrink: 0;
+  font-style: normal;
+}
+.session-tui-thinking-headline .session-tui-thinking-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-tui-thinking-full {
+  margin: 4px 0 6px 14px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
+/* Streaming tail: the uncommitted last line renders as plain text with a
+   soft cursor until its newline commits (newline-gated markdown). */
+.session-tui-stream-tail::after {
+  content: '▍';
+  color: var(--text-tertiary);
+  animation: pulse 1.1s ease-in-out infinite;
+  margin-left: 1px;
+}
+
+/* GitLine hover state card */
+.session-gitline-hovercard {
+  position: absolute;
+  z-index: 30;
+  min-width: 180px;
+  max-width: 260px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  font-size: 11px;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+.session-gitline-hovercard strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+.session-gitline-node.is-rewound-tail {
+  opacity: 0.38;
+}
+.session-gitline-node.is-rewound-tail::after {
+  content: '';
+}
+
+/* Right runtime panel drag-resize handle */
+.session-runtime-resize-handle {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+}
+.session-runtime-resize-handle:hover,
+.session-runtime-resize-handle.is-dragging {
+  background: var(--accent-primary);
+  opacity: 0.35;
+}

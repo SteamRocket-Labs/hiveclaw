@@ -138,6 +138,9 @@ export default function App() {
                         <Route path="local-bridge/activate" element={<LocalAgents />} />
                         <Route path="agents/new" element={<AgentCreate />} />
                         <Route path="agents/:id" element={<AgentDetail />} />
+                        {/* §8.4: the Active Session Workbench is a real route, not a
+                            query-string disguise inside Agent Detail. */}
+                        <Route path="agents/:id/sessions/:sessionId" element={<AgentDetail />} />
                         <Route path="agents/:id/chat" element={<Chat />} />
                         <Route path="messages" element={<Messages />} />
                     </Route>

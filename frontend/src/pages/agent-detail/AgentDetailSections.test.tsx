@@ -721,10 +721,12 @@ describe('AgentDetail extracted sections', () => {
       search: '?manage=true&session_id=session-1',
       hash: '#chat',
     });
+    // §8.4: session navigation now lands on the canonical session route,
+    // never on the query-string disguise.
     expect(buildSessionWorkbenchNavigation('/agents/agent-1', '?manage=true&session_id=session-1', 'session-2')).toEqual({
-      pathname: '/agents/agent-1',
-      search: '?session_id=session-2',
-      hash: '#chat',
+      pathname: '/agents/agent-1/sessions/session-2',
+      search: '',
+      hash: '',
     });
     expect(getAgentDetailHashTab('#mind', AGENT_DETAIL_TABS)).toBe('knowledge');
     expect(getAgentDetailHashTab('#unknown', AGENT_DETAIL_TABS)).toBeNull();

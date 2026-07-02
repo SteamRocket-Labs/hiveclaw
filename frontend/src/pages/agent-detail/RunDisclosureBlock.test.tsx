@@ -5,6 +5,13 @@ import { describe, expect, it, vi } from 'vitest';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import type { RunTimelineSnapshot } from './chatDisclosureReducer';
 
+// Codex-parity contract:
+// - running: shimmering "Working" header + live elapsed seconds
+// - done: ALWAYS collapses by default (process recedes; the answer is the
+//   star) — including runs that contain reasoning/a2a steps
+// - command details render head/tail-clipped output with exit-code badge,
+//   not a raw JSON blob
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: string, options?: Record<string, unknown>) => {
@@ -40,7 +47,7 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('RAW FILE CONTENT');
   });
 
-  it('expands completed runs when they contain visible reasoning or A2A lifecycle feedback', () => {
+  it('collapses completed runs even when they contain reasoning or A2A steps', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
         timeline={{
@@ -67,23 +74,60 @@ describe('RunDisclosureBlock', () => {
       />,
     );
 
-    expect(markup).toContain('aria-expanded="true"');
-    expect(markup).toContain('Verified the delegated artifact');
-    expect(markup).toContain('Action Started');
+    // Codex parity: finished work recedes into one line; the chips still
+    // carry the step summaries for scanning.
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('run-disclosure-compact-summary');
   });
 
-  it('expands active runs by default so the running step remains in the thread', () => {
+  it('expands active runs and shows a shimmering Working header with live elapsed', () => {
+    const startedAt = new Date(Date.now() - 12000).toISOString();
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
         timeline={{
           ...baseTimeline,
           status: 'running',
+          startedAt,
           steps: [{ ...baseTimeline.steps[0], status: 'running' }],
         }}
       />,
     );
 
     expect(markup).toContain('aria-expanded="true"');
-    expect(markup).toContain('read_file');
+    expect(markup).toContain('session-tui-shimmer');
+    expect(markup).toContain('Working');
+    expect(markup).toMatch(/1[0-9]s/); // live elapsed derived from startedAt
+  });
+
+  it('renders command details as head/tail-clipped output with an exit code badge', () => {
+    const longOutput = Array.from({ length: 20 }, (_, index) => `line-${index + 1}`).join('\n');
+    const markup = renderToStaticMarkup(
+      <RunDisclosureBlock
+        timeline={{
+          ...baseTimeline,
+          status: 'failed',
+          steps: [
+            {
+              id: 'cmd-1',
+              kind: 'command',
+              title: 'pytest tests/',
+              status: 'failed',
+              summary: '',
+              details: { command: 'pytest tests/', output: longOutput, exit_code: 1, duration_ms: 2300 },
+              visibility: 'collapsed',
+            },
+          ],
+        }}
+      />,
+    );
+
+    // failed runs stay expanded; the command detail is structured
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain('session-tui-exec-output');
+    expect(markup).toContain('line-1');
+    expect(markup).toContain('line-20');
+    expect(markup).toContain('…'); // clipped middle
+    expect(markup).not.toContain('line-10<'); // middle lines dropped
+    expect(markup).toContain('exit 1');
   });
 });

@@ -51,17 +51,16 @@ class ToolGovernanceResolver:
     def build_dependencies(self) -> GovernanceDependencies:
         async def _resolve_security_zone(agent_id: uuid.UUID) -> str:
             try:
-                async with (
-                    async_session() as db,
-                    enter_rls_bypass(db, reason=f"security-zone resolution for agent {agent_id}"),
-                ):
-                    result = await db.execute(select(Agent).where(Agent.id == agent_id))
-                    agent = result.scalar_one_or_none()
-                    zone = getattr(agent, "security_zone", None)
-                    if not zone:
-                        logger.warning(
-                            "[Governance] Agent %s has no security_zone set — defaulting to 'restricted'", agent_id
-                        )
+                async with async_session() as db:
+                    async with enter_rls_bypass(db, reason=f"security-zone resolution for agent {agent_id}"):
+                        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+                        agent = result.scalar_one_or_none()
+                        zone = getattr(agent, "security_zone", None)
+                        if not zone:
+                            logger.warning(
+                                "[Governance] Agent %s has no security_zone set — defaulting to 'restricted'", agent_id
+                            )
+                    await db.rollback()
                     return zone or "restricted"
             except Exception as exc:
                 logger.error(
@@ -133,25 +132,25 @@ class ToolGovernanceResolver:
             from app.models.tool import AgentTool, Tool
             from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
-            async with (
-                async_session() as db,
-                enter_rls_bypass(db, reason=f"MCP tool-mode resolution for agent {agent_id}"),
-            ):
-                result = await db.execute(
-                    select(Tool)
-                    .join(AgentTool, AgentTool.tool_id == Tool.id)
-                    .where(
-                        AgentTool.agent_id == agent_id,
-                        AgentTool.enabled.is_(True),
-                        Tool.name == target,
-                        Tool.type == "mcp",
-                        Tool.enabled.is_(True),
+            async with async_session() as db:
+                async with enter_rls_bypass(db, reason=f"MCP tool-mode resolution for agent {agent_id}"):
+                    result = await db.execute(
+                        select(Tool)
+                        .join(AgentTool, AgentTool.tool_id == Tool.id)
+                        .where(
+                            AgentTool.agent_id == agent_id,
+                            AgentTool.enabled.is_(True),
+                            Tool.name == target,
+                            Tool.type == "mcp",
+                            Tool.enabled.is_(True),
+                        )
                     )
-                )
-                tool = result.scalar_one_or_none()
-                if tool is None:
-                    return None  # not an MCP tool — fall through to the capability gate
-                return await resolve_agent_mcp_tool_mode(db, agent_id, tool)
+                    tool = result.scalar_one_or_none()
+                    mode = None
+                    if tool is not None:
+                        mode = await resolve_agent_mcp_tool_mode(db, agent_id, tool)
+                await db.rollback()
+                return mode
 
         return GovernanceDependencies(
             resolve_security_zone=_resolve_security_zone,

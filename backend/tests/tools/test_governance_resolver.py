@@ -66,6 +66,7 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
     class _FakeSession:
         def __init__(self):
             self.committed = False
+            self.rolled_back = False
 
         async def __aenter__(self):
             return self
@@ -78,6 +79,9 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
 
         async def commit(self):
             self.committed = True
+
+        async def rollback(self):
+            self.rolled_back = True
 
     async def fake_check_capability(db, tenant_uuid, agent_uuid, tool_name):
         capability_calls.append((db, tenant_uuid, agent_uuid, tool_name))
@@ -102,6 +106,7 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
     deps = resolver.build_dependencies()
 
     assert await deps.resolve_security_zone(agent_id) == "restricted"
+    assert fake_session.rolled_back is True
 
     cap_result = await deps.check_capability(tenant_id, agent_id, "write_file")
     assert cap_result.capability == "workspace.write"
@@ -153,6 +158,7 @@ async def test_resolver_mcp_mode_unwraps_target_and_fast_paths(monkeypatch):
     class _FakeSession:
         def __init__(self, row):
             self._row = row
+            self.rollback_count = 0
 
         async def __aenter__(self):
             return self
@@ -162,6 +168,9 @@ async def test_resolver_mcp_mode_unwraps_target_and_fast_paths(monkeypatch):
 
         async def execute(self, _query):
             return _FakeScalar(self._row)
+
+        async def rollback(self):
+            self.rollback_count += 1
 
     async def fake_resolve_agent_mcp_tool_mode(db, aid, tool):
         mode_calls.append((aid, tool.name))
@@ -175,23 +184,28 @@ async def test_resolver_mcp_mode_unwraps_target_and_fast_paths(monkeypatch):
     resolver = ToolGovernanceResolver()
 
     # 1. call_mcp_tool unwraps the target from arguments
-    monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: _FakeSession(mcp_tool_row))
+    mcp_session = _FakeSession(mcp_tool_row)
+    monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: mcp_session)
     deps = resolver.build_dependencies()
     assert deps.resolve_mcp_tool_mode is not None
     mode = await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {"tool_name": "notion_search"})
     assert mode == "approval"
     assert mode_calls == [(agent_id, "notion_search")]
+    assert mcp_session.rollback_count == 1
 
     # 2. dynamic MCP tool name governs itself
     mode = await deps.resolve_mcp_tool_mode(agent_id, "notion_search", {})
     assert mode == "approval"
+    assert mcp_session.rollback_count == 2
 
     # 3. not an MCP Tool row → None fast path, mode resolution untouched
     mode_calls.clear()
-    monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: _FakeSession(None))
+    non_mcp_session = _FakeSession(None)
+    monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: non_mcp_session)
     deps = resolver.build_dependencies()
     assert await deps.resolve_mcp_tool_mode(agent_id, "read_file", {"path": "x"}) is None
     assert mode_calls == []
+    assert non_mcp_session.rollback_count == 1
 
     # 4. call_mcp_tool without a target name → None (validation happens handler-side)
     assert await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {}) is None
@@ -216,6 +230,7 @@ async def test_resolver_mcp_mode_lookup_is_scoped_to_enabled_agent_assignment(mo
     class _FakeSession:
         def __init__(self):
             self.executed_statements = []
+            self.rollback_count = 0
 
         async def __aenter__(self):
             return self
@@ -226,6 +241,9 @@ async def test_resolver_mcp_mode_lookup_is_scoped_to_enabled_agent_assignment(mo
         async def execute(self, query):
             self.executed_statements.append(query)
             return _FakeScalar()
+
+        async def rollback(self):
+            self.rollback_count += 1
 
     async def fake_resolve_agent_mcp_tool_mode(db, aid, tool):
         assert aid == agent_id
@@ -242,6 +260,7 @@ async def test_resolver_mcp_mode_lookup_is_scoped_to_enabled_agent_assignment(mo
     deps = ToolGovernanceResolver().build_dependencies()
     assert deps.resolve_mcp_tool_mode is not None
     assert await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {"tool_name": "notion_search"}) == "approval"
+    assert session.rollback_count == 1
 
     # enter_rls_bypass also records SET LOCAL app.current_tenant_id statements —
     # pick the business query, not the GUC set.

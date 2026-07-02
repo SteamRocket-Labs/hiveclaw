@@ -137,6 +137,41 @@ def _session_payload(session: ChatSession) -> dict[str, Any]:
     }
 
 
+_WORKBENCH_METADATA_VALUE_CHAR_LIMIT = 2000
+_WORKBENCH_METADATA_OMITTED = {"omitted_oversize_value": True, "workbench_projection": True}
+
+
+def _compact_runtime_task_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Size-bounded metadata projection for the workbench read model (plan B5).
+
+    Runtime-task metadata carries replay journals, restart contracts, and
+    pending-message payloads that reach hundreds of KB per task (a 50-task
+    session pushed the workbench response to 5.7MB in production). The
+    workbench consumes only small scalar keys (names, ids, reasons); full
+    metadata stays on the RuntimeTask row and internal builders keep reading
+    the ORM object directly.
+    """
+    import json
+
+    compact: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if isinstance(value, str):
+            if len(value) > _WORKBENCH_METADATA_VALUE_CHAR_LIMIT:
+                compact[key] = value[:200] + "…[truncated for workbench]"
+            else:
+                compact[key] = value
+            continue
+        if isinstance(value, (dict, list)):
+            try:
+                oversize = len(json.dumps(value, default=str)) > _WORKBENCH_METADATA_VALUE_CHAR_LIMIT
+            except (TypeError, ValueError):
+                oversize = True
+            compact[key] = dict(_WORKBENCH_METADATA_OMITTED) if oversize else value
+            continue
+        compact[key] = value
+    return compact
+
+
 def _runtime_task_payload(task: RuntimeTask) -> dict[str, Any]:
     metadata = task.metadata_json or {}
     return {
@@ -153,7 +188,7 @@ def _runtime_task_payload(task: RuntimeTask) -> dict[str, Any]:
         "completed_at": _iso(task.completed_at),
         "result_summary": task.result_summary,
         "token_usage": task.token_usage or {},
-        "metadata": metadata,
+        "metadata": _compact_runtime_task_metadata(metadata),
         "terminal_reason": metadata.get("terminal_reason"),
     }
 

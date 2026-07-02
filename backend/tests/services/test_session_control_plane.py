@@ -1008,3 +1008,48 @@ async def test_list_teams_batches_member_query(monkeypatch):
     assert [p["member_count"] for p in payloads] == [1, 1]
     assert payload_calls[0][1] == [team_a.id]
     assert payload_calls[1][1] == [team_b.id]
+
+
+def test_runtime_task_payload_bounds_oversize_metadata_values():
+    """B5: runtime-task metadata carries replay journals / restart contracts
+    that reach hundreds of KB per task — the workbench read model must keep
+    only workbench-consumed scalars and mark oversize values as omitted."""
+    import app.services.session_control_plane as service
+
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type="web_chat",
+        status="running",
+        parent_agent_id=uuid4(),
+        child_agent_id=None,
+        parent_session_id="parent",
+        child_session_id=None,
+        trace_id="trace",
+        created_at=now,
+        started_at=now,
+        completed_at=None,
+        result_summary=None,
+        token_usage={},
+        metadata_json={
+            "subagent_name": "Researcher",
+            "terminal_reason": None,
+            "turn_id": "turn-1",
+            "restart_replay_journal": [{"event": "x" * 4000} for _ in range(50)],
+            "pending_user_messages": [{"content": "y" * 5000}],
+            "note": "z" * 10_000,
+        },
+    )
+
+    payload = service._runtime_task_payload(task)
+
+    metadata = payload["metadata"]
+    assert metadata["subagent_name"] == "Researcher"
+    assert metadata["turn_id"] == "turn-1"
+    assert metadata["restart_replay_journal"] == {"omitted_oversize_value": True, "workbench_projection": True}
+    assert metadata["pending_user_messages"] == {"omitted_oversize_value": True, "workbench_projection": True}
+    assert isinstance(metadata["note"], str) and len(metadata["note"]) < 300
+    assert payload["terminal_reason"] is None
+    import json as _json
+
+    assert len(_json.dumps(metadata, default=str)) < 5_000

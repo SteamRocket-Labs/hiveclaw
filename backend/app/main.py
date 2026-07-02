@@ -92,6 +92,10 @@ from app.services.code_execution.probe import (
 settings = get_settings()
 
 
+def _channel_stream_startup_enabled() -> bool:
+    return bool(settings.CHANNEL_STREAM_STARTUP_ENABLED)
+
+
 async def _start_ss_local() -> None:
     """Start ss-local SOCKS5 proxy for Discord API calls. Tries nodes in priority order."""
     import asyncio
@@ -495,11 +499,18 @@ async def lifespan(app: FastAPI):
             ("workflow_daemon", start_workflow_daemon()),
             ("evolution_daemon", start_evolution_daemon()),
             ("code_execution_sandbox_probe_scheduler", start_code_execution_sandbox_probe_scheduler()),
-            ("feishu_ws", feishu_ws_manager.start_all()),
-            ("dingtalk_stream", dingtalk_stream_manager.start_all()),
-            ("wecom_stream", wecom_stream_manager.start_all()),
-            ("wechat_personal_stream", wechat_personal_stream_manager.start_all()),
         ]
+        if _channel_stream_startup_enabled():
+            startup_background_tasks.extend(
+                [
+                    ("feishu_ws", feishu_ws_manager.start_all()),
+                    ("dingtalk_stream", dingtalk_stream_manager.start_all()),
+                    ("wecom_stream", wecom_stream_manager.start_all()),
+                    ("wechat_personal_stream", wechat_personal_stream_manager.start_all()),
+                ]
+            )
+        else:
+            logger.info("[startup] channel stream startup disabled")
         if settings.T0_STARTUP_BACKFILL_ENABLED:
             from app.services.t0_logger import run_startup_chat_transcript_t0_backfill
 

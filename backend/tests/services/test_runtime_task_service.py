@@ -278,7 +278,7 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_cc_session_runtime_tas
 
 
 @pytest.mark.asyncio
-async def test_reconcile_orphaned_runtime_tasks_preserves_restart_resumable_records(monkeypatch):
+async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_restart_resumable_records(monkeypatch):
     from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
 
     resumable_delegation = type(
@@ -325,8 +325,9 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_restart_resumable_reco
 
     updated = await reconcile_orphaned_runtime_tasks()
 
-    assert updated == 1
-    assert resumable_delegation.status == "running"
+    assert updated == 2
+    assert resumable_delegation.status == "needs_reconciliation"
+    assert resumable_delegation.metadata_json["restart_resume_blocker"] == "restart_resume_not_confirmed"
     assert durable_web_chat.status == "running"
     assert in_process_delegation.status == "needs_reconciliation"
     assert in_process_delegation.metadata_json["needs_reconciliation"] is True
@@ -335,7 +336,7 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_restart_resumable_reco
 
 
 @pytest.mark.asyncio
-async def test_reconcile_orphaned_runtime_tasks_preserves_resumable_subagent_records(monkeypatch):
+async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_resumable_subagent_records(monkeypatch):
     from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
 
     resumable_subagent = type(
@@ -373,8 +374,9 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_resumable_subagent_rec
 
     updated = await reconcile_orphaned_runtime_tasks()
 
-    assert updated == 1
-    assert resumable_subagent.status == "running"
+    assert updated == 2
+    assert resumable_subagent.status == "needs_reconciliation"
+    assert resumable_subagent.metadata_json["restart_resume_blocker"] == "restart_resume_not_confirmed"
     assert unsafe_subagent.status == "needs_reconciliation"
     assert unsafe_subagent.metadata_json["needs_reconciliation"] is True
     assert unsafe_subagent.metadata_json["side_effect_risk"] == "mutating"
@@ -382,7 +384,7 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_resumable_subagent_rec
 
 
 @pytest.mark.asyncio
-async def test_reconcile_orphaned_runtime_tasks_preserves_resumable_trigger_and_heartbeat(monkeypatch):
+async def test_reconcile_orphaned_runtime_tasks_reconciles_unconfirmed_resumable_trigger_and_heartbeat(monkeypatch):
     from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
 
     trigger_id = uuid4()
@@ -434,9 +436,11 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_resumable_trigger_and_
 
     updated = await reconcile_orphaned_runtime_tasks()
 
-    assert updated == 0
-    assert resumable_trigger.status == "running"
-    assert resumable_heartbeat.status == "running"
+    assert updated == 2
+    assert resumable_trigger.status == "needs_reconciliation"
+    assert resumable_trigger.metadata_json["restart_resume_blocker"] == "restart_resume_not_confirmed"
+    assert resumable_heartbeat.status == "needs_reconciliation"
+    assert resumable_heartbeat.metadata_json["restart_resume_blocker"] == "restart_resume_not_confirmed"
     assert fake_session.commit_calls == 1
 
 

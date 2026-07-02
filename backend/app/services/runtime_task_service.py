@@ -472,10 +472,12 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
             for task in tasks:
                 if getattr(task, "id", None) in excluded:
                     continue
-                if _is_restart_resumable_runtime_task(task):
-                    continue
                 task_type = str(getattr(task, "task_type", None) or "runtime_task")
                 metadata = dict(getattr(task, "metadata_json", None) or {})
+                if _is_restart_resumable_runtime_task(task):
+                    if task_type in _RESTART_RESUMABLE_TASK_TYPES:
+                        continue
+                    metadata.setdefault("restart_resume_blocker", "restart_resume_not_confirmed")
                 if task_type in {"delegation", "subagent", "trigger", "heartbeat"}:
                     task.status = "needs_reconciliation"
                     blocker = str(metadata.get("restart_resume_blocker") or "non_idempotent_restart_orphan")

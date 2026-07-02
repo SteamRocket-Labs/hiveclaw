@@ -24,6 +24,17 @@ import pytest
 
 SOURCE_CAPABILITY_TOOLS = {"spawn_subagent", "propose_dynamic_workflow", "preview_workflow", "start_workflow"}
 WORK_LEDGER_TOOLS = {"track_todo", "record_finding", "read_ledger"}
+COMMAND_PARITY_TOOLS = {
+    "task_create",
+    "task_update",
+    "task_list",
+    "task_get",
+    "task_output",
+    "task_stop",
+    "goal_start",
+    "advanced_plan",
+    "verify_plan",
+}
 ADVANCED_WEB_TOOLS = {"exa_search", "tavily_search", "firecrawl_fetch", "xcrawl_scrape"}
 CODING_PLUGIN_TOOLS = {"lsp_symbol_search", "worktree_create", "notebook_edit", "browser_ui_open"}
 OFFICE_RUNTIME_TOOLS = {
@@ -71,6 +82,20 @@ def test_collected_surface_provides_schemas_for_core_ledger_tools():
 
     combined_names = {t["function"]["name"] for t in get_combined_openai_tools()}
     assert WORK_LEDGER_TOOLS <= (combined_names & CORE_TOOL_NAMES)
+
+
+def test_core_tool_names_include_command_parity_wrappers():
+    """CC/Codex command wrappers are runtime primitives, not disableable pack add-ons."""
+    from app.services.agent_tools import CORE_TOOL_NAMES
+
+    assert COMMAND_PARITY_TOOLS <= CORE_TOOL_NAMES
+
+
+def test_collected_surface_provides_schemas_for_core_command_parity_tools():
+    from app.services.agent_tools import CORE_TOOL_NAMES, get_combined_openai_tools
+
+    combined_names = {t["function"]["name"] for t in get_combined_openai_tools()}
+    assert COMMAND_PARITY_TOOLS <= (combined_names & CORE_TOOL_NAMES)
 
 
 def test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups():
@@ -228,8 +253,9 @@ def test_l2_taxonomy_decorator_and_pack_manifests_are_consistent():
     from app.tools.collector import collect_tools
 
     taxonomy = {
-        spec.name: {tool for tool in spec.tools if tool not in CORE_TOOL_NAMES}
+        spec.name: tools
         for spec in RUNTIME_L2_CAPABILITY_SPECS
+        if (tools := {tool for tool in spec.tools if tool not in CORE_TOOL_NAMES})
     }
     decorator_groups = {
         name: set(tools)
@@ -243,7 +269,9 @@ def test_l2_taxonomy_decorator_and_pack_manifests_are_consistent():
         for manifest in reader.list_packs():
             if manifest.name not in taxonomy:
                 continue
-            manifest_groups[manifest.name] = set(manifest.owns_names) | set(manifest.optional_provider_names)
+            manifest_tools = set(manifest.owns_names) | set(manifest.optional_provider_names)
+            if manifest_tools:
+                manifest_groups[manifest.name] = manifest_tools
             assert set(manifest.requires_core_names) <= CORE_TOOL_NAMES
 
     assert decorator_groups == taxonomy
@@ -338,23 +366,30 @@ def test_command_pack_no_longer_owns_agent_team_runtime_discovery():
     from app.services.pack_policy_service import policy_pack_names_for_tool
     from app.tools.collector import collect_tools
 
-    command_pack = next(descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack")
+    command_pack = next((descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack"), None)
 
-    assert "team_create" not in command_pack.tools
+    assert command_pack is None or "team_create" not in command_pack.tools
     assert "team_create" not in collect_tools().pack_tool_groups.get("command_pack", [])
     assert policy_pack_names_for_tool("team_create") == ()
 
 
 def test_command_pack_task_wrappers_do_not_duplicate_work_ledger_runtime_surface():
     from app.services.agent_tools import CORE_TOOL_NAMES
-    from app.services.governance_capability_taxonomy import iter_runtime_l2_capabilities
+    from app.services.governance_capability_taxonomy import capability_descriptor_for_tool, iter_runtime_l2_capabilities
+    from app.services.pack_policy_service import policy_pack_names_for_tool
+    from app.tools.collector import collect_tools
 
-    command_pack = next(descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack")
+    command_pack = next((descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack"), None)
 
     assert {"track_todo", "record_finding", "read_ledger"} <= CORE_TOOL_NAMES
-    assert not {"track_todo", "record_finding", "read_ledger"} & set(command_pack.tools)
-    assert {"task_create", "task_update", "task_list", "task_get"} <= set(command_pack.tools)
-    assert not {"task_create", "task_update", "task_list", "task_get"} & CORE_TOOL_NAMES
+    assert COMMAND_PARITY_TOOLS <= CORE_TOOL_NAMES
+    assert command_pack is None or not (COMMAND_PARITY_TOOLS & set(command_pack.tools))
+    assert not (COMMAND_PARITY_TOOLS & set(collect_tools().pack_tool_groups.get("command_pack", [])))
+    for tool_name in COMMAND_PARITY_TOOLS:
+        descriptor = capability_descriptor_for_tool(tool_name)
+        assert descriptor is not None
+        assert descriptor.name == "agent_base"
+        assert policy_pack_names_for_tool(tool_name) == ()
 
 
 def test_all_pack_manifests_root_backend_consistent():

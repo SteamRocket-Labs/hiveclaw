@@ -327,6 +327,56 @@ async def test_tool_runtime_service_blocks_disabled_l2_pack_in_execute_with_cont
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_does_not_l2_block_core_command_wrappers():
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="task_list",
+        arguments={},
+    )
+    governance_resolver = _FakeGovernanceResolver(governance_context, SimpleNamespace())
+    registry = _FakeRegistry("OK")
+
+    async def fake_run_governance(_context, _deps, *, event_callback=None):
+        return None
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=governance_resolver,
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=fake_run_governance,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        pack_policy_loader=lambda runtime_context: {"command_pack": False},
+    )
+
+    result = await service.execute(
+        "task_list",
+        {},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        emit_runtime_hooks=False,
+    )
+
+    assert result == "OK"
+    assert registry.calls
+    assert governance_resolver.context_calls
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_emits_hooks_and_revalidates_modified_args():
     from app.runtime.hooks import HookEvent, HookResult, hook_registry
     from app.tools.governance import ToolGovernanceContext

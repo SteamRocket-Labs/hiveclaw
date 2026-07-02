@@ -131,5 +131,16 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "track_todo",
         "record_finding",
         "read_ledger",
+        # CC/Codex command wrappers are core command-layer primitives, not
+        # disableable command_pack extensions.
+        "task_create",
+        "task_update",
+        "task_list",
+        "task_get",
+        "task_output",
+        "task_stop",
+        "goal_start",
+        "advanced_plan",
+        "verify_plan",
     }
     assert "web_search" in CORE_TOOL_NAMES  # Step 5: web_search promoted to CORE

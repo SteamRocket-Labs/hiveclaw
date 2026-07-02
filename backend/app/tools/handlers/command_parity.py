@@ -60,7 +60,6 @@ def _can_access_runtime_task(record: dict[str, Any] | None, request: ToolExecuti
         },
         category="command_task",
         display_name="Task Create",
-        pack="command_pack",
         adapter="request",
     )
 )
@@ -111,7 +110,6 @@ async def task_create(request: ToolExecutionRequest) -> str:
         },
         category="command_task",
         display_name="Task Update",
-        pack="command_pack",
         adapter="request",
     )
 )
@@ -152,7 +150,6 @@ async def task_update(request: ToolExecutionRequest) -> str:
         read_only=True,
         parallel_safe=True,
         governance="safe",
-        pack="command_pack",
         adapter="request",
     )
 )
@@ -171,7 +168,6 @@ async def task_list(request: ToolExecutionRequest) -> str:
         read_only=True,
         parallel_safe=True,
         governance="safe",
-        pack="command_pack",
         adapter="request",
     )
 )
@@ -196,7 +192,6 @@ async def task_get(request: ToolExecutionRequest) -> str:
         read_only=True,
         parallel_safe=True,
         governance="safe",
-        pack="command_pack",
         adapter="request",
     )
 )
@@ -223,7 +218,6 @@ async def task_output(request: ToolExecutionRequest) -> str:
         },
         category="command_task",
         display_name="Task Stop",
-        pack="command_pack",
         adapter="request",
     )
 )
@@ -270,7 +264,6 @@ async def task_stop(request: ToolExecutionRequest) -> str:
         },
         category="command_goal",
         display_name="Goal Start",
-        pack="command_pack",
         adapter="request",
     )
 )
@@ -341,7 +334,6 @@ async def team_create(request: ToolExecutionRequest) -> str:
         },
         category="command_plan",
         display_name="Advanced Plan",
-        pack="command_pack",
         adapter="request",
     )
 )
@@ -382,7 +374,6 @@ async def advanced_plan(request: ToolExecutionRequest) -> str:
         read_only=True,
         parallel_safe=True,
         governance="safe",
-        pack="command_pack",
         adapter="request",
     )
 )

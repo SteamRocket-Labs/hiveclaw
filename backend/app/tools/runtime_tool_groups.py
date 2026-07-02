@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.services.governance_capability_taxonomy import iter_runtime_l2_capability_specs
+from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES, iter_runtime_l2_capability_specs
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,18 +23,21 @@ class RuntimeToolGroupSpec:
 
 
 def _project_runtime_tool_group(spec) -> RuntimeToolGroupSpec:
+    tools = tuple(tool for tool in spec.tools if tool not in CORE_TOOL_NAMES)
     return RuntimeToolGroupSpec(
         name=spec.name,
         summary=spec.summary,
         source=spec.source,
         activation_mode=spec.activation_mode,
-        tools=tuple(spec.tools),
+        tools=tools,
         infer_from_tools=bool(spec.infer_from_tools),
     )
 
 
 RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = tuple(
-    _project_runtime_tool_group(spec) for spec in iter_runtime_l2_capability_specs()
+    group
+    for group in (_project_runtime_tool_group(spec) for spec in iter_runtime_l2_capability_specs())
+    if group.tools
 )
 
 
@@ -48,7 +51,11 @@ def iter_runtime_tool_groups(query: str = "") -> tuple[RuntimeToolGroupSpec, ...
     normalized = str(query or "").strip()
     if not normalized:
         return tuple(pack for pack in RUNTIME_TOOL_GROUPS if pack.source != "mcp")
-    return tuple(_project_runtime_tool_group(spec) for spec in iter_runtime_l2_capability_specs(normalized))
+    return tuple(
+        group
+        for group in (_project_runtime_tool_group(spec) for spec in iter_runtime_l2_capability_specs(normalized))
+        if group.tools
+    )
 
 
 def runtime_tool_group_for_name(name: str) -> RuntimeToolGroupSpec | None:

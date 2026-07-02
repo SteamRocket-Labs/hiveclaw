@@ -91,6 +91,15 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "track_todo",
         "record_finding",
         "read_ledger",
+        "task_create",
+        "task_update",
+        "task_list",
+        "task_get",
+        "task_output",
+        "task_stop",
+        "goal_start",
+        "advanced_plan",
+        "verify_plan",
     }
 )
 

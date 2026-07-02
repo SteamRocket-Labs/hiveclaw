@@ -236,6 +236,8 @@ export interface WorkspaceDocumentModel {
   group: WorkspaceDocumentGroupKey;
   status: 'current' | 'snapshot' | 'historical' | 'unattributed';
   artifact: ChatArtifactPart;
+  /** How many artifact deliveries collapsed into this row (path-keyed). */
+  revisions: number;
 }
 
 export interface WorkspaceDocumentGroupModel {
@@ -648,9 +650,23 @@ export function buildRuntimeSectionsModel(sessionWorkbench?: Record<string, unkn
   });
 }
 
-function workspaceDocumentGroup(artifact: ChatArtifactPart): WorkspaceDocumentGroupKey {
+function workspaceDocumentGroup(
+  artifact: ChatArtifactPart,
+  sessionRunTaskIds?: Set<string>,
+): WorkspaceDocumentGroupKey {
   const source = String(artifact.source || '').toLowerCase();
   if (source.includes('historical')) return 'historical';
+  // Session deliverables are what THIS session's runs delivered. An artifact
+  // stamped with a runtime task that does not belong to this session (another
+  // workflow/task touching the shared workspace) is history, not a deliverable.
+  if (
+    artifact.runtimeTaskId
+    && sessionRunTaskIds
+    && sessionRunTaskIds.size > 0
+    && !sessionRunTaskIds.has(String(artifact.runtimeTaskId))
+  ) {
+    return 'historical';
+  }
   if (
     artifact.runtimeTaskId
     || artifact.snapshotHash
@@ -670,14 +686,33 @@ function workspaceDocumentStatus(artifact: ChatArtifactPart, group: WorkspaceDoc
   return 'current';
 }
 
-export function buildWorkspaceDocumentsModel(messages: AgentChatMessage[]): WorkspaceDocumentsModel {
+export function buildWorkspaceDocumentsModel(
+  messages: AgentChatMessage[],
+  sessionRunTaskIds?: Set<string>,
+): WorkspaceDocumentsModel {
+  // Path-keyed (Codex Workspace Documents semantics): one file = one row.
+  // Repeated deliveries of the same path collapse into the latest artifact
+  // with a revision count, instead of listing the file once per delivery.
   const docs = new Map<string, WorkspaceDocumentModel>();
   messages.forEach((message) => {
     (message.artifacts || []).forEach((artifact) => {
       if (!artifact.path) return;
-      const group = workspaceDocumentGroup(artifact);
-      const key = `${artifact.id || group}:${artifact.path}`;
-      if (docs.has(key)) return;
+      const group = workspaceDocumentGroup(artifact, sessionRunTaskIds);
+      const key = `${group}:${artifact.path}`;
+      const existing = docs.get(key);
+      if (existing) {
+        docs.set(key, {
+          ...existing,
+          name: artifact.name || existing.name,
+          previewKind: artifact.previewKind ?? existing.previewKind,
+          size: artifact.size ?? existing.size,
+          source: artifact.source ?? existing.source,
+          status: workspaceDocumentStatus(artifact, group),
+          artifact,
+          revisions: existing.revisions + 1,
+        });
+        return;
+      }
       docs.set(key, {
         key,
         name: artifact.name || artifact.path.split('/').pop() || artifact.path,
@@ -688,6 +723,7 @@ export function buildWorkspaceDocumentsModel(messages: AgentChatMessage[]): Work
         group,
         status: workspaceDocumentStatus(artifact, group),
         artifact,
+        revisions: 1,
       });
     });
   });
@@ -849,7 +885,12 @@ export function buildSessionRightPanelModel({
   const runtimeTables = buildRuntimeSectionModels(runtimeSections);
   const sectionByKey = new Map(runtimeTables.map((section) => [section.key, section]));
   const fallbackSection = (key: RuntimeSectionName) => runtimeSectionModel(key, []);
-  const workspaceDocuments = buildWorkspaceDocumentsModel(messages);
+  const sessionRunTaskIds = new Set<string>(
+    (runtimeSections.runs || [])
+      .map((item) => String((item.raw as Record<string, unknown> | undefined)?.runtime_task_id ?? item.id ?? ''))
+      .filter((value): value is string => Boolean(value)),
+  );
+  const workspaceDocuments = buildWorkspaceDocumentsModel(messages, sessionRunTaskIds);
   return {
     workspaceDocuments,
     runtimeSections,

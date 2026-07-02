@@ -1723,7 +1723,14 @@ function SessionRuntimePanel({
     >
       <IconFileText size={15} />
       <span>
-        <strong>{doc.name}</strong>
+        <strong>
+          {doc.name}
+          {doc.revisions > 1 && (
+            <span className="badge" style={{ marginLeft: '6px', fontSize: '10px' }} title={`${doc.revisions} deliveries of this file collapsed`}>
+              ×{doc.revisions}
+            </span>
+          )}
+        </strong>
         <small>{[doc.previewKind, doc.status, formatArtifactSize(doc.size), doc.path].filter(Boolean).join(' · ')}</small>
       </span>
     </button>

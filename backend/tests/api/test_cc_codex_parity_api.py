@@ -1466,3 +1466,31 @@ async def test_agent_team_api_exposes_workbench(monkeypatch):
     assert workbench["summary"]["event_count"] == 1
     assert workbench["members"][0]["summary"] == "Found a hook gap."
     assert workbench["events"][0]["event_type"] == "member_report"
+
+
+@pytest.mark.asyncio
+async def test_schedule_command_with_only_instruction_hands_drafting_to_agent(monkeypatch):
+    """Composer `/schedule <natural language>` must not 400 on missing
+    cron_expr — structuring the schedule is the agent's job (AI-Native L1),
+    so the command degrades to a chat_prompt that starts a drafting turn."""
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.api import commands as commands_api
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=None, creator_id=uuid4())
+    user = SimpleNamespace(id=agent.creator_id, role="user")
+    monkeypatch.setattr(commands_api, "is_agent_creator", lambda *_a, **_k: True)
+
+    result = await commands_api._execute_schedule_command(
+        db=None,
+        agent=agent,
+        user=user,
+        command_name="schedule_create",
+        session_id=None,
+        arguments={"instruction": "每天早上九点给我发昨日日报"},
+    )
+
+    assert result["action"] == "chat_prompt"
+    assert "每天早上九点" in result["content"]
+    assert result["display_content"].startswith("/schedule ")

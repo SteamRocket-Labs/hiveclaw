@@ -146,10 +146,35 @@ function checkpointEventIdFromPayload(actionResult: Record<string, unknown> | nu
     );
 }
 
-function trimMessagesBeforeTranscriptEvent(messages: AgentChatMessage[], checkpointEventId: string): AgentChatMessage[] {
+function trimMessagesBeforeTranscriptEvent(
+    messages: AgentChatMessage[],
+    checkpointEventId: string,
+    checkpointCreatedAt?: string,
+): AgentChatMessage[] {
     if (!checkpointEventId) return messages;
     const index = messages.findIndex((message) => message.transcriptEventId === checkpointEventId);
-    return index >= 0 ? messages.slice(0, index) : messages;
+    if (index >= 0) return messages.slice(0, index);
+    // Live-appended messages may not carry transcript event ids yet; fall back
+    // to the checkpoint timestamp so a rewind never silently does nothing.
+    const anchorTime = checkpointCreatedAt ? Date.parse(checkpointCreatedAt) : NaN;
+    if (!Number.isNaN(anchorTime)) {
+        const timeIndex = messages.findIndex((message) => {
+            const stamp = message.timestamp ? Date.parse(message.timestamp) : NaN;
+            return !Number.isNaN(stamp) && stamp >= anchorTime;
+        });
+        if (timeIndex >= 0) return messages.slice(0, timeIndex);
+    }
+    return messages;
+}
+
+function rewindMarkerMessage(checkpointEventId: string): AgentChatMessage {
+    return {
+        id: `rewind-marker-${checkpointEventId}-${Date.now()}`,
+        role: 'event',
+        content: '⏪ Rewound — messages after this checkpoint left the active context (history is preserved).',
+        timestamp: new Date().toISOString(),
+        eventStatus: 'session_rewind_marker',
+    } as AgentChatMessage;
 }
 
 export function applySessionActiveProjection(
@@ -1040,6 +1065,7 @@ function AgentDetailInner() {
             if (isRewindProjection) {
                 const checkpointEventId = checkpointEventIdFromPayload(actionResult, uiAction);
                 const draftContent = draftContentFromCheckpointPayload(actionResult, uiAction);
+                const checkpointCreatedAt = stringValueFromUnknown(objectValue(actionResult?.checkpoint).created_at);
                 if (draftContent) setChatInput(draftContent);
                 if (checkpointEventId) {
                     const activeKey = buildSessionRuntimeKey(id, currentSessionId);
@@ -1047,17 +1073,18 @@ function AgentDetailInner() {
                     if (replay) {
                         transcriptReplayStateRef.current[activeKey] = {
                             ...replay,
-                            messages: trimMessagesBeforeTranscriptEvent(replay.messages, checkpointEventId),
+                            messages: trimMessagesBeforeTranscriptEvent(replay.messages, checkpointEventId, checkpointCreatedAt),
                         };
                     }
+                    const marker = rewindMarkerMessage(checkpointEventId);
                     setChatMessages(prev => (
                         chatMessagesSessionId === currentSessionId
-                            ? trimMessagesBeforeTranscriptEvent(prev, checkpointEventId)
+                            ? [...trimMessagesBeforeTranscriptEvent(prev, checkpointEventId, checkpointCreatedAt), marker]
                             : prev
                     ));
                     setHistoryMsgs(prev => (
                         historyMessagesSessionId === currentSessionId
-                            ? trimMessagesBeforeTranscriptEvent(prev, checkpointEventId)
+                            ? trimMessagesBeforeTranscriptEvent(prev, checkpointEventId, checkpointCreatedAt)
                             : prev
                     ));
                     setProjectionTailScrollNonce(prev => prev + 1);

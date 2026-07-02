@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildWorkspaceDocumentsModel,
   buildCheckpointTimelineNodes,
   buildCompletionWakeModel,
   buildRuntimeSectionsModel,
@@ -551,5 +552,38 @@ describe('session workbench timeline model', () => {
     });
     expect(workflowWindow.steps).toHaveLength(1);
     expect(workflowWindow.leafCalls).toHaveLength(1);
+  });
+});
+
+describe('buildWorkspaceDocumentsModel (session deliverables semantics)', () => {
+  const artifact = (over: Record<string, unknown>) => ({
+    name: 'report.md',
+    path: 'workspace/report.md',
+    source: 'artifact_delivery',
+    ...over,
+  });
+  const msg = (artifacts: unknown[]) => ({ role: 'assistant', content: '', artifacts }) as never;
+
+  it('collapses repeated deliveries of the same path into one row with a revision count', () => {
+    const model = buildWorkspaceDocumentsModel([
+      msg([artifact({ id: 'a1', size: 100 })]),
+      msg([artifact({ id: 'a2', size: 140 })]),
+    ]);
+    expect(model.currentSession.items).toHaveLength(1);
+    expect(model.currentSession.items[0].revisions).toBe(2);
+    expect(model.currentSession.items[0].size).toBe(140); // newest wins
+  });
+
+  it('moves artifacts from other tasks runs out of the session deliverables group', () => {
+    const sessionRuns = new Set(['run-mine']);
+    const model = buildWorkspaceDocumentsModel(
+      [
+        msg([artifact({ id: 'mine', runtimeTaskId: 'run-mine' })]),
+        msg([artifact({ id: 'foreign', path: 'workspace/other.md', name: 'other.md', runtimeTaskId: 'run-other-workflow' })]),
+      ],
+      sessionRuns,
+    );
+    expect(model.currentSession.items.map((doc) => doc.path)).toEqual(['workspace/report.md']);
+    expect(model.historical.items.map((doc) => doc.path)).toEqual(['workspace/other.md']);
   });
 });

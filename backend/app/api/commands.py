@@ -477,6 +477,27 @@ async def _execute_schedule_command(
     name = str(arguments.get("name") or "").strip()
     instruction = str(arguments.get("instruction") or arguments.get("reason") or "").strip()
     is_enabled = bool(arguments.get("is_enabled", False))
+    # Composer-native path: `/schedule <natural language>` arrives with only an
+    # instruction. Structuring it (name/cron/at) is the agent's judgment call
+    # (AI-Native L1), so hand the drafting to an agent turn instead of failing
+    # schema validation — the agent uses its governed trigger tools and
+    # confirms with the user before enabling anything.
+    has_structured_shape = bool(name) and (
+        bool(str(arguments.get("cron_expr") or arguments.get("cron") or "").strip())
+        if command_name == "schedule_create"
+        else bool(str(arguments.get("at") or arguments.get("once_at") or "").strip())
+    )
+    if instruction and not has_structured_shape:
+        kind_label = "recurring scheduled task" if command_name == "schedule_create" else "one-time scheduled task"
+        return _chat_prompt_payload(
+            command_name=command_name,
+            content=(
+                f"Draft a {kind_label} for this request and confirm the schedule with me before enabling it: "
+                f"{instruction}"
+            ),
+            display_content=f"/{'schedule' if command_name == 'schedule_create' else 'once'} {instruction}",
+            message="Handing the schedule draft to the agent.",
+        )
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
     if not instruction:

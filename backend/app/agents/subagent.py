@@ -1058,10 +1058,41 @@ async def _spawn_one(
 # Background subagent tasks are tracked so the event loop keeps a strong reference
 # (asyncio best practice) until they finish and fire their completion Signal.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
+_BACKGROUND_SUBAGENT_SEMAPHORE: asyncio.Semaphore | None = None
+_BACKGROUND_SUBAGENT_SEMAPHORE_LIMIT: int | None = None
 
 # Signal type a background subagent emits to its parent on completion. The parent
 # consumes it via consume_subagent_signals instead of busy-polling check_async_task.
 SUBAGENT_COMPLETION_SIGNAL = "subagent_completed"
+
+
+def _background_subagent_capacity() -> int:
+    try:
+        from app.config import get_settings
+
+        settings = get_settings()
+        raw_limits = str(getattr(settings, "RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS", "") or "")
+        for item in raw_limits.split(","):
+            if "=" not in item:
+                continue
+            task_type, value = item.split("=", 1)
+            if task_type.strip() != "subagent":
+                continue
+            return max(1, int(value.strip()))
+        worker_limit = int(getattr(settings, "RUNTIME_TASK_WORKER_MAX_CONCURRENT", 8) or 8)
+        return max(1, min(worker_limit, 8))
+    except Exception:
+        return 8
+
+
+def _background_subagent_semaphore() -> asyncio.Semaphore:
+    global _BACKGROUND_SUBAGENT_SEMAPHORE, _BACKGROUND_SUBAGENT_SEMAPHORE_LIMIT
+
+    limit = _background_subagent_capacity()
+    if _BACKGROUND_SUBAGENT_SEMAPHORE is None or _BACKGROUND_SUBAGENT_SEMAPHORE_LIMIT != limit:
+        _BACKGROUND_SUBAGENT_SEMAPHORE = asyncio.Semaphore(limit)
+        _BACKGROUND_SUBAGENT_SEMAPHORE_LIMIT = limit
+    return _BACKGROUND_SUBAGENT_SEMAPHORE
 
 
 async def _emit_completion_signal(ctx: SubagentSpawnContext, result: SubagentResult) -> None:
@@ -1198,26 +1229,27 @@ async def spawn_subagent(
         # §9 P0: pin the initiating tenant inside THIS task's context copy.
         # Request-spawned tasks inherit it via the ContextVar snapshot, but
         # daemon-spawned ones have no request context — ctx carries it.
-        tenant_token = None
-        if ctx.tenant_id:
-            from app.database import reset_current_tenant, set_current_tenant
+        async with _background_subagent_semaphore():
+            tenant_token = None
+            if ctx.tenant_id:
+                from app.database import reset_current_tenant, set_current_tenant
 
-            tenant_token = set_current_tenant(str(ctx.tenant_id))
-        try:
-            result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
-            _write_back_subagent_ledger_todo(ctx, spec.name, ledger_todo_id, ok=result.ok)
-            # Update the durable run record (if any) BEFORE the wake signal, so a parent
-            # woken by the signal already sees the terminal status via check_subagent.
-            if on_complete is not None:
-                try:
-                    await on_complete(result)
-                except Exception as exc:  # durable bookkeeping is best-effort, never blocks the signal
-                    logger.warning("[Subagent] on_complete callback failed (non-fatal): %s", exc)
-            await _emit_completion_signal(ctx, result)
-            return result
-        finally:
-            if tenant_token is not None:
-                reset_current_tenant(tenant_token)
+                tenant_token = set_current_tenant(str(ctx.tenant_id))
+            try:
+                result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
+                _write_back_subagent_ledger_todo(ctx, spec.name, ledger_todo_id, ok=result.ok)
+                # Update the durable run record (if any) BEFORE the wake signal, so a parent
+                # woken by the signal already sees the terminal status via check_subagent.
+                if on_complete is not None:
+                    try:
+                        await on_complete(result)
+                    except Exception as exc:  # durable bookkeeping is best-effort, never blocks the signal
+                        logger.warning("[Subagent] on_complete callback failed (non-fatal): %s", exc)
+                await _emit_completion_signal(ctx, result)
+                return result
+            finally:
+                if tenant_token is not None:
+                    reset_current_tenant(tenant_token)
 
     task_obj = asyncio.create_task(_run_and_signal(), name=f"subagent-{spec.name}")
     _BACKGROUND_TASKS.add(task_obj)

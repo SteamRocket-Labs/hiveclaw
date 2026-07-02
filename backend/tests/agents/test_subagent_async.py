@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agents.coordination import coordination_runtime
+import app.agents.subagent as subagent_module
 from app.agents.subagent import (
     SUBAGENT_COMPLETION_SIGNAL,
     SubagentSpawnContext,
@@ -72,6 +73,47 @@ async def test_background_emits_completion_signal():
     assert signals[0].signal_type == SUBAGENT_COMPLETION_SIGNAL
     assert "bg-result" in signals[0].content
     assert consume_subagent_signals(ctx.parent_agent_id, thread_id="thr-1") == []
+
+
+@pytest.mark.asyncio
+async def test_background_spawn_respects_subagent_budget(monkeypatch):
+    coordination_runtime.reset()
+    monkeypatch.setattr(subagent_module, "_background_subagent_capacity", lambda: 1, raising=False)
+    subagent_module._BACKGROUND_SUBAGENT_SEMAPHORE = None
+    subagent_module._BACKGROUND_SUBAGENT_SEMAPHORE_LIMIT = None
+
+    active = 0
+    max_active = 0
+
+    async def invoke(_request):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            await asyncio.sleep(0.02)
+            return SimpleNamespace(content="budgeted", tokens_used=1)
+        finally:
+            active -= 1
+
+    ctx = _ctx(trace_id="thr-budget")
+    for idx in range(3):
+        await spawn_subagent(
+            ctx,
+            explorer_spec(f"bg-{idx}"),
+            "task",
+            run_in_background=True,
+            invoke=invoke,
+        )
+
+    signals: list = []
+    for _ in range(80):
+        await asyncio.sleep(0.01)
+        signals.extend(consume_subagent_signals(ctx.parent_agent_id))
+        if len(signals) == 3:
+            break
+
+    assert len(signals) == 3
+    assert max_active == 1
 
 
 @pytest.mark.asyncio

@@ -264,6 +264,7 @@ def apply_t3_consolidation_patch(
 
     # -- two-plane operations (spec §3.2/§3.4/§3.5) --
 
+    pending_tombstones: list[tuple[str, str]] = []
     for change in patch.findall("./proposed_changes/rewrite_file"):
         # Convergence loop (工序 4, spec §4.3): full-file rewrite of a
         # profile-plane file. The old version is archived by
@@ -284,6 +285,12 @@ def apply_t3_consolidation_patch(
             continue
         updated_contents[target] = file_content
         committed_blocks.append(f"rewrite:{target}")
+        for tombstone in change.findall("./tombstone"):
+            # Live-ref merge declaration (spec §4.1): old entry id → survivor.
+            old_id = str(tombstone.attrib.get("old") or "").strip()
+            new_id = str(tombstone.attrib.get("new") or "").strip()
+            if old_id and new_id:
+                pending_tombstones.append((old_id, new_id))
 
     for change in patch.findall("./proposed_changes/upsert_page"):
         target = _normalize_target(change.attrib.get("target") or "")
@@ -369,6 +376,12 @@ def apply_t3_consolidation_patch(
 
     resolved_agent_id = uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id
     _atomic_write_targets(mem_dir, updated_contents)
+    if pending_tombstones:
+        from app.memory.reference_index import record_entry_tombstones
+
+        record_entry_tombstones(
+            agent_id=resolved_agent_id, data_root=root, tombstones=pending_tombstones, job_id=job_id
+        )
     source_updates = _apply_source_lifecycle_updates(
         root=root,
         agent_id=resolved_agent_id,

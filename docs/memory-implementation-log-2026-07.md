@@ -182,4 +182,17 @@
 
 **红测：** `tests/memory/test_growth_mechanisms.py` 13 用例 RED→GREEN。覆盖：脏度双因子/干净文件/台账落盘/neighborhood 警示、rewrite_file 收敛成功+旧版存档、缺 note hold、stale sha rebase、清空拒绝、heartbeat wrapper 真跑+接线断言、HEARTBEAT/DREAM 教学断言、config 字段。
 
-**回归：** ruff 全过；memory+heartbeat 面 495 passed；全量随 commit 记录。三 part 共享教学面（HEARTBEAT.md/prompts.py），合并单 commit。
+**回归：** ruff 全过；memory+heartbeat 面 495 passed；全量 = 5391 passed / 4 failed（全部外部归属：alembic pin 债 + `test_chat_artifact_delivery`×3——均为另一 session web chat 持久化线的活跃面）。
+
+**Commit：** `c799575e`（8 files；config.py hunk 级 staging）。
+
+### Part G 来源 ref 体系：短 id 家族 + 活引用 tombstone（2026-07-02）
+
+**改动：**
+- `reference_index.py` 扩展：`id_resolution` 表增 `kind` 列并登记全 id 家族——`t2-<hash>` 短证据 id（与 package_id 同源哈希）、`ms-`/knowledge 页 slug（导航解析）、explicit entry id；`resolve_memory_ref` 统一解析入口（认 `t2://` 完整 URI / `t2-` 短 id / `ms-` / `ex-` / `explicit://`）。**证据永不悬空无条件**：`mark_ref_archived` 归档时同路径的短 id 行随迁（红测钉住归档后 `t2-` 仍解析到 `.archive` 且内容可读）。
+- **活引用 tombstone**（§4.1 次断点闭合）：`record_entry_tombstones`（真相源 = append-only `control/tombstones.jsonl`，SQLite `tombstones` 表为可重建投影）+ `resolve_entry_id` 链式解析（visited 环保护）。收敛合并的声明面 = `rewrite_file` 的 `<tombstone old new/>` 子节点，gate commit 成功后落账。
+- 证据链 vs 活引用分离（§4.1 主断点）：证据只指不可变 t2-/ex-/fb-（HEARTBEAT.md Part E 已教），锚点 [[ms-]]/[[k:]] 仅导航。
+
+**红测：** `tests/memory/test_source_ref_system.py` 8 用例 RED→GREEN。覆盖：短 id 解析、**归档后仍解析**、ms-/完整 URI/explicit 解析、tombstone 记录+链式解析+jsonl 真相、环安全终止、rewrite_file tombstone 声明流入索引、删库重建后 tombstone 幸存（jsonl 重建）。
+
+**回归：** ruff 全过；tests/memory 443 passed；全量随 commit 记录。三 part 共享教学面（HEARTBEAT.md/prompts.py），合并单 commit。

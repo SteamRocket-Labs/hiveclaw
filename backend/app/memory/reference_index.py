@@ -48,6 +48,17 @@ class ResolvedRef:
     archived_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedMemoryRef:
+    ref: str
+    kind: str  # t2_package | milestone | knowledge | explicit_entry
+    path: str
+    archived_at: str
+
+
+TOMBSTONE_LOG_RELATIVE = Path("control") / "tombstones.jsonl"
+
+
 def index_db_path(data_root: Path | str, agent_id: uuid.UUID | str) -> Path:
     return Path(data_root) / str(agent_id) / "memory" / "indexes" / INDEX_DB_FILENAME
 
@@ -65,29 +76,36 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
     rows.extend(_explicit_reference_rows(root, agent_id))
     rows.extend(_episode_reference_rows(packages, package_id_to_ref))
 
+    resolution_rows: list[tuple[str, str, str, str]] = []
+    for package in packages:
+        archived_at = archive_times.get(package["ref"], "") if package["archived"] else ""
+        resolution_rows.append((package["ref"], "t2_package", package["path"], archived_at))
+        short_id = _short_id_from_package_id(package["package_id"])
+        if short_id:
+            resolution_rows.append((short_id, "t2_package", package["path"], archived_at))
+    resolution_rows.extend(_page_resolution_rows(root, agent_id))
+    resolution_rows.extend(_explicit_resolution_rows(root, agent_id))
+    tombstone_rows = _tombstone_rows(root, agent_id)
+
     db_path = index_db_path(root, agent_id)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.execute("DROP TABLE IF EXISTS refs")
         conn.execute("DROP TABLE IF EXISTS id_resolution")
+        conn.execute("DROP TABLE IF EXISTS tombstones")
         conn.execute(
             "CREATE TABLE refs (source_ref TEXT NOT NULL, referrer TEXT NOT NULL, referrer_kind TEXT NOT NULL,"
             " PRIMARY KEY (source_ref, referrer))"
         )
-        conn.execute("CREATE TABLE id_resolution (ref TEXT PRIMARY KEY, path TEXT NOT NULL, archived_at TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE id_resolution (ref TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT 't2_package',"
+            " path TEXT NOT NULL, archived_at TEXT NOT NULL)"
+        )
+        conn.execute("CREATE TABLE tombstones (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL, job_id TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         conn.executemany("INSERT OR IGNORE INTO refs VALUES (?, ?, ?)", rows)
-        conn.executemany(
-            "INSERT OR REPLACE INTO id_resolution VALUES (?, ?, ?)",
-            [
-                (
-                    package["ref"],
-                    package["path"],
-                    archive_times.get(package["ref"], "") if package["archived"] else "",
-                )
-                for package in packages
-            ],
-        )
+        conn.executemany("INSERT OR REPLACE INTO id_resolution VALUES (?, ?, ?, ?)", resolution_rows)
+        conn.executemany("INSERT OR REPLACE INTO tombstones VALUES (?, ?, ?)", tombstone_rows)
         conn.execute(
             "INSERT OR REPLACE INTO meta VALUES ('rebuilt_at', ?)",
             (datetime.now(UTC).isoformat(),),
@@ -123,13 +141,108 @@ def resolve_ref(*, agent_id: uuid.UUID | str, data_root: Path | str, ref: str) -
     return ResolvedRef(ref=str(row[0]), path=str(row[1]), archived_at=str(row[2] or ""))
 
 
+def resolve_memory_ref(*, agent_id: uuid.UUID | str, data_root: Path | str, ref: str) -> ResolvedMemoryRef | None:
+    """Resolve any id-family ref (spec §4.1): t2://, t2-, ms-, ex-/explicit ids.
+
+    Evidence refs (t2-/ex-/fb-) must resolve for the agent's whole life —
+    archived packages resolve to their archive location, never to nothing.
+    """
+    needle = (ref or "").strip()
+    if not needle:
+        return None
+    if needle.startswith("explicit://"):
+        needle = needle.removeprefix("explicit://memory/").removeprefix("explicit://").split("#", 1)[0]
+    db_path = _ensure_index(agent_id=agent_id, data_root=data_root)
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT ref, kind, path, archived_at FROM id_resolution WHERE ref = ?", (needle,)).fetchone()
+    if row is None:
+        return None
+    return ResolvedMemoryRef(ref=str(row[0]), kind=str(row[1]), path=str(row[2]), archived_at=str(row[3] or ""))
+
+
+def record_entry_tombstones(
+    *,
+    agent_id: uuid.UUID | str,
+    data_root: Path | str,
+    tombstones: list[tuple[str, str]],
+    job_id: str,
+) -> None:
+    """Record live-ref merges (old entry id → surviving id, spec §4.1).
+
+    The append-only jsonl is the truth source; SQLite is the rebuildable
+    projection updated in the same call.
+    """
+    cleaned = [
+        (old.strip(), new.strip())
+        for old, new in tombstones
+        if old and new and old.strip() and new.strip() and old.strip() != new.strip()
+    ]
+    if not cleaned:
+        return
+    log_path = Path(data_root) / str(agent_id) / "memory" / TOMBSTONE_LOG_RELATIVE
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC).isoformat()
+    with log_path.open("a", encoding="utf-8") as handle:
+        for old_id, new_id in cleaned:
+            handle.write(
+                json.dumps(
+                    {"old_id": old_id, "new_id": new_id, "job_id": job_id, "created_at": now},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    db_path = _ensure_index(agent_id=agent_id, data_root=data_root)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tombstones (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL, job_id TEXT)"
+        )
+        conn.executemany(
+            "INSERT OR REPLACE INTO tombstones VALUES (?, ?, ?)",
+            [(old_id, new_id, job_id) for old_id, new_id in cleaned],
+        )
+
+
+def resolve_entry_id(*, agent_id: uuid.UUID | str, data_root: Path | str, entry_id: str) -> str:
+    """Follow the tombstone chain to the surviving entry id (cycle-safe)."""
+    db_path = _ensure_index(agent_id=agent_id, data_root=data_root)
+    current = (entry_id or "").strip()
+    visited: set[str] = set()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tombstones (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL, job_id TEXT)"
+        )
+        while current and current not in visited:
+            visited.add(current)
+            row = conn.execute("SELECT new_id FROM tombstones WHERE old_id = ?", (current,)).fetchone()
+            if row is None:
+                return current
+            current = str(row[0])
+    return current
+
+
 def mark_ref_archived(
     *, agent_id: uuid.UUID | str, data_root: Path | str, ref: str, path: str, archived_at: str
 ) -> None:
-    """Point one ref at its archived location (called by the retention executor)."""
+    """Point one ref at its archived location (called by the retention executor).
+
+    The short evidence id (`t2-<hash>`) shares the package's previous path —
+    move it together so 证据永不悬空 holds for both id forms.
+    """
     db_path = _ensure_index(agent_id=agent_id, data_root=data_root)
     with sqlite3.connect(db_path) as conn:
-        conn.execute("INSERT OR REPLACE INTO id_resolution VALUES (?, ?, ?)", (ref, path, archived_at))
+        previous = conn.execute("SELECT path FROM id_resolution WHERE ref = ?", (ref,)).fetchone()
+        previous_path = str(previous[0]) if previous else ""
+        conn.execute(
+            "INSERT OR REPLACE INTO id_resolution VALUES"
+            " (?, COALESCE((SELECT kind FROM id_resolution WHERE ref = ?), 't2_package'), ?, ?)",
+            (ref, ref, path, archived_at),
+        )
+        if previous_path:
+            conn.execute(
+                "UPDATE id_resolution SET path = ?, archived_at = ? WHERE path = ? AND ref != ?",
+                (path, archived_at, previous_path, ref),
+            )
 
 
 def package_ref(*, session_id: str, source_id: str, kind: str) -> str:
@@ -231,6 +344,54 @@ def _episode_reference_rows(packages: list[dict], package_id_to_ref: dict[str, s
             if source_ref:
                 rows.append((source_ref, package["ref"], "episode_package"))
     return rows
+
+
+def _short_id_from_package_id(package_id: str) -> str:
+    """`t2pkg-<hash>` → the spec §4.1 short evidence id `t2-<hash>`."""
+    cleaned = (package_id or "").strip()
+    if cleaned.startswith("t2pkg-"):
+        return "t2-" + cleaned.removeprefix("t2pkg-")
+    return ""
+
+
+def _page_resolution_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str, str, str, str]]:
+    """Register knowledge/milestone page slugs for navigation resolution."""
+    mem_dir = root / str(agent_id) / "memory"
+    rows: list[tuple[str, str, str, str]] = []
+    for subdir, kind in (("milestones", "milestone"), ("knowledge", "knowledge")):
+        directory = mem_dir / subdir
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.md")):
+            rows.append((path.stem, kind, f"memory/{subdir}/{path.name}", ""))
+    return rows
+
+
+def _explicit_resolution_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str, str, str, str]]:
+    rows: list[tuple[str, str, str, str]] = []
+    for entry in load_explicit_overlay_entries(Path(root), agent_id):
+        rows.append((entry.entry_id, "explicit_entry", f"memory/explicit/entries/{entry.entry_id}.md", ""))
+    return rows
+
+
+def _tombstone_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str, str, str]]:
+    """Rebuild the tombstone projection from its append-only jsonl truth."""
+    log_path = root / str(agent_id) / "memory" / TOMBSTONE_LOG_RELATIVE
+    if not log_path.exists():
+        return []
+    latest: dict[str, tuple[str, str, str]] = {}
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        old_id = str(record.get("old_id") or "").strip()
+        new_id = str(record.get("new_id") or "").strip()
+        if old_id and new_id:
+            latest[old_id] = (old_id, new_id, str(record.get("job_id") or ""))
+    return list(latest.values())
 
 
 def _archive_times(root: Path, agent_id: uuid.UUID | str) -> dict[str, str]:

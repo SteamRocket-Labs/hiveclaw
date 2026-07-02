@@ -1360,6 +1360,21 @@ async def _run_consolidation_debt_refresh(agent_id: uuid.UUID):
     )
 
 
+async def _run_t2_retention(agent_id: uuid.UUID):
+    """C9-3: archive cold unreferenced T2 packages (never delete) on the heartbeat cadence."""
+    from app.config import get_settings
+    from app.memory.t2_retention import DEFAULT_ARCHIVE_AFTER_DAYS, run_t2_retention
+
+    settings = get_settings()
+    return await run_t2_retention(
+        agent_id=agent_id,
+        data_root=Path(settings.AGENT_DATA_DIR),
+        archive_after_days=float(
+            getattr(settings, "MEMORY_RETENTION_ARCHIVE_AFTER_DAYS", DEFAULT_ARCHIVE_AFTER_DAYS)
+        ),
+    )
+
+
 async def _execute_heartbeat(
     agent_id: uuid.UUID,
     *,
@@ -1462,6 +1477,19 @@ async def _execute_heartbeat(
                     )
             except Exception as _debt_err:
                 logger.warning("[Heartbeat] Consolidation debt refresh failed for {}: {}", agent_id, _debt_err)
+
+            try:
+                retention_report = await _run_t2_retention(agent_id)
+                if retention_report.archived:
+                    logger.info(
+                        "[Heartbeat] T2 retention for {}: archived={} kept_referenced={} kept_pipeline={}",
+                        agent_id,
+                        list(retention_report.archived),
+                        retention_report.kept_referenced,
+                        retention_report.kept_pipeline,
+                    )
+            except Exception as _retention_err:
+                logger.warning("[Heartbeat] T2 retention failed for {}: {}", agent_id, _retention_err)
 
             if not (agent.primary_model_id or agent.fallback_model_id):
                 logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")

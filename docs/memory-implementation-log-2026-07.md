@@ -73,6 +73,22 @@
 
 **接线证据（grep）：** `app/services/heartbeat.py` `_execute_heartbeat` 内 `debt_report = await _run_consolidation_debt_refresh(agent_id)`。退役：无（纯新增）。
 
-**回归：** ruff 全过；受影响面 `tests/memory + tests/services/test_heartbeat.py` = 411 passed；全量数字见 commit 时记录。
+**回归：** ruff 全过；受影响面 `tests/memory + tests/services/test_heartbeat.py` = 411 passed；全量 = **5323 passed, 0 failed, 1 skipped**（C9-1 时失败的 `test_harness_canary` 本轮同树通过——flaky 特征，已单独上报 owner）。
 
-**Commit：** `<c9-2-hash>`
+**Commit：** `e56d83cf`（5 files, +783/-1；config.py 采用 hunk 级 staging 避开 eval WIP）
+
+#### C9-3 retention 引用计数 + 归档（2026-07-02）
+
+**改动：**
+- 新增 `backend/app/memory/reference_index.py`：SQLite 反向引用索引 `memory/indexes/index.sqlite`（C8 口径最小集：`refs` 反向索引表 + `id_resolution` id 解析表 + meta）。**纯派生**：`rebuild_reference_index` 是唯一写入口，全量从 MD/JSONL 真相重建（T3 accepted blocks 的 source_ref、active explicit overlay 的 source_refs、episode manifest 的 source_packages 归一化为段包 ref、活跃 + 归档双区包目录、archive_log）。删库零损失。
+- 新增 `backend/app/memory/t2_retention.py`：归档执行器。保护顺序：① pipeline（reviewed/closed 且 allowed_next ∈ {t3_intake, episode_stitching} = 待消化债，受 C9-2 监控，不是垃圾）② decision/permission 域证据永不过期（§6.5 对标 Letta）③ 有引用即钉住 ④ 未超期留热区。归档 = `os.replace` 移到 `memory/.archive/t2/**`（保结构）+ append `archive_log.jsonl` + 索引 `mark_ref_archived`——**永不 delete，ref 归档后仍可解析**（§3.6）。
+- `config.py` 增 `MEMORY_RETENTION_ARCHIVE_AFTER_DAYS=30`。
+- `services/heartbeat.py`：`_run_t2_retention` wrapper + `_execute_heartbeat` 维护批第三项（sweep → debt → retention 顺序）。
+
+**红测（先红后绿）：** `backend/tests/memory/test_t2_retention.py`，15 用例——RED（ModuleNotFoundError 全红）→ GREEN 15 passed。覆盖：三源引用计数（T3/explicit/episode 归一化）、删库重建幂等（派生不变量）、absorbed explicit 不计引用、活跃包 resolve、有引用 365 天不归档、无引用未超期不动、无引用超期 absorbed → 归档且 ref 解析到归档路径内容可读（**永不硬删核心**）、pipeline 双态保护、reviewed+allowed_next=none 死端归档、decision/permission 域永不归档、归档包重建后仍可解析（.archive 回扫）、control 报告、heartbeat wrapper 真跑、接线断言、config 字段。
+
+**接线证据（grep）：** `app/services/heartbeat.py` `_execute_heartbeat` 内 `retention_report = await _run_t2_retention(agent_id)`。退役：无（纯新增；`memory/indexes/` 此前仅 wiki_map.md，SQLite 为全新派生面）。
+
+**回归：** ruff 全过（3 文件经 ruff format 重排）；受影响面 426 passed；全量 = **5339 passed, 0 failed, 1 skipped**。
+
+**Commit：** 见 git log（C9-3 commit）

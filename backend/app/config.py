@@ -179,6 +179,10 @@ class Settings(BaseSettings):
     # this without being consolidated marks the memory pipeline as stalled.
     MEMORY_DEBT_PENDING_AGE_ALERT_HOURS: float = 48.0
     MEMORY_DEBT_EXPLICIT_AGE_ALERT_HOURS: float = 72.0
+    # T2 retention (C9-3, memory-system-spec §3.6/§6.2.3): unreferenced
+    # packages older than this archive to memory/.archive/t2/** — moved,
+    # never deleted; refs keep resolving through the reference index.
+    MEMORY_RETENTION_ARCHIVE_AFTER_DAYS: float = 30.0
 
     # Coordination backend (Phase 17 wiring)
     # "postgres" — durable PostgreSQL-backed coordination (default). This keeps

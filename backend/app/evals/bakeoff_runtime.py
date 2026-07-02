@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,14 +23,6 @@ _SCENARIOS = (
     "self_evolution",
     "long_context_after_compaction",
 )
-_BAKEOFF_REPO_ENV_KEYS = {
-    "claude_code": "HIVE_BAKEOFF_CLAUDE_CODE_ROOT",
-    "hermes_agent": "HIVE_BAKEOFF_HERMES_AGENT_ROOT",
-}
-_BAKEOFF_REPO_NAMES = {
-    "claude_code": "claude-code",
-    "hermes_agent": "hermes-agent",
-}
 _RUNTIME_JSON_SCHEMA = {
     "type": "object",
     "properties": {
@@ -152,9 +143,6 @@ def extract_runtime_payload(target: str, raw_output: str) -> dict[str, Any]:
 def _run_process(command: list[str], cwd: Path, timeout_seconds: int) -> ProcessRunResult:
     started = monotonic()
     env = build_agent_subprocess_env(home=Path.home())
-    for env_key in _BAKEOFF_REPO_ENV_KEYS.values():
-        if value := os.environ.get(env_key):
-            env[env_key] = value
     if command and command[0] == "claude":
         # Claude OAuth/keychain auth is unavailable in simple mode, so avoid
         # inheriting or forcing CLAUDE_CODE_SIMPLE during live bakeoffs.
@@ -183,94 +171,6 @@ def _run_process(command: list[str], cwd: Path, timeout_seconds: int) -> Process
         stderr=stderr,
         duration_ms=int((monotonic() - started) * 1000),
     )
-
-
-def _scan_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-
-
-def _resolve_bakeoff_repo_root(target: str) -> Path | None:
-    repo_name = _BAKEOFF_REPO_NAMES.get(target)
-    if repo_name is None:
-        raise ValueError(f"Unsupported bakeoff target: {target}")
-
-    env_override = os.environ.get(_BAKEOFF_REPO_ENV_KEYS[target])
-    candidates: list[Path] = []
-    if env_override:
-        candidates.append(Path(env_override).expanduser())
-
-    current_repo_root = Path(__file__).resolve().parents[3]
-    candidates.append(current_repo_root.parent / repo_name)
-
-    search_root = current_repo_root.parent.parent
-    if search_root.exists():
-        for child in search_root.iterdir():
-            if child.name == repo_name:
-                candidates.append(child)
-                continue
-            nested = child / repo_name
-            if nested.exists():
-                candidates.append(nested)
-
-    seen: set[Path] = set()
-    for candidate in candidates:
-        resolved = candidate.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        if resolved.exists():
-            return resolved
-    return None
-
-
-def _repo_evidence_report(target: str) -> dict[str, Any]:
-    repo_root = _resolve_bakeoff_repo_root(target)
-    exists = bool(repo_root and repo_root.exists())
-    if not exists:
-        scenarios = {
-            name: {
-                "ready": False,
-                "score": 0,
-                "transcript": "repository unavailable",
-                "rubric": "source repository not found locally",
-                "score_breakdown": {"repo_found": False},
-            }
-            for name in _SCENARIOS
-        }
-        return {"kind": "bakeoff", "transport": "repo_evidence", "repo_root": str(repo_root) if repo_root else "", "scenarios": scenarios}
-
-    if target == "claude_code":
-        compact_text = _scan_text(repo_root / "src/services/compact/prompt.ts")
-        session_text = _scan_text(repo_root / "src/services/SessionMemory/prompts.ts")
-        skill_text = _scan_text(repo_root / "src/tools/SkillTool/prompt.ts")
-        scenarios = {
-            "coding": {"ready": True, "score": 95, "transcript": "repo evidence", "rubric": "coding assistant maturity", "score_breakdown": {"repo_found": True}},
-            "review": {"ready": True, "score": 92, "transcript": "repo evidence", "rubric": "review workflow maturity", "score_breakdown": {"repo_found": True}},
-            "research": {"ready": True, "score": 88, "transcript": "repo evidence", "rubric": "research workflow maturity", "score_breakdown": {"repo_found": True}},
-            "operations": {"ready": True, "score": 84, "transcript": "repo evidence", "rubric": "operations workflow maturity", "score_breakdown": {"repo_found": True}},
-            "delegation": {"ready": False, "score": 60, "transcript": "repo evidence", "rubric": "delegation surface", "score_breakdown": {"parallel_agent_docs": "delegate" in skill_text.lower()}},
-            "memory_recall": {"ready": "summary" in session_text.lower(), "score": 95 if "summary" in session_text.lower() else 65, "transcript": "repo evidence", "rubric": "session memory continuity", "score_breakdown": {"session_memory_prompt": "summary" in session_text.lower()}},
-            "self_evolution": {"ready": "skill" in skill_text.lower(), "score": 90 if "skill" in skill_text.lower() else 50, "transcript": "repo evidence", "rubric": "skill routing/evolution", "score_breakdown": {"skill_prompt": "load" in skill_text.lower()}},
-            "long_context_after_compaction": {"ready": "compact" in compact_text.lower(), "score": 96 if "compact" in compact_text.lower() else 55, "transcript": "repo evidence", "rubric": "compaction strategy", "score_breakdown": {"compact_prompt": "compact" in compact_text.lower()}},
-        }
-        return {"kind": "bakeoff", "transport": "repo_evidence", "repo_root": str(repo_root), "scenarios": scenarios}
-
-    compressor_text = _scan_text(repo_root / "agent/context_compressor.py")
-    skill_text = _scan_text(repo_root / "tools/skills_tool.py")
-    scenarios = {
-        "coding": {"ready": True, "score": 86, "transcript": "repo evidence", "rubric": "coding workflow maturity", "score_breakdown": {"repo_found": True}},
-        "review": {"ready": True, "score": 82, "transcript": "repo evidence", "rubric": "review workflow maturity", "score_breakdown": {"repo_found": True}},
-        "research": {"ready": True, "score": 85, "transcript": "repo evidence", "rubric": "research workflow maturity", "score_breakdown": {"repo_found": True}},
-        "operations": {"ready": True, "score": 80, "transcript": "repo evidence", "rubric": "operations workflow maturity", "score_breakdown": {"repo_found": True}},
-        "delegation": {"ready": False, "score": 58, "transcript": "repo evidence", "rubric": "delegation surface", "score_breakdown": {"repo_found": True}},
-        "memory_recall": {"ready": "compress" in compressor_text.lower(), "score": 88 if "compress" in compressor_text.lower() else 55, "transcript": "repo evidence", "rubric": "memory/continuity surface", "score_breakdown": {"compressor": "compress" in compressor_text.lower()}},
-        "self_evolution": {"ready": "skill" in skill_text.lower(), "score": 85 if "skill" in skill_text.lower() else 45, "transcript": "repo evidence", "rubric": "skill surface", "score_breakdown": {"skill_tool": "skill" in skill_text.lower()}},
-        "long_context_after_compaction": {"ready": "compress" in compressor_text.lower(), "score": 90 if "compress" in compressor_text.lower() else 55, "transcript": "repo evidence", "rubric": "compaction strategy", "score_breakdown": {"compressor": "compress" in compressor_text.lower()}},
-    }
-    return {"kind": "bakeoff", "transport": "repo_evidence", "repo_root": str(repo_root), "scenarios": scenarios}
 
 
 def _write_files(workspace_dir: Path, files: dict[str, str]) -> None:
@@ -535,16 +435,15 @@ def _preflight_runtime(target: str, output_dir: Path, profile: RuntimeProfile) -
     return _run_process(command, preflight_dir, timeout_seconds=profile.preflight_timeout_seconds)
 
 
-def _fallback_report(
+def _unavailable_report(
     *,
-    target: str,
     executable: str,
     status: str,
-    fallback: dict[str, Any],
     preflight: ProcessRunResult | None = None,
     artifact_paths: list[str] | None = None,
-    transport: str = "repo_evidence_only",
 ) -> dict[str, Any]:
+    """Honest no-run report (spec §2.4): when the target CLI cannot run there
+    are NO scenario scores — synthesized repo-evidence scoring is retired."""
     runtime_payload: dict[str, Any] = {"status": status, "executable": executable}
     if preflight is not None:
         runtime_payload.update(
@@ -556,15 +455,12 @@ def _fallback_report(
         )
     return {
         "kind": "bakeoff",
-        "transport": transport,
-        "repo_root": fallback.get("repo_root", ""),
+        "transport": "runtime_unavailable",
         "runtime": runtime_payload,
         "auth_status": status,
-        "fallback_used": True,
         "benchmark_complete": False,
         "artifact_paths": artifact_paths or [],
-        "fallback": fallback,
-        "scenarios": fallback["scenarios"],
+        "scenarios": {},
     }
 
 
@@ -597,13 +493,7 @@ def run_runtime_bakeoff(target: str, *, output_dir: Path) -> dict[str, Any]:
     profile = _runtime_profile(target)
 
     if not _which(executable):
-        fallback = _repo_evidence_report(target)
-        return _fallback_report(
-            target=target,
-            executable=executable,
-            status="cli_unavailable",
-            fallback=fallback,
-        )
+        return _unavailable_report(executable=executable, status="cli_unavailable")
 
     preflight = _preflight_runtime(target, output_dir, profile)
     preflight_artifacts: list[str] = []
@@ -611,12 +501,9 @@ def run_runtime_bakeoff(target: str, *, output_dir: Path) -> dict[str, Any]:
         preflight_artifacts = _write_preflight_artifacts(output_dir, preflight)
         preflight_haystack = f"{preflight.stdout}\n{preflight.stderr}".lower()
         if preflight.returncode != 0 or "not logged in" in preflight_haystack:
-            fallback = _repo_evidence_report(target)
-            return _fallback_report(
-                target=target,
+            return _unavailable_report(
                 executable=executable,
                 status=_runtime_failure_status(target, preflight),
-                fallback=fallback,
                 preflight=preflight,
                 artifact_paths=preflight_artifacts,
             )
@@ -665,44 +552,20 @@ def run_runtime_bakeoff(target: str, *, output_dir: Path) -> dict[str, Any]:
             continue
         scenario_reports[scenario_name] = _score_runtime_scenario(scenario, payload, result)
 
-    fallback: dict[str, Any] | None = None
+    # Spec §2.4: failed scenarios stay failed — no synthesized repo-evidence
+    # scores backfill a live run. Incomplete coverage is reported, not papered.
     incomplete_scenarios = _collect_incomplete_scenarios(scenario_reports)
-    failed_scenarios = [
-        name
-        for name, details in scenario_reports.items()
-        if not details["ready"] and details["score_breakdown"].get("reason") in {"command_failed", "invalid_json", "unknown_error"}
-    ]
     transport = "live_cli_partial" if incomplete_scenarios else "live_cli"
-    fallback_used = False
     benchmark_complete = not incomplete_scenarios
     runtime_status = "partial" if incomplete_scenarios else "completed"
-    if failed_scenarios:
-        fallback = _repo_evidence_report(target)
-        for name in failed_scenarios:
-            fallback_scenario = fallback["scenarios"].get(name)
-            if fallback_scenario:
-                scenario_reports[name] = {
-                    **fallback_scenario,
-                    "score_breakdown": {
-                        **fallback_scenario.get("score_breakdown", {}),
-                        "transport": "repo_evidence_fallback",
-                    },
-                }
-        transport = "runtime_mixed"
-        fallback_used = True
-        benchmark_complete = False
-        runtime_status = "partial"
 
     return {
         "kind": "bakeoff",
         "transport": transport,
-        "repo_root": str(_resolve_bakeoff_repo_root(target) or ""),
         "runtime": {"status": runtime_status, "executable": executable},
         "auth_status": "ok",
-        "fallback_used": fallback_used,
         "benchmark_complete": benchmark_complete,
         "incomplete_scenarios": incomplete_scenarios,
         "artifact_paths": _collect_runtime_artifact_paths(output_dir),
-        "fallback": fallback,
         "scenarios": scenario_reports,
     }

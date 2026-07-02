@@ -132,8 +132,12 @@ def test_repo_and_deploy_pack_manifests_are_full_skill_packages():
                     failures.append(f"{manifest.name} skill {skill_ref} missing references/ in {pack_dir.relative_to(REPO_ROOT)}")
                 if not (skill_dir / "templates").is_dir():
                     failures.append(f"{manifest.name} skill {skill_ref} missing templates/ in {pack_dir.relative_to(REPO_ROOT)}")
-                if not (skill_dir / "evals" / "eval.yaml").is_file():
-                    failures.append(f"{manifest.name} skill {skill_ref} missing evals/eval.yaml in {pack_dir.relative_to(REPO_ROOT)}")
+                # Decorative evals/eval.yaml retired (eval-system-spec §3.1).
+                if (skill_dir / "evals" / "eval.yaml").exists():
+                    failures.append(
+                        f"{manifest.name} skill {skill_ref} carries retired decorative eval.yaml"
+                        f" in {pack_dir.relative_to(REPO_ROOT)}"
+                    )
 
     assert not failures, "\n".join(failures)
 

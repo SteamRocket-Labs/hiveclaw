@@ -54,8 +54,3 @@ jobs:
 
       - name: Internal harness eval (fail-gate G3)
         run: python -m app.evals.run --suite core_v1 --target clawith --mode internal --fail-under 90
-
-      - name: Self-evolution behavior bakeoff (Hive absolute gate; Hermes only via real run)
-        # E7: no injected/grep-marker Hermes scores. Hermes is 'unavailable' here
-        # (no live hermes CLI), so the Hive absolute threshold gates.
-        run: python -m app.evals.self_evolution_bakeoff

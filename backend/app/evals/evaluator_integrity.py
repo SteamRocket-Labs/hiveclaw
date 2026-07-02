@@ -29,7 +29,6 @@ EVALUATOR_RELATIVE_PATHS: tuple[str, ...] = (
     "app/evals/artifact_gate.py",
     "app/evals/bakeoff_runtime.py",
     "app/evals/run.py",
-    "app/evals/self_evolution_bakeoff.py",
     "app/evals/evaluator_integrity.py",
     "app/services/evolution_verification.py",
 )

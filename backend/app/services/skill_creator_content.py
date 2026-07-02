@@ -16,9 +16,6 @@ _FILE_MAP = {
     "agents__analyzer.md": "agents/analyzer.md",
     "agents__comparator.md": "agents/comparator.md",
     "agents__grader.md": "agents/grader.md",
-    "assets__eval_review.html": "assets/eval_review.html",
-    "eval-viewer__generate_review.py": "eval-viewer/generate_review.py",
-    "eval-viewer__viewer.html": "eval-viewer/viewer.html",
     "references__schemas.md": "references/schemas.md",
     "scripts____init__.py": "scripts/__init__.py",
     "scripts__aggregate_benchmark.py": "scripts/aggregate_benchmark.py",
@@ -26,8 +23,6 @@ _FILE_MAP = {
     "scripts__improve_description.py": "scripts/improve_description.py",
     "scripts__package_skill.py": "scripts/package_skill.py",
     "scripts__quick_validate.py": "scripts/quick_validate.py",
-    "scripts__run_eval.py": "scripts/run_eval.py",
-    "scripts__run_loop.py": "scripts/run_loop.py",
     "scripts__utils.py": "scripts/utils.py",
 }
 
@@ -153,8 +148,7 @@ When each run completes, save timing data (tokens, duration) to `timing.json`.
 Once all runs are done:
 1. Grade each run against assertions — see `agents/grader.md`
 2. Aggregate results: `python -m scripts.aggregate_benchmark <workspace>/iteration-N --skill-name <name>`
-3. Launch the viewer: `python eval-viewer/generate_review.py <workspace>/iteration-N --skill-name "my-skill" --benchmark <workspace>/iteration-N/benchmark.json`
-4. Present results to the user for review
+3. Present the aggregated benchmark and grading results to the user for review
 
 ### Step 5: Read the feedback
 Read user feedback from `feedback.json`. Empty feedback means the user thought it was fine.
@@ -182,7 +176,8 @@ Read user feedback from `feedback.json`. Empty feedback means the user thought i
 For rigorous comparison between two versions. Read `agents/comparator.md` and `agents/analyzer.md`.
 
 ## Description Optimization
-Optimize the description for better triggering accuracy. Use `scripts/run_loop.py`.
+Optimize the description for better triggering accuracy: collect real trigger
+hits/misses as JSON evidence, then use `scripts/improve_description.py`.
 
 ---
 
@@ -192,15 +187,11 @@ Optimize the description for better triggering accuracy. Use `scripts/run_loop.p
 - `agents/comparator.md` — How to do blind A/B comparison between two outputs
 - `agents/analyzer.md` — How to analyze why one version beat another
 - `references/schemas.md` — JSON structures for evals.json, grading.json, etc.
-- `assets/eval_review.html` — HTML template for eval review
-- `eval-viewer/generate_review.py` — Script to generate the review viewer
 - `scripts/aggregate_benchmark.py` — Aggregate benchmark results
 - `scripts/generate_report.py` — Generate optimization report
 - `scripts/improve_description.py` — Improve skill description
 - `scripts/package_skill.py` — Package skill for distribution
 - `scripts/quick_validate.py` — Quick validation
-- `scripts/run_eval.py` — Run triggering evaluation
-- `scripts/run_loop.py` — Run optimization loop
 - `scripts/utils.py` — Shared utilities
 """
 

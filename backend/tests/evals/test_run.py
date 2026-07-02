@@ -67,7 +67,9 @@ def test_eval_main_accepts_bakeoff_targets_and_ablation_variants(tmp_path: Path)
     assert exit_code == 0
 
 
-def test_run_eval_suite_writes_runtime_status_and_fallback_to_markdown(monkeypatch, tmp_path: Path) -> None:
+def test_run_eval_suite_reports_unavailable_runtime_without_fake_scores(monkeypatch, tmp_path: Path) -> None:
+    """Spec §2.4: no repo_evidence fake-score fallback. An unavailable CLI
+    yields an honest empty-scenario report — never synthesized scores."""
     import app.evals.run as eval_run
 
     monkeypatch.setattr(
@@ -75,23 +77,12 @@ def test_run_eval_suite_writes_runtime_status_and_fallback_to_markdown(monkeypat
         "run_runtime_bakeoff",
         lambda target, output_dir: {
             "kind": "bakeoff",
-            "transport": "repo_evidence_only",
-            "repo_root": "/tmp/claude-code",
+            "transport": "runtime_unavailable",
             "auth_status": "auth_required",
-            "fallback_used": True,
             "benchmark_complete": False,
             "artifact_paths": ["/tmp/claude-code/runtime/auth.txt"],
             "runtime": {"status": "auth_required", "executable": "claude"},
-            "fallback": {"transport": "repo_evidence"},
-            "scenarios": {
-                "coding": {
-                    "ready": True,
-                    "score": 95,
-                    "transcript": "repo evidence",
-                    "rubric": "coding assistant maturity",
-                    "score_breakdown": {"repo_found": True},
-                }
-            },
+            "scenarios": {},
         },
     )
 
@@ -105,9 +96,21 @@ def test_run_eval_suite_writes_runtime_status_and_fallback_to_markdown(monkeypat
 
     report_md = (Path(report["output_dir"]) / "report.md").read_text(encoding="utf-8")
     assert "Runtime Status: auth_required" in report_md
-    assert "Fallback Transport: repo_evidence" in report_md
     assert "Benchmark Complete: no" in report_md
     assert "Auth Status: auth_required" in report_md
+    assert "repo_evidence" not in report_md
+    assert report["scenarios"] == {}
+
+
+def test_bakeoff_runtime_has_no_fake_score_fallback() -> None:
+    """The fake-score machinery must be physically gone, not just unused."""
+    import inspect
+
+    import app.evals.bakeoff_runtime as bakeoff_runtime
+
+    source = inspect.getsource(bakeoff_runtime)
+    assert "repo_evidence" not in source
+    assert "_fallback_report" not in source
 
 
 def test_run_eval_suite_writes_live_bakeoff_markdown_without_fallback(monkeypatch, tmp_path: Path) -> None:

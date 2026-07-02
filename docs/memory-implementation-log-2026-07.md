@@ -295,3 +295,16 @@ kernel+runtime 套件 = **869 passed**；全量 `pytest tests -q` = **1 failed, 
 - **接线**：heartbeat 在 `HEARTBEAT_TICK_END` 后刷新（本轮工作落盘后数字最新鲜，供下轮反思；best-effort）；`build_memory_observability` 带 `growth` 节 → 既有 `GET /knowledge/observability` 端点直出（**零新前后端**）；`HEARTBEAT.md` 新增 `<growth_report_reflection>`（数字归平台、解读归 LLM，禁把报告数字当事实写进记忆——引用 t2- 证据）。
 - **踩坑与修复**：growth 的 DB 指标最初挂维护批共享 session，消费了测试 fake 结果序列致模型查询错位 skip（`test_execute_heartbeat_*` 2 红）→ 挪至 tick 末独立会话，语义反而更对。aiosqlite 为声明依赖但本地 venv 缺装（已补）。
 - **测试证据**：`test_growth_report.py` 7 用例 + c8 轴用例 + labels v3/bundle 用例 = 10 红→10 绿（DB 指标用真 sqlite+aiosqlite engine + `@compiles(JSONB,"sqlite")` 适配，无自有层 mock）；memory 生态 368 passed；全量 = **1 failed, 5269 passed, 1 skipped**（唯一失败 `test_self_evolution_bakeoff` 为下一步降级对象：其 `cost_latency` 检查钉死已退役的 rerank timeout 特征串）。
+
+**J2 commit：** 见 git log（`add zero-llm growth report with failure-signal labels`）。
+
+## eval-system-spec 收尾批（owner 07-02 指令"整份 spec 全部完成"）
+
+主体（J1 provisional / §3.1 删除清单 / 前端退役 / config 清零）已由并行 eval 拆弹批完成并入库（`0034ed7e`）。本批补齐剩余缺口：
+
+- **J3 `self_evolution_bakeoff` 降级**：六 scenario 的真实服务级行为执行迁 `tests/evals/test_self_evolution_behaviors.py`（7 个普通集成测试：session-learning 投影、复用候选+硬验证、失败→patch 路由+ledger eval_run、skill 生命周期 promote/patch+候选包落盘、长任务 manifest/artifact 恢复、PL4 拒绝/公司冲突升级/skill_guard 拦密钥、存活结构守卫）；打分外衣（max_score/Hermes 对比/绝对 gate/CLI/report writer）随模块删除；CI 步骤摘除、evaluator_integrity 信任根清单同步收缩、`test_harness_ci_workflow` 守卫翻转。**持续三轮全量的那根红针根因**=其 `cost_latency` 检查钉死已退役的 rerank timeout 特征串（读侧零 LLM 收口删了检查对象）——特征串锁实现细节的既有教训再次应验，该 check 随降级退役。
+- **J4 `bakeoff_runtime` 假分删除**：`_repo_evidence_report`/`_fallback_report`/repo-root 解析/env 透传全删；CLI 不可用或未登录 = 诚实 `runtime_unavailable` 空报告（零合成分）；live 场景失败不回填假分（`runtime_mixed`/`fallback_used` 概念消亡）；run.py 报告体与渲染同步；`test_bakeoff_runtime`/`test_run` 改为无假分契约 + 新增"假分机器物理不存在"grep 守卫。
+- **§3.1 尾项**：装饰性 `eval.yaml` 全仓 16 处删除（templates/skills 6 + packs/office 9 + hr_agent_template 1，零 Python 消费者验证后删）；seeder payload 去除 shell-claude 件（eval-viewer×2/run_eval/run_loop import 闭包/eval_review.html 资产），`agents/grader·comparator·analyzer` LLM 评审指引作为 Skill capsule evals 能力保留；模板守卫（package_structure/skill_creator_quality）判据翻转为"不得携带退役装饰 eval.yaml"。
+- **文档对齐**：CLAUDE.md 摘除 `memory/policy_replay.py` 死指针；eval spec 补 **v1.1 施工对齐修订**（含 `retrieval_eval` "保留"条目被记忆主线读侧重构取代的现实记录）。
+
+**测试证据**：tests/evals 58 passed；tests/templates+packs 117 passed 1 skipped（三处守卫判据翻转为"不得携带退役装饰 eval.yaml"）；全量 `pytest tests -q` = **5273 passed, 1 skipped, 0 failed**——主线自 6 月来首次零失败（bakeoff 红针随降级消失）。

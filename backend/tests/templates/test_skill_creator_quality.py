@@ -112,26 +112,13 @@ def test_all_skill_templates_meet_skill_creator_quality_bar() -> None:
         if scripts and not re.search(r"\b(test|validate|run)\b", body, re.I):
             failures.append(f"{rel}: scripts are not paired with validation instructions")
 
+        # Decorative evals/eval.yaml retired (eval-system-spec §3.1): quality
+        # no longer demands a YAML no runner executes, and none may return.
         eval_path = skill_dir / "evals" / "eval.yaml"
         if skill_path.name != "SKILL.md":
             eval_path = skill_path.with_suffix("") / "evals" / "eval.yaml"
         if eval_path.exists():
-            eval_doc = yaml.safe_load(eval_path.read_text(encoding="utf-8")) or {}
-            cases = eval_doc.get("cases") or []
-            if len(cases) < 2:
-                failures.append(f"{eval_path.relative_to(REPO_ROOT)}: needs at least two eval cases")
-            for case in cases:
-                if not (
-                    case.get("expected_artifacts")
-                    or case.get("expected_behavior")
-                    or case.get("assertions")
-                    or case.get("expected_output")
-                ):
-                    failures.append(
-                        f"{eval_path.relative_to(REPO_ROOT)}:{case.get('name', '<unnamed>')} lacks artifact/assertion expectation"
-                    )
-        else:
-            failures.append(f"{rel}: missing evals/eval.yaml")
+            failures.append(f"{rel}: carries retired decorative evals/eval.yaml")
 
     assert not failures, "\n".join(failures)
 

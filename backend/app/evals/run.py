@@ -489,10 +489,6 @@ def _write_report(report: dict[str, Any], output_dir: Path) -> None:
         )
         if rendered:
             markdown_lines.append(f"- Incomplete Scenarios: {rendered}")
-    fallback = report.get("evidence", {}).get("fallback")
-    fallback_transport = fallback.get("transport") if isinstance(fallback, dict) else None
-    if fallback_transport:
-        markdown_lines.append(f"- Fallback Transport: {fallback_transport}")
     artifact_paths = report.get("artifact_paths") or []
     if artifact_paths:
         markdown_lines.append(f"- Artifact Paths: {', '.join(artifact_paths[:4])}")
@@ -612,12 +608,10 @@ def run_eval_suite(
         "transport": scenario_bundle.get("transport", "internal"),
         "runtime": scenario_bundle.get("runtime"),
         "auth_status": scenario_bundle.get("auth_status"),
-        "fallback_used": scenario_bundle.get("fallback_used"),
         "benchmark_complete": scenario_bundle.get("benchmark_complete"),
         "incomplete_scenarios": scenario_bundle.get("incomplete_scenarios", []),
         "artifact_paths": scenario_bundle.get("artifact_paths", []),
         "route_observations": scenario_bundle.get("route_observations", []),
-        "repo_root": scenario_bundle.get("repo_root"),
         "scenarios": scenario_bundle["scenarios"],
         "summary": _summarize_scores(scenario_bundle["scenarios"]),
         "analysis": _build_analysis(scenario_bundle["scenarios"]),

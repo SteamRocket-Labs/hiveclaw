@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-import yaml
 
 from app.skills.parser import SkillParser
 from app.tools.collector import collect_tools
@@ -30,7 +29,9 @@ def _assert_full_skill_package(skill_dir: Path) -> None:
     assert (skill_dir / "SKILL.md").is_file(), f"{skill_dir.name} missing SKILL.md"
     assert (skill_dir / "references").is_dir(), f"{skill_dir.name} missing references/"
     assert (skill_dir / "templates").is_dir(), f"{skill_dir.name} missing templates/"
-    assert (skill_dir / "evals" / "eval.yaml").is_file(), f"{skill_dir.name} missing evals/eval.yaml"
+    # Decorative evals/eval.yaml retired (eval-system-spec §3.1): a YAML no
+    # runner ever executes must not pose as package completeness evidence.
+    assert not (skill_dir / "evals" / "eval.yaml").exists(), f"{skill_dir.name} carries retired decorative eval.yaml"
 
 
 def test_office_single_purpose_app_templates_are_retired():
@@ -71,7 +72,7 @@ def _registered_tool_names() -> set[str]:
     return {tool["function"]["name"] for tool in collect_tools().openai_tools}
 
 
-def test_all_package_declared_and_eval_tools_are_registered():
+def test_all_package_declared_tools_are_registered():
     parser = SkillParser()
     registered_tools = _registered_tool_names()
     failures: list[str] = []
@@ -82,13 +83,6 @@ def test_all_package_declared_and_eval_tools_are_registered():
         for tool_name in parsed.metadata.declared_tools:
             if tool_name not in registered_tools:
                 failures.append(f"{skill_path.relative_to(REPO_ROOT)} declares unknown tool {tool_name}")
-
-        eval_path = skill_dir / "evals" / "eval.yaml"
-        eval_doc = yaml.safe_load(eval_path.read_text(encoding="utf-8")) or {}
-        for case in eval_doc.get("cases", []) or []:
-            for tool_name in case.get("expected_tools", []) or []:
-                if tool_name not in registered_tools:
-                    failures.append(f"{eval_path.relative_to(REPO_ROOT)} expects unknown tool {tool_name}")
 
     assert not failures, "\n".join(failures)
 

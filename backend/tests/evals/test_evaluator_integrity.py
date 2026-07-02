@@ -88,7 +88,6 @@ def test_integrity_root_covers_retained_evaluator_files() -> None:
         "app/evals/artifact_gate.py",
         "app/evals/bakeoff_runtime.py",
         "app/evals/run.py",
-        "app/evals/self_evolution_bakeoff.py",
         "app/evals/evaluator_integrity.py",
         "app/services/evolution_verification.py",
     }

@@ -70,7 +70,9 @@ def test_extract_runtime_payload_handles_claude_structured_output() -> None:
     }
 
 
-def test_run_runtime_bakeoff_falls_back_to_repo_evidence_when_auth_is_missing(monkeypatch, tmp_path: Path) -> None:
+def test_run_runtime_bakeoff_reports_unavailable_when_auth_is_missing(monkeypatch, tmp_path: Path) -> None:
+    """Spec §2.4: a runtime that cannot run yields an honest empty report —
+    the repo-evidence fake-score fallback is retired."""
     import app.evals.bakeoff_runtime as runtime
 
     monkeypatch.setattr(runtime, "_which", lambda executable: f"/tmp/{executable}")
@@ -86,34 +88,15 @@ def test_run_runtime_bakeoff_falls_back_to_repo_evidence_when_auth_is_missing(mo
             duration_ms=42,
         ),
     )
-    monkeypatch.setattr(
-        runtime,
-        "_repo_evidence_report",
-        lambda target: {
-            "kind": "bakeoff",
-            "transport": "repo_evidence",
-            "repo_root": f"/tmp/{target}",
-            "scenarios": {
-                "coding": {
-                    "ready": True,
-                    "score": 95,
-                    "transcript": "repo evidence",
-                    "rubric": "coding assistant maturity",
-                    "score_breakdown": {"repo_found": True},
-                }
-            },
-        },
-    )
 
     report = runtime.run_runtime_bakeoff("claude_code", output_dir=tmp_path)
 
-    assert report["transport"] == "repo_evidence_only"
+    assert report["transport"] == "runtime_unavailable"
     assert report["runtime"]["status"] == "auth_required"
     assert report["auth_status"] == "auth_required"
-    assert report["fallback_used"] is True
     assert report["benchmark_complete"] is False
-    assert report["fallback"]["transport"] == "repo_evidence"
-    assert report["scenarios"]["coding"]["score"] == 95
+    assert report["scenarios"] == {}
+    assert "fallback" not in report
     assert isinstance(report["artifact_paths"], list)
 
 
@@ -140,16 +123,6 @@ def test_write_runtime_artifacts_handles_byte_outputs(tmp_path: Path) -> None:
 
     assert (tmp_path / "runtime" / "coding" / "stdout.txt").read_text(encoding="utf-8") == "partial output"
     assert (tmp_path / "runtime" / "coding" / "stderr.txt").read_text(encoding="utf-8") == "timeout stderr"
-
-
-def test_resolve_bakeoff_repo_root_prefers_environment_override(monkeypatch, tmp_path: Path) -> None:
-    import app.evals.bakeoff_runtime as runtime
-
-    repo_root = tmp_path / "claude-code"
-    repo_root.mkdir()
-    monkeypatch.setenv("HIVE_BAKEOFF_CLAUDE_CODE_ROOT", str(repo_root))
-
-    assert runtime._resolve_bakeoff_repo_root("claude_code") == repo_root.resolve()
 
 
 def test_run_runtime_bakeoff_scores_timeout_from_workspace_artifacts(monkeypatch, tmp_path: Path) -> None:
@@ -241,7 +214,6 @@ def test_run_runtime_bakeoff_live_cli_marks_benchmark_complete(monkeypatch, tmp_
     report = runtime.run_runtime_bakeoff("hermes_agent", output_dir=tmp_path)
 
     assert report["transport"] == "live_cli"
-    assert report["fallback_used"] is False
     assert report["benchmark_complete"] is True
     assert report["auth_status"] == "ok"
     assert report["runtime"]["status"] == "completed"

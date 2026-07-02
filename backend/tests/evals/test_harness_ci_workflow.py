@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def test_harness_ci_runs_pytest_prompt_eval_and_self_evolution_bakeoff() -> None:
+def test_harness_ci_runs_pytest_prompt_eval_and_hard_gates() -> None:
     workflow = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "harness-ci.yml"
 
     assert workflow.exists()
@@ -13,7 +13,9 @@ def test_harness_ci_runs_pytest_prompt_eval_and_self_evolution_bakeoff() -> None
     # covered by tests/memory suites, so CI must not invoke the dead module.
     assert "python -m app.memory.retrieval_eval" not in source
     assert "python -m app.runtime.prompt_eval" in source
-    assert "python -m app.evals.self_evolution_bakeoff" in source
+    # self_evolution_bakeoff demoted to a plain integration test (spec §2.3):
+    # its behavior assertions run inside `pytest tests/evals` now.
+    assert "python -m app.evals.self_evolution_bakeoff" not in source
     assert "python -m app.evals.run --suite core_v1 --target clawith --mode internal" in source
     assert "python -m app.evals.adversarial_suite" in source
 

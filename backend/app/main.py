@@ -1,8 +1,9 @@
 """Hive Backend — FastAPI Application Entry Point."""
 
 from contextlib import asynccontextmanager
+import re
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
@@ -106,6 +107,65 @@ def _process_role() -> str:
 
 def _runtime_execution_startup_enabled() -> bool:
     return _process_role() not in {"api", "read_model"}
+
+
+def _volume_bound_startup_enabled() -> bool:
+    return _process_role() != "api"
+
+
+_API_ROLE_PREFIXES = (
+    "/api/auth/",
+    "/api/v1/auth/",
+    "/api/users/",
+    "/api/v1/users/",
+    "/api/enterprise/",
+    "/api/v1/enterprise/",
+    "/api/tenants/",
+    "/api/v1/tenants/",
+    "/api/organization/",
+    "/api/v1/organization/",
+    "/api/feature-flags/",
+    "/api/v1/feature-flags/",
+    "/api/notification/",
+    "/api/v1/notification/",
+    "/api/desktop-auth/",
+    "/api/v1/desktop-auth/",
+    "/api/desktop-sync/",
+    "/api/v1/desktop-sync/",
+)
+_API_ROLE_EXACT_PATHS = {
+    "/api/health",
+    "/api/auth",
+    "/api/v1/auth",
+    "/api/users",
+    "/api/v1/users",
+    "/api/enterprise",
+    "/api/v1/enterprise",
+    "/api/tenants",
+    "/api/v1/tenants",
+    "/api/organization",
+    "/api/v1/organization",
+    "/api/agents",
+    "/api/v1/agents",
+}
+_API_ROLE_AGENT_PATTERNS = (
+    re.compile(r"^/api/(v1/)?agents/[^/]+/?$"),
+    re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/?$"),
+    re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/[^/]+/runs(?:/.*)?$"),
+    re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/[^/]+/turns/steer/?$"),
+    re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/[^/]+/permissions/[^/]+/resolve/?$"),
+)
+
+
+def _api_role_allows_path(path: str) -> bool:
+    normalized = "/" + str(path or "").lstrip("/")
+    if normalized.startswith(("/docs", "/redoc", "/openapi.json", "/ws/")):
+        return True
+    if normalized in _API_ROLE_EXACT_PATHS:
+        return True
+    if any(normalized.startswith(prefix) for prefix in _API_ROLE_PREFIXES):
+        return True
+    return any(pattern.match(normalized) for pattern in _API_ROLE_AGENT_PATTERNS)
 
 
 async def _start_ss_local() -> None:
@@ -242,12 +302,15 @@ async def lifespan(app: FastAPI):
     await check_runtime_rls_role(enforcement=settings.RLS_RUNTIME_ROLE_ENFORCEMENT)
 
     # One-time workspace migration: update HEARTBEAT.md + remove deprecated skills
-    try:
-        from app.tools.workspace import migrate_all_workspaces
+    if _volume_bound_startup_enabled():
+        try:
+            from app.tools.workspace import migrate_all_workspaces
 
-        migrate_all_workspaces()
-    except Exception as e:
-        logger.warning(f"[startup] workspace migration failed (non-fatal): {e}")
+            migrate_all_workspaces()
+        except Exception as e:
+            logger.warning(f"[startup] workspace migration failed (non-fatal): {e}")
+    else:
+        logger.info("[startup] workspace migration skipped for no-volume API role")
 
     # Register concrete Plan Mode handoff handlers onto the REST API's shared
     # service so a confirmed scheduled_trigger plan actually creates its enabled
@@ -280,31 +343,35 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[startup] Default company seed failed: {e}")
 
     # Migrate old shared enterprise_info/ → enterprise_info_{first_tenant_id}/
-    try:
-        import shutil
-        from pathlib import Path as _Path
-        from app.config import get_settings as _gs
-        from app.models.tenant import Tenant as _T
-        from app.database import async_session as _ses
-        from sqlalchemy import select as _sel
+    if _volume_bound_startup_enabled():
+        try:
+            import shutil
+            from pathlib import Path as _Path
+            from app.config import get_settings as _gs
+            from app.models.tenant import Tenant as _T
+            from app.database import async_session as _ses
+            from sqlalchemy import select as _sel
 
-        _data_dir = _Path(_gs().AGENT_DATA_DIR)
-        _old_dir = _data_dir / "enterprise_info"
-        if _old_dir.exists() and any(_old_dir.iterdir()):
-            async with _ses() as _db:
-                _first = await _db.execute(_sel(_T).order_by(_T.created_at).limit(1))
-                _tenant = _first.scalar_one_or_none()
-                if _tenant:
-                    _new_dir = _data_dir / f"enterprise_info_{_tenant.id}"
-                    if not _new_dir.exists():
-                        shutil.copytree(str(_old_dir), str(_new_dir))
-                        print(f"[startup] ✅ Migrated enterprise_info → enterprise_info_{_tenant.id}", flush=True)
-                    else:
-                        print(
-                            f"[startup] ℹ️ enterprise_info_{_tenant.id} already exists, skipping migration", flush=True
-                        )
-    except Exception as e:
-        print(f"[startup] ⚠️ enterprise_info migration failed: {e}", flush=True)
+            _data_dir = _Path(_gs().AGENT_DATA_DIR)
+            _old_dir = _data_dir / "enterprise_info"
+            if _old_dir.exists() and any(_old_dir.iterdir()):
+                async with _ses() as _db:
+                    _first = await _db.execute(_sel(_T).order_by(_T.created_at).limit(1))
+                    _tenant = _first.scalar_one_or_none()
+                    if _tenant:
+                        _new_dir = _data_dir / f"enterprise_info_{_tenant.id}"
+                        if not _new_dir.exists():
+                            shutil.copytree(str(_old_dir), str(_new_dir))
+                            print(f"[startup] ✅ Migrated enterprise_info → enterprise_info_{_tenant.id}", flush=True)
+                        else:
+                            print(
+                                f"[startup] ℹ️ enterprise_info_{_tenant.id} already exists, skipping migration",
+                                flush=True,
+                            )
+        except Exception as e:
+            print(f"[startup] ⚠️ enterprise_info migration failed: {e}", flush=True)
+    else:
+        logger.info("[startup] enterprise_info volume migration skipped for no-volume API role")
 
     # ── MCP backfill (idempotent): legacy Tool(type=mcp) → server-first tables ──
     # The Skill+MCP cutover left this as a manual admin endpoint, so freshly
@@ -400,20 +467,23 @@ async def lifespan(app: FastAPI):
     # C9-1: crash recovery for T2 package jobs — stale queued/running manifests
     # from a dead process are normalized to held so the heartbeat sweep can
     # retry them. Zero-LLM state normalization only; retries run on heartbeat.
-    try:
-        from pathlib import Path as _T2SweepPath
+    if _volume_bound_startup_enabled():
+        try:
+            from pathlib import Path as _T2SweepPath
 
-        from app.config import get_settings as _t2_sweep_settings
-        from app.memory.t2.job_sweep import sweep_all_agents_stale_t2_jobs
+            from app.config import get_settings as _t2_sweep_settings
+            from app.memory.t2.job_sweep import sweep_all_agents_stale_t2_jobs
 
-        _t2_sweep_reports = sweep_all_agents_stale_t2_jobs(
-            data_root=_T2SweepPath(_t2_sweep_settings().AGENT_DATA_DIR)
-        )
-        _t2_recovered = sum(len(report.recovered_stale) for report in _t2_sweep_reports)
-        if _t2_recovered:
-            logger.info("[startup] T2 job sweep: crash-recovered {} stale job(s) to held", _t2_recovered)
-    except Exception as e:
-        logger.warning(f"[startup] T2 job sweep failed (non-fatal): {e}")
+            _t2_sweep_reports = sweep_all_agents_stale_t2_jobs(
+                data_root=_T2SweepPath(_t2_sweep_settings().AGENT_DATA_DIR)
+            )
+            _t2_recovered = sum(len(report.recovered_stale) for report in _t2_sweep_reports)
+            if _t2_recovered:
+                logger.info("[startup] T2 job sweep: crash-recovered {} stale job(s) to held", _t2_recovered)
+        except Exception as e:
+            logger.warning(f"[startup] T2 job sweep failed (non-fatal): {e}")
+    else:
+        logger.info("[startup] T2 job sweep skipped for no-volume API role")
 
     try:
         from app.services.skill_seeder import (
@@ -423,17 +493,23 @@ async def lifespan(app: FastAPI):
         )
 
         await seed_skills()
-        await cleanup_retired_builtin_skills()
-        await push_default_skills_to_existing_agents()
+        if _volume_bound_startup_enabled():
+            await cleanup_retired_builtin_skills()
+            await push_default_skills_to_existing_agents()
+        else:
+            logger.info("[startup] skill workspace maintenance skipped for no-volume API role")
     except Exception as e:
         logger.warning(f"[startup] Skills seed failed: {e}")
 
-    try:
-        from app.services.agent_seeder import seed_default_agents
+    if _volume_bound_startup_enabled():
+        try:
+            from app.services.agent_seeder import seed_default_agents
 
-        await seed_default_agents()
-    except Exception as e:
-        logger.warning(f"[startup] Default agents seed failed: {e}")
+            await seed_default_agents()
+        except Exception as e:
+            logger.warning(f"[startup] Default agents seed failed: {e}")
+    else:
+        logger.info("[startup] default agent workspace seed skipped for no-volume API role")
 
     # P1-W2-9: reconcile registered tools against the capability mapping.
     # Surfaces drift (new tools without policy, dead policy entries) at
@@ -546,7 +622,7 @@ async def lifespan(app: FastAPI):
             )
         else:
             logger.info("[startup] channel stream startup disabled")
-        if settings.T0_STARTUP_BACKFILL_ENABLED:
+        if settings.T0_STARTUP_BACKFILL_ENABLED and _volume_bound_startup_enabled():
             from app.services.t0_logger import run_startup_chat_transcript_t0_backfill
 
             startup_background_tasks.append(("t0_startup_backfill", run_startup_chat_transcript_t0_backfill()))
@@ -567,7 +643,10 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
 
     # Start ss-local SOCKS5 proxy for Discord API calls (non-fatal)
-    asyncio.create_task(_start_ss_local(), name="ss-local-proxy")
+    if _volume_bound_startup_enabled():
+        asyncio.create_task(_start_ss_local(), name="ss-local-proxy")
+    else:
+        logger.info("[startup] ss-local proxy skipped for no-volume API role")
 
     yield
 
@@ -625,6 +704,20 @@ app.add_middleware(
 
 # Tenant isolation middleware (runs after CORS, extracts tenant_id from JWT)
 app.add_middleware(TenantMiddleware)
+
+
+@app.middleware("http")
+async def api_role_runtime_boundary(request: Request, call_next):
+    if _process_role() == "api" and not _api_role_allows_path(request.url.path):
+        return ORJSONResponse(
+            status_code=404,
+            content={
+                "detail": "Route is not served by the no-volume API role. Use the runtime/read-model backend route.",
+                "process_role": "api",
+            },
+        )
+    return await call_next(request)
+
 
 # All API routers — mounted under both /api (backward compat) and /api/v1
 _api_routers = [

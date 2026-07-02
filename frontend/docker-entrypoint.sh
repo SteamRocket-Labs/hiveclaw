@@ -17,8 +17,17 @@ fi
 
 sed -i "s|resolver 127.0.0.11 valid=10s ipv6=off|resolver $RESOLVER valid=10s ipv6=off|g" /etc/nginx/conf.d/default.conf
 
-# Replace backend upstream if BACKEND_HOST is set
-if [ -n "$BACKEND_HOST" ]; then
+# Replace split backend upstreams when Railway service DNS differs from the
+# default service names. BACKEND_HOST remains a compatibility fallback for both.
+if [ -n "$BACKEND_API_HOST" ]; then
+  sed -i "s|backend-api:8000|$BACKEND_API_HOST|g" /etc/nginx/conf.d/default.conf
+elif [ -n "$BACKEND_HOST" ]; then
+  sed -i "s|backend-api:8000|$BACKEND_HOST|g" /etc/nginx/conf.d/default.conf
+fi
+
+if [ -n "$BACKEND_RUNTIME_HOST" ]; then
+  sed -i "s|backend:8000|$BACKEND_RUNTIME_HOST|g" /etc/nginx/conf.d/default.conf
+elif [ -n "$BACKEND_HOST" ]; then
   sed -i "s|backend:8000|$BACKEND_HOST|g" /etc/nginx/conf.d/default.conf
 fi
 

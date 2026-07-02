@@ -324,6 +324,28 @@ def test_terminal_artifact_paths_require_model_declared_current_turn_writes():
     ) == ["workspace/new.md"]
 
 
+def test_web_chat_final_message_has_database_idempotency_guard():
+    from pathlib import Path
+
+    migration = Path("alembic/versions/web_chat_final_message_idempotency_0702.py")
+    assert migration.exists()
+    text = migration.read_text(encoding="utf-8")
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_messages_web_chat_final_decision_trace" in text
+    assert "WHERE decision_trace_id LIKE 'web_chat_final:%'" in text
+
+
+def test_final_assistant_marker_unique_violation_detects_idempotency_index():
+    import app.services.web_chat_runtime as runtime
+    from sqlalchemy.exc import IntegrityError
+
+    class _Orig:
+        diag = SimpleNamespace(constraint_name="uq_chat_messages_web_chat_final_decision_trace")
+
+    exc = IntegrityError("insert chat_messages", {}, _Orig())
+
+    assert runtime._is_final_assistant_marker_unique_violation(exc)
+
+
 class _QueuedScalarResult:
     def __init__(self, value):
         self._value = value
@@ -1542,6 +1564,143 @@ async def test_execute_web_chat_run_does_not_broadcast_done_when_finalization_lo
 
     await runtime.execute_web_chat_run(run_id)
 
+    assert all(event.get("type") != "done" for event in broadcasts)
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_marks_terminal_persistence_error_when_finalization_raises(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="latest question",
+        metadata_json={"user_id": str(user_id), "session_id": session_id},
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Web3研究员",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    task_updates: list[dict] = []
+    broadcasts: list[dict] = []
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, []
+
+    async def fake_invoke(_request):
+        return SimpleNamespace(content="same final answer", reasoning_signature=None)
+
+    async def fail_finalize(**_kwargs):
+        raise RuntimeError("db commit failed")
+
+    async def fake_update_runtime_task(*_args, **kwargs):
+        task_updates.append(kwargs)
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fail_finalize)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", fake_update_runtime_task)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert task_updates
+    assert task_updates[-1]["status"] == "failed"
+    assert task_updates[-1]["metadata_json"]["terminal_reason"] == "persistence_error"
+    assert task_updates[-1]["metadata_json"]["persistence_error"] is True
+    assert all(event.get("type") != "done" for event in broadcasts)
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_treats_final_marker_unique_violation_as_lost_race(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from sqlalchemy.exc import IntegrityError
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="latest question",
+        metadata_json={"user_id": str(user_id), "session_id": session_id},
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Web3研究员",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    task_updates: list[dict] = []
+    broadcasts: list[dict] = []
+
+    class _Orig:
+        diag = SimpleNamespace(constraint_name="uq_chat_messages_web_chat_final_decision_trace")
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, []
+
+    async def fake_invoke(_request):
+        return SimpleNamespace(content="same final answer", reasoning_signature=None)
+
+    async def fail_finalize(**_kwargs):
+        raise IntegrityError("insert chat_messages", {}, _Orig())
+
+    async def fake_update_runtime_task(*_args, **kwargs):
+        task_updates.append(kwargs)
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fail_finalize)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", fake_update_runtime_task)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert task_updates == []
     assert all(event.get("type") != "done" for event in broadcasts)
 
 

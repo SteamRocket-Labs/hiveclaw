@@ -53,6 +53,7 @@ _EXECUTABLE_CHAT_TASK_TYPES = (
     "advanced_plan",
 )
 _ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME = "uq_runtime_tasks_active_web_chat_session"
+_FINAL_ASSISTANT_MARKER_UNIQUE_INDEX_NAME = "uq_chat_messages_web_chat_final_decision_trace"
 _ACTIVE_STATUSES = ("pending", "running")
 _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
 _TERMINAL_TRANSCRIPT_EVENT_TYPES = ("assistant_message", "run_completed", "done", "error", "quota_exceeded")
@@ -976,6 +977,15 @@ def _is_active_web_chat_unique_violation(exc: IntegrityError) -> bool:
     if constraint_name == _ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME:
         return True
     return _ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME in str(exc)
+
+
+def _is_final_assistant_marker_unique_violation(exc: IntegrityError) -> bool:
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None)
+    constraint_name = getattr(diag, "constraint_name", None)
+    if constraint_name == _FINAL_ASSISTANT_MARKER_UNIQUE_INDEX_NAME:
+        return True
+    return _FINAL_ASSISTANT_MARKER_UNIQUE_INDEX_NAME in str(exc)
 
 
 def _capture_user_checkpoint_workspace_snapshot(*, agent_id: uuid.UUID, session: ChatSession, user_event: Any) -> None:
@@ -3286,22 +3296,31 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         declared_artifact_paths = _declared_terminal_artifact_paths(assistant_response)
         artifact_paths = _terminal_artifact_paths_for_turn(runtime_session_context, assistant_response)
         rejected_artifact_paths = _rejected_terminal_artifact_paths_for_turn(runtime_session_context, assistant_response)
-        finalized = await _finalize_web_chat_run_with_assistant(
-            run_uuid=run_uuid,
-            agent_id=agent.id,
-            user_id=user.id,
-            session_id=session_id,
-            content=assistant_response,
-            thinking=thinking,
-            thinking_signature=getattr(result, "reasoning_signature", None),
-            status=status,
-            result_summary=_simulation_title(assistant_response),
-            metadata_json=metadata_update,
-            artifact_paths=artifact_paths,
-            file_change_paths=file_change_paths,
-            declared_artifact_paths=declared_artifact_paths,
-            rejected_artifact_paths=rejected_artifact_paths,
-        )
+        try:
+            finalized = await _finalize_web_chat_run_with_assistant(
+                run_uuid=run_uuid,
+                agent_id=agent.id,
+                user_id=user.id,
+                session_id=session_id,
+                content=assistant_response,
+                thinking=thinking,
+                thinking_signature=getattr(result, "reasoning_signature", None),
+                status=status,
+                result_summary=_simulation_title(assistant_response),
+                metadata_json=metadata_update,
+                artifact_paths=artifact_paths,
+                file_change_paths=file_change_paths,
+                declared_artifact_paths=declared_artifact_paths,
+                rejected_artifact_paths=rejected_artifact_paths,
+            )
+        except IntegrityError as exc:
+            if _is_final_assistant_marker_unique_violation(exc):
+                logger.info(
+                    "[WebChatRun] Terminal assistant finalization lost idempotency race for run {}",
+                    run_uuid.hex,
+                )
+                return
+            raise
         if not finalized:
             return
         await _emit_terminal_turn_hook(
@@ -3387,11 +3406,17 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             logger.warning(
                 "[WebChatRun] Failed to persist visible terminal error for {}: {}", run_uuid.hex, terminal_exc
             )
+            persistence_metadata = {
+                "error": str(terminal_exc)[:500],
+                "original_error": str(exc)[:500],
+                "terminal_reason": TerminalReason.PERSISTENCE_ERROR.value,
+                "persistence_error": True,
+            }
             await _update_runtime_task(
                 run_uuid,
                 status="failed",
-                result_summary=result_summary,
-                metadata_json=metadata_update,
+                result_summary=f"Web chat persistence failed: {type(terminal_exc).__name__}",
+                metadata_json=persistence_metadata,
             )
     finally:
         _CANCEL_EVENTS.pop(run_key, None)

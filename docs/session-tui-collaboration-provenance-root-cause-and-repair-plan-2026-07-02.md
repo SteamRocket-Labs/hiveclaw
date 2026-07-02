@@ -1027,3 +1027,55 @@ cd frontend && npm run test -- \
 cd frontend && npm run build
 # tsc && vite build passed
 ```
+
+### Part 14 — B2 persistence terminal reason 与 terminal marker 并发幂等（2026-07-02）
+
+红测：
+
+- `test_execute_web_chat_run_marks_terminal_persistence_error_when_finalization_raises`：模型调用成功后，terminal finalization 抛持久化异常时，旧实现把 RuntimeTask 标成 `provider_error`，会把 DB/transcript 持久化失败伪装成模型供应商失败。
+- `test_web_chat_final_message_has_database_idempotency_guard`：旧 schema 只有普通 `decision_trace_id` index，没有数据库级 final assistant marker 并发幂等约束。
+- `test_execute_web_chat_run_treats_final_marker_unique_violation_as_lost_race`：旧执行路径遇到 final marker unique violation 会进入失败路径，而不是按“另一个并发 finalizer 已经赢了”处理。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_marks_terminal_persistence_error_when_finalization_raises \
+  -q
+# failed: terminal_reason provider_error != persistence_error
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_web_chat_runtime.py::test_web_chat_final_message_has_database_idempotency_guard \
+  -q
+# failed: missing alembic/versions/web_chat_final_message_idempotency_0702.py
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_web_chat_runtime.py::test_final_assistant_marker_unique_violation_detects_idempotency_index \
+  tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_treats_final_marker_unique_violation_as_lost_race \
+  -q
+# failed: missing helper / unique violation entered failed update path
+```
+
+变更：
+
+- `TerminalReason` 增加 `PERSISTENCE_ERROR = "persistence_error"`。
+- `execute_web_chat_run()` 在 terminal visible error 也持久化失败时，RuntimeTask metadata 写入 `terminal_reason=persistence_error`、`persistence_error=True`、`original_error`，不再伪装成 `provider_error`。
+- 新增 migration `web_chat_final_message_idempotency_0702.py`：对 `chat_messages(decision_trace_id)` 建立 partial unique index，仅约束 `decision_trace_id LIKE 'web_chat_final:%'` 的 terminal assistant marker。
+- 新增 `_is_final_assistant_marker_unique_violation()`；正常 terminal finalization 遇到该 unique violation 时按 lost race 处理，直接返回，不广播 done、不写 failed。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py -q
+# 75 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/web_chat_runtime.py \
+  app/kernel/contracts.py \
+  tests/services/test_web_chat_runtime.py \
+  alembic/versions/web_chat_final_message_idempotency_0702.py
+# All checks passed
+
+cd backend && source .venv/bin/activate && alembic heads
+# web_chat_final_message_idempotency_0702 (head)
+```

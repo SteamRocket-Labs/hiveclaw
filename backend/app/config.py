@@ -188,6 +188,11 @@ class Settings(BaseSettings):
     # over this budget is a write-side convergence failure signal (工序 4),
     # alerted — never hard-trimmed.
     MEMORY_RESIDENT_BUDGET_CHARS: float = 12_000.0
+    # Convergence-loop dirtiness thresholds (工序 4, memory-system-spec §4.3):
+    # a profile-plane file past these marks surfaces CONVERGENCE NEEDED in the
+    # curator's neighborhood; the LLM performs the governed full rewrite.
+    MEMORY_CONVERGENCE_MAX_CHARS_PER_FILE: float = 6_000.0
+    MEMORY_CONVERGENCE_MAX_RETIRED_ENTRIES: int = 2
 
     # Coordination backend (Phase 17 wiring)
     # "postgres" — durable PostgreSQL-backed coordination (default). This keeps

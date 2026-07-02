@@ -216,6 +216,9 @@ def build_t3_neighborhood(*, data_root: Path | str, agent_id: uuid.UUID | str) -
         )
         lines.append(f"  preview: {entry.preview}")
     lines.extend(_two_plane_neighborhood_lines(mem_dir))
+    from app.memory.convergence import convergence_warning_lines
+
+    lines.extend(convergence_warning_lines(agent_id=resolved_agent_id, data_root=root))
     return "\n".join(lines).rstrip() + "\n"
 
 

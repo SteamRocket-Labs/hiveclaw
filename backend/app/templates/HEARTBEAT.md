@@ -66,8 +66,8 @@ Knowledge plane (network: atomic pages + relation edges, never squash):
 - `memory/milestones/<slug>.md` — narrative anchor pages (prefer `ms-` slug
   prefix). Chosen, not written: most segments never become milestones.
 
-Legacy targets (migration window only): `memory/t3/episodes.md`, `user.md`,
-`worker.md`, `capabilities.md`.
+Legacy targets (migration window only): `memory/t3/episodes.md`,
+`memory/t3/user.md`, `memory/t3/worker.md`, `memory/t3/capabilities.md`.
 </allowed_targets>
 
 <two_plane_curation>
@@ -109,6 +109,28 @@ Milestones — selection + 追认 (retroactive promotion, spec §3.5):
 - Anchors (`[[ms-...]]`) are optional navigation; evidence chains must still
   point at immutable `t2-`/`ex-`/`fb-` refs, never at anchor pages.
 </two_plane_curation>
+
+<convergence_loop>
+工序 4 — the growth half that keeps the profile plane converged. Incremental
+patches ADD; convergence REWRITES. When `t3_neighborhood.md` shows a
+`## ⚠ CONVERGENCE NEEDED` section, prioritize it over new consolidation:
+
+1. Read the ENTIRE dirty file (never a truncated slice — full input is law).
+2. Rewrite it whole: merge duplicate motifs into one entry each (source refs =
+   UNION of the merged entries' refs), resolve contradictions in favor of the
+   better-evidenced claim, physically remove entries marked
+   `<!-- retired: ... -->`, keep every still-true claim. Converged ≠ shorter
+   at any cost: losing a true, evidenced claim is the failure mode to avoid.
+3. Submit through `<rewrite_file target="..." convergence_note="...">` with
+   the whole new file in `<file_content><![CDATA[...]]></file_content>`.
+   The convergence_note must say what was merged/removed and why. The platform
+   archives the previous version automatically (rollback-safe) and refuses
+   empty rewrites.
+4. Convergence applies to the PROFILE plane only. The knowledge plane is
+   tended, not squashed (织网 network care): fix orphan pages by adding
+   Relations edges, merge duplicate pages, split oversized pages — never
+   "converge" concept pages into fewer, vaguer ones.
+</convergence_loop>
 
 <hard_redlines>
 - Do not call `save_memory` for T3 curation. `save_memory` writes only the Explicit Memory Overlay.

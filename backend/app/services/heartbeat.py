@@ -1375,6 +1375,28 @@ async def _run_t2_retention(agent_id: uuid.UUID):
     )
 
 
+async def _run_convergence_dirtiness_refresh(agent_id: uuid.UUID):
+    """工序 4 (Part F): measure profile-plane dirtiness for the convergence loop."""
+    from app.config import get_settings
+    from app.memory.convergence import (
+        DEFAULT_MAX_CHARS_PER_FILE,
+        DEFAULT_MAX_RETIRED_ENTRIES,
+        refresh_convergence_dirtiness,
+    )
+
+    settings = get_settings()
+    return refresh_convergence_dirtiness(
+        agent_id=agent_id,
+        data_root=Path(settings.AGENT_DATA_DIR),
+        max_chars_per_file=float(
+            getattr(settings, "MEMORY_CONVERGENCE_MAX_CHARS_PER_FILE", DEFAULT_MAX_CHARS_PER_FILE)
+        ),
+        max_retired_entries=int(
+            getattr(settings, "MEMORY_CONVERGENCE_MAX_RETIRED_ENTRIES", DEFAULT_MAX_RETIRED_ENTRIES)
+        ),
+    )
+
+
 async def _execute_heartbeat(
     agent_id: uuid.UUID,
     *,
@@ -1490,6 +1512,17 @@ async def _execute_heartbeat(
                     )
             except Exception as _retention_err:
                 logger.warning("[Heartbeat] T2 retention failed for {}: {}", agent_id, _retention_err)
+
+            try:
+                dirtiness_report = await _run_convergence_dirtiness_refresh(agent_id)
+                if dirtiness_report.dirty_files:
+                    logger.info(
+                        "[Heartbeat] Convergence needed for {}: {}",
+                        agent_id,
+                        [item["target"] for item in dirtiness_report.dirty_files],
+                    )
+            except Exception as _convergence_err:
+                logger.warning("[Heartbeat] Convergence dirtiness refresh failed for {}: {}", agent_id, _convergence_err)
 
             if not (agent.primary_model_id or agent.fallback_model_id):
                 logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")

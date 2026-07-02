@@ -166,4 +166,20 @@
 
 **红测：** `test_milestones_criteria.py` 2 用例 RED→GREEN（另一判据教学并入 Part D 测试）。
 
-**C/D/E 合计回归：** ruff 全过；tests/memory 422 passed；全量随 commit 记录。三 part 共享教学面（HEARTBEAT.md/prompts.py），合并单 commit。
+**C/D/E 合计回归：** ruff 全过；tests/memory 422 passed；全量 = 5376 passed / 4 failed（3 个归属外部：alembic pin 债、session_control_plane WIP×2——后者已被该 session 自行收掉；1 个 `test_has_t2_to_t3_guidance` 是本 pass 改 HEARTBEAT.md 缩写了 legacy 路径所致，**已修**：legacy 行写全路径，kairos 22 passed）。
+
+**Commit：** `2cc5c720`（8 files）+ HEARTBEAT.md 路径修复随 Part F commit。
+
+### Part F 成长机制：收敛环 + 提名交接（2026-07-02）
+
+**改动：**
+- 新增 `memory/convergence.py`（工序 4 机械半）：侧写平面脏度测量（字数超阈值/retired 条目积压/读侧 resident 超预算信号联动）→ `control/convergence_dirtiness.json` 台账 + `build_t3_neighborhood` 注入 `⚠ CONVERGENCE NEEDED` 警示（curator 视野触发）。LLM 半 = 收敛重写本身，经 gate。
+- `t3_platform_gate.py` 新操作 `rewrite_file`：侧写固定文件**全文重写**（工序 4 执行面）——`convergence_note` 必填（审计）、拒绝清空非空文件（防误删）、base_revision 冲突检测、旧版自动存档（复用 `_atomic_write_targets` rollback staging，红测钉住备份存在且含旧内容）。
+- `config.py` 增 `MEMORY_CONVERGENCE_MAX_CHARS_PER_FILE=6000` / `MEMORY_CONVERGENCE_MAX_RETIRED_ENTRIES=2`。
+- `services/heartbeat.py`：`_run_convergence_dirtiness_refresh` wrapper + 维护批第四项（sweep→debt→retention→convergence dirtiness）。
+- `HEARTBEAT.md` `<convergence_loop>` 节：完整文件输入（L1 不截断）、消重取 refs 并集、清 retired、"收敛≠一味变短"、**侧写收敛 vs 知识织网治理不可混用**。
+- `DREAM.md` 新增 `<self_to_soul_nomination>`（工序 5：长期稳定+高置信+零反例三条件、提名走既有 Soul Memory Gate + Platform Soul Gate + owner 确认、promotion 后 self 条目保留）+ `<self_to_skill_handoff>`（工序 6：`- skill候选:` 标记 → 既有 skill 蒸馏 lane 拾取、固化后 `已固化 → [[skill-x]]` 双向链、记忆永不直造 Skill）。工序 5/6 复用既有 gate 链（auto_dream 的 soul gate、skill_distiller 的 candidate 读取），Part F 落教学与标记约定；distiller 输入面从 legacy capabilities 迁到 self.md 归 Part H（与旧路径退役同 pass）。
+
+**红测：** `tests/memory/test_growth_mechanisms.py` 13 用例 RED→GREEN。覆盖：脏度双因子/干净文件/台账落盘/neighborhood 警示、rewrite_file 收敛成功+旧版存档、缺 note hold、stale sha rebase、清空拒绝、heartbeat wrapper 真跑+接线断言、HEARTBEAT/DREAM 教学断言、config 字段。
+
+**回归：** ruff 全过；memory+heartbeat 面 495 passed；全量随 commit 记录。三 part 共享教学面（HEARTBEAT.md/prompts.py），合并单 commit。

@@ -264,6 +264,27 @@ def apply_t3_consolidation_patch(
 
     # -- two-plane operations (spec §3.2/§3.4/§3.5) --
 
+    for change in patch.findall("./proposed_changes/rewrite_file"):
+        # Convergence loop (工序 4, spec §4.3): full-file rewrite of a
+        # profile-plane file. The old version is archived by
+        # _atomic_write_targets' rollback staging; a convergence note is
+        # mandatory so every rewrite is auditable; emptying a populated file
+        # is refused — convergence converges, it never wipes.
+        target = _normalize_target(change.attrib.get("target") or "")
+        file_content = (change.findtext("file_content") or "").strip()
+        convergence_note = str(change.attrib.get("convergence_note") or "").strip()
+        if not is_profile_plane_target(target):
+            issues.append(f"rewrite_file target must be a self/profiles file: {target or '<missing>'}")
+            continue
+        if not convergence_note:
+            issues.append(f"rewrite_file requires a convergence_note explaining the rewrite: {target}")
+            continue
+        if not file_content:
+            issues.append(f"rewrite_file must not empty a populated file: {target}")
+            continue
+        updated_contents[target] = file_content
+        committed_blocks.append(f"rewrite:{target}")
+
     for change in patch.findall("./proposed_changes/upsert_page"):
         target = _normalize_target(change.attrib.get("target") or "")
         page_content = (change.findtext("page_content") or "").strip()

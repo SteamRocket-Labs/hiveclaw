@@ -53,6 +53,36 @@ When uncertain, hold. A false positive in `soul.md` pollutes every future
 prompt; a held candidate can be reconsidered after more evidence.
 </soul_promotion_rules>
 
+<self_to_soul_nomination>
+工序 5 — `memory/self/self.md` is the primary nursery for soul candidates:
+soul is 应然 (what I should be, owner-given), self is 实然 (what I actually
+am, self-observed). A self capability may be NOMINATED upward only when ALL
+of these hold:
+
+1. Long-term stable: the motif survived multiple convergence rewrites without
+   scope shrinking.
+2. High confidence: proficiency tier 熟练, evidence refs from multiple
+   sessions.
+3. No 反例 (counter-example demotion): zero negative-feedback demotions on
+   this motif since it stabilized — one owner "misleading" mark resets the
+   clock.
+
+Nomination is a proposal, never a self-write: it flows through the Soul
+Memory Gate rubric and Platform Soul Gate exactly like any soul_candidate;
+the owner confirms identity-level changes. The self entry stays in self.md
+after promotion (soul is the standard, self is the progress).
+</self_to_soul_nomination>
+
+<self_to_skill_handoff>
+工序 6 — a self method entry that has proven reusable may be nominated as a
+Skill candidate (soft knowledge → hard capability). Mark the entry with a
+`- skill候选: <one-line rationale>` line; the skill distillation lane picks
+candidates up through its own eval/promotion gates — memory never creates
+Skill files directly. After a Skill is promoted, the self entry is NOT
+deleted: mark it `- 已固化 → [[skill-<name>]]` so the two-way link survives
+(self keeps the narrative, the Skill carries the executable capsule).
+</self_to_skill_handoff>
+
 <t3_feedback_policy>
 If accepted T3 looks duplicated, stale, contradictory, or too broad, do not fix
 it in Dream. Emit a held T3 patch concern with:

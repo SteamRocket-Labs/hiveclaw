@@ -1460,6 +1460,220 @@ async def _run_growth_report_refresh(agent_id: uuid.UUID, tenant_id: uuid.UUID |
         )
 
 
+async def _invoke_heartbeat_and_persist(
+    *,
+    agent,
+    tenant_id: uuid.UUID | None,
+    model,
+    fallback_model,
+    runtime_messages: list[dict],
+    session_id: uuid.UUID,
+    runtime_task_id: str | None,
+    heartbeat_session_id: str | None,
+    agent_participant_id: uuid.UUID | None,
+    tick_count: int,
+) -> None:
+    """Run the long heartbeat model/tool loop outside the preparatory DB session."""
+    import json as _json
+
+    from app.models.agent import Agent
+    from app.models.audit import ChatMessage
+
+    runtime_messages = _compact_heartbeat_runtime_messages(runtime_messages)
+
+    async def _on_tool_call(data: dict) -> None:
+        if data.get("status") != "done":
+            return
+        try:
+            async with tenant_scoped_session(tenant_id) as _tc_db:
+                _tc_db.add(
+                    ChatMessage(
+                        agent_id=agent.id,
+                        tenant_id=tenant_id,
+                        conversation_id=str(session_id),
+                        role="tool_call",
+                        content=_json.dumps(
+                            {
+                                "name": data["name"],
+                                "args": data.get("args"),
+                                "status": "done",
+                                "result": str(data.get("result", ""))[:2000],
+                                "reasoning_content": data.get("reasoning_content"),
+                                "reasoning_signature": data.get("reasoning_signature"),
+                            },
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                        user_id=agent.creator_id,
+                        participant_id=agent_participant_id,
+                    )
+                )
+                await _tc_db.commit()
+        except Exception as tc_err:
+            logger.debug(f"Failed to persist heartbeat tool call: {tc_err}")
+
+    _HEARTBEAT_TIMEOUT_SECONDS = 300  # 5 min hard limit to prevent event loop deadlock
+    result = await asyncio.wait_for(
+        invoke_agent(
+            AgentInvocationRequest(
+                model=model,
+                fallback_model=fallback_model,
+                messages=runtime_messages,
+                memory_messages=runtime_messages,
+                agent_name=agent.name,
+                role_description=agent.role_description or "",
+                agent_id=agent.id,
+                user_id=agent.creator_id,
+                execution_identity=ExecutionIdentityRef(
+                    identity_type="agent_bot",
+                    identity_id=agent.id,
+                    label=f"Agent: {agent.name} (heartbeat)",
+                ),
+                session_context=_get_or_create_heartbeat_session_ctx(
+                    agent.id,
+                    session_id,
+                    tenant_id=tenant_id,
+                    runtime_task_id=runtime_task_id,
+                ),
+                on_tool_call=_on_tool_call,
+                tool_executor=_build_heartbeat_tool_executor(agent.id, agent.creator_id),
+                core_tools_only=False,
+                max_tool_rounds=_HEARTBEAT_MAX_TOOL_ROUNDS,
+            )
+        ),
+        timeout=_HEARTBEAT_TIMEOUT_SECONDS,
+    )
+    reply = result.content
+
+    runtime_messages.append({"role": "assistant", "content": reply or ""})
+    if _heartbeat_session_ids.get(agent.id) == session_id:
+        _heartbeat_contexts[agent.id] = _compact_heartbeat_runtime_messages(runtime_messages)
+        _save_heartbeat_checkpoint(
+            agent.id,
+            session_id=session_id,
+            tick_count=tick_count,
+            runtime_messages=_heartbeat_contexts[agent.id],
+            t2_mtimes=_t2_mtimes.get(agent.id, {}),
+        )
+    else:
+        logger.info(
+            "[Heartbeat] Session cache for {} was reset during execution; not restoring stale context",
+            agent.id,
+        )
+
+    assistant_message_id: str | None = None
+    async with tenant_scoped_session(tenant_id) as db2:
+        assistant_message = ChatMessage(
+            agent_id=agent.id,
+            tenant_id=tenant_id,
+            conversation_id=str(session_id),
+            role="assistant",
+            content=reply or "",
+            user_id=agent.creator_id,
+            participant_id=agent_participant_id,
+        )
+        db2.add(assistant_message)
+        await db2.flush()
+        assistant_message_id = str(assistant_message.id)
+        await db2.commit()
+
+    outcome_type, heartbeat_score = _parse_heartbeat_outcome(reply)
+    outcome_lane = _heartbeat_outcome_lane(outcome_type)
+
+    async with tenant_scoped_session(tenant_id) as db3:
+        a_result = await db3.execute(select(Agent).where(Agent.id == agent.id))
+        a = a_result.scalar_one_or_none()
+        if a:
+            a.last_heartbeat_at = datetime.now(timezone.utc)
+            await db3.commit()
+
+    from app.services.activity_logger import log_activity
+
+    summary = reply[:80] if reply else "empty"
+    await log_activity(
+        agent.id,
+        "heartbeat",
+        f"Heartbeat [{outcome_type}]: {summary}",
+        detail={
+            "reply": reply[:500] if reply else "",
+            "outcome_type": outcome_type,
+            "outcome_lane": outcome_lane,
+            "score": heartbeat_score,
+            "session_id": str(session_id),
+        },
+    )
+
+    try:
+        reflection_result = await _route_heartbeat_reflection_learning(
+            agent_id=agent.id,
+            tenant_id=agent.tenant_id,
+            agent_name=agent.name,
+            session_id=session_id,
+            runtime_task_id=runtime_task_id,
+            assistant_message_id=assistant_message_id,
+            runtime_messages=runtime_messages,
+            reply=reply,
+            outcome_type=outcome_type,
+            outcome_lane=outcome_lane,
+            score=heartbeat_score,
+        )
+        if reflection_result.get("status") in {"emitted", "scheduled"}:
+            await log_activity(
+                agent.id,
+                "heartbeat",
+                "Heartbeat reflection routed to Learning Brain",
+                detail={
+                    "activity_kind": "llm_reflection_extracted",
+                    "source": "heartbeat_reflection",
+                    "outcome_type": outcome_type,
+                    "score": heartbeat_score,
+                    "source_refs": reflection_result.get("source_refs") or [],
+                },
+            )
+    except Exception as _reflection_err:
+        logger.warning(
+            "[Heartbeat] Reflection learning route failed for {}: {}",
+            agent.id,
+            _reflection_err,
+        )
+
+    try:
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        await emit_hook(
+            HookEvent.HEARTBEAT_TICK_END,
+            agent_id=agent.id,
+            session_id=str(session_id),
+            messages=[],
+            source="heartbeat",
+            metadata={
+                "tick": tick_count,
+                "outcome": outcome_type,
+                "outcome_lane": outcome_lane,
+                "score": heartbeat_score,
+                "distillation_scope": "audit_only",
+                "tenant_id": str(agent.tenant_id) if agent.tenant_id else None,
+            },
+        )
+    except Exception as _hook_err:
+        logger.debug("[Heartbeat] HEARTBEAT_TICK_END hook failed (non-fatal): {}", _hook_err)
+
+    try:
+        await _run_growth_report_refresh(agent.id, tenant_id)
+    except Exception as _growth_err:
+        logger.warning("[Heartbeat] Growth report refresh failed for {}: {}", agent.id, _growth_err)
+
+    score_str = f" score={heartbeat_score}" if heartbeat_score is not None else ""
+    logger.info(f"💓 Heartbeat for {agent.name}: {outcome_type}{score_str} — {summary}")
+    await _update_heartbeat_runtime_task(
+        runtime_task_id,
+        status="completed",
+        result_summary=f"Heartbeat [{outcome_type}]: {summary}",
+        session_id=heartbeat_session_id,
+        metadata_json={"outcome": outcome_type, "outcome_lane": outcome_lane, "score": heartbeat_score},
+    )
+
+
 async def _execute_heartbeat(
     agent_id: uuid.UUID,
     *,
@@ -1497,8 +1711,6 @@ async def _execute_heartbeat(
 
     if runtime_task_id is None:
         runtime_task_id = await _create_heartbeat_runtime_task(agent_id, tenant_id=tenant_id)
-
-    import json as _json
 
     try:
         from app.models.agent import Agent
@@ -1854,211 +2066,20 @@ async def _execute_heartbeat(
                     agent.name,
                 )
 
-            runtime_messages = _compact_heartbeat_runtime_messages(runtime_messages)
-
-            # Tool call persistence callback
-            async def _on_tool_call(data: dict) -> None:
-                if data.get("status") != "done":
-                    return
-                try:
-                    async with tenant_scoped_session(tenant_id) as _tc_db:
-                        _tc_db.add(
-                            ChatMessage(
-                                agent_id=agent_id,
-                                tenant_id=tenant_id,
-                                conversation_id=str(session_id),
-                                role="tool_call",
-                                content=_json.dumps(
-                                    {
-                                        "name": data["name"],
-                                        "args": data.get("args"),
-                                        "status": "done",
-                                        "result": str(data.get("result", ""))[:2000],
-                                        "reasoning_content": data.get("reasoning_content"),
-                                        "reasoning_signature": data.get("reasoning_signature"),
-                                    },
-                                    ensure_ascii=False,
-                                    default=str,
-                                ),
-                                user_id=agent.creator_id,
-                                participant_id=agent_participant_id,
-                            )
-                        )
-                        await _tc_db.commit()
-                except Exception as tc_err:
-                    logger.debug(f"Failed to persist heartbeat tool call: {tc_err}")
-
-            _HEARTBEAT_TIMEOUT_SECONDS = 300  # 5 min hard limit to prevent event loop deadlock
-            result = await asyncio.wait_for(
-                invoke_agent(
-                    AgentInvocationRequest(
-                        model=model,
-                        fallback_model=fallback_model,
-                        messages=runtime_messages,
-                        memory_messages=runtime_messages,
-                        agent_name=agent.name,
-                        role_description=agent.role_description or "",
-                        agent_id=agent_id,
-                        user_id=agent.creator_id,
-                        execution_identity=ExecutionIdentityRef(
-                            identity_type="agent_bot",
-                            identity_id=agent_id,
-                            label=f"Agent: {agent.name} (heartbeat)",
-                        ),
-                        session_context=_get_or_create_heartbeat_session_ctx(
-                            agent_id,
-                            session_id,
-                            tenant_id=tenant_id,
-                            runtime_task_id=runtime_task_id,
-                        ),
-                        on_tool_call=_on_tool_call,
-                        tool_executor=_build_heartbeat_tool_executor(agent_id, agent.creator_id),
-                        core_tools_only=False,
-                        max_tool_rounds=_HEARTBEAT_MAX_TOOL_ROUNDS,
-                    )
-                ),
-                timeout=_HEARTBEAT_TIMEOUT_SECONDS,
-            )
-            reply = result.content
-
-            # KAIROS: append assistant response to persistent context
-            runtime_messages.append({"role": "assistant", "content": reply or ""})
-            if _heartbeat_session_ids.get(agent_id) == session_id:
-                _heartbeat_contexts[agent_id] = _compact_heartbeat_runtime_messages(runtime_messages)
-                _save_heartbeat_checkpoint(
-                    agent_id,
-                    session_id=session_id,
-                    tick_count=tick_count,
-                    runtime_messages=_heartbeat_contexts[agent_id],
-                    t2_mtimes=_t2_mtimes.get(agent_id, {}),
-                )
-            else:
-                logger.info(
-                    "[Heartbeat] Session cache for {} was reset during execution; not restoring stale context",
-                    agent_id,
-                )
-
-            # Save assistant reply to Reflection Session
-            assistant_message_id: str | None = None
-            async with tenant_scoped_session(tenant_id) as db2:
-                assistant_message = ChatMessage(
-                    agent_id=agent_id,
-                    tenant_id=tenant_id,
-                    conversation_id=str(session_id),
-                    role="assistant",
-                    content=reply or "",
-                    user_id=agent.creator_id,
-                    participant_id=agent_participant_id,
-                )
-                db2.add(assistant_message)
-                await db2.flush()
-                assistant_message_id = str(assistant_message.id)
-                await db2.commit()
-
-            # Parse structured outcome from LLM reply
-            outcome_type, heartbeat_score = _parse_heartbeat_outcome(reply)
-            outcome_lane = _heartbeat_outcome_lane(outcome_type)
-
-            # Update last_heartbeat_at BEFORE activity logging (optimistic lock)
-            # to prevent timestamp storm: if execution/logging takes long, the agent
-            # won't be re-triggered because the timestamp is already advanced.
-            async with tenant_scoped_session(tenant_id) as db3:
-                a_result = await db3.execute(select(Agent).where(Agent.id == agent_id))
-                a = a_result.scalar_one_or_none()
-                if a:
-                    a.last_heartbeat_at = datetime.now(timezone.utc)
-                    await db3.commit()
-
-            # M-20: Activity log MUST be written before evolution files
-            # so evolution context sees the latest activity on next heartbeat
-            from app.services.activity_logger import log_activity
-
-            summary = reply[:80] if reply else "empty"
-            await log_activity(
-                agent_id,
-                "heartbeat",
-                f"Heartbeat [{outcome_type}]: {summary}",
-                detail={
-                    "reply": reply[:500] if reply else "",
-                    "outcome_type": outcome_type,
-                    "outcome_lane": outcome_lane,
-                    "score": heartbeat_score,
-                    "session_id": str(session_id),
-                },
+            heartbeat_continuation = _invoke_heartbeat_and_persist(
+                agent=agent,
+                tenant_id=tenant_id,
+                model=model,
+                fallback_model=fallback_model,
+                runtime_messages=runtime_messages,
+                session_id=session_id,
+                runtime_task_id=runtime_task_id,
+                heartbeat_session_id=heartbeat_session_id,
+                agent_participant_id=agent_participant_id,
+                tick_count=tick_count,
             )
 
-            try:
-                reflection_result = await _route_heartbeat_reflection_learning(
-                    agent_id=agent_id,
-                    tenant_id=agent.tenant_id,
-                    agent_name=agent.name,
-                    session_id=session_id,
-                    runtime_task_id=runtime_task_id,
-                    assistant_message_id=assistant_message_id,
-                    runtime_messages=runtime_messages,
-                    reply=reply,
-                    outcome_type=outcome_type,
-                    outcome_lane=outcome_lane,
-                    score=heartbeat_score,
-                )
-                if reflection_result.get("status") in {"emitted", "scheduled"}:
-                    await log_activity(
-                        agent_id,
-                        "heartbeat",
-                        "Heartbeat reflection routed to Learning Brain",
-                        detail={
-                            "activity_kind": "llm_reflection_extracted",
-                            "source": "heartbeat_reflection",
-                            "outcome_type": outcome_type,
-                            "score": heartbeat_score,
-                            "source_refs": reflection_result.get("source_refs") or [],
-                        },
-                    )
-            except Exception as _reflection_err:
-                logger.warning(
-                    "[Heartbeat] Reflection learning route failed for {}: {}",
-                    agent_id,
-                    _reflection_err,
-                )
-
-            # Emit HEARTBEAT_TICK_END hook → T0 session ledger
-            try:
-                from app.runtime.hooks import HookEvent, emit_hook
-
-                await emit_hook(
-                    HookEvent.HEARTBEAT_TICK_END,
-                    agent_id=agent_id,
-                    session_id=str(session_id),
-                    messages=[],
-                    source="heartbeat",
-                    metadata={
-                        "tick": tick_count,
-                        "outcome": outcome_type,
-                        "outcome_lane": outcome_lane,
-                        "score": heartbeat_score,
-                        "distillation_scope": "audit_only",
-                        "tenant_id": str(agent.tenant_id) if agent.tenant_id else None,
-                    },
-                )
-            except Exception as _hook_err:
-                logger.debug("[Heartbeat] HEARTBEAT_TICK_END hook failed (non-fatal): {}", _hook_err)
-
-            # J2: refresh the growth report AFTER the tick's work landed so the
-            # numbers include this round; the NEXT reflection reads them.
-            try:
-                await _run_growth_report_refresh(agent_id, tenant_id)
-            except Exception as _growth_err:
-                logger.warning("[Heartbeat] Growth report refresh failed for {}: {}", agent_id, _growth_err)
-
-            score_str = f" score={heartbeat_score}" if heartbeat_score is not None else ""
-            logger.info(f"💓 Heartbeat for {agent.name}: {outcome_type}{score_str} — {summary}")
-            await _update_heartbeat_runtime_task(
-                runtime_task_id,
-                status="completed",
-                result_summary=f"Heartbeat [{outcome_type}]: {summary}",
-                session_id=heartbeat_session_id,
-                metadata_json={"outcome": outcome_type, "outcome_lane": outcome_lane, "score": heartbeat_score},
-            )
+        await heartbeat_continuation
 
     except Exception as e:
         error_text = _format_heartbeat_exception(e)

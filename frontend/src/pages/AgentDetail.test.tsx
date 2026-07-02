@@ -119,6 +119,13 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(source).toContain('if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent))');
     expect(source).toContain('void selectSession(sess)');
   });
+
+  it('keeps the initial transcript read window slim', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+
+    expect(source).toContain('const TRANSCRIPT_INITIAL_WINDOW = 25;');
+    expect(source).toContain('const TRANSCRIPT_OLDER_PAGE = 50;');
+  });
 });
 
 describe('AgentDetail access failures', () => {

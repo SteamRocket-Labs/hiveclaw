@@ -113,10 +113,10 @@ function normalizeSessionPermissionModeValue(value: unknown): SessionPermissionM
 
 const DEFAULT_SESSION_PERMISSION_MODE: SessionPermissionMode = 'bypassPermissions';
 
-// B4 transcript windowing: first screen loads the newest window (~1KB/event,
-// keeps the initial payload under 100KB); older history pages in on demand.
-const TRANSCRIPT_INITIAL_WINDOW = 100;
-const TRANSCRIPT_OLDER_PAGE = 100;
+// B4 transcript windowing: first screen loads a slim newest window; older
+// history pages in on demand.
+const TRANSCRIPT_INITIAL_WINDOW = 25;
+const TRANSCRIPT_OLDER_PAGE = 50;
 
 function objectValue(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' ? value as Record<string, unknown> : {};

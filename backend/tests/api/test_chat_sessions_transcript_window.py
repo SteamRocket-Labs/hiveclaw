@@ -4,6 +4,7 @@ docs/performance-slimming-plan-2026-07-02.md)."""
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -33,16 +34,24 @@ class _DB:
             return _Result(None)
         return _Result(self.values.pop(0))
 
+    async def commit(self):
+        return None
+
 
 def _event(session_id, sequence):
     return SimpleNamespace(
         id=uuid4(),
         session_id=session_id,
+        run_id=None,
+        message_id=None,
         sequence=sequence,
         event_type="user_message",
         actor_type="user",
         content=f"c{sequence}",
+        parts_json=[],
         metadata_json={"role": "user"},
+        visibility_scope="session",
+        listed_surface="chat",
         created_at=None,
     )
 
@@ -124,3 +133,44 @@ async def test_transcript_default_limit_tightened_to_200(monkeypatch):
 
     signature = inspect.signature(api.get_session_transcript)
     assert signature.parameters["limit"].default == 200
+
+
+def test_transcript_projection_caps_oversize_event_payloads():
+    import app.api.chat_sessions as api
+
+    event = SimpleNamespace(
+        id=uuid4(),
+        session_id=uuid4(),
+        run_id=None,
+        message_id=None,
+        sequence=42,
+        event_type="tool_result",
+        actor_type="tool",
+        visibility_scope="session",
+        listed_surface="chat",
+        content="c" * 30_000,
+        parts_json=[
+            {
+                "type": "tool_result",
+                "content": "p" * 30_000,
+                "summary": "s" * 12_000,
+                "raw": {"rows": ["r" * 1_000 for _ in range(30)]},
+            }
+        ],
+        metadata_json={
+            "role": "tool",
+            "summary": "m" * 12_000,
+            "raw": {"payload": "x" * 30_000},
+            "debug": {"payload": "d" * 30_000},
+        },
+        created_at=None,
+    )
+
+    payload = api._serialize_transcript_event(event)
+
+    assert payload["metadata"]["_payload_truncated"] is True
+    assert "raw" not in payload["metadata"]
+    assert "debug" not in payload["metadata"]
+    assert payload["parts"][0]["_payload_truncated"] is True
+    assert len(payload["content"]) <= api._TRANSCRIPT_CONTENT_CHAR_LIMIT + len("...[truncated]")
+    assert len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= 12_000

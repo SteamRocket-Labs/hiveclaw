@@ -18,4 +18,10 @@ describe('runtime pool nginx routing', () => {
         expect(entrypoint).toContain('backend-api:8000');
         expect(entrypoint).toContain('backend:8000');
     });
+
+    it('compresses large API JSON responses before they reach the browser', () => {
+        expect(nginxConf).toContain('gzip on;');
+        expect(nginxConf).toContain('gzip_types');
+        expect(nginxConf).toContain('application/json');
+    });
 });

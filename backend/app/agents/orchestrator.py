@@ -288,6 +288,8 @@ class AsyncDelegationState:
 
 # ── Async delegation registry (in-process, per-worker) ──────────────
 _async_tasks: dict[str, AsyncDelegationState] = {}
+_async_task_parent_ids: dict[str, uuid.UUID | None] = {}
+_async_task_fallback_records: dict[str, dict[str, Any]] = {}
 _MAX_TRACKED_TASKS = 200
 
 
@@ -467,8 +469,51 @@ def _cleanup_stale_tasks() -> None:
     stale = [tid for tid, state in _async_tasks.items() if state.task.done()]
     for tid in stale:
         _async_tasks.pop(tid, None)
+        _async_task_parent_ids.pop(tid, None)
+        _async_task_fallback_records.pop(tid, None)
     if len(_async_tasks) > _MAX_TRACKED_TASKS:
         logger.warning("[Orchestrator] %d active async tasks exceeds cap %d", len(_async_tasks), _MAX_TRACKED_TASKS)
+
+
+def _remember_async_task_parent(
+    task_id: str,
+    parent_agent_id: str | uuid.UUID | None,
+    *,
+    status: str = "queued",
+    child_agent_name: str | None = None,
+    child_session_id: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    _async_task_parent_ids[task_id] = _maybe_uuid(parent_agent_id)
+    _async_task_fallback_records[task_id] = {
+        "task_id": task_id,
+        "parent_agent_id": str(parent_agent_id) if parent_agent_id is not None else None,
+        "status": status,
+        "target_agent": child_agent_name,
+        "session_id": child_session_id,
+        "child_session_id": child_session_id,
+        "trace_id": trace_id,
+    }
+    if len(_async_task_parent_ids) > _MAX_TRACKED_TASKS * 2:
+        for stale_task_id in list(_async_task_parent_ids)[: _MAX_TRACKED_TASKS]:
+            if stale_task_id not in _async_tasks:
+                _async_task_parent_ids.pop(stale_task_id, None)
+                _async_task_fallback_records.pop(stale_task_id, None)
+
+
+def _async_task_parent_for(task_id: str) -> uuid.UUID | None:
+    state = _async_tasks.get(task_id)
+    if state is not None:
+        return state.parent_agent_id
+    return _async_task_parent_ids.get(task_id)
+
+
+def apply_remote_async_delegation_cancel(task_id: str) -> bool:
+    state = _async_tasks.get(task_id)
+    if state is None or state.task.done():
+        return False
+    state.task.cancel()
+    return True
 
 
 @dataclass(slots=True)
@@ -2016,6 +2061,14 @@ def _spawn_async_delegation_task(
         trace_id=trace_id,
         started_at=datetime.now(timezone.utc),
     )
+    _remember_async_task_parent(
+        task_id,
+        request.parent_agent_id,
+        status="running",
+        child_agent_name=getattr(request.target, "name", None),
+        child_session_id=request.session_id,
+        trace_id=trace_id,
+    )
 
 
 async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) -> AgentDelegationRequest | None:
@@ -2219,6 +2272,14 @@ async def delegate_async(
             "signal_thread_id": signal.thread_id,
         }
     )
+    _remember_async_task_parent(
+        task_id,
+        parent_agent_id,
+        status="queued",
+        child_agent_name=getattr(target, "name", None),
+        child_session_id=session_id,
+        trace_id=real_trace_id,
+    )
 
     try:
         await create_runtime_task_record(
@@ -2279,6 +2340,7 @@ async def check_async_delegation(
         }
 
     state = _async_tasks.get(task_id)
+    request_parent_agent_id = _maybe_uuid(parent_agent_id)
     if state is None:
         try:
             persisted = await get_runtime_task_record(task_id)
@@ -2286,6 +2348,13 @@ async def check_async_delegation(
             logger.warning("[Orchestrator] Failed to load runtime task %s: %s", task_id, exc)
             persisted = None
         if persisted is None:
+            known_parent_agent_id = _async_task_parent_for(task_id)
+            if (
+                request_parent_agent_id is not None
+                and known_parent_agent_id is not None
+                and request_parent_agent_id != known_parent_agent_id
+            ):
+                return {"task_id": task_id, "status": "forbidden", "result": None}
             return {"task_id": task_id, "status": "not_found", "result": None}
         return {
             "task_id": task_id,
@@ -2294,7 +2363,6 @@ async def check_async_delegation(
             "timed_out": bool((persisted.get("metadata") or {}).get("timed_out", False)),
             **_session_payload(persisted.get("child_session_id"), persisted.get("parent_session_id")),
         }
-    request_parent_agent_id = _maybe_uuid(parent_agent_id)
     if (
         request_parent_agent_id is not None
         and state.parent_agent_id is not None
@@ -2310,6 +2378,8 @@ async def check_async_delegation(
         }
     # Remove completed task from registry after reading
     _async_tasks.pop(task_id, None)
+    _async_task_parent_ids.pop(task_id, None)
+    _async_task_fallback_records.pop(task_id, None)
     try:
         delegation_result = state.task.result()
         # P1.8: Persist delegation completion
@@ -2390,6 +2460,13 @@ async def cancel_async_delegation(
             logger.warning("[Orchestrator] Failed to load runtime task %s for cancellation: %s", task_id, exc)
             persisted = None
         if persisted is None:
+            known_parent_agent_id = _async_task_parent_for(task_id)
+            if (
+                request_parent_agent_id is not None
+                and known_parent_agent_id is not None
+                and request_parent_agent_id != known_parent_agent_id
+            ):
+                return {"task_id": task_id, "status": "forbidden", "result": None}
             return {"task_id": task_id, "status": "not_found", "result": None}
         persisted_parent_agent_id = _maybe_uuid(persisted.get("parent_agent_id"))
         if (
@@ -2432,6 +2509,12 @@ async def cancel_async_delegation(
                 )
             except Exception as exc:
                 logger.warning("[Orchestrator] Failed to persist runtime task cancellation %s: %s", task_id, exc)
+            try:
+                from app.services.runtime_control_bus import publish_delegation_cancel
+
+                await publish_delegation_cancel(task_id=task_id, parent_agent_id=persisted_parent_agent_id)
+            except Exception as exc:  # noqa: BLE001 - persisted killed state remains the fallback contract.
+                logger.debug("[Orchestrator] Failed to publish delegation cancellation %s: %s", task_id, exc)
             return {
                 "task_id": task_id,
                 "status": "killed",
@@ -2471,6 +2554,8 @@ async def cancel_async_delegation(
         logger.debug("[orchestrator] async task %s cancelled as requested", task_id)
     finally:
         _async_tasks.pop(task_id, None)
+        _async_task_parent_ids.pop(task_id, None)
+        _async_task_fallback_records.pop(task_id, None)
 
     try:
         await update_runtime_task_record(
@@ -2523,6 +2608,13 @@ def list_async_delegations(
                 "trace_id": state.trace_id,
             }
         )
+    for task_id, record in _async_task_fallback_records.items():
+        if task_id in _async_tasks:
+            continue
+        record_parent_agent_id = _maybe_uuid(record.get("parent_agent_id"))
+        if request_parent_agent_id is not None and record_parent_agent_id != request_parent_agent_id:
+            continue
+        results.append(dict(record))
     return results
 
 

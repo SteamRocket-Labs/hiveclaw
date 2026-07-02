@@ -895,12 +895,12 @@ def test_create_todo_task_with_confirmed_plan_passes(monkeypatch):
     gate = _StubGate(_allow_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
-    executed = {"n": 0}
+    enqueued = {}
 
-    async def fake_execute(_task_id, _agent_id):
-        executed["n"] += 1
+    async def fake_enqueue(**kwargs):
+        enqueued.update(kwargs)
 
-    monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute)
+    monkeypatch.setattr(mod, "_enqueue_business_task_execution", fake_enqueue)
 
     client = TestClient(app)
     agent_id = uuid4()
@@ -920,6 +920,8 @@ def test_create_todo_task_with_confirmed_plan_passes(monkeypatch):
     assert resp.status_code == 201
     assert db.committed is True
     assert gate.calls[0]["confirmed_plan_id"] == plan_id
+    assert enqueued["agent_id"] == agent_id
+    assert enqueued["prompt"] == "go"
 
 
 def test_trigger_task_without_plan_returns_409(monkeypatch):
@@ -948,3 +950,54 @@ def test_trigger_task_without_plan_returns_409(monkeypatch):
     assert resp.json()["detail"]["status"] == "requires_confirmation"
     assert executed["n"] == 0
     assert gate.calls[0]["action_kind"] == "start_long_task"
+
+
+def test_trigger_task_with_confirmed_plan_enqueues_runtime_task(monkeypatch):
+    import asyncio
+
+    import app.api.tasks as mod
+
+    task = SimpleNamespace(id=uuid4(), agent_id=uuid4(), description="go")
+    db = _QueuedDB([_ScalarResult(task)])
+    app, _user, allow_access = _make_client(mod, db=db)
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
+    gate = _StubGate(_allow_decision())
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
+
+    enqueued = {}
+
+    async def fake_enqueue(**kwargs):
+        enqueued.update(kwargs)
+
+    async def fake_execute(_task_id, _agent_id):  # pragma: no cover - must not run
+        raise AssertionError("trigger_task must enqueue RuntimeTask instead of spawning execute_task")
+
+    created = []
+
+    def fake_create_task(coro):
+        created.append(coro)
+        coro.close()
+        return SimpleNamespace()
+
+    monkeypatch.setattr(mod, "_enqueue_business_task_execution", fake_enqueue)
+    monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute)
+    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+    client = TestClient(app)
+    plan_id = str(uuid4())
+    resp = client.post(
+        f"/agents/{task.agent_id}/tasks/{task.id}/trigger",
+        json={
+            "confirmed_plan_id": plan_id,
+            "confirmed_plan_version": 1,
+            "confirmed_plan_hash": "sha256:abc",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert created == []
+    assert enqueued["agent_id"] == task.agent_id
+    assert enqueued["task_id"] == task.id
+    assert enqueued["prompt"] == "go"
+    assert gate.calls[0]["confirmed_plan_id"] == plan_id

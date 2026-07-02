@@ -1,5 +1,6 @@
 """Hive Backend — FastAPI Application Entry Point."""
 
+import asyncio
 from contextlib import asynccontextmanager
 import re
 
@@ -126,8 +127,6 @@ _API_ROLE_PREFIXES = (
     "/api/v1/auth/",
     "/api/users/",
     "/api/v1/users/",
-    "/api/enterprise/",
-    "/api/v1/enterprise/",
     "/api/tenants/",
     "/api/v1/tenants/",
     "/api/organization/",
@@ -149,8 +148,6 @@ _API_ROLE_EXACT_PATHS = {
     "/api/v1/auth",
     "/api/users",
     "/api/v1/users",
-    "/api/enterprise",
-    "/api/v1/enterprise",
     "/api/tenants",
     "/api/v1/tenants",
     "/api/organization",
@@ -239,7 +236,7 @@ async def _start_ss_local() -> None:
     logger.warning("[Proxy] All SS nodes failed — Discord API calls will run without proxy")
 
 
-async def _resume_runtime_tasks_after_startup() -> None:
+async def _resume_runtime_tasks_after_startup(done_event=None) -> None:
     """Resume/reconcile durable runtime work without blocking FastAPI health startup."""
     try:
         from app.agents.orchestrator import resume_persisted_async_delegations
@@ -278,6 +275,20 @@ async def _resume_runtime_tasks_after_startup() -> None:
             logger.warning("[startup] Reconciled {} orphaned runtime task(s) after restart", reconciled)
     except Exception as e:
         logger.warning(f"[startup] Runtime task reconciliation failed: {e}")
+    finally:
+        if done_event is not None:
+            done_event.set()
+
+
+async def _run_after_startup_resume_gate(done_event, coro) -> None:
+    """Run a startup coroutine only after runtime resume/reconcile has released worker claim."""
+    try:
+        await done_event.wait()
+        await coro
+    except asyncio.CancelledError:
+        if hasattr(coro, "close"):
+            coro.close()
+        raise
 
 
 @asynccontextmanager
@@ -618,18 +629,33 @@ async def lifespan(app: FastAPI):
 
                 mark_daemon_stopped(t.get_name(), "background task exited")
 
+        runtime_startup_resume_done = asyncio.Event()
         startup_background_tasks = [
             ("code_execution_sandbox_probe_scheduler", start_code_execution_sandbox_probe_scheduler()),
         ]
         if _runtime_execution_startup_enabled():
-            startup_background_tasks.append(("runtime_startup_resume", _resume_runtime_tasks_after_startup()))
+            startup_background_tasks.append(
+                ("runtime_startup_resume", _resume_runtime_tasks_after_startup(runtime_startup_resume_done))
+            )
+            try:
+                from app.services.runtime_control_bus import start_runtime_control_listener
+
+                startup_background_tasks.append(("runtime_control_listener", start_runtime_control_listener()))
+            except Exception as exc:
+                logger.warning("[startup] runtime control listener setup failed: {}", exc)
         else:
+            runtime_startup_resume_done.set()
             logger.info("[startup] runtime resume/reconcile disabled for process role {}", _process_role())
         try:
             from app.services.runtime_task_worker import runtime_task_worker_enabled, start_runtime_task_worker_loop
 
             if runtime_task_worker_enabled():
-                startup_background_tasks.append(("runtime_task_worker", start_runtime_task_worker_loop()))
+                startup_background_tasks.append(
+                    (
+                        "runtime_task_worker",
+                        _run_after_startup_resume_gate(runtime_startup_resume_done, start_runtime_task_worker_loop()),
+                    )
+                )
             else:
                 logger.info("[startup] runtime task worker disabled for process role {}", _process_role())
         except Exception as exc:

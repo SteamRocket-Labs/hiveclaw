@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+
+import pytest
 
 
 def test_heavy_startup_background_work_is_opt_in_by_default(monkeypatch):
@@ -70,6 +73,8 @@ def test_api_role_path_boundary_allows_control_plane_and_rejects_volume_paths():
     assert main_mod._api_role_allows_path("/api/agents/agent-1/sessions/session-1/transcript") is False
     assert main_mod._api_role_allows_path("/api/agents/agent-1/sessions/session-1/workbench") is False
     assert main_mod._api_role_allows_path("/api/agents/agent-1/files/download") is False
+    assert main_mod._api_role_allows_path("/api/enterprise/knowledge-base/files") is False
+    assert main_mod._api_role_allows_path("/api/v1/enterprise/knowledge-base/upload") is False
     assert main_mod._api_role_allows_path("/api/tools/execute") is False
 
 
@@ -83,4 +88,24 @@ def test_runtime_resume_runs_as_background_startup_task_not_lifespan_blocker():
     )[0]
 
     assert "resume_persisted_subagent_runs" not in pre_background_task_setup
-    assert "_resume_runtime_tasks_after_startup()" in background_task_setup
+    assert "_resume_runtime_tasks_after_startup(" in background_task_setup
+    assert "_run_after_startup_resume_gate(" in background_task_setup
+
+
+@pytest.mark.asyncio
+async def test_runtime_task_worker_waits_for_startup_resume_gate():
+    import app.main as main_mod
+
+    resume_done = asyncio.Event()
+    calls: list[str] = []
+
+    async def worker_loop():
+        calls.append("worker_started")
+
+    worker_task = asyncio.create_task(main_mod._run_after_startup_resume_gate(resume_done, worker_loop()))
+    await asyncio.sleep(0)
+    assert calls == []
+
+    resume_done.set()
+    await asyncio.wait_for(worker_task, timeout=1)
+    assert calls == ["worker_started"]

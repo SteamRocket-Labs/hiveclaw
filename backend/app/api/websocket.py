@@ -3,6 +3,7 @@
 import asyncio
 import os
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from loguru import logger
@@ -32,6 +33,47 @@ from app.services.web_chat_runtime import (
 from app.services.web_session_contract import apply_web_session_contract
 
 router = APIRouter(tags=["websocket"])
+
+
+def _process_role() -> str:
+    from app.config import get_settings
+
+    return str(get_settings().HIVE_PROCESS_ROLE or "runtime").strip().lower()
+
+
+async def _emit_ws_session_lifecycle_hook(
+    event: Any,
+    *,
+    agent_id: uuid.UUID | str,
+    session_id: str | uuid.UUID | None,
+    messages: list[dict[str, Any]],
+    source: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    if _process_role() == "api":
+        from app.services.runtime_control_bus import publish_session_lifecycle_hook
+
+        await publish_session_lifecycle_hook(
+            event=event,
+            agent_id=agent_id,
+            session_id=session_id,
+            messages=messages,
+            source=source,
+            metadata=metadata,
+        )
+        return
+
+    from app.runtime.hooks import HookEvent, emit_hook
+
+    hook_event = HookEvent(event) if isinstance(event, str) else event
+    await emit_hook(
+        hook_event,
+        agent_id=agent_id,
+        session_id=session_id,
+        messages=messages,
+        source=source,
+        metadata=metadata or {},
+    )
 
 
 class ConnectionManager:
@@ -592,10 +634,10 @@ async def websocket_chat(
                     _idle_dreamed = True
                     logger.info("[WS] SESSION_IDLE triggered for {} (session {})", agent_name, conv_id)
                     try:
-                        from app.runtime.hooks import HookEvent, emit_hook
+                        from app.runtime.hooks import HookEvent
 
                         await _aio_idle.wait_for(
-                            emit_hook(
+                            _emit_ws_session_lifecycle_hook(
                                 HookEvent.SESSION_IDLE,
                                 agent_id=agent_id,
                                 session_id=conv_id,
@@ -610,7 +652,7 @@ async def websocket_chat(
                             timeout=15.0,
                         )
                         # Session summary for Episodic layer (DB) — kept for retriever._retrieve_episodic()
-                        if agent.tenant_id and conv_id:
+                        if _process_role() != "api" and agent.tenant_id and conv_id:
                             try:
                                 from app.services.memory_service import _generate_session_summary, _save_session_summary
 
@@ -635,9 +677,9 @@ async def websocket_chat(
                     # Phase 2: SESSION_CLOSE — idle timeout, close connection
                     logger.info(f"[WS] SESSION_CLOSE (idle timeout {_idle_timeout}s) for {agent_name}")
                     try:
-                        from app.runtime.hooks import HookEvent, emit_hook
+                        from app.runtime.hooks import HookEvent
 
-                        await emit_hook(
+                        await _emit_ws_session_lifecycle_hook(
                             HookEvent.SESSION_CLOSE,
                             agent_id=agent_id,
                             session_id=conv_id,

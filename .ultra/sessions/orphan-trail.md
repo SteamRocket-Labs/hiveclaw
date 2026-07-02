@@ -4,6 +4,46 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-07-02T22:00Z [sid:d10bf6fb]; branch:main; 19 files (orphan-trail.md, orchestrator.py, files.py, +16); last commit: 820e312a Route notifications through API plane
+- 2026-07-02T21:51Z [sid:c5740092]; branch:main; 19 files (orphan-trail.md, orchestrator.py, files.py, +16); last commit: 820e312a Route notifications through API plane
+- 2026-07-02T17:19Z [sid:d10bf6fb]; branch:main; 11 files (orphan-trail.md, orchestrator.py, files.py, +8); last commit: 820e312a Route notifications through API plane
+- 2026-07-02T17:16Z [sid:c5740092]; branch:main; 11 files (orphan-trail.md, orchestrator.py, files.py, +8); last commit: 820e312a Route notifications through API plane
+- 2026-07-02T17:09Z [sid:48a22b8e]; branch:main; 7 files (orphan-trail.md, files.py, main.py, +4); last commit: 820e312a Route notifications through API plane
+- 2026-07-02T17:09Z [sid:9bbef5b3]; branch:main; 6 files (orphan-trail.md, files.py, main.py, +3); last commit: 820e312a Route notifications through API plane
+- 2026-07-02T17:08Z [sid:d10bf6fb]; branch:main; 5 files (orphan-trail.md, files.py, main.py, +2); last commit: 820e312a Route notifications through API plane
+- 2026-07-02T17:05Z [sid:c5740092]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 820e312a Route notifications through API plane
+- 2026-07-02T14:41Z [sid:4fa6e2cc]; branch:main; 19 files (orphan-trail.md, orchestrator.py, files.py, +16); last commit: 27868d1c Add no-volume API role and split frontend routing
+- 2026-07-02T13:50Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: cdabf1c7 Release heartbeat DB sessions before model invocati
+- 2026-07-02T13:06Z [sid:4fa6e2cc]; branch:main; 4 files (orphan-trail.md, files.py, test_files_channel_download_token.py, +1); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T13:05Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:58Z [sid:01ead1c5]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:57Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:57Z [sid:4c3958a6]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:56Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:56Z [sid:48ef0190]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:54Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:54Z [sid:32ff51d9]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:53Z [sid:25b606c4]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:53Z [sid:54b27f88]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:53Z [sid:f37657bf]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:53Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:52Z [sid:c8381d61]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:52Z [sid:32ff51d9]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:51Z [sid:5dc3962a]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:51Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:50Z [sid:25b606c4]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:50Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:49Z [sid:02e310d4]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:49Z [sid:4bb2a8ac]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:43Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T12:34Z [sid:4fa6e2cc]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T11:57Z [sid:0e349ad2]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
+- 2026-07-02T06:51Z [sid:4fa6e2cc]; branch:main; 1 files (orphan-trail.md); last commit: 0d6955bf bound runtime-task metadata in the workbench read m
+- 2026-07-02T06:49Z [sid:0e349ad2]; branch:main; 1 files (orphan-trail.md); last commit: 0d6955bf bound runtime-task metadata in the workbench read m
+- 2026-07-02T06:28Z [sid:4fa6e2cc]; branch:main; 1 files (orphan-trail.md); last commit: 09ecf766 stop nginx from replaying timed-out GETs against a 
+- 2026-07-02T05:54Z [sid:0e349ad2]; branch:main; 5 files (orphan-trail.md, chat_sessions.py, session_control_plane.py, +2); last commit: cfe4975a rebuild memory and evolution tabs with the owner ap
+- 2026-07-02T05:00Z [sid:4fa6e2cc]; branch:main; 11 files (harness-ci.yml, orphan-trail.md, bakeoff_runtime.py, +8); last commit: e31243cc add zero-llm growth report with failure-signal labe
+- 2026-07-02T04:29Z [sid:02ddce64]; branch:main; 2 files (test_c8_derived_tables.py, test_t2_segment_package_builder.py); last commit: 0034ed7e Refactor memory and workflow systems for Hive parit
 - 2026-07-02T04:13Z [sid:8c6e6b92]; branch:main; 56 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +53); last commit: 06a82cb6 retire the memory navigation prompt chain end to en
 - 2026-07-02T04:07Z [sid:0e349ad2]; branch:main; 56 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +53); last commit: 06a82cb6 retire the memory navigation prompt chain end to en
 - 2026-07-02T02:51Z [sid:8c6e6b92]; branch:main; 106 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +103); last commit: 48378fb2 fix session regression test fallout
@@ -64,43 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-14T05:32Z [sid:5247cf90]; branch:main; 4 files (executing_actions.py, system.py, tasks.py, +1); last commit: a1fc2606 fix(chat): hide compaction details and collapse tod
 - 2026-06-14T04:22Z [sid:ffc0ad0e]; branch:main; 1 files (orphan-trail.md); last commit: e0c95b2d feat(llm): refresh ProviderSpec to latest model spe
 - 2026-06-13T10:01Z [sid:5d6cd3f6]; branch:feat/external-behavior-eval-ci; 117 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +114); last commit: 07f92521 feat(eval-ci): E10 per-scenario cost/latency budget
-- 2026-06-13T08:52Z [sid:f4214f60]; branch:main; 50 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +47); last commit: 6d7e0925 docs(round2): bwrap production finding + vercel san
-- 2026-06-13T08:11Z [sid:5d6cd3f6]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: 6d7e0925 docs(round2): bwrap production finding + vercel san
-- 2026-06-13T07:51Z [sid:4b8a1e2a]; branch:main; 10 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +7); last commit: 6d7e0925 docs(round2): bwrap production finding + vercel san
-- 2026-06-12T18:03Z [sid:267d9f0b]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_memory.py, +30); last commit: 4a02c6fd Refactor agent runtime and align memory controls
-- 2026-06-11T07:42Z [sid:145e9276]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: aac4044a fix frontend auth 401 messaging
-- 2026-06-11T07:23Z [sid:33d833cd]; branch:main; 3 files (compact-snapshot.md, orphan-trail.md, request.ts); last commit: 79a2cbb0 fix(rls): run entrypoint backfill in background — n
-- 2026-06-11T06:49Z [sid:09d3585c]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 79a2cbb0 fix(rls): run entrypoint backfill in background — n
-- 2026-06-10T19:22Z [sid:ad4f955e]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 0603b5dc feat(rls): stage-2a accessors — plan-mode tenant sc
-- 2026-06-10T03:45Z [sid:7c1ac7cf]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 8c158167 docs(rls): RLS enforcement migration plan (Goal-2 n
-- 2026-06-09T09:38Z [sid:5858f97b]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: a4c30ab7 fix(channels): make IM Plan Mode + A2A coordination
-- 2026-06-09T09:38Z [sid:c4237ae6]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: a4c30ab7 fix(channels): make IM Plan Mode + A2A coordination
-- 2026-06-09T08:27Z [sid:5858f97b]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: a4c30ab7 fix(channels): make IM Plan Mode + A2A coordination
-- 2026-06-09T08:19Z [sid:0660f658]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: a4c30ab7 fix(channels): make IM Plan Mode + A2A coordination
-- 2026-06-09T01:29Z [sid:815bdcdd]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 00ab30af fix session loop review findings
-- 2026-06-09T01:18Z [sid:0660f658]; branch:feat/session-loop-cc-alignment; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 00ab30af fix session loop review findings
-- 2026-06-08T16:56Z [sid:b397f10e]; branch:feat/session-loop-cc-alignment; 3 files (compact-snapshot.md, orphan-trail.md, test_mcp_tool_discovery.py); last commit: d25d088e docs(session-loop): all 6 stations landed (3556 pas
-- 2026-06-08T16:19Z [sid:815bdcdd]; branch:feat/session-loop-cc-alignment; 2 files (compact-snapshot.md, orphan-trail.md); last commit: d25d088e docs(session-loop): all 6 stations landed (3556 pas
-- 2026-06-08T16:01Z [sid:b397f10e]; branch:feat/session-loop-cc-alignment; 14 files (compact-snapshot.md, orphan-trail.md, contracts.py, +11); last commit: adba11e1 test: align I/J contract tests surfaced during F re
-- 2026-06-08T15:56Z [sid:815bdcdd]; branch:feat/session-loop-cc-alignment; 3 files (compact-snapshot.md, orphan-trail.md, session-loop-cc-alignment-plan.md); last commit: adba11e1 test: align I/J contract tests surfaced during F re
-- 2026-06-08T15:41Z [sid:b397f10e]; branch:feat/session-loop-cc-alignment; 19 files (compact-snapshot.md, orphan-trail.md, orchestrator.py, +16); last commit: 7e46c1b7 docs(session-loop): track implementation progress (
-- 2026-06-08T15:27Z [sid:815bdcdd]; branch:feat/session-loop-cc-alignment; 13 files (compact-snapshot.md, orphan-trail.md, orchestrator.py, +10); last commit: 7e46c1b7 docs(session-loop): track implementation progress (
-- 2026-06-08T15:19Z [sid:b397f10e]; branch:feat/session-loop-cc-alignment; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 7e46c1b7 docs(session-loop): track implementation progress (
-- 2026-06-08T14:47Z [sid:815bdcdd]; branch:feat/session-loop-cc-alignment; 8 files (compact-snapshot.md, orphan-trail.md, prompt_eval.py, +5); last commit: cc985adb feat(tools): discover imported MCP server tools thr
-- 2026-06-08T13:51Z [sid:b397f10e]; branch:main; 35 files (compact-snapshot.md, orphan-trail.md, autonomy.py, +32); last commit: d1f14ac5 fix(memory): stop inlining dead access_count/last_a
-- 2026-06-08T13:47Z [sid:815bdcdd]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: b8f47e80 fix(memory): clear purity debt D1-D10 — telemetry/m
-- 2026-06-08T13:45Z [sid:b397f10e]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: b8f47e80 fix(memory): clear purity debt D1-D10 — telemetry/m
-- 2026-06-08T13:43Z [sid:815bdcdd]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: b8f47e80 fix(memory): clear purity debt D1-D10 — telemetry/m
-- 2026-06-08T13:17Z [sid:b397f10e]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: b8f47e80 fix(memory): clear purity debt D1-D10 — telemetry/m
-- 2026-06-08T09:28Z [sid:815bdcdd]; branch:main; 46 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +43); last commit: 4d11ff91 docs(memory): add purity debt register + one-pass d
-- 2026-06-08T09:19Z [sid:b397f10e]; branch:main; 44 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +41); last commit: 4d11ff91 docs(memory): add purity debt register + one-pass d
-- 2026-06-08T09:06Z [sid:815bdcdd]; branch:main; 40 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +37); last commit: 4d11ff91 docs(memory): add purity debt register + one-pass d
-- 2026-06-08T08:37Z [sid:78c277d5]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 4d11ff91 docs(memory): add purity debt register + one-pass d
-- 2026-06-08T08:17Z [sid:815bdcdd]; branch:main; 36 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +33); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
-- 2026-06-08T08:16Z [sid:78c277d5]; branch:main; 36 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +33); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
-- 2026-06-08T08:10Z [sid:815bdcdd]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
-- 2026-06-08T08:09Z [sid:78c277d5]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
-- 2026-06-08T08:03Z [sid:815bdcdd]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
-- 2026-06-08T07:55Z [sid:78c277d5]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
-- 2026-06-08T02:32Z [sid:7f0e5932]; branch:main; 3 files (compact-snapshot.md, orphan-trail.md, plan-mode-cc-alignment.md); last commit: 974d6bf9 feat(plan-mode): ask_user_question CC-shaped questi
-- 2026-06-07T09:55Z [sid:859f0a68]; branch:main; 1 files (orphan-trail.md); last commit: dc8c1afa fix(llm): limit-coherence audit — two cross-limit g

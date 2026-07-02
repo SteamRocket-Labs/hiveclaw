@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.memory.t0.ledger import T0AppendResult, append_t0_session_event
 from app.models.audit import ChatMessage
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -86,6 +87,13 @@ def _next_sequence() -> int:
     T0 retains its own per-segment append sequence as raw evidence truth.
     """
     return time.time_ns()
+
+
+def _bridge_to_t0_enabled(bridge_to_t0: bool) -> bool:
+    if not bridge_to_t0:
+        return False
+    role = str(get_settings().HIVE_PROCESS_ROLE or "runtime").strip().lower()
+    return role != "api"
 
 
 async def append_session_event(
@@ -196,7 +204,7 @@ async def append_session_event(
         await db.flush()
 
     t0_result: T0AppendResult | None = None
-    if bridge_to_t0:
+    if _bridge_to_t0_enabled(bridge_to_t0):
         t0_result = append_t0_session_event(
             agent_id=agent_uuid,
             session_id=session_id,

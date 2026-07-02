@@ -88,9 +88,10 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "${FRONTEND_PORT:-3008}:3000"
+      - "${FRONTEND_PORT:-3008}:80"
     environment:
       VITE_API_URL: http://localhost:8000
+      BACKEND_HOST: backend:8000
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public

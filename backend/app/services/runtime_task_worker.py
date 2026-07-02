@@ -267,6 +267,20 @@ async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
     except Exception as exc:  # noqa: BLE001
         _STATE["last_error"] = f"business_task:{type(exc).__name__}:{str(exc)[:300]}"
         logger.exception("[RuntimeTaskWorker] business task {} failed", runtime_task_id)
+        try:
+            from app.services.runtime_task_service import update_runtime_task_record
+
+            await update_runtime_task_record(
+                runtime_task_id.hex,
+                status="failed",
+                result_summary=f"business_task worker failed: {type(exc).__name__}: {str(exc)[:500]}",
+            )
+        except Exception as persist_exc:  # noqa: BLE001 - original failure is already logged.
+            logger.warning(
+                "[RuntimeTaskWorker] failed to persist failed status for business task {}: {}",
+                runtime_task_id,
+                persist_exc,
+            )
 
 
 async def start_runtime_task_worker_loop() -> None:

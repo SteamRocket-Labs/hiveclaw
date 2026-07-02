@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -100,3 +100,133 @@ def test_build_channel_file_download_url_uses_signed_token_and_quoted_path(tmp_p
     assert url.startswith(f"https://backend.example.com/api/agents/{agent_id}/files/download?")
     assert "path=workspace%2FSerenity_" in url
     assert "token=" in url
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _RlsScopedUserDb:
+    def __init__(self, *, tenant_id, user):
+        self.tenant_id = tenant_id
+        self.user = user
+        self.pinned_tenants = []
+
+    async def execute(self, _statement):
+        return _ScalarResult(self.user if self.pinned_tenants and self.pinned_tenants[-1] == self.tenant_id else None)
+
+
+async def _pin_fake_download_tenant(db, tenant_id):
+    db.pinned_tenants.append(UUID(str(tenant_id)))
+
+
+@pytest.mark.asyncio
+async def test_workspace_download_query_jwt_pins_token_tenant_before_user_lookup(tmp_path, monkeypatch) -> None:
+    import app.api.files as files_api
+    import app.core.security as security
+
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(files_api, "settings", settings)
+    monkeypatch.setattr(files_api, "pin_rls_tenant_context", _pin_fake_download_tenant, raising=False)
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
+    workspace = tmp_path / str(agent_id) / "workspace"
+    workspace.mkdir(parents=True)
+    target = workspace / "report.md"
+    target.write_text("hello", encoding="utf-8")
+    user = SimpleNamespace(id=user_id, is_active=True, tenant_id=tenant_id, role="member")
+    db = _RlsScopedUserDb(tenant_id=tenant_id, user=user)
+
+    monkeypatch.setattr(
+        security,
+        "decode_access_token",
+        lambda _token: {"sub": str(user_id), "role": "member", "tid": str(tenant_id)},
+    )
+    monkeypatch.setattr(
+        files_api,
+        "verify_channel_file_download_token",
+        lambda **_kwargs: (_ for _ in ()).throw(files_api.NotChannelFileDownloadToken()),
+    )
+
+    async def fake_check_agent_access(check_db, check_user, check_agent_id):
+        assert check_db is db
+        assert check_user is user
+        assert check_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
+
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+
+    response = await files_api.download_file(
+        agent_id=agent_id,
+        path="workspace/report.md",
+        token="browser-query-jwt",
+        credentials=None,
+        db=db,
+    )
+
+    assert response.path == str(target)
+    assert response.filename == "report.md"
+    assert db.pinned_tenants == [tenant_id]
+
+
+@pytest.mark.asyncio
+async def test_artifact_download_query_jwt_pins_token_tenant_before_user_lookup(tmp_path, monkeypatch) -> None:
+    import app.api.files as files_api
+    import app.core.security as security
+
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(files_api, "settings", settings)
+    monkeypatch.setattr(files_api, "pin_rls_tenant_context", _pin_fake_download_tenant, raising=False)
+
+    agent_id = uuid4()
+    artifact_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
+    workspace = tmp_path / str(agent_id) / "workspace"
+    workspace.mkdir(parents=True)
+    target = workspace / "artifact.md"
+    target.write_text("artifact", encoding="utf-8")
+    user = SimpleNamespace(id=user_id, is_active=True, tenant_id=tenant_id, role="member")
+    db = _RlsScopedUserDb(tenant_id=tenant_id, user=user)
+
+    monkeypatch.setattr(
+        security,
+        "decode_access_token",
+        lambda _token: {"sub": str(user_id), "role": "member", "tid": str(tenant_id)},
+    )
+
+    async def fake_check_agent_access(check_db, check_user, check_agent_id):
+        assert check_db is db
+        assert check_user is user
+        assert check_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
+
+    async def fake_load_artifact_or_404(*, db, agent_id, artifact_id):
+        return SimpleNamespace(
+            id=artifact_id,
+            agent_id=agent_id,
+            path="workspace/artifact.md",
+            name="artifact.md",
+            snapshot_json={},
+        )
+
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(files_api, "_load_chat_artifact_or_404", fake_load_artifact_or_404)
+
+    response = await files_api.download_artifact(
+        agent_id=agent_id,
+        artifact_id=artifact_id,
+        token="browser-query-jwt",
+        credentials=None,
+        db=db,
+    )
+
+    assert response.path == str(target)
+    assert response.filename == "artifact.md"
+    assert db.pinned_tenants == [tenant_id]

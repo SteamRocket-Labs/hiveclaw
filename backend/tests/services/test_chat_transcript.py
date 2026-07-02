@@ -146,3 +146,36 @@ async def test_append_session_event_can_skip_t0_bridge_for_projection(monkeypatc
     assert transcript_events[0].metadata_json["semantic_memory_eligible"] is False
     assert result.t0_result is None
     assert replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_append_session_event_api_role_does_not_bridge_to_t0(monkeypatch, tmp_path):
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    import app.services.chat_transcript as transcript
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    db = _FakeDB()
+
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr(transcript, "get_settings", lambda: SimpleNamespace(HIVE_PROCESS_ROLE="api"))
+
+    result = await transcript.append_session_event(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        actor_type="system",
+        event_type="permission_resolved",
+        role="system",
+        content="permission resolved",
+        metadata={"source": "api-role"},
+        source="web",
+    )
+
+    transcript_events = [item for item in db.added if isinstance(item, ChatTranscriptEvent)]
+    assert len(transcript_events) == 1
+    assert result.t0_result is None
+    assert replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path) == []

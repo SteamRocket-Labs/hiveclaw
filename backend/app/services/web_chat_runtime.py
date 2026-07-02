@@ -1003,6 +1003,15 @@ def unregister_web_chat_run_for_test(run_id: str) -> None:
     _TASKS.pop(str(run_id), None)
 
 
+def apply_remote_web_chat_cancel(run_id: str | uuid.UUID) -> bool:
+    run_key = _run_id(run_id).hex
+    cancel_event = _CANCEL_EVENTS.get(run_key)
+    if cancel_event is None:
+        return False
+    cancel_event.set()
+    return True
+
+
 def active_web_chat_run_count() -> int:
     """Return currently dispatched in-process web/runtime chat runs."""
     done_keys = []
@@ -1568,6 +1577,17 @@ async def cancel_web_chat_run(
     cancel_event = _CANCEL_EVENTS.get(run_uuid.hex)
     if cancel_event is not None:
         cancel_event.set()
+    try:
+        from app.services.runtime_control_bus import publish_web_chat_cancel
+
+        await publish_web_chat_cancel(
+            run_id=run_uuid.hex,
+            agent_id=str(agent_id),
+            session_id=str(session_id),
+            user_id=str(user_id),
+        )
+    except Exception as exc:  # noqa: BLE001 - DB state is still the cancellation truth for API callers.
+        logger.debug("[WebChatRun] failed to publish cross-process cancel for {}: {}", run_uuid.hex, exc)
     metadata = dict(task.metadata_json or {})
     metadata["cancelled_by_user"] = True
     metadata["cancelled_by_user_id"] = str(user_id)

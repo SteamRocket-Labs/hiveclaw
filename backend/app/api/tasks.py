@@ -26,6 +26,37 @@ class TaskTriggerIn(BaseModel):
 router = APIRouter(prefix="/agents/{agent_id}/tasks", tags=["tasks"])
 
 
+async def _enqueue_business_task_execution(
+    *,
+    runtime_task_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    agent_name: str | None,
+    task_id: uuid.UUID,
+    user_id: uuid.UUID,
+    prompt: str | None,
+) -> None:
+    from app.services.runtime_task_service import create_runtime_task_record
+    from app.services.runtime_task_worker import notify_runtime_task_worker
+
+    await create_runtime_task_record(
+        task_id=runtime_task_id.hex,
+        task_type="business_task",
+        status="pending",
+        parent_agent_id=agent_id,
+        child_agent_id=agent_id,
+        child_agent_name=agent_name,
+        prompt=prompt,
+        trace_id=f"business_task:{runtime_task_id.hex}",
+        depth=1,
+        metadata_json={
+            "business_task_id": str(task_id),
+            "user_id": str(user_id),
+            "source": "tasks_api",
+        },
+    )
+    await notify_runtime_task_worker(reason="business_task_created", runtime_task_id=runtime_task_id)
+
+
 async def _enrich_task_out(task: Task, db: AsyncSession) -> TaskOut:
     """Convert Task to TaskOut with creator_username populated."""
     out = TaskOut.model_validate(task)
@@ -112,26 +143,14 @@ async def create_task(
 
     runtime_task_id = uuid.uuid4()
     try:
-        from app.services.runtime_task_service import create_runtime_task_record
-        from app.services.runtime_task_worker import notify_runtime_task_worker
-
-        await create_runtime_task_record(
-            task_id=runtime_task_id.hex,
-            task_type="business_task",
-            status="pending",
-            parent_agent_id=agent_id,
-            child_agent_id=agent_id,
-            child_agent_name=getattr(agent, "name", None),
+        await _enqueue_business_task_execution(
+            runtime_task_id=runtime_task_id,
+            agent_id=agent_id,
+            agent_name=getattr(agent, "name", None),
+            task_id=task.id,
+            user_id=current_user.id,
             prompt=data.description,
-            trace_id=f"business_task:{runtime_task_id.hex}",
-            depth=1,
-            metadata_json={
-                "business_task_id": str(task.id),
-                "user_id": str(current_user.id),
-                "source": "tasks_api",
-            },
         )
-        await notify_runtime_task_worker(reason="business_task_created", runtime_task_id=runtime_task_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to enqueue task execution: {exc}") from exc
 
@@ -221,9 +240,17 @@ async def trigger_task(
         confirmed_plan_hash=trigger_in.confirmed_plan_hash,
     )
 
-    import asyncio
-    from app.services.task_executor import execute_task
+    runtime_task_id = uuid.uuid4()
+    try:
+        await _enqueue_business_task_execution(
+            runtime_task_id=runtime_task_id,
+            agent_id=agent_id,
+            agent_name=getattr(agent, "name", None),
+            task_id=task.id,
+            user_id=current_user.id,
+            prompt=getattr(task, "description", None),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to enqueue task execution: {exc}") from exc
 
-    asyncio.create_task(execute_task(task.id, agent_id))
-
-    return {"status": "triggered", "task_id": str(task_id)}
+    return {"status": "triggered", "task_id": str(task_id), "runtime_task_id": runtime_task_id.hex}

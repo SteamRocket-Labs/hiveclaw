@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from app.config import get_settings
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
-from app.database import get_db
+from app.database import get_db, pin_rls_tenant_context
 from app.models.chat_artifact import ChatArtifact
 from app.models.user import User
 from app.services.chat_artifact_delivery import read_chat_artifact_snapshot_content
@@ -309,6 +309,37 @@ async def _load_chat_artifact_or_404(
     return artifact
 
 
+async def _load_download_user_from_jwt(*, db: AsyncSession, jwt_token: str) -> User:
+    """Authenticate browser-friendly download URLs before tenant-scoped file reads.
+
+    TenantMiddleware only sees Authorization headers. Direct browser downloads
+    carry JWTs in the query string, so the endpoint must pin RLS from the token
+    before loading the user row.
+    """
+    from app.core.security import decode_access_token
+
+    payload = decode_access_token(jwt_token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    token_tenant_id = payload.get("tid")
+    if token_tenant_id:
+        try:
+            await pin_rls_tenant_context(db, token_tenant_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+    try:
+        user_uuid = uuid.UUID(str(user_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+
+    result = await db.execute(select(User).where(User.id == user_uuid))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+    return user
+
+
 @router.get("/artifacts/{artifact_id}/content", response_model=FileContent)
 async def read_artifact_content(
     agent_id: uuid.UUID,
@@ -335,8 +366,6 @@ async def download_file(
 
     Auth via Bearer header, access-token query parameter, or scoped channel file token.
     """
-    from app.core.security import decode_access_token
-
     if token:
         try:
             verify_channel_file_download_token(token=token, agent_id=agent_id, path=path)
@@ -362,15 +391,7 @@ async def download_file(
     if not jwt_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
 
-    payload = decode_access_token(jwt_token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+    user = await _load_download_user_from_jwt(db=db, jwt_token=jwt_token)
 
     _agent, access_level = await check_agent_access(db, user, agent_id)
     if access_level == "use" and _is_governed_memory_path(path):
@@ -390,20 +411,10 @@ async def download_artifact(
     db: AsyncSession = Depends(get_db),
 ):
     """Download the delivery-time artifact snapshot, falling back only for legacy rows."""
-    from app.core.security import decode_access_token
-
     jwt_token = credentials.credentials if credentials else token
     if not jwt_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
-    payload = decode_access_token(jwt_token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+    user = await _load_download_user_from_jwt(db=db, jwt_token=jwt_token)
 
     await check_agent_access(db, user, agent_id)
     artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)

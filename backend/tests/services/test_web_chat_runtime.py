@@ -1038,6 +1038,12 @@ async def test_cancel_web_chat_run_sets_cancel_event_and_marks_runtime_task_kill
     )
     db = _FakeDB(active_run=runtime_task)
     cancel_event = asyncio.Event()
+    published_cancels = []
+
+    async def fake_publish_web_chat_cancel(**kwargs):
+        published_cancels.append(kwargs)
+
+    monkeypatch.setattr("app.services.runtime_control_bus.publish_web_chat_cancel", fake_publish_web_chat_cancel)
     runtime.register_web_chat_run_for_test(run_id.hex, cancel_event=cancel_event)
 
     try:
@@ -1054,6 +1060,8 @@ async def test_cancel_web_chat_run_sets_cancel_event_and_marks_runtime_task_kill
         assert cancel_event.is_set() is True
         assert runtime_task.status == "killed"
         assert runtime_task.metadata_json["cancelled_by_user"] is True
+        assert published_cancels[0]["run_id"] == run_id.hex
+        assert published_cancels[0]["agent_id"] == str(agent_id)
         assert db.commits == 1
     finally:
         runtime.unregister_web_chat_run_for_test(run_id.hex)

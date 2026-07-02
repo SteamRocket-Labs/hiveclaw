@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
 
 
 def test_worker_claimable_task_types_cover_v3_runtime_planes():
@@ -66,3 +69,40 @@ def test_worker_task_type_limit_parser_caps_claimable_types(monkeypatch):
     assert worker._task_type_capacity_remaining("web_chat_turn") == 0
     assert worker._task_type_capacity_remaining("workflow") == 1
     assert worker._claimable_task_types_for_available_capacity() == ("workflow", "delegation")
+
+
+@pytest.mark.asyncio
+async def test_execute_claimed_business_task_marks_failed_on_executor_error(monkeypatch):
+    import app.services.runtime_task_worker as worker
+
+    runtime_task_id = uuid4()
+    business_task_id = uuid4()
+    agent_id = uuid4()
+    updates = []
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == runtime_task_id.hex
+        return {
+            "metadata": {"business_task_id": str(business_task_id)},
+            "parent_agent_id": str(agent_id),
+        }
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        updates.append((task_id, kwargs))
+        return True
+
+    async def fake_execute_task(_business_task_id, _agent_id):
+        raise RuntimeError("executor exploded")
+
+    monkeypatch.setattr("app.services.runtime_task_service.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.services.runtime_task_service.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute_task)
+
+    await worker._execute_claimed_business_task(runtime_task_id)
+
+    assert any(
+        task_id == runtime_task_id.hex
+        and payload.get("status") == "failed"
+        and "executor exploded" in payload.get("result_summary", "")
+        for task_id, payload in updates
+    )

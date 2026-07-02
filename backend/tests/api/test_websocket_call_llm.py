@@ -61,6 +61,37 @@ def test_websocket_idle_timeout_default_allows_long_wait(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_emit_ws_session_lifecycle_hook_api_role_publishes_runtime_control(monkeypatch):
+    import app.api.websocket as websocket_api
+
+    published = []
+    emitted = []
+
+    async def fake_publish(**kwargs):
+        published.append(kwargs)
+
+    async def fake_emit_hook(event, **kwargs):
+        emitted.append((event, kwargs))
+
+    monkeypatch.setattr(websocket_api, "_process_role", lambda: "api")
+    monkeypatch.setattr("app.services.runtime_control_bus.publish_session_lifecycle_hook", fake_publish)
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    await websocket_api._emit_ws_session_lifecycle_hook(
+        "session_idle",
+        agent_id=uuid4(),
+        session_id="session-1",
+        messages=[{"role": "user", "content": "hi"}],
+        source="websocket",
+        metadata={"idle_seconds": 180},
+    )
+
+    assert published
+    assert published[0]["event"] == "session_idle"
+    assert emitted == []
+
+
+@pytest.mark.asyncio
 async def test_websocket_ping_control_message_replies_with_pong():
     from app.api.websocket import _handle_websocket_control_message
 

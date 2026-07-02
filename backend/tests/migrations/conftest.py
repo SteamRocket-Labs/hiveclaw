@@ -37,7 +37,20 @@ from tests.integration.conftest import (  # noqa: F401  (re-exported fixtures)
 
 _PREVIOUS_HEAD = "retire_openclaw_gateway_0627"
 _LATEST_ONLY_TABLES: tuple[str, ...] = ()
-_LATEST_ONLY_COLUMNS = (("invocation_spans", "evidence_refs"), ("invocation_spans", "truth_evidence_json"))
+_LATEST_ONLY_COLUMNS = (
+    ("invocation_spans", "evidence_refs"),
+    ("invocation_spans", "truth_evidence_json"),
+    ("runtime_tasks", "scheduled_at"),
+    ("runtime_tasks", "priority"),
+    ("runtime_tasks", "claimed_by"),
+    ("runtime_tasks", "claim_expires_at"),
+    ("runtime_tasks", "attempt_count"),
+)
+_LATEST_ONLY_INDEXES = (
+    "ix_agents_tenant_active_created_at",
+    "ix_agents_creator_tenant_active_created_at",
+    "ix_agent_permissions_scope_lookup",
+)
 
 
 def _alembic_upgrade_head(database_url: str) -> None:
@@ -79,6 +92,7 @@ def chain_migrated_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture p
     rewind_sql = "; ".join(
         [f"DROP TABLE IF EXISTS {table} CASCADE" for table in _LATEST_ONLY_TABLES]
         + [f"ALTER TABLE {table} DROP COLUMN IF EXISTS {column}" for table, column in _LATEST_ONLY_COLUMNS]
+        + [f"DROP INDEX IF EXISTS {index}" for index in _LATEST_ONLY_INDEXES]
         + [f"UPDATE alembic_version SET version_num = '{_PREVIOUS_HEAD}'"]
     )
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "chaintest", "-c", rewind_sql])

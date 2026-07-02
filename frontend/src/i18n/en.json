@@ -1368,7 +1368,8 @@
         "compactionMeta": "Kept {{kept}} of {{original}} messages",
         "toolGroupsActivated": "{{count}} runtime tool groups activated",
         "permissionNeeded": "The agent needs permission to use {{tool}}."
-      }
+      },
+      "loadOlderMessages": "Load earlier messages"
     },
     "office": {
       "title": "Office",

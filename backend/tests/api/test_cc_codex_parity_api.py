@@ -408,8 +408,19 @@ async def test_chat_sessions_api_exposes_unified_workbench_and_json_export(monke
         captured.append(("access", kwargs))
         return session, agent, "manage"
 
-    async def fake_build_session_workbench(db_arg, *, agent, session):
-        captured.append(("workbench", {"db": db_arg, "agent": agent, "session": session}))
+    async def fake_build_session_workbench(db_arg, *, agent, session, timeline_limit=50, include=None):
+        captured.append(
+            (
+                "workbench",
+                {
+                    "db": db_arg,
+                    "agent": agent,
+                    "session": session,
+                    "timeline_limit": timeline_limit,
+                    "include": include,
+                },
+            )
+        )
         return {
             "schema": "hive.ccplus.session_workbench.v1",
             "session": {"id": str(session.id), "title": session.title},

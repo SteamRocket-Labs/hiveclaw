@@ -1,0 +1,126 @@
+"""B4 — transcript windowing: backward (tail) reads must not break the
+existing after_sequence incremental contract (owner-pinned constraint,
+docs/performance-slimming-plan-2026-07-02.md)."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+
+class _Result:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+    def scalars(self):
+        value = self._value if isinstance(self._value, list) else []
+        return SimpleNamespace(all=lambda: value)
+
+
+class _DB:
+    def __init__(self, *values):
+        self.values = list(values)
+        self.statements = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        if not self.values:
+            return _Result(None)
+        return _Result(self.values.pop(0))
+
+
+def _event(session_id, sequence):
+    return SimpleNamespace(
+        id=uuid4(),
+        session_id=session_id,
+        sequence=sequence,
+        event_type="user_message",
+        actor_type="user",
+        content=f"c{sequence}",
+        metadata_json={"role": "user"},
+        created_at=None,
+    )
+
+
+def _setup(monkeypatch):
+    import app.api.chat_sessions as api
+
+    agent = SimpleNamespace(id=uuid4())
+    session = SimpleNamespace(id=uuid4(), agent_id=agent.id, user_id=uuid4())
+    user = SimpleNamespace(id=session.user_id, role="member")
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(api, "_serialize_transcript_event", lambda event: {"sequence": event.sequence})
+    return api, agent, session, user
+
+
+@pytest.mark.asyncio
+async def test_transcript_forward_after_sequence_contract_unchanged(monkeypatch):
+    api, agent, session, user = _setup(monkeypatch)
+    rows = [_event(session.id, seq) for seq in (6, 7, 8)]
+    db = _DB(session, rows)
+
+    payload = await api.get_session_transcript(
+        agent_id=agent.id,
+        session_id=session.id,
+        after_sequence=5,
+        current_user=user,
+        db=db,
+    )
+
+    assert [item["sequence"] for item in payload] == [6, 7, 8]
+
+
+@pytest.mark.asyncio
+async def test_transcript_backward_returns_latest_window_ascending(monkeypatch):
+    api, agent, session, user = _setup(monkeypatch)
+    # DB returns DESC rows for backward queries; endpoint must re-ascend.
+    rows = [_event(session.id, seq) for seq in (30, 29, 28)]
+    db = _DB(session, rows)
+
+    payload = await api.get_session_transcript(
+        agent_id=agent.id,
+        session_id=session.id,
+        direction="backward",
+        limit=3,
+        current_user=user,
+        db=db,
+    )
+
+    assert [item["sequence"] for item in payload] == [28, 29, 30]
+
+
+@pytest.mark.asyncio
+async def test_transcript_before_sequence_pages_older_history_ascending(monkeypatch):
+    api, agent, session, user = _setup(monkeypatch)
+    rows = [_event(session.id, seq) for seq in (27, 26, 25)]
+    db = _DB(session, rows)
+
+    payload = await api.get_session_transcript(
+        agent_id=agent.id,
+        session_id=session.id,
+        before_sequence=28,
+        limit=3,
+        current_user=user,
+        db=db,
+    )
+
+    assert [item["sequence"] for item in payload] == [25, 26, 27]
+
+
+@pytest.mark.asyncio
+async def test_transcript_default_limit_tightened_to_200(monkeypatch):
+    import inspect
+
+    import app.api.chat_sessions as api
+
+    signature = inspect.signature(api.get_session_transcript)
+    assert signature.parameters["limit"].default == 200

@@ -47,6 +47,38 @@ describe('chat API adapter', () => {
     expect(get).toHaveBeenNthCalledWith(3, '/agents/agent-1/sessions/session-1/index');
   });
 
+  it('builds transcript windowing URLs: tail first screen, older paging, incremental contract', async () => {
+    vi.doMock('../core', async () => {
+      const actual = await vi.importActual<typeof import('../core')>('../core');
+      return {
+        ...actual,
+        get: vi.fn(),
+      };
+    });
+
+    const { chatApi } = await import('./chat');
+    const { get } = await import('../core');
+    vi.mocked(get).mockResolvedValue([] as never);
+
+    await chatApi.getSessionTranscript('agent-1', 'session-1', { direction: 'backward', limit: 100 });
+    await chatApi.getSessionTranscript('agent-1', 'session-1', { beforeSequence: 57, limit: 100 });
+    await chatApi.getSessionTranscript('agent-1', 'session-1', { afterSequence: 41 });
+    await chatApi.getSessionTranscript('agent-1', 'session-1');
+
+    expect(get).toHaveBeenNthCalledWith(
+      1,
+      '/agents/agent-1/sessions/session-1/transcript?direction=backward&limit=100',
+      undefined,
+    );
+    expect(get).toHaveBeenNthCalledWith(
+      2,
+      '/agents/agent-1/sessions/session-1/transcript?before_sequence=57&limit=100',
+      undefined,
+    );
+    expect(get).toHaveBeenNthCalledWith(3, '/agents/agent-1/sessions/session-1/transcript?after_sequence=41', undefined);
+    expect(get).toHaveBeenNthCalledWith(4, '/agents/agent-1/sessions/session-1/transcript', undefined);
+  });
+
   it('sends structured attachment metadata when starting a session run', async () => {
     vi.doMock('../core', async () => {
       const actual = await vi.importActual<typeof import('../core')>('../core');

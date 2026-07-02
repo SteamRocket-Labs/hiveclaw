@@ -113,6 +113,11 @@ function normalizeSessionPermissionModeValue(value: unknown): SessionPermissionM
 
 const DEFAULT_SESSION_PERMISSION_MODE: SessionPermissionMode = 'bypassPermissions';
 
+// B4 transcript windowing: first screen loads the newest window (~1KB/event,
+// keeps the initial payload under 100KB); older history pages in on demand.
+const TRANSCRIPT_INITIAL_WINDOW = 100;
+const TRANSCRIPT_OLDER_PAGE = 100;
+
 function objectValue(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
@@ -459,6 +464,9 @@ function AgentDetailInner() {
     const reconnectAttemptsRef = useRef<Record<SessionRuntimeKey, number>>({});
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, SessionUiState>>({});
     const transcriptReplayStateRef = useRef<Record<SessionRuntimeKey, TranscriptReplayState>>({});
+    const transcriptEventsRef = useRef<Record<SessionRuntimeKey, ChatTranscriptEventPayload[]>>({});
+    const [transcriptHasOlder, setTranscriptHasOlder] = useState<Record<SessionRuntimeKey, boolean>>({});
+    const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
     const activeRunStateRef = useRef<Record<SessionRuntimeKey, SessionRunState>>({});
     const pendingUserMessagesRef = useRef<Record<SessionRuntimeKey, PendingUserMessage[]>>({});
     const runtimeActivityAtRef = useRef<Record<SessionRuntimeKey, number>>({});
@@ -725,12 +733,22 @@ function AgentDetailInner() {
         sessionMsgAbortRef.current = controller;
         const loadSeq = ++sessionLoadSeqRef.current;
         try {
-            const transcriptEvents = await chatApi.getSessionTranscript(targetAgentId, sessionId, { signal: controller.signal });
+            // First screen loads the newest window; older history pages in on demand (plan B4).
+            const transcriptEvents = await chatApi.getSessionTranscript(targetAgentId, sessionId, {
+                direction: 'backward',
+                limit: TRANSCRIPT_INITIAL_WINDOW,
+                signal: controller.signal,
+            });
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sessionId) return;
             let preParsed: AgentChatMessage[];
             if (transcriptEvents.length > 0) {
+                transcriptEventsRef.current[runtimeKey] = transcriptEvents as ChatTranscriptEventPayload[];
+                setTranscriptHasOlder((prev) => ({
+                    ...prev,
+                    [runtimeKey]: transcriptEvents.length >= TRANSCRIPT_INITIAL_WINDOW,
+                }));
                 const replay = replayTranscriptEvents(transcriptEvents as ChatTranscriptEventPayload[]);
                 transcriptReplayStateRef.current[runtimeKey] = replay;
                 sessionUiStateRef.current[runtimeKey] = replay.ui;
@@ -772,6 +790,44 @@ function AgentDetailInner() {
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
             console.error('Failed to load session messages:', err);
+        }
+    };
+
+    const loadOlderMessages = async () => {
+        const targetAgentId = currentAgentIdRef.current;
+        const sessionId = activeSessionIdRef.current;
+        if (!targetAgentId || !sessionId || olderMessagesLoading) return;
+        const runtimeKey = buildSessionRuntimeKey(targetAgentId, sessionId);
+        const existing = transcriptEventsRef.current[runtimeKey] || [];
+        const earliestSequence = existing.length > 0 ? Number(existing[0]?.sequence ?? 0) : 0;
+        if (!earliestSequence || earliestSequence <= 1) {
+            setTranscriptHasOlder((prev) => ({ ...prev, [runtimeKey]: false }));
+            return;
+        }
+        setOlderMessagesLoading(true);
+        try {
+            const older = await chatApi.getSessionTranscript(targetAgentId, sessionId, {
+                beforeSequence: earliestSequence,
+                limit: TRANSCRIPT_OLDER_PAGE,
+            });
+            if (activeSessionIdRef.current !== sessionId) return;
+            setTranscriptHasOlder((prev) => ({ ...prev, [runtimeKey]: older.length >= TRANSCRIPT_OLDER_PAGE }));
+            if (older.length === 0) return;
+            const merged = [...(older as ChatTranscriptEventPayload[]), ...existing];
+            transcriptEventsRef.current[runtimeKey] = merged;
+            const replay = replayTranscriptEvents(merged);
+            transcriptReplayStateRef.current[runtimeKey] = replay;
+            sessionUiStateRef.current[runtimeKey] = replay.ui;
+            const preParsed = replay.messages.map(parseChatMsg);
+            if (chatMessagesSessionId === sessionId) {
+                setChatMessages(mergePendingForSession(runtimeKey, preParsed));
+            } else if (historyMessagesSessionId === sessionId) {
+                setHistoryMsgs(preParsed);
+            }
+        } catch (err) {
+            console.warn('Failed to load older transcript window:', err);
+        } finally {
+            setOlderMessagesLoading(false);
         }
     };
 
@@ -2659,6 +2715,13 @@ function AgentDetailInner() {
                             onHistoryScroll={handleHistoryScroll}
                             historyMsgs={historyMsgs}
                             historyMessagesSessionId={historyMessagesSessionId}
+                            onLoadOlderMessages={loadOlderMessages}
+                            olderMessagesLoading={olderMessagesLoading}
+                            hasOlderMessages={Boolean(
+                                activeSession?.id
+                                && id
+                                && transcriptHasOlder[buildSessionRuntimeKey(id, String(activeSession.id))],
+                            )}
                             showHistoryScrollBtn={showHistoryScrollBtn}
                             onScrollHistoryToBottom={scrollHistoryToBottom}
                             chatContainerRef={chatContainerRef}

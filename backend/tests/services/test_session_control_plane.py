@@ -199,7 +199,7 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
     )
 
     async def fake_load_events(db, *, agent, session, limit):
-        assert limit == 1000
+        assert limit == 50, "default workbench window is the slim 50-event tail"
         return [event], "t0_events_jsonl"
 
     async def fake_active_run(**_kwargs):
@@ -264,7 +264,7 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
     monkeypatch.setattr(service, "_list_branches", fake_branches)
     monkeypatch.setattr(service, "_list_workflow_journals", fake_workflow_journals)
 
-    result = await service.build_session_workbench(object(), agent=agent, session=session)
+    result = await service.build_session_workbench(object(), agent=agent, session=session, include={"timeline"})
 
     assert result["schema"] == "hive.ccplus.session_workbench.v1"
     assert result["session"]["id"] == str(session_id)
@@ -812,3 +812,199 @@ async def test_pending_approvals_without_session_binding_do_not_leak_between_ses
     )
 
     assert [approval["details"]["reason"] for approval in approvals] == ["current"]
+
+
+def _slim_event(sequence, event_type="user_message", role="user", metadata=None):
+    return SimpleNamespace(
+        id=uuid4(),
+        event_id=uuid4(),
+        sequence=sequence,
+        event_type=event_type,
+        actor_type="user",
+        role=role,
+        content=f"c{sequence}",
+        metadata_json=metadata or {"role": role},
+        created_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
+    )
+
+
+def _slim_agent_session():
+    agent_id = uuid4()
+    session_id = uuid4()
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        tenant_id=agent.tenant_id,
+        user_id=uuid4(),
+        title="Slim",
+        source_channel="web",
+        session_kind="human_chat",
+        actor_type="user",
+        runtime_source="web_chat",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        parent_session_id=None,
+        root_session_id=session_id,
+        runtime_task_id=None,
+        created_at=now,
+        last_message_at=now,
+    )
+    return agent, session
+
+
+def _patch_slim_workbench_deps(monkeypatch, service, *, events, seen_limits):
+    async def fake_load_events(db, *, agent, session, limit):
+        seen_limits.append(limit)
+        return list(events[-limit:]), "t0_events_jsonl"
+
+    async def fake_active_run(**_kwargs):
+        return None
+
+    async def fake_session_index(*_args, **_kwargs):
+        return {"schema": "hive.session_index.v1", "checkpoints": []}
+
+    async def _empty(*_args, **_kwargs):
+        return []
+
+    async def fake_journals(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(service, "_load_events", fake_load_events)
+    monkeypatch.setattr(service, "get_active_web_chat_run", fake_active_run)
+    monkeypatch.setattr(service, "read_session_index", fake_session_index)
+    monkeypatch.setattr(service, "_list_runtime_tasks", _empty)
+    monkeypatch.setattr(service, "_list_goals", _empty)
+    monkeypatch.setattr(service, "_list_teams", _empty)
+    monkeypatch.setattr(service, "_list_pending_approvals", _empty)
+    monkeypatch.setattr(service, "_list_branches", _empty)
+    monkeypatch.setattr(service, "_list_workflow_journals", fake_journals)
+
+
+def _mixed_slim_events():
+    events = [_slim_event(i) for i in range(1, 58)]
+    events.append(_slim_event(58, event_type="tool_call", role="tool_call", metadata={"tool_name": "web_search"}))
+    events.append(_slim_event(59, event_type="hook_pre_tool_use", role="system", metadata={"hook_event": "PRE_TOOL_USE"}))
+    events.append(_slim_event(60, event_type="session_compact", role="system", metadata={"kind": "compaction"}))
+    return events
+
+
+@pytest.mark.asyncio
+async def test_workbench_default_omits_heavy_derived_sections(monkeypatch):
+    import app.services.session_control_plane as service
+
+    agent, session = _slim_agent_session()
+    seen_limits: list[int] = []
+    _patch_slim_workbench_deps(monkeypatch, service, events=_mixed_slim_events(), seen_limits=seen_limits)
+
+    result = await service.build_session_workbench(object(), agent=agent, session=session)
+
+    assert seen_limits == [50]
+    assert result["timeline"]["included"] is False
+    assert result["timeline"]["events"] == []
+    assert result["tool_calls"] == []
+    assert result["hooks"] == []
+    assert result["compactions"] == []
+    # derivations still come from the newest window
+    assert result["turn"]["latest_event"]["sequence"] == 60
+    assert result["turn"]["event_count"] == 50
+
+
+@pytest.mark.asyncio
+async def test_workbench_include_restores_heavy_sections(monkeypatch):
+    import app.services.session_control_plane as service
+
+    agent, session = _slim_agent_session()
+    seen_limits: list[int] = []
+    _patch_slim_workbench_deps(monkeypatch, service, events=_mixed_slim_events(), seen_limits=seen_limits)
+
+    result = await service.build_session_workbench(
+        object(),
+        agent=agent,
+        session=session,
+        timeline_limit=100,
+        include={"timeline", "tool_calls", "hooks", "compactions"},
+    )
+
+    assert seen_limits == [100]
+    assert result["timeline"]["included"] is True
+    assert len(result["timeline"]["events"]) == 60
+    assert [item["sequence"] for item in result["tool_calls"]] == [58]
+    assert [item["sequence"] for item in result["hooks"]] == [59]
+    assert [item["sequence"] for item in result["compactions"]] == [60]
+
+
+@pytest.mark.asyncio
+async def test_workbench_clamps_timeline_limit(monkeypatch):
+    import app.services.session_control_plane as service
+
+    agent, session = _slim_agent_session()
+    seen_limits: list[int] = []
+    _patch_slim_workbench_deps(monkeypatch, service, events=_mixed_slim_events(), seen_limits=seen_limits)
+
+    await service.build_session_workbench(object(), agent=agent, session=session, timeline_limit=999_999)
+    await service.build_session_workbench(object(), agent=agent, session=session, timeline_limit=0)
+
+    assert seen_limits == [1000, 50]
+
+
+@pytest.mark.asyncio
+async def test_export_keeps_full_heavy_sections(monkeypatch):
+    import app.services.session_control_plane as service
+
+    agent, session = _slim_agent_session()
+    seen_limits: list[int] = []
+    _patch_slim_workbench_deps(monkeypatch, service, events=_mixed_slim_events(), seen_limits=seen_limits)
+
+    export = await service.build_session_json_export(object(), agent=agent, session=session)
+
+    assert export["workbench"]["timeline"]["included"] is True
+    assert len(export["workbench"]["timeline"]["events"]) == 60
+    assert [item["sequence"] for item in export["workbench"]["tool_calls"]] == [58]
+    # workbench window inside export stays at the full 1000 cap
+    assert 1000 in seen_limits
+
+
+@pytest.mark.asyncio
+async def test_list_teams_batches_member_query(monkeypatch):
+    import app.services.session_control_plane as service
+
+    team_a = SimpleNamespace(id=uuid4(), created_at=datetime(2026, 7, 2, tzinfo=timezone.utc))
+    team_b = SimpleNamespace(id=uuid4(), created_at=datetime(2026, 7, 2, tzinfo=timezone.utc))
+    member_a = SimpleNamespace(team_id=team_a.id)
+    member_b = SimpleNamespace(team_id=team_b.id)
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def scalars(self):
+            rows = self._rows
+            return SimpleNamespace(all=lambda: rows)
+
+    class _CountingDB:
+        def __init__(self):
+            self.executed = 0
+
+        async def execute(self, _stmt):
+            self.executed += 1
+            if self.executed == 1:
+                return _Result([team_a, team_b])
+            return _Result([member_a, member_b])
+
+    payload_calls: list[tuple] = []
+
+    def fake_team_payload(team, members):
+        payload_calls.append((team.id, [m.team_id for m in members]))
+        return {"id": str(team.id), "member_count": len(members)}
+
+    monkeypatch.setattr(service, "_team_payload", fake_team_payload)
+
+    db = _CountingDB()
+    payloads = await service._list_teams(db, agent_id=uuid4(), session_id=uuid4())
+
+    assert db.executed == 2, "expected one teams query plus ONE batched members query"
+    assert [p["member_count"] for p in payloads] == [1, 1]
+    assert payload_calls[0][1] == [team_a.id]
+    assert payload_calls[1][1] == [team_b.id]

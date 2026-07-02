@@ -465,7 +465,9 @@ _RUNTIME_SECTION_KEYS = (
 _SUBAGENT_TASK_TYPES = {"subagent", "delegation"}
 _WORKFLOW_TASK_TYPES = {"workflow"}
 _AGENT_TEAM_TASK_TYPES = {"team_member"}
-_BACKGROUND_TASK_TYPES = _BACKGROUND_COMPLETION_TASK_TYPES - _SUBAGENT_TASK_TYPES - _WORKFLOW_TASK_TYPES - _AGENT_TEAM_TASK_TYPES
+_BACKGROUND_TASK_TYPES = (
+    _BACKGROUND_COMPLETION_TASK_TYPES - _SUBAGENT_TASK_TYPES - _WORKFLOW_TASK_TYPES - _AGENT_TEAM_TASK_TYPES
+)
 
 
 def _runtime_section_payload(key: str, items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -541,7 +543,9 @@ def _workflow_controls_payload(
     state = _completion_state(status)
     waiting_for_signal = _mapping(metadata.get("waiting_for_signal"))
     repair_plan = _mapping(metadata.get("repair_plan") or dynamic_workflow.get("repair_plan"))
-    promotion_eligibility = _mapping(metadata.get("promotion_eligibility") or dynamic_workflow.get("promotion_eligibility"))
+    promotion_eligibility = _mapping(
+        metadata.get("promotion_eligibility") or dynamic_workflow.get("promotion_eligibility")
+    )
     repairable = bool(repair_plan.get("repairable"))
     promotion_eligible = bool(
         promotion_eligibility.get("eligible")
@@ -554,7 +558,11 @@ def _workflow_controls_payload(
     proposal_id = dynamic_workflow.get("proposal_id") or metadata.get("proposal_id")
     candidate_id = dynamic_workflow.get("candidate_id") or metadata.get("candidate_id")
     gate_status = _workflow_gate_status(steps=steps, waiting_for_signal=waiting_for_signal)
-    wait_status = "waiting_for_signal" if waiting_for_signal else ("waiting" if status in {"waiting", "suspended", "blocked"} else "not_waiting")
+    wait_status = (
+        "waiting_for_signal"
+        if waiting_for_signal
+        else ("waiting" if status in {"waiting", "suspended", "blocked"} else "not_waiting")
+    )
     can_resume = bool(waiting_for_signal or status in {"waiting", "suspended", "blocked"} or repairable)
     can_repair = repairable
     can_cancel = state in {"pending", "running"} or status in {"waiting", "suspended", "blocked"}
@@ -582,8 +590,12 @@ def _workflow_controls_payload(
         "promotion_eligible": promotion_eligible,
         "promotion_eligibility": promotion_eligibility,
         "actions": [
-            action_payload("resume", enabled=can_resume, reason=waiting_for_signal.get("reason") or repair_plan.get("strategy")),
-            action_payload("repair", enabled=can_repair, reason=repair_plan.get("strategy") or repair_plan.get("reason")),
+            action_payload(
+                "resume", enabled=can_resume, reason=waiting_for_signal.get("reason") or repair_plan.get("strategy")
+            ),
+            action_payload(
+                "repair", enabled=can_repair, reason=repair_plan.get("strategy") or repair_plan.get("reason")
+            ),
             action_payload("cancel", enabled=can_cancel, reason="run is active" if can_cancel else "run is terminal"),
             action_payload(
                 "promote",
@@ -609,7 +621,9 @@ async def _list_workflow_journals(
         str(run_id): {"steps": [], "leaf_calls": []} for run_id in run_ids
     }
     for row in steps_result.scalars().all():
-        journals.setdefault(str(row.run_id), {"steps": [], "leaf_calls": []})["steps"].append(_workflow_step_payload(row))
+        journals.setdefault(str(row.run_id), {"steps": [], "leaf_calls": []})["steps"].append(
+            _workflow_step_payload(row)
+        )
     for row in leaf_result.scalars().all():
         journals.setdefault(str(row.run_id), {"steps": [], "leaf_calls": []})["leaf_calls"].append(
             _workflow_leaf_call_payload(row)
@@ -719,9 +733,7 @@ def _resume_health_payload(
     }
 
 
-def _session_index_with_resume_health(
-    *, session_index: Any, active_run: Any, checkpoint_count: int
-) -> dict[str, Any]:
+def _session_index_with_resume_health(*, session_index: Any, active_run: Any, checkpoint_count: int) -> dict[str, Any]:
     payload = _mapping(session_index)
     payload.setdefault("schema", "hive.session_index.v1")
     payload["resume_health"] = _resume_health_payload(
@@ -1003,14 +1015,16 @@ def _timeline_payload(
     events: list[Any],
     truth_source: str,
     limit: int,
+    included: bool = True,
 ) -> dict[str, Any]:
-    event_payloads = [_event_payload(event) for event in events]
+    event_payloads = [_event_payload(event) for event in events] if included else []
     return {
         "schema": "hive.ccplus.session_timeline.v1",
         "truth_source": truth_source,
-        "event_count": len(event_payloads),
+        "included": included,
+        "event_count": len(events),
         "window_limit": limit,
-        "truncated": len(event_payloads) >= limit,
+        "truncated": len(events) >= limit,
         "events": event_payloads,
     }
 
@@ -1237,7 +1251,9 @@ def _branch_payload(session: ChatSession) -> dict[str, Any]:
     }
 
 
-async def _list_runtime_tasks(db: AsyncSession, *, agent_id: Any, session_id: Any, limit: int = 50) -> list[RuntimeTask]:
+async def _list_runtime_tasks(
+    db: AsyncSession, *, agent_id: Any, session_id: Any, limit: int = 50
+) -> list[RuntimeTask]:
     session_key = str(session_id)
     result = await db.execute(
         select(RuntimeTask)
@@ -1270,14 +1286,17 @@ async def _list_teams(db: AsyncSession, *, agent_id: Any, session_id: Any) -> li
         .order_by(AgentTeam.created_at.desc())
     )
     teams = list(result.scalars().all())
-    payloads: list[dict[str, Any]] = []
-    for team in teams:
-        members_result = await db.execute(
-            select(AgentTeamMember).where(AgentTeamMember.team_id == team.id).order_by(AgentTeamMember.created_at.asc())
-        )
-        members = list(members_result.scalars().all())
-        payloads.append(_team_payload(team, members))
-    return payloads
+    if not teams:
+        return []
+    members_result = await db.execute(
+        select(AgentTeamMember)
+        .where(AgentTeamMember.team_id.in_([team.id for team in teams]))
+        .order_by(AgentTeamMember.created_at.asc())
+    )
+    members_by_team: dict[Any, list[AgentTeamMember]] = {}
+    for member in members_result.scalars().all():
+        members_by_team.setdefault(member.team_id, []).append(member)
+    return [_team_payload(team, members_by_team.get(team.id, [])) for team in teams]
 
 
 async def _list_pending_approvals(
@@ -1303,7 +1322,9 @@ async def _list_pending_approvals(
             continue
         payload = _approval_payload(approval)
         details = _mapping(payload.get("details"))
-        approval_session = details.get("session_id") or details.get("parent_session_id") or details.get("chat_session_id")
+        approval_session = (
+            details.get("session_id") or details.get("parent_session_id") or details.get("chat_session_id")
+        )
         if not approval_session:
             continue
         if str(approval_session) != str(session_id):
@@ -1324,8 +1345,30 @@ async def _list_branches(db: AsyncSession, *, agent_id: Any, session_id: Any, li
     return [_branch_payload(branch) for branch in result.scalars().all()]
 
 
-async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: ChatSession) -> dict[str, Any]:
-    timeline_limit = 1000
+WORKBENCH_HEAVY_SECTIONS = frozenset({"timeline", "tool_calls", "hooks", "compactions"})
+WORKBENCH_DEFAULT_TIMELINE_LIMIT = 50
+WORKBENCH_MAX_TIMELINE_LIMIT = 1000
+
+
+async def build_session_workbench(
+    db: AsyncSession,
+    *,
+    agent: Agent,
+    session: ChatSession,
+    timeline_limit: int = WORKBENCH_DEFAULT_TIMELINE_LIMIT,
+    include: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Session workbench read model.
+
+    Heavy events-derived sections (timeline/tool_calls/hooks/compactions) are
+    returned only when explicitly requested via ``include`` — the default
+    response stays light for the always-on chat surface (plan B1); the JSON
+    export path requests everything.
+    """
+    included_sections = WORKBENCH_HEAVY_SECTIONS & set(include or ())
+    if timeline_limit <= 0:
+        timeline_limit = WORKBENCH_DEFAULT_TIMELINE_LIMIT
+    timeline_limit = min(timeline_limit, WORKBENCH_MAX_TIMELINE_LIMIT)
     events, truth_source = await _load_events(db, agent=agent, session=session, limit=timeline_limit)
     checkpoints = _checkpoint_payloads(events)
     latest_event = _event_payload(events[-1]) if events else None
@@ -1373,11 +1416,16 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
         "active_turn": active_turn,
         "agent_session": agent_session,
         "session_graph": session_graph,
-        "timeline": _timeline_payload(events=events, truth_source=truth_source, limit=timeline_limit),
-        "tool_calls": _tool_call_payloads(events),
+        "timeline": _timeline_payload(
+            events=events,
+            truth_source=truth_source,
+            limit=timeline_limit,
+            included="timeline" in included_sections,
+        ),
+        "tool_calls": _tool_call_payloads(events) if "tool_calls" in included_sections else [],
         "approvals": approvals,
-        "hooks": _hook_payloads(events),
-        "compactions": _compaction_payloads(events),
+        "hooks": _hook_payloads(events) if "hooks" in included_sections else [],
+        "compactions": _compaction_payloads(events) if "compactions" in included_sections else [],
         "context_window": _context_window_payload(events),
         "branches": branches,
         "permission_profile": permission_profile,
@@ -1417,7 +1465,13 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
 
 
 async def build_session_json_export(db: AsyncSession, *, agent: Agent, session: ChatSession) -> dict[str, Any]:
-    workbench = await build_session_workbench(db, agent=agent, session=session)
+    workbench = await build_session_workbench(
+        db,
+        agent=agent,
+        session=session,
+        timeline_limit=WORKBENCH_MAX_TIMELINE_LIMIT,
+        include=WORKBENCH_HEAVY_SECTIONS,
+    )
     events, truth_source = await _load_events(db, agent=agent, session=session, limit=10000)
     return {
         "schema": "hive.ccplus.session_export.v1",

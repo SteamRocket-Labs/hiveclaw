@@ -1368,7 +1368,8 @@
         "compactionMeta": "保留 {{kept}} / {{original}} 条消息",
         "toolGroupsActivated": "已激活 {{count}} 个运行时工具组",
         "permissionNeeded": "Agent 需要权限来使用 {{tool}}。"
-      }
+      },
+      "loadOlderMessages": "加载更早的消息"
     },
     "office": {
       "title": "Office",

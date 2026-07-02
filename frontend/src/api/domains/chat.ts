@@ -235,11 +235,34 @@ export const chatApi = {
   deleteSession: (agentId: string, sessionId: string) => del(`/agents/${agentId}/sessions/${sessionId}`),
   getSessionMessages: (agentId: string, sessionId: string, options?: RequestOptions) =>
     get<ChatMessage[]>(`/agents/${agentId}/sessions/${sessionId}/messages`, options),
-  getSessionTranscript: (agentId: string, sessionId: string, options?: RequestOptions & { afterSequence?: number }) => {
-    const after = typeof options?.afterSequence === 'number' ? `?after_sequence=${options.afterSequence}` : '';
+  getSessionTranscript: (
+    agentId: string,
+    sessionId: string,
+    options?: RequestOptions & {
+      afterSequence?: number;
+      beforeSequence?: number;
+      direction?: 'forward' | 'backward';
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (typeof options?.afterSequence === 'number') params.set('after_sequence', String(options.afterSequence));
+    if (typeof options?.beforeSequence === 'number') params.set('before_sequence', String(options.beforeSequence));
+    if (options?.direction) params.set('direction', options.direction);
+    if (typeof options?.limit === 'number') params.set('limit', String(options.limit));
+    const query = params.toString();
     const requestOptions = options ? { ...options } : undefined;
-    if (requestOptions) delete requestOptions.afterSequence;
-    return get<ChatTranscriptEvent[]>(`/agents/${agentId}/sessions/${sessionId}/transcript${after}`, requestOptions);
+    if (requestOptions) {
+      delete requestOptions.afterSequence;
+      delete requestOptions.beforeSequence;
+      delete requestOptions.direction;
+      delete requestOptions.limit;
+    }
+    const remainingOptions = requestOptions && Object.keys(requestOptions).length > 0 ? requestOptions : undefined;
+    return get<ChatTranscriptEvent[]>(
+      `/agents/${agentId}/sessions/${sessionId}/transcript${query ? `?${query}` : ''}`,
+      remainingOptions,
+    );
   },
   getRuntimeSummary: (sessionId: string, options?: RequestOptions) =>
     get<SessionRuntimeSummary>(`/chat/sessions/${sessionId}/runtime-summary`, options),

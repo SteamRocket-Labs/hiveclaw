@@ -283,6 +283,9 @@ interface AgentChatSectionProps {
   onHistoryScroll: () => void;
   historyMsgs: AgentChatMessage[];
   historyMessagesSessionId: string | null;
+  onLoadOlderMessages: () => void;
+  olderMessagesLoading: boolean;
+  hasOlderMessages: boolean;
   showHistoryScrollBtn: boolean;
   onScrollHistoryToBottom: () => void;
   chatContainerRef: React.RefObject<HTMLDivElement | null>;
@@ -2489,6 +2492,9 @@ export default function AgentChatSection({
   onHistoryScroll,
   historyMsgs,
   historyMessagesSessionId,
+  onLoadOlderMessages,
+  olderMessagesLoading,
+  hasOlderMessages,
   showHistoryScrollBtn,
   onScrollHistoryToBottom,
   chatContainerRef,
@@ -3438,6 +3444,29 @@ export default function AgentChatSection({
         onNavigateBranch={onSelectBranchSession}
       />
       <div className="session-tui-history-content">
+        {hasOlderMessages && !activeSessionHydrating ? (
+          <div style={{ textAlign: 'center', marginBottom: '10px' }}>
+            <button
+              type="button"
+              data-testid="load-older-messages"
+              onClick={onLoadOlderMessages}
+              disabled={olderMessagesLoading}
+              style={{
+                fontSize: '12px',
+                padding: '4px 12px',
+                borderRadius: '12px',
+                border: '1px solid var(--border-default)',
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-secondary)',
+                cursor: olderMessagesLoading ? 'wait' : 'pointer',
+              }}
+            >
+              {olderMessagesLoading
+                ? t('common.loading', 'Loading')
+                : t('agent.chat.loadOlderMessages', 'Load earlier messages')}
+            </button>
+          </div>
+        ) : null}
         {children}
       </div>
     </div>

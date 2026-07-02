@@ -1174,7 +1174,9 @@ async def create_session_run(
             parts=body.parts,
         )
     except ActiveWebChatRunExists as exc:
-        return JSONResponse(status_code=202, content={"session": _session_out(session, current_user).model_dump(), "run": exc.run})
+        return JSONResponse(
+            status_code=202, content={"session": _session_out(session, current_user).model_dump(), "run": exc.run}
+        )
 
     await db.refresh(session)
     return CreateSessionRunOut(session=_session_out(session, current_user, message_count=1), run=run)
@@ -1380,6 +1382,8 @@ async def get_session_index(
 async def get_session_workbench(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    timeline_limit: int = 50,
+    include: str = "",
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -1389,7 +1393,14 @@ async def get_session_workbench(
         session_id=session_id,
         current_user=current_user,
     )
-    return await build_session_workbench(db, agent=agent, session=session)
+    include_sections = {part.strip() for part in include.split(",") if part.strip()}
+    return await build_session_workbench(
+        db,
+        agent=agent,
+        session=session,
+        timeline_limit=timeline_limit,
+        include=include_sections,
+    )
 
 
 @router.get("/{agent_id}/sessions/{session_id}/export")
@@ -1814,7 +1825,9 @@ async def get_session_transcript(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     after_sequence: int = 0,
-    limit: int = 500,
+    before_sequence: int | None = None,
+    direction: str = "forward",
+    limit: int = 200,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1822,7 +1835,14 @@ async def get_session_transcript(
 
     This is the durable UI replay surface. `chat_messages` remains a read model
     for compatibility, while transcript events are the ordered event stream.
+
+    Windowing: the default ``after_sequence`` forward contract is unchanged.
+    ``direction=backward`` (optionally with ``before_sequence``) reads the
+    newest window / pages older history; rows are always returned ascending,
+    so clients merge by sequence either way (plan B4).
     """
+    if direction not in {"forward", "backward"}:
+        raise HTTPException(status_code=400, detail="direction must be 'forward' or 'backward'")
     result = await db.execute(
         select(ChatSession).where(
             ChatSession.id == session_id,
@@ -1837,16 +1857,26 @@ async def get_session_transcript(
     if str(session.user_id) != str(current_user.id) and not _can_manage_sessions(current_user, agent, access_level):
         raise HTTPException(status_code=403, detail="Not authorized to view this session")
 
-    events_result = await db.execute(
-        select(ChatTranscriptEvent)
-        .where(
-            ChatTranscriptEvent.session_id == session_id,
-            ChatTranscriptEvent.sequence > after_sequence,
+    limit = max(1, min(limit, 1000))
+    if direction == "backward" or before_sequence is not None:
+        stmt = select(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == session_id)
+        if before_sequence is not None:
+            stmt = stmt.where(ChatTranscriptEvent.sequence < before_sequence)
+        events_result = await db.execute(stmt.order_by(ChatTranscriptEvent.sequence.desc()).limit(limit))
+        rows = list(events_result.scalars().all())
+        rows.reverse()
+    else:
+        events_result = await db.execute(
+            select(ChatTranscriptEvent)
+            .where(
+                ChatTranscriptEvent.session_id == session_id,
+                ChatTranscriptEvent.sequence > after_sequence,
+            )
+            .order_by(ChatTranscriptEvent.sequence.asc())
+            .limit(limit)
         )
-        .order_by(ChatTranscriptEvent.sequence.asc())
-        .limit(limit)
-    )
-    return [_serialize_transcript_event(event) for event in events_result.scalars().all()]
+        rows = list(events_result.scalars().all())
+    return [_serialize_transcript_event(event) for event in rows]
 
 
 @router.post("/{agent_id}/sessions/{session_id}/runs/{run_id}/cancel")

@@ -167,9 +167,10 @@ _API_ROLE_AGENT_PATTERNS = (
 
 def _api_role_allows_path(path: str) -> bool:
     normalized = "/" + str(path or "").lstrip("/")
+    exact_normalized = normalized.rstrip("/") or "/"
     if normalized.startswith(("/docs", "/redoc", "/openapi.json", "/ws/")):
         return True
-    if normalized in _API_ROLE_EXACT_PATHS:
+    if exact_normalized in _API_ROLE_EXACT_PATHS:
         return True
     if any(normalized.startswith(prefix) for prefix in _API_ROLE_PREFIXES):
         return True

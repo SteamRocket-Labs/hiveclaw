@@ -324,6 +324,91 @@ def test_terminal_artifact_paths_require_model_declared_current_turn_writes():
     ) == ["workspace/new.md"]
 
 
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import SessionContext
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="write the new report",
+        metadata_json={"user_id": str(user_id), "session_id": session_id, "source": "web", "turn_id": "turn-current"},
+        trace_id=f"web_chat_turn:{run_id.hex}",
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=tenant_id,
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    runtime_context = SessionContext(session_id=session_id, source="web", channel="web")
+    runtime_context.track_file_write("workspace/old.md")
+    captured: dict[str, object] = {}
+
+    async def fake_load_context(_run_uuid):
+        return (runtime_task, agent, user, llm_model, None, [], SimpleNamespace(delivery_target_json=None))
+
+    async def fake_runtime_session(_agent_id, _session_id):
+        return runtime_context
+
+    async def fake_invoke(request):
+        assert request.session_context is runtime_context
+        assert runtime_context.current_turn_writes == []
+        assert runtime_context.recent_writes == ["workspace/old.md"]
+        assert runtime_context.metadata["runtime_task_id"] == run_id.hex
+        assert runtime_context.metadata["turn_id"] == "turn-current"
+        runtime_context.track_file_write("workspace/new.md")
+        return SimpleNamespace(
+            content="\n".join(
+                [
+                    "完成。",
+                    "DELIVERABLE: workspace/new.md",
+                    "DELIVERABLE: workspace/old.md",
+                ]
+            ),
+            reasoning_signature=None,
+        )
+
+    async def fake_finalize(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime.web_chat_broker, "get_or_create_runtime_session", fake_runtime_session)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fake_finalize)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
+    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert captured["artifact_paths"] == ["workspace/new.md"]
+    assert captured["file_change_paths"] == ["workspace/new.md"]
+    assert captured["declared_artifact_paths"] == ["workspace/new.md", "workspace/old.md"]
+    assert captured["rejected_artifact_paths"] == ["workspace/old.md"]
+    assert runtime_context.current_turn_writes == ["workspace/new.md"]
+
+
 def test_web_chat_final_message_has_database_idempotency_guard():
     from pathlib import Path
 

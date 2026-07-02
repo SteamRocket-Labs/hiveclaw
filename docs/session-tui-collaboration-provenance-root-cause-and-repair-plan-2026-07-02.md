@@ -316,11 +316,11 @@ Step 1–7 的提交都在 main（`46527c7f…7c422592`），每步有红/绿测
 
 要求：
 
-1. **per-run 写入记录替代共享 list**：文件写入追踪按 `runtime_task_id`（run 身份）落独立结构（含 path、tool_call_id、写入时 size/mtime/content-hash 快照），不再依赖长活 SessionContext 上仅靠 `begin_turn` 清空的可变 list。并发/接续 run 互不可见。
-2. **交付时 provenance 校验**：只有「本 run 写入记录中存在」的路径才可附为该 run 的 artifact；`build_artifact_candidate` 校验从「文件存在」升级为「本 run 所写 + 存在」，并携带写入时快照信息。
+1. **C2 正式修订：per-turn 写入追踪 + 同 session 单 active run guard**：当前合同不再要求新增一套独立 per-run write-ledger。文件写入追踪保留在 `SessionContext.current_turn_writes`，但每个 `web_chat_turn`/`goal_continuation` 开始必须 `begin_turn()` 清空旧写入并写入当前 `runtime_task_id` / `turn_id`；同一 `agent_id + session_id` 只能存在一个 active run，新的用户消息或唯一索引竞态必须进入 pending queue，而不是并发执行。该组合保证同 session 并发/接续 run 不共享 artifact 候选。
+2. **交付时 provenance 校验**：只有「当前 turn 写入记录中存在」且被模型在 final answer 显式声明为交付物的路径才可附为该 run 的 artifact；`build_artifact_candidate` 仍负责路径安全、存在性与交付时快照，`_terminal_artifact_paths_for_turn` 负责当前 turn 写入归属校验。
 3. **幂等**：`create_chat_artifacts_for_message` 先查 (agent, session, runtime_task, path, snapshot_hash) 或 PostgreSQL upsert（ON CONFLICT）；tool_result 与 final 不重复插行——artifact 行一次创建，消息 parts 引用既有行。测试覆盖重复调用与并发。
 4. **provenance 字段**：artifact part 增加 scope/session_id/runtime_task_id/turn_id/tool_call_id/source（07-02 稿 §7.5.4 形态沿用）。
-5. **交付物 vs 文件变化分离（D4 已拍 = (b)）**：终局消息只附「模型显式声明的交付物 ∩ 本 run 写入记录」；「本 run 全量文件变化」进入右栏独立 file-changes 侧通道（Codex TurnDiff 的 Web 对应物），不拼进最终消息。
+5. **交付物 vs 文件变化分离（D4 已拍 = (b)）**：终局消息只附「模型显式声明的交付物 ∩ 当前 turn 写入记录」；当前 turn 全量文件变化进入右栏独立 file-changes 侧通道（Codex TurnDiff 的 Web 对应物），不拼进最终消息。
 6. **错误表达**：`UniqueViolationError`、artifact/transcript persistence error 有专属 terminal reason 与结构化日志（agent/session/runtime_task/tool_call/path/snapshot/execution_contract/team 标识），前端 failed run cell 显示真实错误类别 + raw detail disclosure；不得再泛化为 `[LLMError]`。
 
 ### 8-C. Workbench read model 线
@@ -1331,4 +1331,30 @@ cd backend && source .venv/bin/activate && ruff check \
   app/services/chat_artifact_delivery.py \
   tests/services/test_chat_artifact_delivery.py
 # All checks passed
+```
+
+### Part 21 — C2 per-run 结构口径正式修订为 per-turn + single active run guard（2026-07-02）
+
+核查结论：
+
+- 当前代码没有独立 per-run write-ledger；真实合同是 `SessionContext.current_turn_writes` 的 per-turn 写入追踪。
+- `execute_web_chat_run()` 在每个 run 入口调用 `runtime_session_context.begin_turn()`，随后写入当前 `runtime_task_id` / `turn_id` / `intent_id`。
+- `start_web_chat_run()` 与 `start_channel_chat_run_from_saved_turn()` 均先查 `_find_active_run(agent_id, session_id)`；已有 active run 时不并发启动，改为 queue pending user message。
+- active run 唯一索引竞态已有 lost-race queue 测试，证明 DB 并发 start 也不会得到两个同时执行的同 session run。
+
+变更：
+
+- §8-B.1 从“必须新增 per-run 写入记录替代共享 list”正式修订为“per-turn 写入追踪 + 同 session 单 active run guard”。
+- §8-B.2 / §8-B.5 同步把交付物归属从“本 run 写入记录”改为“当前 turn 写入记录 + 模型显式声明”。
+- 新增执行级合同测试 `test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables`：旧 turn 的 `workspace/old.md` 在新 run 入口被清空，不会成为 artifact；新 run 中写入并声明的 `workspace/new.md` 才进入 `artifact_paths`，旧声明进入 `rejected_artifact_paths`。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables \
+  tests/services/test_web_chat_runtime.py::test_start_web_chat_run_queues_user_message_when_run_is_active \
+  tests/services/test_web_chat_runtime.py::test_start_web_chat_run_queues_when_active_run_unique_index_conflicts \
+  -q
+# 3 passed, 3 warnings
 ```

@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,7 @@ _TERMINAL_TRANSCRIPT_EVENT_TYPES = ("assistant_message", "run_completed", "done"
 _USER_VISIBLE_WEB_CHAT_ERROR = "[LLM Error] AI 模型调用异常，请稍后重试。"
 _CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 _TASKS: dict[str, asyncio.Task] = {}
+_CURRENT_BROADCAST_RUN_ID: ContextVar[str | None] = ContextVar("_CURRENT_BROADCAST_RUN_ID", default=None)
 _PERMISSION_METADATA_KEYS = ("permission_mode", "permission_profile", "writable_roots")
 _CHANNEL_DELIVERY_TOOL_NAMES = ("send_channel_message", "send_channel_file")
 _CHANNEL_DELIVERY_CHANNEL_HINT_RE = re.compile(
@@ -256,6 +258,33 @@ def _saved_user_content(*, content: str, display_content: str = "", file_name: s
     if file_name:
         saved_content = f"[file:{file_name}]\n{saved_content}"
     return saved_content
+
+
+def _initial_user_message_payload(
+    *,
+    message_id: uuid.UUID | str | None,
+    content: str,
+    llm_content: str,
+    display_content: str = "",
+    file_name: str = "",
+    source: str = "web",
+    attachments: list[dict[str, Any]] | None = None,
+    parts: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "message_id": str(message_id) if message_id else None,
+        "content": content,
+        "llm_content": llm_content,
+        "display_content": display_content if display_content else content,
+        "file_name": file_name,
+        "source": source,
+        "attachments": attachments or [],
+        "parts": parts or [],
+        "metadata": dict(metadata or {}),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return payload
 
 
 def _final_assistant_decision_trace_id(run_uuid: uuid.UUID) -> str:
@@ -623,51 +652,82 @@ async def _queue_mid_run_user_message(
         "content": saved_content,
         "llm_content": content,
         "display_content": display_content if display_content else saved_content,
+        "role": "user",
+        "source": "web",
+        "user_id": str(user.id),
         "file_name": file_name,
         "attachments": attachments or [],
         "parts": parts or [],
         "metadata": supplied_metadata,
+        "t0_materialized": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     pending.append(queued)
     metadata["pending_user_messages"] = pending
     metadata["pending_user_message_count"] = len(pending)
     active_run.metadata_json = metadata
-    user_event = await append_session_event(
-        db=db,
-        agent_id=agent.id,
-        tenant_id=getattr(agent, "tenant_id", None),
-        session_id=session.id,
-        run_id=getattr(active_run, "id", None),
-        actor_type="user",
-        event_type="user_message",
-        role="user",
-        user_id=user.id,
-        content=saved_content,
-        message_id=message_id,
-        parts=parts or None,
-        source="web",
-        metadata={
-            "source": "web",
-            "queued": True,
-            "display_content": display_content,
-            "file_name": file_name,
-            "llm_content_present": bool(content and content != saved_content),
-            "attachments": attachments or [],
-            **supplied_metadata,
-        },
-    )
-    _capture_user_checkpoint_workspace_snapshot(agent_id=agent.id, session=session, user_event=user_event)
-    if getattr(user_event, "event_id", None):
-        await mark_latest_pending_clarification_answered(
-            db=db,
+    db.add(
+        ChatMessage(
+            id=message_id,
             agent_id=agent.id,
-            session_id=session.id,
-            answer_event_id=user_event.event_id,
-            answer_text=saved_content,
+            tenant_id=getattr(agent, "tenant_id", None),
+            user_id=user.id,
+            role="user",
+            content=saved_content,
+            conversation_id=str(session.id),
         )
+    )
     await db.commit()
     return queued
+
+
+async def _materialize_pending_mid_run_user_message(
+    *,
+    db: AsyncSession,
+    task: RuntimeTask,
+    item: dict[str, Any],
+) -> None:
+    if item.get("t0_materialized") is True:
+        return
+    session_id = getattr(task, "parent_session_id", None)
+    agent_id = getattr(task, "parent_agent_id", None)
+    if not session_id or not agent_id:
+        return
+    role = str(item.get("role") or "user").strip().lower()
+    if role not in {"user", "system"}:
+        role = "user"
+    source = str(item.get("source") or "web")
+    content = str(item.get("content") or "")
+    if not content:
+        return
+    item_metadata = dict(item.get("metadata") or {})
+    await append_session_event(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=getattr(task, "tenant_id", None),
+        session_id=session_id,
+        run_id=getattr(task, "id", None),
+        actor_type="user" if role == "user" else "system",
+        event_type="user_message" if role == "user" else "agent_session_message",
+        role=role,
+        user_id=item.get("user_id"),
+        content=content,
+        message_id=item.get("id"),
+        parts=item.get("parts") or None,
+        source=source,
+        materialize_chat_message=False,
+        metadata={
+            "source": source,
+            "queued": True,
+            "runtime_mailbox_role": role,
+            "display_content": item.get("display_content") or content,
+            "file_name": item.get("file_name") or "",
+            "llm_content_present": bool(item.get("llm_content") and item.get("llm_content") != content),
+            "attachments": item.get("attachments") or [],
+            "worker_materialized": True,
+            **item_metadata,
+        },
+    )
 
 
 async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[dict[str, Any]]:
@@ -684,6 +744,8 @@ async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[
         pending = [item for item in metadata.get("pending_user_messages") or [] if isinstance(item, dict)]
         if not pending:
             return []
+        for item in pending:
+            await _materialize_pending_mid_run_user_message(db=db, task=task, item=item)
         metadata["pending_user_messages"] = []
         metadata["pending_user_message_count"] = 0
         task.metadata_json = metadata
@@ -941,6 +1003,19 @@ def unregister_web_chat_run_for_test(run_id: str) -> None:
     _TASKS.pop(str(run_id), None)
 
 
+def dispatch_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> bool:
+    run_uuid = _run_id(run_id)
+    run_key = run_uuid.hex
+    if run_key in _TASKS:
+        return False
+    cancel_event = cancel_event or asyncio.Event()
+    _CANCEL_EVENTS[run_key] = cancel_event
+    task = asyncio.create_task(execute_web_chat_run(run_uuid, cancel_event=cancel_event), name=f"web-chat-run-{run_key}")
+    _TASKS[run_key] = task
+    task.add_done_callback(lambda _task, run_id=run_key: _TASKS.pop(run_id, None))
+    return True
+
+
 async def handle_web_chat_disconnect(_run_id: str | None = None) -> None:
     """Disconnecting a subscriber must not cancel the underlying background run."""
     return None
@@ -949,7 +1024,25 @@ async def handle_web_chat_disconnect(_run_id: str | None = None) -> None:
 async def broadcast_web_chat_event(
     agent_id: uuid.UUID, session_id: str | uuid.UUID | None, event: dict[str, Any]
 ) -> None:
-    await web_chat_broker.send_session_message(str(agent_id), str(session_id) if session_id else None, event)
+    event_payload = dict(event)
+    run_id = event_payload.get("run_id") or event_payload.get("runtime_task_id") or _CURRENT_BROADCAST_RUN_ID.get()
+    if run_id and not event_payload.get("run_id"):
+        event_payload["run_id"] = str(run_id)
+    await web_chat_broker.send_session_message(str(agent_id), str(session_id) if session_id else None, event_payload)
+    if run_id:
+        try:
+            from app.services.web_chat_stream_bus import publish_web_chat_stream_event
+
+            await publish_web_chat_stream_event(
+                tenant_id=event_payload.get("tenant_id"),
+                agent_id=agent_id,
+                session_id=session_id,
+                run_id=run_id,
+                event_type=str(event_payload.get("type") or event_payload.get("event_type") or "event"),
+                payload=event_payload,
+            )
+        except Exception as exc:  # noqa: BLE001 - local broker and durable transcript remain fallback.
+            logger.warning("[WebChatRun] stream bus publish failed for run {}: {}", run_id, exc)
 
 
 async def _find_active_run(db: AsyncSession, *, agent_id: uuid.UUID, session_id: str | uuid.UUID) -> RuntimeTask | None:
@@ -1125,7 +1218,7 @@ async def start_web_chat_run(
     runtime_task = RuntimeTask(
         id=run_uuid,
         task_type=runtime_task_type,
-        status="running",
+        status="pending",
         parent_agent_id=agent.id,
         child_agent_id=agent.id,
         child_agent_name=getattr(agent, "name", None),
@@ -1134,7 +1227,6 @@ async def start_web_chat_run(
         parent_session_id=str(session.id),
         child_session_id=str(session.id),
         depth=1,
-        started_at=now,
         tenant_id=getattr(agent, "tenant_id", None),
         metadata_json={
             "user_id": str(user.id),
@@ -1160,45 +1252,44 @@ async def start_web_chat_run(
             **supplied_metadata,
         },
     )
+    if append_user_message:
+        runtime_task.metadata_json["initial_user_message"] = _initial_user_message_payload(
+            message_id=message_id,
+            content=saved_content,
+            llm_content=content,
+            display_content=display_content,
+            file_name=file_name,
+            source="web",
+            attachments=attachments,
+            parts=parts,
+            metadata={
+                "source": "web",
+                "display_content": display_content,
+                "file_name": file_name,
+                "attachments": attachments or [],
+                "llm_content_present": bool(content and content != saved_content),
+                "plan_mode_requested": bool(plan_mode_requested),
+                "turn_id": turn_id,
+                "intent_id": intent_id,
+                **supplied_metadata,
+            },
+        )
+        runtime_task.metadata_json["initial_user_message_t0_materialized"] = False
     db.add(runtime_task)
-    try:
-        await db.flush()
-        if append_user_message:
-            user_event = await append_session_event(
-                db=db,
+    if append_user_message:
+        db.add(
+            ChatMessage(
+                id=message_id,
                 agent_id=agent.id,
                 tenant_id=getattr(agent, "tenant_id", None),
-                session_id=session.id,
-                run_id=run_uuid,
-                actor_type="user",
-                event_type="user_message",
-                role="user",
                 user_id=user.id,
+                role="user",
                 content=saved_content,
-                message_id=message_id,
-                parts=parts or None,
-                source="web",
-                metadata={
-                    "source": "web",
-                    "display_content": display_content,
-                    "file_name": file_name,
-                    "attachments": attachments or [],
-                    "llm_content_present": bool(content and content != saved_content),
-                    "plan_mode_requested": bool(plan_mode_requested),
-                    "turn_id": turn_id,
-                    "intent_id": intent_id,
-                    **supplied_metadata,
-                },
+                conversation_id=str(session.id),
             )
-            _capture_user_checkpoint_workspace_snapshot(agent_id=agent.id, session=session, user_event=user_event)
-            if getattr(user_event, "event_id", None):
-                await mark_latest_pending_clarification_answered(
-                    db=db,
-                    agent_id=agent.id,
-                    session_id=session.id,
-                    answer_event_id=user_event.event_id,
-                    answer_text=saved_content,
-                )
+        )
+    try:
+        await db.flush()
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -1220,20 +1311,20 @@ async def start_web_chat_run(
             display_content=display_content,
             file_name=file_name,
             source_channel="web",
-            message_already_in_t0=True,
+            message_already_in_t0=False,
             attachments=attachments,
             parts=parts,
         )
         raise ActiveWebChatRunExists(payload) from exc
 
-    cancel_event = asyncio.Event()
-    _CANCEL_EVENTS[run_uuid.hex] = cancel_event
-    task = asyncio.create_task(execute_web_chat_run(run_uuid, cancel_event=cancel_event))
-    _TASKS[run_uuid.hex] = task
-    task.add_done_callback(lambda _task, run_id=run_uuid.hex: _TASKS.pop(run_id, None))
+    try:
+        from app.services.runtime_task_worker import notify_runtime_task_worker
 
+        await notify_runtime_task_worker(reason="web_chat_run_created", runtime_task_id=run_uuid)
+    except Exception as exc:  # noqa: BLE001 - polling remains the fallback.
+        logger.warning("[WebChatRun] runtime task worker wakeup failed for {}: {}", run_uuid, exc)
     payload = _runtime_task_to_run(runtime_task)
-    await broadcast_web_chat_event(agent.id, session.id, {"type": "run_started", **payload})
+    await broadcast_web_chat_event(agent.id, session.id, {"type": "run_queued", **payload})
     return payload
 
 
@@ -1265,9 +1356,22 @@ async def _queue_saved_mid_run_user_message(
         "llm_content": content,
         "display_content": display_content if display_content else saved_content,
         "role": queued_role,
+        "source": source_channel,
+        "user_id": str(user.id),
         "file_name": file_name,
         "attachments": attachments or [],
         "parts": parts or [],
+        "metadata": {
+            "source": source_channel,
+            "queued": True,
+            "existing_user_message_saved": True,
+            "runtime_mailbox_role": queued_role,
+            "display_content": display_content,
+            "file_name": file_name,
+            "llm_content_present": bool(content and content != saved_content),
+            "attachments": attachments or [],
+        },
+        "t0_materialized": bool(message_already_in_t0),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     pending.append(queued)
@@ -1275,42 +1379,6 @@ async def _queue_saved_mid_run_user_message(
     metadata["pending_user_message_count"] = len(pending)
     active_run.metadata_json = metadata
     session.last_message_at = datetime.now(timezone.utc)
-    if not message_already_in_t0:
-        user_event = await append_session_event(
-            db=db,
-            agent_id=agent.id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            session_id=session.id,
-            run_id=getattr(active_run, "id", None),
-            actor_type="user" if queued_role == "user" else "system",
-            event_type="user_message" if queued_role == "user" else "agent_session_message",
-            role=queued_role,
-            user_id=user.id,
-            content=saved_content,
-            message_id=queued["id"],
-            parts=parts or None,
-            source=source_channel,
-            materialize_chat_message=False,
-            metadata={
-                "source": source_channel,
-                "queued": True,
-                "existing_user_message_saved": True,
-                "runtime_mailbox_role": queued_role,
-                "display_content": display_content,
-                "file_name": file_name,
-                "llm_content_present": bool(content and content != saved_content),
-                "attachments": attachments or [],
-            },
-        )
-        _capture_user_checkpoint_workspace_snapshot(agent_id=agent.id, session=session, user_event=user_event)
-        if getattr(user_event, "event_id", None):
-            await mark_latest_pending_clarification_answered(
-                db=db,
-                agent_id=agent.id,
-                session_id=session.id,
-                answer_event_id=user_event.event_id,
-                answer_text=saved_content,
-            )
     await db.commit()
     payload = _runtime_task_to_run(active_run)
     payload["queued_user_message"] = queued
@@ -1358,7 +1426,6 @@ async def start_channel_chat_run_from_saved_turn(
         )
 
     run_uuid = uuid.uuid4()
-    now = datetime.now(timezone.utc)
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
     allowed_tools = [
@@ -1388,10 +1455,28 @@ async def start_channel_chat_run_from_saved_turn(
         "permission_profile": {"mode": permission_mode, "allowed_tools": allowed_tools, "writable_roots": writable_roots},
         **(extra_metadata or {}),
     }
+    metadata["initial_user_message"] = _initial_user_message_payload(
+        message_id=(extra_metadata or {}).get("message_id"),
+        content=saved_content,
+        llm_content=content,
+        display_content=display_content,
+        file_name=file_name,
+        source=source_channel,
+        metadata={
+            "source": source_channel,
+            "channel": source_channel,
+            "existing_user_message_saved": True,
+            "display_content": display_content,
+            "file_name": file_name,
+            "plan_mode_requested": bool(plan_mode_requested),
+            **(extra_metadata or {}),
+        },
+    )
+    metadata["initial_user_message_t0_materialized"] = False
     runtime_task = RuntimeTask(
         id=run_uuid,
         task_type=WEB_CHAT_TURN_TASK_TYPE,
-        status="running",
+        status="pending",
         parent_agent_id=agent.id,
         child_agent_id=agent.id,
         child_agent_name=getattr(agent, "name", None),
@@ -1400,46 +1485,12 @@ async def start_channel_chat_run_from_saved_turn(
         parent_session_id=str(session.id),
         child_session_id=str(session.id),
         depth=1,
-        started_at=now,
         tenant_id=getattr(agent, "tenant_id", None),
         metadata_json=metadata,
     )
     db.add(runtime_task)
     try:
         await db.flush()
-        user_event = await append_session_event(
-            db=db,
-            agent_id=agent.id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            session_id=session.id,
-            run_id=run_uuid,
-            actor_type="user",
-            event_type="user_message",
-            role="user",
-            user_id=user.id,
-            content=saved_content,
-            message_id=(extra_metadata or {}).get("message_id"),
-            source=source_channel,
-            materialize_chat_message=False,
-            metadata={
-                "source": source_channel,
-                "channel": source_channel,
-                "existing_user_message_saved": True,
-                "display_content": display_content,
-                "file_name": file_name,
-                "plan_mode_requested": bool(plan_mode_requested),
-                **(extra_metadata or {}),
-            },
-        )
-        _capture_user_checkpoint_workspace_snapshot(agent_id=agent.id, session=session, user_event=user_event)
-        if getattr(user_event, "event_id", None):
-            await mark_latest_pending_clarification_answered(
-                db=db,
-                agent_id=agent.id,
-                session_id=session.id,
-                answer_event_id=user_event.event_id,
-                answer_text=saved_content,
-            )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -1461,17 +1512,17 @@ async def start_channel_chat_run_from_saved_turn(
             display_content=display_content,
             file_name=file_name,
             source_channel=source_channel,
-            message_already_in_t0=True,
+            message_already_in_t0=False,
         )
 
-    cancel_event = asyncio.Event()
-    _CANCEL_EVENTS[run_uuid.hex] = cancel_event
-    task = asyncio.create_task(execute_web_chat_run(run_uuid, cancel_event=cancel_event))
-    _TASKS[run_uuid.hex] = task
-    task.add_done_callback(lambda _task, run_id=run_uuid.hex: _TASKS.pop(run_id, None))
+    try:
+        from app.services.runtime_task_worker import notify_runtime_task_worker
 
+        await notify_runtime_task_worker(reason="channel_chat_run_created", runtime_task_id=run_uuid)
+    except Exception as exc:  # noqa: BLE001 - polling remains the fallback.
+        logger.warning("[WebChatRun] runtime task worker wakeup failed for {}: {}", run_uuid, exc)
     payload = _runtime_task_to_run(runtime_task)
-    await broadcast_web_chat_event(agent.id, session.id, {"type": "run_started", **payload})
+    await broadcast_web_chat_event(agent.id, session.id, {"type": "run_queued", **payload})
     return payload
 
 
@@ -1552,13 +1603,8 @@ async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
 
     resumed_ids: list[str] = []
     for task in resumed:
-        run_key = task.id.hex
-        cancel_event = asyncio.Event()
-        _CANCEL_EVENTS[run_key] = cancel_event
-        bg_task = asyncio.create_task(execute_web_chat_run(task.id, cancel_event=cancel_event))
-        _TASKS[run_key] = bg_task
-        bg_task.add_done_callback(lambda _task, run_id=run_key: _TASKS.pop(run_id, None))
-        resumed_ids.append(run_key)
+        if dispatch_web_chat_run(task.id):
+            resumed_ids.append(task.id.hex)
     return resumed_ids
 
 
@@ -2591,6 +2637,70 @@ async def _update_runtime_task(
         await db.commit()
 
 
+async def _materialize_initial_user_turn_for_worker(
+    *,
+    db: AsyncSession,
+    runtime_task: RuntimeTask,
+    agent: Agent,
+    user: User,
+    session: ChatSession | None,
+) -> None:
+    metadata = dict(runtime_task.metadata_json or {})
+    if metadata.get("initial_user_message_t0_materialized") is True:
+        return
+    payload = metadata.get("initial_user_message")
+    if not isinstance(payload, dict):
+        return
+
+    session_id = getattr(session, "id", None) or getattr(runtime_task, "parent_session_id", None)
+    if session_id is None:
+        return
+
+    source = str(payload.get("source") or metadata.get("source") or "web")
+    payload_metadata = dict(payload.get("metadata") or {})
+    content = str(payload.get("content") or "")
+    message_id = payload.get("message_id") or None
+    user_event = await append_session_event(
+        db=db,
+        agent_id=agent.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        session_id=session_id,
+        run_id=getattr(runtime_task, "id", None),
+        actor_type="user",
+        event_type="user_message",
+        role="user",
+        user_id=user.id,
+        content=content,
+        message_id=message_id,
+        parts=payload.get("parts") or None,
+        source=source,
+        materialize_chat_message=False,
+        metadata={
+            "source": source,
+            "display_content": payload.get("display_content") or content,
+            "file_name": payload.get("file_name") or "",
+            "attachments": payload.get("attachments") or [],
+            "llm_content_present": bool(payload.get("llm_content") and payload.get("llm_content") != content),
+            "worker_materialized": True,
+            **payload_metadata,
+        },
+    )
+    if session is not None:
+        _capture_user_checkpoint_workspace_snapshot(agent_id=agent.id, session=session, user_event=user_event)
+    if getattr(user_event, "event_id", None):
+        await mark_latest_pending_clarification_answered(
+            db=db,
+            agent_id=agent.id,
+            session_id=session_id,
+            answer_event_id=user_event.event_id,
+            answer_text=content,
+        )
+        metadata["initial_user_message_t0_event_id"] = str(user_event.event_id)
+    metadata["initial_user_message_t0_materialized"] = True
+    metadata["initial_user_message_t0_materialized_at"] = datetime.now(timezone.utc).isoformat()
+    runtime_task.metadata_json = metadata
+
+
 async def _load_runtime_context(
     run_uuid: uuid.UUID,
 ) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[ChatMessage], ChatSession | None]:
@@ -2624,6 +2734,21 @@ async def _load_runtime_context(
         user = user_result.scalar_one_or_none()
         if user is None:
             raise RuntimeError(f"User {user_id} not found")
+
+        if getattr(runtime_task, "status", None) == "pending":
+            runtime_task.status = "running"
+            if getattr(runtime_task, "started_at", None) is None:
+                runtime_task.started_at = datetime.now(timezone.utc)
+            metadata["worker_claimed_at"] = datetime.now(timezone.utc).isoformat()
+            runtime_task.metadata_json = metadata
+        await _materialize_initial_user_turn_for_worker(
+            db=db,
+            runtime_task=runtime_task,
+            agent=agent,
+            user=user,
+            session=session,
+        )
+        await db.commit()
 
         primary_model = None
         fallback_model = None
@@ -2775,6 +2900,7 @@ async def _deliver_run_result_to_channel(agent_id: uuid.UUID, session_id: Any, t
 async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> None:
     run_uuid = _run_id(run_id)
     run_key = run_uuid.hex
+    broadcast_run_token = _CURRENT_BROADCAST_RUN_ID.set(run_key)
     cancel_event = cancel_event or _CANCEL_EVENTS.setdefault(run_key, asyncio.Event())
     streamed_chunks: list[str] = []
     thinking_content: list[str] = []
@@ -3419,6 +3545,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 metadata_json=persistence_metadata,
             )
     finally:
+        _CURRENT_BROADCAST_RUN_ID.reset(broadcast_run_token)
         _CANCEL_EVENTS.pop(run_key, None)
         if terminal_agent_id is not None and terminal_session_id:
             try:

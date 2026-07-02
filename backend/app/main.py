@@ -100,6 +100,14 @@ def _core_daemon_startup_enabled() -> bool:
     return bool(settings.CORE_DAEMON_STARTUP_ENABLED)
 
 
+def _process_role() -> str:
+    return str(settings.HIVE_PROCESS_ROLE or "runtime").strip().lower()
+
+
+def _runtime_execution_startup_enabled() -> bool:
+    return _process_role() not in {"api", "read_model"}
+
+
 async def _start_ss_local() -> None:
     """Start ss-local SOCKS5 proxy for Discord API calls. Tries nodes in priority order."""
     import asyncio
@@ -366,23 +374,26 @@ async def lifespan(app: FastAPI):
             expired_permissions = await expire_stale_session_permission_requests(db=_db_permission_scan)
             if expired_permissions:
                 logger.info("[startup] Marked {} stale session permission request(s) expired", expired_permissions)
-        resumed_task_ids = await resume_persisted_async_delegations(limit=50)
-        resumed_subagent_ids = await resume_persisted_subagent_runs(limit=50)
-        resumed_web_chat_ids = await resume_persisted_web_chat_runs(limit=50)
-        resumed_trigger_ids = await resume_persisted_trigger_runs(limit=50)
-        resumed_heartbeat_ids = await resume_persisted_heartbeat_runs(limit=50)
-        resumed_task_ids = [
-            *resumed_task_ids,
-            *resumed_subagent_ids,
-            *resumed_web_chat_ids,
-            *resumed_trigger_ids,
-            *resumed_heartbeat_ids,
-        ]
-        if resumed_task_ids:
-            logger.info("[startup] Resumed {} persisted async runtime task(s)", len(resumed_task_ids))
-        reconciled = await reconcile_orphaned_runtime_tasks(exclude_task_ids=set(resumed_task_ids))
-        if reconciled:
-            logger.warning("[startup] Reconciled {} orphaned runtime task(s) after restart", reconciled)
+        if _runtime_execution_startup_enabled():
+            resumed_task_ids = await resume_persisted_async_delegations(limit=50)
+            resumed_subagent_ids = await resume_persisted_subagent_runs(limit=50)
+            resumed_web_chat_ids = await resume_persisted_web_chat_runs(limit=50)
+            resumed_trigger_ids = await resume_persisted_trigger_runs(limit=50)
+            resumed_heartbeat_ids = await resume_persisted_heartbeat_runs(limit=50)
+            resumed_task_ids = [
+                *resumed_task_ids,
+                *resumed_subagent_ids,
+                *resumed_web_chat_ids,
+                *resumed_trigger_ids,
+                *resumed_heartbeat_ids,
+            ]
+            if resumed_task_ids:
+                logger.info("[startup] Resumed {} persisted async runtime task(s)", len(resumed_task_ids))
+            reconciled = await reconcile_orphaned_runtime_tasks(exclude_task_ids=set(resumed_task_ids))
+            if reconciled:
+                logger.warning("[startup] Reconciled {} orphaned runtime task(s) after restart", reconciled)
+        else:
+            logger.info("[startup] runtime resume/reconcile disabled for process role {}", _process_role())
     except Exception as e:
         logger.warning(f"[startup] Runtime task reconciliation failed: {e}")
 
@@ -501,6 +512,19 @@ async def lifespan(app: FastAPI):
         startup_background_tasks = [
             ("code_execution_sandbox_probe_scheduler", start_code_execution_sandbox_probe_scheduler()),
         ]
+        try:
+            from app.services.runtime_task_worker import runtime_task_worker_enabled, start_runtime_task_worker_loop
+
+            if runtime_task_worker_enabled():
+                startup_background_tasks.append(("runtime_task_worker", start_runtime_task_worker_loop()))
+            else:
+                logger.info("[startup] runtime task worker disabled for process role {}", _process_role())
+        except Exception as exc:
+            logger.warning("[startup] runtime task worker setup failed: {}", exc)
+        if _process_role() == "api":
+            from app.services.web_chat_stream_bus import start_web_chat_stream_forwarder
+
+            startup_background_tasks.append(("web_chat_stream_forwarder", start_web_chat_stream_forwarder()))
         if _core_daemon_startup_enabled():
             startup_background_tasks.extend(
                 [
@@ -691,6 +715,8 @@ async def health_check():
     from app.services.daemon_liveness import daemon_health_status, daemon_liveness_snapshot
     from app.services.event_loop_monitor import event_loop_lag_monitor
     from app.services.rls_runtime_guard import latest_runtime_rls_role_health
+    from app.services.runtime_task_worker import runtime_task_worker_snapshot
+    from app.services.web_chat_stream_bus import web_chat_stream_forwarder_snapshot
 
     db_pool = snapshot_db_pool()
     rls_runtime_role = latest_runtime_rls_role_health()
@@ -721,6 +747,9 @@ async def health_check():
             "daemons": daemon_liveness_snapshot(),
             "rls_runtime_role": rls_runtime_role,
             "code_execution_sandbox_probe": sandbox_probe,
+            "process_role": {"role": _process_role()},
+            "runtime_task_worker": runtime_task_worker_snapshot(),
+            "web_chat_stream_forwarder": web_chat_stream_forwarder_snapshot(),
             "db_pool": db_pool,
             "event_loop": event_loop_lag_monitor.snapshot(),
         },

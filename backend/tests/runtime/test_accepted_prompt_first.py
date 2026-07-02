@@ -4,18 +4,22 @@ Required selector: ``pytest -k accepted_prompt_first``.
 
 Contract under test
 -------------------
-EVERY runtime entry must persist the accepted user prompt to the durable
-transcript / T0 session ledger (append + ``db.commit``) BEFORE it dispatches the
-kernel (``invoke_agent`` / the task that calls it). This is the crash-resumable
-invariant: if the process dies mid-response, the accepted prompt is already
-durable so the turn can be replayed/resumed instead of being silently lost.
+EVERY runtime entry must persist the accepted user prompt before the kernel
+(``invoke_agent`` / the task that calls it) sees the turn. In the split runtime
+topology, the API process may only queue the DB control record; the volume-backed
+worker must materialize the initial user turn to transcript / T0 before invoking
+the model. This is the crash-resumable invariant: if the process dies
+mid-response, the accepted prompt is already durable so the turn can be
+replayed/resumed instead of being silently lost.
 
 The nine runtime entries reduce to THREE real append-before-kernel choke points,
-because most entries funnel their kernel dispatch through ``start_web_chat_run``:
+because most entries funnel their kernel dispatch through the web-chat queue and
+worker materialization path:
 
-  1. ``web_chat_runtime.start_web_chat_run`` — appends the ``user_message``
-     transcript event and ``db.commit()``s it BEFORE scheduling
-     ``execute_web_chat_run`` (the ONLY caller of ``invoke_agent`` for chat).
+  1. ``web_chat_runtime.start_web_chat_run`` — writes only the DB queued run
+     and user read model in the API process; the worker materializes the queued
+     initial user turn to T0 before ``execute_web_chat_run`` calls
+     ``invoke_agent``.
   2. ``agents.subagent._spawn_one`` — appends the child T0 ``user_message``
      event(s) BEFORE calling ``invoke(request)`` (the kernel).
   3. ``agent_session_continuation.continue_agent_session_from_mailbox`` —
@@ -25,8 +29,9 @@ because most entries funnel their kernel dispatch through ``start_web_chat_run``
 Coverage map for the 9 entries (Reconciliation §7 row-00):
 
   BEHAVIORALLY ASSERTED (real ordering assertions in this file):
-    [1] web chat turn ......... start_web_chat_run: append+commit BEFORE
-                                the create_task(execute_web_chat_run) dispatch.
+    [1] web chat turn ......... start_web_chat_run queues DB-only; worker
+                                materializes the initial user turn before
+                                kernel dispatch.
     [2] subagent spawn ........ _spawn_one: child T0 user_message append (and the
                                 event is readable on disk) BEFORE invoke().
     [3] agent_session cont. ... continue_agent_session_from_mailbox: append of
@@ -51,7 +56,7 @@ Coverage map for the 9 entries (Reconciliation §7 row-00):
 
   Entries [4]-[9] do NOT re-implement transcript persistence — they inherit the
   append-before-kernel guarantee from entries [1]/[3]. We assert that inheritance
-  by proving (a) the proven gates ([1],[3]) order append+commit before the kernel
+  by proving (a) the proven gates ([1],[3]) persist before the kernel
   dispatch, and (b) the delegating entries route their kernel dispatch through
   exactly those gates (no private invoke_agent path). The one entry that needs a
   heavy integration harness to exercise end-to-end (plan-mode team handoff, [8],
@@ -59,9 +64,10 @@ Coverage map for the 9 entries (Reconciliation §7 row-00):
   rather than independently asserted here; see ``test_plan_mode_team_handoff_
   delegates_to_agenttool_teammate_runtime`` for the explicit note.
 
-Every assertion fails if the underlying append-before-kernel ordering were
-reverted (e.g. if ``start_web_chat_run`` scheduled the run task before committing
-the user message, or ``_spawn_one`` invoked the kernel before writing T0).
+Every assertion fails if the underlying persist-before-kernel ordering were
+reverted (e.g. if ``start_web_chat_run`` went back to in-process dispatch, if the
+worker invoked the kernel before materializing the queued user turn, or if
+``_spawn_one`` invoked the kernel before writing T0).
 """
 
 from __future__ import annotations
@@ -122,18 +128,14 @@ class _OrderRecordingDB:
 
 
 @pytest.mark.asyncio
-async def test_web_chat_turn_appends_and_commits_prompt_before_kernel_dispatch_accepted_prompt_first(
-    monkeypatch, tmp_path
-):
-    """[1] web chat: append(user_message) + db.commit() happen BEFORE the
-    create_task(execute_web_chat_run) kernel-dispatch.
+async def test_web_chat_turn_api_queues_db_only_before_worker_dispatch_accepted_prompt_first(monkeypatch, tmp_path):
+    """[1] web chat API: the control-plane start call queues the run and user
+    read model in DB, but does not write T0 or dispatch the kernel in-process.
 
-    ``execute_web_chat_run`` is the ONLY function that calls ``invoke_agent`` for
-    a chat turn, and it is reached exclusively via ``asyncio.create_task`` at the
-    tail of ``start_web_chat_run``. Recording the order of (append, commit,
-    create_task) on one timeline therefore proves the accepted prompt is durable
-    before the kernel is ever dispatched. Reverting to schedule the task before
-    the commit would flip the order and fail this test.
+    In the split topology the API process may not assume access to the agent
+    volume. ``start_web_chat_run`` therefore returns a pending run after DB commit;
+    the worker-side materialization test below proves the T0 write happens before
+    invoke.
     """
     import app.services.web_chat_runtime as runtime
 
@@ -153,13 +155,9 @@ async def test_web_chat_turn_appends_and_commits_prompt_before_kernel_dispatch_a
     )
     db = _OrderRecordingDB(order, active_run=None)
 
-    real_append = runtime.append_session_event
-
     async def recording_append(**kwargs):
         order.append("append")
-        # Persist for real into the tmp T0 ledger so the event is genuinely
-        # durable (and observable) by the time the run task is scheduled.
-        return await real_append(**kwargs)
+        raise AssertionError(f"API start must not append transcript/T0: {kwargs}")
 
     def recording_create_task(coro):
         order.append("create_task")
@@ -183,29 +181,93 @@ async def test_web_chat_turn_appends_and_commits_prompt_before_kernel_dispatch_a
         display_content="请规划一个长任务",
     )
 
-    assert result["status"] == "running"
-    # The accepted prompt is appended AND committed before the kernel task spawns.
-    assert order == ["append", "commit", "create_task"], order
-    assert order.index("append") < order.index("create_task")
-    assert order.index("commit") < order.index("create_task")
+    assert result["status"] == "pending"
+    assert order == ["commit"], order
 
-    # And the prompt is genuinely durable in the T0 ledger at dispatch time.
     from app.memory.t0.ledger import replay_t0_session_events
 
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_web_chat_worker_materializes_queued_prompt_before_kernel_accepted_prompt_first(monkeypatch, tmp_path):
+    """[1] web chat worker: the queued initial user turn is materialized to T0
+    and committed before the worker can invoke the kernel."""
+    import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
+
+    order: list[str] = []
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    message_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_session_id=str(session_id),
+        metadata_json={
+            "source": "web",
+            "initial_user_message_t0_materialized": False,
+            "initial_user_message": {
+                "message_id": str(message_id),
+                "content": "请规划一个长任务",
+                "llm_content": "请规划一个长任务",
+                "display_content": "请规划一个长任务",
+                "file_name": "",
+                "source": "web",
+                "attachments": [],
+                "parts": [],
+                "metadata": {"turn_id": "turn-1", "intent_id": "intent-1"},
+            },
+        },
+    )
+    db = _OrderRecordingDB(order, active_run=None)
+    real_append = runtime.append_session_event
+
+    async def recording_append(**kwargs):
+        order.append("append")
+        return await real_append(**kwargs)
+
+    def fake_capture(**_kwargs):
+        return None
+
+    async def fake_mark(**_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "append_session_event", recording_append)
+    monkeypatch.setattr(runtime, "_capture_user_checkpoint_workspace_snapshot", fake_capture)
+    monkeypatch.setattr(runtime, "mark_latest_pending_clarification_answered", fake_mark)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    await runtime._materialize_initial_user_turn_for_worker(
+        db=db,
+        runtime_task=runtime_task,
+        agent=agent,
+        user=user,
+        session=session,
+    )
+    await db.commit()
+    order.append("invoke")
+
+    assert order == ["append", "commit", "invoke"], order
+    assert runtime_task.metadata_json["initial_user_message_t0_materialized"] is True
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert [(e.event_type, e.role, e.content) for e in events] == [("user_message", "user", "请规划一个长任务")]
 
 
 @pytest.mark.asyncio
-async def test_web_chat_goal_continuation_appends_before_kernel_dispatch_accepted_prompt_first(monkeypatch, tmp_path):
-    """[1]/[5]/[6]/[7]/[9] non-user prompts still commit before dispatch.
+async def test_web_chat_goal_continuation_queues_before_worker_dispatch_accepted_prompt_first(monkeypatch, tmp_path):
+    """[1]/[5]/[6]/[7]/[9] non-user prompts still commit a pending DB task
+    before any worker dispatch.
 
     ``goal_continuation`` / ``team_member`` / ``plan_mode_handoff`` enter
     ``start_web_chat_run`` with ``append_user_message=False`` (the prompt is a
-    synthesized continuation, not a fresh user message). The accepted-prompt-first
-    contract still holds: the run task must not be scheduled before ``db.commit``
-    durably records the run. This proves the commit-before-dispatch ordering for
-    every delegating entry that funnels through this gate.
+    synthesized continuation, not a fresh user message). The API must only queue
+    the durable task; worker claim is responsible for execution.
     """
     import app.services.web_chat_runtime as runtime
 
@@ -245,9 +307,8 @@ async def test_web_chat_goal_continuation_appends_before_kernel_dispatch_accepte
     )
 
     assert result["run_id"]
-    # Even with no user_message append, the run is committed before dispatch.
-    assert order == ["commit", "create_task"], order
-    assert order.index("commit") < order.index("create_task")
+    assert result["status"] == "pending"
+    assert order == ["commit"], order
 
 
 # --------------------------------------------------------------------------- #

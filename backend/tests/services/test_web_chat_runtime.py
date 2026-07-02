@@ -2364,7 +2364,6 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     )
     db = _FakeDB(active_run=None)
     scheduled = []
-    snapshots = []
 
     def fake_create_task(coro):
         scheduled.append(coro)
@@ -2379,15 +2378,6 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
-    def fake_capture_session_workspace_snapshot(**kwargs):
-        snapshots.append(kwargs)
-        return {"checkpoint_event_id": str(kwargs["checkpoint_event_id"])}
-
-    monkeypatch.setattr(
-        "app.services.session_workspace_snapshot.capture_session_workspace_snapshot",
-        fake_capture_session_workspace_snapshot,
-    )
-
     result = await runtime.start_web_chat_run(
         db=db,
         agent=agent,
@@ -2399,10 +2389,12 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     )
 
     assert result["run_id"]
-    assert result["status"] == "running"
+    assert result["status"] == "pending"
     assert any(isinstance(item, ChatMessage) and item.role == "user" for item in db.added)
     task = next(item for item in db.added if isinstance(item, RuntimeTask))
     assert task.task_type == "web_chat_turn"
+    assert task.status == "pending"
+    assert task.started_at is None
     assert task.parent_agent_id == agent_id
     assert task.child_agent_id == agent_id
     assert task.tenant_id == agent.tenant_id
@@ -2412,17 +2404,13 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     assert task.metadata_json["runtime_task_id"] == task.id.hex
     assert task.metadata_json["request_id"] == str(task.id)
     assert task.metadata_json["trace_id"] == task.trace_id
-    assert snapshots
-    assert snapshots[0]["agent_id"] == agent_id
-    assert snapshots[0]["session"] is session
+    assert task.metadata_json["initial_user_message"]["content"] == "请规划一个长任务"
+    assert task.metadata_json["initial_user_message"]["message_id"]
+    assert task.metadata_json["initial_user_message_t0_materialized"] is False
     assert db.commits == 1
-    assert scheduled
+    assert not scheduled
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.sequence, event.event_type, event.role, event.content) for event in events] == [
-        (1, "user_message", "user", "请规划一个长任务")
-    ]
-    assert events[0].message_id
-    assert events[0].metadata["source"] == "web"
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -2476,11 +2464,13 @@ async def test_start_web_chat_run_accepts_goal_continuation_task_type(monkeypatc
     assert task.metadata_json["source"] == "goal_continuation"
     assert task.metadata_json["goal_id"] == "goal-1"
     assert not any(isinstance(item, ChatMessage) for item in db.added)
-    assert scheduled
+    assert result["status"] == "pending"
+    assert task.status == "pending"
+    assert not scheduled
 
 
 @pytest.mark.asyncio
-async def test_start_web_chat_run_flushes_runtime_task_before_transcript_event(monkeypatch):
+async def test_start_web_chat_run_does_not_append_t0_or_dispatch_from_api(monkeypatch):
     import app.services.web_chat_runtime as runtime
     from app.models.runtime_task import RuntimeTask
 
@@ -2510,7 +2500,6 @@ async def test_start_web_chat_run_flushes_runtime_task_before_transcript_event(m
     scheduled = []
 
     async def fake_append_session_event(**kwargs):
-        assert db.runtime_task_flushed is True
         append_calls.append(kwargs)
 
     def fake_create_task(coro):
@@ -2533,8 +2522,77 @@ async def test_start_web_chat_run_flushes_runtime_task_before_transcript_event(m
         content="hello",
     )
 
-    assert append_calls
-    assert scheduled
+    assert db.runtime_task_flushed is True
+    assert append_calls == []
+    assert scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_worker_materializes_initial_user_turn_to_t0_without_duplicate_chat_message(monkeypatch, tmp_path):
+    import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.audit import ChatMessage
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    message_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_session_id=str(session_id),
+        metadata_json={
+            "source": "web",
+            "initial_user_message_t0_materialized": False,
+            "initial_user_message": {
+                "message_id": str(message_id),
+                "content": "请规划一个长任务",
+                "llm_content": "请规划一个长任务",
+                "display_content": "请规划一个长任务",
+                "file_name": "",
+                "source": "web",
+                "attachments": [],
+                "parts": [],
+                "metadata": {"turn_id": "turn-1", "intent_id": "intent-1"},
+            },
+        },
+    )
+    db = _FakeDB(active_run=None)
+    snapshots = []
+    answered = []
+
+    def fake_capture(**kwargs):
+        snapshots.append(kwargs)
+
+    async def fake_mark(**kwargs):
+        answered.append(kwargs)
+
+    monkeypatch.setattr(runtime, "_capture_user_checkpoint_workspace_snapshot", fake_capture)
+    monkeypatch.setattr(runtime, "mark_latest_pending_clarification_answered", fake_mark)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    await runtime._materialize_initial_user_turn_for_worker(
+        db=db,
+        runtime_task=runtime_task,
+        agent=agent,
+        user=user,
+        session=session,
+    )
+
+    assert runtime_task.metadata_json["initial_user_message_t0_materialized"] is True
+    assert runtime_task.metadata_json["initial_user_message_t0_event_id"]
+    assert snapshots
+    assert answered
+    assert not any(isinstance(item, ChatMessage) for item in db.added)
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role, event.content) for event in events] == [
+        ("user_message", "user", "请规划一个长任务")
+    ]
+    assert events[0].message_id == message_id.hex
+    assert events[0].metadata["worker_materialized"] is True
 
 
 @pytest.mark.asyncio
@@ -2589,10 +2647,12 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
     )
 
     assert result["run_id"]
-    assert result["status"] == "running"
+    assert result["status"] == "pending"
     assert not any(isinstance(item, ChatMessage) for item in db.added)
     task = next(item for item in db.added if isinstance(item, RuntimeTask))
     assert task.task_type == "web_chat_turn"
+    assert task.status == "pending"
+    assert task.started_at is None
     assert task.tenant_id == agent.tenant_id
     assert task.parent_session_id == str(session_id)
     assert task.prompt == "处理这条飞书消息"
@@ -2609,16 +2669,16 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
         "allowed_tools": ["web_search"],
         "writable_roots": ["workspace/"],
     }
-    assert scheduled
+    assert task.metadata_json["initial_user_message"]["content"] == "处理这条飞书消息"
+    assert task.metadata_json["initial_user_message"]["source"] == "feishu"
+    assert task.metadata_json["initial_user_message_t0_materialized"] is False
+    assert not scheduled
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role, event.content) for event in events] == [
-        ("user_message", "user", "处理这条飞书消息")
-    ]
-    assert events[0].metadata["existing_user_message_saved"] is True
+    assert events == []
 
 
 @pytest.mark.asyncio
-async def test_start_channel_chat_run_from_saved_turn_flushes_runtime_task_before_transcript_event(monkeypatch):
+async def test_start_channel_chat_run_from_saved_turn_does_not_append_t0_or_dispatch_from_api(monkeypatch):
     import app.services.web_chat_runtime as runtime
     from app.models.runtime_task import RuntimeTask
 
@@ -2649,7 +2709,6 @@ async def test_start_channel_chat_run_from_saved_turn_flushes_runtime_task_befor
     scheduled = []
 
     async def fake_append_session_event(**kwargs):
-        assert db.runtime_task_flushed is True
         append_calls.append(kwargs)
 
     def fake_create_task(coro):
@@ -2673,8 +2732,9 @@ async def test_start_channel_chat_run_from_saved_turn_flushes_runtime_task_befor
         source_channel="feishu",
     )
 
-    assert append_calls
-    assert scheduled
+    assert db.runtime_task_flushed is True
+    assert append_calls == []
+    assert scheduled == []
 
 
 @pytest.mark.asyncio
@@ -2718,10 +2778,7 @@ async def test_start_web_chat_run_queues_user_message_when_run_is_active(monkeyp
     assert active_run.metadata_json["pending_user_messages"][0]["content"] == "second message"
     assert db.commits == 1
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role, event.content) for event in events] == [
-        ("user_message", "user", "second message")
-    ]
-    assert events[0].runtime_task_id == existing_run_id.hex
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -2813,9 +2870,7 @@ async def test_steer_active_web_chat_turn_queues_message_for_matching_turn(monke
     assert active_run.metadata_json["pending_user_messages"][0]["content"] == "Use the stricter interpretation."
     assert db.commits == 1
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role, event.content) for event in events] == [
-        ("user_message", "user", "Use the stricter interpretation.")
-    ]
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -2853,6 +2908,100 @@ async def test_steer_active_web_chat_turn_rejects_stale_turn_id():
 
     assert exc.value.status_code == 409
     assert "active turn has changed" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_worker_claim_materializes_pending_mid_run_user_messages(monkeypatch, tmp_path):
+    import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.audit import ChatMessage
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    message_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        tenant_id=tenant_id,
+        parent_session_id=str(session_id),
+        metadata_json={
+            "pending_user_messages": [
+                {
+                    "id": message_id.hex,
+                    "content": "Use the stricter interpretation.",
+                    "llm_content": "Use the stricter interpretation.",
+                    "display_content": "Use the stricter interpretation.",
+                    "role": "user",
+                    "source": "web",
+                    "user_id": str(user_id),
+                    "attachments": [],
+                    "parts": [],
+                    "metadata": {"turn_id": "turn-1"},
+                    "t0_materialized": False,
+                }
+            ],
+            "pending_user_message_count": 1,
+        },
+    )
+
+    class _Session:
+        def __init__(self):
+            self.added = []
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(task)
+
+        def add(self, value):
+            self.added.append(value)
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            self.commits += 1
+
+    class _NoopAsyncContext:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_args):
+            return False
+
+    session = _Session()
+    monkeypatch.setattr(runtime, "_async_session", lambda: session)
+    monkeypatch.setattr(runtime, "enter_rls_bypass", lambda *_args, **_kwargs: _NoopAsyncContext())
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    drained = await runtime._claim_pending_mid_run_user_messages(run_id)
+
+    assert drained == [
+        {
+            "role": "user",
+            "content": "Use the stricter interpretation.",
+            "display_content": "Use the stricter interpretation.",
+            "attachments": [],
+            "parts": [],
+        }
+    ]
+    assert task.metadata_json["pending_user_messages"] == []
+    assert task.metadata_json["pending_user_message_count"] == 0
+    assert session.commits == 1
+    assert not any(isinstance(item, ChatMessage) for item in session.added)
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role, event.content) for event in events] == [
+        ("user_message", "user", "Use the stricter interpretation.")
+    ]
+    assert events[0].runtime_task_id == run_id.hex
 
 
 @pytest.mark.asyncio
@@ -3181,9 +3330,7 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
     assert active_run.metadata_json["pending_user_messages"][0]["content"] == "race message"
     assert broadcasts[-1]["type"] == "user_message_queued"
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role, event.content) for event in events] == [
-        ("user_message", "user", "race message")
-    ]
+    assert events == []
 
 
 @pytest.mark.asyncio

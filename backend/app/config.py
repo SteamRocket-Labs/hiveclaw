@@ -73,6 +73,17 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
     DB_POOL_TIMEOUT: int = 30
+    # Runtime pool isolation role. Existing single-service deployments default
+    # to runtime so pending RuntimeTasks still have a volume-backed executor.
+    # New no-volume control-plane services must set HIVE_PROCESS_ROLE=api.
+    HIVE_PROCESS_ROLE: str = "runtime"
+    RUNTIME_TASK_WORKER_ENABLED: bool = True
+    RUNTIME_TASK_WORKER_ID: str = ""
+    RUNTIME_TASK_WORKER_BATCH_SIZE: int = 4
+    RUNTIME_TASK_WORKER_MAX_CONCURRENT: int = 8
+    RUNTIME_TASK_CLAIM_LEASE_SECONDS: int = 180
+    RUNTIME_TASK_CLAIM_POLL_SECONDS: float = 1.0
+    RUNTIME_TASK_WAKEUP_CHANNEL: str = "hive:runtime_tasks:wakeup"
     # Requests slower than this log a structured `slow_request` warning.
     SLOW_REQUEST_WARN_SECONDS: float = 1.0
 

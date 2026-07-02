@@ -19,12 +19,15 @@ Upstream:
 - Explicit Memory Overlay (`memory/explicit/`) contains user-commanded memory
   that is immediately activatable but not accepted T3 truth.
 
-Downstream:
-- Accepted T3 truth is only:
-  `memory/t3/episodes.md`
-  `memory/t3/user.md`
-  `memory/t3/worker.md`
-  `memory/t3/capabilities.md`
+Downstream — accepted T3 truth is the two-plane layout:
+- Profile plane (convergent, entry-based): `memory/self/self.md`,
+  `memory/profiles/owner.md`, `memory/profiles/collaborators.md`,
+  `memory/profiles/domain.md`.
+- Knowledge plane (network, page-based): `memory/knowledge/<slug>.md`,
+  `memory/milestones/<slug>.md`.
+- Legacy flat files (`memory/t3/episodes.md`, `user.md`, `worker.md`,
+  `capabilities.md`) remain writable during migration only; prefer the
+  two-plane targets for all new consolidation.
 - T3 to `soul.md`, Skill generation, and Workflow JSON are separate lanes.
 
 Core law:
@@ -47,11 +50,65 @@ Gate `review.md` win over chat history.
 </session_context>
 
 <allowed_targets>
-- `memory/t3/episodes.md` — scene/episode recall anchors.
-- `memory/t3/user.md` — stable user/principal preferences and constraints.
-- `memory/t3/worker.md` — agent operating rules, redlines, conditional behavior.
-- `memory/t3/capabilities.md` — reusable methods, SOPs, progressive capability capsules.
+Profile plane (convergence: merge motifs, never let these files grow long):
+- `memory/self/self.md` — the agent's self-model: capabilities (with
+  proficiency tier 熟练/一般/弱), methods, failure modes (with lifecycle
+  state active/规避中/已根除), style. Written as `###` entries.
+- `memory/profiles/owner.md` — owner preferences, constraints, feedback taste.
+- `memory/profiles/collaborators.md` — collaborator working styles.
+- `memory/profiles/domain.md` — domain-level judgment and taste (specific
+  concept facts belong in knowledge/, not here).
+
+Knowledge plane (network: atomic pages + relation edges, never squash):
+- `memory/knowledge/<slug>.md` — one concept per page: Current Claim / Scope /
+  Evidence / Contradictions / Relations. A NEW page must carry >=1
+  `## Relations` edge; forward references to not-yet-written pages count.
+- `memory/milestones/<slug>.md` — narrative anchor pages (prefer `ms-` slug
+  prefix). Chosen, not written: most segments never become milestones.
+
+Legacy targets (migration window only): `memory/t3/episodes.md`, `user.md`,
+`worker.md`, `capabilities.md`.
 </allowed_targets>
+
+<two_plane_curation>
+Profile plane — motif + scenario-condition tiers (spec §3.2):
+- ~80% of signals repeat an existing motif → `upsert_entry` the SAME entry_id,
+  strengthen evidence (confirm), keep the prose converged.
+- ~15% are a variation → add a scenario-condition line under the existing
+  motif, do NOT fork a new entry.
+- ~5% are genuinely new → new `###` entry with a fresh stable id.
+- Splitting a scenario into its own motif requires enough evidence AND a
+  trigger/mitigation that clearly diverges from the parent motif.
+- add-vs-update is YOUR semantic judgment; never fork duplicates mechanically.
+- Failure modes carry lifecycle state (active / 规避中 / 已根除) on a
+  `- 状态:` line; active ones surface first in the agent's prompt.
+- 反例下调 (counter-example demotion): negative owner feedback entries from the
+  explicit overlay (origin=session_feedback, polarity negative/misleading) are
+  the strongest contradiction signal — demote the affected self/profile claim
+  (lower proficiency, reopen a failure mode to active, or retire the entry)
+  and record why with the fb evidence ref.
+
+Knowledge plane — update-vs-create (spec §3.4):
+- Read the Knowledge Plane section of `t3_neighborhood.md` first; prefer
+  updating an existing page over creating a near-duplicate.
+- Low-confidence claims must NOT overwrite an existing Current Claim — hold or
+  add to Contradictions instead.
+- Conflicts go into `## Contradictions`; the old view is NEVER deleted (the
+  platform gate rejects updates that drop existing Contradictions lines).
+- Grow the network: add `## Relations` edges (`- is_a [[k:Concept]]`),
+  forward references welcome.
+
+Milestones — selection + 追认 (retroactive promotion, spec §3.5):
+- Criteria ①②③ (owner_feedback / major_failure / first_success) arrive
+  pre-marked in T2 labels' `<milestone_signal>`.
+- Criterion ④ fires HERE: when you want to cite a narrative anchor
+  (`[[ms-...]]`) for a self/knowledge entry but the underlying T2 segment was
+  never promoted, promote it retroactively — add an `upsert_page` for
+  `memory/milestones/<ms-slug>.md` in the SAME patch, citing its immutable
+  `t2-` evidence. 追认 closes the "didn't look important at the time" gap.
+- Anchors (`[[ms-...]]`) are optional navigation; evidence chains must still
+  point at immutable `t2-`/`ex-`/`fb-` refs, never at anchor pages.
+</two_plane_curation>
 
 <hard_redlines>
 - Do not call `save_memory` for T3 curation. `save_memory` writes only the Explicit Memory Overlay.
@@ -128,13 +185,29 @@ is stale and cannot authorize Platform Gate commit.
 
 Use XML blocks inside Markdown. The patch must include:
 - `<t3_consolidation_patch schema_version="t3.consolidation_patch.v1">`
-- `<base_revisions>` for every target file
+- `<base_revisions>` for every target file (a new page/file uses the empty sha)
 - `<source_packages>` or explicit overlay refs
-- `<target_files>` using only the four accepted targets
-- closed target-view labels
-- `<proposed_changes>` with exact `append_block`, `replace_block`,
-  `retire_block`, or `reinforce_block` operations
+- `<target_files>` using only accepted targets (two-plane or legacy)
+- closed target-view labels (`target_view` may be `self`, `profiles`,
+  `knowledge`, `milestones`, or a legacy view)
+- `<proposed_changes>` with exact operations
 - `<evidence>` with T2/overlay source refs
+
+Two-plane operations:
+- `<upsert_page target="memory/knowledge/<slug>.md">` /
+  `target="memory/milestones/<slug>.md"` with the WHOLE page in
+  `<page_content><![CDATA[...]]></page_content>`. Updating an existing page
+  requires its current sha in base_revisions and must preserve every existing
+  Contradictions line.
+- `<upsert_entry target="memory/self/self.md" entry_id="..." section="...">`
+  with one `###` entry in `<entry_content><![CDATA[...]]></entry_content>`.
+  The entry MUST start with `###` and carry `<!-- id: <entry_id> -->` right
+  under the heading. Same entry_id replaces in place (convergence!).
+- `<retire_entry target="..." entry_id="..." reason="..."/>` — marks the entry
+  retired; the convergence loop physically removes it later.
+
+Legacy operations (`append_block`, `replace_block`, `retire_block`,
+`reinforce_block`) remain for the legacy flat files during migration.
 
 Allowed `target_view_labels.consolidation_mode` values are exactly:
 `create`, `merge`, `supersede`, `reinforce`, `contradict`, `retract`, `noop`.

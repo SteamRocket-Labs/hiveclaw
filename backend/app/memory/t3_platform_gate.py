@@ -277,6 +277,18 @@ def apply_t3_consolidation_patch(
         if target.startswith("memory/knowledge/") and is_new_page and not _RELATION_EDGE_RE.search(page_content):
             issues.append(f"new knowledge page must carry >=1 `## Relations` edge (forward references count): {target}")
             continue
+        if target.startswith("memory/knowledge/") and not is_new_page:
+            # Conflicts go to Contradictions and the old view is never deleted
+            # (spec §3.4): every existing Contradictions line must survive updates.
+            dropped = _dropped_contradiction_lines(
+                old_content=current_contents.get(target, ""), new_content=page_content
+            )
+            if dropped:
+                issues.append(
+                    f"knowledge page update must preserve existing Contradictions lines in {target}: "
+                    + "; ".join(dropped[:3])
+                )
+                continue
         updated_contents[target] = page_content
         committed_blocks.append(target)
 
@@ -671,6 +683,30 @@ def _validate_block_content(block_content: str, *, block_id: str, target: str) -
     if block.tag != target_prefix:
         return f"block_content root for {target} must be {target_prefix}"
     return ""
+
+
+def _dropped_contradiction_lines(*, old_content: str, new_content: str) -> list[str]:
+    """Existing `## Contradictions` lines that the proposed update would lose."""
+    old_lines = _contradiction_lines(old_content)
+    if not old_lines:
+        return []
+    new_lines = set(_contradiction_lines(new_content))
+    return [line for line in old_lines if line not in new_lines]
+
+
+def _contradiction_lines(content: str) -> list[str]:
+    in_section = False
+    lines: list[str] = []
+    for line in (content or "").splitlines():
+        stripped = line.strip()
+        if re.match(r"^##\s+Contradictions\s*$", stripped):
+            in_section = True
+            continue
+        if in_section and stripped.startswith("## "):
+            break
+        if in_section and stripped.startswith("- "):
+            lines.append(stripped)
+    return lines
 
 
 def _read_target(mem_dir: Path, target: str) -> str:

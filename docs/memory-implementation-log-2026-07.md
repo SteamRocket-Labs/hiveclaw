@@ -136,4 +136,34 @@
 
 **红测：** `tests/memory/test_t3_gate_four_planes.py` 13 用例，RED（10 失败）→ GREEN 13 passed。覆盖：新 knowledge 页 commit、无 Relations hold、前向引用满足成网、stale sha rebase、milestones 无需 Relations、slug 三种非法形态、self 条目建/改（同 id 原位替换唯一性）、retire 标记不删内容、缺 id 注释 hold、无 t2/explicit 证据 hold、legacy XML block 兼容、layout 建新目录。
 
-**回归：** ruff 全过；tests/memory 411 passed；全量随 commit 记录。
+**回归：** ruff 全过；tests/memory 411 passed；全量 = 5365 passed / 2 failed / 1 skipped（两个失败均归属另一 session：alembic head pin 债 + `session_control_plane` WIP 中间态——该文件在其未提交修改集内）。
+
+**Commit：** `03c85489`（4 files, +527/-11）。
+
+### Part C knowledge 写侧：curator 视野 + 网络保护（2026-07-02）
+
+**改动：**
+- `t3_consolidation.py`：`build_t3_neighborhood` 增两平面区块——Profile Plane（固定文件 base_revision + 现有 `###` 条目 id/标题清单）+ Knowledge Plane（knowledge/milestones 页清单：title/status/base_revision/Current Claim 首行/Relations 边摘要）。**L1 完整视野**：update-vs-create 是 LLM 判断，必须看得见现有网络。`allowed_target_files` 扩为旧四 + PROFILE_PLANE_TARGETS + 动态页模式（含成网契约内联说明）。
+- `t3_platform_gate.py`：knowledge 页更新的 **Contradictions 保留校验**——旧页 `## Contradictions` 每一行必须在新页中幸存，否则 hold（§3.4"冲突进 Contradictions 不删旧"的机械保护）。
+- `templates/HEARTBEAT.md`：`<allowed_targets>` 四区化 + `<two_plane_curation>` 教学节（update-vs-create 判据、低置信不覆盖 Current Claim、强制成网+前向引用）+ `<phase_4_revised_patch>` 新操作教学。
+
+**红测：** `test_knowledge_write_side.py` 4 用例 RED→GREEN。
+
+### Part D 侧写写侧：operation patch 管线（2026-07-02）
+
+**改动：**
+- `t2/prompts.py`：`LEARNING_BRAIN_LABELS_PROMPT` 增 `<four_plane_signals>` 轴（self_signal 自我认知信号引述 / nutrients 四区养分归类 / milestone_signal 判据命中）——**工序 1/2 物理同 call**（spec §2 两道逻辑工序一次 LLM 调用）；版本 bump `t2.learning_brain_labels.v2`（旧断言同步）。新节点可选，T2 validator 向后兼容（红测钉住）。
+- `HEARTBEAT.md` `<two_plane_curation>`：母题+场景条件三档（80% confirm / 15% 场景行 / 5% 新母题）、add-vs-update 交 LLM、失败模式生命周期、**反例下调**（explicit overlay 中 origin=session_feedback 负极性条目 = 最强打脸信号 → 降熟练度/重开失败模式/退役条目并留 fb 证据）。
+- 反例下调输入的生产链**无需新接线**：`write_session_feedback_overlay` → explicit overlay → `discover_pending_t3_sources` → batch（红测钉住既有链路真通）。
+
+**红测：** `test_profile_plane_write_side.py` 5 用例（prompt 教学 ×2、新 labels 节点过校验、HEARTBEAT 教学、feedback→batch 生产链）RED→GREEN。
+
+### Part E milestones：判据 + 追认（2026-07-02）
+
+**改动：**
+- 判据①②③（owner_feedback/major_failure/first_success）搭 labels call（Part D 的 milestone_signal 轴）；判据④追认落 `HEARTBEAT.md`：要挂 `[[ms-]]` 锚点而 T2 段未升级 → **同一 patch** `upsert_page` 追认升级，锚点=可选导航、证据必须不可变 t2-（§4.1 分离）。归档 retention 复用 C9-3（milestones 页被引用即钉住）。
+- gate 组合原子性由 Part B 天然支持（红测钉住：一个 patch 建 milestone 页 + self 条目引用它，两文件原子落盘）。
+
+**红测：** `test_milestones_criteria.py` 2 用例 RED→GREEN（另一判据教学并入 Part D 测试）。
+
+**C/D/E 合计回归：** ruff 全过；tests/memory 422 passed；全量随 commit 记录。三 part 共享教学面（HEARTBEAT.md/prompts.py），合并单 commit。

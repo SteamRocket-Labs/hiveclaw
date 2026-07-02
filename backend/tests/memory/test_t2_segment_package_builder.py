@@ -300,7 +300,7 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     assert manifest["source_refs"][0].startswith(f"t0://session/{session_id}/segment/{first.segment_id}#seq=1..")
     assert manifest["files"]["summary.md"]["sha256"]
     assert manifest["prompts"]["summary_prompt_version"] == "t2.summary_agent.v1"
-    assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.v1"
+    assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.v2"
     assert manifest["review_mode"] == "independent_gate"
     assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v1"
 

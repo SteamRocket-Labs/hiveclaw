@@ -17,7 +17,14 @@ from typing import Any
 
 from app.memory.explicit_overlay import ExplicitMemoryOverlayEntry, load_explicit_overlay_entries
 from app.memory.md_store import build_t3_entry_manifest, ensure_t3_layout, memory_dir
-from app.memory.t3_platform_gate import ACCEPTED_T3_TARGETS, file_sha256
+from app.memory.t3_platform_gate import ACCEPTED_T3_TARGETS, PROFILE_PLANE_TARGETS, file_sha256
+
+# Dynamic knowledge-plane targets are pattern-shaped, so the allowed-target
+# list carries the pattern plus its contract inline (spec §3.4/§3.5).
+DYNAMIC_TARGET_PATTERNS: tuple[str, ...] = (
+    "memory/knowledge/<slug>.md (one atomic concept per page; a NEW page must carry >=1 `## Relations` edge)",
+    "memory/milestones/<slug>.md (narrative anchors only; prefer ms- prefixed slugs)",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +98,7 @@ def build_t3_consolidation_batch(
         "source_packages": packages,
         "explicit_overlay_entries": explicit_entries,
         "source_signature": _source_signature(packages=packages, explicit_entries=explicit_entries),
-        "allowed_target_files": list(ACCEPTED_T3_TARGETS),
+        "allowed_target_files": [*ACCEPTED_T3_TARGETS, *PROFILE_PLANE_TARGETS, *DYNAMIC_TARGET_PATTERNS],
         "created_at": _now(),
         "write_boundary": {
             "semantic_writer": "T3 Consolidator",
@@ -208,7 +215,84 @@ def build_t3_neighborhood(*, data_root: Path | str, agent_id: uuid.UUID | str) -
             f"base_revision={file_sha256(mem_dir / entry.filename)}"
         )
         lines.append(f"  preview: {entry.preview}")
+    lines.extend(_two_plane_neighborhood_lines(mem_dir))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _two_plane_neighborhood_lines(mem_dir: Path) -> list[str]:
+    """Show the curator the current two-plane state (L1: complete visibility).
+
+    Update-vs-create on knowledge pages and add-vs-update on profile entries
+    are LLM judgments — they need the existing network and entry ids in view.
+    """
+    lines: list[str] = ["", "## Profile Plane (fixed convergent files)", ""]
+    any_profile = False
+    for target in PROFILE_PLANE_TARGETS:
+        path = mem_dir.parent / target
+        lines.append(f"- `{target}` base_revision=`{file_sha256(path)}`")
+        if not path.exists():
+            continue
+        content = path.read_text(encoding="utf-8", errors="replace")
+        for match in re.finditer(
+            r"^###\s+(?P<heading>.+)$\n<!--\s*id:\s*(?P<entry_id>[^\s>]+)\s*-->", content, re.MULTILINE
+        ):
+            any_profile = True
+            lines.append(f"  - entry id={match.group('entry_id')} heading={match.group('heading').strip()}")
+    if not any_profile:
+        lines.append("  (no profile-plane entries yet)")
+
+    lines.extend(["", "## Knowledge Plane (network pages)", ""])
+    any_page = False
+    for subdir, label in (("knowledge", "knowledge"), ("milestones", "milestone")):
+        directory = mem_dir / subdir
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.md")):
+            any_page = True
+            content = path.read_text(encoding="utf-8", errors="replace")
+            title = _frontmatter_field(content, "title") or path.stem
+            status = _frontmatter_field(content, "status") or "active"
+            lines.append(
+                f"- `{subdir}/{path.stem}` [{label}] title={title} status={status} base_revision=`{file_sha256(path)}`"
+            )
+            claim = _first_section_line(content, "Current Claim")
+            if claim:
+                lines.append(f"  claim: {claim}")
+            for relation in _relation_lines(content)[:6]:
+                lines.append(f"  relation: {relation}")
+    if not any_page:
+        lines.append(
+            "  (no knowledge/milestone pages yet — new knowledge pages must open the network with `## Relations` edges; forward references are allowed)"
+        )
+    return lines
+
+
+def _frontmatter_field(content: str, field: str) -> str:
+    if not content.startswith("---") or content.count("---") < 2:
+        return ""
+    frontmatter = content.split("---", 2)[1]
+    match = re.search(rf"^{re.escape(field)}:\s*(?P<value>.+)$", frontmatter, re.MULTILINE)
+    return match.group("value").strip() if match else ""
+
+
+def _first_section_line(content: str, section: str) -> str:
+    match = re.search(rf"^##\s+{re.escape(section)}\s*$\n+(?P<line>[^\n#].*)$", content, re.MULTILINE)
+    return match.group("line").strip() if match else ""
+
+
+def _relation_lines(content: str) -> list[str]:
+    in_relations = False
+    found: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if re.match(r"^##\s+Relations\s*$", stripped):
+            in_relations = True
+            continue
+        if in_relations and stripped.startswith("## "):
+            break
+        if in_relations and stripped.startswith("- "):
+            found.append(stripped[2:].strip())
+    return found
 
 
 def write_t3_job_artifact(

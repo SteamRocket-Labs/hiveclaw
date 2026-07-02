@@ -1,7 +1,7 @@
 """Versioned prompt contracts for canonical T0 -> T2 distillation."""
 
 SUMMARY_PROMPT_VERSION = "t2.summary_agent.v1"
-LABELS_PROMPT_VERSION = "t2.learning_brain_labels.v1"
+LABELS_PROMPT_VERSION = "t2.learning_brain_labels.v2"
 REVIEW_PROMPT_VERSION = "t2.memory_gate_review.v1"
 EPISODE_STITCHER_PROMPT_VERSION = "t2.episode_stitcher.v1"
 EPISODE_GATE_REVIEW_PROMPT_VERSION = "t2.episode_gate_review.v1"
@@ -85,8 +85,20 @@ rewrite summary.md, decide final promotion, write T3, or write soul.md.
 2. Emit thin engineering labels and lightweight event/fact labels.
 3. Emit controlled continuity_state:
    standalone|same_episode_candidate|needs_previous|needs_next|low_signal|admin_only.
-4. Use controlled enums only.
-5. Evidence gaps must become missing_refs/evidence_gap, not guessed labels.
+4. Emit <four_plane_signals> (工序 2 rides this same call — two logical steps, one LLM call):
+   - <self_signal present="true|false">: does this segment reveal how the agent
+     itself performs — a capability shown, a method that worked, a failure mode,
+     a style observation? Quote the concrete signal; near-zero cost, high value.
+   - <nutrients>: one <nutrient plane="self|profiles|knowledge|milestones"> per
+     plane that should later digest something from this segment. self = agent
+     self-knowledge; profiles = facts about the owner/collaborators/domain taste;
+     knowledge = declarative concepts worth a network page; milestones = see below.
+   - <milestone_signal criteria="...">: emit ONLY when one of the promotion
+     criteria fires — owner_feedback (explicit owner positive/negative feedback),
+     major_failure (big failure or rework), first_success (first time this class
+     of task succeeded). Most segments have NO milestone signal; that is normal.
+5. Use controlled enums only.
+6. Evidence gaps must become missing_refs/evidence_gap, not guessed labels.
 </task_steps>
 
 <rubric>
@@ -109,7 +121,8 @@ continuity_state maps summary continuity into a controlled engineering label.
 
 <output_schema>
 Return Markdown with exactly one <t2_labels schema_version="t2.labels.v1"> block.
-The block must include <continuity_state>.
+The block must include <continuity_state>. Include <four_plane_signals> with
+<self_signal>, <nutrients>, and (only when a criterion fires) <milestone_signal>.
 </output_schema>
 """.strip()
 

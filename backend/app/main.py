@@ -237,6 +237,47 @@ async def _start_ss_local() -> None:
     logger.warning("[Proxy] All SS nodes failed — Discord API calls will run without proxy")
 
 
+async def _resume_runtime_tasks_after_startup() -> None:
+    """Resume/reconcile durable runtime work without blocking FastAPI health startup."""
+    try:
+        from app.agents.orchestrator import resume_persisted_async_delegations
+        from app.api.chat_sessions import expire_stale_session_permission_requests
+        from app.database import async_session as _session_permission_scan
+        from app.services.heartbeat import resume_persisted_heartbeat_runs
+        from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+        from app.services.subagent_run_service import resume_persisted_subagent_runs
+        from app.services.trigger_daemon import resume_persisted_trigger_runs
+        from app.services.web_chat_runtime import resume_persisted_web_chat_runs
+
+        async with _session_permission_scan() as _db_permission_scan:
+            expired_permissions = await expire_stale_session_permission_requests(db=_db_permission_scan)
+            if expired_permissions:
+                logger.info("[startup] Marked {} stale session permission request(s) expired", expired_permissions)
+        if not _runtime_execution_startup_enabled():
+            logger.info("[startup] runtime resume/reconcile disabled for process role {}", _process_role())
+            return
+
+        resumed_task_ids = await resume_persisted_async_delegations(limit=50)
+        resumed_subagent_ids = await resume_persisted_subagent_runs(limit=50)
+        resumed_web_chat_ids = await resume_persisted_web_chat_runs(limit=50)
+        resumed_trigger_ids = await resume_persisted_trigger_runs(limit=50)
+        resumed_heartbeat_ids = await resume_persisted_heartbeat_runs(limit=50)
+        resumed_task_ids = [
+            *resumed_task_ids,
+            *resumed_subagent_ids,
+            *resumed_web_chat_ids,
+            *resumed_trigger_ids,
+            *resumed_heartbeat_ids,
+        ]
+        if resumed_task_ids:
+            logger.info("[startup] Resumed {} persisted async runtime task(s)", len(resumed_task_ids))
+        reconciled = await reconcile_orphaned_runtime_tasks(exclude_task_ids=set(resumed_task_ids))
+        if reconciled:
+            logger.warning("[startup] Reconciled {} orphaned runtime task(s) after restart", reconciled)
+    except Exception as e:
+        logger.warning(f"[startup] Runtime task reconciliation failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
@@ -448,43 +489,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Tool coverage audit failed: {e}")
 
-    try:
-        from app.agents.orchestrator import resume_persisted_async_delegations
-        from app.api.chat_sessions import expire_stale_session_permission_requests
-        from app.database import async_session as _session_permission_scan
-        from app.services.heartbeat import resume_persisted_heartbeat_runs
-        from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
-        from app.services.subagent_run_service import resume_persisted_subagent_runs
-        from app.services.trigger_daemon import resume_persisted_trigger_runs
-        from app.services.web_chat_runtime import resume_persisted_web_chat_runs
-
-        async with _session_permission_scan() as _db_permission_scan:
-            expired_permissions = await expire_stale_session_permission_requests(db=_db_permission_scan)
-            if expired_permissions:
-                logger.info("[startup] Marked {} stale session permission request(s) expired", expired_permissions)
-        if _runtime_execution_startup_enabled():
-            resumed_task_ids = await resume_persisted_async_delegations(limit=50)
-            resumed_subagent_ids = await resume_persisted_subagent_runs(limit=50)
-            resumed_web_chat_ids = await resume_persisted_web_chat_runs(limit=50)
-            resumed_trigger_ids = await resume_persisted_trigger_runs(limit=50)
-            resumed_heartbeat_ids = await resume_persisted_heartbeat_runs(limit=50)
-            resumed_task_ids = [
-                *resumed_task_ids,
-                *resumed_subagent_ids,
-                *resumed_web_chat_ids,
-                *resumed_trigger_ids,
-                *resumed_heartbeat_ids,
-            ]
-            if resumed_task_ids:
-                logger.info("[startup] Resumed {} persisted async runtime task(s)", len(resumed_task_ids))
-            reconciled = await reconcile_orphaned_runtime_tasks(exclude_task_ids=set(resumed_task_ids))
-            if reconciled:
-                logger.warning("[startup] Reconciled {} orphaned runtime task(s) after restart", reconciled)
-        else:
-            logger.info("[startup] runtime resume/reconcile disabled for process role {}", _process_role())
-    except Exception as e:
-        logger.warning(f"[startup] Runtime task reconciliation failed: {e}")
-
     # C9-1: crash recovery for T2 package jobs — stale queued/running manifests
     # from a dead process are normalized to held so the heartbeat sweep can
     # retry them. Zero-LLM state normalization only; retries run on heartbeat.
@@ -615,6 +619,10 @@ async def lifespan(app: FastAPI):
         startup_background_tasks = [
             ("code_execution_sandbox_probe_scheduler", start_code_execution_sandbox_probe_scheduler()),
         ]
+        if _runtime_execution_startup_enabled():
+            startup_background_tasks.append(("runtime_startup_resume", _resume_runtime_tasks_after_startup()))
+        else:
+            logger.info("[startup] runtime resume/reconcile disabled for process role {}", _process_role())
         try:
             from app.services.runtime_task_worker import runtime_task_worker_enabled, start_runtime_task_worker_loop
 

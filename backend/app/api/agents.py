@@ -656,6 +656,63 @@ async def get_agent_evolution(
     return build_agent_evolution_view(workspace)
 
 
+@router.post("/{agent_id}/evolution/soul-candidates/{candidate_id}/approve")
+async def approve_agent_soul_candidate(
+    agent_id: uuid.UUID,
+    candidate_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Owner-authorized commit of a held soul candidate.
+
+    Approval unlocks only the owner hold — the Platform Soul Gate's physical
+    hard checks (base drift, schema, frozen-charter preservation) still run
+    and can refuse. Requires manage access; audited with the approver id.
+    """
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Soul candidate approval requires manage access")
+
+    from pathlib import Path
+
+    from app.services.soul_approval import approve_soul_candidate
+
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    return await approve_soul_candidate(
+        workspace=workspace,
+        agent_id=agent_id,
+        candidate_id=candidate_id,
+        approver_id=current_user.id,
+    )
+
+
+@router.post("/{agent_id}/evolution/soul-candidates/{candidate_id}/reject")
+async def reject_agent_soul_candidate(
+    agent_id: uuid.UUID,
+    candidate_id: str,
+    payload: dict | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Owner rejection of a held soul candidate; soul.md stays untouched."""
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Soul candidate rejection requires manage access")
+
+    from pathlib import Path
+
+    from app.services.soul_approval import reject_soul_candidate
+
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    return await reject_soul_candidate(
+        workspace=workspace,
+        agent_id=agent_id,
+        candidate_id=candidate_id,
+        approver_id=current_user.id,
+        reason=str((payload or {}).get("reason") or ""),
+    )
+
+
 @router.get("/{agent_id}/extension-registry")
 async def get_agent_extension_registry(
     agent_id: uuid.UUID,

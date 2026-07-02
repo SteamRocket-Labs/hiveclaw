@@ -2574,7 +2574,13 @@ function AgentDetailInner() {
                 )}
 
                 {/* ── Evolution Tab (skill lifecycle + evolution timeline) ── */}
-                {activeTab === 'evolution' && <AgentEvolutionSection agentId={id!} active={canLoadAgentScopedData} />}
+                {activeTab === 'evolution' && (
+                    <AgentEvolutionSection
+                        agentId={id!}
+                        active={canLoadAgentScopedData}
+                        canManage={canManage}
+                    />
+                )}
                 {activeTab === 'workflows' && (
                     <AgentWorkflowsSection agentId={id!} canManage={(agent as any)?.access_level !== 'use'} />
                 )}

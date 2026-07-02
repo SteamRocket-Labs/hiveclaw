@@ -1,4 +1,4 @@
-import { get } from '../core';
+import { get, post } from '../core';
 
 export type EvolutionSkillEcosystemSummary = {
   active: number;
@@ -70,6 +70,17 @@ export type AgentEvolutionView = {
   };
 };
 
+export type SoulApprovalResult = {
+  status: 'committed' | 'refused' | 'rejected' | string;
+  candidate_id?: string;
+  reason?: string;
+  rollback_ref?: string;
+};
+
 export const evolutionApi = {
   get: (agentId: string) => get<AgentEvolutionView>(`/agents/${agentId}/evolution`),
+  approveSoulCandidate: (agentId: string, candidateId: string) =>
+    post<SoulApprovalResult>(`/agents/${agentId}/evolution/soul-candidates/${candidateId}/approve`, {}),
+  rejectSoulCandidate: (agentId: string, candidateId: string, reason: string) =>
+    post<SoulApprovalResult>(`/agents/${agentId}/evolution/soul-candidates/${candidateId}/reject`, { reason }),
 };

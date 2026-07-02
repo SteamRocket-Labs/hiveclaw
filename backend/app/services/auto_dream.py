@@ -1139,6 +1139,7 @@ def _stage_soul_candidate_package(
         "target_path": "soul.md",
         "status": status,
         "reason": reason,
+        "requires_owner_approval": bool(candidate.get("requires_owner_approval")),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_refs": [str(ref) for ref in (candidate.get("source_refs") or [])],
         "base_sha256": hashlib.sha256(current_soul.encode("utf-8")).hexdigest(),

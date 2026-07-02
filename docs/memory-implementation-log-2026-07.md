@@ -308,3 +308,19 @@ kernel+runtime 套件 = **869 passed**；全量 `pytest tests -q` = **1 failed, 
 - **文档对齐**：CLAUDE.md 摘除 `memory/policy_replay.py` 死指针；eval spec 补 **v1.1 施工对齐修订**（含 `retrieval_eval` "保留"条目被记忆主线读侧重构取代的现实记录）。
 
 **测试证据**：tests/evals 58 passed；tests/templates+packs 117 passed 1 skipped（三处守卫判据翻转为"不得携带退役装饰 eval.yaml"）；全量 `pytest tests -q` = **5273 passed, 1 skipped, 0 failed**——主线自 6 月来首次零失败（bakeoff 红针随降级消失）。
+
+## K 批：记忆/进化前端重做 + soul 审批闭环（owner 07-02 指令"前端跟坨屎一样,记忆和进化都要改"）
+
+**根因承认**：memory 主线按"零新前后端"只切了后端读模型,消费面没同步——记忆 tab 还在渲染已死概念（Active/Superseded/Archived 旧 T3 计数恒 0、extractor 恒未运行、entries 旧条目生态）,而 soul held 候选**后端留了门、前端没装门铃**（只读列表,无审批按钮,连 approve 端点都不存在）。
+
+**K1 后端（红测先行 `test_soul_candidate_approval.py` 7 红→7 绿）**：
+- **soul 审批环** `services/soul_approval.py`：`list_pending_soul_approvals`（pitch/patch 随行）/ `approve_soul_candidate`（重验物理硬校验——base_sha 漂移拒、hive.soul.v2、source_refs、transient、frozen charter 保留,**批准只解锁 owner hold 不放松其它门**;通过则 rollback 快照+原子写 soul+manifest 记 approved_by+审计 owner_approved）/ `reject_soul_candidate`（包标 rejected+审计,soul 不动）。API：`POST /agents/{id}/evolution/soul-candidates/{cid}/approve|reject`（**manage 权限**,403 否则）。`auto_dream` staging manifest 补 `requires_owner_approval` 字段（审批面不再解析 reason 文本）。
+- **overview 两平面 shape**（`build_knowledge_overview` 重写）：`planes`（self 条目+失败模式生命周期 active/规避中/已根除、profiles、knowledge/milestones 页数、explicit active）+ `pipeline`（debt 摘要:积压/停滞）+ `growth`（报告新鲜度）;旧 `memory` 计数块与 lifecycle 依赖删除;distillers `extractor`→`t2_pipeline` 改名。
+- evolution view 无需改——provisional 状态已在 candidates[].status 透传。
+
+**K2 前端**：
+- **记忆 tab 重做**（AgentKnowledgeSection）：子视图 overview/自我认知/人际与领域/知识网络/里程碑/timeline/raw（entries/candidates 死视图退役）;overview 五卡=身份（待审批数+"去审批"深链进化 tab）/自我认知（失败模式三色进度）/记忆版图（四区计数可点入）/记忆管线（四蒸馏器状态+停滞红警+成长报告时间）/关联能力;plane 视图渲染条目卡（标题+状态徽章+证据 id）。
+- **进化 tab 重做**（AgentEvolutionSection）：第一屏=**成长报告卡**（失败模式复发/规避表+规避率、知识复用、返工率趋势、主人反馈极性、任务量、晋升/回滚）+ **待你审批区**（held+requires_owner_approval 过滤,manage 权限显示批准/驳回按钮,useMutation→新 API→invalidate;门禁拒绝原因回显）+ **技能试用中**（provisional 分组,试用制说明）;canManage prop 从 AgentDetail 接入。
+- types：KnowledgeOverview 两平面化、GrowthMetrics/MemoryObservability、evolutionApi approve/reject;WorkspaceFeatureHub 漏网消费者修复（旧 memory.active/stale→两平面求和+active 失败模式,标签同步双语）;i18n en/zh 全量补 keys。
+
+**测试证据**：后端 soul 审批 7 用例+read model 改造（overview 两平面断言+旧计数不得复活+t2_pipeline 改名）全绿;前端新组件 7 用例（两平面 overview/死视图按钮退役/审批按钮 manage-gated/成长报告渲染/provisional 面）+全套 **415 passed**;tsc 零错;前端 `npm run build` 成功;后端本域套件（soul 审批+read model+growth+memory+api+evals+auto_dream）= **1099 passed**;全量 8 failed 全部归属并行 session 的 session_control_plane/transcript 活跃 WIP（过滤后本批引入失败 = 0）。

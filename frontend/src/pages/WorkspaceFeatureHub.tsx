@@ -324,8 +324,12 @@ async function collectMemoryRows(agents: Agent[]): Promise<MemoryHubRow[]> {
         return {
           agentId: agent.id,
           agentName: agent.name,
-          active: overview.memory.active,
-          stale: overview.memory.stale,
+          active:
+            overview.planes.self.entries +
+            overview.planes.profiles.entries +
+            overview.planes.knowledge.pages +
+            overview.planes.milestones.pages,
+          stale: overview.planes.self.failureModes.active,
           pendingSoulCandidates: overview.identity.pendingSoulCandidates,
           skillCandidates: overview.linkedCapabilities.skillCandidates,
           href: `/agents/${agent.id}#knowledge`,
@@ -849,8 +853,8 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
               <Link key={row.agentId} to={row.href} className="workbench-data-card">
                 <strong>{row.agentName}</strong>
                 <div className="workbench-stat-grid">
-                  <span><small>{t('featureHub.activeMemories', 'Active memories')}</small><b>{row.active}</b></span>
-                  <span><small>{t('featureHub.staleMemories', 'Stale')}</small><b>{row.stale}</b></span>
+                  <span><small>{t('featureHub.activeMemories', 'Memory entries')}</small><b>{row.active}</b></span>
+                  <span><small>{t('featureHub.staleMemories', 'Failure modes (active)')}</small><b>{row.stale}</b></span>
                   <span><small>{t('featureHub.soulCandidates', 'Soul candidates')}</small><b>{row.pendingSoulCandidates}</b></span>
                   <span><small>{t('featureHub.skillCandidates', 'Skill candidates')}</small><b>{row.skillCandidates}</b></span>
                 </div>

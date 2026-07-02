@@ -55,7 +55,9 @@ def _seed_workspace(tmp_path: Path) -> Path:
         "### 研究三段法 — 熟练\n<!-- id: mem_s1 -->\nresearch → design → verify workflow\n"
         "- skill候选: 三次验证有效\n- 证据: t2-a1b2\n\n"
         "### 夜间摘要管线 — 一般\n<!-- id: mem_s2 -->\nnightly digest pipeline with durable state\n"
-        "- workflow候选: 需要持久状态\n- 证据: t2-c3d4\n",
+        "- workflow候选: 需要持久状态\n- 证据: t2-c3d4\n\n"
+        "## 失败模式\n\n"
+        "### 需求含糊时爱猜 — active\n<!-- id: fm-guessing -->\n- 状态: active\n- 证据: t2-a1b2\n",
         encoding="utf-8",
     )
     (mem / "profiles" / "owner.md").write_text(
@@ -177,17 +179,33 @@ def _age_t3_files(root: Path, *, hours: float) -> None:
                 _age(path, hours=hours)
 
 
-def test_overview_is_structured(tmp_path: Path) -> None:
+def test_overview_speaks_two_planes(tmp_path: Path) -> None:
+    """The overview reports the two-plane world: per-plane counts with the
+    self failure-mode lifecycle, pipeline health, and growth freshness — the
+    retired flat-T3 lifecycle counters (active/superseded/archived) and the
+    legacy "extractor" distiller label are gone."""
     _seed_workspace(tmp_path)
     overview = build_knowledge_overview(tmp_path, AGENT)
 
     assert overview["identity"]["sections"] == 2
     assert overview["identity"]["pendingSoulCandidates"] == 1
-    assert overview["memory"]["active"] == 5  # 3 profile entries + 2 pages (two-plane read model)
-    assert overview["memory"]["superseded"] == 1
-    assert overview["memory"]["sensitiveSuppressed"] == 0  # PL2 is not PL3/PL4
+
+    planes = overview["planes"]
+    assert planes["self"]["entries"] == 3  # two methods + one failure mode
+    assert planes["self"]["failureModes"] == {"active": 1, "mitigating": 0, "resolved": 0}
+    assert planes["profiles"]["entries"] == 1
+    assert planes["knowledge"]["pages"] == 1
+    assert planes["milestones"]["pages"] == 1
+    assert planes["explicit"]["active"] == 0
+
+    assert "memory" not in overview  # retired flat-T3 counters must not resurface
+    assert "extractor" not in overview["distillers"]
+    assert overview["distillers"]["t2_pipeline"]["state"] == "never_ran"
     assert overview["distillers"]["dream"]["state"] == "active"
-    assert overview["distillers"]["extractor"]["state"] == "never_ran"
+
+    assert "pipeline" in overview  # consolidation-debt summary (may be empty when never assessed)
+    assert "growth" in overview  # growth-report freshness (empty when never generated)
+
     assert overview["linkedCapabilities"]["skillsReferenced"] == 1
     assert overview["linkedCapabilities"]["skillCandidates"] == 1
     assert overview["linkedCapabilities"]["workflowsReferenced"] == 1
@@ -221,7 +239,7 @@ def test_entries_expose_heat_telemetry_and_candidates(tmp_path: Path) -> None:
     _seed_workspace(tmp_path)
     entries = list_knowledge_entries(tmp_path, AGENT)
 
-    assert len(entries) == 5  # profile entries + knowledge/milestone pages
+    assert len(entries) == 6  # profile entries (incl. failure mode) + knowledge/milestone pages
     by_id = {entry["id"]: entry for entry in entries}
     # heat telemetry retired with the flat-T3 sidecar; two-plane rows are
     # structure-first (load column distinguishes resident vs retrieval)
@@ -302,7 +320,8 @@ def test_candidates_cover_all_lanes(tmp_path: Path) -> None:
 def test_empty_workspace_returns_empty_structures(tmp_path: Path) -> None:
     agent_id = uuid.uuid4()
     overview = build_knowledge_overview(tmp_path, agent_id)
-    assert overview["memory"]["active"] == 0
+    assert overview["planes"]["self"]["entries"] == 0
+    assert overview["planes"]["knowledge"]["pages"] == 0
     assert list_knowledge_pages(tmp_path, agent_id) == []
     assert list_knowledge_events(tmp_path, agent_id) == []
     assert list_knowledge_candidates(tmp_path, agent_id)["skillCandidates"] == []
@@ -355,7 +374,7 @@ def test_t3_consolidator_active_when_t2_input_is_idle(tmp_path: Path) -> None:
     assert overview["distillers"]["heartbeat"]["state"] == "active"
 
 
-def test_extractor_active_when_t2_keeps_up_with_t0_session_ledger(tmp_path: Path) -> None:
+def test_t2_pipeline_active_when_t2_keeps_up_with_t0_session_ledger(tmp_path: Path) -> None:
     root = _seed_workspace(tmp_path)
     source = root / "memory" / "t0" / "sessions" / "sess-1" / "segments" / "seg-1" / "source.md"
     source.parent.mkdir(parents=True)
@@ -364,10 +383,10 @@ def test_extractor_active_when_t2_keeps_up_with_t0_session_ledger(tmp_path: Path
     _write_t2_segment_manifest(root)  # fresh enough output after the T0 input
 
     overview = build_knowledge_overview(tmp_path, AGENT)
-    assert overview["distillers"]["extractor"]["state"] == "active"
+    assert overview["distillers"]["t2_pipeline"]["state"] == "active"
 
 
-def test_extractor_stale_when_t0_session_ledger_unprocessed(tmp_path: Path) -> None:
+def test_t2_pipeline_stale_when_t0_session_ledger_unprocessed(tmp_path: Path) -> None:
     root = _seed_workspace(tmp_path)
     source = root / "memory" / "t0" / "sessions" / "sess-1" / "segments" / "seg-1" / "source.md"
     source.parent.mkdir(parents=True)
@@ -376,7 +395,7 @@ def test_extractor_stale_when_t0_session_ledger_unprocessed(tmp_path: Path) -> N
     _age(t2_manifest, hours=30)  # > 24h grace behind fresh ledger source
 
     overview = build_knowledge_overview(tmp_path, AGENT)
-    assert overview["distillers"]["extractor"]["state"] == "stale"
+    assert overview["distillers"]["t2_pipeline"]["state"] == "stale"
 
 
 def test_dream_stale_when_t3_outruns_state(tmp_path: Path) -> None:

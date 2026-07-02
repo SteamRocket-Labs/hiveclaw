@@ -209,7 +209,8 @@ describe('WorkspaceFeatureHub', () => {
 
     expect(markup).toContain('Memory &amp; Knowledge');
     expect(markup).toContain('Research Lead');
-    expect(markup).toContain('Active memories');
+    expect(markup).toContain('Memory entries');
+    expect(markup).toContain('Failure modes (active)');
     expect(markup).toContain('Soul candidates');
     expect(markup).toContain('Skill candidates');
     expect(markup).toContain('href="/agents/agent-1#knowledge"');

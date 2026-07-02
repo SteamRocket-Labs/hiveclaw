@@ -267,9 +267,9 @@ def _build_distiller_statuses(root: Path) -> dict:
     dream_window = _STALE_MULTIPLIER * MIN_HOURS_BETWEEN_DREAMS * 3600
 
     return {
-        "extractor": _distiller_status_from_anchor(
+        "t2_pipeline": _distiller_status_from_anchor(
             t2_output_anchor,
-            label="extractor",
+            label="t2_pipeline",
             stale_seconds=_EXTRACTOR_GRACE_SECONDS,
             input_anchor=t0_input_anchor,
         ),
@@ -292,8 +292,14 @@ def _build_distiller_statuses(root: Path) -> dict:
 # ── Overview ──
 
 
+_FAILURE_MODE_STATUS_KEYS = {"active": "active", "规避中": "mitigating", "已根除": "resolved"}
+
+
 def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
-    from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_read_path
+    """Two-plane overview: per-plane counts (with the self failure-mode
+    lifecycle), pipeline health, growth freshness, distiller states. The
+    retired flat-T3 lifecycle counters do not resurface here."""
+    from app.memory.explicit_overlay import load_explicit_overlay_entries
     from app.memory.plane_read import list_knowledge_pages, list_profile_entries
 
     root = _agent_root(data_root, agent_id)
@@ -303,21 +309,53 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
     frozen_sections = sum(1 for line in soul_blocks if 'frozen="true"' in line.lower())
 
     plane_entries = list_profile_entries(data_root, agent_id)
-    plane_pages = list_knowledge_pages(data_root, agent_id)
-    manifest = [*plane_entries, *plane_pages]
-    sensitive_suppressed = 0
+    self_entries = [entry for entry in plane_entries if str(entry.get("source") or "").endswith("self/self.md")]
+    profile_entries = [entry for entry in plane_entries if entry not in self_entries]
+    failure_modes = {"active": 0, "mitigating": 0, "resolved": 0}
+    for entry in self_entries:
+        if not str(entry.get("id") or "").startswith("fm-"):
+            continue
+        status = ""
+        for line in str(entry.get("content") or "").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- 状态:"):
+                status = stripped.removeprefix("- 状态:").strip()
+                break
+        key = _FAILURE_MODE_STATUS_KEYS.get(status, "active")
+        failure_modes[key] += 1
 
-    lifecycle_counts = {"superseded": 0, "archived": 0, "stale": 0}
-    store = MemoryLifecycleStore(lifecycle_read_path(data_root, agent_id))
-    for entry in store._entries.values():  # noqa: SLF001 — read model over the same package's store
-        status = entry.status.value
-        if status in lifecycle_counts:
-            lifecycle_counts[status] += 1
+    plane_pages = list_knowledge_pages(data_root, agent_id)
+    knowledge_pages = sum(1 for page in plane_pages if page.get("kind") == "knowledge")
+    milestone_pages = sum(1 for page in plane_pages if page.get("kind") == "milestone")
+    explicit_active = sum(
+        1 for entry in load_explicit_overlay_entries(Path(data_root), agent_id) if entry.status == "active"
+    )
 
     pending_soul = sum(
         1
         for manifest in _load_soul_candidate_manifests(root)
         if str(manifest.get("status") or "").lower() not in {"committed", "rejected", "archived"}
+    )
+
+    debt = _read_json(root / "memory" / "control" / "consolidation_debt.json")
+    pipeline = (
+        {
+            "pendingPackages": debt.get("pending_packages"),
+            "heldJobs": debt.get("held_jobs"),
+            "stalled": bool(debt.get("stalled")),
+            "lastAssessedAt": str(debt.get("generated_at") or ""),
+        }
+        if debt
+        else {}
+    )
+    growth_history = _read_jsonl(root / "memory" / "control" / "growth_metrics_history.jsonl", limit=1)
+    growth = (
+        {
+            "generatedAt": str(growth_history[-1].get("generated_at") or ""),
+            "reportPath": "memory/control/growth_report.md",
+        }
+        if growth_history
+        else {}
     )
 
     skills_dir = root / "skills"
@@ -335,13 +373,15 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
             "pendingSoulCandidates": pending_soul,
             "lastUpdated": _file_mtime_iso(root / "soul.md"),
         },
-        "memory": {
-            "active": len(manifest),
-            "stale": lifecycle_counts["stale"],
-            "superseded": lifecycle_counts["superseded"],
-            "archived": lifecycle_counts["archived"],
-            "sensitiveSuppressed": sensitive_suppressed,
+        "planes": {
+            "self": {"entries": len(self_entries), "failureModes": failure_modes},
+            "profiles": {"entries": len(profile_entries)},
+            "knowledge": {"pages": knowledge_pages},
+            "milestones": {"pages": milestone_pages},
+            "explicit": {"active": explicit_active},
         },
+        "pipeline": pipeline,
+        "growth": growth,
         "distillers": _build_distiller_statuses(root),
         "linkedCapabilities": {
             "skillsReferenced": skills_count,

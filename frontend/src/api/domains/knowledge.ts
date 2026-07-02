@@ -19,15 +19,29 @@ export interface KnowledgeOverview {
     pendingSoulCandidates: number;
     lastUpdated?: string;
   };
-  memory: {
-    active: number;
-    stale: number;
-    superseded: number;
-    archived: number;
-    sensitiveSuppressed: number;
+  // Two-plane world (memory spec v1.2): profile plane converges
+  // (self/profiles), knowledge plane networks (knowledge/milestones).
+  planes: {
+    self: { entries: number; failureModes: { active: number; mitigating: number; resolved: number } };
+    profiles: { entries: number };
+    knowledge: { pages: number };
+    milestones: { pages: number };
+    explicit: { active: number };
+  };
+  // Consolidation-debt summary — empty object until first assessed.
+  pipeline: {
+    pendingPackages?: number;
+    heldJobs?: number;
+    stalled?: boolean;
+    lastAssessedAt?: string;
+  };
+  // Growth-report freshness — empty object until first generated.
+  growth: {
+    generatedAt?: string;
+    reportPath?: string;
   };
   distillers: {
-    extractor: DistillerStatus;
+    t2_pipeline: DistillerStatus;
     heartbeat: DistillerStatus;
     dream: DistillerStatus;
     skillDistiller: DistillerStatus;
@@ -38,6 +52,33 @@ export interface KnowledgeOverview {
     mcpToolsReferenced: number;
     skillCandidates: number;
   };
+}
+
+// J2 growth report metrics as persisted in growth_metrics_history.jsonl.
+export interface GrowthFailureMode {
+  id: string;
+  title: string;
+  status: string;
+  recurred: number;
+  avoided: number;
+  avoidance_rate: number | null;
+}
+
+export interface GrowthMetrics {
+  generated_at?: string;
+  failure_modes?: GrowthFailureMode[];
+  rework?: { labeled_packages?: number; rework_packages?: number; recent_rate?: number | null; previous_rate?: number | null };
+  reuse?: { knowledge_pages?: number; total_citations?: number; top_cited?: { ref: string; count: number }[] };
+  feedback_polarity?: { recent?: Record<string, number>; previous?: Record<string, number> };
+  task_volume?: { recent_invocations?: number; window_days?: number };
+  evolution?: { promotions?: number; rollbacks?: number };
+}
+
+export interface MemoryObservability {
+  debt: Record<string, unknown>;
+  debt_history: Record<string, unknown>[];
+  label_axes: Record<string, Record<string, number>>;
+  growth: { generated_at?: string; metrics?: GrowthMetrics; report_path?: string };
 }
 
 export interface KnowledgePageSummary {
@@ -116,4 +157,5 @@ export const knowledgeApi = {
   entries: (agentId: string) => get<{ entries: KnowledgeEntry[] }>(`/agents/${agentId}/knowledge/entries`),
   events: (agentId: string) => get<{ events: KnowledgeEvent[] }>(`/agents/${agentId}/knowledge/events`),
   candidates: (agentId: string) => get<KnowledgeCandidates>(`/agents/${agentId}/knowledge/candidates`),
+  observability: (agentId: string) => get<MemoryObservability>(`/agents/${agentId}/knowledge/observability`),
 };

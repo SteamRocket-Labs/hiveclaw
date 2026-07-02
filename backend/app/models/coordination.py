@@ -42,11 +42,11 @@ class CoordinationSignal(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    from_agent_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    to_agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    from_agent_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    to_agent_id: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
     content: Mapped[str] = mapped_column(String, nullable=False)
-    signal_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    thread_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    signal_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    thread_id: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

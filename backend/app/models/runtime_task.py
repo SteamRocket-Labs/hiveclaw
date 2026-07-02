@@ -71,9 +71,9 @@ class RuntimeTask(Base):
     token_usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Tracing
-    trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    parent_session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    child_session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    parent_session_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    child_session_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     depth: Mapped[int] = mapped_column(default=1)
 
     # Timestamps

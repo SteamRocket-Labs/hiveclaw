@@ -1442,6 +1442,23 @@ async def _run_convergence_dirtiness_refresh(agent_id: uuid.UUID):
     )
 
 
+async def _run_growth_report_refresh(agent_id: uuid.UUID, tenant_id: uuid.UUID | None):
+    """J2: refresh the zero-LLM growth report (eval-system-spec §2.1) so the
+    reflection prompt can read fresh numbers. Opens its own tenant-scoped
+    session for the DB-side metrics — the maintenance batch's session must
+    not be consumed by side reads."""
+    from app.config import get_settings
+    from app.services.growth_report import refresh_growth_report
+
+    settings = get_settings()
+    async with tenant_scoped_session(tenant_id) as growth_db:
+        return await refresh_growth_report(
+            data_root=Path(settings.AGENT_DATA_DIR),
+            agent_id=agent_id,
+            db=growth_db,
+        )
+
+
 async def _execute_heartbeat(
     agent_id: uuid.UUID,
     *,
@@ -2020,6 +2037,13 @@ async def _execute_heartbeat(
                 )
             except Exception as _hook_err:
                 logger.debug("[Heartbeat] HEARTBEAT_TICK_END hook failed (non-fatal): {}", _hook_err)
+
+            # J2: refresh the growth report AFTER the tick's work landed so the
+            # numbers include this round; the NEXT reflection reads them.
+            try:
+                await _run_growth_report_refresh(agent_id, tenant_id)
+            except Exception as _growth_err:
+                logger.warning("[Heartbeat] Growth report refresh failed for {}: {}", agent_id, _growth_err)
 
             score_str = f" score={heartbeat_score}" if heartbeat_score is not None else ""
             logger.info(f"💓 Heartbeat for {agent.name}: {outcome_type}{score_str} — {summary}")

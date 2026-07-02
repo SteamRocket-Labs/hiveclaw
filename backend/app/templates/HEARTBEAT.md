@@ -126,6 +126,18 @@ patches ADD; convergence REWRITES. When `t3_neighborhood.md` shows a
    "converge" concept pages into fewer, vaguer ones.
 </convergence_loop>
 
+<growth_report_reflection>
+The platform keeps a zero-LLM growth report at `memory/control/growth_report.md`
+(failure-mode recurrence vs avoidance per self.md id, rework rate, knowledge
+citation counts, owner feedback polarity, task volume). The numbers are
+mechanical; the INTERPRETATION is yours. When curating the self plane, read it
+and let the trends inform your judgment: a failure mode with rising avoidance
+and zero recurrence is lifecycle-progress evidence (规避中 → 已根除 candidate);
+a recurring one belongs at the top of active attention; a falling reuse count
+may mean a knowledge page went stale. Never copy report numbers into memory
+entries as facts — cite the segment evidence (t2- refs), not the report.
+</growth_report_reflection>
+
 <hard_redlines>
 - Do not call `save_memory` for T3 curation. `save_memory` writes only the Explicit Memory Overlay.
 - Do not write accepted T3 files directly with filesystem tools; direct writes are refused by runtime policy.

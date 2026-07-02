@@ -302,7 +302,7 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     assert manifest["source_refs"][0].startswith(f"t0://session/{session_id}/segment/{first.segment_id}#seq=1..")
     assert manifest["files"]["summary.md"]["sha256"]
     assert manifest["prompts"]["summary_prompt_version"] == "t2.summary_agent.v1"
-    assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.v2"
+    assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.v3"
     assert manifest["review_mode"] == "independent_gate"
     assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v1"
 
@@ -1365,3 +1365,55 @@ async def test_build_with_llm_holds_without_model_config(monkeypatch, tmp_path: 
     report = json.loads((result.staging_dir / "platform_gate_report.json").read_text(encoding="utf-8"))
     assert report["status"] == "held"
     assert "no summary model config" in report["issues"][0]
+
+
+def test_labels_prompt_teaches_failure_signals_for_growth_report() -> None:
+    """J2 工序 1 input: the labels prompt must teach <failure_signals> with
+    recurred/avoided outcomes tied to known self.md failure-mode ids."""
+    from app.memory.t2.prompts import LABELS_PROMPT_VERSION, LEARNING_BRAIN_LABELS_PROMPT
+
+    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.v3"
+    assert "<failure_signals>" in LEARNING_BRAIN_LABELS_PROMPT
+    assert "recurred" in LEARNING_BRAIN_LABELS_PROMPT
+    assert "avoided" in LEARNING_BRAIN_LABELS_PROMPT
+    assert "known_failure_modes" in LEARNING_BRAIN_LABELS_PROMPT
+    assert "<rework" in LEARNING_BRAIN_LABELS_PROMPT
+
+
+def test_source_bundle_includes_known_failure_modes(tmp_path) -> None:
+    """The labels LLM needs full visibility of the agent's known failure modes
+    (L1) — the source bundle carries id/title/status rows from self.md."""
+    from app.memory.t2.segment_package import _build_source_bundle
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    self_dir = tmp_path / str(agent_id) / "memory" / "self"
+    self_dir.mkdir(parents=True)
+    (self_dir / "self.md").write_text(
+        "## 失败模式\n\n### 需求含糊时爱猜 — active\n<!-- id: fm-guessing -->\n- 状态: active\n",
+        encoding="utf-8",
+    )
+    event = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=None,
+        event_type="user_message",
+        role="user",
+        content="帮我拆一下这个需求",
+        source="web_chat",
+        data_root=tmp_path,
+    )
+
+    bundle = _build_source_bundle(
+        root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=None,
+        session_id=session_id,
+        t0_segment_id=event.segment_id,
+        package_id="t2pkg-fm",
+    )
+
+    modes = bundle["known_failure_modes"]
+    assert modes and modes[0]["id"] == "fm-guessing"
+    assert modes[0]["status"] == "active"
+    assert "爱猜" in modes[0]["title"]

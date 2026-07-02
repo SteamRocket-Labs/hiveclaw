@@ -1,7 +1,7 @@
 """Versioned prompt contracts for canonical T0 -> T2 distillation."""
 
 SUMMARY_PROMPT_VERSION = "t2.summary_agent.v1"
-LABELS_PROMPT_VERSION = "t2.learning_brain_labels.v2"
+LABELS_PROMPT_VERSION = "t2.learning_brain_labels.v3"
 REVIEW_PROMPT_VERSION = "t2.memory_gate_review.v1"
 EPISODE_STITCHER_PROMPT_VERSION = "t2.episode_stitcher.v1"
 EPISODE_GATE_REVIEW_PROMPT_VERSION = "t2.episode_gate_review.v1"
@@ -97,8 +97,20 @@ rewrite summary.md, decide final promotion, write T3, or write soul.md.
      criteria fires — owner_feedback (explicit owner positive/negative feedback),
      major_failure (big failure or rework), first_success (first time this class
      of task succeeded). Most segments have NO milestone signal; that is normal.
-5. Use controlled enums only.
-6. Evidence gaps must become missing_refs/evidence_gap, not guessed labels.
+5. Emit <failure_signals> (J2 growth-report input — recurrence detection):
+   source_bundle.known_failure_modes lists this agent's known failure modes
+   (id/title/status from self.md). For each mode this segment ACTUALLY touches,
+   emit one <failure_signal ref="fm-..." outcome="recurred|avoided">quote the
+   concrete evidence</failure_signal> — recurred = the mode showed up again;
+   avoided = the situation invited the mode and the agent demonstrably steered
+   clear. Only reference listed ids; never invent new fm- ids here (new failure
+   modes are self-plane curation, not labels). Most segments touch NO known
+   mode; emit an empty <failure_signals/> then.
+6. Emit <rework present="true"> ONLY when this segment redoes or corrects work
+   a previous segment already delivered (owner asked for rework, output was
+   scrapped and rebuilt). Routine iteration inside one task is NOT rework.
+7. Use controlled enums only.
+8. Evidence gaps must become missing_refs/evidence_gap, not guessed labels.
 </task_steps>
 
 <rubric>

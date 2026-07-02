@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import os
 import re
 import shutil
@@ -37,6 +38,8 @@ from app.memory.t2.prompts import (
     SUMMARY_PROMPT_VERSION,
 )
 
+
+logger = logging.getLogger(__name__)
 
 SUMMARY_FILENAME = "summary.md"
 LABELS_FILENAME = "labels.md"
@@ -611,6 +614,56 @@ async def build_t2_episode_stitch_package_with_llm(
         )
 
 
+_FAILURE_MODE_HEADING_RE = re.compile(r"^###\s+(?P<title>.+?)(?:\s+—\s+(?P<status>\S+))?\s*$")
+_FAILURE_MODE_ANCHOR_RE = re.compile(r"<!--\s*id:\s*(?P<id>[^\s>]+)\s*-->")
+
+
+def _known_failure_modes(*, root: Path, agent_id: uuid.UUID | str) -> list[dict[str, str]]:
+    """Known self.md failure modes (id/title/status) for the labels agent.
+
+    工序 1 emits ``<failure_signal ref outcome>`` recurrence/avoidance rows —
+    the labels LLM needs full visibility of the ids it may reference (L1).
+    Absence of self.md or the section reads as an empty list, never an error.
+    """
+    path = Path(root) / str(agent_id) / "memory" / "self" / "self.md"
+    if not path.exists():
+        return []
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("known_failure_modes read failed for %s: %s", agent_id, exc)
+        return []
+    modes: list[dict[str, str]] = []
+    in_section = False
+    current: dict[str, str] | None = None
+    for line in content.splitlines():
+        if line.startswith("## "):
+            in_section = line.strip() == "## 失败模式"
+            current = None
+            continue
+        if not in_section:
+            continue
+        heading = _FAILURE_MODE_HEADING_RE.match(line)
+        if heading:
+            current = {
+                "id": "",
+                "title": heading.group("title").strip(),
+                "status": (heading.group("status") or "").strip(),
+            }
+            continue
+        if current is None:
+            continue
+        anchor = _FAILURE_MODE_ANCHOR_RE.search(line)
+        if anchor and not current["id"]:
+            current["id"] = anchor.group("id")
+            modes.append(current)
+            continue
+        status_match = re.match(r"^-\s*状态:\s*(?P<status>\S+)", line.strip())
+        if status_match and current in modes:
+            current["status"] = status_match.group("status")
+    return [mode for mode in modes if mode["id"]]
+
+
 def _build_source_bundle(
     *,
     root: Path,
@@ -637,6 +690,7 @@ def _build_source_bundle(
         root=root, agent_id=agent_id, session_id=session_id, segment_id=t0_segment_id, path=source_path, events=events
     )
     work_ledger = _work_ledger_payload(root=root, agent_id=agent_id, session_id=session_id)
+    known_failure_modes = _known_failure_modes(root=root, agent_id=agent_id)
     lineage = _build_lineage_payload(session_id=session_id, session_lineage=session_lineage, events=segment_events)
     excluded_refs = _excluded_source_refs(session_id=session_id, events=excluded_events)
     context_refs = _context_refs_from_lineage_and_events(lineage=lineage, events=segment_events)
@@ -667,6 +721,7 @@ def _build_source_bundle(
         "span_refs": [],
         "artifact_refs": work_ledger["source_refs"],
         "work_ledger": work_ledger,
+        "known_failure_modes": known_failure_modes,
         "previous_checkpoint_refs": [],
         "principal_context": {},
         "created_at": _now(),

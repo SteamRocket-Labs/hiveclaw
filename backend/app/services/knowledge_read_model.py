@@ -620,4 +620,14 @@ def build_memory_observability(data_root: Path, agent_id: uuid.UUID) -> dict:
         except (sqlite3.Error, ValueError) as exc:
             logger.warning("Memory observability index read failed for %s: %s", agent_id, exc)
 
-    return {"debt": debt_payload, "debt_history": debt_history, "label_axes": label_axes}
+    growth: dict = {}
+    growth_history = _read_jsonl(root / "memory" / "control" / "growth_metrics_history.jsonl", limit=1)
+    if growth_history:
+        latest = growth_history[-1]
+        growth = {
+            "generated_at": str(latest.get("generated_at") or ""),
+            "metrics": latest,
+            "report_path": "memory/control/growth_report.md",
+        }
+
+    return {"debt": debt_payload, "debt_history": debt_history, "label_axes": label_axes, "growth": growth}

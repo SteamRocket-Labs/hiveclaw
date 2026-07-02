@@ -120,7 +120,8 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
         conn.execute("CREATE TABLE tombstones (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL, job_id TEXT)")
         conn.execute(
             "CREATE TABLE t2_label_axes (package_ref TEXT NOT NULL, session_id TEXT NOT NULL,"
-            " axis TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (package_ref, axis, value))"
+            " axis TEXT NOT NULL, value TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '',"
+            " PRIMARY KEY (package_ref, axis, value))"
         )
         conn.execute(
             "CREATE TABLE consolidation_debt_history (assessed_at TEXT PRIMARY KEY,"
@@ -133,7 +134,7 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
         conn.executemany("INSERT OR IGNORE INTO refs VALUES (?, ?, ?)", rows)
         conn.executemany("INSERT OR REPLACE INTO id_resolution VALUES (?, ?, ?, ?)", resolution_rows)
         conn.executemany("INSERT OR REPLACE INTO tombstones VALUES (?, ?, ?)", tombstone_rows)
-        conn.executemany("INSERT OR IGNORE INTO t2_label_axes VALUES (?, ?, ?, ?)", label_rows)
+        conn.executemany("INSERT OR IGNORE INTO t2_label_axes VALUES (?, ?, ?, ?, ?)", label_rows)
         conn.executemany(
             "INSERT OR REPLACE INTO consolidation_debt_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             debt_rows,
@@ -439,10 +440,10 @@ _LABEL_SINGLE_AXES = ("continuity_state", "confidence", "source_integrity")
 _LABEL_MULTI_AXES = (("risk_flag", ".//risk_flag"), ("system", ".//system"), ("memory_domain", ".//memory_domain"))
 
 
-def _label_axis_rows(packages: list[dict]) -> list[tuple[str, str, str, str]]:
+def _label_axis_rows(packages: list[dict]) -> list[tuple[str, str, str, str, str]]:
     """Split each live package's labels.md into per-axis rows. Missing axes
     stay absent — derived observability never guesses (evidence-gap rule)."""
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str]] = []
     for package in packages:
         if package["archived"] or package["kind"] != "segment":
             continue
@@ -459,11 +460,12 @@ def _label_axis_rows(packages: list[dict]) -> list[tuple[str, str, str, str]]:
             continue
         package_ref = _short_id_from_package_id(package["package_id"]) or package["ref"]
         session_id = str(package["manifest"].get("session_id") or "")
+        created_at = str(package["manifest"].get("created_at") or "")
 
         def _add(axis: str, value: str) -> None:
             cleaned = " ".join(str(value or "").split())
             if cleaned:
-                rows.append((package_ref, session_id, axis, cleaned))
+                rows.append((package_ref, session_id, axis, cleaned, created_at))
 
         for axis in _LABEL_SINGLE_AXES:
             found = node.find(f".//{axis}")
@@ -480,6 +482,15 @@ def _label_axis_rows(packages: list[dict]) -> list[tuple[str, str, str, str]]:
         milestone = node.find(".//milestone_signal")
         if milestone is not None:
             _add("milestone_criteria", milestone.get("criteria") or "unspecified")
+        # J2 growth-report axes: failure-mode recurrence/avoidance + rework
+        for signal in node.findall(".//failure_signal"):
+            ref = (signal.get("ref") or "").strip()
+            outcome = (signal.get("outcome") or "").strip().lower()
+            if ref and outcome in {"recurred", "avoided"}:
+                _add(f"failure_mode_{outcome}", ref)
+        rework = node.find(".//rework")
+        if rework is not None and (rework.get("present") or "").strip().lower() == "true":
+            _add("rework", "true")
     return rows
 
 

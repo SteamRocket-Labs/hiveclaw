@@ -286,3 +286,12 @@ kernel+runtime 套件 = **869 passed**；全量 `pytest tests -q` = **1 failed, 
 
 - 生产存量数据迁移属唯一不可逆步骤：工具 `python -m app.scripts.migrate_memory_two_planes`（dry-run 默认；`--apply --confirm` 才落盘；无模型配置自动 held）。代码已全切两平面，**存量 agent 的 t3 四文件重组需 owner 在生产环境执行**（先 dry-run 审 plan，再 apply）。
 - engine 内其余另一 session 活跃面未触碰；`test_self_evolution_bakeoff` 修复归其 eval 拆弹主线。
+
+## J2 成长报告（eval-system-spec §2.1/§4.2，owner 07-02 拍板接续 memory 主线）
+
+- **工序 1 输入面**：labels prompt **v3**——新增 `<failure_signals>`（`<failure_signal ref="fm-..." outcome="recurred|avoided">`，只准引用已知 id、禁止发明新 fm-）与 `<rework present>`（重做先前交付才算）两节；`_build_source_bundle` 注入 `known_failure_modes`（self.md `## 失败模式` 的 id/标题/状态，labels LLM 全视野 L1）。
+- **C8 轴扩展**：`t2_label_axes` 增 `failure_mode_recurred`/`failure_mode_avoided`/`rework` 轴 + `created_at` 列（趋势分桶）；rebuild 全派生不变。
+- **生成器** `app/services/growth_report.py`（**零 LLM**，读数=机械不违 L1；解读归蒸馏器）：v1 四指标=失败模式复发/规避（按 fm id 聚合+self.md 状态）、knowledge 引用计数 top-N、owner 反馈极性趋势（session_feedback）、返工率趋势+任务量（spans）；附能力演化节（evolution_ledger promotion/rollback 计数）。产物 `memory/control/growth_report.md` + append-only `growth_metrics_history.jsonl`（debt ledger 同模式）。
+- **接线**：heartbeat 在 `HEARTBEAT_TICK_END` 后刷新（本轮工作落盘后数字最新鲜，供下轮反思；best-effort）；`build_memory_observability` 带 `growth` 节 → 既有 `GET /knowledge/observability` 端点直出（**零新前后端**）；`HEARTBEAT.md` 新增 `<growth_report_reflection>`（数字归平台、解读归 LLM，禁把报告数字当事实写进记忆——引用 t2- 证据）。
+- **踩坑与修复**：growth 的 DB 指标最初挂维护批共享 session，消费了测试 fake 结果序列致模型查询错位 skip（`test_execute_heartbeat_*` 2 红）→ 挪至 tick 末独立会话，语义反而更对。aiosqlite 为声明依赖但本地 venv 缺装（已补）。
+- **测试证据**：`test_growth_report.py` 7 用例 + c8 轴用例 + labels v3/bundle 用例 = 10 红→10 绿（DB 指标用真 sqlite+aiosqlite engine + `@compiles(JSONB,"sqlite")` 适配，无自有层 mock）；memory 生态 368 passed；全量 = **1 failed, 5269 passed, 1 skipped**（唯一失败 `test_self_evolution_bakeoff` 为下一步降级对象：其 `cost_latency` 检查钉死已退役的 rerank timeout 特征串）。

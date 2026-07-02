@@ -228,6 +228,43 @@ async def test_memory_observability_read_model(tmp_path: Path) -> None:
     assert axes["continuity_state"]["standalone"] == 1
 
 
+def test_failure_and_rework_axes_with_created_at(tmp_path: Path) -> None:
+    """J2 input surface: labels ``<failure_signal ref outcome>`` and
+    ``<rework present>`` land as queryable axes, and every axis row carries the
+    package created_at so growth trends can bucket by time."""
+    from app.memory.reference_index import index_db_path, rebuild_reference_index
+
+    agent_id = uuid4()
+    resolved = "t2pkg-fm1"
+    _write_labeled_package(
+        tmp_path,
+        agent_id,
+        segment_id="seg-fm",
+        package_id=resolved,
+        labels_body=f"""<t2_labels schema_version="t2.labels.v1" package_id="{resolved}">
+  <continuity_state>standalone</continuity_state>
+  <failure_signals>
+    <failure_signal ref="fm-guessing" outcome="recurred">又猜了。</failure_signal>
+    <failure_signal ref="fm-stall" outcome="avoided">这次用 ledger 推进。</failure_signal>
+  </failure_signals>
+  <rework present="true">重做了报告结构。</rework>
+</t2_labels>""",
+    )
+
+    rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
+
+    rows = _axis_rows(tmp_path, agent_id)
+    ref = next(iter({r for r, _, _ in rows}))
+    assert (ref, "failure_mode_recurred", "fm-guessing") in rows
+    assert (ref, "failure_mode_avoided", "fm-stall") in rows
+    assert (ref, "rework", "true") in rows
+    with sqlite3.connect(index_db_path(tmp_path, agent_id)) as conn:
+        created = conn.execute(
+            "SELECT DISTINCT created_at FROM t2_label_axes WHERE package_ref = ?", (ref,)
+        ).fetchall()
+    assert created and created[0][0]
+
+
 def test_plane_evidence_refs_count_for_retention(tmp_path: Path) -> None:
     """Part H gap closed here: two-plane citations must reach the reverse
     index. A knowledge page or self.md entry citing ``t2-<hash>`` counts as a

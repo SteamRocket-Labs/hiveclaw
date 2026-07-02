@@ -40,6 +40,9 @@ _LATEST_ONLY_TABLES: tuple[str, ...] = ()
 _LATEST_ONLY_COLUMNS = (
     ("invocation_spans", "evidence_refs"),
     ("invocation_spans", "truth_evidence_json"),
+    ("invocation_spans", "execution_identity_type"),
+    ("invocation_spans", "execution_identity_id"),
+    ("invocation_spans", "execution_identity_label"),
     ("runtime_tasks", "scheduled_at"),
     ("runtime_tasks", "priority"),
     ("runtime_tasks", "claimed_by"),
@@ -50,6 +53,7 @@ _LATEST_ONLY_INDEXES = (
     "ix_agents_tenant_active_created_at",
     "ix_agents_creator_tenant_active_created_at",
     "ix_agent_permissions_scope_lookup",
+    "ix_invocation_spans_execution_identity",
 )
 
 

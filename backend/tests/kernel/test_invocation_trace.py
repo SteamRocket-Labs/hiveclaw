@@ -49,6 +49,7 @@ async def test_record_invocation_span_extracts_truth_evidence_fields():
     from app.services.invocation_trace import record_invocation_span
 
     db = _FakeSpanDB()
+    delegated_user_id = uuid4()
     evidence_payload = {
         "evidence_id": "truth://policy/email-confirmation",
         "source_refs": ["knowledge://policy/email"],
@@ -71,6 +72,9 @@ async def test_record_invocation_span_extracts_truth_evidence_fields():
         runtime_task_id=None,
         session_id="session-1",
         request_id=None,
+        execution_identity_type="delegated_user",
+        execution_identity_id=delegated_user_id,
+        execution_identity_label="Rocky via web",
         metadata={
             "preflight": {
                 "evidence_refs": "truth://policy/email-confirmation",
@@ -83,6 +87,9 @@ async def test_record_invocation_span_extracts_truth_evidence_fields():
     assert row is db.rows[0]
     assert row.evidence_refs == ["truth://policy/email-confirmation"]
     assert row.truth_evidence_json == [evidence_payload]
+    assert row.execution_identity_type == "delegated_user"
+    assert row.execution_identity_id == delegated_user_id
+    assert row.execution_identity_label == "Rocky via web"
 
 
 @pytest.mark.asyncio
@@ -277,7 +284,7 @@ async def test_kernel_records_code_execution_evidence_from_tool_envelope(monkeyp
 
 @pytest.mark.asyncio
 async def test_kernel_persists_invocation_spans_with_runtime_join_keys(monkeypatch, tmp_path):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.contracts import ExecutionIdentityRef, InvocationRequest, RuntimeConfig
     from app.kernel.engine import AgentKernel, KernelDependencies
     from app.services import invocation_trace
 
@@ -286,6 +293,7 @@ async def test_kernel_persists_invocation_spans_with_runtime_join_keys(monkeypat
     agent_id = uuid4()
     tenant_id = uuid4()
     user_id = uuid4()
+    delegated_user_id = uuid4()
     runtime_task_id = uuid4()
     request_id = uuid4()
     captured: list[dict] = []
@@ -333,6 +341,11 @@ async def test_kernel_persists_invocation_spans_with_runtime_join_keys(monkeypat
             role_description="desc",
             agent_id=agent_id,
             user_id=user_id,
+            execution_identity=ExecutionIdentityRef(
+                identity_type="delegated_user",
+                identity_id=delegated_user_id,
+                label="Rocky via web",
+            ),
             session_context=session_ctx,
         )
     )
@@ -349,5 +362,11 @@ async def test_kernel_persists_invocation_spans_with_runtime_join_keys(monkeypat
     assert generation["parent_trace_id"] == "trace-parent"
     assert generation["parent_span_id"].startswith("invocation-")
     assert generation["usage"]["total_tokens"] == 11
+    assert generation["execution_identity_type"] == "delegated_user"
+    assert generation["execution_identity_id"] == delegated_user_id
+    assert generation["execution_identity_label"] == "Rocky via web"
     assert invocation["span_id"] == generation["parent_span_id"]
     assert invocation["runtime_task_id"] == runtime_task_id
+    assert invocation["execution_identity_type"] == "delegated_user"
+    assert invocation["execution_identity_id"] == delegated_user_id
+    assert invocation["execution_identity_label"] == "Rocky via web"

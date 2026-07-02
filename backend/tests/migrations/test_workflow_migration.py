@@ -30,7 +30,12 @@ _WORKFLOW_TABLES = ("workflow_definitions", "workflow_steps", "workflow_leaf_cal
 _COORDINATION_TABLES = ("coordination_leases", "coordination_signals", "coordination_checkpoints")
 _FEEDBACK_TABLES = ("session_feedback_events",)
 _INVOCATION_TRACE_TABLES = ("invocation_spans",)
-_CURRENT_CLOSURE_HEAD = "add_agent_list_performance_indexes_0702"
+_INVOCATION_IDENTITY_COLUMNS = (
+    "execution_identity_type",
+    "execution_identity_id",
+    "execution_identity_label",
+)
+_CURRENT_CLOSURE_HEAD = "invocation_span_execution_identity_0703"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:
@@ -185,6 +190,30 @@ async def _assert_invocation_trace_tables_forced_rls(database_url: str) -> None:
     assert all(name == f"tenant_isolation_{table}" for table, name in policies)
 
 
+async def _assert_invocation_span_identity_columns(database_url: str) -> None:
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name = 'invocation_spans'
+                          AND column_name = ANY(:names)
+                        """
+                    ),
+                    {"names": list(_INVOCATION_IDENTITY_COLUMNS)},
+                )
+            ).all()
+    finally:
+        await engine.dispose()
+
+    found = {row.column_name for row in rows}
+    assert found == set(_INVOCATION_IDENTITY_COLUMNS)
+
+
 async def test_upgrade_path_creates_workflow_tables_with_forced_rls(chain_migrated_pg_url):
     """The migration's own DDL (executed, not stamped) must produce the contract."""
     await _assert_workflow_tables_forced_rls(chain_migrated_pg_url)
@@ -218,6 +247,14 @@ async def test_upgrade_path_creates_invocation_spans_with_forced_rls(chain_migra
 
 async def test_bootstrap_path_creates_invocation_spans_with_forced_rls(migrated_pg_url):
     await _assert_invocation_trace_tables_forced_rls(migrated_pg_url)
+
+
+async def test_upgrade_path_adds_invocation_span_execution_identity_columns(chain_migrated_pg_url):
+    await _assert_invocation_span_identity_columns(chain_migrated_pg_url)
+
+
+async def test_bootstrap_path_adds_invocation_span_execution_identity_columns(migrated_pg_url):
+    await _assert_invocation_span_identity_columns(migrated_pg_url)
 
 
 async def test_upgrade_path_adds_chat_message_thinking_signature(chain_migrated_pg_url):

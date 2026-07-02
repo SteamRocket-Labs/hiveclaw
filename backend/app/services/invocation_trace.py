@@ -197,6 +197,9 @@ async def record_invocation_span(
     runtime_task_id: uuid.UUID | None,
     session_id: str | None,
     request_id: uuid.UUID | None,
+    execution_identity_type: str | None = None,
+    execution_identity_id: uuid.UUID | str | None = None,
+    execution_identity_label: str | None = None,
     metadata: dict[str, Any] | None = None,
     usage: dict[str, Any] | None = None,
     error: str | None = None,
@@ -207,12 +210,20 @@ async def record_invocation_span(
     from app.models.invocation_span import InvocationSpan
 
     clean_metadata = dict(metadata or {})
+    identity_metadata = clean_metadata.get("execution_identity")
+    if isinstance(identity_metadata, dict):
+        execution_identity_type = execution_identity_type or identity_metadata.get("identity_type") or identity_metadata.get("type")
+        execution_identity_id = execution_identity_id or identity_metadata.get("identity_id") or identity_metadata.get("id")
+        execution_identity_label = execution_identity_label or identity_metadata.get("label")
     evidence_refs, truth_evidence_json = _extract_truth_evidence_fields(clean_metadata)
     row = InvocationSpan(
         id=uuid.uuid4(),
         tenant_id=tenant_id,
         agent_id=agent_id,
         user_id=user_id,
+        execution_identity_type=str(execution_identity_type)[:20] if execution_identity_type else None,
+        execution_identity_id=_coerce_uuid(execution_identity_id),
+        execution_identity_label=str(execution_identity_label)[:200] if execution_identity_label else None,
         runtime_task_id=runtime_task_id,
         session_id=str(session_id) if session_id else None,
         request_id=request_id,
@@ -253,6 +264,9 @@ async def persist_invocation_span(
     runtime_task_id: uuid.UUID | str | None,
     session_id: str | None,
     request_id: uuid.UUID | str | None,
+    execution_identity_type: str | None = None,
+    execution_identity_id: uuid.UUID | str | None = None,
+    execution_identity_label: str | None = None,
     metadata: dict[str, Any] | None = None,
     usage: dict[str, Any] | None = None,
     error: str | None = None,
@@ -287,6 +301,9 @@ async def persist_invocation_span(
                 runtime_task_id=_coerce_uuid(runtime_task_id),
                 session_id=session_id,
                 request_id=_coerce_uuid(request_id),
+                execution_identity_type=execution_identity_type,
+                execution_identity_id=execution_identity_id,
+                execution_identity_label=execution_identity_label,
                 metadata=metadata,
                 usage=usage,
                 error=error,
@@ -302,6 +319,15 @@ def _span_to_dict(row: Any) -> dict[str, Any]:
         "tenant_id": str(row.tenant_id),
         "agent_id": str(row.agent_id) if row.agent_id else None,
         "user_id": str(row.user_id) if row.user_id else None,
+        "execution_identity": (
+            {
+                "type": row.execution_identity_type,
+                "id": str(row.execution_identity_id) if row.execution_identity_id else None,
+                "label": row.execution_identity_label,
+            }
+            if row.execution_identity_type or row.execution_identity_id or row.execution_identity_label
+            else None
+        ),
         "runtime_task_id": str(row.runtime_task_id) if row.runtime_task_id else None,
         "session_id": row.session_id,
         "request_id": str(row.request_id) if row.request_id else None,

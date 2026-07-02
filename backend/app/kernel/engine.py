@@ -1053,6 +1053,16 @@ async def _record_runtime_span(
     clean_metadata = dict(metadata or {})
     clean_metadata.setdefault("source", _span_source(request))
     clean_metadata.setdefault("parent_span_id", root_span_id if span_type != "invocation" else None)
+    execution_identity = request.execution_identity
+    if execution_identity is not None:
+        clean_metadata.setdefault(
+            "execution_identity",
+            {
+                "identity_type": execution_identity.identity_type,
+                "identity_id": str(execution_identity.identity_id) if execution_identity.identity_id else None,
+                "label": execution_identity.label,
+            },
+        )
     session_metadata = _span_session_metadata(request)
     if session_metadata.get("parent_trace_id") and not clean_metadata.get("parent_trace_id"):
         clean_metadata["parent_trace_id"] = session_metadata.get("parent_trace_id")
@@ -1090,6 +1100,9 @@ async def _record_runtime_span(
             or _uuid_from_metadata(session_metadata, "task_id"),
             session_id=_span_session_id(request),
             request_id=_uuid_from_metadata(session_metadata, "request_id"),
+            execution_identity_type=execution_identity.identity_type if execution_identity is not None else None,
+            execution_identity_id=execution_identity.identity_id if execution_identity is not None else None,
+            execution_identity_label=execution_identity.label if execution_identity is not None else None,
             metadata=clean_metadata,
             usage=clean_metadata.get("usage") if isinstance(clean_metadata.get("usage"), dict) else None,
             error=str(clean_metadata.get("error") or "")[:4000] if clean_metadata.get("error") else None,

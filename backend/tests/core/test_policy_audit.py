@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 
-from app.core.policy import write_audit_event
+from app.core.policy import compute_audit_event_hash, write_audit_event
 
 
 class _FailIfTouchedDB:
@@ -92,6 +92,107 @@ async def test_write_audit_event_hash_covers_details() -> None:
     second = await _write({"path": "b.md"})
 
     assert first.event_hash != second.event_hash
+
+
+def test_compute_audit_event_hash_covers_execution_identity() -> None:
+    tenant_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    resource_id = uuid.uuid4()
+    request_id = uuid.uuid4()
+    delegated_user_id = uuid.uuid4()
+
+    first = compute_audit_event_hash(
+        event_type="tool.execution",
+        severity="info",
+        actor_type="agent",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        action="send_email",
+        resource_type="tool",
+        resource_id=resource_id,
+        details={"recipient": "customer@example.com"},
+        request_id=request_id,
+        prev_hash="same-prev",
+        execution_identity_type="delegated_user",
+        execution_identity_id=delegated_user_id,
+        execution_identity_label="Rocky via web",
+    )
+    second = compute_audit_event_hash(
+        event_type="tool.execution",
+        severity="info",
+        actor_type="agent",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        action="send_email",
+        resource_type="tool",
+        resource_id=resource_id,
+        details={"recipient": "customer@example.com"},
+        request_id=request_id,
+        prev_hash="same-prev",
+        execution_identity_type="delegated_user",
+        execution_identity_id=delegated_user_id,
+        execution_identity_label="Rocky via feishu",
+    )
+
+    assert first != second
+
+
+@pytest.mark.asyncio
+async def test_write_audit_event_hash_chains_execution_identity() -> None:
+    from app.core.execution_context import ExecutionIdentity, clear_execution_identity, set_execution_identity
+
+    tenant_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    delegated_user_id = uuid.uuid4()
+    db = _CaptureAuditDB(previous_hash="same-prev")
+    set_execution_identity(ExecutionIdentity("delegated_user", delegated_user_id, "Rocky via web"))
+    try:
+        await write_audit_event(
+            db,  # type: ignore[arg-type]
+            event_type="tool.execution",
+            severity="info",
+            actor_type="agent",
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            action="send_email",
+            resource_type="tool",
+            resource_id=None,
+            details={"recipient": "customer@example.com"},
+        )
+    finally:
+        clear_execution_identity()
+
+    event = db.added[0]
+    assert event.execution_identity_type == "delegated_user"
+    assert event.execution_identity_id == delegated_user_id
+    assert event.execution_identity_label == "Rocky via web"
+    assert event.event_hash == compute_audit_event_hash(
+        event_type="tool.execution",
+        severity="info",
+        actor_type="agent",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        action="send_email",
+        resource_type="tool",
+        resource_id=None,
+        details={"recipient": "customer@example.com"},
+        prev_hash="same-prev",
+        execution_identity_type="delegated_user",
+        execution_identity_id=delegated_user_id,
+        execution_identity_label="Rocky via web",
+    )
+    assert event.event_hash != compute_audit_event_hash(
+        event_type="tool.execution",
+        severity="info",
+        actor_type="agent",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        action="send_email",
+        resource_type="tool",
+        resource_id=None,
+        details={"recipient": "customer@example.com"},
+        prev_hash="same-prev",
+    )
 
 
 @pytest.mark.asyncio

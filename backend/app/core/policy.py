@@ -30,31 +30,36 @@ def compute_audit_event_hash(
     details: dict | None = None,
     ip_address: str | None = None,
     request_id: uuid.UUID | None = None,
+    execution_identity_type: str | None = None,
+    execution_identity_id: uuid.UUID | None = None,
+    execution_identity_label: str | None = None,
     prev_hash: str,
 ) -> str:
     """Compute the canonical tamper-evident hash for an audit event."""
     import hashlib
     import json
 
-    hash_input = json.dumps(
-        {
-            "event_type": event_type,
-            "severity": severity,
-            "actor_type": actor_type,
-            "actor_id": str(actor_id) if actor_id is not None else None,
-            "tenant_id": str(tenant_id),
-            "action": action,
-            "resource_type": resource_type,
-            "resource_id": str(resource_id) if resource_id is not None else None,
-            "details": details or {},
-            "ip_address": str(ip_address) if ip_address else None,
-            "request_id": str(request_id) if request_id is not None else None,
-            "prev_hash": prev_hash,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
+    payload = {
+        "event_type": event_type,
+        "severity": severity,
+        "actor_type": actor_type,
+        "actor_id": str(actor_id) if actor_id is not None else None,
+        "tenant_id": str(tenant_id),
+        "action": action,
+        "resource_type": resource_type,
+        "resource_id": str(resource_id) if resource_id is not None else None,
+        "details": details or {},
+        "ip_address": str(ip_address) if ip_address else None,
+        "request_id": str(request_id) if request_id is not None else None,
+        "prev_hash": prev_hash,
+    }
+    if execution_identity_type or execution_identity_id or execution_identity_label:
+        payload["execution_identity"] = {
+            "type": execution_identity_type,
+            "id": str(execution_identity_id) if execution_identity_id is not None else None,
+            "label": execution_identity_label,
+        }
+    hash_input = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(hash_input.encode()).hexdigest()
 
 
@@ -239,6 +244,20 @@ async def write_audit_event(
     )
     prev_hash = result.scalar_one_or_none() or "genesis"
 
+    # Read execution identity from ContextVar (set by channel handlers / trigger daemon)
+    exec_identity_type = None
+    exec_identity_id = None
+    exec_identity_label = None
+    try:
+        from app.core.execution_context import get_execution_identity
+        identity = get_execution_identity()
+        if identity:
+            exec_identity_type = identity.identity_type
+            exec_identity_id = identity.identity_id
+            exec_identity_label = identity.label
+    except Exception as exc:  # noqa: BLE001 - audit writing must not fail on optional context capture
+        logger.debug("Execution identity unavailable for audit event %s: %s", event_type, exc)
+
     event_hash = compute_audit_event_hash(
         event_type=event_type,
         severity=severity,
@@ -251,22 +270,11 @@ async def write_audit_event(
         details=details,
         ip_address=ip_address,
         request_id=request_id,
+        execution_identity_type=exec_identity_type,
+        execution_identity_id=exec_identity_id,
+        execution_identity_label=exec_identity_label,
         prev_hash=prev_hash,
     )
-
-    # Read execution identity from ContextVar (set by channel handlers / trigger daemon)
-    exec_identity_type = None
-    exec_identity_id = None
-    exec_identity_label = None
-    try:
-        from app.core.execution_context import get_execution_identity
-        identity = get_execution_identity()
-        if identity:
-            exec_identity_type = identity.identity_type
-            exec_identity_id = identity.identity_id
-            exec_identity_label = identity.label
-    except Exception:
-        pass  # execution_context not available — safe to skip
 
     event = SecurityAuditEvent(
         event_type=event_type,

@@ -165,6 +165,23 @@ async def verify_chain(
         details=event.details,
         ip_address=str(event.ip_address) if event.ip_address else None,
         request_id=event.request_id,
+        execution_identity_type=getattr(event, "execution_identity_type", None),
+        execution_identity_id=getattr(event, "execution_identity_id", None),
+        execution_identity_label=getattr(event, "execution_identity_label", None),
+        prev_hash=event.prev_hash,
+    )
+    canonical_v2_hash = compute_audit_event_hash(
+        event_type=event.event_type,
+        severity=event.severity,
+        actor_type=event.actor_type,
+        actor_id=event.actor_id,
+        tenant_id=event.tenant_id,
+        action=event.action,
+        resource_type=event.resource_type,
+        resource_id=event.resource_id,
+        details=event.details,
+        ip_address=str(event.ip_address) if event.ip_address else None,
+        request_id=event.request_id,
         prev_hash=event.prev_hash,
     )
     legacy_hash = compute_legacy_audit_event_hash(
@@ -178,6 +195,17 @@ async def verify_chain(
     if event.event_hash == canonical_hash:
         valid = True
         computed_hash = canonical_hash
+        if (
+            getattr(event, "execution_identity_type", None)
+            or getattr(event, "execution_identity_id", None)
+            or getattr(event, "execution_identity_label", None)
+        ):
+            hash_version = "canonical_v3"
+        else:
+            hash_version = "canonical_v2"
+    elif event.event_hash == canonical_v2_hash:
+        valid = True
+        computed_hash = canonical_v2_hash
         hash_version = "canonical_v2"
     elif event.event_hash == legacy_hash:
         valid = True

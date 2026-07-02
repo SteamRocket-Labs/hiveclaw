@@ -41,6 +41,7 @@ async def test_invocation_trace_service_persists_and_reads_cross_invocation_tree
     await _seed_tenant(owner_sessionmaker, tenant_id)
     runtime_task_id = uuid.uuid4()
     request_id = uuid.uuid4()
+    delegated_user_id = uuid.uuid4()
     await _seed_runtime_task(owner_sessionmaker, tenant_id, runtime_task_id)
 
     async with owner_sessionmaker() as db:
@@ -60,6 +61,9 @@ async def test_invocation_trace_service_persists_and_reads_cross_invocation_tree
             runtime_task_id=runtime_task_id,
             session_id="session-1",
             request_id=request_id,
+            execution_identity_type="delegated_user",
+            execution_identity_id=delegated_user_id,
+            execution_identity_label="Rocky via web",
             metadata={"source": "web"},
         )
         await record_invocation_span(
@@ -108,6 +112,11 @@ async def test_invocation_trace_service_persists_and_reads_cross_invocation_tree
     assert tree["span_count"] == 3
     root = tree["tree"][0]
     assert root["span_id"] == "invocation"
+    assert root["execution_identity"] == {
+        "type": "delegated_user",
+        "id": str(delegated_user_id),
+        "label": "Rocky via web",
+    }
     assert {child["span_id"] for child in root["children"]} == {"generation-1", "invocation"}
     child_trace = next(child for child in root["children"] if child["trace_id"] == "trace-child")
     assert child_trace["parent_trace_id"] == "trace-parent"

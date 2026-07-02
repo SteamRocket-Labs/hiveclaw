@@ -1358,3 +1358,48 @@ cd backend && source .venv/bin/activate && pytest \
   -q
 # 3 passed, 3 warnings
 ```
+
+### Part 22 — C3 ChatArtifact snapshot GC / retention（2026-07-02）
+
+红测：
+
+- `test_chat_artifact_snapshot_cleanup_deletes_only_unreferenced_expired_files`：旧服务只有 delivery-time snapshot 写入，没有任何 retention/GC 函数、没有 GC report，也无法证明 referenced snapshot 不会被误删。
+- `test_execute_heartbeat_wires_chat_artifact_snapshot_retention`：旧 heartbeat maintenance 没有调用 artifact snapshot retention。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_chat_artifact_delivery.py::test_chat_artifact_snapshot_cleanup_deletes_only_unreferenced_expired_files \
+  tests/services/test_chat_artifact_delivery.py::test_execute_heartbeat_wires_chat_artifact_snapshot_retention \
+  -q
+# failed: missing CHAT_ARTIFACT_SNAPSHOT_GC_REPORT / _run_chat_artifact_snapshot_retention
+```
+
+变更：
+
+- `chat_artifact_delivery.py` 新增 `cleanup_chat_artifact_snapshots()`：只遍历 `runtime_artifacts/chat_artifact_snapshots/**`，拒绝绝对路径、`..` 与非 snapshot 前缀；referenced snapshots 永不删除；unreferenced 且超过 retention 的文件删除。
+- 新增 `cleanup_chat_artifact_snapshots_for_agent()`：从 `ChatArtifact.snapshot_json.snapshot_storage_path` 收集引用集合，再执行 filesystem GC。
+- 每次 GC 写 `runtime_artifacts/chat_artifact_snapshot_gc.json`，schema 为 `chat_artifact_snapshot_gc.v1`，记录 retention_days、cutoff、removed_count、kept_referenced_count、kept_recent_count、removed_bytes、pruned_empty_dirs。
+- `config.py` 增加 `CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS=30.0`。
+- `heartbeat._execute_heartbeat()` best-effort 调用 `_run_chat_artifact_snapshot_retention()`；失败只 warning，不影响 heartbeat 主流程。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_chat_artifact_delivery.py::test_chat_artifact_snapshot_cleanup_deletes_only_unreferenced_expired_files \
+  tests/services/test_chat_artifact_delivery.py::test_execute_heartbeat_wires_chat_artifact_snapshot_retention \
+  -q
+# 2 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_chat_artifact_delivery.py -q
+# 33 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/chat_artifact_delivery.py \
+  app/services/heartbeat.py \
+  app/config.py \
+  tests/services/test_chat_artifact_delivery.py
+# All checks passed
+```

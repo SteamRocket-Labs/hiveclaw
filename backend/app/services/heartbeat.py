@@ -1375,6 +1375,33 @@ async def _run_t2_retention(agent_id: uuid.UUID):
     )
 
 
+async def _run_chat_artifact_snapshot_retention(agent_id: uuid.UUID) -> dict:
+    """Remove expired unreferenced chat artifact snapshots on the heartbeat cadence."""
+    from app.config import get_settings
+    from app.services.chat_artifact_delivery import (
+        DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
+        cleanup_chat_artifact_snapshots_for_agent,
+    )
+
+    settings = get_settings()
+    async with (
+        tenant_scoped_session(None) as db,
+        enter_rls_bypass(db, reason="chat artifact snapshot retention across tenants"),
+    ):
+        return await cleanup_chat_artifact_snapshots_for_agent(
+            db=db,
+            agent_id=agent_id,
+            workspace_root=Path(settings.AGENT_DATA_DIR) / str(agent_id),
+            retention_days=float(
+                getattr(
+                    settings,
+                    "CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS",
+                    DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
+                )
+            ),
+        )
+
+
 async def _run_convergence_dirtiness_refresh(agent_id: uuid.UUID):
     """工序 4 (Part F): measure profile-plane dirtiness for the convergence loop."""
     from app.config import get_settings
@@ -1512,6 +1539,18 @@ async def _execute_heartbeat(
                     )
             except Exception as _retention_err:
                 logger.warning("[Heartbeat] T2 retention failed for {}: {}", agent_id, _retention_err)
+
+            try:
+                artifact_gc_report = await _run_chat_artifact_snapshot_retention(agent_id)
+                if artifact_gc_report.get("removed_count"):
+                    logger.info(
+                        "[Heartbeat] Chat artifact snapshot retention for {}: removed={} bytes={}",
+                        agent_id,
+                        artifact_gc_report.get("removed_count"),
+                        artifact_gc_report.get("removed_bytes"),
+                    )
+            except Exception as _artifact_gc_err:
+                logger.warning("[Heartbeat] Chat artifact snapshot retention failed for {}: {}", agent_id, _artifact_gc_err)
 
             try:
                 dirtiness_report = await _run_convergence_dirtiness_refresh(agent_id)

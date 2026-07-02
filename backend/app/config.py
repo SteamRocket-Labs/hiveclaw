@@ -183,6 +183,10 @@ class Settings(BaseSettings):
     # packages older than this archive to memory/.archive/t2/** — moved,
     # never deleted; refs keep resolving through the reference index.
     MEMORY_RETENTION_ARCHIVE_AFTER_DAYS: float = 30.0
+    # Chat artifact delivery snapshots are opened from delivery-time copies.
+    # Referenced snapshots are never deleted; unreferenced files older than
+    # this threshold are removed by heartbeat maintenance.
+    CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS: float = 30.0
     # Resident profile-plane budget (read side, memory-system-spec §4.2):
     # self + profiles + explicit overlay load whole into the prompt; going
     # over this budget is a write-side convergence failure signal (工序 4),

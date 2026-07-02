@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -91,6 +93,56 @@ def test_artifact_open_returns_delivery_snapshot_after_workspace_overwrite(tmp_p
     assert content["uses_snapshot"] is True
     assert content["legacy_current_file_fallback"] is False
     assert content["workspace_changed"] is True
+
+
+def test_chat_artifact_snapshot_cleanup_deletes_only_unreferenced_expired_files(tmp_path):
+    from app.services.chat_artifact_delivery import (
+        CHAT_ARTIFACT_SNAPSHOT_DIR,
+        CHAT_ARTIFACT_SNAPSHOT_GC_REPORT,
+        cleanup_chat_artifact_snapshots,
+    )
+
+    workspace = tmp_path / "agent"
+    snapshot_root = workspace / CHAT_ARTIFACT_SNAPSHOT_DIR
+    referenced = snapshot_root / "session-a" / "run-a" / "keep.md"
+    old_unreferenced = snapshot_root / "session-b" / "run-b" / "delete.md"
+    recent_unreferenced = snapshot_root / "session-c" / "run-c" / "recent.md"
+    for path in (referenced, old_unreferenced, recent_unreferenced):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding="utf-8")
+
+    old_ts = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+    recent_ts = datetime(2026, 2, 14, tzinfo=timezone.utc).timestamp()
+    for path in (referenced, old_unreferenced):
+        os.utime(path, (old_ts, old_ts))
+    os.utime(recent_unreferenced, (recent_ts, recent_ts))
+
+    report = cleanup_chat_artifact_snapshots(
+        workspace_root=workspace,
+        referenced_snapshot_paths=[str(referenced.relative_to(workspace))],
+        retention_days=30.0,
+        now=datetime(2026, 2, 15, tzinfo=timezone.utc),
+    )
+
+    assert referenced.exists()
+    assert recent_unreferenced.exists()
+    assert not old_unreferenced.exists()
+    assert report["removed_count"] == 1
+    assert report["kept_referenced_count"] == 1
+    assert report["kept_recent_count"] == 1
+    gc_report = json.loads((workspace / CHAT_ARTIFACT_SNAPSHOT_GC_REPORT).read_text(encoding="utf-8"))
+    assert gc_report["schema"] == "chat_artifact_snapshot_gc.v1"
+    assert gc_report["removed_count"] == 1
+    assert gc_report["retention_days"] == 30.0
+
+
+def test_execute_heartbeat_wires_chat_artifact_snapshot_retention():
+    import inspect
+
+    from app.services import heartbeat
+
+    source = inspect.getsource(heartbeat._execute_heartbeat)
+    assert "_run_chat_artifact_snapshot_retention(" in source
 
 
 def test_chat_artifact_insert_statement_uses_postgres_on_conflict(tmp_path):

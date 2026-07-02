@@ -6,7 +6,7 @@ import hashlib
 import json
 import mimetypes
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -28,9 +28,12 @@ OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"}
 TEXT_PREVIEW_SNAPSHOT_MAX_BYTES = 64 * 1024
 CHAT_ARTIFACT_SNAPSHOT_DIR = Path("runtime_artifacts") / "chat_artifact_snapshots"
 CHAT_ARTIFACT_PROVENANCE_INDEX = Path("runtime_artifacts") / "chat_artifact_provenance_index.json"
+CHAT_ARTIFACT_SNAPSHOT_GC_REPORT = Path("runtime_artifacts") / "chat_artifact_snapshot_gc.json"
 CHAT_ARTIFACT_PROVENANCE_ENTRY_LIMIT = 20
 CHAT_ARTIFACT_PROVENANCE_HINT_LIMIT = 5
 CHAT_ARTIFACT_IDEMPOTENCY_CONSTRAINT = "uq_chat_artifacts_agent_session_run_path_snapshot"
+CHAT_ARTIFACT_SNAPSHOT_GC_SCHEMA = "chat_artifact_snapshot_gc.v1"
+DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS = 30.0
 
 
 def tool_session_write_paths(tool_name: str, args: dict[str, Any]) -> list[str]:
@@ -251,6 +254,139 @@ def _snapshot_storage_rel_path(
     filename = f"{snapshot_hash}{suffix}" if suffix else snapshot_hash
     run_key = str(runtime_task_id) if runtime_task_id else "no-runtime-task"
     return CHAT_ARTIFACT_SNAPSHOT_DIR / str(session_id) / run_key / filename
+
+
+def _safe_snapshot_relative_path(value: Any) -> Path | None:
+    raw = str(value or "").replace("\\", "/").strip()
+    if not raw:
+        return None
+    rel = PurePosixPath(raw)
+    if rel.is_absolute() or any(part in {"", ".", ".."} for part in rel.parts):
+        return None
+    required_prefix = PurePosixPath(CHAT_ARTIFACT_SNAPSHOT_DIR.as_posix()).parts
+    if rel.parts[: len(required_prefix)] != required_prefix:
+        return None
+    return Path(rel.as_posix())
+
+
+def _write_snapshot_gc_report(workspace_root: Path, report: dict[str, Any]) -> None:
+    report_path = workspace_root / CHAT_ARTIFACT_SNAPSHOT_GC_REPORT
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = report_path.with_suffix(f"{report_path.suffix}.tmp")
+    tmp.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+    tmp.replace(report_path)
+
+
+def _prune_empty_snapshot_dirs(snapshot_root: Path) -> int:
+    removed = 0
+    if not snapshot_root.exists():
+        return 0
+    directories = [path for path in snapshot_root.rglob("*") if path.is_dir()]
+    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+        try:
+            directory.rmdir()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def cleanup_chat_artifact_snapshots(
+    *,
+    workspace_root: Path,
+    referenced_snapshot_paths: list[str] | tuple[str, ...] | set[str],
+    retention_days: float = DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Delete expired unreferenced delivery snapshots and write an audit report."""
+    root = workspace_root.resolve()
+    snapshot_root = (root / CHAT_ARTIFACT_SNAPSHOT_DIR).resolve()
+    current_time = now or datetime.now(timezone.utc)
+    retention_days = max(float(retention_days), 0.0)
+    cutoff = current_time - timedelta(days=retention_days)
+    referenced_paths: set[Path] = set()
+    for raw_path in referenced_snapshot_paths:
+        rel = _safe_snapshot_relative_path(raw_path)
+        if rel is None:
+            continue
+        referenced_paths.add((root / rel).resolve())
+
+    removed_paths: list[str] = []
+    removed_bytes = 0
+    kept_referenced_count = 0
+    kept_recent_count = 0
+    scanned_count = 0
+    if snapshot_root.exists():
+        for path in snapshot_root.rglob("*"):
+            if not path.is_file():
+                continue
+            scanned_count += 1
+            resolved = path.resolve()
+            try:
+                rel_display = resolved.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if resolved in referenced_paths:
+                kept_referenced_count += 1
+                continue
+            try:
+                stat_data = path.stat()
+            except OSError:
+                continue
+            modified_at = datetime.fromtimestamp(stat_data.st_mtime, tz=timezone.utc)
+            if modified_at > cutoff:
+                kept_recent_count += 1
+                continue
+            try:
+                size = stat_data.st_size
+                path.unlink()
+            except OSError:
+                continue
+            removed_paths.append(rel_display)
+            removed_bytes += size
+
+    pruned_empty_dirs = _prune_empty_snapshot_dirs(snapshot_root)
+    report = {
+        "schema": CHAT_ARTIFACT_SNAPSHOT_GC_SCHEMA,
+        "generated_at": current_time.isoformat(),
+        "workspace_root": str(root),
+        "retention_days": retention_days,
+        "cutoff": cutoff.isoformat(),
+        "referenced_count": len(referenced_paths),
+        "scanned_count": scanned_count,
+        "removed_count": len(removed_paths),
+        "removed_bytes": removed_bytes,
+        "removed_paths": removed_paths[:200],
+        "kept_referenced_count": kept_referenced_count,
+        "kept_recent_count": kept_recent_count,
+        "pruned_empty_dirs": pruned_empty_dirs,
+    }
+    _write_snapshot_gc_report(root, report)
+    return report
+
+
+async def cleanup_chat_artifact_snapshots_for_agent(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    workspace_root: Path,
+    retention_days: float = DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    result = await db.execute(select(ChatArtifact.snapshot_json).where(ChatArtifact.agent_id == agent_id))
+    snapshot_payloads = result.scalars().all()
+    referenced_paths: list[str] = []
+    for snapshot in snapshot_payloads:
+        if isinstance(snapshot, dict):
+            storage_path = str(snapshot.get("snapshot_storage_path") or "").strip()
+            if storage_path:
+                referenced_paths.append(storage_path)
+    return cleanup_chat_artifact_snapshots(
+        workspace_root=workspace_root,
+        referenced_snapshot_paths=referenced_paths,
+        retention_days=retention_days,
+        now=now,
+    )
 
 
 def _write_content_snapshot(

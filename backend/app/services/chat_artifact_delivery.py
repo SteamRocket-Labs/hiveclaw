@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_artifact import ChatArtifact
@@ -29,6 +30,7 @@ CHAT_ARTIFACT_SNAPSHOT_DIR = Path("runtime_artifacts") / "chat_artifact_snapshot
 CHAT_ARTIFACT_PROVENANCE_INDEX = Path("runtime_artifacts") / "chat_artifact_provenance_index.json"
 CHAT_ARTIFACT_PROVENANCE_ENTRY_LIMIT = 20
 CHAT_ARTIFACT_PROVENANCE_HINT_LIMIT = 5
+CHAT_ARTIFACT_IDEMPOTENCY_CONSTRAINT = "uq_chat_artifacts_agent_session_run_path_snapshot"
 
 
 def tool_session_write_paths(tool_name: str, args: dict[str, Any]) -> list[str]:
@@ -567,6 +569,65 @@ def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:
     }
 
 
+def _chat_artifact_insert_statement(
+    *,
+    candidate: dict[str, Any],
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    session_id: str | uuid.UUID,
+    message_id: uuid.UUID,
+    runtime_task_id: str | uuid.UUID | None,
+    source: str,
+) -> Any:
+    """Build the atomic artifact insert used by concurrent web-chat runs."""
+    runtime_uuid = uuid.UUID(str(runtime_task_id)) if runtime_task_id else None
+    return (
+        pg_insert(ChatArtifact)
+        .values(
+            id=uuid.UUID(str(candidate["artifact_id"])),
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=uuid.UUID(str(session_id)),
+            message_id=message_id,
+            runtime_task_id=runtime_uuid,
+            path=candidate["path"],
+            name=candidate["name"],
+            mime_type=candidate.get("mime_type"),
+            size=candidate.get("size"),
+            modified_at=candidate.get("modified_at"),
+            preview_kind=candidate.get("preview_kind", "download"),
+            source=candidate.get("source", source),
+            snapshot_hash=candidate["snapshot_hash"],
+            snapshot_json=candidate.get("snapshot"),
+        )
+        .on_conflict_do_nothing(constraint=CHAT_ARTIFACT_IDEMPOTENCY_CONSTRAINT)
+        .returning(ChatArtifact.id)
+    )
+
+
+async def _load_existing_chat_artifact(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    runtime_task_id: uuid.UUID | None,
+    path: str,
+    snapshot_hash: str,
+) -> ChatArtifact | None:
+    result = await db.execute(
+        select(ChatArtifact)
+        .where(
+            ChatArtifact.agent_id == agent_id,
+            ChatArtifact.session_id == session_id,
+            ChatArtifact.runtime_task_id == runtime_task_id,
+            ChatArtifact.path == path,
+            ChatArtifact.snapshot_hash == snapshot_hash,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def create_chat_artifacts_for_message(
     *,
     db: AsyncSession,
@@ -613,42 +674,35 @@ async def create_chat_artifacts_for_message(
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
-        existing_result = await db.execute(
-            select(ChatArtifact)
-            .where(
-                ChatArtifact.agent_id == agent_id,
-                ChatArtifact.session_id == session_uuid,
-                ChatArtifact.runtime_task_id == runtime_uuid,
-                ChatArtifact.path == candidate["path"],
-                ChatArtifact.snapshot_hash == candidate["snapshot_hash"],
+        insert_result = await db.execute(
+            _chat_artifact_insert_statement(
+                candidate=candidate,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=session_uuid,
+                message_id=message_id,
+                runtime_task_id=runtime_uuid,
+                source=source,
             )
-            .limit(1)
         )
-        existing = existing_result.scalar_one_or_none()
-        if existing is not None:
+        inserted_id = insert_result.scalar_one_or_none()
+        if inserted_id is None:
+            existing = await _load_existing_chat_artifact(
+                db=db,
+                agent_id=agent_id,
+                session_id=session_uuid,
+                runtime_task_id=runtime_uuid,
+                path=candidate["path"],
+                snapshot_hash=candidate["snapshot_hash"],
+            )
+            if existing is None:
+                continue
             part = artifact_part_from_model(existing)
             record_workspace_artifact_provenance(workspace_root, part)
             parts.append(part)
             continue
-        artifact_id = uuid.UUID(str(candidate["artifact_id"]))
-        artifact = ChatArtifact(
-            id=artifact_id,
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            session_id=session_uuid,
-            message_id=message_id,
-            runtime_task_id=runtime_uuid,
-            path=candidate["path"],
-            name=candidate["name"],
-            mime_type=candidate.get("mime_type"),
-            size=candidate.get("size"),
-            modified_at=candidate.get("modified_at"),
-            preview_kind=candidate.get("preview_kind", "download"),
-            source=candidate.get("source", source),
-            snapshot_hash=candidate["snapshot_hash"],
-            snapshot_json=candidate.get("snapshot"),
-        )
-        db.add(artifact)
+        candidate["artifact_id"] = str(inserted_id)
+        candidate["id"] = str(inserted_id)
         record_workspace_artifact_provenance(workspace_root, candidate)
         parts.append(_artifact_part_from_candidate(candidate))
     return parts

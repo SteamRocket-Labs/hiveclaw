@@ -1289,3 +1289,46 @@ cd frontend && npm run test -- src/pages/agent-detail/AgentDetailSections.test.t
 cd frontend && npm run build
 # tsc && vite build passed
 ```
+
+### Part 20 — C1 ChatArtifact 并发幂等改为数据库级 upsert（2026-07-02）
+
+红测：
+
+- `test_chat_artifact_insert_statement_uses_postgres_on_conflict`：旧 `chat_artifact_delivery` 没有 `_chat_artifact_insert_statement`，artifact 创建仍是“先查再插”，两个 session/run 并发交付同一路径同一快照时存在竞态。
+- `test_chat_artifact_delivery_real_pg_concurrent_idempotency`：使用真实 migrated PostgreSQL、两个独立 tenant-scoped session 并发调用 `create_chat_artifacts_for_message()`，要求唯一约束只保留一条 `chat_artifacts` row，两个返回 part 指向同一个 artifact id。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_chat_artifact_delivery.py::test_chat_artifact_insert_statement_uses_postgres_on_conflict \
+  -q
+# failed: ImportError: cannot import name '_chat_artifact_insert_statement'
+```
+
+变更：
+
+- `chat_artifact_delivery.py` 新增 `CHAT_ARTIFACT_IDEMPOTENCY_CONSTRAINT`，显式绑定 `uq_chat_artifacts_agent_session_run_path_snapshot`。
+- 新增 `_chat_artifact_insert_statement()`，使用 PostgreSQL `INSERT ... ON CONFLICT ON CONSTRAINT ... DO NOTHING RETURNING chat_artifacts.id`。
+- `create_chat_artifacts_for_message()` 删除“先查再插”主路径，改为先执行原子 upsert；只有 `RETURNING id` 为空时才回查既有 artifact 并返回已存在 row 的 part。
+- 保留同一函数内 path/snapshot 去重、delivery snapshot、workspace provenance index 更新语义不变。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_chat_artifact_delivery.py::test_chat_artifact_insert_statement_uses_postgres_on_conflict \
+  tests/services/test_chat_artifact_delivery.py::test_chat_artifact_delivery_idempotent_for_same_run_path_snapshot \
+  -q
+# 2 passed
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_chat_artifact_delivery.py::test_chat_artifact_delivery_real_pg_concurrent_idempotency \
+  -q
+# 1 passed
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/chat_artifact_delivery.py \
+  tests/services/test_chat_artifact_delivery.py
+# All checks passed
+```

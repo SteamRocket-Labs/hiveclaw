@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import func, select
 
 
 def test_artifact_policy_accepts_workspace_user_artifact(tmp_path):
@@ -91,6 +93,44 @@ def test_artifact_open_returns_delivery_snapshot_after_workspace_overwrite(tmp_p
     assert content["workspace_changed"] is True
 
 
+def test_chat_artifact_insert_statement_uses_postgres_on_conflict(tmp_path):
+    from sqlalchemy.dialects import postgresql
+
+    from app.services.chat_artifact_delivery import build_artifact_candidate, _chat_artifact_insert_statement
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    runtime_task_id = uuid4()
+    message_id = uuid4()
+    workspace = tmp_path / "agent"
+    report = workspace / "workspace" / "report.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("# Report\n", encoding="utf-8")
+
+    candidate = build_artifact_candidate(
+        agent_id=agent_id,
+        session_id=session_id,
+        runtime_task_id=runtime_task_id,
+        path="workspace/report.md",
+        workspace_root=workspace,
+    )
+    assert candidate is not None
+
+    statement = _chat_artifact_insert_statement(
+        candidate=candidate,
+        agent_id=agent_id,
+        tenant_id=None,
+        session_id=session_id,
+        message_id=message_id,
+        runtime_task_id=runtime_task_id,
+        source="workspace_write",
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "ON CONFLICT ON CONSTRAINT uq_chat_artifacts_agent_session_run_path_snapshot DO NOTHING" in compiled
+    assert "RETURNING chat_artifacts.id" in compiled
+
+
 @pytest.mark.asyncio
 async def test_chat_artifact_delivery_idempotent_for_same_run_path_snapshot(tmp_path):
     from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
@@ -112,15 +152,45 @@ async def test_chat_artifact_delivery_idempotent_for_same_run_path_snapshot(tmp_
 
     class _Db:
         def __init__(self):
-            self.added = []
-            self.existing = None
+            self.rows = {}
 
-        async def execute(self, _stmt):
-            return _Result(self.existing)
+        async def execute(self, stmt):
+            from sqlalchemy.dialects import postgresql
 
-        def add(self, value):
-            self.added.append(value)
-            self.existing = value
+            if getattr(stmt, "is_insert", False):
+                params = stmt.compile(dialect=postgresql.dialect()).params
+                key = (
+                    params["agent_id"],
+                    params["session_id"],
+                    params["runtime_task_id"],
+                    params["path"],
+                    params["snapshot_hash"],
+                )
+                if key in self.rows:
+                    return _Result(None)
+                from app.models.chat_artifact import ChatArtifact
+
+                artifact = ChatArtifact(
+                    id=params["id"],
+                    agent_id=params["agent_id"],
+                    tenant_id=params["tenant_id"],
+                    session_id=params["session_id"],
+                    message_id=params["message_id"],
+                    runtime_task_id=params["runtime_task_id"],
+                    path=params["path"],
+                    name=params["name"],
+                    mime_type=params["mime_type"],
+                    size=params["size"],
+                    modified_at=params["modified_at"],
+                    preview_kind=params["preview_kind"],
+                    source=params["source"],
+                    snapshot_hash=params["snapshot_hash"],
+                    snapshot_json=params["snapshot_json"],
+                )
+                self.rows[key] = artifact
+                return _Result(params["id"])
+
+            return _Result(next(iter(self.rows.values()), None))
 
     db = _Db()
 
@@ -145,9 +215,129 @@ async def test_chat_artifact_delivery_idempotent_for_same_run_path_snapshot(tmp_
         workspace_root=workspace,
     )
 
-    assert len(db.added) == 1
+    assert len(db.rows) == 1
     assert first[0]["artifact_id"] == second[0]["artifact_id"]
     assert first[0]["path"] == second[0]["path"] == "workspace/report.md"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessionmaker, tmp_path):
+    from app.database import tenant_scoped_session
+    from app.models.agent import Agent
+    from app.models.audit import ChatMessage
+    from app.models.chat_artifact import ChatArtifact
+    from app.models.chat_session import ChatSession
+    from app.models.participant import Participant
+    from app.models.runtime_task import RuntimeTask
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+
+    tenant_id = uuid4()
+    user_id = uuid4()
+    agent_id = uuid4()
+    participant_id = uuid4()
+    session_id = uuid4()
+    runtime_task_id = uuid4()
+    message_ids = [uuid4(), uuid4()]
+    workspace = tmp_path / "agent"
+    report = workspace / "workspace" / "report.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("# Concurrent Report\n", encoding="utf-8")
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as db:
+        db.add(Tenant(id=tenant_id, name="artifact-concurrency", slug=f"artifact-{tenant_id.hex[:10]}"))
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as db:
+        db.add(Participant(id=participant_id, type="agent", ref_id=agent_id, display_name="Artifact Agent"))
+        db.add(
+            User(
+                id=user_id,
+                username=f"artifact-u-{user_id.hex[:10]}",
+                email=f"{user_id.hex[:10]}@artifact.test",
+                password_hash="x",
+                display_name="Artifact Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="artifact-agent",
+                role_description="artifact",
+                creator_id=user_id,
+                sponsor_user_id=user_id,
+                participant_id=participant_id,
+            )
+        )
+        db.add(
+            RuntimeTask(
+                id=runtime_task_id,
+                task_type="web_chat_turn",
+                parent_agent_id=agent_id,
+                tenant_id=tenant_id,
+                parent_session_id=str(session_id),
+                status="running",
+            )
+        )
+        await db.flush()
+        db.add(
+            ChatSession(
+                id=session_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                title="Artifact concurrency",
+                source_channel="web",
+                runtime_task_id=runtime_task_id,
+            )
+        )
+        for message_id in message_ids:
+            db.add(
+                ChatMessage(
+                    id=message_id,
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    role="assistant",
+                    content="done",
+                    conversation_id=str(session_id),
+                )
+            )
+
+    async def deliver(message_id):
+        async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as db:
+            parts = await create_chat_artifacts_for_message(
+                db=db,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                message_id=message_id,
+                runtime_task_id=runtime_task_id,
+                paths=["workspace/report.md"],
+                workspace_root=workspace,
+            )
+            await db.commit()
+            return parts
+
+    first, second = await asyncio.gather(*(deliver(message_id) for message_id in message_ids))
+
+    assert first[0]["artifact_id"] == second[0]["artifact_id"]
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as db:
+        row_count = (
+            await db.execute(
+                select(func.count(ChatArtifact.id)).where(
+                    ChatArtifact.agent_id == agent_id,
+                    ChatArtifact.session_id == session_id,
+                    ChatArtifact.runtime_task_id == runtime_task_id,
+                    ChatArtifact.path == "workspace/report.md",
+                )
+            )
+        ).scalar_one()
+    assert row_count == 1
 
 
 def test_artifact_policy_preserves_a2a_producer_as_download_owner(tmp_path):

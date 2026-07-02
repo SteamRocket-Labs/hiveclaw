@@ -2,7 +2,7 @@
 
 日期：2026-07-02
 
-状态：**实施验收口径**。owner 已于 2026-07-02 拍板 §9 全部决策（D1=(b)、D2=CC parity 可发现性合约 + 提示词规则、D3=(b)、D4=(b)、D5=(b)、D7=command_pack 退役为 API/compat facade、D8=不全删 pack 但退役 runtime-core gate 用法），并在后续复核中将 D6 从「提示级」升级为「内容快照级」：artifact 卡片打开的是交付时快照，不是后续被覆盖的 workspace 当前文件。本轮修复一次完整交付，禁分期、禁 MVP、禁默认关的半成品；被明确剔除的范围以 §13 后续 pass 记账，不留「悄悄不做」。
+状态：**返工中，未达关闭口径**。owner 已于 2026-07-02 拍板 §9 全部决策（D1=(b)、D2=CC parity 可发现性合约 + 提示词规则、D3=(b)、D4=(b)、D5=(b)、D7=command_pack 退役为 API/compat facade、D8=不全删 pack 但退役 runtime-core gate 用法），并在后续复核中将 D6 从「提示级」升级为「内容快照级」：artifact 卡片打开的是交付时快照，不是后续被覆盖的 workspace 当前文件。本轮修复一次完整交付，禁分期、禁 MVP、禁默认关的半成品；被明确剔除的范围以 §13 后续 pass 记账，不留「悄悄不做」。2026-07-02 对抗验收结论为 **✅5 / 🟡3 / ❌6，不能关闭**，见 §14 Part 10。
 
 文档关系：
 
@@ -465,12 +465,15 @@ Step 1–7 的提交都在 main（`46527c7f…7c422592`），每步有红/绿测
 - 显式 Agent Team 用例复跑（07-02 稿 §8.3 验收用例 1–3）。
 - 复跑一次多任务多 session 并发场景：终局交付物无跨任务文件；无 UniqueViolationError；失败 run（若有）的 terminal reason 非 `[LLMError]` 泛化。
 
-## 11. 收口状态与部署后复跑项
+## 11. 当前未关闭项与部署后复跑项
 
-1. **跨 session 内容级污染已按 owner 确认的机制收口**：共享 workspace 不隔离；`list_files` / `read_file` 现在返回最近交付的 `session_id` / `runtime_task_id` / artifact provenance hint，避免模型把其他 session/run 的文件误认为当前素材。该机制不做机械过滤，保留用户要求对比历史文件时读取旧产物的能力。
-2. **终局交付污染已按 run scope 收口**：终局 artifact 路径来自当前 turn writes，tool_result artifact 路径来自当前工具 args；artifact card 打开/下载读取交付时内容快照，后续 workspace 覆盖只显示 divergence，不偷换旧交付物。
-3. **Workbench 污染口子已收口**：pending approvals 必须 session-bound；work ledger 优先 session-scoped WIP；`session_index.resume_health` 已补齐默认 `ok/running` read model。
-4. **生产复跑属于部署后运营验收**：本 pass 未擅自部署 Railway，因此不伪造生产 smoke 结论。部署后按 §10.4 复跑显式 Agent Team、多 session 并发、日志 `rg team_create|agent_team|UniqueViolationError|artifact persistence`。
+1. **已收口但仍需回归守护**：共享 workspace 不隔离；`list_files` / `read_file` 现在返回最近交付的 `session_id` / `runtime_task_id` / artifact provenance hint，降低模型把其他 session/run 的文件误认为当前素材的概率。该机制不做机械过滤，保留用户要求对比历史文件时读取旧产物的能力。
+2. **仍未达标：D4 交付物形态**：终局 artifact 仍来自当前 turn writes 的自动全集，缺少「模型声明交付物 + 平台 provenance 校验 + file-changes 独立侧通道」。快照与 run scope 只是必要子集，不等于完成 D4。
+3. **仍未达标：G2 member session window**：当前点击 member 只是普通 `onSelectBranchSession` 切换，缺少 `Main > Agent: <name>` breadcrumb、active tab/status、composer footer 目标切换、Enter/Send/Resume/Close 生命周期入口。
+4. **仍未达标：错误表达与幂等硬化**：顺序幂等已做，但 artifact persistence/DB 错误没有专属 terminal reason，仍可能被归到 provider/LLM 错误；并发幂等未用真实 PG `ON CONFLICT` 证明。
+5. **仍未达标：Dynamic Workflow session-native 完整性**：Workflow Run Window 已能打开，但 gate/wait/resume/repair/promotion eligibility 的后端产出和前端表达未闭合，调度门槛测试缺失。
+6. **仍未达标：PlanCard 前端半截**：后端 blocking `open_questions` 已拒绝，但前端 PlanCard 未实现 needs-clarification/禁用 Implement/answer flow。
+7. **生产复跑属于部署后运营验收**：本 pass 未擅自部署 Railway，因此不伪造 production smoke 结论。A+B 完成并 push/deploy 后按 §10.4 复跑显式 Agent Team、多 session 并发、日志 `rg team_create|agent_team|UniqueViolationError|artifact persistence`。
 
 ## 12. 完成口径
 
@@ -487,7 +490,7 @@ Step 1–7 的提交都在 main（`46527c7f…7c422592`），每步有红/绿测
 9. Dynamic Workflow 与 A2A Pipeline 的命名、路由、UI、测试边界清楚隔离；本 pass 不新增 A2A pipeline 语义，也不把 Dynamic Workflow leaf 冒充为 A2A employee session。
 10. Dynamic Workflow 后端 substrate 保持不重写，补齐 session-native Workflow Run Window、runtime_sections、step/leaf detail、gate/wait/resume/repair 表达与调度门槛测试。
 11. Plan Mode 的 blocking open questions 不再落成可确认计划；问题必须先被 `ask_user_question` 或前端 answer flow 解决。
-12. 后端测试、前端测试、build 有本地证据；production smoke 在部署后按 §10.4 执行，不在未部署代码上伪造结论。验收断言钉行为不钉 testid。
+12. 后端测试、前端测试、build、production smoke 必须全部有证据；未部署时不得伪造 production smoke 结论。验收断言钉行为不钉 testid。
 13. `command_pack` 不再作为模型 runtime 协作能力的总开关；slash-command API facade 与模型工具面去重完成，Agent Team/Goal/Task/Advanced Plan 的归属各自明确。
 14. `office_pack` 不再和 Office CII/runtime 工具边界混淆；inactive `office_pack` 不影响 CORE Office runtime，root/backend manifest ownership 表达一致。
 15. pack 机制边界收敛：插件/能力包仍用于安装、凭据、sandbox、skill、hook、catalog；模型 runtime 的 CORE 能力发现与调用不再受 pack enabled 控制；历史 pack_policy/RuntimeToolGroup projection 有兼容说明或重命名计划。
@@ -873,3 +876,34 @@ cd backend && source .venv/bin/activate && ruff check \
 
 - 本轮已按 Part 1–8 分块提交，每个 part 的红测/绿测证据均写入本文。
 - 当前没有执行 Railway 部署；因此 §10.4 的 production smoke 是部署后运营验收，不作为本地代码提交伪造完成证据。
+
+### Part 10 — 对抗验收判定：未达完成口径（2026-07-02）
+
+来源：三路对抗核查 + 干净 worktree 全量回归反馈。结论：**不能关闭**。主链真实闭合，但边翼承诺未完成；14 条完成口径判定为 **✅5 / 🟡3 / ❌6**。
+
+逐条判定：
+
+| # | 口径 | 判定 | 依据 |
+| --- | --- | --- | --- |
+| 1 | Agent Team 可发现路径在模型第一轮视野 | ✅ | deferred 名单和 `tool_search select:team_create` 路径真实可用；pack gate 正确放行 |
+| 2 | Plan 合约 metadata 通道 | ✅ | `_execution_contract` metadata fallback 与 `PlanModeState` round-trip 真实通过 |
+| 3 | 前端独立分类 | ✅ | 七分栏消费 typed `runtime_sections`，reducer 反降级测试有效 |
+| 4 | member 可进入 session window | ❌ | 当前只是普通 `onSelectBranchSession`；缺 breadcrumb/status tab/composer target/lifecycle entry |
+| 5 | 交付物因果归属 + 模型声明 + 侧通道 | ❌ | 快照已做；但终局仍自动附本 run 写入全集，缺模型声明与 file-changes 侧通道 |
+| 6 | 幂等 + 错误不伪装 | ❌ | 顺序幂等已做；persistence 错误仍无专属 terminal reason，并发幂等未证 |
+| 7 | workbench 无跨 session 口子 | ✅ | approvals session filter、ledger fail-closed、resume_health 默认值已落地 |
+| 8 | §8-D 1–10 全落地 | ❌ | 指标行、G2 窗口、命名模型底座、Workspace 分组仍缺 |
+| 9 | Workflow 与 A2A 边界隔离 | ✅ | leaf detail-only 行为断言存在；未混入 A2A 语义 |
+| 10 | Workflow session-native | 🟡 | Run Window 有；gate/wait/resume/repair/promotion 和调度门槛测试缺 |
+| 11 | Plan open questions | 🟡 | 后端拒绝已做；前端 PlanCard answer flow/禁用 Implement 未做 |
+| 12 | 全部证据 | ❌ | 本地聚合通过的是 targeted；反馈指出全量后端仍有 1 真回归 + 预存红，production smoke 未跑 |
+| 13 | `command_pack` facade | 🟡 | `team_create`/task 去重已做；`goal_start`/`advanced_plan`/`verify_plan` 边界未重审 |
+| 14 | `office_pack` 边界 | ✅ | root/backend manifest 一致，inactive office_pack 不挡 CORE Office runtime |
+
+立即返工顺序：
+
+1. **A1 回归修复**：`harness_canary.py` 显式声明 ledger 完成；同步裁决 `self_evolution_bakeoff.py`；清理或恢复 `record_long_task_progress` 死 wrapper。
+2. **A2 仓库卫生**：补齐导致 clone 后全量红的两份 docs：`cc-codex-prompt-unified-audit-2026-06-22.md`、`ccplus-v1-latency-hiding-exclusion-2026-06-24.md`。
+3. **B1–B7 硬门补做**：D4 模型声明交付物 + file-changes 侧通道；persistence 专属 terminal reason；G2 member window；§8-D 四缺项；Workflow gate/repair + 门槛测试；§8-A.4 Agent Team 合约后拦截；PlanCard 前端 half。
+4. **C 加固**：真实 PG/`ON CONFLICT` 并发幂等、per-run 结构或正式修订、快照 GC/retention、交互级点击测试、goal/advanced_plan 边界重审。
+5. **D 生产**：A+B 完成后 push/deploy，再跑 §10.4 smoke。

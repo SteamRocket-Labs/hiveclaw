@@ -91,4 +91,15 @@
 
 **回归：** ruff 全过（3 文件经 ruff format 重排）；受影响面 426 passed；全量 = **5339 passed, 0 failed, 1 skipped**。
 
-**Commit：** 见 git log（C9-3 commit）
+**Commit：** `b8131742`（6 files, +957/-2；config.py hunk 级 staging）
+
+#### C9 验收：设计不变量自检（spec §7.1 + owner 无双轨条款，2026-07-02）
+
+1. **所有文件产出有明确 writer（无孤儿）**：`control/t2_job_sweep.json` ← sweep（startup+heartbeat）；`control/consolidation_debt.json` ← debt refresh（heartbeat）；`control/t2_retention.json` ← retention（heartbeat）；`indexes/index.sqlite` ← `rebuild_reference_index`（retention 每轮重建，唯一写入口）；`.archive/t2/**` + `archive_log.jsonl` ← retention 归档。全部有真实生产调用点（接线断言测试钉死）。✅
+2. **侧写只收敛、知识只成网**：C9 不触及四区语义文件，N/A。✅
+3. **智能步骤 LLM 全视野、读取不跑 LLM**：sweep 重试复用 canonical runner（完整三角色 LLM 管线，零机械 fallback）；debt/retention 为纯机械 lifecycle 治理（L2 harness 职权，非语义步骤）。✅
+4. **证据只指不可变源 + T2 永不硬删（永不悬空无条件）**：retention 只 `os.replace` 移动、零 delete 调用；归档后 ref 经 `id_resolution` 仍解析、内容可读（测试钉死）；pipeline/decision/permission 保护防误归档。✅
+5. **语义写入全过 gate**：C9 无新语义写入面；重试产出的 T2 包走原 Memory Gate + Platform Gate 链。✅
+6. **无双轨（owner 2026-07-02 条款）**：三模块均纯新增，无被替代旧路径；`memory/indexes/` 此前仅 wiki_map.md；`control/` 沿用 lifecycle_maintenance.json sidecar 模式而非另起体系。✅
+
+**三 commit 均通过"只含本任务文件"检查**（main.py/config.py hunk 级 staging，eval WIP 零卷入）。C9 三断层一次完整 pass 交付完毕；下一阶段按序为**读侧**（§4.2）。

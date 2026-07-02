@@ -161,7 +161,7 @@ describe('ChatWorkLedgerDock', () => {
     renderToStaticMarkup(<ChatWorkLedgerDock agentId="agent-1" sessionId="session-1" live />);
 
     const sessionCall = queryHarness.calls.find((call) => String(call.queryKey[0]) === 'chat-session-work-ledger');
-    expect(sessionCall?.refetchInterval).toBe(3000);
+    expect(sessionCall?.refetchInterval).toBe(5000);
     expect(sessionCall?.refetchOnMount).toBe('always');
     expect(sessionCall?.refetchOnWindowFocus).toBe(true);
     expect(sessionCall?.staleTime).toBe(0);

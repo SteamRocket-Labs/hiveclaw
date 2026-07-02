@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => ({
-  queryCalls: [] as Array<{ key: unknown[]; enabled: unknown }>,
+  queryCalls: [] as Array<{ key: unknown[]; enabled: unknown; refetchInterval?: unknown }>,
   hash: '#aware',
   accessLevel: 'use',
   userRole: 'member',
@@ -17,8 +17,12 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: (options: { queryKey: unknown[]; enabled?: unknown }) => {
-    mockState.queryCalls.push({ key: options.queryKey, enabled: options.enabled });
+  useQuery: (options: { queryKey: unknown[]; enabled?: unknown; refetchInterval?: unknown }) => {
+    mockState.queryCalls.push({
+      key: options.queryKey,
+      enabled: options.enabled,
+      refetchInterval: options.refetchInterval,
+    });
     const key = String(options.queryKey[0]);
     if (key === 'agent') {
       return {
@@ -137,5 +141,28 @@ describe('AgentDetail aware reflection session gating', () => {
     expect(markup).toContain('Tools');
     expect(markup).toContain('Skills');
     expect(markup).toContain('Workflows');
+  });
+});
+
+describe('AgentDetail chat runtime polling convergence (plan D1)', () => {
+  beforeEach(() => {
+    mockState.queryCalls.length = 0;
+    mockState.hash = '#chat';
+    mockState.accessLevel = 'use';
+    mockState.userRole = 'member';
+  });
+
+  it('registers chat-active-run with a live-gated refetchInterval function, not an unconditional timer', () => {
+    renderToStaticMarkup(<AgentDetail />);
+
+    const activeRunCall = mockState.queryCalls.find((call) => String(call.key[0]) === 'chat-active-run');
+    expect(activeRunCall).toBeTruthy();
+    const interval = (activeRunCall as { refetchInterval?: unknown } | undefined)?.refetchInterval;
+    expect(typeof interval).toBe('function');
+    const intervalFn = interval as (query: { state: { data: unknown } }) => number | false;
+    expect(intervalFn({ state: { data: null } })).toBe(false);
+    expect(intervalFn({ state: { data: { status: 'completed' } } })).toBe(false);
+    expect(intervalFn({ state: { data: { status: 'running' } } })).toBe(3000);
+    expect(intervalFn({ state: { data: { status: 'pending' } } })).toBe(3000);
   });
 });

@@ -3247,29 +3247,47 @@ export default function AgentChatSection({
       && activeSessionId
       && String(gitLineAxisSessionId) !== String(activeSessionId),
   );
+  // Workbench/index reads are refreshed by explicit invalidations (session
+  // commands, WS run boundaries); a long staleTime plus no focus-refetch keeps
+  // tab switching from re-pulling the payloads (plan D3).
   const { data: sessionIndexData } = useQuery({
     queryKey: ['chat-session-index', effectiveAgentId, activeSessionId],
     queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, activeSessionId!),
     enabled: Boolean(effectiveAgentId && activeSessionId),
-    staleTime: 10_000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
   const { data: sessionWorkbenchData } = useQuery({
     queryKey: ['chat-session-workbench', effectiveAgentId, activeSessionId],
     queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!),
     enabled: Boolean(effectiveAgentId && activeSessionId),
-    staleTime: 10_000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
   const { data: gitLineAxisSessionIndexData, isLoading: gitLineAxisSessionIndexLoading } = useQuery({
     queryKey: ['chat-session-index', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis'],
     queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, gitLineAxisSessionId!),
     enabled: Boolean(effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession),
-    staleTime: 10_000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
+  // The branch-axis workbench is only a checkpoints fallback — fetch it just
+  // when the axis session index came back without checkpoints (plan D3).
+  const gitLineAxisIndexMissingCheckpoints = Boolean(
+    gitLineAxisSessionIndexData
+      && !(
+        Array.isArray((gitLineAxisSessionIndexData as { checkpoints?: unknown[] })?.checkpoints)
+        && ((gitLineAxisSessionIndexData as { checkpoints?: unknown[] }).checkpoints as unknown[]).length > 0
+      ),
+  );
   const { data: gitLineAxisSessionWorkbenchData, isLoading: gitLineAxisSessionWorkbenchLoading } = useQuery({
     queryKey: ['chat-session-workbench', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis'],
     queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, gitLineAxisSessionId!),
-    enabled: Boolean(effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession),
-    staleTime: 10_000,
+    enabled: Boolean(
+      effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession && gitLineAxisIndexMissingCheckpoints,
+    ),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
   const sessionIndex = sessionIndexData && !Array.isArray(sessionIndexData) ? sessionIndexData : null;
   const sessionWorkbench = sessionWorkbenchData && !Array.isArray(sessionWorkbenchData) ? sessionWorkbenchData : null;

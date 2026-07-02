@@ -465,6 +465,7 @@ function AgentDetailInner() {
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, SessionUiState>>({});
     const transcriptReplayStateRef = useRef<Record<SessionRuntimeKey, TranscriptReplayState>>({});
     const transcriptEventsRef = useRef<Record<SessionRuntimeKey, ChatTranscriptEventPayload[]>>({});
+    const toolCallInvalidateAtRef = useRef<Record<SessionRuntimeKey, number>>({});
     const [transcriptHasOlder, setTranscriptHasOlder] = useState<Record<SessionRuntimeKey, boolean>>({});
     const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
     const activeRunStateRef = useRef<Record<SessionRuntimeKey, SessionRunState>>({});
@@ -1638,7 +1639,15 @@ function AgentDetailInner() {
                     isWaiting: false,
                     isStreaming: endStreaming ? false : nextStreaming,
                 });
-                if (d.type === 'tool_call') invalidateSessionRuntimeQueries(agentId, sessionId, false);
+                if (d.type === 'tool_call') {
+                    // Tool-heavy turns fire this event in bursts; coalesce the
+                    // HTTP refetch amplification into a 2s window (plan D2).
+                    const now = Date.now();
+                    if (now - (toolCallInvalidateAtRef.current[key] || 0) >= 2000) {
+                        toolCallInvalidateAtRef.current[key] = now;
+                        invalidateSessionRuntimeQueries(agentId, sessionId, false);
+                    }
+                }
                 if (endStreaming) {
                     markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
                     invalidateSessionRuntimeQueries(agentId, sessionId);
@@ -2266,7 +2275,9 @@ function AgentDetailInner() {
         queryKey: ['chat-active-run', id, activeSession?.id],
         queryFn: () => chatApi.getActiveSessionRun(id!, String(activeSession!.id)),
         enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && !!activeSession && isWritableSession(activeSession) && !isDraftHumanChatSession(activeSession),
-        refetchInterval: activeTab === 'chat' && activeSession?.id && !isDraftHumanChatSession(activeSession) ? 3000 : false,
+        // Idle sessions rely on WS run events (run_started/done invalidate this
+        // query); the 3s timer is only a live-run fallback (plan D1).
+        refetchInterval: (query) => (isLiveRun(query.state.data as SessionRun | null | undefined) ? 3000 : false),
     });
 
     useEffect(() => {

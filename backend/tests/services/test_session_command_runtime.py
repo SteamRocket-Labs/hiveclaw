@@ -42,6 +42,12 @@ class _DB:
         self.flushes += 1
 
 
+def _db_rows(*events):
+    """_load_db_events queries sequence DESC (newest window) and re-ascends;
+    the fake returns rows verbatim, so feed them the way the DB would: descending."""
+    return list(reversed(events))
+
+
 def _session(agent_id, user_id, *, title="Session") -> ChatSession:
     return ChatSession(
         id=uuid4(),
@@ -157,7 +163,7 @@ async def test_session_commands_resume_prefers_t0_jsonl_truth_over_db_projection
     t0_events = [_t0_event(session, "user_message", sequence=1, content="persisted before model loop", role="user")]
     db = _DB(session, [])
 
-    monkeypatch.setattr(runtime, "replay_t0_session_events", lambda **_kwargs: t0_events, raising=False)
+    monkeypatch.setattr(runtime, "replay_t0_session_events_tail", lambda **_kwargs: t0_events, raising=False)
 
     result = await runtime.execute_session_command(
         db=db,
@@ -304,7 +310,7 @@ async def test_session_export_uses_t0_jsonl_truth_and_db_as_read_model(monkeypat
     ]
     db = _DB(session, [], [], [])
 
-    monkeypatch.setattr(runtime, "replay_t0_session_events", lambda **_kwargs: t0_events, raising=False)
+    monkeypatch.setattr(runtime, "replay_t0_session_events_tail", lambda **_kwargs: t0_events, raising=False)
 
     result = await runtime.execute_session_command(
         db=db,
@@ -420,7 +426,7 @@ async def test_rewind_without_checkpoint_opens_selector_and_does_not_create_sess
     session = _session(agent.id, user.id)
     first = _event(session, "user_message", sequence=1, content="first", role="user")
     second = _event(session, "user_message", sequence=3, content="second", role="user")
-    db = _DB(session, [first, second])
+    db = _DB(session, _db_rows(first, second))
 
     async def fail_create_conversation_branch(**_kwargs):
         raise AssertionError("rewind must not create a branch session")
@@ -458,7 +464,7 @@ async def test_rewind_with_checkpoint_updates_active_projection_without_new_sess
     session = _session(agent.id, user.id)
     first = _event(session, "user_message", sequence=1, content="first", role="user")
     second = _event(session, "user_message", sequence=3, content="second", role="user")
-    db = _DB(session, [first, second])
+    db = _DB(session, _db_rows(first, second))
     appended = []
 
     async def fail_create_conversation_branch(**_kwargs):
@@ -629,7 +635,7 @@ async def test_compact_command_installs_compacted_projection_and_session_compact
         _event(session, "user_message", sequence=1, content="Please build the report", role="user"),
         _event(session, "assistant_message", sequence=2, content="Report drafted", role="assistant"),
     ]
-    db = _DB(session, events)
+    db = _DB(session, _db_rows(*events))
     appended = []
     hooks = []
 
@@ -860,7 +866,7 @@ async def test_checkpoints_lists_user_turn_boundaries():
     first_user = _event(session, "user_message", sequence=1, content="first", role="user")
     assistant = _event(session, "assistant_message", sequence=2, content="answer", role="assistant")
     second_user = _event(session, "user_message", sequence=3, content="second", role="user")
-    db = _DB(session, [first_user, assistant, second_user])
+    db = _DB(session, _db_rows(first_user, assistant, second_user))
 
     result = await execute_session_command(
         db=db,
@@ -899,7 +905,7 @@ async def test_copy_returns_nth_latest_assistant_response_and_code_blocks():
         content="Second response\n\n```ts\nconsole.log('second')\n```",
         role="assistant",
     )
-    db = _DB(session, [first, second])
+    db = _DB(session, _db_rows(first, second))
 
     result = await execute_session_command(
         db=db,
@@ -983,7 +989,7 @@ async def test_rewind_defaults_to_last_user_checkpoint_and_drops_that_turn(monke
     first_user = _event(source, "user_message", sequence=1, content="first", role="user")
     assistant = _event(source, "assistant_message", sequence=2, content="answer", role="assistant")
     second_user = _event(source, "user_message", sequence=3, content="second", role="user")
-    db = _DB(source, [first_user, assistant, second_user])
+    db = _DB(source, _db_rows(first_user, assistant, second_user))
 
     async def fail_create_conversation_branch(**_kwargs):
         raise AssertionError("rewind must not create a branch session")
@@ -1016,7 +1022,7 @@ async def test_rollback_num_turns_selects_nth_latest_user_checkpoint(monkeypatch
     first_user = _event(source, "user_message", sequence=1, content="first", role="user")
     assistant = _event(source, "assistant_message", sequence=2, content="answer", role="assistant")
     second_user = _event(source, "user_message", sequence=3, content="second", role="user")
-    db = _DB(source, [first_user, assistant, second_user])
+    db = _DB(source, _db_rows(first_user, assistant, second_user))
     appended = []
 
     async def fail_create_conversation_branch(**_kwargs):
@@ -1105,3 +1111,30 @@ async def test_compact_command_refuses_to_fake_success_without_messages(monkeypa
     assert result["action"] == "not_supported"
     assert result["debug_payload"]["missing"] == "session_messages"
     assert emitted == []
+
+
+@pytest.mark.asyncio
+async def test_load_events_returns_latest_t0_window_not_earliest(monkeypatch, tmp_path):
+    """A1 regression pin: a session longer than `limit` must surface its NEWEST
+    events (latest_event/active-turn derivation reads events[-1])."""
+    import app.services.session_command_runtime as runtime
+    from app.config import get_settings
+    from app.memory.t0.ledger import append_t0_session_event
+
+    agent = SimpleNamespace(id=uuid4())
+    session = SimpleNamespace(id=uuid4())
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+    for i in range(1, 31):
+        append_t0_session_event(
+            agent_id=agent.id,
+            session_id=session.id,
+            event_type="user_message",
+            role="user",
+            content=f"m{i}",
+        )
+
+    events, truth_source = await runtime._load_events(None, agent=agent, session=session, limit=10)
+
+    assert truth_source == "t0_events_jsonl"
+    assert [event.sequence for event in events] == list(range(21, 31))
+    assert events[-1].content == "m30"

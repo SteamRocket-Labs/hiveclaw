@@ -7,6 +7,7 @@ rewrites prior transcript events. ``branch`` creates a new ChatSession index;
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 import re
 from datetime import datetime, timezone
@@ -22,7 +23,7 @@ from app.models.chat_artifact import ChatArtifact
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.user import User
-from app.memory.t0.ledger import T0SessionEvent, replay_t0_session_events
+from app.memory.t0.ledger import T0SessionEvent, replay_t0_session_events_tail
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_transcript import append_session_event
 from app.services.conversation_branch_service import create_conversation_branch
@@ -168,7 +169,9 @@ def _session_payload(session: ChatSession) -> dict[str, Any]:
     }
 
 
-def _control_event_payload(event_type: str, *, event: Any | None = None, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def _control_event_payload(
+    event_type: str, *, event: Any | None = None, metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
     event_id = getattr(event, "event_id", None) or getattr(event, "id", None)
     return {
         "event_type": event_type,
@@ -359,10 +362,10 @@ async def _load_db_events(db: AsyncSession, *, session: ChatSession, limit: int 
     result = await db.execute(
         select(ChatTranscriptEvent)
         .where(ChatTranscriptEvent.session_id == session.id, ChatTranscriptEvent.listed_surface == "chat")
-        .order_by(ChatTranscriptEvent.sequence.asc())
+        .order_by(ChatTranscriptEvent.sequence.desc())
         .limit(limit)
     )
-    return list(result.scalars().all())
+    return list(reversed(list(result.scalars().all())))
 
 
 async def _load_events(
@@ -372,12 +375,22 @@ async def _load_events(
     session: ChatSession,
     limit: int = 500,
 ) -> tuple[list[ChatTranscriptEvent | T0SessionEvent], str]:
+    """Load the NEWEST ``limit`` events, ascending (events[-1] is the latest).
+
+    The T0 tail replay runs in a worker thread — it is sync file IO and must
+    not block the event loop (docs/performance-slimming-plan-2026-07-02.md A1).
+    """
     try:
-        t0_events = replay_t0_session_events(agent_id=agent.id, session_id=session.id)
+        t0_events = await asyncio.to_thread(
+            replay_t0_session_events_tail,
+            agent_id=agent.id,
+            session_id=session.id,
+            limit=limit,
+        )
     except Exception:  # noqa: BLE001 - command surface must fall back to DB read model if files are unavailable.
         t0_events = []
     if t0_events:
-        return list(t0_events[:limit]), "t0_events_jsonl"
+        return list(t0_events), "t0_events_jsonl"
     return await _load_db_events(db, session=session, limit=limit), "chat_transcript_events_read_model"
 
 
@@ -728,7 +741,11 @@ async def execute_session_command(
 
     if command_name == "btw":
         question = str(
-            arguments.get("question") or arguments.get("content") or arguments.get("message") or arguments.get("prompt") or ""
+            arguments.get("question")
+            or arguments.get("content")
+            or arguments.get("message")
+            or arguments.get("prompt")
+            or ""
         ).strip()
         if not question:
             raise HTTPException(status_code=400, detail="question or content is required")
@@ -866,7 +883,10 @@ async def execute_session_command(
                         "level": "warning",
                         "message": "Workspace rewind will restore files from the selected checkpoint. Confirm before applying.",
                     },
-                    debug_payload={"requested_mode": rewind_mode, "checkpoint_event_id": checkpoint["checkpoint_event_id"]},
+                    debug_payload={
+                        "requested_mode": rewind_mode,
+                        "checkpoint_event_id": checkpoint["checkpoint_event_id"],
+                    },
                     truth_source=truth_source,
                     checkpoint=checkpoint,
                 )
@@ -946,7 +966,9 @@ async def execute_session_command(
             action="rewind_applied",
             session_id=session.id,
             ui_action={
-                "type": "install_active_projection" if workspace_restore_payload is None else "install_active_projection_with_workspace",
+                "type": "install_active_projection"
+                if workspace_restore_payload is None
+                else "install_active_projection_with_workspace",
                 "session_id": str(session.id),
                 "projection_reason": "rewind",
                 "checkpoint_event_id": checkpoint["checkpoint_event_id"],
@@ -984,7 +1006,11 @@ async def execute_session_command(
                 action="not_supported",
                 session_id=session.id,
                 ok=False,
-                ui_action={"type": "toast", "level": "warning", "message": "No session messages are available to compact."},
+                ui_action={
+                    "type": "toast",
+                    "level": "warning",
+                    "message": "No session messages are available to compact.",
+                },
                 debug_payload={"missing": "session_messages", "truth_source": truth_source},
             )
         await emit_hook(

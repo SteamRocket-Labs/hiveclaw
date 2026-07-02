@@ -396,6 +396,18 @@ def import_legacy_t0_file(
     return LegacyImportResult(path=path, segment_id=segment_id, sequence=sequence, imported=True, jsonl_path=jsonl_path)
 
 
+def _replay_segment_events(*, session_dir: Path, segment: dict[str, Any]) -> list[T0SessionEvent]:
+    segment_id = str(segment.get("segment_id") or "")
+    rel_path = segment.get("path") or (Path("segments") / segment_id / SOURCE_FILENAME).as_posix()
+    source_path = session_dir / str(rel_path)
+    jsonl_path = session_dir / _segment_events_path(segment)
+    if jsonl_path.exists():
+        return _parse_events_from_jsonl(path=jsonl_path, segment_id=segment_id, source_path=source_path)
+    if source_path.exists():
+        return _parse_events_from_source(path=source_path, segment_id=segment_id)
+    return []
+
+
 def replay_t0_session_events(
     *,
     agent_id: uuid.UUID | str,
@@ -409,16 +421,39 @@ def replay_t0_session_events(
     segment_records = list(index.get("segments") or []) if index else _discover_segments(session_dir)
     events: list[T0SessionEvent] = []
     for segment in segment_records:
-        segment_id = str(segment.get("segment_id") or "")
-        rel_path = segment.get("path") or (Path("segments") / segment_id / SOURCE_FILENAME).as_posix()
-        source_path = session_dir / str(rel_path)
-        jsonl_path = session_dir / _segment_events_path(segment)
-        if jsonl_path.exists():
-            events.extend(_parse_events_from_jsonl(path=jsonl_path, segment_id=segment_id, source_path=source_path))
-            continue
-        if source_path.exists():
-            events.extend(_parse_events_from_source(path=source_path, segment_id=segment_id))
+        events.extend(_replay_segment_events(session_dir=session_dir, segment=segment))
     return sorted(events, key=lambda event: event.sequence)
+
+
+def replay_t0_session_events_tail(
+    *,
+    agent_id: uuid.UUID | str,
+    session_id: uuid.UUID | str,
+    limit: int,
+    data_root: Path | str | None = None,
+) -> list[T0SessionEvent]:
+    """Read only the newest ``limit`` events, ascending by sequence.
+
+    Walks index segments newest-first (index order is append order, and
+    sequences are globally monotonic) and stops as soon as the tail is
+    covered, so long sessions do not pay a full-ledger parse. Sessions
+    without an index fall back to a full replay — discovered segment
+    directory names are not guaranteed to sort chronologically.
+    """
+    if limit <= 0:
+        return []
+    session_dir = _session_dir(data_root, agent_id, session_id)
+    index = _read_index(session_dir)
+    if not index:
+        events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=data_root)
+        return events[-limit:]
+    collected: list[T0SessionEvent] = []
+    for segment in reversed(list(index.get("segments") or [])):
+        collected.extend(_replay_segment_events(session_dir=session_dir, segment=segment))
+        if len(collected) >= limit:
+            break
+    collected.sort(key=lambda event: event.sequence)
+    return collected[-limit:]
 
 
 def _session_dir(data_root: Path | str | None, agent_id: uuid.UUID | str, session_id: uuid.UUID | str) -> Path:

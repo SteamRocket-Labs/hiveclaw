@@ -194,6 +194,93 @@ def test_seal_segment_preserves_append_only_history_and_next_turn_gets_new_segme
     ]
 
 
+def test_tail_replay_returns_latest_window_ascending(tmp_path: Path) -> None:
+    from app.memory.t0.ledger import replay_t0_session_events_tail
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    for i in range(1, 16):
+        append_t0_session_event(
+            agent_id=agent_id,
+            session_id=session_id,
+            event_type="user_message",
+            role="user",
+            content=f"m{i}",
+            data_root=tmp_path,
+        )
+    seal_t0_session_segment(agent_id=agent_id, session_id=session_id, reason="session_idle", data_root=tmp_path)
+    for i in range(17, 31):
+        append_t0_session_event(
+            agent_id=agent_id,
+            session_id=session_id,
+            event_type="user_message",
+            role="user",
+            content=f"m{i}",
+            data_root=tmp_path,
+        )
+
+    events = replay_t0_session_events_tail(agent_id=agent_id, session_id=session_id, limit=10, data_root=tmp_path)
+
+    assert [event.sequence for event in events] == list(range(21, 31))
+
+
+def test_tail_replay_returns_everything_when_limit_exceeds_total(tmp_path: Path) -> None:
+    from app.memory.t0.ledger import replay_t0_session_events, replay_t0_session_events_tail
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    for i in range(1, 6):
+        append_t0_session_event(
+            agent_id=agent_id,
+            session_id=session_id,
+            event_type="user_message",
+            role="user",
+            content=f"m{i}",
+            data_root=tmp_path,
+        )
+
+    tail = replay_t0_session_events_tail(agent_id=agent_id, session_id=session_id, limit=100, data_root=tmp_path)
+    full = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+
+    assert [event.sequence for event in tail] == [event.sequence for event in full]
+
+
+def test_tail_replay_skips_older_segments_when_tail_is_enough(monkeypatch, tmp_path: Path) -> None:
+    import app.memory.t0.ledger as ledger_module
+    from app.memory.t0.ledger import replay_t0_session_events_tail
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    for segment in range(3):
+        for i in range(10):
+            append_t0_session_event(
+                agent_id=agent_id,
+                session_id=session_id,
+                event_type="user_message",
+                role="user",
+                content=f"seg{segment}-m{i}",
+                data_root=tmp_path,
+            )
+        if segment < 2:
+            seal_t0_session_segment(
+                agent_id=agent_id, session_id=session_id, reason="session_idle", data_root=tmp_path
+            )
+
+    parse_calls: list[str] = []
+    real_parse = ledger_module._parse_events_from_jsonl
+
+    def counting_parse(*, path, segment_id, source_path):
+        parse_calls.append(segment_id)
+        return real_parse(path=path, segment_id=segment_id, source_path=source_path)
+
+    monkeypatch.setattr(ledger_module, "_parse_events_from_jsonl", counting_parse)
+
+    events = replay_t0_session_events_tail(agent_id=agent_id, session_id=session_id, limit=5, data_root=tmp_path)
+
+    assert len(events) == 5
+    assert len(parse_calls) == 1, f"expected only the newest segment to be parsed, parsed: {parse_calls}"
+
+
 def test_pl4_credential_is_masked_before_it_reaches_t0_source(tmp_path: Path) -> None:
     agent_id = uuid4()
     session_id = uuid4()

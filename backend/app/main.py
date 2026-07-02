@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
@@ -550,6 +551,9 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     lifespan=lifespan,
+    # MB-scale payloads (workbench/transcript/export) serialize on the event
+    # loop; orjson keeps that burst an order of magnitude shorter (plan A2).
+    default_response_class=ORJSONResponse,
 )
 
 # Add TraceIdMiddleware first so it's executed for all requests

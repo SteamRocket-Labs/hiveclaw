@@ -139,6 +139,28 @@ async def build_memory_context(
             return ""
         if "activation_context" in retrieve_params and activation_context:
             retrieve_kwargs["activation_context"] = activation_context
+
+        # Resident profile plane (spec §4.2): self + profiles + explicit
+        # overlay load WHOLE ahead of retrieval — never trimmed per-entry.
+        # Over-budget raises a one-shot write-side convergence alert.
+        from app.memory.profile_plane import (
+            DEFAULT_RESIDENT_BUDGET_CHARS,
+            check_resident_budget,
+            load_resident_memory,
+        )
+
+        settings = get_settings()
+        data_root = Path(settings.AGENT_DATA_DIR)
+        resident = load_resident_memory(
+            agent_id=agent_id,
+            data_root=data_root,
+            budget_chars=float(getattr(settings, "MEMORY_RESIDENT_BUDGET_CHARS", DEFAULT_RESIDENT_BUDGET_CHARS)),
+        )
+        try:
+            await check_resident_budget(agent_id=agent_id, data_root=data_root, resident=resident)
+        except Exception as budget_exc:  # noqa: BLE001 - budget telemetry must not block prompt assembly
+            logger.warning("Resident budget check failed for %s: %s", agent_id, budget_exc)
+
         items = await retriever.retrieve(
             agent_id,
             query,
@@ -146,11 +168,20 @@ async def build_memory_context(
             str(tenant_id) if tenant_id else None,
             **retrieve_kwargs,
         )
+        if resident.text:
+            # Overlay entries already sit in the resident block — drop the
+            # retriever's duplicate explicit-overlay items for this assembly.
+            items = [item for item in items if item.metadata.get("source_type") != "explicit_overlay"]
         assembler = MemoryAssembler()
         assemble_kwargs = {}
         if "budget_chars" in inspect.signature(assembler.assemble).parameters:
-            assemble_kwargs["budget_chars"] = retrieval_profile.memory_budget_chars
-        return assembler.assemble(items, **assemble_kwargs) or ""
+            # Profile plane holds a fixed allowance; retrieval fills the rest.
+            retrieval_budget = max(2_000, retrieval_profile.memory_budget_chars - resident.chars)
+            assemble_kwargs["budget_chars"] = retrieval_budget
+        assembled = assembler.assemble(items, **assemble_kwargs) or ""
+        if resident.text and assembled:
+            return f"{resident.text}\n\n{assembled}"
+        return resident.text or assembled
     except Exception as exc:
         logger.warning("Retrieval pipeline failed, returning empty memory context: %s", exc)
         return ""

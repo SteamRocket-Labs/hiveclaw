@@ -183,6 +183,11 @@ class Settings(BaseSettings):
     # packages older than this archive to memory/.archive/t2/** — moved,
     # never deleted; refs keep resolving through the reference index.
     MEMORY_RETENTION_ARCHIVE_AFTER_DAYS: float = 30.0
+    # Resident profile-plane budget (read side, memory-system-spec §4.2):
+    # self + profiles + explicit overlay load whole into the prompt; going
+    # over this budget is a write-side convergence failure signal (工序 4),
+    # alerted — never hard-trimmed.
+    MEMORY_RESIDENT_BUDGET_CHARS: float = 12_000.0
 
     # Coordination backend (Phase 17 wiring)
     # "postgres" — durable PostgreSQL-backed coordination (default). This keeps

@@ -69,19 +69,25 @@ def search_wiki_pages(
     method: str = DEFAULT_WIKI_METHOD,
     limit: int = 5,
     graph: RelationGraph | None = None,
+    page_dirs: tuple[str, ...] | None = None,
 ) -> list[dict]:
-    """Rank active wiki/scene pages for a query.
+    """Rank active memory pages for a query.
 
-    Returns rows of ``{page_id, title, kind, score, method, preview,
-    source_ref}`` — ``source_ref`` always resolves back to the Markdown
-    truth source.
+    Defaults to the legacy wiki/scenes dirs; pass
+    ``relation_graph.KNOWLEDGE_PAGE_DIRS`` to rank the two-plane
+    knowledge/milestones network. Returns rows of ``{page_id, title, kind,
+    score, method, preview, source_ref}`` — ``source_ref`` always resolves
+    back to the Markdown truth source.
     """
     needle = (query or "").strip()
     if not needle:
         return []
 
     if graph is None:
-        graph = build_relation_graph(data_root, agent_id)
+        if page_dirs is None:
+            graph = build_relation_graph(data_root, agent_id)
+        else:
+            graph = build_relation_graph(data_root, agent_id, page_dirs=page_dirs)
     active_nodes = [node for node in graph.nodes if node.exists and node.status == "active"]
     if not active_nodes:
         return []

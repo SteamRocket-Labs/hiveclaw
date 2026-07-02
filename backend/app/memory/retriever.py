@@ -257,6 +257,10 @@ class MemoryRetriever:
         del limit  # default prompt memory is sourced from accepted T3/explicit overlay + episodic recall.
         if self.include_derived_sources:
             items.extend(self._retrieve_wiki_pages(agent_id, query=query, limit=semantic_limit) or [])
+        # Knowledge plane (spec §4.2): always-on top-k retrieval over the
+        # knowledge/milestones link network. Zero LLM — the network was built
+        # at write time, PPR order is final.
+        items.extend(self._retrieve_knowledge_pages(agent_id, query=query, limit=semantic_limit) or [])
 
         items.extend(await self._retrieve_episodic(agent_id, session_id, previous_limit=episodic_limit) or [])
 
@@ -290,7 +294,13 @@ class MemoryRetriever:
         # rerank model is available, the LLM picks; mechanical order remains
         # the observable fallback inside _rerank_semantic_items.
         if rerank_model_config and query:
-            semantic_pool = [item for item in items if item.kind == MemoryKind.SEMANTIC]
+            # Knowledge-plane hits never enter the LLM rerank pool (spec §4.2:
+            # reads never run an LLM; PPR order over the authored network is final).
+            semantic_pool = [
+                item
+                for item in items
+                if item.kind == MemoryKind.SEMANTIC and item.metadata.get("source_type") != "knowledge_ppr"
+            ]
             if len(semantic_pool) > _RERANK_THRESHOLD:
                 reranked = await _rerank_semantic_items(
                     semantic_pool,
@@ -363,6 +373,58 @@ class MemoryRetriever:
                         "source_ref": source_ref,
                         "source_type": f"wiki_{method}",
                         "method": method,
+                        "sensitivity": "PL1_public",
+                    },
+                )
+            )
+        return items
+
+    def _retrieve_knowledge_pages(self, agent_id: uuid.UUID, *, query: str = "", limit: int = 5) -> list[MemoryItem]:
+        """Knowledge plane retrieval (spec §4.2): PPR top-k over knowledge/milestones.
+
+        Zero LLM by contract — the link network was authored at write time, so
+        graph order is final; these items are exempt from the LLM rerank pool.
+        """
+        if not query:
+            return []
+        try:
+            from app.memory.relation_graph import KNOWLEDGE_PAGE_DIRS
+            from app.memory.wiki_retrieval import DEFAULT_WIKI_METHOD, search_wiki_pages
+
+            hits = search_wiki_pages(
+                self.data_root,
+                agent_id,
+                query,
+                method=DEFAULT_WIKI_METHOD,
+                limit=limit,
+                page_dirs=KNOWLEDGE_PAGE_DIRS,
+            )
+        except Exception as exc:
+            logger.warning("[Retriever] knowledge-plane retrieval failed: %s", exc)
+            return []
+
+        items: list[MemoryItem] = []
+        for index, hit in enumerate(hits):
+            page_id = str(hit.get("page_id") or "")
+            title = str(hit.get("title") or page_id.rsplit("/", 1)[-1].replace("-", " ").title())
+            page_kind = str(hit.get("kind") or "knowledge")
+            source_ref = str(hit.get("source_ref") or f"memory/{page_id}.md")
+            preview = str(hit.get("preview") or "").strip()
+            raw_score = float(hit.get("score") or 0.0)
+            score = round(max(0.5, min(0.9, 0.5 + raw_score - (index * 0.02))), 4)
+            items.append(
+                MemoryItem(
+                    kind=MemoryKind.SEMANTIC,
+                    content=f"[{page_kind}:{title}] {preview}".strip(),
+                    score=score,
+                    source=source_ref,
+                    metadata={
+                        "page_id": page_id,
+                        "title": title,
+                        "page_kind": page_kind,
+                        "source_ref": source_ref,
+                        "source_type": "knowledge_ppr",
+                        "method": str(hit.get("method") or "ppr"),
                         "sensitivity": "PL1_public",
                     },
                 )

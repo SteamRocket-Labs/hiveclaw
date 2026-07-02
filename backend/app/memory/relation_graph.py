@@ -30,6 +30,13 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 _PAGE_DIRS = ("wiki", "scenes")
+# Two-plane knowledge network dirs (spec §1.1): pass to build_relation_graph
+# for the knowledge/milestones planes; _PAGE_DIRS stays the legacy default
+# until the C7 cutover retires wiki/scenes.
+KNOWLEDGE_PAGE_DIRS = ("knowledge", "milestones")
+
+_LEGACY_KIND_BY_DIR = {"wiki": "wiki", "scenes": "scene"}
+_KNOWLEDGE_LINK_PREFIX = "k:"
 
 
 @dataclass(slots=True)
@@ -151,14 +158,27 @@ def _parse_page_links(body: str) -> list[tuple[str, str]]:
     return links
 
 
-def build_relation_graph(data_root: Path, agent_id: uuid.UUID) -> RelationGraph:
-    """Rebuild the page graph from memory/wiki + memory/scenes Markdown."""
+def build_relation_graph(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    page_dirs: tuple[str, ...] = _PAGE_DIRS,
+) -> RelationGraph:
+    """Rebuild the page graph from the given memory page directories.
+
+    Defaults to the legacy wiki/scenes layout; pass ``KNOWLEDGE_PAGE_DIRS``
+    for the two-plane knowledge/milestones network. ``[[k:Title]]`` links
+    resolve into the knowledge dir; unresolved targets become
+    forward-reference nodes in the first (primary) page dir (spec §3.4:
+    forward references mark pages worth writing, not errors).
+    """
     mem_dir = Path(data_root) / str(agent_id) / "memory"
     graph = RelationGraph()
     slug_to_node: dict[str, GraphNode] = {}
     pending_links: list[tuple[str, str, str]] = []  # (source_id, rel_type, target_title)
+    fallback_dir = "knowledge" if "knowledge" in page_dirs else page_dirs[0]
 
-    for subdir in _PAGE_DIRS:
+    for subdir in page_dirs:
         directory = mem_dir / subdir
         if not directory.exists():
             continue
@@ -171,7 +191,7 @@ def build_relation_graph(data_root: Path, agent_id: uuid.UUID) -> RelationGraph:
             slug = path.stem
             node = GraphNode(
                 node_id=f"{subdir}/{slug}",
-                kind="wiki" if subdir == "wiki" else "scene",
+                kind=_LEGACY_KIND_BY_DIR.get(subdir, subdir),
                 slug=slug,
                 title=frontmatter.get("title") or slug.replace("-", " ").title(),
                 status=(frontmatter.get("status") or "active").strip().lower(),
@@ -183,24 +203,27 @@ def build_relation_graph(data_root: Path, agent_id: uuid.UUID) -> RelationGraph:
             for rel_type, target_title in _parse_page_links(body):
                 pending_links.append((node.node_id, rel_type, target_title))
 
-    # Resolve link targets: title slugs match page filenames (wiki first,
-    # then scenes); unresolved targets become forward-reference wiki nodes.
+    # Resolve link targets: title slugs match page filenames across page_dirs;
+    # unresolved targets become forward-reference nodes in the primary dir.
     seen_missing: set[str] = set()
     for source_id, rel_type, target_title in pending_links:
-        target_slug = slugify_title(target_title)
+        cleaned_title = target_title
+        if cleaned_title.lower().startswith(_KNOWLEDGE_LINK_PREFIX):
+            cleaned_title = cleaned_title[len(_KNOWLEDGE_LINK_PREFIX) :].strip()
+        target_slug = slugify_title(cleaned_title)
         node = slug_to_node.get(target_slug)
         if node is not None:
             target_id = node.node_id
         else:
-            target_id = f"wiki/{target_slug}"
+            target_id = f"{fallback_dir}/{target_slug}"
             if target_slug not in seen_missing:
                 seen_missing.add(target_slug)
                 graph.nodes.append(
                     GraphNode(
                         node_id=target_id,
-                        kind="wiki",
+                        kind=_LEGACY_KIND_BY_DIR.get(fallback_dir, fallback_dir),
                         slug=target_slug,
-                        title=target_title,
+                        title=cleaned_title,
                         status="missing",
                         exists=False,
                     )

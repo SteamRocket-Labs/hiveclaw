@@ -103,3 +103,25 @@
 6. **无双轨（owner 2026-07-02 条款）**：三模块均纯新增，无被替代旧路径；`memory/indexes/` 此前仅 wiki_map.md；`control/` 沿用 lifecycle_maintenance.json sidecar 模式而非另起体系。✅
 
 **三 commit 均通过"只含本任务文件"检查**（main.py/config.py hunk 级 staging，eval WIP 零卷入）。C9 三断层一次完整 pass 交付完毕；下一阶段按序为**读侧**（§4.2）。
+
+---
+
+## Memory 全量完工主线（owner 2026-07-02 拍板：全部完工后一次汇报）
+
+执行策略声明：各 Part 依 spec §6.1 顺序推进，中间 commit 保持系统可运行（新机制以并存方式落地），**Part H（C7）完成路径切换与全部废弃路径清退**——双轨在 Part H 收口清零，符合"一个大 pass 内退役"纪律。
+
+### Part A 读侧：两平面分层（2026-07-02）
+
+**改动：**
+- 新增 `memory/profile_plane.py`：常驻侧写平面读取器——self/self.md + profiles/{owner,collaborators,domain}.md + explicit overlay active 整份加载（零 LLM、**永不裁剪**），self 的 active 失败模式置顶；同时承载 self.md 结构契约（`## 失败模式` + `- 状态:` 生命周期行，Part D 写侧共用）。超预算 = 写侧收敛失败信号：一次性 `memory_resident_over_budget` audit 告警 + `control/resident_budget.json` 标记（恢复清除），不硬截。
+- `relation_graph.py`：`build_relation_graph` 参数化 `page_dirs`（默认仍 wiki/scenes，C7 切换）；新增 `KNOWLEDGE_PAGE_DIRS=("knowledge","milestones")`；`[[k:Title]]` 前缀剥离解析进 knowledge/；前向引用落主目录（knowledge 优先）。
+- `wiki_retrieval.py`：`search_wiki_pages` 透传 `page_dirs`。
+- `retriever.py`：新增 `_retrieve_knowledge_pages`（PPR top-k over knowledge/milestones，source_type=`knowledge_ppr`，always-on）；**knowledge 命中豁免 LLM rerank 池**（§4.2 读取零 LLM，写入建网 PPR 即终序）。
+- `memory_service.build_memory_context`：常驻块顶层拼装（不进 assembler → 天然免个体裁剪）；检索预算 = memory_budget - resident 实际占用（下限 2000）；resident 含 overlay 时剔除 retriever 的 overlay 重复条目。
+- `config.py` 增 `MEMORY_RESIDENT_BUDGET_CHARS=12000`。
+
+**红测：** `tests/memory/test_read_side_two_planes.py` 10 用例，RED（9 失败+1 空池 vacuous）→ GREEN 10 passed。覆盖：整份加载与置顶排序、新 agent 空、inactive overlay 排除、超预算不截、一次性告警+恢复清标+再告警、knowledge/milestones 图构建与 k: 前缀/前向引用、PPR 检索命中、knowledge 豁免 rerank 池（spy 断言）、端到端 resident+检索拼装、config 字段。
+
+**接线证据：** `memory_service.py build_memory_context` 内 `load_resident_memory`/`check_resident_budget`/`_retrieve_knowledge_pages`（经 retriever.retrieve 主流程 always-on）。退役：无（旧 t3 direct 读法保持至 Part H 收口）。
+
+**回归：** ruff 全过；受影响面 tests/memory+tests/runtime = 1043 passed；全量数字随 commit 记录。

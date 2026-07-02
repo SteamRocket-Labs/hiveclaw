@@ -950,3 +950,31 @@ cd backend && source .venv/bin/activate && ruff check \
   tests/evals/test_self_evolution_bakeoff.py
 # All checks passed
 ```
+
+### Part 12 — A2 缺失 docs 仓库卫生修复（2026-07-02）
+
+红因：
+
+- 干净 clone 下 `backend/tests/architecture/test_prompt_text_contract_doc.py` 依赖 `docs/cc-codex-prompt-unified-audit-2026-06-22.md`。
+- `backend/tests/kernel/test_latency_hiding_exclusion.py` 依赖 `docs/ccplus-v1-latency-hiding-exclusion-2026-06-24.md`。
+- 两份文件在本地工作区存在，但 `git ls-files` 为空，说明未被版本库跟踪；干净 checkout 会缺文件并导致全量红。
+
+变更：
+
+- 强制加入 `docs/cc-codex-prompt-unified-audit-2026-06-22.md`。
+- 强制加入 `docs/ccplus-v1-latency-hiding-exclusion-2026-06-24.md`。
+
+验证：
+
+```bash
+git ls-files \
+  docs/cc-codex-prompt-unified-audit-2026-06-22.md \
+  docs/ccplus-v1-latency-hiding-exclusion-2026-06-24.md
+# 提交后应列出两份文件
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/architecture/test_prompt_text_contract_doc.py \
+  tests/kernel/test_latency_hiding_exclusion.py \
+  -q
+# 8 passed, 4 warnings
+```

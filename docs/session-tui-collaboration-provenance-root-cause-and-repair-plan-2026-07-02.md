@@ -1520,3 +1520,60 @@ node -e "JSON.parse(require('fs').readFileSync('frontend/src/i18n/en.json','utf8
 rg -n "consume_turn_writes|agentTeamSubagent" backend/app frontend/src -g '*.py' -g '*.ts' -g '*.tsx' -g '*.json'
 # no production/frontend i18n matches
 ```
+
+### Part 26 — 全量回归补洞：heartbeat / artifact fake / Alembic head（2026-07-02）
+
+红测来源：
+
+- C6 后执行后端全量：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests -q
+# 10 failed, 5364 passed, 1 skipped, 4 warnings
+```
+
+本轮相关红点：
+
+- `test_execute_heartbeat_uses_correct_settings` 与 `test_execute_heartbeat_recovers_from_incomplete_persistent_session`：C3 的 snapshot retention 在 heartbeat 主流程里额外打开 DB session，单元测试 fake session 被提前消费，导致后续模型读取错位。
+- `test_persist_tool_call_attaches_written_artifact_parts`：C1 改为 PostgreSQL `ON CONFLICT ... RETURNING` 后，旧 fake session 不能表达 inserted row，tool-result artifact 单测看不到 `ChatArtifact`。
+- `test_alembic_single_head_is_current_closure_head`：C1 新增 `web_chat_final_message_idempotency_0702` 后，migration head 守卫仍指向旧 head。
+
+变更：
+
+- `heartbeat.py` 的 chat artifact snapshot retention 支持复用当前 tenant-scoped `AsyncSession`；真实 DB 继续执行 GC，非 SQLAlchemy fake session 明确 `skipped=non_async_session`，避免测试 fake 查询被消费。
+- `chat_artifact_delivery.py` 保留生产 PostgreSQL upsert；仅当 `db` 不是真实 `AsyncSession` 且 fake 无法返回 inserted/existing row 时，构造 ORM `ChatArtifact` fallback，维持旧单元测试的 fake persistence 语义。
+- `test_workflow_migration.py` 的 `_CURRENT_CLOSURE_HEAD` 更新为 `web_chat_final_message_idempotency_0702`，与当前单 Alembic head 对齐。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_heartbeat.py::test_execute_heartbeat_uses_correct_settings \
+  tests/services/test_heartbeat.py::test_execute_heartbeat_recovers_from_incomplete_persistent_session \
+  tests/services/test_web_chat_runtime.py::test_persist_tool_call_attaches_written_artifact_parts \
+  tests/migrations/test_workflow_migration.py::test_alembic_single_head_is_current_closure_head \
+  -q
+# 4 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_chat_artifact_delivery.py \
+  tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables \
+  tests/runtime/test_session_skill_lifecycle.py \
+  -q
+# 48 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/heartbeat.py \
+  app/services/chat_artifact_delivery.py \
+  tests/migrations/test_workflow_migration.py
+# All checks passed
+```
+
+全量回归当前状态：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests -q
+# 39 failed, 5335 passed, 1 skipped, 4 warnings
+```
+
+这 39 个失败集中在并行 memory two-plane / T3 Platform Gate worktree 改动，不属于本 session/provenance 修复链：首要失败是 `t3_consolidation.py` 导入已被当前 `t3_platform_gate.py` 移除的 `ACCEPTED_T3_TARGETS`，随后是旧 flat T3 target（`memory/t3/user.md` / `worker.md` 等）与当前 two-plane gate 的 canonical target 集不一致。该组红项未混入本 commit，需由 memory two-plane pass 自行收口后再给全量绿证据。

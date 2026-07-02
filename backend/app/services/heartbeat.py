@@ -16,6 +16,7 @@ from pathlib import Path
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import get_redis
 from app.database import enter_rls_bypass, tenant_scoped_session
@@ -1377,7 +1378,7 @@ async def _run_t2_retention(agent_id: uuid.UUID):
     )
 
 
-async def _run_chat_artifact_snapshot_retention(agent_id: uuid.UUID) -> dict:
+async def _run_chat_artifact_snapshot_retention(agent_id: uuid.UUID, *, db=None) -> dict:
     """Remove expired unreferenced chat artifact snapshots on the heartbeat cadence."""
     from app.config import get_settings
     from app.services.chat_artifact_delivery import (
@@ -1386,6 +1387,21 @@ async def _run_chat_artifact_snapshot_retention(agent_id: uuid.UUID) -> dict:
     )
 
     settings = get_settings()
+    if db is not None:
+        if not isinstance(db, AsyncSession):
+            return {"schema": "chat_artifact_snapshot_gc.v1", "skipped": "non_async_session"}
+        return await cleanup_chat_artifact_snapshots_for_agent(
+            db=db,
+            agent_id=agent_id,
+            workspace_root=Path(settings.AGENT_DATA_DIR) / str(agent_id),
+            retention_days=float(
+                getattr(
+                    settings,
+                    "CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS",
+                    DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
+                )
+            ),
+        )
     async with (
         tenant_scoped_session(None) as db,
         enter_rls_bypass(db, reason="chat artifact snapshot retention across tenants"),
@@ -1543,7 +1559,7 @@ async def _execute_heartbeat(
                 logger.warning("[Heartbeat] T2 retention failed for {}: {}", agent_id, _retention_err)
 
             try:
-                artifact_gc_report = await _run_chat_artifact_snapshot_retention(agent_id)
+                artifact_gc_report = await _run_chat_artifact_snapshot_retention(agent_id, db=db)
                 if artifact_gc_report.get("removed_count"):
                     logger.info(
                         "[Heartbeat] Chat artifact snapshot retention for {}: removed={} bytes={}",

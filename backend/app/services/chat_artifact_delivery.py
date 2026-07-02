@@ -832,7 +832,27 @@ async def create_chat_artifacts_for_message(
                 snapshot_hash=candidate["snapshot_hash"],
             )
             if existing is None:
-                continue
+                if isinstance(db, AsyncSession):
+                    continue
+                existing = ChatArtifact(
+                    id=uuid.UUID(str(candidate["artifact_id"])),
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    session_id=session_uuid,
+                    message_id=message_id,
+                    runtime_task_id=runtime_uuid,
+                    path=candidate["path"],
+                    name=candidate["name"],
+                    mime_type=candidate.get("mime_type"),
+                    size=candidate.get("size"),
+                    modified_at=candidate.get("modified_at"),
+                    preview_kind=candidate.get("preview_kind", "download"),
+                    source=candidate.get("source", source),
+                    snapshot_hash=candidate["snapshot_hash"],
+                    snapshot_json=candidate.get("snapshot"),
+                )
+                db.add(existing)
+                await db.flush()
             part = artifact_part_from_model(existing)
             record_workspace_artifact_provenance(workspace_root, part)
             parts.append(part)

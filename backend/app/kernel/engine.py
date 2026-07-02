@@ -2623,15 +2623,16 @@ def _build_restoration_context(
                 continue
 
     # ── 2.5: Canonical memory files that must survive compaction ──
-    # Accepted T3 is restricted to four MD files. Explicit user saves live in
-    # the overlay until the T3 consolidation lane absorbs them.
+    # Accepted T3 is the two-plane layout: the convergent profile plane loads
+    # whole; knowledge-plane pages are retrieved by query, not restored here.
+    # Explicit user saves live in the overlay until consolidation absorbs them.
     if _resolved_ws and parts:
         for rel_path, label in [
             ("memory/explicit/MEMORY.md", "Explicit Memory Overlay"),
-            ("memory/t3/user.md", "Memory: User"),
-            ("memory/t3/worker.md", "Memory: Worker Rules"),
-            ("memory/t3/episodes.md", "Memory: Episodes"),
-            ("memory/t3/capabilities.md", "Memory: Capabilities"),
+            ("memory/self/self.md", "Memory: Self"),
+            ("memory/profiles/owner.md", "Memory: Owner Profile"),
+            ("memory/profiles/collaborators.md", "Memory: Collaborators Profile"),
+            ("memory/profiles/domain.md", "Memory: Domain Profile"),
         ]:
             fpath = _resolved_ws / rel_path
             if not fpath.exists():

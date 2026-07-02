@@ -237,6 +237,7 @@ def search_explicit_overlay_entries(
             "source_type": "explicit_overlay",
             "timestamp": entry.created_at,
             "sensitivity": entry.sensitivity,
+            "metadata": dict(entry.metadata),
         }
         for entry in entries[:limit]
     ]

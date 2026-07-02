@@ -233,24 +233,27 @@ class TestReadT2Full:
 
 
 class TestReadT3Summary:
-    def test_reads_memory_files(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        memory_dir = tmp_agent_dir / str(agent_id) / "memory" / "t3"
-        memory_dir.mkdir(parents=True, exist_ok=True)
-        (memory_dir / "user.md").write_text("- [2026-04-06] User prefers snake_case\n")
-        (memory_dir / "capabilities.md").write_text("- [2026-04-06] Project uses PostgreSQL\n")
+    def test_reads_two_plane_memory(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        memory_dir = tmp_agent_dir / str(agent_id) / "memory"
+        (memory_dir / "self").mkdir(parents=True, exist_ok=True)
+        (memory_dir / "self" / "self.md").write_text("## 能力\n\n### 深度研究 — 熟练\nsnake_case 偏好经验。\n")
+        (memory_dir / "knowledge").mkdir(parents=True, exist_ok=True)
+        (memory_dir / "knowledge" / "postgresql.md").write_text(
+            "---\ntitle: PostgreSQL\nstatus: active\n---\n## Current Claim\n主库。\n"
+        )
 
         with patch("app.config.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             result = _read_t3_summary(agent_id)
 
         assert "snake_case" in result
-        assert "PostgreSQL" in result
+        assert "postgresql" in result
 
     def test_empty_memory(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         with patch("app.config.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             result = _read_t3_summary(agent_id)
-        assert result == "(no accepted T3 files)"
+        assert result == "(no accepted two-plane memory yet)"
 
 
 # ── _read_incremental_t2 ──

@@ -223,41 +223,12 @@ def test_knowledge_pages_are_retrieved_by_query(tmp_path: Path) -> None:
     assert all(item.metadata.get("source_type") == "knowledge_ppr" for item in items)
 
 
-@pytest.mark.asyncio
-async def test_knowledge_hits_never_enter_llm_rerank_pool(tmp_path: Path, monkeypatch) -> None:
-    """Reads never run an LLM: knowledge_ppr items bypass the rerank side-query."""
+def test_llm_rerank_machinery_is_retired() -> None:
+    """Reads never run an LLM (spec §4.2): the rerank side-query is gone entirely."""
     from app.memory import retriever as retriever_module
-    from app.memory.retriever import MemoryRetriever
 
-    agent_id = uuid4()
-    for i in range(8):
-        _write_knowledge_page(
-            tmp_path,
-            agent_id,
-            slug=f"concept-{i}",
-            title=f"Concept {i}",
-            body=f"## Current Claim\nrollup 概念 {i}。\n## Relations\n- references [[k:Concept 0]]\n",
-        )
-
-    reranked_pools: list[list] = []
-
-    async def spy_rerank(items, query, model_config=None, **kwargs):
-        reranked_pools.append(list(items))
-        return items[:5]
-
-    monkeypatch.setattr(retriever_module, "_rerank_semantic_items", spy_rerank)
-
-    retriever = MemoryRetriever(data_root=tmp_path)
-    await retriever.retrieve(
-        agent_id,
-        "rollup",
-        None,
-        None,
-        rerank_model_config={"provider": "fake", "model": "fake"},
-    )
-
-    for pool in reranked_pools:
-        assert all(item.metadata.get("source_type") != "knowledge_ppr" for item in pool)
+    assert not hasattr(retriever_module, "_rerank_semantic_items")
+    assert not hasattr(retriever_module, "_RERANK_THRESHOLD")
 
 
 # --- end-to-end assembly: resident + retrieved, resident never trimmed ---

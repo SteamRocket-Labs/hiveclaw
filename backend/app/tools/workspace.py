@@ -309,21 +309,20 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
             encoding="utf-8",
         )
 
-    # Pre-create accepted T3 semantic memory files and explicit overlay index.
-    for t3_file, t3_seed in [
-        ("memory/t3/episodes.md", "# T3 Episodes\n\n"),
-        ("memory/t3/user.md", "# T3 User\n\n"),
-        ("memory/t3/worker.md", "# T3 Worker\n\n"),
-        ("memory/t3/capabilities.md", "# T3 Capabilities\n\n"),
+    # Pre-create the explicit overlay index. Two-plane memory files
+    # (self/profiles/knowledge/milestones) are created by governed writers —
+    # ensure_t3_layout above bootstraps the directories only; the legacy
+    # memory/t3/ four-file skeleton is retired (C7 cutover).
+    for seed_file, seed_content in [
         (
             "memory/explicit/MEMORY.md",
             "# Explicit Memory Overlay\n\nImmediate user-commanded memories awaiting T3 consolidation. Not accepted T3 truth.\n",
         ),
     ]:
-        t3_path = ws / t3_file
-        if not t3_path.exists():
-            t3_path.parent.mkdir(parents=True, exist_ok=True)
-            t3_path.write_text(t3_seed, encoding="utf-8")
+        seed_path = ws / seed_file
+        if not seed_path.exists():
+            seed_path.parent.mkdir(parents=True, exist_ok=True)
+            seed_path.write_text(seed_content, encoding="utf-8")
 
     # Pre-create the single generated Memory Wiki map. Root memory/wiki_map.md,
     # memory/INDEX.md, lower-case memory/index.md, and the old

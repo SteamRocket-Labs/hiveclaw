@@ -16,13 +16,8 @@ from typing import Any
 
 from app.memory.activation import ActivationContext, ActivationScorer, memory_lifecycle_suppression_reason
 from app.memory.explicit_overlay import search_explicit_overlay_entries
-from app.memory.md_store import build_t3_entry_manifest
 from app.memory.types import MemoryItem, MemoryKind
 from app.runtime.context_budget import ContextBudget
-
-# Rerank: only trigger LLM side-query when semantic candidates exceed this count.
-_RERANK_THRESHOLD = 5
-_RERANK_MAX_SELECT = 5
 
 logger = logging.getLogger(__name__)
 
@@ -63,144 +58,6 @@ def _content_similar(a: str, b: str, threshold: float = 0.7) -> bool:
     return max(word_sim, char_sim) > threshold
 
 
-def _score_relevance(content: str, query: str) -> float:
-    """Score content relevance using dual-path: word overlap (English) + char overlap (CJK)."""
-    q_lower = query.lower()
-    c_lower = content.lower()
-
-    # Path 1: English word overlap
-    query_words = set(q_lower.split())
-    content_words = set(c_lower.split())
-    word_overlap = len(query_words & content_words) / max(len(query_words), 1)
-
-    # Path 2: CJK character overlap (only if query or content has CJK)
-    char_overlap = 0.0
-    if _has_cjk(query) or _has_cjk(content):
-        query_chars = _chars_set(query)
-        content_chars = _chars_set(content)
-        if query_chars:
-            char_overlap = len(query_chars & content_chars) / len(query_chars)
-
-    return max(word_overlap, char_overlap)
-
-
-async def _rerank_semantic_items(
-    items: list[MemoryItem],
-    query: str,
-    model_config: dict | None = None,
-    *,
-    agent_id: uuid.UUID | None = None,
-    tenant_id: str | uuid.UUID | None = None,
-    max_select: int = _RERANK_MAX_SELECT,
-    timeout_seconds: float = 3.0,
-) -> list[MemoryItem]:
-    """Use a cheap LLM side-query to select the most relevant semantic memories.
-
-    Returns up to _RERANK_MAX_SELECT items, preserving original MemoryItem objects.
-    Falls back to the original list on any error.
-
-    Args:
-        model_config: dict with keys provider/api_key/model/base_url for create_llm_client.
-            If None, rerank is skipped (graceful degradation).
-    """
-    if not model_config:
-        return items[:max_select]
-
-    try:
-        from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
-    except ImportError:
-        return items[:max_select]
-
-    # A3: 400-char previews — the reranker judges meaning, not headlines.
-    manifest_lines = [str(i) + ": " + item.content[:400] for i, item in enumerate(items)]
-    manifest = "\n".join(manifest_lines)
-    system_prompt = (
-        "<role>\n"
-        "You are a memory reranker. Given a user query and a numbered list of\n"
-        "candidate semantic memory items, select the indices that will best\n"
-        "help the caller answer the query. You do NOT summarize, explain, or\n"
-        "modify the memories — you only pick.\n"
-        "</role>\n\n"
-        "<selection_criteria>\n"
-        "- Relevance to the literal query intent comes first.\n"
-        "- Prefer items with concrete artifacts (file paths, decisions, errors,\n"
-        "  user preferences) over abstract or generic statements.\n"
-        "- Skip items that merely restate a well-known fact already covered by\n"
-        "  a higher-ranked item.\n"
-        "- When items are near-duplicates, keep ONE (the one with richer\n"
-        "  evidence) and drop the rest.\n"
-        "</selection_criteria>\n\n"
-        "<anti_patterns>\n"
-        "- Do NOT invent new memory content. You can only return indices that\n"
-        "  appear in the numbered list.\n"
-        "- Do NOT return indices outside [0, len(items) - 1].\n"
-        "- Do NOT pad the selection to hit the cap — return fewer indices if\n"
-        "  fewer are relevant. An empty selection is valid if nothing fits.\n"
-        "- Do NOT wrap the JSON in markdown fences or add prose outside it.\n"
-        "</anti_patterns>\n\n"
-        "<output_contract>\n"
-        "Respond with a single raw JSON object, no fences, no prose:\n"
-        '  {"selected": [<int>, <int>, ...]}\n'
-        "Indices are 0-based. Order by descending relevance (most useful first).\n"
-        "</output_contract>"
-    )
-    user_prompt = (
-        "<query>" + query + "</query>\n\n"
-        "<candidate_memories>\n"
-        "Format: `<index>: <content preview, truncated at 150 chars>`\n\n" + manifest + "\n</candidate_memories>\n\n"
-        "<task>\n"
-        "Select up to " + str(max_select) + " memory indices most useful for the query above.\n"
-        "Return only the JSON object defined in <output_contract>.\n"
-        "</task>"
-    )
-    client = None
-    try:
-        client = create_llm_client_from_config(
-            with_llm_usage_context(
-                model_config,
-                source="memory_rerank",
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-            )
-        )
-        response = await asyncio.wait_for(
-            client.stream(
-                messages=[
-                    LLMMessage(role="system", content=system_prompt),
-                    LLMMessage(role="user", content=user_prompt),
-                ],
-                max_tokens=100,
-                temperature=0.0,
-            ),
-            timeout=timeout_seconds,
-        )
-        content = response.content if hasattr(response, "content") else str(response)
-        start = content.find("{")
-        end = content.rfind("}") + 1
-        if start >= 0 and end > start:
-            parsed = json.loads(content[start:end])
-            indices = parsed.get("selected", [])
-            if isinstance(indices, list) and indices:
-                selected = [items[i] for i in indices if isinstance(i, int) and 0 <= i < len(items)]
-                if selected:
-                    logger.debug("[Retriever] Rerank selected %d/%d items", len(selected), len(items))
-                    return selected
-    except Exception as exc:
-        # A3: degradation to mechanical order must be observable, not silent.
-        logger.warning(
-            "[Retriever] Rerank failed, using mechanical order: %s",
-            exc,
-            extra={"metric": "memory_rerank_fallback", "candidates": len(items)},
-        )
-        return items[:max_select]
-    finally:
-        if client is not None and hasattr(client, "close"):
-            try:
-                await client.close()
-            except Exception:
-                logger.debug("[Retriever] Rerank client close failed", exc_info=True)
-
-
 class MemoryRetriever:
     """Four-layer memory retrieval pipeline.
 
@@ -209,18 +66,8 @@ class MemoryRetriever:
     DB-dependent layers degrade gracefully with logging.
     """
 
-    def __init__(
-        self,
-        *,
-        data_root: Path,
-        use_t3_index_first: bool = False,
-        include_legacy_sources: bool = False,
-        include_derived_sources: bool = False,
-    ) -> None:
+    def __init__(self, *, data_root: Path) -> None:
         self.data_root = Path(data_root)
-        self.use_t3_index_first = use_t3_index_first
-        self.include_legacy_sources = include_legacy_sources
-        self.include_derived_sources = include_derived_sources
 
     async def retrieve(
         self,
@@ -234,40 +81,22 @@ class MemoryRetriever:
         retrieval_profile: ContextBudget | None = None,
         activation_context: ActivationContext | None = None,
     ) -> list[MemoryItem]:
-        """Retrieve memory items from all four layers.
+        """Retrieve memory items: explicit overlay, knowledge plane, episodic, hooks.
 
-        Args:
-            rerank_model_config: When provided and semantic candidates > _RERANK_THRESHOLD,
-                use a cheap LLM side-query to re-score semantic items by relevance.
-                Dict with keys: provider, api_key, model, base_url (for create_llm_client).
+        Reads never run an LLM (spec §4.2). ``rerank_model_config`` is accepted
+        for caller compatibility and intentionally ignored.
         """
         items: list[MemoryItem] = []
         items.extend(self._retrieve_explicit_overlay(agent_id, query=query) or [])
-        if self.use_t3_index_first:
-            items.extend(self._retrieve_t3_index_first(agent_id, query=query) or [])
-        else:
-            items.extend(self._retrieve_t3_direct(agent_id, query=query) or [])
-        if self.include_derived_sources:
-            items.extend(self._retrieve_understandings(agent_id, query=query) or [])
-        if self.include_legacy_sources:
-            items.extend(self._retrieve_high_priority_t2(agent_id, query=query) or [])
         episodic_limit = retrieval_profile.episodic_limit if retrieval_profile else 3
         external_limit = retrieval_profile.external_limit if retrieval_profile else 5
         semantic_limit = retrieval_profile.semantic_limit if retrieval_profile else 5
-        del limit  # default prompt memory is sourced from accepted T3/explicit overlay + episodic recall.
-        if self.include_derived_sources:
-            items.extend(self._retrieve_wiki_pages(agent_id, query=query, limit=semantic_limit) or [])
+        del limit, rerank_model_config  # reads never run an LLM (spec §4.2); PPR order is final
         # Knowledge plane (spec §4.2): always-on top-k retrieval over the
-        # knowledge/milestones link network. Zero LLM — the network was built
-        # at write time, PPR order is final.
+        # knowledge/milestones link network built at write time.
         items.extend(self._retrieve_knowledge_pages(agent_id, query=query, limit=semantic_limit) or [])
 
         items.extend(await self._retrieve_episodic(agent_id, session_id, previous_limit=episodic_limit) or [])
-
-        # Default prompt memory is explicit overlay + accepted T3 markdown +
-        # episodic recall. Legacy and derived stores require explicit opt-in to
-        # avoid dual-source drift.
-
         items.extend(
             await self._retrieve_semantic_backend(
                 agent_id,
@@ -288,95 +117,8 @@ class MemoryRetriever:
             or []
         )
 
-        # A3 (docs/agent-lifecycle-cc-alignment.md 主题 A): semantic activation
-        # gets an LLM pass. Keyword + fixed-weight scoring never reads content
-        # meaning — when the semantic pool is contested (> threshold) and a
-        # rerank model is available, the LLM picks; mechanical order remains
-        # the observable fallback inside _rerank_semantic_items.
-        if rerank_model_config and query:
-            # Knowledge-plane hits never enter the LLM rerank pool (spec §4.2:
-            # reads never run an LLM; PPR order over the authored network is final).
-            semantic_pool = [
-                item
-                for item in items
-                if item.kind == MemoryKind.SEMANTIC and item.metadata.get("source_type") != "knowledge_ppr"
-            ]
-            if len(semantic_pool) > _RERANK_THRESHOLD:
-                reranked = await _rerank_semantic_items(
-                    semantic_pool,
-                    query,
-                    rerank_model_config,
-                    agent_id=agent_id,
-                    tenant_id=tenant_id,
-                )
-                items = [item for item in items if item.kind != MemoryKind.SEMANTIC] + list(reranked)
-
         if activation_context:
             return self._apply_activation(items, activation_context, agent_id=agent_id)
-        return items
-
-    def _retrieve_high_priority_t2(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
-        """Retired legacy T2 read model.
-
-        `memory/learnings/*.md` may still exist for compatibility repair and
-        migration audit, but it is no longer a prompt memory source. Accepted
-        semantic memory is recalled from explicit overlay, accepted T3 Wiki, and
-        episodic T0/T2 session packages.
-        """
-
-        del agent_id, query
-        return []
-
-    def _retrieve_wiki_pages(self, agent_id: uuid.UUID, *, query: str = "", limit: int = 5) -> list[MemoryItem]:
-        """Retrieve derived wiki/scene pages through the PPR-backed Markdown graph.
-
-        These pages are not accepted T3 truth. They are available only when the
-        caller opts into derived sources for migration, eval, or offline graph
-        analysis.
-        """
-        if not query:
-            return []
-        try:
-            from app.memory.wiki_retrieval import DEFAULT_WIKI_METHOD, search_wiki_pages
-
-            hits = search_wiki_pages(
-                self.data_root,
-                agent_id,
-                query,
-                method=DEFAULT_WIKI_METHOD,
-                limit=limit,
-            )
-        except Exception as exc:
-            logger.debug("[Retriever] wiki PPR retrieval failed: %s", exc)
-            return []
-
-        items: list[MemoryItem] = []
-        for index, hit in enumerate(hits):
-            page_id = str(hit.get("page_id") or "")
-            title = str(hit.get("title") or page_id.rsplit("/", 1)[-1].replace("-", " ").title())
-            page_kind = str(hit.get("kind") or "wiki")
-            method = str(hit.get("method") or "ppr")
-            source_ref = str(hit.get("source_ref") or f"memory/{page_id}.md")
-            preview = str(hit.get("preview") or "").strip()
-            raw_score = float(hit.get("score") or 0.0)
-            score = round(max(0.5, min(0.9, 0.5 + raw_score - (index * 0.02))), 4)
-            items.append(
-                MemoryItem(
-                    kind=MemoryKind.SEMANTIC,
-                    content=f"[{page_kind}:{title}] {preview}".strip(),
-                    score=score,
-                    source=source_ref,
-                    metadata={
-                        "page_id": page_id,
-                        "title": title,
-                        "page_kind": page_kind,
-                        "source_ref": source_ref,
-                        "source_type": f"wiki_{method}",
-                        "method": method,
-                        "sensitivity": "PL1_public",
-                    },
-                )
-            )
         return items
 
     def _retrieve_knowledge_pages(self, agent_id: uuid.UUID, *, query: str = "", limit: int = 5) -> list[MemoryItem]:
@@ -431,16 +173,6 @@ class MemoryRetriever:
             )
         return items
 
-    def _retrieve_understandings(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
-        """Legacy no-op for retired relationship projection.
-
-        `understandings.md` is not a semantic memory source. Relationship-shaped
-        memory must be authored through the canonical T2/T3 Wiki lane, so this
-        compatibility hook intentionally returns no prompt items.
-        """
-        del agent_id, query
-        return []
-
     def _apply_activation(
         self,
         items: list[MemoryItem],
@@ -483,69 +215,11 @@ class MemoryRetriever:
             )
         return sorted(activated, key=lambda item: item.score, reverse=True)
 
-    # -- T3 Direct layer: memory/*.md files (MD = Source of Truth) --
-
-    # P0 files are always loaded at full score (user corrections and failure
-    # patterns must never be dropped by query-aware filtering).
-    # P1/P2 files are scored per-entry by relevance to the current query.
-    _T3_FILES: list[tuple[str, str, float, bool]] = [
-        #  (path, category, base_score, is_p0)
-        ("memory/t3/user.md", "user", 0.95, True),  # P0 if relevant
-        ("memory/t3/worker.md", "worker", 0.95, True),  # P0 if relevant
-        ("memory/t3/episodes.md", "episode", 0.85, False),  # P1
-        ("memory/t3/capabilities.md", "capability", 0.80, False),  # P1
-    ]
-    _T3_SCORE_BY_SOURCE = {
-        rel_path: (category, base_score, is_p0) for rel_path, category, base_score, is_p0 in _T3_FILES
-    }
-    _P0_FULL_RECENT_LIMIT = 8
-    _P1_P2_FULL_QUERY_LIMIT = 5
-
-    @staticmethod
-    def _index_entry_content(entry_id: str, category: str, timestamp: str, preview: str) -> str:
-        date = timestamp[:10] if timestamp else "undated"
-        return (
-            f"Memory index entry id={entry_id} [{category}] ({date}) {preview} "
-            f'- call load_memory(ids=["{entry_id}"]) before relying on the full fact.'
-        )
-
-    def _memory_item_from_entry(
-        self,
-        entry,
-        *,
-        score: float,
-        source_type: str,
-        indexed_only: bool,
-        category: str | None = None,
-    ) -> MemoryItem:
-        display_category = category or entry.category
-        metadata: dict[str, Any] = {
-            **entry.metadata,
-            "entry_id": entry.entry_id,
-            "category": display_category,
-            "source_type": source_type,
-        }
-        if indexed_only:
-            metadata["indexed_only"] = "true"
-        if entry.timestamp:
-            metadata["timestamp"] = entry.timestamp
-        content = (
-            self._index_entry_content(entry.entry_id, display_category, entry.timestamp, entry.preview)
-            if indexed_only
-            else f"[{display_category}] {entry.content}"
-        )
-        return MemoryItem(
-            kind=MemoryKind.SEMANTIC,
-            content=content,
-            score=round(score, 4),
-            source=entry.source,
-            metadata=metadata,
-        )
-
     def _retrieve_explicit_overlay(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
         items: list[MemoryItem] = []
         for fact in search_explicit_overlay_entries(self.data_root, agent_id, query, limit=8):
             metadata = {
+                **(fact.get("metadata") or {}),
                 "entry_id": fact.get("id", ""),
                 "category": fact.get("category", "general"),
                 "target_hint": fact.get("target_hint", "unknown"),
@@ -563,133 +237,6 @@ class MemoryRetriever:
                 )
             )
         return items
-
-    def _retrieve_t3_direct(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
-        """Read T3 memory/*.md files — per-entry granularity with query-aware scoring.
-
-        P0 entries (feedback + blocked) are always included at full score.
-        P1/P2 entries are scored by relevance to the current user query so
-        only the most useful knowledge/strategy/user facts occupy prompt space.
-
-        Previously this emitted one MemoryItem per file (all bullets concatenated).
-        Now each bullet is a separate MemoryItem, enabling the assembler's
-        budget trimming to drop individual low-relevance entries instead of
-        losing an entire file.
-        """
-        items: list[MemoryItem] = []
-
-        for entry in build_t3_entry_manifest(self.data_root, agent_id):
-            if memory_lifecycle_suppression_reason(entry.metadata):
-                continue
-            score_spec = self._T3_SCORE_BY_SOURCE.get(entry.source)
-            if not score_spec:
-                continue
-            category, base_score, is_p0 = score_spec
-            if is_p0 or not query:
-                score = base_score
-            else:
-                relevance = _score_relevance(entry.content, query)
-                score = base_score * max(relevance, 0.15)
-            items.append(
-                self._memory_item_from_entry(
-                    entry,
-                    score=score,
-                    source_type="t3_direct",
-                    indexed_only=False,
-                    category=category,
-                )
-            )
-
-        return items
-
-    def _retrieve_t3_index_first(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
-        """P0 direct + P1/P2 index-guided retrieval.
-
-        This is intentionally a separate path so callers can run shadow
-        comparisons before switching production retrieval.
-        """
-        items: list[MemoryItem] = []
-        entries = build_t3_entry_manifest(self.data_root, agent_id)
-        if not entries:
-            return []
-
-        p0_entries = [entry for entry in entries if entry.is_p0]
-        p0_full_ids = {entry.entry_id for entry in p0_entries[-self._P0_FULL_RECENT_LIMIT :]}
-
-        p1_p2_ranked: list[tuple[float, str]] = []
-        if query:
-            for entry in entries:
-                if entry.is_p0:
-                    continue
-                relevance = _score_relevance(
-                    f"{entry.filename} {entry.category} {entry.preview} {entry.content}", query
-                )
-                if relevance > 0:
-                    p1_p2_ranked.append((relevance, entry.entry_id))
-            p1_p2_ranked.sort(reverse=True)
-        p1_p2_full_ids = {entry_id for _relevance, entry_id in p1_p2_ranked[: self._P1_P2_FULL_QUERY_LIMIT]}
-
-        for entry in entries:
-            if memory_lifecycle_suppression_reason(entry.metadata):
-                continue
-            score_spec = self._T3_SCORE_BY_SOURCE.get(entry.source)
-            if not score_spec:
-                continue
-            category, base_score, is_p0 = score_spec
-            relevance = _score_relevance(f"{entry.filename} {entry.category} {entry.preview} {entry.content}", query)
-            should_expand = (is_p0 and entry.entry_id in p0_full_ids) or (
-                not is_p0 and entry.entry_id in p1_p2_full_ids
-            )
-            score = base_score if is_p0 else base_score * max(relevance, 0.15)
-            if not should_expand:
-                score *= 0.55
-            items.append(
-                self._memory_item_from_entry(
-                    entry,
-                    score=score,
-                    source_type="t3_full_entry" if should_expand else "t3_index_entry",
-                    indexed_only=not should_expand,
-                    category=category,
-                )
-            )
-        return items
-
-    def retrieve_t3_index_shadow(self, agent_id: uuid.UUID, *, query: str = "") -> dict[str, Any]:
-        direct = self._retrieve_t3_direct(agent_id, query=query)
-        index_first = self._retrieve_t3_index_first(agent_id, query=query)
-        direct_p0 = {
-            item.metadata.get("entry_id") or item.content
-            for item in direct
-            if item.source in {"memory/t3/user.md", "memory/t3/worker.md"}
-        }
-        index_p0 = {
-            item.metadata.get("entry_id") or item.content
-            for item in index_first
-            if item.source in {"memory/t3/user.md", "memory/t3/worker.md"}
-        }
-        direct_p1p2 = {
-            item.metadata.get("entry_id") or item.content
-            for item in direct
-            if item.source not in {"memory/t3/user.md", "memory/t3/worker.md"}
-        }
-        index_p1p2 = {
-            item.metadata.get("entry_id") or item.content
-            for item in index_first
-            if item.source not in {"memory/t3/user.md", "memory/t3/worker.md"}
-        }
-        overlap = len(direct_p1p2 & index_p1p2)
-        miss_count = max(0, len(direct_p1p2 - index_p1p2))
-        return {
-            "query": query,
-            "direct_count": len(direct),
-            "index_count": len(index_first),
-            "p0_preserved": direct_p0 <= index_p0,
-            "p1_p2_overlap": overlap,
-            "p1_p2_direct_count": len(direct_p1p2),
-            "p1_p2_index_count": len(index_p1p2),
-            "p1_p2_miss_count": miss_count,
-            "p1_p2_miss_rate": round(miss_count / len(direct_p1p2), 4) if direct_p1p2 else 0.0,
-        }
 
     # -- Episodic layer: session summaries from DB --
 

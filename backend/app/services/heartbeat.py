@@ -558,26 +558,28 @@ def _read_t2_full(agent_id: uuid.UUID) -> str:
 
 
 def _read_t3_summary(agent_id: uuid.UUID) -> str:
-    """Read T3 memory files summary (reference for dedup during curation)."""
+    """Two-plane accepted-memory summary (reference for dedup during curation)."""
     from app.config import get_settings
 
-    memory_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory" / "t3"
-    if not memory_dir.exists():
-        return "(no accepted T3 files)"
-
+    memory_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory"
     parts: list[str] = []
-    for fname in ["episodes.md", "user.md", "worker.md", "capabilities.md"]:
-        fpath = memory_dir / fname
+    for rel in ("self/self.md", "profiles/owner.md", "profiles/collaborators.md", "profiles/domain.md"):
+        fpath = memory_dir / rel
         if fpath.exists():
             try:
                 content = fpath.read_text(encoding="utf-8", errors="replace").strip()
                 if content:
-                    # Truncate to first 500 chars per file for reference
-                    parts.append(f"### {fname}\n{content[:500]}")
+                    parts.append(f"### {rel}\n{content[:500]}")
             except Exception as exc:
-                logger.debug("[Heartbeat] Failed to read T3 {}: {}", fpath, exc)
+                logger.debug("[Heartbeat] Failed to read profile plane {}: {}", fpath, exc)
+    for subdir, label in (("knowledge", "knowledge pages"), ("milestones", "milestone pages")):
+        directory = memory_dir / subdir
+        if directory.exists():
+            slugs = sorted(path.stem for path in directory.glob("*.md"))
+            if slugs:
+                parts.append(f"### {label} ({len(slugs)})\n" + ", ".join(slugs[:40]))
     return _truncate_heartbeat_text(
-        "\n\n".join(parts) if parts else "(no accepted T3 files)",
+        "\n\n".join(parts) if parts else "(no accepted two-plane memory yet)",
         _HEARTBEAT_T3_MAX_CHARS,
         "T3 summary",
     )

@@ -57,8 +57,8 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
         description=(
             "Read file contents from the workspace.\n\n"
             "Usage:\n"
-            "- Common files: soul.md (personality), memory/t3/user.md, memory/t3/worker.md, "
-            "memory/t3/episodes.md, memory/t3/capabilities.md, memory/explicit/MEMORY.md (memory), "
+            "- Common files: soul.md (personality), memory/self/self.md (self-model), memory/profiles/owner.md, "
+            "memory/knowledge/<concept>.md, memory/milestones/<slug>.md, memory/explicit/MEMORY.md (memory), "
             "tasks.json (tasks), skills/<slug>/SKILL.md (skill files), enterprise_info/ (shared company info)\n"
             "- For large files, the output may be truncated. Check if the result ends with a truncation marker.\n"
             "- You can read office documents (PDF, Word, Excel) via the separate `read_document` tool.\n"
@@ -70,7 +70,7 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path, e.g.: tasks.json, soul.md, memory/t3/capabilities.md, skills/my-skill/SKILL.md, enterprise_info/company_profile.md",
+                    "description": "File path, e.g.: tasks.json, soul.md, memory/self/self.md, skills/my-skill/SKILL.md, enterprise_info/company_profile.md",
                 }
             },
             "required": ["path"],

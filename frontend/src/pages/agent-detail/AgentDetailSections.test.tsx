@@ -4799,7 +4799,7 @@ describe('AgentDetail extracted sections', () => {
         estimated_cost: { tokens_per_run: 'medium', expected_duration: '1-3 minutes' },
         stop_conditions: ['User cancels the plan.'],
         assumptions: ['User wants Asia-market focus by default.'],
-        open_questions: ['Which sectors should the brief prioritise?'],
+        open_questions: [],
       },
       handoff_status: null,
       handoff_payload: null,
@@ -4838,7 +4838,6 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('medium');
     expect(markup).toContain('User cancels the plan.');
     expect(markup).toContain('User wants Asia-market focus by default.');
-    expect(markup).toContain('Which sectors should the brief prioritise?');
     // Actionable while awaiting confirmation; confirmation should clearly start handoff.
     expect(markup).toContain('Implement this plan');
     expect(markup).toContain('Adjust plan');
@@ -4847,6 +4846,51 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="plan-reject-composer"');
     expect(markup).toContain('Tell the agent what to adjust');
     expect(markup).toContain('Reason for leaving Plan Mode');
+  });
+
+  it('renders PlanCard open questions as a clarification flow and disables implementation', () => {
+    const plan = {
+      id: 'plan-open-questions',
+      agent_id: 'agent-1',
+      tenant_id: null,
+      session_id: null,
+      runtime_task_id: null,
+      requested_by_user_id: null,
+      source: 'web_chat',
+      intent_type: 'long_task',
+      original_request: 'Prepare a detailed ABS report',
+      status: 'awaiting_confirmation',
+      plan_version: 1,
+      plan_hash: 'sha256:open-questions',
+      plan_markdown_path: null,
+      plan_json: {
+        title: 'ABS report plan',
+        objective: 'Prepare the ABS report after scope is clarified.',
+        open_questions: ['Should the report focus on China credit ABS or overseas CLO/LBO high-yield debt?'],
+      },
+      handoff_status: null,
+      handoff_payload: null,
+      confirmed_by_user_id: null,
+      confirmed_at: null,
+      rejected_by_user_id: null,
+      rejected_at: null,
+      superseded_by_plan_id: null,
+      expires_at: null,
+      created_at: null,
+      updated_at: null,
+      metadata: {},
+    } as PlanRequest;
+
+    const markup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={plan} />);
+
+    expect(markup).toContain('data-testid="plan-clarification-required"');
+    expect(markup).toContain('data-testid="plan-clarification-composer"');
+    expect(markup).toContain('Should the report focus on China credit ABS or overseas CLO/LBO high-yield debt?');
+    expect(markup).toContain('Answer questions');
+    expect(markup).toContain('Send answers');
+    expect(markup).toContain('data-testid="plan-implement-disabled"');
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain('Answer the open questions before implementing.');
   });
 
   it('does not expose internal ledger paths or empty side-effect placeholders in PlanCard', () => {

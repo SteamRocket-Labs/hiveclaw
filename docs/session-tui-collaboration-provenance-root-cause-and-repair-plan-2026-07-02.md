@@ -1072,6 +1072,44 @@ cd backend && source .venv/bin/activate && ruff check \
 # All checks passed
 ```
 
+### Part 19 — B7 PlanCard open questions clarification flow（2026-07-02）
+
+红测：
+
+- `renders PlanCard open questions as a clarification flow and disables implementation`：旧 PlanCard 对 `plan_json.open_questions` 只做普通详情展示，仍显示可点击 `Implement this plan`，用户只能看到“调整/退出”，无法直接回答开放问题。
+- 普通 awaiting PlanCard 测试同步拆分：无 open questions 的 plan 仍应保留 `Implement this plan`、`Adjust plan`、`Ignore / exit plan`。
+
+红测验证：
+
+```bash
+cd frontend && npm run test -- \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  --run -t "PlanCard open questions|PlanCard with plan_json"
+# failed: missing data-testid="plan-clarification-required" and plan still exposed active Implement button
+```
+
+变更：
+
+- `PlanCard.tsx` 新增 `requiresClarification` 分支：当 plan 处于 `awaiting_confirmation` 或 `needs_clarification` 且存在 `open_questions` 时，显示 `plan-clarification-required` 提示。
+- 新增 `plan-clarification-composer`，用户可直接回答问题；提交走现有 `planApi.revise()`，写入 `clarification_answers`、`answered_open_questions`、以及可读 `revision_request`，触发重新生成/修订 confirmable plan。
+- 含 open questions 的卡片保留 `Implement this plan` 但强制 disabled，并带 `data-testid="plan-implement-disabled"` 与 title `Answer the open questions before implementing.`；不会再把未澄清计划当成可确认计划。
+- 保留普通 awaiting PlanCard 的确认/调整/退出三操作不变；补齐 en/zh i18n key。
+
+验证：
+
+```bash
+cd frontend && npm run test -- \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  --run -t "PlanCard open questions|PlanCard with plan_json"
+# 1 passed file, 2 passed tests
+
+cd frontend && npm run test -- src/pages/agent-detail/AgentDetailSections.test.tsx --run
+# 1 passed file, 84 passed tests
+
+cd frontend && npm run build
+# tsc && vite build passed
+```
+
 ### Part 17 — B5 Workflow gate / wait / resume / repair session-native 表达（2026-07-02）
 
 红测：

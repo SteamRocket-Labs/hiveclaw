@@ -151,9 +151,10 @@ const labelStyle: React.CSSProperties = {
 
 export default function PlanCard({ agentId, plan, onChanged, dense = false }: PlanCardProps) {
   const { t } = useTranslation();
-  const [busy, setBusy] = React.useState<null | 'confirm' | 'revise' | 'regenerate' | 'reject'>(null);
+  const [busy, setBusy] = React.useState<null | 'confirm' | 'revise' | 'clarify' | 'regenerate' | 'reject'>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [revisionRequest, setRevisionRequest] = React.useState('');
+  const [clarificationAnswers, setClarificationAnswers] = React.useState('');
   const [rejectReason, setRejectReason] = React.useState('');
 
   const planJson = plan.plan_json || {};
@@ -173,9 +174,11 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   const costText = humanizeCost(planJson.estimated_cost);
   const risk = planJson.risk_assessment;
   const planningErrors = planningErrorMessages(plan.metadata);
+  const requiresClarification =
+    (plan.status === 'needs_clarification' || isAwaiting) && openQuestions.length > 0;
 
   const runAction = async (
-    kind: 'confirm' | 'revise' | 'regenerate' | 'reject',
+    kind: 'confirm' | 'revise' | 'clarify' | 'regenerate' | 'reject',
     fn: () => Promise<unknown>,
   ) => {
     if (busy) return;
@@ -213,6 +216,24 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
       isPlanningFailed
         ? planApi.regenerate(agentId, plan.id, payload)
         : planApi.revise(agentId, plan.id, payload),
+    );
+  };
+
+  const onAnswerQuestions = (event?: React.FormEvent) => {
+    event?.preventDefault();
+    const answers = clarificationAnswers.trim();
+    if (!answers) {
+      setError(t('agent.plan.clarificationAnswerRequired', 'Answer the open questions before continuing.'));
+      return;
+    }
+    return runAction('clarify', () =>
+      planApi.revise(agentId, plan.id, {
+        fill: {
+          revision_request: `Answer the open questions before confirming:\n${answers}`,
+          clarification_answers: answers,
+          answered_open_questions: openQuestions,
+        },
+      }),
     );
   };
 
@@ -423,6 +444,33 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           confirm button (CC-align §4.5/§4.6). */}
       {isConfirmed && <HandoffBanner plan={plan} dense={dense} />}
 
+      {requiresClarification && (
+        <div
+          data-testid="plan-clarification-required"
+          role="status"
+          style={{
+            fontSize: '12px',
+            color: 'var(--warning, #b45309)',
+            background: 'rgba(180, 83, 9, 0.08)',
+            border: '1px solid rgba(180, 83, 9, 0.24)',
+            borderRadius: '6px',
+            padding: '8px 10px',
+            display: 'grid',
+            gap: '3px',
+          }}
+        >
+          <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+            {t('agent.plan.clarificationRequired', 'Clarification required')}
+          </div>
+          <div>
+            {t(
+              'agent.plan.answerBeforeImplementing',
+              'Answer the open questions before implementing.',
+            )}
+          </div>
+        </div>
+      )}
+
       {isPlanning && (
         <div
           role="status"
@@ -491,7 +539,43 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
       )}
 
       {/* Actions stay in the session card: no browser prompts, no context switch. */}
-      {isAwaiting ? (
+      {requiresClarification ? (
+        <div style={{ display: 'grid', gap: '10px' }}>
+          <div className="plan-inline-actions">
+            <PlanDecisionComposer
+              testId="plan-clarification-composer"
+              title={t('agent.plan.answerQuestions', 'Answer questions')}
+              label={t('agent.plan.answerPrompt', 'Answer the open questions')}
+              value={clarificationAnswers}
+              disabled={busy !== null}
+              submitLabel={busy === 'clarify' ? t('common.loading', 'Loading...') : t('agent.plan.sendAnswers', 'Send answers')}
+              onChange={setClarificationAnswers}
+              onSubmit={onAnswerQuestions}
+            />
+            <PlanDecisionComposer
+              testId="plan-reject-composer"
+              title={t('agent.plan.ignoreExit', 'Ignore / exit plan')}
+              label={t('agent.plan.exitPrompt', 'Reason for leaving Plan Mode (optional)')}
+              value={rejectReason}
+              disabled={busy !== null}
+              danger
+              submitLabel={busy === 'reject' ? t('common.loading', 'Loading...') : t('agent.plan.submitExit', 'Exit Plan Mode')}
+              onChange={setRejectReason}
+              onSubmit={onReject}
+            />
+          </div>
+          <button
+            data-testid="plan-implement-disabled"
+            type="button"
+            className="btn btn-primary"
+            style={{ justifySelf: 'flex-end', fontSize: '12px', padding: '6px 14px' }}
+            disabled
+            title={t('agent.plan.answerBeforeImplementing', 'Answer the open questions before implementing.')}
+          >
+            {t('agent.plan.implementPlan', 'Implement this plan')}
+          </button>
+        </div>
+      ) : isAwaiting ? (
         <div style={{ display: 'grid', gap: '10px' }}>
           <div className="plan-inline-actions">
             <PlanDecisionComposer

@@ -220,8 +220,7 @@ def search_explicit_overlay_entries(
     entries = [entry for entry in load_explicit_overlay_entries(data_root, agent_id) if entry.status == "active"]
     if needle:
         scored = [
-            (_simple_score(needle, f"{entry.category} {entry.target_hint} {entry.content}"), entry)
-            for entry in entries
+            (_simple_score(needle, f"{entry.category} {entry.target_hint} {entry.content}"), entry) for entry in entries
         ]
         scored = [(score, entry) for score, entry in scored if score > 0]
         scored.sort(key=lambda item: item[0], reverse=True)
@@ -424,3 +423,24 @@ def _escape_table(value: str) -> str:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+# Episodic-observation guard for save_memory (moved from the retired
+# t3_store): routine scan / no-change observations belong to the T0/session
+# ledger, never to explicit long-term memory. A reusable strategy is never a
+# false positive — mechanical checks back off rather than corrupt (L1).
+_EPISODIC_OBSERVATION_VERB = re.compile(r"(scan|poll|monitor|sweep|crawl|扫描|轮询|巡检|监控)", re.IGNORECASE)
+_EPISODIC_NULL_OR_COUNT = re.compile(
+    r"(no\s+change|unchanged|nothing\s+new|no\s+new\b|无变化|无更新|没有变化|没有更新|"
+    r"\d+\s*(?:个|项|条|家|expos?|items?|results?|sites?)\b[^。.\n]{0,16}(?:无|没有|unchanged|no\s+change))",
+    re.IGNORECASE,
+)
+
+
+def looks_episodic_observation(content: str) -> bool:
+    """High-confidence episodic scan log: a routine-observation verb AND a
+    null/count observation. Conservative by design — single signals pass."""
+    text = (content or "").strip()
+    if not text:
+        return False
+    return bool(_EPISODIC_OBSERVATION_VERB.search(text) and _EPISODIC_NULL_OR_COUNT.search(text))

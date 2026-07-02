@@ -88,6 +88,10 @@ def load_resident_memory(
         for entry in load_explicit_overlay_entries(Path(data_root), agent_id):
             if entry.status != "active":
                 continue
+            # Sensitive entries never ride the always-on resident block; they
+            # remain reachable through retrieval + activation gating (§4.5).
+            if str(entry.sensitivity or "").startswith(("PL3", "PL4")):
+                continue
             content = entry.content.strip()
             if content:
                 overlay_lines.append(f"- [{entry.category}] {content} ({entry.entry_id})")

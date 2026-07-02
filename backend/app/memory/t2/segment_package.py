@@ -1682,9 +1682,7 @@ def _legacy_t2_sessions_dir(root: Path, agent_id: uuid.UUID | str) -> Path:
     return root / str(agent_id) / "memory" / "sessions"
 
 
-def _segment_package_roots(
-    root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | str
-) -> tuple[Path, Path]:
+def _segment_package_roots(root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | str) -> tuple[Path, Path]:
     return (
         _t2_sessions_dir(root, agent_id) / str(session_id) / "segments",
         _legacy_t2_sessions_dir(root, agent_id) / str(session_id) / "segments",

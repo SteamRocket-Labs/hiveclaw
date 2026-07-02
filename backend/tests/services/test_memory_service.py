@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
+import uuid
+
 import pytest
 
 
@@ -434,66 +436,34 @@ async def test_generate_session_summary_holds_without_llm_instead_of_mechanical_
 
 
 @pytest.mark.asyncio
-async def test_build_memory_context_passes_rerank_model_config(monkeypatch, tmp_path):
+async def test_build_memory_context_never_requests_rerank_config(monkeypatch, tmp_path) -> None:
+    """spec §4.2: reads never run an LLM — the rerank side-query is retired."""
     from app.services import memory_service
 
-    agent_id = uuid4()
-    tenant_id = uuid4()
-    captured = {}
+    called = {"rerank": False}
 
-    class _FakeRetriever:
-        async def retrieve(self, _agent_id, _query, _session_id, _tenant_id, *, rerank_model_config=None, limit=20):
-            captured["rerank_model_config"] = rerank_model_config
-            captured["limit"] = limit
-            return ["memory-item"]
+    async def spy(_tenant_id):
+        called["rerank"] = True
+        return None
 
-    class _FakeAssembler:
-        def assemble(self, items):
-            captured["assembled_items"] = items
-            return "ASSEMBLED"
-
+    monkeypatch.setattr(memory_service, "_get_rerank_model_config", spy, raising=False)
     monkeypatch.setattr(
-        memory_service,
-        "MemoryRetriever",
-        lambda **_kwargs: _FakeRetriever(),
+        memory_service, "get_settings",
+        lambda: type("S", (), {"AGENT_DATA_DIR": str(tmp_path), "MEMORY_RESIDENT_BUDGET_CHARS": 12000.0})(),
     )
-    monkeypatch.setattr(
-        memory_service,
-        "MemoryAssembler",
-        lambda: _FakeAssembler(),
-    )
-    monkeypatch.setattr(
-        memory_service,
-        "_get_rerank_model_config",
-        lambda _tenant_id: {
-            "provider": "openai",
-            "model": "gpt-4.1-mini",
-            "api_key": "test-key",
-            "base_url": None,
-        },
-        raising=False,
-    )
+    from app.memory.activation import ActivationContext
 
-    async def fake_resolve_activation_context(*_args, **_kwargs):
-        return object()
+    class _P:
+        def can_access_sensitivity(self, _s):
+            return True
 
-    monkeypatch.setattr(memory_service, "_resolve_activation_context", fake_resolve_activation_context)
+    async def fake_activation(**_kw):
+        return ActivationContext(query="q", principal_stack=_P())
 
-    context = await memory_service.build_memory_context(
-        agent_id,
-        tenant_id,
-        session_id="session-1",
-        query="latest roadmap preference",
-    )
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", lambda **kw: fake_activation(**kw))
+    await memory_service.build_memory_context(uuid.uuid4(), uuid.uuid4(), query="q")
 
-    assert context == "ASSEMBLED"
-    assert captured["assembled_items"] == ["memory-item"]
-    assert captured["rerank_model_config"] == {
-        "provider": "openai",
-        "model": "gpt-4.1-mini",
-        "api_key": "test-key",
-        "base_url": None,
-    }
+    assert called["rerank"] is False
 
 
 @pytest.mark.asyncio
@@ -606,16 +576,24 @@ async def test_build_memory_context_omits_pl3_for_non_owner(monkeypatch, tmp_pat
     owner_id = uuid4()
     viewer_id = uuid4()
     mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    (mem_dir / "t3" / "user.md").write_text(
-        "# T3 User\n\n"
-        '<t3_user_memory id="salary-private" status="active" created_at="2026-05-22" sensitivity="PL3_sensitive">'
-        "<claim>Q3 salary planning requires owner-only handling</claim>"
-        "<evidence><source_ref>session:salary-private</source_ref></evidence>"
-        "</t3_user_memory>\n\n"
-        '<t3_user_memory id="salary-public" status="active" created_at="2026-05-22" sensitivity="PL1_public">'
-        "<claim>Acme salary planning policy uses the approved budget template</claim>"
-        "<evidence><source_ref>session:salary-public</source_ref></evidence>"
-        "</t3_user_memory>\n",
+    overlay = mem_dir / "explicit"
+    (overlay / "entries").mkdir(parents=True, exist_ok=True)
+    import json as _json
+
+    (overlay / "manifest.jsonl").write_text(
+        _json.dumps({"id": "salary-private", "status": "active", "category": "constraint", "sensitivity": "PL3_sensitive"}) + "\n",
+        encoding="utf-8",
+    )
+    (overlay / "entries" / "salary-private.md").write_text(
+        "<normalized_memory>Q3 salary planning requires owner-only handling</normalized_memory>",
+        encoding="utf-8",
+    )
+    with (overlay / "manifest.jsonl").open("a", encoding="utf-8") as _handle:
+        _handle.write(
+            _json.dumps({"id": "salary-public", "status": "active", "category": "constraint", "sensitivity": "PL1_public"}) + "\n"
+        )
+    (overlay / "entries" / "salary-public.md").write_text(
+        "<normalized_memory>Acme salary planning policy uses the approved budget template</normalized_memory>",
         encoding="utf-8",
     )
 
@@ -643,7 +621,6 @@ async def test_build_memory_context_omits_pl3_for_non_owner(monkeypatch, tmp_pat
 
     assert "owner-only handling" not in context
     assert "approved budget template" in context
-    assert "why=" in context
 
 
 @pytest.mark.asyncio

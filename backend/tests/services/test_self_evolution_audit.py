@@ -26,12 +26,9 @@ def test_self_evolution_audit_reports_memory_evidence_gaps(tmp_path: Path) -> No
         encoding="utf-8",
     )
     memory_dir = workspace / "memory"
-    (memory_dir / "t3").mkdir(parents=True, exist_ok=True)
-    (memory_dir / "t3" / "user.md").write_text(
-        "# T3 User\n\n"
-        '<t3_user_memory id="missing-source" status="active" created_at="2026-05-02">'
-        "<claim>T3 entry without source ref</claim>"
-        "</t3_user_memory>\n",
+    (memory_dir / "self").mkdir(parents=True, exist_ok=True)
+    (memory_dir / "self" / "self.md").write_text(
+        "## 方法\n\n### 无证据条目 — 一般\n<!-- id: missing-source -->\n没有证据引用的条目\n",
         encoding="utf-8",
     )
     (workspace / "soul.md").write_text(

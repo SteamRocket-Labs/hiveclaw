@@ -992,7 +992,6 @@ async def test_resolve_runtime_config_defaults_skill_candidate_loop_to_true_when
     assert config.turn_token_budget > 0
     assert config.runtime_continuity_enabled is False
     assert config.skill_candidate_loop_enabled is True
-    assert config.skill_distiller_behavior_report is None
 
 
 @pytest.mark.asyncio
@@ -2444,37 +2443,3 @@ async def test_kernel_get_tools_without_discovered_tools_keeps_none_requested(mo
     )
     await kernel._deps.get_tools(uuid4(), True)
     assert captured["requested_names"] is None
-
-
-@pytest.mark.asyncio
-async def test_load_latest_skill_distiller_behavior_report_uses_dedicated_latest_report_setting():
-    """Regression guard: runtime config resolution must not import a stale
-    behavior-eval constant and fail every agent invocation when
-    skill_candidate_loop_v1 is enabled.
-    """
-    from app.evals.hive_live_runner import BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY
-    from app.runtime.invoker import _load_latest_skill_distiller_behavior_report
-
-    tenant_id = uuid4()
-    trusted_report = {
-        "kind": "behavior_eval",
-        "transport": "hive_live",
-        "benchmark_complete": True,
-        "fallback_used": False,
-        "scenarios": {"coding": {"ready": True, "score": 100}},
-    }
-
-    class FakeDB:
-        def __init__(self) -> None:
-            self.statement = None
-
-        async def execute(self, statement):
-            self.statement = statement
-            return _FakeScalarResult({"report": trusted_report})
-
-    db = FakeDB()
-
-    report = await _load_latest_skill_distiller_behavior_report(db, tenant_id=tenant_id)
-
-    assert report == trusted_report
-    assert BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY == "behavior_eval_latest_report"

@@ -6,15 +6,12 @@ returning a unified list of MemoryItem objects for the assembler.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import re as _re
 import uuid
 from pathlib import Path
-from typing import Any
 
-from app.memory.activation import ActivationContext, ActivationScorer, memory_lifecycle_suppression_reason
+from app.memory.activation import ActivationContext, ActivationScorer
 from app.memory.explicit_overlay import search_explicit_overlay_entries
 from app.memory.types import MemoryItem, MemoryKind
 from app.runtime.context_budget import ContextBudget

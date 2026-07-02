@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import uuid
 from pathlib import Path
 
@@ -222,44 +221,6 @@ source_refs:
     return entry_id
 
 
-def test_build_t3_consolidation_batch_stages_source_bundle_and_neighborhood(tmp_path: Path) -> None:
-    from app.memory.md_store import ensure_t3_layout
-    from app.memory.t3_consolidation import build_t3_consolidation_batch
-
-    agent_id = uuid.uuid4()
-    package_dir = _write_reviewed_t2_package(tmp_path, agent_id)
-    mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    (mem_dir / "t3" / "capabilities.md").write_text(
-        "# T3 Capabilities\n\n"
-        '<t3_capability id="cap_existing" status="active"><name>Memory batch flow</name></t3_capability>\n',
-        encoding="utf-8",
-    )
-
-    result = build_t3_consolidation_batch(
-        agent_id=agent_id,
-        data_root=tmp_path,
-        package_dirs=[package_dir],
-        job_id="job-t3-1",
-    )
-
-    assert result.status == "staged"
-    assert (result.job_dir / "source_bundle.json").exists()
-    assert (result.job_dir / "t3_neighborhood.md").exists()
-    assert (result.job_dir / "consolidation_pitch.md").exists()
-    assert (result.job_dir / "review.md").exists()
-    assert (result.job_dir / "revised_patch.md").exists()
-    assert (result.job_dir / "manifest.json").exists()
-
-    bundle = json.loads((result.job_dir / "source_bundle.json").read_text(encoding="utf-8"))
-    assert bundle["schema_version"] == "t3.source_bundle.v1"
-    assert bundle["source_packages"][0]["ref"] == "t2://session/s1/segment/seg-1"
-    assert "memory/t3/episodes.md" in bundle["allowed_target_files"]
-
-    neighborhood = (result.job_dir / "t3_neighborhood.md").read_text(encoding="utf-8")
-    assert "cap_existing" in neighborhood
-    assert "base_revision" in neighborhood
-
-
 def test_discover_pending_t3_sources_uses_episode_stitch_packages(tmp_path: Path) -> None:
     from app.memory.t3_consolidation import discover_pending_t3_sources, stage_pending_t3_consolidation_job
 
@@ -333,312 +294,6 @@ def test_build_t3_consolidation_batch_embeds_explicit_overlay_details(tmp_path: 
     assert bundle["explicit_overlay_entries"][0]["target_hint"] == "user"
     assert "架构改造前必须先讨论" in bundle["explicit_overlay_entries"][0]["content"]
     assert "tool:save_memory" in bundle["explicit_overlay_entries"][0]["source_refs"]
-
-
-def test_platform_gate_applies_llm_authored_append_block_atomically(tmp_path: Path) -> None:
-    from app.memory.md_store import ensure_t3_layout
-    from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
-
-    agent_id = uuid.uuid4()
-    _write_reviewed_t2_package(tmp_path, agent_id)
-    mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    target = mem_dir / "t3" / "episodes.md"
-    base_sha = file_sha256(target)
-    patch = f"""# Revised Patch
-
-<t3_consolidation_patch id="t3p_1" schema_version="t3.consolidation_patch.v1">
-  <base_revisions>
-    <base_revision path="memory/t3/episodes.md" sha256="{base_sha}"/>
-  </base_revisions>
-  <source_packages>
-    <source_package ref="t2://session/s1/segment/seg-1" status="reviewed"/>
-  </source_packages>
-  <target_files>
-    <target_file path="memory/t3/episodes.md"/>
-  </target_files>
-  <target_view_labels>
-    <target_view>episodes</target_view>
-    <consolidation_mode>create</consolidation_mode>
-    <source_coverage>single_session</source_coverage>
-    <cue_strength>0.80</cue_strength>
-    <stability>stable</stability>
-    <behavior_impact>recall_only</behavior_impact>
-    <prompt_priority>p1_dynamic</prompt_priority>
-  </target_view_labels>
-  <proposed_changes>
-    <append_block target="memory/t3/episodes.md" block_id="ep_memory_t3_batch" insert_policy="append_to_active_blocks">
-      <block_content><![CDATA[
-<t3_episode id="ep_memory_t3_batch" status="active" confidence="0.95" prompt_priority="p1_dynamic">
-  <title>T3 通过 Consolidation Batch 从多个 Segment Package 收敛</title>
-  <source_refs><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></source_refs>
-</t3_episode>
-      ]]></block_content>
-    </append_block>
-  </proposed_changes>
-  <evidence>
-    <source_ref>t2://session/s1/segment/seg-1#summary</source_ref>
-  </evidence>
-</t3_consolidation_patch>
-"""
-
-    result = apply_t3_consolidation_patch(
-        agent_id=agent_id,
-        data_root=tmp_path,
-        job_id="job-t3-commit",
-        revised_patch_md=patch,
-        review_md=_accepted_review(),
-    )
-
-    assert result.status == "committed"
-    body = target.read_text(encoding="utf-8")
-    assert "ep_memory_t3_batch" in body
-    assert "T3 通过 Consolidation Batch" in body
-    assert "consolidation_patch" not in body
-    assert (mem_dir / ".staging" / "t3_jobs" / "job-t3-commit" / "manifest.json").exists()
-
-
-def test_platform_gate_rebuilds_wiki_map_after_commit(tmp_path: Path) -> None:
-    from app.memory.md_store import ensure_t3_layout
-    from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
-
-    agent_id = uuid.uuid4()
-    _write_reviewed_t2_package(tmp_path, agent_id)
-    mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    target = mem_dir / "t3" / "episodes.md"
-    base_sha = file_sha256(target)
-    patch = f"""# Revised Patch
-
-<t3_consolidation_patch id="t3p_index_sync" schema_version="t3.consolidation_patch.v1">
-  <base_revisions><base_revision path="memory/t3/episodes.md" sha256="{base_sha}"/></base_revisions>
-  <source_packages><source_package ref="t2://session/s1/segment/seg-1" status="reviewed"/></source_packages>
-  <target_files><target_file path="memory/t3/episodes.md"/></target_files>
-  <target_view_labels>
-    <target_view>episodes</target_view>
-    <consolidation_mode>create</consolidation_mode>
-    <source_coverage>single_session</source_coverage>
-    <cue_strength>0.80</cue_strength>
-    <stability>stable</stability>
-    <behavior_impact>recall_only</behavior_impact>
-    <prompt_priority>p1_dynamic</prompt_priority>
-  </target_view_labels>
-  <proposed_changes>
-    <append_block target="memory/t3/episodes.md" block_id="ep_index_sync">
-      <block_content><![CDATA[
-<t3_episode id="ep_index_sync" status="active" confidence="0.95" prompt_priority="p1_dynamic">
-  <title>Platform Gate commit 后派生索引必须同步</title>
-  <source_refs><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></source_refs>
-</t3_episode>
-      ]]></block_content>
-    </append_block>
-  </proposed_changes>
-  <evidence><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></evidence>
-</t3_consolidation_patch>
-"""
-
-    result = apply_t3_consolidation_patch(
-        agent_id=agent_id,
-        data_root=tmp_path,
-        job_id="job-t3-index-sync",
-        revised_patch_md=patch,
-        review_md=_accepted_review(),
-    )
-
-    assert result.status == "committed"
-    wiki_map = mem_dir / "indexes" / "wiki_map.md"
-    assert wiki_map.exists()
-    assert "ep_index_sync" in wiki_map.read_text(encoding="utf-8")
-    assert not (mem_dir / "wiki_map.md").exists()
-    assert not (mem_dir / "INDEX.md").exists()
-    assert not (mem_dir / "index.md").exists()
-    assert not (mem_dir / ".derived" / "t3_index.md").exists()
-
-
-def test_platform_gate_marks_t2_and_explicit_overlay_absorbed_after_commit(tmp_path: Path) -> None:
-    from app.memory.explicit_overlay import load_explicit_overlay_entries
-    from app.memory.md_store import ensure_t3_layout
-    from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
-
-    agent_id = uuid.uuid4()
-    package_dir = _write_reviewed_t2_package(tmp_path, agent_id)
-    explicit_id = _write_explicit_overlay_entry(tmp_path, agent_id)
-    mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    target = mem_dir / "t3" / "user.md"
-    base_sha = file_sha256(target)
-    explicit_ref = f"explicit://memory/{explicit_id}"
-    t2_ref = "t2://session/s1/segment/seg-1"
-    patch = f"""# Revised Patch
-
-<t3_consolidation_patch id="t3p_explicit" schema_version="t3.consolidation_patch.v1">
-  <base_revisions><base_revision path="memory/t3/user.md" sha256="{base_sha}"/></base_revisions>
-  <source_packages>
-    <source_package ref="{t2_ref}" status="reviewed"/>
-    <source_package ref="{explicit_ref}" status="active"/>
-  </source_packages>
-  <target_files><target_file path="memory/t3/user.md"/></target_files>
-  <target_view_labels>
-    <target_view>user</target_view>
-    <consolidation_mode>create</consolidation_mode>
-    <source_coverage>explicit_user</source_coverage>
-    <cue_strength>0.90</cue_strength>
-    <stability>stable</stability>
-    <behavior_impact>response_style</behavior_impact>
-    <prompt_priority>p1_dynamic</prompt_priority>
-  </target_view_labels>
-  <proposed_changes>
-    <append_block target="memory/t3/user.md" block_id="usr_discuss_first">
-      <block_content><![CDATA[
-<t3_user_memory id="usr_discuss_first" status="active" confidence="0.95" prompt_priority="p1_dynamic">
-  <claim>用户要求架构改造前必须先讨论并落文档。</claim>
-  <source_refs>
-    <source_ref>{explicit_ref}</source_ref>
-    <source_ref>t2://session/s1/segment/seg-1#summary</source_ref>
-  </source_refs>
-</t3_user_memory>
-      ]]></block_content>
-    </append_block>
-  </proposed_changes>
-  <evidence>
-    <source_ref>{explicit_ref}</source_ref>
-    <source_ref>t2://session/s1/segment/seg-1#summary</source_ref>
-  </evidence>
-</t3_consolidation_patch>
-"""
-
-    result = apply_t3_consolidation_patch(
-        agent_id=agent_id,
-        data_root=tmp_path,
-        job_id="job-explicit-commit",
-        revised_patch_md=patch,
-        review_md=_accepted_review_for(explicit_ref, "t2://session/s1/segment/seg-1#summary"),
-    )
-
-    assert result.status == "committed"
-    assert "usr_discuss_first" in target.read_text(encoding="utf-8")
-
-    overlay_entry = load_explicit_overlay_entries(tmp_path, agent_id)[0]
-    assert overlay_entry.status == "absorbed"
-    assert overlay_entry.metadata["accepted_blocks"] == "usr_discuss_first"
-    assert overlay_entry.metadata["status_reason"] == "t3_commit:job-explicit-commit"
-
-    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["package_status"] == "absorbed"
-    assert manifest["t3_absorbed_by"] == "job-explicit-commit"
-    assert manifest["t3_committed_blocks"] == ["usr_discuss_first"]
-
-
-def test_platform_gate_accepts_reinforce_mode_and_marks_sources_reinforced(tmp_path: Path) -> None:
-    from app.memory.md_store import ensure_t3_layout
-    from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
-
-    agent_id = uuid.uuid4()
-    package_dir = _write_reviewed_t2_package(tmp_path, agent_id)
-    mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    target = mem_dir / "t3" / "user.md"
-    target.write_text(
-        "# T3 User\n\n"
-        '<t3_user_memory id="usr_existing_rule" status="active" confidence="0.90" prompt_priority="p1_dynamic">\n'
-        "  <claim>用户要求架构改造前必须先讨论。</claim>\n"
-        "  <source_refs><source_ref>t2://session/s0/segment/seg-0</source_ref></source_refs>\n"
-        "</t3_user_memory>\n",
-        encoding="utf-8",
-    )
-    base_sha = file_sha256(target)
-    t2_ref = "t2://session/s1/segment/seg-1"
-    patch = f"""# Revised Patch
-
-<t3_consolidation_patch id="t3p_reinforce" schema_version="t3.consolidation_patch.v1">
-  <base_revisions><base_revision path="memory/t3/user.md" sha256="{base_sha}"/></base_revisions>
-  <source_packages><source_package ref="{t2_ref}" status="reviewed"/></source_packages>
-  <target_files><target_file path="memory/t3/user.md"/></target_files>
-  <target_view_labels>
-    <target_view>user</target_view>
-    <consolidation_mode>reinforce</consolidation_mode>
-    <source_coverage>single_session</source_coverage>
-    <cue_strength>0.80</cue_strength>
-    <stability>stable</stability>
-    <behavior_impact>response_style</behavior_impact>
-    <prompt_priority>p1_dynamic</prompt_priority>
-  </target_view_labels>
-  <proposed_changes>
-    <reinforce_block target="memory/t3/user.md" block_id="usr_existing_rule"/>
-  </proposed_changes>
-  <evidence><source_ref>{t2_ref}#summary</source_ref></evidence>
-</t3_consolidation_patch>
-"""
-
-    result = apply_t3_consolidation_patch(
-        agent_id=agent_id,
-        data_root=tmp_path,
-        job_id="job-reinforce",
-        revised_patch_md=patch,
-        review_md=_accepted_review_for(f"{t2_ref}#summary", decision="reinforced"),
-    )
-
-    assert result.status == "committed"
-    assert result.committed_blocks == ("usr_existing_rule",)
-    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["package_status"] == "reinforced"
-    assert manifest["t3_lifecycle_status"] == "reinforced"
-    assert "absorbed_at" not in manifest
-
-
-def test_platform_gate_retire_block_marks_accepted_t3_block_retired(tmp_path: Path) -> None:
-    from app.memory.md_store import ensure_t3_layout
-    from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
-
-    agent_id = uuid.uuid4()
-    package_dir = _write_reviewed_t2_package(tmp_path, agent_id)
-    mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    target = mem_dir / "t3" / "user.md"
-    active_block = (
-        '<t3_user_memory id="usr_old_rule" status="active" confidence="0.90" prompt_priority="p1_dynamic">\n'
-        "  <claim>用户曾经要求所有输出都极短。</claim>\n"
-        "  <source_refs><source_ref>t2://session/s0/segment/seg-0</source_ref></source_refs>\n"
-        "</t3_user_memory>\n"
-    )
-    target.write_text("# T3 User\n\n" + active_block, encoding="utf-8")
-    base_sha = file_sha256(target)
-    old_hash = hashlib.sha256(active_block.strip().encode("utf-8")).hexdigest()
-    t2_ref = "t2://session/s1/segment/seg-1"
-    patch = f"""# Revised Patch
-
-<t3_consolidation_patch id="t3p_retire" schema_version="t3.consolidation_patch.v1">
-  <base_revisions><base_revision path="memory/t3/user.md" sha256="{base_sha}"/></base_revisions>
-  <source_packages><source_package ref="{t2_ref}" status="reviewed"/></source_packages>
-  <target_files><target_file path="memory/t3/user.md"/></target_files>
-  <target_view_labels>
-    <target_view>user</target_view>
-    <consolidation_mode>retract</consolidation_mode>
-    <source_coverage>single_session</source_coverage>
-    <cue_strength>0.80</cue_strength>
-    <stability>stable</stability>
-    <behavior_impact>response_style</behavior_impact>
-    <prompt_priority>p1_dynamic</prompt_priority>
-  </target_view_labels>
-  <proposed_changes>
-    <retire_block target="memory/t3/user.md" block_id="usr_old_rule" expected_old_hash="sha256:{old_hash}" reason="superseded_by_newer_user_preference"/>
-  </proposed_changes>
-  <evidence><source_ref>{t2_ref}#summary</source_ref></evidence>
-</t3_consolidation_patch>
-"""
-
-    result = apply_t3_consolidation_patch(
-        agent_id=agent_id,
-        data_root=tmp_path,
-        job_id="job-retire",
-        revised_patch_md=patch,
-        review_md=_accepted_review_for(f"{t2_ref}#summary", decision="supersede_existing"),
-    )
-
-    assert result.status == "committed"
-    body = target.read_text(encoding="utf-8")
-    assert 'id="usr_old_rule"' in body
-    assert 'status="retired"' in body
-    assert 'retired_by="job-retire"' in body
-    assert 'retire_reason="superseded_by_newer_user_preference"' in body
-    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["package_status"] == "absorbed"
-    assert manifest["t3_committed_blocks"] == ["usr_old_rule"]
 
 
 def test_platform_gate_rejects_low_score_reinforced_review(tmp_path: Path) -> None:
@@ -777,31 +432,146 @@ def test_platform_gate_holds_patch_with_t0_ref_not_derivable_from_t2_source_refs
     assert "usr_bad_ref" not in target.read_text(encoding="utf-8")
 
 
-def test_platform_gate_returns_rebase_required_when_base_revision_changed(tmp_path: Path) -> None:
-    from app.memory.md_store import ensure_t3_layout
+# ── Two-plane replacements (Part H cutover): the discipline the retired
+# legacy-XML cases pinned — staging visibility, index rebuild after commit,
+# absorbed/reinforced source lifecycle — now rides the two-plane operations. ──
+
+
+def _entry_patch(target: str, sha: str, entry_id: str, entry: str, *, refs: list[str], mode: str = "create") -> str:
+    packages = "".join(f'<source_package ref="{ref}" status="reviewed"/>' for ref in refs)
+    evidence = "".join(f"<source_ref>{ref}</source_ref>" for ref in refs)
+    return f"""<t3_consolidation_patch schema_version="t3.consolidation_patch.v1">
+  <base_revisions><base_revision path="{target}" sha256="{sha}"/></base_revisions>
+  <source_packages>{packages}</source_packages>
+  <target_files><target_file path="{target}"/></target_files>
+  <target_view_labels>
+    <target_view>profiles</target_view><consolidation_mode>{mode}</consolidation_mode>
+    <source_coverage>single_session</source_coverage><stability>stable</stability>
+    <behavior_impact>recall_only</behavior_impact><prompt_priority>p1_dynamic</prompt_priority>
+  </target_view_labels>
+  <proposed_changes>
+    <upsert_entry target="{target}" entry_id="{entry_id}" section="偏好">
+      <entry_content><![CDATA[{entry}]]></entry_content>
+    </upsert_entry>
+  </proposed_changes>
+  <evidence>{evidence}</evidence>
+</t3_consolidation_patch>"""
+
+
+def test_build_t3_consolidation_batch_stages_source_bundle_and_neighborhood(tmp_path: Path) -> None:
+    from app.memory.t3_consolidation import build_t3_consolidation_batch
+
+    agent_id = uuid.uuid4()
+    package_dir = _write_reviewed_t2_package(tmp_path, agent_id)
+    kdir = tmp_path / str(agent_id) / "memory" / "knowledge"
+    kdir.mkdir(parents=True, exist_ok=True)
+    (kdir / "memory-batch-flow.md").write_text(
+        "---\ntitle: Memory Batch Flow\nstatus: active\n---\n## Current Claim\n批处理流。\n## Relations\n- is_a [[k:Flow]]\n",
+        encoding="utf-8",
+    )
+
+    result = build_t3_consolidation_batch(
+        agent_id=agent_id, data_root=tmp_path, package_dirs=[package_dir], job_id="job-t3-1"
+    )
+
+    assert result.status == "staged"
+    for filename in (
+        "source_bundle.json",
+        "t3_neighborhood.md",
+        "consolidation_pitch.md",
+        "review.md",
+        "revised_patch.md",
+        "manifest.json",
+    ):
+        assert (result.job_dir / filename).exists()
+    bundle = json.loads((result.job_dir / "source_bundle.json").read_text(encoding="utf-8"))
+    assert bundle["schema_version"] == "t3.source_bundle.v1"
+    assert bundle["source_packages"][0]["ref"] == "t2://session/s1/segment/seg-1"
+    assert "memory/self/self.md" in bundle["allowed_target_files"]
+    neighborhood = (result.job_dir / "t3_neighborhood.md").read_text(encoding="utf-8")
+    assert "memory-batch-flow" in neighborhood
+    assert "base_revision" in neighborhood
+
+
+def test_platform_gate_rebuilds_wiki_map_after_commit(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
     agent_id = uuid.uuid4()
-    mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    target = mem_dir / "t3" / "user.md"
-    old_sha = file_sha256(target)
-    target.write_text(target.read_text(encoding="utf-8") + '\n<t3_user_memory id="usr_existing"/>\n', encoding="utf-8")
-    patch = f"""<t3_consolidation_patch id="t3p_rebase" schema_version="t3.consolidation_patch.v1">
-  <base_revisions><base_revision path="memory/t3/user.md" sha256="{old_sha}"/></base_revisions>
-  <source_packages><source_package ref="t2://session/s1/segment/seg-1" status="reviewed"/></source_packages>
-  <target_files><target_file path="memory/t3/user.md"/></target_files>
-  <target_view_labels><target_view>user</target_view><consolidation_mode>create</consolidation_mode><source_coverage>single_session</source_coverage><cue_strength>0.80</cue_strength><stability>stable</stability><behavior_impact>response_style</behavior_impact><prompt_priority>p1_dynamic</prompt_priority></target_view_labels>
-  <proposed_changes><append_block target="memory/t3/user.md" block_id="usr_new"><block_content><![CDATA[<t3_user_memory id="usr_new" status="active"><claim>用户偏好先讨论。</claim></t3_user_memory>]]></block_content></append_block></proposed_changes>
-  <evidence><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></evidence>
-</t3_consolidation_patch>"""
+    _write_reviewed_t2_package(tmp_path, agent_id)
+    target = "memory/profiles/owner.md"
+    sha = file_sha256(tmp_path / str(agent_id) / target)
+    entry = "### 讨论先行 — 已确认\n<!-- id: pref-discuss-first -->\n架构改造先讨论。\n- 证据: t2-a1b2"
 
     result = apply_t3_consolidation_patch(
         agent_id=agent_id,
         data_root=tmp_path,
-        job_id="job-rebase",
-        revised_patch_md=patch,
+        job_id="job-t3-index-sync",
+        revised_patch_md=_entry_patch(target, sha, "pref-discuss-first", entry, refs=["t2://session/s1/segment/seg-1"]),
         review_md=_accepted_review(),
     )
 
-    assert result.status == "rebase_required"
-    assert (mem_dir / ".staging" / "t3_jobs" / "job-rebase" / "conflict_bundle.json").exists()
+    assert result.status == "committed", result.issues
+    wiki_map = tmp_path / str(agent_id) / "memory" / "indexes" / "wiki_map.md"
+    assert wiki_map.exists()
+    assert "pref-discuss-first" in wiki_map.read_text(encoding="utf-8")
+
+
+def test_platform_gate_marks_t2_and_explicit_overlay_absorbed_after_commit(tmp_path: Path) -> None:
+    from app.memory.explicit_overlay import load_explicit_overlay_entries
+    from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
+
+    agent_id = uuid.uuid4()
+    package_dir = _write_reviewed_t2_package(tmp_path, agent_id)
+    explicit_id = _write_explicit_overlay_entry(tmp_path, agent_id)
+    explicit_ref = f"explicit://memory/{explicit_id}"
+    t2_ref = "t2://session/s1/segment/seg-1"
+    target = "memory/profiles/owner.md"
+    sha = file_sha256(tmp_path / str(agent_id) / target)
+    entry = "### 架构改造先讨论 — 已确认\n<!-- id: usr-discuss-first -->\n用户要求架构改造前必须先讨论并落文档。\n- 证据: t2-a1b2"
+
+    result = apply_t3_consolidation_patch(
+        agent_id=agent_id,
+        data_root=tmp_path,
+        job_id="job-explicit-commit",
+        revised_patch_md=_entry_patch(target, sha, "usr-discuss-first", entry, refs=[t2_ref, explicit_ref]),
+        review_md=_accepted_review_for(explicit_ref, "t2://session/s1/segment/seg-1#summary"),
+    )
+
+    assert result.status == "committed", result.issues
+    assert "usr-discuss-first" in (tmp_path / str(agent_id) / target).read_text(encoding="utf-8")
+    overlay_entry = load_explicit_overlay_entries(tmp_path, agent_id)[0]
+    assert overlay_entry.status == "absorbed"
+    assert overlay_entry.metadata["status_reason"] == "t3_commit:job-explicit-commit"
+    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["package_status"] == "absorbed"
+    assert manifest["t3_absorbed_by"] == "job-explicit-commit"
+
+
+def test_platform_gate_reinforce_mode_marks_sources_reinforced(tmp_path: Path) -> None:
+    from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
+
+    agent_id = uuid.uuid4()
+    package_dir = _write_reviewed_t2_package(tmp_path, agent_id)
+    target = "memory/profiles/owner.md"
+    owner_path = tmp_path / str(agent_id) / target
+    owner_path.parent.mkdir(parents=True, exist_ok=True)
+    owner_path.write_text(
+        "## 偏好\n\n### 讨论先行 — 已确认\n<!-- id: pref-discuss-first -->\n旧证据。\n- 证据: t2-old\n",
+        encoding="utf-8",
+    )
+    sha = file_sha256(owner_path)
+    entry = "### 讨论先行 — 已确认\n<!-- id: pref-discuss-first -->\n旧证据 + 新证据确认。\n- 证据: t2-old · t2-a1b2"
+
+    result = apply_t3_consolidation_patch(
+        agent_id=agent_id,
+        data_root=tmp_path,
+        job_id="job-reinforce",
+        revised_patch_md=_entry_patch(
+            target, sha, "pref-discuss-first", entry, refs=["t2://session/s1/segment/seg-1"], mode="reinforce"
+        ),
+        review_md=_accepted_review_for("t2://session/s1/segment/seg-1#summary", decision="reinforced"),
+    )
+
+    assert result.status == "committed", result.issues
+    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["package_status"] == "reinforced"

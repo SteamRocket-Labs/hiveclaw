@@ -29,7 +29,6 @@ from .executing_actions import build_executing_actions_section
 from .identity import build_identity_section
 from .knowledge import build_knowledge_section
 from .memory import build_memory_section
-from .memory_navigation import build_memory_navigation_section
 from .scenario import build_scenario_section
 from .skills_catalog import build_skills_catalog_section
 from .subagent_listing import build_subagent_listing_section
@@ -53,7 +52,6 @@ __all__ = [
     "build_a2a_collaborators_section",
     # Dynamic suffix
     "build_memory_section",
-    "build_memory_navigation_section",
     "build_plan_mode_guidance_section",
     "build_scenario_section",
     "build_active_tool_groups_section",

@@ -200,9 +200,7 @@ def _should_create_lifecycle_sketch(extraction: dict[str, str]) -> bool:
     volatility = str(extraction.get("volatility") or extraction.get("vol") or "").strip().lower()
     explicit = str(extraction.get("lifecycle_status") or extraction.get("status") or "").strip().lower()
     return explicit == "sketch" or (
-        confidence is not None
-        and confidence < SKETCH_CONFIDENCE_THRESHOLD
-        and volatility in _SKETCH_VOLATILITY_MARKERS
+        confidence is not None and confidence < SKETCH_CONFIDENCE_THRESHOLD and volatility in _SKETCH_VOLATILITY_MARKERS
     )
 
 
@@ -255,7 +253,11 @@ def _listify_metadata(value) -> list[str]:
 
 def _resolve_local_source_ref(data_root: Path, agent_id: uuid.UUID, ref: str) -> Path | None:
     normalized = ref.strip()
-    if normalized.startswith("workspace/") or normalized.startswith("memory/") or normalized.startswith("runtime_artifacts/"):
+    if (
+        normalized.startswith("workspace/")
+        or normalized.startswith("memory/")
+        or normalized.startswith("runtime_artifacts/")
+    ):
         return Path(data_root) / str(agent_id) / normalized
     return None
 

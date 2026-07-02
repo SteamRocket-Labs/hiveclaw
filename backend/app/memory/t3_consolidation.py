@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from app.memory.explicit_overlay import ExplicitMemoryOverlayEntry, load_explicit_overlay_entries
-from app.memory.md_store import build_t3_entry_manifest, ensure_t3_layout, memory_dir
-from app.memory.t3_platform_gate import ACCEPTED_T3_TARGETS, PROFILE_PLANE_TARGETS, file_sha256
+from app.memory.md_store import ensure_t3_layout, memory_dir
+from app.memory.t3_platform_gate import PROFILE_PLANE_TARGETS, file_sha256
 
 # Dynamic knowledge-plane targets are pattern-shaped, so the allowed-target
 # list carries the pattern plus its contract inline (spec §3.4/§3.5).
@@ -98,7 +98,7 @@ def build_t3_consolidation_batch(
         "source_packages": packages,
         "explicit_overlay_entries": explicit_entries,
         "source_signature": _source_signature(packages=packages, explicit_entries=explicit_entries),
-        "allowed_target_files": [*ACCEPTED_T3_TARGETS, *PROFILE_PLANE_TARGETS, *DYNAMIC_TARGET_PATTERNS],
+        "allowed_target_files": [*PROFILE_PLANE_TARGETS, *DYNAMIC_TARGET_PATTERNS],
         "created_at": _now(),
         "write_boundary": {
             "semantic_writer": "T3 Consolidator",
@@ -202,19 +202,6 @@ def build_t3_neighborhood(*, data_root: Path | str, agent_id: uuid.UUID | str) -
         "## Base Revisions",
         "",
     ]
-    for target in ACCEPTED_T3_TARGETS:
-        path = mem_dir.parent / target
-        lines.append(f"- `{target}` base_revision=`{file_sha256(path)}`")
-    lines.extend(["", "## Existing Accepted Blocks", ""])
-    entries = build_t3_entry_manifest(root, resolved_agent_id)
-    if not entries:
-        lines.append("(no accepted T3 blocks yet)")
-    for entry in entries:
-        lines.append(
-            f"- id={entry.entry_id} source={entry.source} category={entry.category} "
-            f"base_revision={file_sha256(mem_dir / entry.filename)}"
-        )
-        lines.append(f"  preview: {entry.preview}")
     lines.extend(_two_plane_neighborhood_lines(mem_dir))
     from app.memory.convergence import convergence_warning_lines
 

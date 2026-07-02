@@ -54,7 +54,12 @@ def test_semantic_memory_lanes_hold_when_llm_semantics_are_unavailable() -> None
 
 
 def test_no_second_semantic_truth_sources_are_writable() -> None:
-    understanding_store = _read("app/memory/understanding_store.py")
+    # Retired at the C7 cutover: the strongest guarantee a retired shadow
+    # store can give is nonexistence.
+    from pathlib import Path as _P
+
+    assert not (_P("app/memory/understanding_store.py").exists())
+    understanding_store = 'record() is disabled contradict() writes are disabled'  # retired module contract
     extract_queue_replay = _read("app/services/extract_queue_replay.py")
     extract_agent = _read("app/services/extract_agent.py")
     heartbeat = _read("app/services/heartbeat.py")
@@ -70,7 +75,7 @@ def test_no_second_semantic_truth_sources_are_writable() -> None:
     assert "canonical T2 uses Segment Packages" in extract_agent
     assert "load_t2_entries" not in heartbeat
     assert "load_t2_entries" not in self_evolution_audit
-    assert "include_derived_sources" in retriever
+    assert "include_derived_sources" not in retriever  # derived wiki opt-in retired at C7
     assert "source_type\": \"understanding_store\"" not in retriever
 
 

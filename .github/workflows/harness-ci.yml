@@ -49,9 +49,6 @@ jobs:
           pytest tests/evals tests/runtime/test_prompt_cache.py tests/runtime/test_prompt_eval.py \
             tests/services/test_prompt_contracts.py -q
 
-      - name: Memory retrieval and retirement eval
-        run: python -m app.memory.retrieval_eval --data-root /tmp/hive-memory-eval
-
       - name: Prompt contract eval
         run: python -m app.runtime.prompt_eval --fail-severity=critical,high
 

@@ -25,6 +25,8 @@ _RELATIVE_TIME_RE = re.compile(
     r"(昨天|今天|明天|上周|下周|最近|稍后|之后|以后)",
     re.I,
 )
+
+
 def lint_memory_form(content: str) -> FormLintResult:
     text = (content or "").strip()
     violations: list[FormViolation] = []

@@ -29,11 +29,10 @@ _SECTION_HEADER_RE = re.compile(r"^##\s+")
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
-_PAGE_DIRS = ("wiki", "scenes")
-# Two-plane knowledge network dirs (spec §1.1): pass to build_relation_graph
-# for the knowledge/milestones planes; _PAGE_DIRS stays the legacy default
-# until the C7 cutover retires wiki/scenes.
+# Two-plane knowledge network dirs (spec §1.1) — the default since the C7
+# cutover; the legacy wiki/scenes directories are archive-only.
 KNOWLEDGE_PAGE_DIRS = ("knowledge", "milestones")
+_PAGE_DIRS = KNOWLEDGE_PAGE_DIRS
 
 _LEGACY_KIND_BY_DIR = {"wiki": "wiki", "scenes": "scene"}
 _KNOWLEDGE_LINK_PREFIX = "k:"

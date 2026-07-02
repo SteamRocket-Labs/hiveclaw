@@ -13,7 +13,6 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.memory.hygiene import repair_agent_memory_hygiene
-from app.memory.legacy_migration import migrate_legacy_memory_tree
 from app.memory.md_store import ensure_t3_layout, rebuild_index
 from app.models.agent import Agent
 from app.models.task import Task
@@ -67,7 +66,7 @@ def _bootstrap_evolution_files(ws: Path) -> None:
 # PR-12: rewrote the template with XML sections + a decision matrix. Use one
 # of the new unique tags as the marker so agents on the pre-PR-12 template
 # get upgraded on next startup migration.
-_HEARTBEAT_MIGRATION_MARKER = "<decision_matrix>"
+_HEARTBEAT_MIGRATION_MARKER = "<two_plane_curation>"
 _DEPRECATED_SKILLS = ("self-improving-agent", "proactive-agent")
 
 
@@ -124,6 +123,28 @@ def _move_legacy_directory_if_needed(source: Path, target: Path) -> bool:
     except OSError:
         pass
     return moved_any
+
+
+_LEGACY_MEMORY_FILES = ("memory.md", "knowledge.md", "feedback.md", "INDEX.md", "index.md", "wiki_map.md")
+
+
+def _archive_legacy_memory_files(agent_dir: Path) -> list[str]:
+    """Move pre-two-plane single-file memories into the archive (never delete).
+
+    Content reorganization into the two planes is the migration tool's job
+    (app.scripts.migrate_memory_two_planes); this step only keeps the root
+    memory/ dir canonical.
+    """
+    moved: list[str] = []
+    memory_dir = agent_dir / "memory"
+    archive_dir = memory_dir / ".archive" / "legacy_import"
+    for name in _LEGACY_MEMORY_FILES:
+        if _move_legacy_file_if_needed(memory_dir / name, archive_dir / name):
+            moved.append(name)
+    learnings = memory_dir / "learnings"
+    if learnings.is_dir() and _move_legacy_directory_if_needed(learnings, archive_dir / "learnings"):
+        moved.append("learnings/")
+    return moved
 
 
 def _migrate_workspace_runtime_artifacts(agent_dir: Path) -> list[str]:
@@ -196,8 +217,8 @@ def migrate_all_workspaces() -> None:
             logger.debug("[migrate] Skipping non-agent workspace directory: %s", agent_dir.name)
             continue
 
-        migrate_legacy_memory_tree(WORKSPACE_ROOT, agent_uuid)
         moved_runtime_artifacts = _migrate_workspace_runtime_artifacts(agent_dir)
+        moved_runtime_artifacts.extend(_archive_legacy_memory_files(agent_dir))
         if moved_runtime_artifacts:
             logger.info(
                 "[migrate] Runtime artifact paths for %s: %s",
@@ -293,6 +314,7 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
     (ws / "evolution").mkdir(exist_ok=True)
     (ws / "runtime_artifacts").mkdir(exist_ok=True)
     _migrate_workspace_runtime_artifacts(ws)
+    _archive_legacy_memory_files(ws)
     ensure_t3_layout(WORKSPACE_ROOT, agent_id)
 
     if tenant_id:

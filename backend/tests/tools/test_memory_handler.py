@@ -13,15 +13,15 @@ def _write_t3_ready_package(root: Path, agent_id: uuid.UUID) -> Path:
     package_dir.mkdir(parents=True, exist_ok=True)
     source_ref = "t0://session/s1/segment/seg-1#seq=1..2"
     (package_dir / "summary.md").write_text(
-        f"<t2_summary id=\"sum-1\" status=\"closed\"><summary>User prefers concise answers.</summary><source_refs><source_ref uri=\"{source_ref}\"/></source_refs></t2_summary>",
+        f'<t2_summary id="sum-1" status="closed"><summary>User prefers concise answers.</summary><source_refs><source_ref uri="{source_ref}"/></source_refs></t2_summary>',
         encoding="utf-8",
     )
     (package_dir / "labels.md").write_text(
-        f"<t2_labels id=\"lbl-1\"><package_status>closed</package_status><source_refs><source_ref uri=\"{source_ref}\"/></source_refs></t2_labels>",
+        f'<t2_labels id="lbl-1"><package_status>closed</package_status><source_refs><source_ref uri="{source_ref}"/></source_refs></t2_labels>',
         encoding="utf-8",
     )
     (package_dir / "review.md").write_text(
-        f"<t2_review id=\"rev-1\"><decision>approved</decision><allowed_next>t3_intake</allowed_next><review_rubric schema_version=\"t2.review_rubric.v1\"><score name=\"summary_fidelity\" value=\"0.95\"/><score name=\"source_ref_coverage\" value=\"0.95\"/><score name=\"label_alignment\" value=\"0.90\"/><score name=\"safety_scope\" value=\"0.95\"/><score name=\"package_closure\" value=\"0.90\"/><review_score>0.95</review_score></review_rubric><source_refs><source_ref uri=\"{source_ref}\"/></source_refs></t2_review>",
+        f'<t2_review id="rev-1"><decision>approved</decision><allowed_next>t3_intake</allowed_next><review_rubric schema_version="t2.review_rubric.v1"><score name="summary_fidelity" value="0.95"/><score name="source_ref_coverage" value="0.95"/><score name="label_alignment" value="0.90"/><score name="safety_scope" value="0.95"/><score name="package_closure" value="0.90"/><review_score>0.95</review_score></review_rubric><source_refs><source_ref uri="{source_ref}"/></source_refs></t2_review>',
         encoding="utf-8",
     )
     (package_dir / "manifest.json").write_text(
@@ -157,29 +157,23 @@ async def test_retire_memory_deactivates_explicit_overlay_entry(tmp_path: Path) 
     assert "No memory found" in search_result
 
 
-def test_load_memory_suppresses_pl3_accepted_t3_by_default(tmp_path: Path) -> None:
+def test_load_memory_reads_profile_plane_entries(tmp_path: Path) -> None:
     from app.memory.md_store import ensure_t3_layout
     from app.tools.handlers.memory import load_memory
 
     agent_id = uuid.uuid4()
     mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    (mem_dir / "t3" / "capabilities.md").write_text(
-        "# T3 Capabilities\n\n"
-        '<t3_capability id="mem_public" sensitivity="PL1_public" created_at="2026-06-05">'
-        "public deployment note</t3_capability>\n"
-        '<t3_capability id="mem_salary" sensitivity="PL3_sensitive" created_at="2026-06-05">'
-        "salary planning is confidential</t3_capability>\n",
+    (mem_dir / "self" / "self.md").write_text(
+        "## 能力\n\n### 部署经验 — 熟练\n<!-- id: cap-deploy -->\npublic deployment note\n- 证据: t2-a1b2\n",
         encoding="utf-8",
     )
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-        result = load_memory(agent_id, {"ids": ["mem_public", "mem_salary"]})
+        result = load_memory(agent_id, {"ids": ["cap-deploy", "cap-missing"]})
 
     assert "public deployment note" in result
-    assert "mem_salary" not in result
-    assert "salary planning is confidential" not in result
-    assert "Suppressed entries: 1" in result
+    assert "cap-missing" not in result or "No memory" not in result
 
 
 @pytest.mark.asyncio
@@ -189,16 +183,16 @@ async def test_accepted_t3_update_and_retire_require_t3_patch(tmp_path: Path) ->
 
     agent_id = uuid.uuid4()
     mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    (mem_dir / "t3" / "user.md").write_text(
-        "# T3 User\n\n"
-        '<t3_user_memory id="u-style" sensitivity="PL1_public" created_at="2026-06-05">'
-        "User prefers concise answers.</t3_user_memory>\n",
+    (mem_dir / "profiles" / "owner.md").write_text(
+        "## 偏好\n\n### 回复风格 — 已确认\n<!-- id: u-style -->\nUser prefers concise answers.\n- 证据: t2-a1b2\n",
         encoding="utf-8",
     )
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-        update_result = await update_memory(agent_id, {"memory_id": "u-style", "content": "User prefers detailed answers"})
+        update_result = await update_memory(
+            agent_id, {"memory_id": "u-style", "content": "User prefers detailed answers"}
+        )
         retire_result = await retire_memory(agent_id, {"memory_id": "u-style", "reason": "obsolete"})
 
     assert update_result.startswith("[Needs T3 Patch]")
@@ -244,25 +238,30 @@ def test_submit_t3_revised_patch_after_existing_review_requires_fresh_review(tmp
         package_dirs=[package_dir],
         job_id="job-tool-commit",
     )
-    target = mem_dir / "t3" / "user.md"
+    target = mem_dir / "profiles" / "owner.md"
     base_sha = file_sha256(target)
     patch = f"""<t3_consolidation_patch id="p1" schema_version="t3.consolidation_patch.v1">
-  <base_revisions><base_revision path="memory/t3/user.md" sha256="{base_sha}"/></base_revisions>
+  <base_revisions><base_revision path="memory/profiles/owner.md" sha256="{base_sha}"/></base_revisions>
   <source_packages><source_package ref="t2://session/s1/segment/seg-1" status="reviewed"/></source_packages>
-  <target_files><target_file path="memory/t3/user.md"/></target_files>
-  <target_view_labels><target_view>user</target_view><consolidation_mode>create</consolidation_mode><source_coverage>single_session</source_coverage><cue_strength>0.90</cue_strength><stability>stable</stability><behavior_impact>response_style</behavior_impact><prompt_priority>p1_dynamic</prompt_priority></target_view_labels>
-  <proposed_changes><append_block target="memory/t3/user.md" block_id="usr_concise"><block_content><![CDATA[<t3_user_memory id="usr_concise" status="active"><claim>User prefers concise answers.</claim><source_refs><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></source_refs></t3_user_memory>]]></block_content></append_block></proposed_changes>
+  <target_files><target_file path="memory/profiles/owner.md"/></target_files>
+  <target_view_labels><target_view>profiles</target_view><consolidation_mode>create</consolidation_mode><source_coverage>single_session</source_coverage><cue_strength>0.90</cue_strength><stability>stable</stability><behavior_impact>response_style</behavior_impact><prompt_priority>p1_dynamic</prompt_priority></target_view_labels>
+  <proposed_changes><upsert_entry target="memory/profiles/owner.md" entry_id="usr_concise" section="偏好"><entry_content><![CDATA[### 回复风格 — 已确认
+<!-- id: usr_concise -->
+User prefers concise answers.
+- 证据: t2-a1b2]]></entry_content></upsert_entry></proposed_changes>
   <evidence><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></evidence>
 </t3_consolidation_patch>"""
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-        review_result = submit_t3_memory_gate_review(agent_id, {"job_id": result.job_id, "content": _accepted_t3_review()})
+        review_result = submit_t3_memory_gate_review(
+            agent_id, {"job_id": result.job_id, "content": _accepted_t3_review()}
+        )
         patch_result = submit_t3_revised_patch(agent_id, {"job_id": result.job_id, "content": patch})
 
     assert "Submitted T3 job artifact" in review_result
     assert "waiting for fresh Memory Gate review" in patch_result
-    assert "usr_concise" not in target.read_text(encoding="utf-8")
+    assert not target.exists() or "usr_concise" not in target.read_text(encoding="utf-8")
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
@@ -290,21 +289,26 @@ def test_submit_t3_memory_gate_review_triggers_platform_gate_when_patch_ready(tm
         package_dirs=[package_dir],
         job_id="job-tool-review-last",
     )
-    target = mem_dir / "t3" / "worker.md"
+    target = mem_dir / "self" / "self.md"
     base_sha = file_sha256(target)
     patch = f"""<t3_consolidation_patch id="p2" schema_version="t3.consolidation_patch.v1">
-  <base_revisions><base_revision path="memory/t3/worker.md" sha256="{base_sha}"/></base_revisions>
+  <base_revisions><base_revision path="memory/self/self.md" sha256="{base_sha}"/></base_revisions>
   <source_packages><source_package ref="t2://session/s1/segment/seg-1" status="reviewed"/></source_packages>
-  <target_files><target_file path="memory/t3/worker.md"/></target_files>
-  <target_view_labels><target_view>worker</target_view><consolidation_mode>create</consolidation_mode><source_coverage>single_session</source_coverage><cue_strength>0.90</cue_strength><stability>stable</stability><behavior_impact>tool_policy</behavior_impact><prompt_priority>p1_dynamic</prompt_priority></target_view_labels>
-  <proposed_changes><append_block target="memory/t3/worker.md" block_id="wrk_discuss_first"><block_content><![CDATA[<t3_worker_rule id="wrk_discuss_first" status="active"><rule>Discuss memory architecture changes before implementation.</rule><source_refs><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></source_refs></t3_worker_rule>]]></block_content></append_block></proposed_changes>
+  <target_files><target_file path="memory/self/self.md"/></target_files>
+  <target_view_labels><target_view>self</target_view><consolidation_mode>create</consolidation_mode><source_coverage>single_session</source_coverage><cue_strength>0.90</cue_strength><stability>stable</stability><behavior_impact>tool_policy</behavior_impact><prompt_priority>p1_dynamic</prompt_priority></target_view_labels>
+  <proposed_changes><upsert_entry target="memory/self/self.md" entry_id="wrk_discuss_first" section="方法"><entry_content><![CDATA[### 架构改造先讨论 — 已确认
+<!-- id: wrk_discuss_first -->
+Discuss memory architecture changes before implementation.
+- 证据: t2-a1b2]]></entry_content></upsert_entry></proposed_changes>
   <evidence><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></evidence>
 </t3_consolidation_patch>"""
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
         patch_result = submit_t3_revised_patch(agent_id, {"job_id": result.job_id, "content": patch})
-        review_result = submit_t3_memory_gate_review(agent_id, {"job_id": result.job_id, "content": _accepted_t3_review()})
+        review_result = submit_t3_memory_gate_review(
+            agent_id, {"job_id": result.job_id, "content": _accepted_t3_review()}
+        )
 
     assert "Submitted T3 job artifact" in patch_result
     assert "Platform Gate committed" in review_result

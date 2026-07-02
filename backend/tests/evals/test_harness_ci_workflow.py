@@ -9,7 +9,9 @@ def test_harness_ci_runs_pytest_prompt_eval_and_self_evolution_bakeoff() -> None
     assert workflow.exists()
     source = workflow.read_text(encoding="utf-8")
     assert "pytest" in source
-    assert "python -m app.memory.retrieval_eval" in source
+    # retrieval_eval retired at the C7 two-plane cutover; wiki retrieval is
+    # covered by tests/memory suites, so CI must not invoke the dead module.
+    assert "python -m app.memory.retrieval_eval" not in source
     assert "python -m app.runtime.prompt_eval" in source
     assert "python -m app.evals.self_evolution_bakeoff" in source
     assert "python -m app.evals.run --suite core_v1 --target clawith --mode internal" in source

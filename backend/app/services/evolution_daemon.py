@@ -192,30 +192,8 @@ async def run_heartbeat_evolution_maintenance(
     except Exception as exc:
         logger.debug("[EvolutionDaemon] Auto-dream check failed for {}: {}", agent_id, exc)
 
-    try:
-        from app.memory.distillation_audit import write_distillation_audit
-        from app.memory.md_store import validate_and_normalize_t3
-
-        normalization_report = validate_and_normalize_t3(Path(get_settings().AGENT_DATA_DIR), agent_id)
-        report["t3_normalization"] = normalization_report
-        if normalization_report["fixed"] or normalization_report["warnings"]:
-            write_distillation_audit(
-                Path(get_settings().AGENT_DATA_DIR),
-                agent_id,
-                stage="t3_normalization_repair",
-                outcome="repaired" if normalization_report["fixed"] else "warning",
-                reason="platform hygiene normalized accepted T3 shape",
-                detail=normalization_report,
-            )
-            logger.info(
-                "[EvolutionDaemon] T3 normalization for {}: fixed={} warnings={} files={}",
-                agent_id,
-                normalization_report["fixed"],
-                len(normalization_report["warnings"]),
-                normalization_report["files_touched"],
-            )
-    except Exception as exc:
-        logger.debug("[EvolutionDaemon] T3 normalization failed for {}: {}", agent_id, exc)
+    # Legacy flat-T3 shape normalization retired at the C7 cutover; two-plane
+    # shape discipline is enforced by the Platform Gate operations themselves.
 
     try:
         from app.memory.enhancement import sync_t3_to_memory_enhancement

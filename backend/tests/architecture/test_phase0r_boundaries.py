@@ -88,7 +88,6 @@ def test_focus_workspace_surface_is_fully_retired_from_live_code() -> None:
     forbidden_tokens = ("focus.md", "focus_ref", "focus_state")
     roots = [APP_ROOT, PROJECT_ROOT / "frontend/src"]
     allowed_files = {
-        APP_ROOT / "memory/legacy_migration.py",
     }
     violations: list[str] = []
 

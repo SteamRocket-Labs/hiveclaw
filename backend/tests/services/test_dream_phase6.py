@@ -129,8 +129,7 @@ class TestUpdateIndexMd:
         index = (tmp_agent_dir / str(agent_id) / "memory" / "indexes" / "wiki_map.md").read_text(
             encoding="utf-8"
         )
-        assert "t3/user.md" in index
-        assert "t3/capabilities.md" in index
+        assert "Memory Wiki Map" in index
 
 
 class TestDreamGateExpansion:

@@ -103,25 +103,6 @@ def _derive_turn_token_budget(max_tool_rounds: int | None) -> int:
     )
 
 
-async def _load_latest_skill_distiller_behavior_report(db, *, tenant_id: uuid.UUID) -> dict[str, Any] | None:
-    from app.evals.hive_live_runner import BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY, behavior_eval_passed
-    from app.models.tenant_setting import TenantSetting
-
-    result = await db.execute(
-        select(TenantSetting.value).where(
-            TenantSetting.tenant_id == tenant_id,
-            TenantSetting.key == BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY,
-        )
-    )
-    value = result.scalar_one_or_none()
-    if not isinstance(value, dict):
-        return None
-    report = value.get("report")
-    if isinstance(report, dict) and behavior_eval_passed(report):
-        return report
-    return None
-
-
 def _normalize_invocation_session_context(request: AgentInvocationRequest) -> None:
     if request.session_context is None:
         return
@@ -391,12 +372,6 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
 
             runtime_continuity_enabled = await _resolve_flag("runtime_continuity_v1")
             skill_candidate_loop_enabled = await _resolve_flag("skill_candidate_loop_v1")
-            skill_distiller_behavior_report = (
-                await _load_latest_skill_distiller_behavior_report(db, tenant_id=agent.tenant_id)
-                if skill_candidate_loop_enabled
-                else None
-            )
-
             return RuntimeConfig(
                 tenant_id=agent.tenant_id,
                 max_tool_rounds=agent.max_tool_rounds or 200,
@@ -405,7 +380,6 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
                 execution_mode=getattr(agent, "execution_mode", None),
                 runtime_continuity_enabled=runtime_continuity_enabled,
                 skill_candidate_loop_enabled=skill_candidate_loop_enabled,
-                skill_distiller_behavior_report=skill_distiller_behavior_report,
             )
     except Exception as exc:
         # Log full exception detail server-side for ops; surface only the
@@ -668,46 +642,6 @@ async def _resolve_memory_context(
             logger.debug("[SkillEvolution] digest skipped for %s: %s", request.agent_id, exc)
 
     return "\n\n".join(parts)
-
-
-async def _resolve_memory_navigation_context(
-    request: AgentInvocationRequest,
-    tenant_id: uuid.UUID | None,
-) -> str:
-    if (request.standalone_system_prompt or "").strip():
-        return ""  # CC subagent semantics: no host memory navigation
-    if not request.agent_id:
-        return ""
-
-    principal_stack = None
-    if tenant_id:
-        try:
-            from app.services.memory_service import _resolve_activation_context
-
-            current_user_name = await _resolve_current_user_name(request.user_id) if request.user_id else None
-            activation_context = await _resolve_activation_context(
-                agent_id=request.agent_id,
-                tenant_id=tenant_id,
-                query=_last_user_query(request.messages),
-                current_user_id=request.user_id,
-                current_user_name=current_user_name,
-            )
-            if activation_context:
-                principal_stack = activation_context.principal_stack
-        except Exception as exc:  # noqa: BLE001 — default navigation visibility is the safe fallback
-            logger.debug("[MemoryNavigation] principal stack unavailable for %s: %s", request.agent_id, exc)
-
-    try:
-        from app.runtime.prompt_sections import build_memory_navigation_section
-
-        return build_memory_navigation_section(
-            Path(get_settings().AGENT_DATA_DIR),
-            request.agent_id,
-            principal_stack=principal_stack,
-        )
-    except Exception as exc:  # noqa: BLE001 — navigation is optional context
-        logger.debug("[MemoryNavigation] render skipped for %s: %s", request.agent_id, exc)
-        return ""
 
 
 async def _resolve_runtime_metadata_context(
@@ -1041,12 +975,6 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
     ) -> str:
         return await _resolve_retrieval_context(request, tenant_id)  # type: ignore[arg-type]
 
-    async def _kernel_resolve_memory_navigation_context(
-        request: InvocationRequest,
-        tenant_id: uuid.UUID | None,
-    ) -> str:
-        return await _resolve_memory_navigation_context(request, tenant_id)  # type: ignore[arg-type]
-
     async def _kernel_get_tools(agent_id: uuid.UUID, core_only: bool) -> list[dict]:
         # RC11: specialized reasoning passes can disable the tool surface entirely so
         # synthesis cannot route through write_file and exhaust the round budget.
@@ -1117,7 +1045,6 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             resolve_memory_context=_kernel_resolve_memory_context,
             resolve_runtime_metadata_context=_kernel_resolve_runtime_metadata_context,
             resolve_retrieval_context=_kernel_resolve_retrieval_context,
-            resolve_memory_navigation_context=_kernel_resolve_memory_navigation_context,
             get_tools=_kernel_get_tools,
             resolve_tool_expansion=_resolve_tool_expansion,
             maybe_compress_messages=maybe_compress_messages,

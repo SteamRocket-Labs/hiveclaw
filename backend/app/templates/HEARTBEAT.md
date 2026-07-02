@@ -25,9 +25,6 @@ Downstream — accepted T3 truth is the two-plane layout:
   `memory/profiles/domain.md`.
 - Knowledge plane (network, page-based): `memory/knowledge/<slug>.md`,
   `memory/milestones/<slug>.md`.
-- Legacy flat files (`memory/t3/episodes.md`, `user.md`, `worker.md`,
-  `capabilities.md`) remain writable during migration only; prefer the
-  two-plane targets for all new consolidation.
 - T3 to `soul.md`, Skill generation, and Workflow JSON are separate lanes.
 
 Core law:
@@ -65,9 +62,6 @@ Knowledge plane (network: atomic pages + relation edges, never squash):
   `## Relations` edge; forward references to not-yet-written pages count.
 - `memory/milestones/<slug>.md` — narrative anchor pages (prefer `ms-` slug
   prefix). Chosen, not written: most segments never become milestones.
-
-Legacy targets (migration window only): `memory/t3/episodes.md`,
-`memory/t3/user.md`, `memory/t3/worker.md`, `memory/t3/capabilities.md`.
 </allowed_targets>
 
 <two_plane_curation>
@@ -145,12 +139,12 @@ patches ADD; convergence REWRITES. When `t3_neighborhood.md` shows a
 <decision_matrix>
 | w / evidence strength | cat / target view | action |
 |---|---|---|
-| `>= 0.85` and source refs are reviewed | `user`, `worker`, `capabilities`, or `episodes` | propose append or merge in revised_patch |
+| `>= 0.85` and source refs are reviewed | `self`, `profiles`, `knowledge`, or `milestones` | propose upsert_entry / upsert_page in revised_patch |
 | `0.50-0.85` or evidence is mixed | same target set | write pitch, ask Memory Gate for specific review, usually hold or revise |
 | `< 0.50` or source refs are weak | any | noop or reject; do not invent T3 truth |
 
 Tiebreakers:
-- prefer false negative over false positive for identity-like worker/user rules
+- prefer false negative over false positive for identity-like self/profile claims
 - preserve unique deltas during semantic dedup; do not drop a 10% novel path just because 90% overlaps
 - prefer merge/reinforce over binary rejection when two candidates share the same scenario but carry different evidence
 - Drop T2 metadata from accepted prose; keep source refs and rubric data in XML attributes / evidence blocks
@@ -227,9 +221,6 @@ Two-plane operations:
   under the heading. Same entry_id replaces in place (convergence!).
 - `<retire_entry target="..." entry_id="..." reason="..."/>` — marks the entry
   retired; the convergence loop physically removes it later.
-
-Legacy operations (`append_block`, `replace_block`, `retire_block`,
-`reinforce_block`) remain for the legacy flat files during migration.
 
 Allowed `target_view_labels.consolidation_mode` values are exactly:
 `create`, `merge`, `supersede`, `reinforce`, `contradict`, `retract`, `noop`.

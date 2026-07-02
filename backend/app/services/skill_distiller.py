@@ -221,28 +221,42 @@ async def _ensure_runtime_behavior_report(
 # ledger. Entries stamped `[promoted_to=...]` have left the candidate pool.
 
 
+_CANDIDATE_MARKERS = {
+    "skill_candidate": "- skill候选:",
+    "workflow_candidate": "- workflow候选:",
+}
+_PROMOTED_MARKER = "已固化 →"
+
+
 def _load_memory_container_candidates(
     data_root: Path,
     agent_id: uuid.UUID,
     *,
     container: str,
 ) -> list[dict[str, str]]:
-    from app.memory.md_store import build_t3_entry_manifest
+    """工序 6 input surface (Part H cutover): candidates live as marker lines
+    inside profile-plane entries — `- skill候选: <rationale>` /
+    `- workflow候选: <rationale>` — and stop qualifying once the entry carries
+    the two-way `已固化 → [[...]]` link."""
+    from app.memory.plane_read import list_profile_entries
 
+    marker = _CANDIDATE_MARKERS.get(container)
+    if marker is None:
+        return []
     candidates: list[dict[str, str]] = []
-    for entry in build_t3_entry_manifest(data_root, agent_id):
-        metadata = entry.metadata
-        if (metadata.get("container") or "").strip().lower() != container:
+    for entry in list_profile_entries(data_root, agent_id):
+        body = str(entry.get("content") or "")
+        if marker not in body:
             continue
-        if metadata.get("promoted_to"):
+        if _PROMOTED_MARKER in body:
             continue
         candidates.append(
             {
-                "entry_id": entry.entry_id,
-                "content": entry.content,
-                "timestamp": entry.timestamp,
-                "filename": entry.filename,
-                "source": entry.source,
+                "entry_id": entry["id"],
+                "content": body,
+                "timestamp": "",
+                "filename": entry["source"],
+                "source": entry["source"],
             }
         )
     return candidates
@@ -2413,11 +2427,11 @@ async def run_skill_distillation_cycle(
     # `[promoted_to=skill]` so they stop surfacing as open candidates.
     promoted_memory_ids: list[str] = []
     if draft.consumed_memory_candidate_ids:
-        from app.memory.md_store import mark_t3_entry_promoted
+        from app.memory.plane_read import mark_profile_entry_promoted
 
         for candidate_id in draft.consumed_memory_candidate_ids:
             try:
-                if mark_t3_entry_promoted(
+                if mark_profile_entry_promoted(
                     data_root,
                     agent_id,
                     entry_id=candidate_id,

@@ -19,7 +19,9 @@ from typing import Any
 
 from app.memory.md_store import ensure_t3_layout, rebuild_index
 
-ACCEPTED_T3_TARGETS: tuple[str, ...] = (
+# Legacy flat-T3 corpus files. NOT accepted write targets since the C7
+# cutover — kept only so migration/archive tooling can name them.
+LEGACY_T3_FILES: tuple[str, ...] = (
     "memory/t3/episodes.md",
     "memory/t3/user.md",
     "memory/t3/worker.md",
@@ -40,9 +42,7 @@ _DYNAMIC_TARGET_RE = re.compile(r"^memory/(?:knowledge|milestones)/[a-z0-9][a-z0
 _RELATION_EDGE_RE = re.compile(r"^-\s+[a-z_]+\s+\[\[[^\]]+\]\]\s*$", re.MULTILINE)
 _ENTRY_ID_COMMENT_RE = re.compile(r"<!--\s*id:\s*(?P<entry_id>[A-Za-z0-9:_.-]+)\s*-->")
 
-TARGET_VIEW_VALUES = frozenset(
-    {"episodes", "user", "worker", "capabilities", "self", "profiles", "knowledge", "milestones"}
-)
+TARGET_VIEW_VALUES = frozenset({"self", "profiles", "knowledge", "milestones"})
 CONSOLIDATION_MODE_VALUES = frozenset({"create", "merge", "supersede", "reinforce", "contradict", "retract", "noop"})
 SOURCE_COVERAGE_VALUES = frozenset({"single_session", "multi_session", "explicit_user", "tool_verified", "weak"})
 STABILITY_VALUES = frozenset({"ephemeral", "short_lived", "evolving", "stable"})
@@ -85,7 +85,7 @@ class T3PlatformGateResult:
 
 def is_accepted_t3_target(path: str) -> bool:
     normalized = _normalize_target(path)
-    if normalized in ACCEPTED_T3_TARGETS or normalized in PROFILE_PLANE_TARGETS:
+    if normalized in PROFILE_PLANE_TARGETS:
         return True
     return bool(_DYNAMIC_TARGET_RE.match(normalized))
 
@@ -177,93 +177,6 @@ def apply_t3_consolidation_patch(
     current_contents = {target: _read_target(mem_dir, target) for target in targets}
     updated_contents = dict(current_contents)
     committed_blocks: list[str] = []
-    for change in list(patch.findall("./proposed_changes/append_block")) + list(
-        patch.findall("./proposed_changes/replace_block")
-    ):
-        op = change.tag
-        target = _normalize_target(change.attrib.get("target") or "")
-        block_id = str(change.attrib.get("block_id") or "").strip()
-        block_content = (change.findtext("block_content") or "").strip()
-        if not target or not block_id or not block_content:
-            issues.append(f"{op} missing target/block_id/block_content")
-            continue
-        if target not in ACCEPTED_T3_TARGETS:
-            issues.append(f"non-canonical target: {target}")
-            continue
-        block_issue = _validate_block_content(block_content, block_id=block_id, target=target)
-        if block_issue:
-            issues.append(block_issue)
-            continue
-        if op == "append_block":
-            if _block_exists(updated_contents.get(target, ""), block_id):
-                issues.append(f"block already exists in {target}: {block_id}")
-                continue
-            updated_contents[target] = _append_block(updated_contents.get(target, ""), block_content)
-            committed_blocks.append(block_id)
-        elif op == "replace_block":
-            expected_old_hash = str(change.attrib.get("expected_old_hash") or "").replace("sha256:", "").strip()
-            existing = _find_block(updated_contents.get(target, ""), block_id)
-            if existing is None:
-                issues.append(f"replace_block target block missing in {target}: {block_id}")
-                continue
-            current_block_hash = hashlib.sha256(existing.encode("utf-8")).hexdigest()
-            if expected_old_hash and expected_old_hash != current_block_hash:
-                conflict_path = _write_conflict_bundle(
-                    job_dir=job_dir,
-                    target=target,
-                    expected_sha=expected_old_hash,
-                    current_sha=current_block_hash,
-                    current_content=existing,
-                )
-                return _write_manifest_result(
-                    job_dir,
-                    status="rebase_required",
-                    job_id=job_id,
-                    issues=[f"block revision changed for {target}#{block_id}"],
-                    conflict_bundle_path=conflict_path,
-                )
-            updated_contents[target] = updated_contents[target].replace(existing, block_content)
-            committed_blocks.append(block_id)
-
-    for change in patch.findall("./proposed_changes/retire_block"):
-        target = _normalize_target(change.attrib.get("target") or "")
-        block_id = str(change.attrib.get("block_id") or "").strip()
-        if not is_accepted_t3_target(target) or not block_id:
-            issues.append("retire_block missing canonical target/block_id")
-            continue
-        existing = _find_block(updated_contents.get(target, ""), block_id)
-        if existing is None:
-            issues.append(f"retire_block target block missing in {target}: {block_id}")
-            continue
-        expected_old_hash = str(change.attrib.get("expected_old_hash") or "").replace("sha256:", "").strip()
-        current_block_hash = hashlib.sha256(existing.strip().encode("utf-8")).hexdigest()
-        if expected_old_hash and expected_old_hash != current_block_hash:
-            conflict_path = _write_conflict_bundle(
-                job_dir=job_dir,
-                target=target,
-                expected_sha=expected_old_hash,
-                current_sha=current_block_hash,
-                current_content=existing,
-            )
-            return _write_manifest_result(
-                job_dir,
-                status="rebase_required",
-                job_id=job_id,
-                issues=[f"block revision changed for {target}#{block_id}"],
-                conflict_bundle_path=conflict_path,
-            )
-        updated_contents[target] = updated_contents[target].replace(
-            existing,
-            _retire_block(
-                existing,
-                job_id=job_id,
-                reason=str(change.attrib.get("reason") or "").strip(),
-            ),
-        )
-        committed_blocks.append(block_id)
-
-    # -- two-plane operations (spec §3.2/§3.4/§3.5) --
-
     pending_tombstones: list[tuple[str, str]] = []
     for change in patch.findall("./proposed_changes/rewrite_file"):
         # Convergence loop (工序 4, spec §4.3): full-file rewrite of a
@@ -359,17 +272,6 @@ def apply_t3_consolidation_patch(
             existing, _retire_md_entry(existing, entry_id=entry_id, job_id=job_id, reason=reason)
         )
         committed_blocks.append(entry_id)
-
-    for change in patch.findall("./proposed_changes/reinforce_block"):
-        target = _normalize_target(change.attrib.get("target") or "")
-        block_id = str(change.attrib.get("block_id") or "").strip()
-        if not is_accepted_t3_target(target) or not block_id:
-            issues.append("reinforce_block missing canonical target/block_id")
-            continue
-        if _find_block(updated_contents.get(target, ""), block_id) is None:
-            issues.append(f"reinforce_block target block missing in {target}: {block_id}")
-            continue
-        committed_blocks.append(block_id)
 
     if issues:
         return _write_manifest_result(job_dir, status="held", job_id=job_id, issues=issues)
@@ -701,24 +603,6 @@ def _dedupe(values: list[str]) -> list[str]:
     return result
 
 
-def _validate_block_content(block_content: str, *, block_id: str, target: str) -> str:
-    try:
-        block = ET.fromstring(block_content)
-    except ET.ParseError as exc:
-        return f"block_content XML parse failed for {block_id}: {exc}"
-    if (block.attrib.get("id") or "").strip() != block_id:
-        return f"block_content id does not match block_id: {block_id}"
-    target_prefix = {
-        "memory/t3/episodes.md": "t3_episode",
-        "memory/t3/user.md": "t3_user_memory",
-        "memory/t3/worker.md": "t3_worker_rule",
-        "memory/t3/capabilities.md": "t3_capability",
-    }[target]
-    if block.tag != target_prefix:
-        return f"block_content root for {target} must be {target_prefix}"
-    return ""
-
-
 def _dropped_contradiction_lines(*, old_content: str, new_content: str) -> list[str]:
     """Existing `## Contradictions` lines that the proposed update would lose."""
     old_lines = _contradiction_lines(old_content)
@@ -810,39 +694,6 @@ def _retire_md_entry(existing: str, *, entry_id: str, job_id: str, reason: str) 
         if match and match.group("entry_id") == entry_id:
             return "\n".join(lines[: index + 1] + [marker] + lines[index + 1 :])
     return existing + "\n" + marker
-
-
-def _block_regex(block_id: str) -> re.Pattern[str]:
-    escaped = re.escape(block_id)
-    return re.compile(
-        rf"<(?P<tag>t3_[A-Za-z0-9_]+)\b(?=[^>]*\bid=[\"']{escaped}[\"'])[^>]*>.*?</(?P=tag)>|"
-        rf"<(?P<tag_self>t3_[A-Za-z0-9_]+)\b(?=[^>]*\bid=[\"']{escaped}[\"'])[^>]*/>",
-        re.DOTALL,
-    )
-
-
-def _find_block(content: str, block_id: str) -> str | None:
-    match = _block_regex(block_id).search(content)
-    return match.group(0) if match else None
-
-
-def _block_exists(content: str, block_id: str) -> bool:
-    return _find_block(content, block_id) is not None
-
-
-def _append_block(existing: str, block_content: str) -> str:
-    base = existing.rstrip()
-    return f"{base}\n\n{block_content.strip()}\n" if base else f"{block_content.strip()}\n"
-
-
-def _retire_block(existing: str, *, job_id: str, reason: str) -> str:
-    block = ET.fromstring(existing)
-    block.set("status", "retired")
-    block.set("retired_by", job_id)
-    block.set("retired_at", _now())
-    if reason:
-        block.set("retire_reason", reason)
-    return ET.tostring(block, encoding="unicode").strip()
 
 
 def _atomic_write_targets(mem_dir: Path, contents: dict[str, str]) -> None:

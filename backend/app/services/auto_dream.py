@@ -1699,9 +1699,10 @@ def _update_index_md(agent_id: uuid.UUID) -> None:
 
 
 def _count_t3_entries(agent_id: uuid.UUID) -> int:
-    from app.memory.md_store import build_t3_entry_manifest
+    from app.memory.plane_read import list_knowledge_pages, list_profile_entries
 
-    return len(build_t3_entry_manifest(Path(get_settings().AGENT_DATA_DIR), agent_id))
+    root = Path(get_settings().AGENT_DATA_DIR)
+    return len(list_profile_entries(root, agent_id)) + len(list_knowledge_pages(root, agent_id))
 
 
 def propose_charter_calibrations_from_feedback(decision_store) -> list[dict[str, str]]:

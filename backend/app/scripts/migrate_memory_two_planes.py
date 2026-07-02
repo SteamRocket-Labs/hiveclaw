@@ -189,12 +189,12 @@ async def migrate_agent_memory(
         rebuild_reference_index(agent_id=agent_id, data_root=root)
     except Exception as exc:  # noqa: BLE001 - index is derived; a rebuild failure must not fail the migration
         logger.warning("Post-migration index rebuild failed for %s: %s", agent_id, exc)
-    return MigrationReport(
-        agent_id=str(agent_id), status="applied", plan_path=plan_path, archived_to=str(archive_dir)
-    )
+    return MigrationReport(agent_id=str(agent_id), status="applied", plan_path=plan_path, archived_to=str(archive_dir))
 
 
-async def build_migration_plan_with_llm(corpus: dict, *, model_config: dict, agent_id: str, tenant_id: str | None) -> dict:
+async def build_migration_plan_with_llm(
+    corpus: dict, *, model_config: dict, agent_id: str, tenant_id: str | None
+) -> dict:
     """One LLM call over the whole legacy corpus (L1: full visibility, ample output)."""
     from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
 
@@ -250,7 +250,10 @@ def _validate_plan(plan: Any) -> list[str]:
     profiles = plan.get("profiles")
     if not isinstance(profiles, dict):
         issues.append("plan missing profiles object")
-    for key, pages in (("knowledge_pages", plan.get("knowledge_pages")), ("milestone_pages", plan.get("milestone_pages"))):
+    for key, pages in (
+        ("knowledge_pages", plan.get("knowledge_pages")),
+        ("milestone_pages", plan.get("milestone_pages")),
+    ):
         if pages is None:
             continue
         if not isinstance(pages, list):

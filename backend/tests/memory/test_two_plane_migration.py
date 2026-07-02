@@ -74,7 +74,10 @@ FAKE_PLAN = {
         }
     ],
     "milestone_pages": [
-        {"slug": "ms-first-report", "content": "---\ntitle: 首份研报\nstatus: active\n---\n首次交付,owner 好评。\n证据: t2-a1b2\n"}
+        {
+            "slug": "ms-first-report",
+            "content": "---\ntitle: 首份研报\nstatus: active\n---\n首次交付,owner 好评。\n证据: t2-a1b2\n",
+        }
     ],
     "notes": "worker wr-1 硬约束→soul 候选;wr-2 软边界→self 失败模式。",
 }
@@ -91,9 +94,7 @@ async def test_dry_run_produces_plan_without_touching_data(tmp_path: Path) -> No
     agent_id = uuid4()
     _seed_legacy_agent(tmp_path, agent_id)
 
-    report = await migrate_agent_memory(
-        agent_id=agent_id, data_root=tmp_path, apply=False, plan_builder=_fake_llm_plan
-    )
+    report = await migrate_agent_memory(agent_id=agent_id, data_root=tmp_path, apply=False, plan_builder=_fake_llm_plan)
 
     assert report.status == "planned"
     assert report.plan_path is not None and report.plan_path.exists()
@@ -111,9 +112,7 @@ async def test_apply_lands_planes_archives_legacy_and_marks(tmp_path: Path) -> N
     agent_id = uuid4()
     _seed_legacy_agent(tmp_path, agent_id)
 
-    report = await migrate_agent_memory(
-        agent_id=agent_id, data_root=tmp_path, apply=True, plan_builder=_fake_llm_plan
-    )
+    report = await migrate_agent_memory(agent_id=agent_id, data_root=tmp_path, apply=True, plan_builder=_fake_llm_plan)
 
     assert report.status == "applied"
     mem = _mem_dir(tmp_path, agent_id)
@@ -149,9 +148,7 @@ async def test_migration_is_idempotent(tmp_path: Path) -> None:
         calls["count"] += 1
         return FAKE_PLAN
 
-    second = await migrate_agent_memory(
-        agent_id=agent_id, data_root=tmp_path, apply=True, plan_builder=counting_plan
-    )
+    second = await migrate_agent_memory(agent_id=agent_id, data_root=tmp_path, apply=True, plan_builder=counting_plan)
 
     assert second.status == "already_migrated"
     assert calls["count"] == 0

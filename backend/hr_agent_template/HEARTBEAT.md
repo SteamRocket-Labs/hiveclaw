@@ -20,10 +20,10 @@ Upstream:
   memory that is active immediately but not accepted T3 truth.
 
 Accepted T3 truth is only:
-- `memory/t3/episodes.md`
-- `memory/t3/user.md`
-- `memory/t3/worker.md`
-- `memory/t3/capabilities.md`
+- `memory/self/self.md`
+- `memory/profiles/owner.md` / `collaborators.md` / `domain.md`
+- `memory/knowledge/<slug>.md` (atomic concept pages; new pages need >=1 `## Relations` edge)
+- `memory/milestones/<slug>.md` (narrative anchors, `ms-` prefixed)
 
 After a successful Platform Gate commit, source Segment Packages or explicit
 overlay entries are marked `absorbed` / `reinforced` by Platform Gate. Heartbeat

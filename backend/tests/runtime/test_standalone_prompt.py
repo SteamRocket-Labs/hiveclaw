@@ -64,13 +64,6 @@ async def test_resolve_retrieval_context_standalone_is_empty():
 
 
 @pytest.mark.asyncio
-async def test_resolve_memory_navigation_context_standalone_is_empty():
-    from app.runtime import invoker
-
-    assert await invoker._resolve_memory_navigation_context(_standalone_request(), uuid4()) == ""
-
-
-@pytest.mark.asyncio
 async def test_non_standalone_request_still_builds_host_prompt(monkeypatch):
     """Control case: the default path is untouched (host identity assembled)."""
 

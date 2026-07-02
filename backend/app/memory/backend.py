@@ -94,15 +94,14 @@ class MDBackend:
         date_to: str | None = None,
         category: str | None = None,
     ) -> list[ScoredMemory]:
-        from app.memory.md_store import search_t3_facts
+        from app.memory.plane_read import search_plane_facts
 
-        facts = search_t3_facts(
+        del date_from, date_to  # two-plane facts carry no per-entry dates
+        facts = search_plane_facts(
             self._data_root,
             agent_id,
             query,
             limit=limit,
-            date_from=date_from,
-            date_to=date_to,
         )
         results: list[ScoredMemory] = []
         for f in facts:
@@ -166,6 +165,7 @@ def _md_backend() -> MemoryBackend:
     """MDBackend singleton — tenant-agnostic."""
     if "md" not in _backend_cache:
         from app.config import get_settings
+
         _backend_cache["md"] = MDBackend(Path(get_settings().AGENT_DATA_DIR))
     return _backend_cache["md"]
 

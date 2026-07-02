@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.memory.md_store import build_t3_entry_manifest
+from app.memory.plane_read import list_profile_entries
 from app.memory.t2.read_model import load_t2_package_snapshots, t2_package_has_source_refs
 from app.services.evolution_ledger import load_evolution_ledger
 
@@ -49,9 +49,9 @@ def run_self_evolution_audit(
     ]
 
     t3_without_refs = 0
-    for entry in build_t3_entry_manifest(Path(data_root), agent_id):
-        refs = entry.metadata.get("source_refs") or entry.metadata.get("evidence_refs") or ""
-        if not refs and not _has_source_ref_text(entry.content):
+    for entry in list_profile_entries(Path(data_root), agent_id):
+        body = str(entry.get("content") or "")
+        if "证据:" not in body and not _has_source_ref_text(body):
             t3_without_refs += 1
 
     ledger_entries = load_evolution_ledger(workspace)

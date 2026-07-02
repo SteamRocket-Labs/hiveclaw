@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from app.memory.lifecycle_store import LifecycleStatus, MemoryLifecycleStore, lifecycle_path, record_active_memory_lifecycle
+from app.memory.lifecycle_store import (
+    LifecycleStatus,
+    MemoryLifecycleStore,
+    lifecycle_path,
+    record_active_memory_lifecycle,
+)
 
 
 def test_sketch_promotes_to_active_with_version_lineage() -> None:

@@ -36,6 +36,7 @@ _last_failure_ts: dict[str, float] = {}
 @dataclass
 class LatencyWindow:
     """Sliding-window latency stats (keeps last N samples)."""
+
     samples: list[float] = field(default_factory=list)
     max_samples: int = 256
 
@@ -182,25 +183,17 @@ def snapshot() -> dict[str, Any]:
     """Return all counters + latency summaries. Safe to serialize as JSON."""
     return {
         "recall_total": {f"{k[0]}:{k[1]}": v for k, v in _recall_total.items()},
-        "recall_error_total": {
-            f"{k[0]}:{k[1]}:{k[2]}": v for k, v in _recall_error_total.items()
-        },
+        "recall_error_total": {f"{k[0]}:{k[1]}:{k[2]}": v for k, v in _recall_error_total.items()},
         "recall_empty_total": {f"{k[0]}:{k[1]}": v for k, v in _recall_empty_total.items()},
-        "recall_latency_ms": {
-            f"{k[0]}:{k[1]}": v.snapshot() for k, v in _recall_latency.items()
-        },
+        "recall_latency_ms": {f"{k[0]}:{k[1]}": v.snapshot() for k, v in _recall_latency.items()},
         "sync_items_total": dict(_sync_items_total),
         "sync_failure_total": dict(_sync_failure_total),
         "consecutive_failures": dict(_consecutive_failures),
         # P0-2c extraction pipeline counters
         "extract_enqueue_total": dict(_extract_enqueue_total),
-        "extract_enqueue_failure_total": {
-            f"{k[0]}:{k[1]}": v for k, v in _extract_enqueue_failure_total.items()
-        },
+        "extract_enqueue_failure_total": {f"{k[0]}:{k[1]}": v for k, v in _extract_enqueue_failure_total.items()},
         "extract_task_success_total": dict(_extract_task_success_total),
-        "extract_task_failure_total": {
-            f"{k[0]}:{k[1]}": v for k, v in _extract_task_failure_total.items()
-        },
+        "extract_task_failure_total": {f"{k[0]}:{k[1]}": v for k, v in _extract_task_failure_total.items()},
         "extract_drain_timeout_total": dict(_extract_drain_timeout_total),
         "extract_replay": {
             "scheduled": _extract_replay_scheduled_total,
@@ -213,38 +206,25 @@ def snapshot() -> dict[str, Any]:
         "frozen_prefix_warn_total": _frozen_prefix_warn_total,
         "frozen_prefix_overrun_total": _frozen_prefix_overrun_total,
         # P1-W3-10/11 autonomous LLM call tracking
-        "autonomous_llm_calls_total": {
-            f"{k[0]}:{k[1]}": v for k, v in _autonomous_llm_calls_total.items()
-        },
+        "autonomous_llm_calls_total": {f"{k[0]}:{k[1]}": v for k, v in _autonomous_llm_calls_total.items()},
         "llm_output_cap_hit_total": {
-            f"{k[0]}:{k[1]}:{k[2]}:{k[3]}:{k[4]}": v
-            for k, v in _llm_output_cap_hit_total.items()
+            f"{k[0]}:{k[1]}:{k[2]}:{k[3]}:{k[4]}": v for k, v in _llm_output_cap_hit_total.items()
         },
-        "hook_failure_total": {
-            f"{k[0]}:{k[1]}:{k[2]}": v for k, v in _hook_failure_total.items()
-        },
-        "prompt_cache_observations_total": {
-            f"{k[0]}:{k[1]}": v for k, v in _prompt_cache_observations_total.items()
-        },
+        "hook_failure_total": {f"{k[0]}:{k[1]}:{k[2]}": v for k, v in _hook_failure_total.items()},
+        "prompt_cache_observations_total": {f"{k[0]}:{k[1]}": v for k, v in _prompt_cache_observations_total.items()},
         "prompt_cache_read_tokens_total": dict(_prompt_cache_read_tokens_total),
         "prompt_cache_write_tokens_total": dict(_prompt_cache_write_tokens_total),
         "prompt_cache_uncached_input_tokens_total": dict(_prompt_cache_uncached_input_tokens_total),
         "prompt_cache_input_tokens_total": dict(_prompt_cache_input_tokens_total),
         "prompt_cache_hit_rate": {
-            provider: (
-                _prompt_cache_read_tokens_total[provider] / total if total else 0.0
-            )
+            provider: (_prompt_cache_read_tokens_total[provider] / total if total else 0.0)
             for provider, total in _prompt_cache_input_tokens_total.items()
         },
-        "invocation_spans_total": {
-            f"{k[0]}:{k[1]}": v for k, v in _invocation_spans_total.items()
-        },
+        "invocation_spans_total": {f"{k[0]}:{k[1]}": v for k, v in _invocation_spans_total.items()},
         "invocation_span_duration_ms": {
             f"{k[0]}:{k[1]}": v.snapshot() for k, v in _invocation_span_duration_ms.items()
         },
-        "invocation_tokens_total": {
-            f"{k[0]}:{k[1]}:{k[2]}": v for k, v in _invocation_tokens_total.items()
-        },
+        "invocation_tokens_total": {f"{k[0]}:{k[1]}:{k[2]}": v for k, v in _invocation_tokens_total.items()},
         "heartbeat_reflection_total": dict(_heartbeat_reflection_total),
     }
 
@@ -334,10 +314,7 @@ def _extract_failure_ratio_samples() -> tuple[
         failure_count = failures_by_source.get(source, 0)
         total = success_count + failure_count
         ratio = failure_count / total if total else 0.0
-        alert = int(
-            total >= _EXTRACT_FAILURE_RATIO_MIN_EVENTS
-            and ratio >= _EXTRACT_FAILURE_RATIO_ALERT_THRESHOLD
-        )
+        alert = int(total >= _EXTRACT_FAILURE_RATIO_MIN_EVENTS and ratio >= _EXTRACT_FAILURE_RATIO_ALERT_THRESHOLD)
         labels = {"source": source}
         ratio_samples.append((labels, ratio))
         alert_samples.append((labels, alert))
@@ -366,10 +343,7 @@ def render_prometheus() -> str:
         name="hive_daemon_liveness_up",
         metric_type="gauge",
         help_text="One when a registered background daemon is live, zero when degraded/crashed/stopped.",
-        samples=[
-            ({"name": name}, int(bool(row.get("healthy"))))
-            for name, row in daemon_rows.items()
-        ],
+        samples=[({"name": name}, int(bool(row.get("healthy")))) for name, row in daemon_rows.items()],
     )
     _append_prometheus_metric(
         lines,
@@ -533,20 +507,14 @@ def render_prometheus() -> str:
         name="hive_memory_frozen_prefix_chars",
         metric_type="gauge",
         help_text="Sliding-window frozen prompt prefix character count.",
-        samples=[
-            ({"stat": stat_name}, value)
-            for stat_name, value in _frozen_prefix_chars_window.snapshot().items()
-        ],
+        samples=[({"stat": stat_name}, value) for stat_name, value in _frozen_prefix_chars_window.snapshot().items()],
     )
     _append_prometheus_metric(
         lines,
         name="hive_memory_frozen_prefix_tokens",
         metric_type="gauge",
         help_text="Sliding-window frozen prompt prefix token estimate.",
-        samples=[
-            ({"stat": stat_name}, value)
-            for stat_name, value in _frozen_prefix_tokens_window.snapshot().items()
-        ],
+        samples=[({"stat": stat_name}, value) for stat_name, value in _frozen_prefix_tokens_window.snapshot().items()],
     )
     _append_prometheus_metric(
         lines,
@@ -780,9 +748,7 @@ def record_autonomous_llm_call(*, source: str, outcome: str) -> None:
     _autonomous_llm_calls_total[(source, outcome)] += 1
 
 
-def record_llm_output_cap_hit(
-    *, provider: str, model: str, finish_reason: str, mode: str, phase: str
-) -> None:
+def record_llm_output_cap_hit(*, provider: str, model: str, finish_reason: str, mode: str, phase: str) -> None:
     """Bump the provider/model output-cap counter.
 
     `mode` is {"complete", "stream"} and `phase` is {"initial", "retry"}.
@@ -835,15 +801,11 @@ def record_prompt_cache_metrics(metrics: Any) -> None:
     _prompt_cache_observations_total[(provider, outcome)] += 1
     _prompt_cache_read_tokens_total[provider] += int(getattr(metrics, "cache_read_tokens", 0) or 0)
     _prompt_cache_write_tokens_total[provider] += int(getattr(metrics, "cache_write_tokens", 0) or 0)
-    _prompt_cache_uncached_input_tokens_total[provider] += int(
-        getattr(metrics, "uncached_input_tokens", 0) or 0
-    )
+    _prompt_cache_uncached_input_tokens_total[provider] += int(getattr(metrics, "uncached_input_tokens", 0) or 0)
     _prompt_cache_input_tokens_total[provider] += int(getattr(metrics, "total_input_tokens", 0) or 0)
 
 
-def record_frozen_prefix_metering(
-    *, chars: int, tokens: int, warn: bool = False, overrun: bool = False
-) -> None:
+def record_frozen_prefix_metering(*, chars: int, tokens: int, warn: bool = False, overrun: bool = False) -> None:
     """Record one frozen-prefix build sample.
 
     `warn` and `overrun` are independent flags — overrun implies warn but

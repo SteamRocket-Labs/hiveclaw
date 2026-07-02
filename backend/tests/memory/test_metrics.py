@@ -259,6 +259,7 @@ async def test_recall_timer_records_error_on_explicit_reason() -> None:
 class TestExtractionMetrics:
     def setup_method(self):
         from app.memory.metrics import reset_all
+
         reset_all()
 
     def test_record_enqueue_increments_per_source(self):
@@ -468,13 +469,9 @@ class TestPrometheusExport:
 
         text = render_prometheus()
         assert (
-            'hive_memory_hook_failure_total{event="response_complete",source="kernel",reason="RuntimeError"} 2'
-            in text
+            'hive_memory_hook_failure_total{event="response_complete",source="kernel",reason="RuntimeError"} 2' in text
         )
-        assert (
-            'hive_memory_hook_failure_total{event="post_tool_use",source="registry",reason="ValueError"} 1'
-            in text
-        )
+        assert 'hive_memory_hook_failure_total{event="post_tool_use",source="registry",reason="ValueError"} 1' in text
 
     def test_prometheus_export_includes_extract_failure_ratio_and_alert(self):
         from app.memory.metrics import (
@@ -490,7 +487,7 @@ class TestPrometheusExport:
         text = render_prometheus()
 
         assert "# HELP hive_memory_extract_task_failure_total" in text
-        assert '# TYPE hive_memory_extract_failure_ratio gauge' in text
+        assert "# TYPE hive_memory_extract_failure_ratio gauge" in text
         assert 'hive_memory_extract_task_success_total{source="web"} 4' in text
         assert 'hive_memory_extract_task_failure_total{source="web",reason="RuntimeError"} 1' in text
         assert 'hive_memory_extract_failure_ratio{source="web"} 0.2' in text
@@ -503,4 +500,7 @@ class TestPrometheusExport:
 
         text = render_prometheus()
 
-        assert 'hive_memory_recall_error_total{backend="hi\\"nd\\\\sight",tenant_id="tenant-a",reason="ConnectError"} 1' in text
+        assert (
+            'hive_memory_recall_error_total{backend="hi\\"nd\\\\sight",tenant_id="tenant-a",reason="ConnectError"} 1'
+            in text
+        )

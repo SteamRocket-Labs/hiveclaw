@@ -15,10 +15,7 @@ def test_heartbeat_template_is_t3_consolidator_not_save_memory_loop() -> None:
     assert "t3_neighborhood.md" in text
     assert "consolidation_pitch.md" in text
     assert "revised_patch.md" in text
-    assert "memory/t3/episodes.md" in text
-    assert "memory/t3/user.md" in text
-    assert "memory/t3/worker.md" in text
-    assert "memory/t3/capabilities.md" in text
+    assert "memory/self/self.md" in text
     assert "Do not call `save_memory`" in text or "do not call `save_memory`" in text.lower()
     assert "raw T0" in text
     assert "memory/feedback.md" not in text

@@ -9,7 +9,6 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 T3_NATIVE_CHAIN_FILES = [
     "app/memory/backend.py",
     "app/memory/retriever.py",
-    "app/memory/t3_store.py",
     "app/services/auto_dream.py",
     "app/services/heartbeat.py",
     "app/services/memory_service.py",

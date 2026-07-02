@@ -321,20 +321,17 @@ class TestDreamIntegration:
 
         agent_id = uuid.uuid4()
         memory_dir = tmp_path / str(agent_id) / "memory"
-        t3_dir = memory_dir / "t3"
-        t3_dir.mkdir(parents=True)
-        (t3_dir / "user.md").write_text(
-            "# T3 User\n\n"
-            '<t3_user_memory id="idx-a" status="active" created_at="2026-04-06">'
-            "<claim>a</claim><evidence><source_ref>session:a</source_ref></evidence>"
-            "</t3_user_memory>\n",
+        self_dir = memory_dir / "self"
+        self_dir.mkdir(parents=True)
+        (self_dir / "self.md").write_text(
+            "## 方法\n\n### 条目甲 — 一般\n<!-- id: idx-a -->\na\n- 证据: t2-a\n",
             encoding="utf-8",
         )
         with patch("app.services.auto_dream.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_path)
             _update_index_md(agent_id)
         index = (memory_dir / "indexes" / "wiki_map.md").read_text()
-        assert "t3/user.md" in index
+        assert "Memory Wiki Map" in index
         assert "idx-a" in index
         assert not (memory_dir / "INDEX.md").exists()
         assert not (memory_dir / "index.md").exists()

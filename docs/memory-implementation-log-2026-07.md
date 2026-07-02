@@ -195,4 +195,46 @@
 
 **红测：** `tests/memory/test_source_ref_system.py` 8 用例 RED→GREEN。覆盖：短 id 解析、**归档后仍解析**、ms-/完整 URI/explicit 解析、tombstone 记录+链式解析+jsonl 真相、环安全终止、rewrite_file tombstone 声明流入索引、删库重建后 tombstone 幸存（jsonl 重建）。
 
-**回归：** ruff 全过；tests/memory 443 passed；全量随 commit 记录。三 part 共享教学面（HEARTBEAT.md/prompts.py），合并单 commit。
+**回归：** ruff 全过；tests/memory 443 passed；全量 = 5402 passed / 2 failed（alembic pin + web_chat_runtime，均外部归属）。
+
+**Commit：** `fed455fa`（4 files）。
+
+### Part H C7 迁移 + 路径统一清退：接线单（开工承诺，2026-07-02）
+
+**退役清单（grep 盘点，收工逐项零残留验证）：**
+| 废弃路径 | 现存调用面 | 处置 |
+|---|---|---|
+| `memory/t3/{episodes,user,worker,capabilities}.md` 运行时读写 | retriever（direct/index_first/shadow）、md_store T3_FILE_SPECS 骨架、gate legacy 目标+四操作、t3_consolidation legacy blocks 区、prompt memory.py、workspace.py、auto_dream/heartbeat 读、agent_evolution_view、kernel 引用 | 运行时全切两平面；旧文件由迁移脚本重组后归档隔离 |
+| `memory/learnings/**` | retriever no-op、hooks_setup 注释、prompt 提及、extract_agent/reflection | 提及清除；已是 no-op 的删函数 |
+| `memory/sessions/**`（legacy T2 root） | segment_package/_discover/t3_consolidation/debt/retention 双 root 扫描 | 保留只读归档扫描（证据永不悬空），新写零 |
+| `wiki/`、`scenes/` 页目录 | relation_graph 默认 _PAGE_DIRS、wiki_retrieval 默认、retriever._retrieve_wiki_pages（derived 开关） | 默认切 knowledge/milestones；derived 开关与旧读法删除；旧目录 hygiene 隔离 |
+| `understanding_store.py` | 零调用 | 删除（含测试） |
+| `scene_curator.py`/`wiki_curator.py` | 零外部调用（孤儿） | 删除（含测试）；活的 relation_graph/wiki_retrieval 保留 |
+| `t2_store.py`/`extract_agent.py`/extract_queue*/admin backfill | admin API + queue replay | 迁移工具化：仅迁移/导入脚本引用，运行时零接线（已达）；admin backfill 端点保留为数据导入面并明确标注 |
+| retriever LLM rerank（读侧零 LLM） | build_memory_context | 删除（读取不跑 LLM 硬约束收口） |
+
+**新建：** `app/scripts/migrate_memory_two_planes.py`（dry-run 默认 + `--apply --confirm` 安全门；LLM 全文判定重组：soul 拆纯/worker constraint 两分/capabilities 三分/episodes→milestones 筛选；无模型配置 → held 不动数据；apply = 原子落盘新区 + 旧四文件移 `memory/.archive/legacy_t3/` + 报告）。
+**配套同步：** HEARTBEAT.md/DREAM.md legacy 段删除 + 各 agent 克隆同步机制核查；`docs/memory-vault-path-contract` 更新；hygiene.py 认新路径与旧 t3 隔离规则；HR 模板产应然 soul + self 骨架；`wiki_map.md` 改指两平面。
+**Breaking 边界（安全门非 MVP）：** 运行时代码只认新路径；存量 agent 数据迁移由脚本执行——真实生产数据 `--apply` 属不可逆操作，交付物为"代码全切 + 迁移工具 dry-run 验证就绪"，生产 apply 由 owner 确认执行（唯一例外条款）。
+
+### Part H 实施记录（2026-07-02，三个 commit 分批落袋）
+
+**进度 1（`6ecd1738`）**：迁移工具 `app/scripts/migrate_memory_two_planes.py`（dry-run 默认/`--apply --confirm`、LLM 全 corpus 重组 plan、原子落盘、旧文件归档 `.archive/legacy_t3/`、幂等 marker、6 红测全绿）；读侧清退（retriever 删 direct/index-first/shadow/derived/legacy/LLM rerank——**读取零 LLM 收口**，rerank 配置成惰性参数并被测试钉死）；kernel compaction 恢复清单、workspace 种子、filesystem 工具文档、heartbeat T3 摘要全切两平面。
+
+**进度 2（本 commit）——路径统一清退主体：**
+- **gate**：旧四文件目标与 append/replace/retire/reinforce_block 四操作删除（`LEGACY_T3_FILES` 仅为迁移工具命名保留）；`TARGET_VIEW_VALUES` 收缩两平面。
+- **读取面全切 `plane_read.py`**（新统一模块）：`search_memory(facts)`/`load_memory`/update/retire 判定、knowledge_read_model（overview/entries/pages 走 knowledge|milestones）、memory/backend、self_evolution_audit、auto_dream 计数、`rebuild_index`→两平面 wiki_map。
+- **工序 6 输入面接线**（Part F 遗留）：skill_distiller 的 skill/workflow 候选从旧 `[container=]` T3 标记切到 self.md `- skill候选:`/`- workflow候选:` 行；`已固化 → [[skill-x]]` 双向链的写半落 `plane_read.mark_profile_entry_promoted`（平台记账职权，幂等，红测钉死）。
+- **memory_navigation prompt 节退役**（数据流+模块+invoker 供给线删除；engine 6 处惰性形参因另一 session 活跃改 engine 暂留一个周期，终验收补摘——显式取舍非遗忘）。
+- **死文件删除**：`t3_store.py`（`looks_episodic_observation` 护栏迁 explicit_overlay）、`legacy_migration.py`（workspace 挂点换 `_archive_legacy_memory_files`：legacy 单文件记忆归档 `.archive/legacy_import/` 永不删）、`retrieval_eval.py`、`scene_curator.py`、`wiki_curator.py`、`understanding_store.py`；md_store 旧条目生态（T3_FILE_SPECS/entry manifest/heat/dedup/prose/promoted stamp/load/search + 全部孤儿 helper/dataclass/正则簇）全删（1150→301 行，存活面=xml block 解析/两平面布局/jaccard 去重/bm25/wiki_map 重建/退役语义 retirement 空清单）。
+- **hygiene/admin**：flat-T3 prose backfill 步骤退役（hygiene 报告字段清零语义、admin 端点返回 `status=retired`）；evolution_daemon 的旧 T3 形态修复 lane 退役（两平面形态纪律由 gate 操作本身承担）。
+- **relation_graph 默认切 KNOWLEDGE_PAGE_DIRS**；HEARTBEAT.md legacy 教学三段删除+决策矩阵两平面化；HR 模板（hr_agent_template/HEARTBEAT.md）两平面化；克隆 marker 升级 `<two_plane_curation>`（存量 agent startup 重新克隆）；新 agent 创建流产 self.md 骨架（结构由平台、语义由经历经 gate）。
+- **发现并修复的真实缺口**：overlay lifecycle metadata 未透传检索层（activation 抑制对 explicit 条目失效）；resident 常驻块未过滤 PL3/PL4 overlay 条目（敏感条目改走检索+activation 门）。
+- **path contract 文档**已更新两平面布局与 control sidecar 清单。
+- **测试面改造**：19+ 文件——gate 主套 4 用例改新载体（staging 视野/wiki_map 重建/absorbed/reinforced 纪律保留）、candidate lane 8 用例 self.md 载体、read model 16 用例两平面、boundary/architecture 守卫改"退役模块不存在"断言、6 个纯旧生态测试文件删除。
+
+**误操作坦白（owner 必读）**：navigation 手术中 `git checkout backend/app/runtime/invoker.py` 恢复文件时，误抹了另一 session 在该文件的未提交 eval 拆弹修改（behavior-report 门拆除）。已按其测试期待等价重做（`_load_latest_skill_distiller_behavior_report` 删除 + RuntimeConfig 装配行删除），invoker 测试恢复绿；该 session 若有超出测试可见面的意图需其复核。同批 `test_standalone_prompt.py` 曾被整删后 checkout 恢复并只摘 navigation 单用例。三 part 共享教学面（HEARTBEAT.md/prompts.py），合并单 commit。
+
+**进度 2 收尾（同 commit）**：`GET /agents/{id}/memory` facts 端点从已删 `parse_t3_facts` 切 `plane_read`（profile 条目 + knowledge/milestones 页元数据，零前端/测试消费者验证后保留为两平面查看面）；`.github/workflows/harness-ci.yml` 摘除指向已删 `retrieval_eval` 模块的死步骤（CI 否则必炸），`test_harness_ci_workflow` 守卫翻转为 `not in` 断言；`wiki_retrieval.py` 模块 docstring 死指针清除。事故记录：删除 `parse_t3_facts` 时误切 `_CJK_RANGE_RE` 常量（存活 `_bm25_tokenize` 依赖）致 tests/memory 3 失败，恢复常量后归绿——bm25 簇消费者为 `wiki_retrieval.py`（PPR 检索层）已 grep 钉死。
+**退役零残留核查（grep 全仓）**：`parse_t3_facts`/`_filter_facts_by_date`/`T3_FILE_SPECS`/`build_t3_entry_manifest`/`ACCEPTED_T3_TARGETS`/`legacy_migration`/`scene_curator`/`wiki_curator`/`ParsedMemoryEntry`/`T3MemoryEntry` = 0；`understanding_store`/`t3_store` 仅存"退役契约"架构守卫断言与来源归属注释；`memory_navigation` 仅存 engine/prompt_builder/turn_envelope 惰性形参链（invoker 供给恒 None → 恒空字符串，Part J 与 contracts 字段一并摘除）。
+**测试证据**：tests/memory + api/test_memory_api + tools/test_memory_handler + services/test_auto_dream = 373 passed；全量 `pytest tests -q` = **1 failed, 5251 passed, 1 skipped**（唯一失败 `test_self_evolution_bakeoff` 属并行 session eval 拆弹 WIP 面，干净归属已验证）；ruff check/format 全过。

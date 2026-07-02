@@ -8,8 +8,8 @@ Two methods, one contract:
   the wikilink network, so pages linked to the query's topic surface even
   when they share no query terms (multi-hop).
 
-The default method is chosen by the memory eval benchmark
-(`app/memory/retrieval_eval.py`), not by taste — see DEFAULT_WIKI_METHOD.
+The default method was chosen by benchmark evidence, not by taste — see
+DEFAULT_WIKI_METHOD.
 
 Safety: only status=active pages are retrievable (archived/superseded pages
 are de-indexed from recall, spec §4.9); page content already passed the

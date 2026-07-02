@@ -46,7 +46,7 @@ def _review_xml() -> str:
 </memory_gate_review>"""
 
 
-def _patch_xml(*, targets: list[tuple[str, str]], changes: str, labels_view: str = "capabilities") -> str:
+def _patch_xml(*, targets: list[tuple[str, str]], changes: str, labels_view: str = "knowledge") -> str:
     target_files = "\n".join(f'<target_file path="{path}"/>' for path, _sha in targets)
     base_revisions = "\n".join(f'<base_revision path="{path}" sha256="{sha}"/>' for path, sha in targets)
     return f"""<t3_consolidation_patch schema_version="t3.consolidation_patch.v1">
@@ -304,24 +304,21 @@ def test_patch_without_t2_or_explicit_evidence_is_held(tmp_path: Path) -> None:
     assert result.status == "held"
 
 
-def test_legacy_xml_block_targets_still_work(tmp_path: Path) -> None:
-    from app.memory.md_store import ensure_t3_layout
-    from app.memory.t3_platform_gate import file_sha256
-
+def test_legacy_flat_t3_targets_are_rejected(tmp_path: Path) -> None:
+    """Part H cutover: the flat-T3 files are no longer writable through the gate."""
     agent_id = uuid4()
-    mem_dir = ensure_t3_layout(tmp_path, agent_id)
     target = "memory/t3/user.md"
-    current_sha = file_sha256(mem_dir.parent / target)
-    block = '<t3_user_memory id="um-1"><claim>偏好中文汇报。</claim><evidence><source_ref>t2://session/s1/segment/seg-1</source_ref></evidence></t3_user_memory>'
+    block = '<t3_user_memory id="um-1"><claim>x</claim></t3_user_memory>'
     changes = (
         f'<append_block target="{target}" block_id="um-1">'
         f"<block_content><![CDATA[{block}]]></block_content></append_block>"
     )
     result = _apply(
-        tmp_path, agent_id, _patch_xml(targets=[(target, current_sha)], changes=changes, labels_view="user")
+        tmp_path, agent_id, _patch_xml(targets=[(target, _empty_sha())], changes=changes, labels_view="profiles")
     )
 
-    assert result.status == "committed", result.issues
+    assert result.status == "held"
+    assert any("non-canonical target" in issue for issue in result.issues)
 
 
 def test_layout_bootstrap_creates_two_plane_dirs(tmp_path: Path) -> None:

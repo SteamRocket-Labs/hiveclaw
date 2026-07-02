@@ -156,15 +156,15 @@ def test_direct_t3_write_is_refused(agent_env) -> None:
 
 
 def test_native_t3_active_file_set_is_canonical() -> None:
-    from app.memory.md_store import T3_FILE_SPECS
+    from app.memory.t3_platform_gate import PROFILE_PLANE_TARGETS, is_accepted_t3_target
 
-    active_files = {spec["filename"] for spec in T3_FILE_SPECS}
-    assert active_files == {
-        "t3/episodes.md",
-        "t3/user.md",
-        "t3/worker.md",
-        "t3/capabilities.md",
-    }
-    assert "archive.md" not in active_files
-    assert "feedback.md" not in active_files
-    assert "knowledge.md" not in active_files
+    assert PROFILE_PLANE_TARGETS == (
+        "memory/self/self.md",
+        "memory/profiles/owner.md",
+        "memory/profiles/collaborators.md",
+        "memory/profiles/domain.md",
+    )
+    assert is_accepted_t3_target("memory/knowledge/some-page.md")
+    assert not is_accepted_t3_target("memory/t3/episodes.md")
+
+

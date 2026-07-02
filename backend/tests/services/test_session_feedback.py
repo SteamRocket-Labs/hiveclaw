@@ -29,7 +29,7 @@ def test_session_feedback_default_writer_is_explicit_overlay_not_t3_adapter() ->
 
 @pytest.mark.asyncio
 async def test_record_useful_session_feedback_persists_event_audit_and_t3(tmp_path) -> None:
-    from app.memory.t3_store import T3AppendResult
+    from types import SimpleNamespace as T3AppendResult
     from app.models.audit import AuditLog
     from app.models.session_feedback import SessionFeedbackEvent
     from app.services.session_feedback import record_session_feedback
@@ -77,7 +77,7 @@ async def test_record_useful_session_feedback_persists_event_audit_and_t3(tmp_pa
 
 @pytest.mark.asyncio
 async def test_record_session_feedback_links_to_verified_decision_trace(tmp_path) -> None:
-    from app.memory.t3_store import T3AppendResult
+    from types import SimpleNamespace as T3AppendResult
     from app.models.session_feedback import SessionFeedbackEvent
     from app.services.decision_trace import DecisionTraceStore
     from app.services.session_feedback import record_session_feedback
@@ -131,7 +131,7 @@ async def test_record_session_feedback_links_to_verified_decision_trace(tmp_path
 
 @pytest.mark.asyncio
 async def test_record_session_feedback_rejects_cross_session_decision_trace(tmp_path) -> None:
-    from app.memory.t3_store import T3AppendResult
+    from types import SimpleNamespace as T3AppendResult
     from app.services.decision_trace import DecisionTraceStore
     from app.services.session_feedback import record_session_feedback
 
@@ -175,7 +175,7 @@ async def test_record_session_feedback_rejects_cross_session_decision_trace(tmp_
 
 @pytest.mark.asyncio
 async def test_record_misleading_session_feedback_marks_harmful_calibration(tmp_path) -> None:
-    from app.memory.t3_store import T3AppendResult
+    from types import SimpleNamespace as T3AppendResult
     from app.services.session_feedback import record_session_feedback
 
     db = _FakeDB()

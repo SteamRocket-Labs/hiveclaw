@@ -68,10 +68,10 @@ class TestDecisionMatrix:
 
     def test_matrix_maps_each_category_to_file(self, template_text: str) -> None:
         for target in [
-            "memory/t3/episodes.md",
-            "memory/t3/user.md",
-            "memory/t3/worker.md",
-            "memory/t3/capabilities.md",
+            "memory/self/self.md",
+            "memory/profiles/owner.md",
+            "memory/knowledge/<slug>.md",
+            "memory/milestones/<slug>.md",
         ]:
             assert target in template_text
 

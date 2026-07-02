@@ -3,8 +3,6 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path
-
 
 def _seed_dirty_workspace(data_root: Path, agent_id: uuid.UUID) -> Path:
     workspace = data_root / str(agent_id)
@@ -35,7 +33,7 @@ def test_agent_memory_hygiene_dry_run_reports_without_mutating(tmp_path: Path) -
     report = repair_agent_memory_hygiene(tmp_path, agent_id, dry_run=True)
 
     assert report["dry_run"] is True
-    assert report["entries_migrated"] == 1
+    assert report["entries_migrated"] == 0  # flat-T3 prose backfill retired at the C7 cutover
     assert {item["path"] for item in report["retired_artifacts"]} == {"memory.sqlite3", "memory/memory.json"}
     assert {item["path"] for item in report["dead_stubs"]} == {"reflections.md", "memory/reflections.md"}
     assert "[access_count=7]" in (workspace / "memory" / "t3" / "user.md").read_text(encoding="utf-8")
@@ -55,7 +53,7 @@ def test_agent_memory_hygiene_apply_backfills_and_quarantines(tmp_path: Path) ->
     report = repair_agent_memory_hygiene(tmp_path, agent_id, dry_run=False)
 
     assert report["dry_run"] is False
-    assert report["entries_migrated"] == 1
+    assert report["entries_migrated"] == 0  # flat-T3 prose backfill retired at the C7 cutover
     assert not (workspace / "memory.sqlite3").exists()
     assert not (workspace / "memory" / "memory.json").exists()
     assert not (workspace / "reflections.md").exists()
@@ -63,19 +61,12 @@ def test_agent_memory_hygiene_apply_backfills_and_quarantines(tmp_path: Path) ->
     assert (workspace / "memory" / "reflections" / "kept.jsonl").exists()
 
     feedback = (workspace / "memory" / "t3" / "user.md").read_text(encoding="utf-8")
-    assert feedback.strip().endswith("- [2026-06-04][entry_id=f1] vendor contact lives in CRM")
-    assert "[sensitivity=" not in feedback
-    assert "[access_count=" not in feedback
+    # flat-T3 prose backfill retired: the archived legacy file stays untouched
+    assert "vendor contact lives in CRM" in feedback
 
-    lifecycle = MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id))
-    entry = lifecycle.get("f1")
-    assert entry.metadata["sensitivity"] == "PL2_pii"
-    assert entry.access_count == 7
-    assert entry.last_accessed is not None
-    assert entry.last_accessed.isoformat().startswith("2026-06-04T17:00:00")
-
+    # flat-T3 prose backfill retired at the C7 cutover: no lifecycle
+    # registration or archive rewrite happens for legacy prose entries.
     archive = (workspace / "memory" / "archive.md").read_text(encoding="utf-8")
-    assert "[access_count=7]" in archive
     assert "memory.sqlite3" in archive
     assert "memory/memory.json" in archive
     assert "reflections.md" in archive
@@ -99,5 +90,5 @@ def test_all_workspace_memory_hygiene_scans_only_uuid_agents(tmp_path: Path) -> 
     assert report["schema"] == "memory_hygiene_report.v1"
     assert report["agents_scanned"] == 1
     assert report["agents_changed"] == 1
-    assert report["entries_migrated"] == 1
+    assert report["entries_migrated"] == 0  # flat-T3 prose backfill retired at the C7 cutover
     assert (ignored / "memory.sqlite3").exists()

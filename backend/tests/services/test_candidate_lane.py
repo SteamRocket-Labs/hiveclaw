@@ -17,12 +17,37 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _write_strategies(root: Path, agent_id: uuid.UUID, body: str) -> Path:
+def _write_self(root: Path, agent_id: uuid.UUID, body: str) -> Path:
     mem_dir = root / str(agent_id) / "memory"
-    (mem_dir / "t3").mkdir(parents=True, exist_ok=True)
-    path = mem_dir / "t3" / "capabilities.md"
+    (mem_dir / "self").mkdir(parents=True, exist_ok=True)
+    path = mem_dir / "self" / "self.md"
     path.write_text(body, encoding="utf-8")
     return path
+
+
+SELF_WITH_CANDIDATES = """## 方法
+
+### 研究三段法 — 熟练
+<!-- id: mem_aaa -->
+Research → design → verify workflow proven across 3 PRs
+- skill候选: 跨 3 个 PR 验证有效
+- 证据: t2-a1b2
+
+### 普通方法 — 一般
+<!-- id: mem_plain -->
+plain strategy without candidate marker
+
+### 夜间摘要管线 — 一般
+<!-- id: mem_bbb -->
+Nightly digest pipeline needs durable state
+- workflow候选: 需要持久状态
+
+### 已固化方法 — 熟练
+<!-- id: mem_ccc -->
+already promoted method
+- skill候选: 曾经的候选
+- 已固化 → [[skill-market-research]]
+"""
 
 
 # ── Heartbeat lane: candidate signals only, no direct skill writes ──
@@ -82,15 +107,7 @@ def test_load_memory_skill_candidates_reads_unpromoted_markers(tmp_path) -> None
     from app.services.skill_distiller import load_memory_skill_candidates
 
     agent_id = uuid.uuid4()
-    _write_strategies(
-        tmp_path,
-        agent_id,
-        "# Strategies\n\n"
-        "- [2026-06-01][container=skill_candidate][entry_id=mem_aaa] Research → design → verify workflow proven across 3 PRs\n"
-        "- [2026-06-02] plain strategy without candidate marker\n"
-        "- [2026-06-03][container=workflow_candidate][entry_id=mem_bbb] Nightly digest pipeline needs durable state\n"
-        "- [2026-06-04][container=skill_candidate][promoted_to=skill][entry_id=mem_ccc] already promoted method\n",
-    )
+    _write_self(tmp_path, agent_id, SELF_WITH_CANDIDATES)
 
     candidates = load_memory_skill_candidates(tmp_path, agent_id)
     contents = [c["content"] for c in candidates]
@@ -104,83 +121,41 @@ def test_load_memory_workflow_candidates_reads_workflow_lane(tmp_path) -> None:
     from app.services.skill_distiller import load_memory_workflow_candidates
 
     agent_id = uuid.uuid4()
-    _write_strategies(
-        tmp_path,
-        agent_id,
-        "# Strategies\n\n"
-        "- [2026-06-03][container=workflow_candidate][entry_id=mem_bbb] Nightly digest pipeline needs durable state\n"
-        "- [2026-06-04][container=workflow_candidate][promoted_to=workflow][entry_id=mem_ddd] promoted pipeline\n",
-    )
+    _write_self(tmp_path, agent_id, SELF_WITH_CANDIDATES)
 
     candidates = load_memory_workflow_candidates(tmp_path, agent_id)
     assert len(candidates) == 1
     assert "Nightly digest" in candidates[0]["content"]
 
 
-def test_mark_t3_entry_promoted_stamps_marker(tmp_path) -> None:
-    from app.memory.md_store import mark_t3_entry_promoted
+def test_mark_profile_entry_promoted_stamps_two_way_link(tmp_path) -> None:
+    from app.memory.plane_read import mark_profile_entry_promoted
     from app.services.skill_distiller import load_memory_skill_candidates
 
     agent_id = uuid.uuid4()
-    path = _write_strategies(
-        tmp_path,
-        agent_id,
-        "# Strategies\n\n"
-        "- [2026-06-01][container=skill_candidate][entry_id=mem_aaa] Research → design → verify workflow proven across 3 PRs\n",
-    )
+    path = _write_self(tmp_path, agent_id, SELF_WITH_CANDIDATES)
 
-    ok = mark_t3_entry_promoted(
-        tmp_path,
-        agent_id,
-        entry_id="mem_aaa",
-        promoted_to="skill",
-        target="market-research",
+    ok = mark_profile_entry_promoted(
+        tmp_path, agent_id, entry_id="mem_aaa", promoted_to="skill", target="market-research"
     )
     assert ok
-
-    body = path.read_text(encoding="utf-8")
-    assert "[promoted_to=skill]" in body
-    assert "[promoted_target=market-research]" in body
-    # Promoted entries leave the candidate pool.
-    assert load_memory_skill_candidates(tmp_path, agent_id) == []
-
-
-def test_mark_t3_xml_entry_promoted_stamps_attributes(tmp_path) -> None:
-    from app.memory.md_store import mark_t3_entry_promoted
-    from app.services.skill_distiller import load_memory_skill_candidates
-
-    agent_id = uuid.uuid4()
-    path = _write_strategies(
-        tmp_path,
-        agent_id,
-        "# T3 Capabilities\n\n"
-        '<t3_capability id="mem_xml_aaa" container="skill_candidate" created_at="2026-06-23T00:00:00Z">\n'
-        "  <title>Reusable research verification loop</title>\n"
-        "  <source_refs>\n"
-        "    <source_ref>memory/t2/sessions/s1/segments/seg1/summary.md#t2_summary</source_ref>\n"
-        "  </source_refs>\n"
-        "</t3_capability>\n",
-    )
-
+    content = path.read_text(encoding="utf-8")
+    assert "已固化 → [[skill-market-research]]" in content
+    assert "Research → design → verify" in content  # narrative stays (two-way link)
+    # candidate no longer qualifies
     candidates = load_memory_skill_candidates(tmp_path, agent_id)
-    assert [candidate["entry_id"] for candidate in candidates] == ["mem_xml_aaa"]
-
-    ok = mark_t3_entry_promoted(
-        tmp_path,
-        agent_id,
-        entry_id="mem_xml_aaa",
-        promoted_to="skill",
-        target="research-loop",
-    )
-    assert ok
-
-    body = path.read_text(encoding="utf-8")
-    assert 'promoted_to="skill"' in body
-    assert 'promoted_target="research-loop"' in body
-    assert load_memory_skill_candidates(tmp_path, agent_id) == []
+    assert all(c["entry_id"] != "mem_aaa" for c in candidates)
 
 
-# ── Workflow candidate lane: recorded into the evolution ledger ──
+def test_mark_profile_entry_promoted_is_idempotent(tmp_path) -> None:
+    from app.memory.plane_read import mark_profile_entry_promoted
+
+    agent_id = uuid.uuid4()
+    path = _write_self(tmp_path, agent_id, SELF_WITH_CANDIDATES)
+    assert mark_profile_entry_promoted(tmp_path, agent_id, entry_id="mem_aaa", promoted_to="skill", target="x")
+    assert mark_profile_entry_promoted(tmp_path, agent_id, entry_id="mem_aaa", promoted_to="skill", target="x")
+
+    assert path.read_text(encoding="utf-8").count("已固化 → [[skill-x]]") == 1
 
 
 def test_record_workflow_candidates_writes_evolution_ledger(tmp_path) -> None:
@@ -188,12 +163,7 @@ def test_record_workflow_candidates_writes_evolution_ledger(tmp_path) -> None:
 
     agent_id = uuid.uuid4()
     workspace = tmp_path / str(agent_id)
-    _write_strategies(
-        tmp_path,
-        agent_id,
-        "# Strategies\n\n"
-        "- [2026-06-03][container=workflow_candidate][entry_id=mem_bbb] Nightly digest pipeline needs durable state\n",
-    )
+    _write_self(tmp_path, agent_id, SELF_WITH_CANDIDATES)
 
     recorded = record_workflow_candidates_from_memory(tmp_path, agent_id, workspace=workspace)
     assert recorded == 1

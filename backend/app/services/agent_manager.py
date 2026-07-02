@@ -313,6 +313,15 @@ class AgentManager:
         from app.memory.md_store import ensure_t3_layout, rebuild_index
 
         ensure_t3_layout(Path(settings.AGENT_DATA_DIR), agent.id)
+        # Two-plane bootstrap (spec §6.3 C7): soul stays 应然; the self-model
+        # starts as an empty skeleton that experience fills through the gate.
+        self_path = agent_dir / "memory" / "self" / "self.md"
+        if not self_path.exists():
+            self_path.parent.mkdir(parents=True, exist_ok=True)
+            self_path.write_text(
+                "# Self — 我对自己的认识\n\n## 能力\n\n## 方法\n\n## 失败模式\n\n## 风格\n",
+                encoding="utf-8",
+            )
         rebuild_index(Path(settings.AGENT_DATA_DIR), agent.id)
 
         # Ensure HEARTBEAT.md exists — copy from central template

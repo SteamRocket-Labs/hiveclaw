@@ -45,8 +45,7 @@ def _seed_entry(tmp_path: Path, agent_id: uuid.UUID, memory_dir: Path, filename:
     """
     path = memory_dir / filename
     line = (
-        f"- [2026-05-15 09:30][entry_id={entry_id}][sensitivity=PL1_public]"
-        "[status=active][version=1] note about acme\n"
+        f"- [2026-05-15 09:30][entry_id={entry_id}][sensitivity=PL1_public][status=active][version=1] note about acme\n"
     )
     path.write_text(f"# Knowledge\n\n{line}", encoding="utf-8")
     record_active_memory_lifecycle(

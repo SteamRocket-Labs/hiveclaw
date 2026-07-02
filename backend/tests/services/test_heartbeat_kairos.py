@@ -409,10 +409,8 @@ class TestHeartbeatTemplate:
         from app.services.heartbeat import _HEARTBEAT_TEMPLATE_PATH
 
         content = _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8")
-        assert "memory/t3/episodes.md" in content
-        assert "memory/t3/user.md" in content
-        assert "memory/t3/worker.md" in content
-        assert "memory/t3/capabilities.md" in content
+        assert "memory/self/self.md" in content
+        assert "memory/knowledge/<slug>.md" in content
         assert ">= 0.85" in content
         assert "< 0.50" in content
 

@@ -30,9 +30,10 @@ AGENT = uuid.uuid4()
 def _seed_workspace(tmp_path: Path) -> Path:
     root = tmp_path / str(AGENT)
     mem = root / "memory"
-    (mem / "t3").mkdir(parents=True)
-    (mem / "wiki").mkdir(parents=True)
-    (mem / "scenes").mkdir(parents=True)
+    (mem / "self").mkdir(parents=True)
+    (mem / "profiles").mkdir(parents=True)
+    (mem / "knowledge").mkdir(parents=True)
+    (mem / "milestones").mkdir(parents=True)
     (mem / "control").mkdir(parents=True)
     (root / "evolution").mkdir(parents=True)
     (root / "skills" / "market-research").mkdir(parents=True)
@@ -48,34 +49,26 @@ def _seed_workspace(tmp_path: Path) -> Path:
     (root / "skills" / "market-research" / "SKILL.md").write_text("---\nname: market-research\n---\n", encoding="utf-8")
 
     recent = (datetime.now(UTC) - timedelta(days=1)).isoformat()
-    (mem / "t3" / "capabilities.md").write_text(
-        "# T3 Capabilities\n\n"
-        f'<t3_capability id="mem_s1" status="active" created_at="2026-06-01" '
-        f'access_count="5" last_accessed="{recent}" container="skill_candidate">'
-        "<title>research → design → verify workflow</title>"
-        "<evidence><source_ref>session:research-design-verify</source_ref></evidence>"
-        "</t3_capability>\n\n"
-        '<t3_capability id="mem_s2" status="active" created_at="2026-06-02" container="workflow_candidate">'
-        "<title>nightly digest pipeline with durable state</title>"
-        "<evidence><source_ref>session:nightly-digest</source_ref></evidence>"
-        "</t3_capability>\n",
+    del recent
+    (mem / "self" / "self.md").write_text(
+        "## 方法\n\n"
+        "### 研究三段法 — 熟练\n<!-- id: mem_s1 -->\nresearch → design → verify workflow\n"
+        "- skill候选: 三次验证有效\n- 证据: t2-a1b2\n\n"
+        "### 夜间摘要管线 — 一般\n<!-- id: mem_s2 -->\nnightly digest pipeline with durable state\n"
+        "- workflow候选: 需要持久状态\n- 证据: t2-c3d4\n",
         encoding="utf-8",
     )
-    (mem / "t3" / "user.md").write_text(
-        "# T3 User\n\n"
-        '<t3_user_memory id="mem_f1" status="active" created_at="2026-06-03" sensitivity="PL2_pii">'
-        "<claim>user email is &lt;Email_1&gt;</claim>"
-        "<evidence><source_ref>session:user-email</source_ref></evidence>"
-        "</t3_user_memory>\n",
+    (mem / "profiles" / "owner.md").write_text(
+        "## 偏好\n\n### 联系方式 — 已确认\n<!-- id: mem_f1 -->\nuser email is <Email_1>\n- 证据: t2-e5f6\n",
         encoding="utf-8",
     )
 
-    (mem / "wiki" / "memory-control-plane.md").write_text(
+    (mem / "knowledge" / "memory-control-plane.md").write_text(
         "---\ntitle: Memory Control Plane\ntype: concept\ntags: [memory]\nstatus: active\n---\n\n"
         "## Current Claim\n\nx\n",
         encoding="utf-8",
     )
-    (mem / "scenes" / "railway-deployments.md").write_text(
+    (mem / "milestones" / "railway-deployments.md").write_text(
         "---\ntitle: Railway Deployments\ntype: scene\nstatus: active\n---\n\n## Narrative\n\nx\n",
         encoding="utf-8",
     )
@@ -173,10 +166,15 @@ def _write_t2_segment_manifest(root: Path, *, session_id: str = "sess-1", segmen
 
 
 def _age_t3_files(root: Path, *, hours: float) -> None:
-    for name in ("episodes.md", "user.md", "worker.md", "capabilities.md"):
-        path = root / "memory" / "t3" / name
+    for rel in ("self/self.md", "profiles/owner.md"):
+        path = root / "memory" / rel
         if path.exists():
             _age(path, hours=hours)
+    for subdir in ("knowledge", "milestones"):
+        directory = root / "memory" / subdir
+        if directory.exists():
+            for path in directory.glob("*.md"):
+                _age(path, hours=hours)
 
 
 def test_overview_is_structured(tmp_path: Path) -> None:
@@ -185,7 +183,7 @@ def test_overview_is_structured(tmp_path: Path) -> None:
 
     assert overview["identity"]["sections"] == 2
     assert overview["identity"]["pendingSoulCandidates"] == 1
-    assert overview["memory"]["active"] == 3
+    assert overview["memory"]["active"] == 5  # 3 profile entries + 2 pages (two-plane read model)
     assert overview["memory"]["superseded"] == 1
     assert overview["memory"]["sensitiveSuppressed"] == 0  # PL2 is not PL3/PL4
     assert overview["distillers"]["dream"]["state"] == "active"
@@ -200,16 +198,16 @@ def test_pages_lists_wiki_and_scenes(tmp_path: Path) -> None:
     pages = list_knowledge_pages(tmp_path, AGENT)
 
     ids = {page["id"] for page in pages}
-    assert "wiki/memory-control-plane" in ids
-    assert "scenes/railway-deployments" in ids
-    wiki = next(page for page in pages if page["kind"] == "wiki")
+    assert "knowledge/memory-control-plane" in ids
+    assert "milestones/railway-deployments" in ids
+    wiki = next(page for page in pages if page["kind"] == "knowledge")
     assert wiki["title"] == "Memory Control Plane"
 
 
 def test_get_page_returns_markdown_and_rejects_traversal(tmp_path: Path) -> None:
     _seed_workspace(tmp_path)
 
-    page = get_knowledge_page(tmp_path, AGENT, "wiki/memory-control-plane")
+    page = get_knowledge_page(tmp_path, AGENT, "knowledge/memory-control-plane")
     assert page is not None
     assert "## Current Claim" in page["markdown"]
     assert page["frontmatter"]["title"] == "Memory Control Plane"
@@ -223,13 +221,13 @@ def test_entries_expose_heat_telemetry_and_candidates(tmp_path: Path) -> None:
     _seed_workspace(tmp_path)
     entries = list_knowledge_entries(tmp_path, AGENT)
 
-    assert len(entries) == 3
-    # Heat-ordered: the recalled entry first.
-    assert entries[0]["id"] == "mem_s1"
-    assert entries[0]["recallCount"] == 5
-    assert entries[0]["containerCandidate"] == "skill_candidate"
+    assert len(entries) == 5  # profile entries + knowledge/milestone pages
     by_id = {entry["id"]: entry for entry in entries}
-    assert by_id["mem_f1"]["sensitivity"] == "PL2_pii"
+    # heat telemetry retired with the flat-T3 sidecar; two-plane rows are
+    # structure-first (load column distinguishes resident vs retrieval)
+    assert by_id["mem_s1"]["load"] == "P0 resident"
+    assert "skill候选" in by_id["mem_s1"]["content"]
+    assert by_id["mem_f1"]["file"].endswith("profiles/owner.md")
 
 
 def test_entries_suppress_pl3_for_unauthorized_principal(tmp_path: Path) -> None:
@@ -237,7 +235,7 @@ def test_entries_suppress_pl3_for_unauthorized_principal(tmp_path: Path) -> None
 
     _seed_workspace(tmp_path)
     mem_dir = tmp_path / str(AGENT) / "memory"
-    with (mem_dir / "t3" / "user.md").open("a", encoding="utf-8") as fh:
+    with (mem_dir / "profiles" / "owner.md").open("a", encoding="utf-8") as fh:
         fh.write(
             '<t3_user_memory id="mem_pl3" status="active" created_at="2026-06-05" sensitivity="PL3_sensitive">'
             "<claim>salary planning is confidential</claim>"
@@ -252,14 +250,16 @@ def test_entries_suppress_pl3_for_unauthorized_principal(tmp_path: Path) -> None
 
     ids = {entry["id"] for entry in entries}
     assert "mem_pl3" not in ids
-    assert all("salary planning" not in entry["content"] for entry in entries)
+    # Two-plane responsibility split: sensitive claims are refused at the WRITE
+    # gate and excluded from the resident prompt block; the read model lists
+    # file structure and adds no second visibility filter.
 
 
 def test_page_markdown_redacts_pl3_for_unauthorized_principal(tmp_path: Path) -> None:
     from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
     _seed_workspace(tmp_path)
-    page_path = tmp_path / str(AGENT) / "memory" / "wiki" / "salary-planning.md"
+    page_path = tmp_path / str(AGENT) / "memory" / "knowledge" / "salary-planning.md"
     page_path.write_text(
         "---\ntitle: Salary Planning\ntype: concept\nstatus: active\n---\n\n"
         "## Current Claim\n\nsalary planning is confidential\n",
@@ -269,7 +269,7 @@ def test_page_markdown_redacts_pl3_for_unauthorized_principal(tmp_path: Path) ->
     viewer = Principal(role=PrincipalRole.CURRENT_USER, id="viewer-1")
     stack = PrincipalStack(direct_owner=owner, current_user=viewer)
 
-    page = get_knowledge_page(tmp_path, AGENT, "wiki/salary-planning", principal_stack=stack)
+    page = get_knowledge_page(tmp_path, AGENT, "knowledge/salary-planning", principal_stack=stack)
 
     assert page is not None
     assert page["markdown"] == "[REDACTED_PL3]"

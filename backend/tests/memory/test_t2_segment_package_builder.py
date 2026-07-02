@@ -279,7 +279,9 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
         memory_gate=memory_gate,
     )
 
-    package_dir = tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / str(session_id) / "segments" / first.segment_id
+    package_dir = (
+        tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / str(session_id) / "segments" / first.segment_id
+    )
     assert result.status == "committed"
     assert result.package_dir == package_dir
     assert sorted(path.name for path in package_dir.iterdir()) == [
@@ -372,7 +374,9 @@ async def test_low_risk_t2_package_requires_memory_gate_review(tmp_path: Path) -
         memory_gate=memory_gate,
     )
 
-    package_dir = tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / str(session_id) / "segments" / first.segment_id
+    package_dir = (
+        tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / str(session_id) / "segments" / first.segment_id
+    )
     manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
     review = _assert_xml_block(package_dir / "review.md", "t2_review")
 
@@ -619,7 +623,9 @@ async def test_platform_gate_holds_invalid_agent_output_without_partial_commit(t
         memory_gate=review,
     )
 
-    package_dir = tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / str(session_id) / "segments" / first.segment_id
+    package_dir = (
+        tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / str(session_id) / "segments" / first.segment_id
+    )
     held_dir = tmp_path / str(agent_id) / "memory" / ".staging" / "t2_jobs" / result.job_id
     assert result.status == "held"
     assert not package_dir.exists()

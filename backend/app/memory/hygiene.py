@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.memory.t3_store import backfill_t3_prose
 
 _RETIRED_ARTIFACTS = (
     Path("memory.sqlite3"),
@@ -20,9 +19,7 @@ _DEAD_STUB_FILES = (
     Path("memory/reflections.md"),
     Path("evolution/reflections.md"),
 )
-_RETIRED_ROOT_FILES = (
-    Path("focus" + ".md"),
-)
+_RETIRED_ROOT_FILES = (Path("focus" + ".md"),)
 
 
 def _rel(path: Path) -> str:
@@ -95,7 +92,7 @@ def repair_agent_memory_hygiene(data_root: Path, agent_id: uuid.UUID, *, dry_run
     """
     root = Path(data_root)
     agent_root = root / str(agent_id)
-    backfill = backfill_t3_prose(root, agent_id, dry_run=dry_run)
+    backfill = {}  # legacy flat-T3 prose backfill retired at the C7 cutover
 
     retired_artifacts: list[dict[str, str]] = []
     for rel_path in _RETIRED_ARTIFACTS:
@@ -150,8 +147,7 @@ def repair_agent_memory_hygiene(data_root: Path, agent_id: uuid.UUID, *, dry_run
 def repair_all_memory_hygiene(data_root: Path, *, dry_run: bool = True) -> dict[str, Any]:
     """Repair every UUID-named agent workspace under ``data_root``."""
     agent_reports = [
-        repair_agent_memory_hygiene(data_root, agent_id, dry_run=dry_run)
-        for agent_id in _iter_agent_ids(data_root)
+        repair_agent_memory_hygiene(data_root, agent_id, dry_run=dry_run) for agent_id in _iter_agent_ids(data_root)
     ]
     return {
         "schema": "memory_hygiene_report.v1",

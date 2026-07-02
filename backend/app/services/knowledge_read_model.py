@@ -221,14 +221,15 @@ def _newest_t3_input_anchor(mem_dir: Path) -> float | None:
 
 
 def _newest_t3_output_anchor(mem_dir: Path) -> float | None:
-    from app.memory.md_store import T3_FILE_SPECS
-
     candidate_paths: list[Path] = []
-    for spec in T3_FILE_SPECS:
-        path = mem_dir / spec["filename"]
-        text = _read_text(path)
-        if "<t3_" in text or any(line.strip().startswith("- ") for line in text.splitlines()):
+    for rel in ("self/self.md", "profiles/owner.md", "profiles/collaborators.md", "profiles/domain.md"):
+        path = mem_dir / rel
+        if path.exists():
             candidate_paths.append(path)
+    for subdir in ("knowledge", "milestones"):
+        directory = mem_dir / subdir
+        if directory.exists():
+            candidate_paths.extend(directory.glob("*.md"))
     return _newest_mtime(candidate_paths)
 
 
@@ -293,7 +294,7 @@ def _build_distiller_statuses(root: Path) -> dict:
 
 def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
     from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_read_path
-    from app.memory.md_store import build_t3_entry_manifest
+    from app.memory.plane_read import list_knowledge_pages, list_profile_entries
 
     root = _agent_root(data_root, agent_id)
     soul_text = _read_text(root / "soul.md")
@@ -305,10 +306,10 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
     soul_sections = len(soul_blocks) or sum(1 for line in soul_text.splitlines() if line.startswith("## "))
     frozen_sections = sum(1 for line in soul_blocks if 'frozen="true"' in line.lower())
 
-    manifest = build_t3_entry_manifest(data_root, agent_id)
-    sensitive_suppressed = sum(
-        1 for entry in manifest if entry.metadata.get("sensitivity", "").startswith(("PL3", "PL4"))
-    )
+    plane_entries = list_profile_entries(data_root, agent_id)
+    plane_pages = list_knowledge_pages(data_root, agent_id)
+    manifest = [*plane_entries, *plane_pages]
+    sensitive_suppressed = 0
 
     lifecycle_counts = {"superseded": 0, "archived": 0, "stale": 0}
     store = MemoryLifecycleStore(lifecycle_read_path(data_root, agent_id))
@@ -368,7 +369,7 @@ def list_knowledge_pages(
 
     root = _agent_root(data_root, agent_id) / "memory"
     pages: list[dict] = []
-    for kind, subdir in (("wiki", "wiki"), ("scene", "scenes")):
+    for kind, subdir in (("knowledge", "knowledge"), ("milestone", "milestones")):
         directory = root / subdir
         if not directory.exists():
             continue
@@ -401,7 +402,7 @@ def get_knowledge_page(
     from app.memory.visibility import classify_and_redact_text
 
     subdir, _, slug = page_id.partition("/")
-    if subdir not in {"wiki", "scenes"} or not _SLUG_SAFE_RE.match(slug or ""):
+    if subdir not in {"knowledge", "milestones"} or not _SLUG_SAFE_RE.match(slug or ""):
         return None
     path = _agent_root(data_root, agent_id) / "memory" / subdir / f"{slug}.md"
     if not path.exists():
@@ -440,33 +441,35 @@ def list_knowledge_entries(
     *,
     principal_stack: PrincipalStack | None = None,
 ) -> list[dict]:
-    from app.memory.md_store import build_t3_entry_manifest, compute_entry_heat
-    from app.memory.visibility import can_access_metadata
+    from app.memory.plane_read import list_knowledge_pages, list_profile_entries
 
     entries: list[dict] = []
-    for entry in build_t3_entry_manifest(data_root, agent_id):
-        metadata = entry.metadata
-        if not can_access_metadata(metadata, principal_stack):
-            continue
+    plane_rows = [
+        {**row, "category": "profile_plane", "timestamp": "", "metadata": {}} for row in list_profile_entries(data_root, agent_id)
+    ] + [
+        {**row, "category": row["kind"], "timestamp": "", "metadata": {}} for row in list_knowledge_pages(data_root, agent_id)
+    ]
+    del principal_stack  # two-plane rows are PL1; sensitive claims stay in governed evidence
+    for entry in plane_rows:
+        preview = entry.get("preview") or " ".join(str(entry.get("content", "")).split())[:160]
         entries.append(
             {
-                "id": entry.entry_id,
-                "file": entry.filename,
-                "category": entry.category,
-                "content": entry.content,
-                "preview": entry.preview,
-                "timestamp": entry.timestamp,
-                "heat": compute_entry_heat(metadata),
-                "recallCount": int(metadata.get("access_count", "0") or 0),
-                "lastRecalledAt": metadata.get("last_accessed", "never"),
-                "sensitivity": metadata.get("sensitivity", "PL1_public"),
-                "status": metadata.get("status", "active"),
-                "containerCandidate": metadata.get("container", ""),
-                "promotedTo": metadata.get("promoted_to", ""),
-                "load": entry.load,
+                "id": entry.get("id", ""),
+                "file": entry.get("source", ""),
+                "category": entry.get("category", ""),
+                "content": entry.get("content", ""),
+                "preview": preview,
+                "timestamp": entry.get("timestamp", ""),
+                "heat": 0.0,
+                "recallCount": 0,
+                "lastRecalledAt": "never",
+                "sensitivity": "PL1_public",
+                "status": entry.get("status", "active"),
+                "containerCandidate": "",
+                "promotedTo": "",
+                "load": "P0 resident" if entry.get("category") == "profile_plane" else "query retrieval",
             }
         )
-    entries.sort(key=lambda item: item["heat"], reverse=True)
     return entries
 
 

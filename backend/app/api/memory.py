@@ -191,16 +191,22 @@ async def get_agent_memory(
     from app.core.permissions import check_agent_access
     await check_agent_access(db, current_user, agent_id)
 
-    # D8: read from the T3 markdown source of truth, not the retired `memory.json`
-    # shadow store. The SQLite/JSON shadow store was decommissioned and is no
-    # longer written, so this endpoint had been returning permanently-empty facts.
+    # Two-plane read model: profile-plane entries (self/profiles) plus
+    # knowledge-plane pages (knowledge/milestones), read from the MD source
+    # of truth via the unified plane_read surface.
     from pathlib import Path
 
     from app.config import get_settings
-    from app.memory.md_store import parse_t3_facts
+    from app.memory.plane_read import list_knowledge_pages, list_profile_entries
 
     settings = get_settings()
-    return {"facts": parse_t3_facts(Path(settings.AGENT_DATA_DIR), agent_id)}
+    data_root = Path(settings.AGENT_DATA_DIR)
+    profile_entries = list_profile_entries(data_root, agent_id)
+    knowledge_pages = [
+        {key: value for key, value in page.items() if key != "content"}
+        for page in list_knowledge_pages(data_root, agent_id)
+    ]
+    return {"facts": [*profile_entries, *knowledge_pages]}
 
 
 @router.get("/sessions/{session_id}/summary")

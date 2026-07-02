@@ -280,9 +280,8 @@ def test_run_memory_dream_stages_episode_stitch_packages(tmp_path: Path) -> None
     assert result.workspace_result.selected_package_dirs == (package_dir,)
     assert result.t3_batch_result is not None
     assert (result.t3_batch_result.job_dir / "source_bundle.json").exists()
-    assert (tmp_path / str(agent_id) / "memory" / "t3" / "episodes.md").read_text(encoding="utf-8") == (
-        "# T3 Episodes\n\n"
-    )
+    # C7 cutover: no flat-T3 skeleton exists; staging output is the contract.
+    assert not (tmp_path / str(agent_id) / "memory" / "t3" / "episodes.md").exists()
 
 
 def test_run_dream_reports_memory_dream_lane_when_t3_is_empty(tmp_path: Path, monkeypatch) -> None:

@@ -838,10 +838,7 @@ async def backfill_agent_prose(
     Defaults to ``dry_run=true`` — it touches the production data volume, so the
     owner previews the diff first (safety gate, not an MVP stage).
     """
-    from pathlib import Path
 
-    from app.config import get_settings
-    from app.memory.t3_store import backfill_t3_prose
 
     await _load_platform_admin_agent_and_pin(
         db,
@@ -850,4 +847,5 @@ async def backfill_agent_prose(
         reason=f"platform admin T3 prose backfill lookup for agent {agent_id}",
     )
 
-    return backfill_t3_prose(Path(get_settings().AGENT_DATA_DIR), agent_id, dry_run=dry_run)
+    del dry_run  # accepted for API compatibility; nothing runs anymore
+    return {"status": "retired", "reason": "legacy flat-T3 prose backfill retired at the C7 two-plane cutover"}

@@ -9,83 +9,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.memory.lifecycle_store import (
-    read_access_telemetry,
-    read_sidecar_metadata,
-    record_active_memory_lifecycle,
-)
 
-
-T3_FILE_SPECS = (
-    {
-        "filename": "t3/episodes.md",
-        "header": "# T3 Episodes",
-        "categories": ("episode", "episodic"),
-        "load": "P1 dynamic",
-        "shadow_category": "episode",
-    },
-    {
-        "filename": "t3/user.md",
-        "header": "# T3 User",
-        "categories": ("user", "feedback"),
-        "load": "P0 if relevant",
-        "shadow_category": "user",
-    },
-    {
-        "filename": "t3/worker.md",
-        "header": "# T3 Worker",
-        "categories": ("worker", "constraint", "blocked_pattern"),
-        "load": "P0 if relevant",
-        "shadow_category": "worker",
-    },
-    {
-        "filename": "t3/capabilities.md",
-        "header": "# T3 Capabilities",
-        "categories": ("capability", "strategy", "project", "reference", "general"),
-        "load": "P1 dynamic",
-        "shadow_category": "capability",
-    },
-)
-
-_CATEGORY_TO_SPEC = {category: spec for spec in T3_FILE_SPECS for category in spec["categories"]}
-
-_ENTRY_WITH_DATE_RE = re.compile(
-    r"^- \[(?P<timestamp>[^\]]+)\]"
-    r"(?P<meta>(?:\[[^\]]+\])*)"
-    r"\s+(?P<content>.+?)\s*$"
-)
-_ENTRY_BARE_RE = re.compile(r"^- (?P<content>.+?)\s*$")
-_META_TOKEN_RE = re.compile(r"\[([^\]=]+)=([^\]]+)\]")
 _T3_XML_BLOCK_RE = re.compile(
     r"<(?P<tag>t3_[A-Za-z0-9_]+)\b[^>]*>.*?</(?P=tag)>|<(?P<tag_self>t3_[A-Za-z0-9_]+)\b[^>]*/>",
     re.DOTALL,
 )
-_T3_XML_OPEN_TAG_RE = re.compile(
-    r"^(?P<open><t3_[A-Za-z0-9_]+\b)(?P<attrs>[^>]*?)(?P<close>/?>)",
-    re.DOTALL,
-)
-_XML_ATTR_RE = re.compile(r"([A-Za-z_:][A-Za-z0-9_.:-]*)=[\"']([^\"']*)[\"']")
-
-
-@dataclass(frozen=True, slots=True)
-class ParsedMemoryEntry:
-    content: str
-    timestamp: str | None
-    metadata: dict[str, str]
-
-
-@dataclass(frozen=True, slots=True)
-class T3MemoryEntry:
-    entry_id: str
-    content: str
-    category: str
-    timestamp: str
-    metadata: dict[str, str]
-    source: str
-    filename: str
-    load: str
-    preview: str
-    is_p0: bool
+_CJK_RANGE_RE = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,63 +29,20 @@ def memory_dir(data_root: Path, agent_id: uuid.UUID) -> Path:
     return Path(data_root) / str(agent_id) / "memory"
 
 
-def t3_spec_for_category(category: str) -> dict:
-    return _CATEGORY_TO_SPEC.get(category, _CATEGORY_TO_SPEC["general"])
-
-
 TWO_PLANE_DIRS: tuple[str, ...] = ("self", "profiles", "knowledge", "milestones")
 
 
 def ensure_t3_layout(data_root: Path, agent_id: uuid.UUID) -> Path:
     mem_dir = memory_dir(data_root, agent_id)
     mem_dir.mkdir(parents=True, exist_ok=True)
-    for spec in T3_FILE_SPECS:
-        path = mem_dir / spec["filename"]
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"{spec['header']}\n\n", encoding="utf-8")
+    # Legacy flat-T3 four-file skeleton retired at the C7 cutover; existing
+    # files are reorganized by app.scripts.migrate_memory_two_planes.
     # Two-plane layout (spec §1.1/§5): profile plane (self/profiles) +
     # knowledge plane (knowledge/milestones). Directories only — files are
     # created by governed writers (Platform Gate / HR bootstrap), not here.
     for subdir in TWO_PLANE_DIRS:
         (mem_dir / subdir).mkdir(parents=True, exist_ok=True)
     return mem_dir
-
-
-def extract_entry_lines(content: str) -> list[str]:
-    lines: list[str] = []
-    for raw_line in content.splitlines():
-        line = raw_line.strip()
-        if line.startswith("- [") or line.startswith("- "):
-            lines.append(line)
-    return lines
-
-
-def parse_entry_record(line: str) -> ParsedMemoryEntry:
-    match = _ENTRY_WITH_DATE_RE.match(line)
-    if match:
-        meta_raw = match.group("meta") or ""
-        metadata = {
-            key.strip(): value.strip()
-            for key, value in _META_TOKEN_RE.findall(meta_raw)
-            if key.strip() and value.strip()
-        }
-        return ParsedMemoryEntry(
-            content=match.group("content").strip(),
-            timestamp=match.group("timestamp").strip(),
-            metadata=metadata,
-        )
-
-    match = _ENTRY_BARE_RE.match(line)
-    if match:
-        return ParsedMemoryEntry(content=match.group("content").strip(), timestamp=None, metadata={})
-
-    return ParsedMemoryEntry(content=line.strip().lstrip("-").strip(), timestamp=None, metadata={})
-
-
-def parse_entry_line(line: str) -> tuple[str, str | None]:
-    record = parse_entry_record(line)
-    return record.content, record.timestamp
 
 
 def extract_t3_xml_blocks(content: str) -> list[str]:
@@ -175,11 +61,7 @@ def parse_t3_xml_block(block: str) -> ParsedT3XmlBlock | None:
         return None
     attrs = {str(key): str(value) for key, value in node.attrib.items() if value is not None}
     block_id = attrs.get("id") or _stable_entry_id("t3_xml_block", raw)
-    source_refs = [
-        (ref.text or "").strip()
-        for ref in node.findall(".//source_ref")
-        if (ref.text or "").strip()
-    ]
+    source_refs = [(ref.text or "").strip() for ref in node.findall(".//source_ref") if (ref.text or "").strip()]
     if source_refs:
         attrs["source_refs"] = ",".join(source_refs)
         attrs.setdefault("evidence_refs", ",".join(source_refs))
@@ -214,58 +96,6 @@ def _xml_block_content(node) -> str:
     return " ".join(part for part in texts if part).strip()
 
 
-def _xml_attr_value(value: str) -> str:
-    return (
-        str(value)
-        .replace("&", "&amp;")
-        .replace('"', "&quot;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-
-
-def _safe_promoted_target(target: str) -> str:
-    return " ".join(target.replace("[", "(").replace("]", ")").split())[:120]
-
-
-def _append_t3_xml_attributes(block: str, attrs: dict[str, str]) -> str:
-    match = _T3_XML_OPEN_TAG_RE.match(block)
-    if not match:
-        return block
-    attr_text = "".join(f' {key}="{_xml_attr_value(value)}"' for key, value in attrs.items() if key and value)
-    if not attr_text:
-        return block
-    return (
-        f"{match.group('open')}{match.group('attrs')}{attr_text}{match.group('close')}"
-        f"{block[match.end():]}"
-    )
-
-
-def _stamp_t3_xml_block_promoted(
-    content: str,
-    *,
-    entry_id: str,
-    promoted_to: str,
-    target: str,
-) -> tuple[str, bool]:
-    for match in _T3_XML_BLOCK_RE.finditer(content or ""):
-        block = match.group(0)
-        parsed = parse_t3_xml_block(block)
-        if parsed is None or parsed.block_id != entry_id:
-            continue
-        if parsed.metadata.get("promoted_to"):
-            return content, False
-        attrs = {"promoted_to": promoted_to}
-        safe_target = _safe_promoted_target(target)
-        if safe_target:
-            attrs["promoted_target"] = safe_target
-        stamped = _append_t3_xml_attributes(block, attrs)
-        if stamped == block:
-            return content, False
-        return f"{content[: match.start()]}{stamped}{content[match.end():]}", True
-    return content, False
-
-
 def _normalize_entry_content(content: str) -> str:
     return re.sub(r"\s+", " ", content).strip().lower()
 
@@ -274,17 +104,6 @@ def _stable_entry_id(filename: str, content: str) -> str:
     normalized = _normalize_entry_content(content)
     digest = hashlib.sha256(f"{filename}\0{normalized}".encode("utf-8")).hexdigest()[:16]
     return f"mem_{digest}"
-
-
-def _entry_preview(content: str, max_chars: int = 160) -> str:
-    compact = re.sub(r"\s+", " ", content).strip()
-    if len(compact) <= max_chars:
-        return compact
-    return compact[: max(20, max_chars - 3)].rstrip() + "..."
-
-
-def _escape_table_cell(value: str) -> str:
-    return str(value).replace("|", "\\|").replace("\n", " ").strip()
 
 
 # Similarity thresholds for detecting near-duplicate T3 entries / skills.
@@ -340,237 +159,6 @@ def jaccard_similarity(a: str, b: str) -> float:
     return max(token_score, bigram_score)
 
 
-def find_similar_t3_entries(
-    data_root: Path,
-    agent_id: uuid.UUID,
-    *,
-    content: str,
-    category: str | None = None,
-    threshold: float = MEMORY_DEDUP_THRESHOLD,
-    limit: int = 3,
-) -> list[dict]:
-    """Return T3 facts whose Jaccard similarity to `content` exceeds threshold.
-
-    When `category` is given, limits to facts routed to the same canonical T3
-    target file.
-    """
-    if not content.strip():
-        return []
-    target_filename: str | None = None
-    if category:
-        spec = t3_spec_for_category(category)
-        target_filename = spec["filename"]
-
-    hits: list[tuple[float, dict]] = []
-    mem_dir = ensure_t3_layout(data_root, agent_id)
-    for spec in T3_FILE_SPECS:
-        if target_filename and spec["filename"] != target_filename:
-            continue
-        path = mem_dir / spec["filename"]
-        if not path.exists():
-            continue
-        body = path.read_text(encoding="utf-8", errors="replace")
-        for block in extract_t3_xml_blocks(body):
-            parsed = parse_t3_xml_block(block)
-            if parsed is None or not parsed.content:
-                continue
-            sim = jaccard_similarity(content, parsed.content)
-            if sim >= threshold:
-                hits.append(
-                    (
-                        sim,
-                        {
-                            "id": parsed.block_id,
-                            "content": parsed.content,
-                            "category": spec["shadow_category"],
-                            "timestamp": parsed.metadata.get("created_at", ""),
-                            "similarity": round(sim, 3),
-                        },
-                    )
-                )
-        for line in extract_entry_lines(body):
-            record = parse_entry_record(line)
-            existing_content = record.content
-            timestamp = record.timestamp
-            if not existing_content:
-                continue
-            sim = jaccard_similarity(content, existing_content)
-            if sim >= threshold:
-                entry_id = record.metadata.get("entry_id") or _stable_entry_id(spec["filename"], existing_content)
-                hits.append(
-                    (
-                        sim,
-                        {
-                            "id": entry_id,
-                            "content": existing_content,
-                            "category": spec["shadow_category"],
-                            "timestamp": timestamp or "",
-                            "similarity": round(sim, 3),
-                        },
-                    )
-                )
-
-    hits.sort(key=lambda item: item[0], reverse=True)
-    return [fact for _sim, fact in hits[:limit]]
-
-
-# D2: T3 prose carries only [date][entry_id]. entry_id is the join key; every
-# other field — sensitivity/status/version/refs and the D1 access telemetry —
-# lives in the lifecycle sidecar (record metadata dict + dedicated int fields).
-_PROSE_INLINE_META_KEYS = ("entry_id",)
-
-
-def append_t3_entry(
-    data_root: Path,
-    agent_id: uuid.UUID,
-    *,
-    category: str,
-    content: str,
-    timestamp: str | None = None,
-    metadata: dict[str, str] | None = None,
-) -> Path:
-    spec = t3_spec_for_category(category)
-    mem_dir = ensure_t3_layout(data_root, agent_id)
-    path = mem_dir / spec["filename"]
-    existing = path.read_text(encoding="utf-8", errors="replace") if path.exists() else f"{spec['header']}\n\n"
-    normalized_new = _normalize_entry_content(content)
-    for line in extract_entry_lines(existing):
-        existing_content, _ = parse_entry_line(line)
-        if _normalize_entry_content(existing_content) == normalized_new:
-            rebuild_index(data_root, agent_id)
-            return path
-
-    date_label = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    meta_text = "".join(
-        f"[{key}={value}]"
-        for key, value in (metadata or {}).items()
-        if key and value and key in _PROSE_INLINE_META_KEYS
-    )
-    entry = f"- [{date_label}]{meta_text} {content.strip()}"
-    updated = existing.rstrip()
-    if updated:
-        updated += "\n"
-    updated += entry + "\n"
-    path.write_text(updated, encoding="utf-8")
-    if metadata and metadata.get("entry_id"):
-        record_active_memory_lifecycle(
-            data_root,
-            agent_id,
-            content=content.strip(),
-            metadata={str(key): str(value) for key, value in metadata.items() if value is not None},
-        )
-    rebuild_index(data_root, agent_id)
-    return path
-
-
-def compute_entry_heat(metadata: dict[str, str]) -> float:
-    """Heat = recall pressure for navigation order and retirement (spec §12 P6).
-
-    Engineering score, not neuroscience truth: access_count plus a recency
-    bonus from last_accessed. The sidecar fields are written by
-    `access_log.bump_access` on every prompt activation.
-    """
-    try:
-        count = max(0, int(metadata.get("access_count", "0")))
-    except (TypeError, ValueError):
-        count = 0
-
-    recency_bonus = 0.0
-    raw_ts = (metadata.get("last_accessed") or "").strip()
-    if raw_ts and raw_ts != "never":
-        from app.memory.types import parse_utc_timestamp
-
-        ts = parse_utc_timestamp(raw_ts)
-        if ts is not None:
-            age_days = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 86400)
-            if age_days <= 7:
-                recency_bonus = 2.0
-            elif age_days <= 30:
-                recency_bonus = 1.0
-    return round(count + recency_bonus, 2)
-
-
-def _parse_metadata_dt(value: str | None) -> datetime | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _stamp_ttl_metadata(metadata: dict[str, str], *, now: datetime | None = None) -> None:
-    expires_at = _parse_metadata_dt(metadata.get("expires_at"))
-    if expires_at is None:
-        return
-    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    metadata["ttl_status"] = "expired" if expires_at <= current else "active"
-    if expires_at <= current:
-        metadata["expired"] = "true"
-
-
-def _split_refs(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    return [item.strip() for item in re.split(r"[,;\n]", str(raw)) if item.strip()]
-
-
-def _local_ref_exists(data_root: Path, agent_id: uuid.UUID, ref: str) -> bool | None:
-    normalized = ref.strip().replace("\\", "/")
-    if normalized.startswith("tool:") or normalized.startswith("session:") or normalized.startswith("memory:"):
-        return None
-    if "://" in normalized:
-        return None
-    agent_root = (Path(data_root) / str(agent_id)).resolve()
-    if normalized.startswith(("memory/", "workspace/")):
-        target = (agent_root / normalized).resolve()
-    else:
-        return None
-    try:
-        target.relative_to(agent_root)
-    except ValueError:
-        return False
-    return target.exists()
-
-
-def _stamp_reference_metadata(data_root: Path, agent_id: uuid.UUID, metadata: dict[str, str]) -> None:
-    existing_status = str(metadata.get("reference_status") or "").strip().lower()
-    if existing_status in {"invalid", "revalidation_required", "expired", "stale"}:
-        return
-    refs = _split_refs(metadata.get("evidence_refs") or metadata.get("source_refs"))
-    if not refs:
-        metadata["reference_status"] = "missing"
-        return
-    checked = 0
-    missing: list[str] = []
-    for ref in refs:
-        exists = _local_ref_exists(data_root, agent_id, ref)
-        if exists is None:
-            continue
-        checked += 1
-        if not exists:
-            missing.append(ref)
-    if missing:
-        metadata["reference_status"] = "invalid"
-        metadata["invalid_evidence_refs"] = ",".join(missing)
-    elif checked:
-        metadata["reference_status"] = "valid"
-    else:
-        metadata["reference_status"] = "unchecked"
-
-
-def _entry_active_for_fact_retrieval(entry: T3MemoryEntry) -> bool:
-    metadata = entry.metadata
-    if metadata.get("expired") == "true" or metadata.get("ttl_status") == "expired":
-        return False
-    status = str(metadata.get("status") or "active").strip().lower()
-    return status in {"", "active"}
-
-
 def list_retirement_candidates(
     data_root: Path,
     agent_id: uuid.UUID,
@@ -578,384 +166,59 @@ def list_retirement_candidates(
     limit: int = 10,
     protected_markers: list[str] | None = None,
 ) -> list[dict]:
-    """Lowest-heat active entries — the decay-lane retirement shortlist.
-
-    Mechanical ranking only: the Reconsolidator (dream) makes the semantic
-    retire/keep decision. Entries matching `protected_markers` (preservation
-    flags) and already-promoted entries are excluded.
-    """
-    markers = [m for m in (protected_markers or []) if m]
-    ranked: list[tuple[float, str, dict]] = []
-    for entry in build_t3_entry_manifest(data_root, agent_id):
-        if entry.metadata.get("promoted_to"):
-            continue
-        if markers and any(marker in entry.content for marker in markers):
-            continue
-        heat = compute_entry_heat(entry.metadata)
-        ranked.append(
-            (
-                heat,
-                entry.timestamp or "",
-                {
-                    "entry_id": entry.entry_id,
-                    "content": entry.content,
-                    "filename": entry.filename,
-                    "category": entry.category,
-                    "timestamp": entry.timestamp,
-                    "heat": heat,
-                },
-            )
-        )
-    ranked.sort(key=lambda item: (item[0], item[1]))
-    return [payload for _heat, _ts, payload in ranked[:limit]]
-
-
-def mark_t3_entry_promoted(
-    data_root: Path,
-    agent_id: uuid.UUID,
-    *,
-    entry_id: str,
-    promoted_to: str,
-    target: str = "",
-) -> bool:
-    """Stamp a promoted marker on the T3 entry carrying entry_id.
-
-    Spec §12 P4: promoted strategy entries keep their evidence in T3 but
-    leave the candidate pool. Returns True when a Markdown line or XML block was
-    stamped; False on missing entry, already-promoted entry, or invalid
-    promoted_to value.
-    """
-    normalized_target_kind = (promoted_to or "").strip().lower()
-    if normalized_target_kind not in {"skill", "workflow", "soul"}:
-        return False
-    needle = f"[entry_id={entry_id}]"
-
-    mem_dir = memory_dir(data_root, agent_id)
-    for spec in T3_FILE_SPECS:
-        path = mem_dir / spec["filename"]
-        if not path.exists():
-            continue
-        content = path.read_text(encoding="utf-8", errors="replace")
-        stamped_content, stamped_xml = _stamp_t3_xml_block_promoted(
-            content,
-            entry_id=entry_id,
-            promoted_to=normalized_target_kind,
-            target=target,
-        )
-        if stamped_xml:
-            path.write_text(stamped_content, encoding="utf-8")
-            rebuild_index(data_root, agent_id)
-            return True
-
-        lines = content.splitlines()
-        for index, line in enumerate(lines):
-            if needle not in line:
-                continue
-            if "[promoted_to=" in line:
-                return False
-            record = parse_entry_record(line)
-            suffix = f"[promoted_to={normalized_target_kind}]"
-            safe_target = _safe_promoted_target(target)
-            if safe_target:
-                suffix += f"[promoted_target={safe_target}]"
-            # Insert the markers right before the content, after existing metadata.
-            content_start = line.find(record.content) if record.content else -1
-            if content_start > 0:
-                lines[index] = line[:content_start].rstrip() + suffix + " " + line[content_start:]
-            else:
-                lines[index] = line + " " + suffix
-            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            rebuild_index(data_root, agent_id)
-            return True
-    return False
+    """Retired at the C7 cutover: entry-level decay retirement was a flat-T3
+    mechanism. The convergence loop (工序 4) now owns pruning — retired
+    entries are marked by the gate and physically removed by governed
+    full-file rewrites. Dream receives an empty shortlist."""
+    del data_root, agent_id, limit, protected_markers
+    return []
 
 
 def rebuild_index(data_root: Path, agent_id: uuid.UUID) -> Path:
+    """Regenerate memory/indexes/wiki_map.md over the two-plane layout.
+
+    Navigation artifact only (spec: wiki_map is a generated map, not prompt
+    memory): profile-plane entries (id/heading/source) + knowledge-plane pages
+    (slug/title/status/relations count). Rebuilt after every gate commit.
+    """
+    from app.memory.plane_read import list_knowledge_pages, list_profile_entries
+
     mem_dir = ensure_t3_layout(data_root, agent_id)
     updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
-        "# Memory Index",
+        "# Memory Wiki Map",
         f"Updated: {updated_at}",
         "",
-        "| File | Category | Items | Updated | Load |",
-        "|------|----------|-------|---------|------|",
+        "## Profile Plane",
+        "",
+        "| Entry ID | Heading | File |",
+        "|----------|---------|------|",
     ]
+    profile_entries = list_profile_entries(data_root, agent_id)
+    for entry in profile_entries:
+        lines.append(f"| {entry['id']} | {entry['heading']} | {entry['source']} |")
+    if not profile_entries:
+        lines.append("| _none yet_ | | |")
 
-    for spec in T3_FILE_SPECS:
-        path = mem_dir / spec["filename"]
-        content = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
-        entries = extract_entry_lines(content)
-        xml_blocks = extract_t3_xml_blocks(content)
-        last_updated = "-"
-        if entries:
-            _entry_content, parsed_ts = parse_entry_line(entries[-1])
-            last_updated = parsed_ts or updated_at.split(" ")[0]
-        elif xml_blocks:
-            parsed = parse_t3_xml_block(xml_blocks[-1])
-            last_updated = (parsed.metadata.get("created_at", "")[:10] if parsed else "") or updated_at.split(" ")[0]
-        lines.append(
-            f"| {spec['filename']} | {', '.join(spec['categories'])} | {len(entries) + len(xml_blocks)} | {last_updated} | {spec['load']} |"
-        )
-
-    # D7: INDEX is a lightweight nav (id/path/short summary/heat), not a
-    # full-content mirror. The manifest's 160-char preview is re-truncated to a
-    # short summary here and a Heat column (from D1 sidecar telemetry via
-    # compute_entry_heat) is added — rendering only; the in-memory manifest is
-    # unchanged.
-    manifest = build_t3_entry_manifest(data_root, agent_id)
     lines.extend(
         [
             "",
-            "## Entry Manifest",
+            "## Knowledge Plane",
             "",
-            "| ID | File | Category | Date | Load | Heat | Summary |",
-            "|----|------|----------|------|------|------|---------|",
+            "| Page | Kind | Title | Status |",
+            "|------|------|-------|--------|",
         ]
     )
-    for entry in manifest:
-        lines.append(
-            "| "
-            + " | ".join(
-                [
-                    _escape_table_cell(entry.entry_id),
-                    _escape_table_cell(entry.filename),
-                    _escape_table_cell(entry.category),
-                    _escape_table_cell(entry.timestamp or "-"),
-                    _escape_table_cell(entry.load),
-                    _escape_table_cell(str(compute_entry_heat(entry.metadata))),
-                    _escape_table_cell(_entry_preview(entry.preview, max_chars=60)),
-                ]
-            )
-            + " |"
-        )
+    pages = list_knowledge_pages(data_root, agent_id)
+    for page in pages:
+        lines.append(f"| {page['id']} | {page['kind']} | {page['title']} | {page['status']} |")
+    if not pages:
+        lines.append("| _none yet_ | | | |")
 
     index_path = mem_dir / "indexes" / "wiki_map.md"
-    rendered = "\n".join(lines) + "\n"
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_path.write_text(rendered, encoding="utf-8")
-
-    # Retire historical mirrors. The single persistent Memory Wiki map is
-    # memory/indexes/wiki_map.md; the prompt/runtime still builds its own live
-    # manifest from accepted T3 files instead of treating this generated map as
-    # semantic truth. Avoid lower-case index.md because it collides with retired
-    # INDEX.md on case-insensitive filesystems.
-    for legacy_index in (
-        mem_dir / "wiki_map.md",
-        mem_dir / "INDEX.md",
-        mem_dir / "index.md",
-        mem_dir / ".derived" / "t3_index.md",
-    ):
-        if legacy_index.is_file():
-            legacy_index.unlink()
+    index_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return index_path
-
-
-def build_t3_entry_manifest(data_root: Path, agent_id: uuid.UUID) -> list[T3MemoryEntry]:
-    mem_dir = ensure_t3_layout(data_root, agent_id)
-    # D1/D2: telemetry + all other metadata are joined from the sidecar by
-    # entry_id, not parsed from prose (prose is bare [date][entry_id] after D2).
-    # Join order below: prose < sidecar metadata < telemetry — telemetry's
-    # dedicated int fields win over any stale access_count in the metadata dict.
-    telemetry = read_access_telemetry(data_root, agent_id)
-    sidecar_meta = read_sidecar_metadata(data_root, agent_id)
-    entries: list[T3MemoryEntry] = []
-    for spec in T3_FILE_SPECS:
-        path = mem_dir / spec["filename"]
-        if not path.exists():
-            continue
-        content = path.read_text(encoding="utf-8", errors="replace")
-        for block in extract_t3_xml_blocks(content):
-            parsed = parse_t3_xml_block(block)
-            if parsed is None or not parsed.content:
-                continue
-            entry_id = parsed.block_id
-            timestamp = parsed.metadata.get("created_at", "")
-            source = f"memory/{spec['filename']}"
-            joined_metadata = {
-                **parsed.metadata,
-                **sidecar_meta.get(entry_id, {}),
-                "entry_id": entry_id,
-                "xml_block": "true",
-                **telemetry.get(entry_id, {}),
-            }
-            _stamp_ttl_metadata(joined_metadata)
-            _stamp_reference_metadata(data_root, agent_id, joined_metadata)
-            if "confidence" not in joined_metadata and joined_metadata.get("conf"):
-                joined_metadata["confidence"] = joined_metadata["conf"]
-            if "retention_score" not in joined_metadata:
-                heat = compute_entry_heat(joined_metadata)
-                if heat > 0:
-                    joined_metadata["retention_score"] = f"{min(1.0, heat / 5.0):.2f}"
-            entries.append(
-                T3MemoryEntry(
-                    entry_id=entry_id,
-                    content=parsed.content,
-                    category=spec["shadow_category"],
-                    timestamp=timestamp,
-                    metadata=joined_metadata,
-                    source=source,
-                    filename=spec["filename"],
-                    load=spec["load"],
-                    preview=_entry_preview(parsed.content),
-                    is_p0=spec["load"].startswith("P0"),
-                )
-            )
-        for line in extract_entry_lines(content):
-            record = parse_entry_record(line)
-            if not record.content:
-                continue
-            entry_id = record.metadata.get("entry_id") or _stable_entry_id(spec["filename"], record.content)
-            timestamp = record.timestamp or ""
-            source = f"memory/{spec['filename']}"
-            joined_metadata = {
-                **record.metadata,
-                **sidecar_meta.get(entry_id, {}),
-                "entry_id": entry_id,
-                **telemetry.get(entry_id, {}),
-            }
-            _stamp_ttl_metadata(joined_metadata)
-            _stamp_reference_metadata(data_root, agent_id, joined_metadata)
-            if "confidence" not in joined_metadata and joined_metadata.get("conf"):
-                joined_metadata["confidence"] = joined_metadata["conf"]
-            if "retention_score" not in joined_metadata:
-                heat = compute_entry_heat(joined_metadata)
-                if heat > 0:
-                    joined_metadata["retention_score"] = f"{min(1.0, heat / 5.0):.2f}"
-            entries.append(
-                T3MemoryEntry(
-                    entry_id=entry_id,
-                    content=record.content,
-                    category=spec["shadow_category"],
-                    timestamp=timestamp,
-                    metadata=joined_metadata,
-                    source=source,
-                    filename=spec["filename"],
-                    load=spec["load"],
-                    preview=_entry_preview(record.content),
-                    is_p0=spec["load"].startswith("P0"),
-                )
-            )
-    return entries
-
-
-def load_t3_entries_by_ids(data_root: Path, agent_id: uuid.UUID, ids: list[str]) -> list[T3MemoryEntry]:
-    requested: list[str] = []
-    seen: set[str] = set()
-    for raw in ids:
-        entry_id = str(raw or "").strip()
-        if entry_id and entry_id not in seen:
-            requested.append(entry_id)
-            seen.add(entry_id)
-    if not requested:
-        return []
-
-    by_id = {entry.entry_id: entry for entry in build_t3_entry_manifest(data_root, agent_id)}
-    return [by_id[entry_id] for entry_id in requested if entry_id in by_id]
-
-
-def parse_t3_facts(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
-    facts: list[dict] = []
-    for entry in build_t3_entry_manifest(data_root, agent_id):
-        if not _entry_active_for_fact_retrieval(entry):
-            continue
-        fact = {
-            "id": entry.entry_id,
-            "content": entry.content,
-            "preview": entry.preview,
-            "category": entry.category,
-            "source": entry.source,
-            "load": entry.load,
-            "sensitivity": entry.metadata.get("sensitivity", "PL1_public"),
-        }
-        if entry.timestamp:
-            fact["timestamp"] = entry.timestamp
-        for metadata_key in ("expires_at", "ttl_status", "reference_status", "invalid_evidence_refs"):
-            if entry.metadata.get(metadata_key):
-                fact[metadata_key] = entry.metadata[metadata_key]
-        facts.append(fact)
-    return facts
-
-
-def search_t3_facts(
-    data_root: Path,
-    agent_id: uuid.UUID,
-    query: str,
-    *,
-    limit: int = 5,
-    date_from: str | None = None,
-    date_to: str | None = None,
-) -> list[dict]:
-    """Search T3 MD files using BM25 scoring with optional temporal filtering.
-
-    Args:
-        date_from: ISO date string (YYYY-MM-DD). Only include facts on or after this date.
-        date_to: ISO date string (YYYY-MM-DD). Only include facts on or before this date.
-    """
-    needle = (query or "").strip()
-
-    all_facts = parse_t3_facts(data_root, agent_id)
-    if not all_facts:
-        return []
-
-    # Apply temporal filter if specified
-    if date_from or date_to:
-        all_facts = _filter_facts_by_date(all_facts, date_from=date_from, date_to=date_to)
-
-    if not needle:
-        return all_facts[:limit]
-
-    # Build corpus + tokenize
-    corpus_tokens: list[list[str]] = []
-    for fact in all_facts:
-        content = str(fact.get("content", ""))
-        # Include category as searchable text
-        category = str(fact.get("category", ""))
-        corpus_tokens.append(_bm25_tokenize(f"{category} {content}"))
-
-    query_tokens = _bm25_tokenize(needle)
-    if not query_tokens:
-        return all_facts[:limit]
-
-    # BM25 scoring
-    scores = _bm25_score(query_tokens, corpus_tokens)
-
-    ranked: list[tuple[float, int, dict]] = []
-    for i, (score, fact) in enumerate(zip(scores, all_facts)):
-        if score > 0:
-            ranked.append((score, -i, fact))
-
-    ranked.sort(reverse=True)
-    return [fact for _score, _neg_index, fact in ranked[:limit]]
-
-
-# ── Temporal filtering ──
-
-
-def _filter_facts_by_date(
-    facts: list[dict],
-    *,
-    date_from: str | None = None,
-    date_to: str | None = None,
-) -> list[dict]:
-    """Filter facts by their [YYYY-MM-DD] timestamp tag."""
-    filtered: list[dict] = []
-    for fact in facts:
-        ts = (fact.get("timestamp") or "")[:10]  # "2026-04-16" portion
-        if not ts or len(ts) < 10:
-            # No date tag → include (don't drop undated facts silently)
-            filtered.append(fact)
-            continue
-        if date_from and ts < date_from:
-            continue
-        if date_to and ts > date_to:
-            continue
-        filtered.append(fact)
-    return filtered
-
-
-# ── BM25 implementation (pure Python, zero dependencies) ──
-
-_CJK_RANGE_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uF900-\uFAFF]")
 
 
 def _bm25_tokenize(text: str) -> list[str]:
@@ -1036,123 +299,3 @@ def _bm25_score(
         scores.append(score)
 
     return scores
-
-
-# ── T3 format validator + self-healing (PR-9) ──
-#
-# heartbeat writes T3 via LLM following HEARTBEAT.md's "- [YYYY-MM-DD] desc"
-# rule, but nothing stops the model from drifting to `* desc`, `1. desc`, or
-# dateless bullets. dream's parser (extract_entry_lines) only recognizes
-# `- [` / `- ` prefixes, so any drifted row becomes invisible — dedup misses
-# it, soul promotion misses it, and the cap-by-count cleanup misses it.
-# This module re-canonicalizes what it can and surfaces what it can't.
-
-_STAR_BULLET_RE = re.compile(r"^\*\s+(?P<content>.+?)\s*$")
-_NUMBERED_BULLET_RE = re.compile(r"^\d+\.\s+(?P<content>.+?)\s*$")
-_DASH_WITH_DATE_RE = re.compile(r"^- \[\d{4}-\d{2}-\d{2}[^\]]*\]")
-_DASH_BARE_RE = re.compile(r"^- (?P<content>.+?)\s*$")
-_T3_HEADER_PREFIXES = tuple(spec["header"] for spec in T3_FILE_SPECS)
-
-
-def validate_and_normalize_t3(
-    data_root: Path,
-    agent_id: uuid.UUID,
-    *,
-    recent_window_seconds: int = 3600,
-) -> dict:
-    """Auto-fix drifted T3 lines; flag lines we can't safely repair.
-
-    Rewrites are purely syntactic (bullet marker, missing date); semantic
-    content is never altered. Files untouched inside `recent_window_seconds`
-    are skipped so the common no-op case is cheap.
-
-    Returns:
-      {
-        "fixed": int,                 # lines rewritten
-        "warnings": list[str],        # unfixable plain-text lines (truncated)
-        "files_touched": list[str],   # filenames with any change
-      }
-    """
-    import time as _time
-
-    report: dict = {"fixed": 0, "warnings": [], "files_touched": []}
-    mem_dir = memory_dir(data_root, agent_id)
-    if not mem_dir.exists():
-        return report
-
-    now_ts = _time.time()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    for spec in T3_FILE_SPECS:
-        path = mem_dir / spec["filename"]
-        if not path.exists():
-            continue
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            continue
-        if now_ts - mtime > recent_window_seconds:
-            continue
-
-        try:
-            original = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-
-        new_lines: list[str] = []
-        fixed_in_file = 0
-        for raw_line in original.splitlines():
-            stripped = raw_line.rstrip()
-            if not stripped:
-                new_lines.append(raw_line)
-                continue
-
-            # Preserve file headers verbatim.
-            if stripped.startswith(_T3_HEADER_PREFIXES) or stripped.startswith("##"):
-                new_lines.append(raw_line)
-                continue
-
-            # Already canonical "- [date] ..." — keep.
-            if _DASH_WITH_DATE_RE.match(stripped):
-                new_lines.append(raw_line)
-                continue
-
-            # "* content" → "- [today] content"
-            star = _STAR_BULLET_RE.match(stripped)
-            if star:
-                new_lines.append(f"- [{today}] {star.group('content').strip()}")
-                fixed_in_file += 1
-                continue
-
-            # "1. content" / "2. content" → "- [today] content"
-            numbered = _NUMBERED_BULLET_RE.match(stripped)
-            if numbered:
-                new_lines.append(f"- [{today}] {numbered.group('content').strip()}")
-                fixed_in_file += 1
-                continue
-
-            # "- content" without date → "- [today] content"
-            dash_bare = _DASH_BARE_RE.match(stripped)
-            if dash_bare:
-                content = dash_bare.group("content").strip()
-                if len(content) >= 10:
-                    new_lines.append(f"- [{today}] {content}")
-                    fixed_in_file += 1
-                    continue
-                # Too short to canonicalize safely — keep original.
-                new_lines.append(raw_line)
-                continue
-
-            # Plain text line that isn't a bullet or heading — can't repair.
-            report["warnings"].append(f"{spec['filename']}: {stripped[:100]}")
-            new_lines.append(raw_line)
-
-        if fixed_in_file:
-            new_content = "\n".join(new_lines)
-            if not new_content.endswith("\n"):
-                new_content += "\n"
-            path.write_text(new_content, encoding="utf-8")
-            report["fixed"] += fixed_in_file
-            report["files_touched"].append(spec["filename"])
-
-    return report

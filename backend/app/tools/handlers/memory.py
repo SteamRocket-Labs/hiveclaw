@@ -115,8 +115,7 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
     # pass request.context.tenant_id so governed memory writes retain tenant
     # context for the optional enhancement adapter boundary.
     from app.config import get_settings
-    from app.memory.explicit_overlay import write_explicit_memory_overlay
-    from app.memory.t3_store import looks_episodic_observation
+    from app.memory.explicit_overlay import looks_episodic_observation, write_explicit_memory_overlay
 
     content = (arguments.get("content") or "").strip()
     if not content:
@@ -380,13 +379,22 @@ async def _sync_memory_enhancement_after_memory_mutation(
 
 
 def _load_visible_t3_entry(data_root: Path, agent_id: uuid.UUID, entry_id: str):
-    from app.memory.md_store import load_t3_entries_by_ids
+    from types import SimpleNamespace
 
-    entries = load_t3_entries_by_ids(data_root, agent_id, [entry_id])
+    from app.memory.plane_read import load_plane_entries
+
+    entries = load_plane_entries(data_root, agent_id, [entry_id])
     if not entries:
         return None
     entry = entries[0]
-    return entry if _memory_metadata_visible(entry.metadata) else None
+    return SimpleNamespace(
+        entry_id=entry["id"],
+        content=entry["content"],
+        category=entry["category"],
+        source=entry["source"],
+        timestamp=entry.get("timestamp", ""),
+        metadata={},
+    )
 
 
 @tool(
@@ -450,7 +458,7 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
         update_explicit_overlay_status,
         write_explicit_memory_overlay,
     )
-    from app.memory.t3_platform_gate import ACCEPTED_T3_TARGETS
+    from app.memory.t3_platform_gate import is_accepted_t3_target
 
     memory_id = (arguments.get("memory_id") or arguments.get("id") or "").strip()
     content = (arguments.get("content") or "").strip()
@@ -491,7 +499,7 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
             return f"Updated explicit memory {memory_id} -> {result.entry_id} [{result.category}]: {content[:80]}"
     if old_entry is None:
         return f"[Error] Memory entry not found or not visible: {memory_id}"
-    if old_entry.source in ACCEPTED_T3_TARGETS:
+    if is_accepted_t3_target(old_entry.source):
         return (
             f"[Needs T3 Patch] Accepted T3 memory {memory_id} lives in {old_entry.source}. "
             "Create a T3 Consolidation revised_patch with replace_block/supersede evidence; "
@@ -538,7 +546,7 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
 async def retire_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
     from app.config import get_settings
     from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids, update_explicit_overlay_status
-    from app.memory.t3_platform_gate import ACCEPTED_T3_TARGETS
+    from app.memory.t3_platform_gate import is_accepted_t3_target
 
     memory_id = (arguments.get("memory_id") or arguments.get("id") or "").strip()
     reason = (arguments.get("reason") or "").strip().lower()
@@ -557,7 +565,7 @@ async def retire_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
             return f"Retired explicit memory {memory_id}: {reason}"
     if old_entry is None:
         return f"[Error] Memory entry not found or not visible: {memory_id}"
-    if old_entry.source in ACCEPTED_T3_TARGETS:
+    if is_accepted_t3_target(old_entry.source):
         return (
             f"[Needs T3 Patch] Accepted T3 memory {memory_id} lives in {old_entry.source}. "
             "Retirement requires a T3 revised_patch with retire_block/supersede evidence and Platform Gate commit."
@@ -603,7 +611,7 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
 
     from app.config import get_settings
     from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
-    from app.memory.md_store import load_t3_entries_by_ids
+    from app.memory.plane_read import load_plane_entries
 
     raw_ids = arguments.get("ids") or []
     if isinstance(raw_ids, str):
@@ -618,7 +626,19 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     data_root = Path(settings.AGENT_DATA_DIR)
     explicit_entries = load_explicit_overlay_entries_by_ids(data_root, agent_id, ids)
     explicit_ids = {entry.entry_id for entry in explicit_entries}
-    entries = load_t3_entries_by_ids(data_root, agent_id, [entry_id for entry_id in ids if entry_id not in explicit_ids])
+    from types import SimpleNamespace
+
+    entries = [
+        SimpleNamespace(
+            entry_id=row["id"],
+            content=row["content"],
+            category=row["category"],
+            source=row["source"],
+            timestamp=row.get("timestamp", ""),
+            metadata={},
+        )
+        for row in load_plane_entries(data_root, agent_id, [entry_id for entry_id in ids if entry_id not in explicit_ids])
+    ]
     if not entries and not explicit_entries:
         return f"No memory entries found for ids: {', '.join(ids)}"
 
@@ -715,8 +735,7 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
     from pathlib import Path
 
     from app.config import get_settings
-    from app.memory.md_store import search_t3_facts
-
+    
     query = (arguments.get("query") or "").strip()
     if not query:
         return "[Error] query is required."
@@ -752,13 +771,13 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                     f"{preview} load_memory(ids=[\"{entry_id}\"])"
                 )
 
-        facts = search_t3_facts(
+        from app.memory.plane_read import search_plane_facts
+
+        facts = search_plane_facts(
             Path(settings.AGENT_DATA_DIR),
             agent_id,
             query,
             limit=limit,
-            date_from=date_from,
-            date_to=date_to,
         )
         backend_facts = await _search_semantic_backend_facts(
             agent_id,

@@ -262,10 +262,8 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     assert (workspace / "workspace").is_dir()
     assert (workspace / "workspace" / "knowledge_base").is_dir()
     assert (workspace / "memory").is_dir()
-    assert (workspace / "memory" / "t3" / "episodes.md").exists()
-    assert (workspace / "memory" / "t3" / "user.md").exists()
-    assert (workspace / "memory" / "t3" / "worker.md").exists()
-    assert (workspace / "memory" / "t3" / "capabilities.md").exists()
+    for plane_dir in ("self", "profiles", "knowledge", "milestones"):
+        assert (workspace / "memory" / plane_dir).is_dir()
     assert (workspace / "memory" / "explicit" / "MEMORY.md").exists()
     assert (workspace / "memory" / "indexes" / "wiki_map.md").exists()
     assert not (workspace / "memory" / "wiki_map.md").exists()
@@ -331,7 +329,7 @@ async def test_ensure_workspace_rebuilds_canonical_t3_index_without_legacy_index
 
     wiki_map = workspace / "memory" / "indexes" / "wiki_map.md"
     assert wiki_map.exists()
-    assert "Memory Index" in wiki_map.read_text(encoding="utf-8")
+    assert "Memory Wiki Map" in wiki_map.read_text(encoding="utf-8")
     assert not legacy_index.exists()
     assert not (workspace / "memory" / "index.md").exists()
     assert not (workspace / "memory" / ".derived" / "t3_index.md").exists()
@@ -393,19 +391,18 @@ def test_migrate_all_workspaces_handles_legacy_memory_file(monkeypatch, tmp_path
 
     migrate_all_workspaces()
 
+    # C7 cutover: legacy single-file memories are ARCHIVED (moved, never
+    # deleted); content reorganization is the two-plane migration tool's job.
     assert not (workspace / "memory" / "memory.md").exists()
-    assert not (workspace / "memory" / "learnings" / "LEARNINGS.md").exists()
-    assert "Keep the architecture md-first" in (workspace / "memory" / "t3" / "capabilities.md").read_text(
-        encoding="utf-8"
-    )
+    assert not (workspace / "memory" / "learnings").exists()
+    archive = workspace / "memory" / ".archive" / "legacy_import"
+    assert "Keep the architecture md-first" in (archive / "memory.md").read_text(encoding="utf-8")
     assert "Prefer weighted promotion over rigid layer upgrades." in (
-        workspace / "memory" / "learnings" / "insights.md"
+        archive / "learnings" / "LEARNINGS.md"
     ).read_text(encoding="utf-8")
-    assert (workspace / ".legacy_migrated").exists()
 
 
 def test_migrate_all_workspaces_repairs_memory_hygiene(monkeypatch, tmp_path):
-    from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path
     from app.tools.workspace import migrate_all_workspaces
 
     agent_id = uuid4()
@@ -425,18 +422,16 @@ def test_migrate_all_workspaces_repairs_memory_hygiene(monkeypatch, tmp_path):
 
     migrate_all_workspaces()
 
+    # C7 cutover: legacy feedback.md is archived intact (no flat-T3 rewrite)
     assert not (mem / "feedback.md").exists()
-    feedback = (mem / "t3" / "user.md").read_text(encoding="utf-8")
-    assert feedback.strip().endswith("- [2026-06-04][entry_id=f1] keep vendor contacts private")
-    assert "[sensitivity=" not in feedback
+    archived = (mem / ".archive" / "legacy_import" / "feedback.md").read_text(encoding="utf-8")
+    assert "keep vendor contacts private" in archived
     assert not (workspace / "memory.sqlite3").exists()
     assert not (workspace / "reflections.md").exists()
     assert (workspace / "memory" / "retired_artifacts" / "memory.sqlite3").exists()
     assert (workspace / "memory" / "retired_artifacts" / "reflections.md").exists()
 
-    lifecycle_entry = MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id)).get("f1")
-    assert lifecycle_entry.metadata["sensitivity"] == "PL2_pii"
-    assert lifecycle_entry.access_count == 4
+    # flat-T3 prose backfill retired: no lifecycle registration for legacy prose
 
 
 def test_migrate_all_workspaces_rehomes_legacy_runtime_and_root_files(monkeypatch, tmp_path):

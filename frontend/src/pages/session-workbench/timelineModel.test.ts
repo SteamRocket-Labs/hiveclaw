@@ -564,7 +564,7 @@ describe('buildWorkspaceDocumentsModel (session deliverables semantics)', () => 
   });
   const msg = (artifacts: unknown[]) => ({ role: 'assistant', content: '', artifacts }) as never;
 
-  it('collapses repeated deliveries of the same path into one row with a revision count', () => {
+  it('collapses repeated deliveries of the same path into one row without making the repeat count user-facing', () => {
     const model = buildWorkspaceDocumentsModel([
       msg([artifact({ id: 'a1', size: 100 })]),
       msg([artifact({ id: 'a2', size: 140 })]),

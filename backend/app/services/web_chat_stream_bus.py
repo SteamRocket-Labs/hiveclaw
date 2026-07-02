@@ -13,11 +13,14 @@ from app.core.events import get_redis
 WEB_CHAT_STREAM_SCHEMA = "hive.web_chat.stream.v1"
 WEB_CHAT_STREAM_LIVE_CHANNEL = "hive:web_chat:stream:live"
 WEB_CHAT_STREAM_MAXLEN = 10_000
+WEB_CHAT_STREAM_RECONNECT_SECONDS = 2.0
 _FORWARDER_STATE: dict[str, Any] = {
     "running": False,
     "forwarded": 0,
     "last_sequence": None,
     "last_error": None,
+    "restart_count": 0,
+    "last_restart_at": None,
 }
 
 
@@ -70,36 +73,56 @@ async def publish_web_chat_stream_event(
         return None
 
 
-async def start_web_chat_stream_forwarder() -> None:
+async def _listen_web_chat_stream_once() -> None:
     from app.services.web_chat_broker import web_chat_broker
 
+    redis = await get_redis()
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(WEB_CHAT_STREAM_LIVE_CHANNEL)
+    async for message in pubsub.listen():
+        if message.get("type") != "message":
+            continue
+        try:
+            raw = message.get("data")
+            envelope = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+            payload = dict(envelope.get("payload") or {})
+            agent_id = envelope.get("agent_id")
+            session_id = envelope.get("session_id")
+            if not agent_id:
+                continue
+            await web_chat_broker.send_session_message(str(agent_id), str(session_id) if session_id else None, payload)
+            _FORWARDER_STATE["forwarded"] = int(_FORWARDER_STATE.get("forwarded") or 0) + 1
+            _FORWARDER_STATE["last_sequence"] = envelope.get("sequence")
+        except Exception as exc:  # noqa: BLE001 - one malformed event must not stop the forwarder.
+            _FORWARDER_STATE["last_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+            logger.warning("[WebChatStreamBus] forward failed: {}", exc)
+
+
+async def start_web_chat_stream_forwarder(
+    *,
+    reconnect_delay_seconds: float = WEB_CHAT_STREAM_RECONNECT_SECONDS,
+) -> None:
     _FORWARDER_STATE.update({"running": True, "last_error": None})
     try:
-        redis = await get_redis()
-        pubsub = redis.pubsub()
-        await pubsub.subscribe(WEB_CHAT_STREAM_LIVE_CHANNEL)
-        async for message in pubsub.listen():
-            if message.get("type") != "message":
-                continue
+        while True:
             try:
-                raw = message.get("data")
-                envelope = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
-                payload = dict(envelope.get("payload") or {})
-                agent_id = envelope.get("agent_id")
-                session_id = envelope.get("session_id")
-                if not agent_id:
-                    continue
-                await web_chat_broker.send_session_message(str(agent_id), str(session_id) if session_id else None, payload)
-                _FORWARDER_STATE["forwarded"] = int(_FORWARDER_STATE.get("forwarded") or 0) + 1
-                _FORWARDER_STATE["last_sequence"] = envelope.get("sequence")
-            except Exception as exc:  # noqa: BLE001 - one malformed event must not stop the forwarder.
+                await _listen_web_chat_stream_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
                 _FORWARDER_STATE["last_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-                logger.warning("[WebChatStreamBus] forward failed: {}", exc)
+                _FORWARDER_STATE["restart_count"] = int(_FORWARDER_STATE.get("restart_count") or 0) + 1
+                _FORWARDER_STATE["last_restart_at"] = datetime.now(timezone.utc).isoformat()
+                logger.warning("[WebChatStreamBus] forwarder reconnecting after error: {}", exc)
+                await asyncio.sleep(max(0.0, reconnect_delay_seconds))
+                continue
+            _FORWARDER_STATE["last_error"] = "WebChatStreamForwarderEnded: pubsub listener returned"
+            _FORWARDER_STATE["restart_count"] = int(_FORWARDER_STATE.get("restart_count") or 0) + 1
+            _FORWARDER_STATE["last_restart_at"] = datetime.now(timezone.utc).isoformat()
+            logger.warning("[WebChatStreamBus] forwarder returned; reconnecting")
+            await asyncio.sleep(max(0.0, reconnect_delay_seconds))
     except asyncio.CancelledError:
         raise
-    except Exception as exc:  # noqa: BLE001
-        _FORWARDER_STATE["last_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-        logger.warning("[WebChatStreamBus] forwarder stopped: {}", exc)
     finally:
         _FORWARDER_STATE["running"] = False
 

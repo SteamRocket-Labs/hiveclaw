@@ -53,13 +53,14 @@ async def _emit_ws_session_lifecycle_hook(
     if _process_role() == "api":
         from app.services.runtime_control_bus import publish_session_lifecycle_hook
 
+        lifecycle_metadata = dict(metadata or {})
+        lifecycle_metadata.setdefault("message_count", len(messages))
         await publish_session_lifecycle_hook(
             event=event,
             agent_id=agent_id,
             session_id=session_id,
-            messages=messages,
             source=source,
-            metadata=metadata,
+            metadata=lifecycle_metadata,
         )
         return
 

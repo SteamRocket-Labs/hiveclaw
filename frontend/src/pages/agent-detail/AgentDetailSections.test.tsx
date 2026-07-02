@@ -3713,6 +3713,109 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-native-controls"');
   });
 
+  it('omits repeated artifact counts and leaves the lower runtime panel unchanged', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Runtime Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-repeat-artifact',
+          user_id: 'user-1',
+          title: 'Repeat artifact session',
+          created_at: '2026-06-28T09:00:00Z',
+        }}
+        branchLineage={[]}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        onLoadOlderMessages={vi.fn()}
+        olderMessagesLoading={false}
+        hasOlderMessages={false}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'assistant',
+            content: 'Delivered.',
+            artifacts: [
+              {
+                name: 'repeat-report.md',
+                path: 'workspace/repeat-report.md',
+                previewKind: 'markdown',
+                size: 100,
+                runtimeTaskId: 'run-1',
+                snapshotHash: 'sha256-repeat-1',
+              },
+            ],
+          },
+          {
+            role: 'assistant',
+            content: 'Delivered again.',
+            artifacts: [
+              {
+                name: 'repeat-report.md',
+                path: 'workspace/repeat-report.md',
+                previewKind: 'markdown',
+                size: 120,
+                runtimeTaskId: 'run-1',
+                snapshotHash: 'sha256-repeat-2',
+              },
+            ],
+          },
+        ]}
+        chatMessagesSessionId="session-repeat-artifact"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus="idle"
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('repeat-report.md');
+    expect(markup).not.toContain('×2');
+    expect(markup).not.toContain('2 deliveries');
+    expect(markup).toContain('data-testid="session-runtime-background"');
+    expect(markup).toContain('data-testid="session-runtime-notifications"');
+    expect(markup).toContain('data-testid="session-runtime-runs"');
+    expect(markup).toContain('data-testid="session-runtime-raw"');
+    expect(markup).not.toContain('No active collaboration surfaces');
+  });
+
   it('renders Agent Team member sessions as enterable child-session windows with composer target', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection

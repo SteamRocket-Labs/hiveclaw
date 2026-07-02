@@ -97,6 +97,33 @@ def test_terminal_task_update_persists_and_projects_terminal_reason():
     assert payload["terminal_reason"] == "provider_error"
 
 
+def test_terminal_task_update_preserves_existing_killed_status():
+    import app.services.web_chat_runtime as runtime
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        status="killed",
+        created_at=None,
+        started_at=None,
+        completed_at=datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc),
+        result_summary="cancelled by user",
+        metadata_json={"cancelled_by": "user"},
+    )
+
+    runtime._apply_terminal_task_update(
+        task,
+        status="completed",
+        result_summary="final answer completed",
+        metadata_json={"terminal_reason": "stop"},
+    )
+
+    assert task.status == "killed"
+    assert task.result_summary == "cancelled by user"
+    assert task.metadata_json["terminal_reason"] == "stop"
+    assert task.metadata_json["terminal_update_preserved_status"] == "killed"
+    assert task.metadata_json["terminal_update_attempted_status"] == "completed"
+
+
 def test_runtime_session_permission_metadata_prefers_latest_session_override():
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import SessionContext

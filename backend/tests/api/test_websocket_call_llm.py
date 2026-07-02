@@ -88,6 +88,8 @@ async def test_emit_ws_session_lifecycle_hook_api_role_publishes_runtime_control
 
     assert published
     assert published[0]["event"] == "session_idle"
+    assert "messages" not in published[0]
+    assert published[0]["metadata"]["message_count"] == 1
     assert emitted == []
 
 

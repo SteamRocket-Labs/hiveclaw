@@ -96,6 +96,13 @@ def _bridge_to_t0_enabled(bridge_to_t0: bool) -> bool:
     return role != "api"
 
 
+def _relay_t0_bridge_enabled(bridge_to_t0: bool) -> bool:
+    if not bridge_to_t0:
+        return False
+    role = str(get_settings().HIVE_PROCESS_ROLE or "runtime").strip().lower()
+    return role == "api"
+
+
 async def append_session_event(
     *,
     db: AsyncSession,
@@ -220,6 +227,24 @@ async def append_session_event(
             created_at=created_at,
             data_root=data_root,
         )
+    elif _relay_t0_bridge_enabled(bridge_to_t0):
+        event_metadata = {**event_metadata, "t0_bridge_pending": True}
+        transcript_event.metadata_json = event_metadata
+        try:
+            from app.services.runtime_control_bus import publish_transcript_t0_bridge
+
+            await publish_transcript_t0_bridge(
+                transcript_event_id=event_id,
+                agent_id=agent_uuid,
+                session_id=session_uuid,
+                tenant_id=tenant_uuid,
+            )
+        except Exception as exc:  # noqa: BLE001 - transcript stays durable; runtime sweep/ops can observe pending state.
+            event_metadata = {
+                **event_metadata,
+                "t0_bridge_publish_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            }
+            transcript_event.metadata_json = event_metadata
     return AppendSessionEventResult(
         event_id=event_id,
         sequence=sequence,

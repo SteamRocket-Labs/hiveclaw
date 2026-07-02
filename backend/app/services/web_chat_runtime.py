@@ -298,14 +298,23 @@ def _apply_terminal_task_update(
     result_summary: str | None,
     metadata_json: dict[str, Any] | None,
 ) -> None:
-    task.status = status
-    if result_summary is not None:
+    preserve_existing_killed = getattr(task, "status", None) == "killed" and status != "killed"
+    if preserve_existing_killed:
+        metadata = dict(metadata_json or {})
+        metadata["terminal_update_preserved_status"] = "killed"
+        metadata["terminal_update_attempted_status"] = status
+        metadata_json = metadata
+        status_for_timestamp = "killed"
+    else:
+        task.status = status
+        status_for_timestamp = status
+    if result_summary is not None and not preserve_existing_killed:
         task.result_summary = result_summary
     if metadata_json:
         metadata = dict(task.metadata_json or {})
         metadata.update(metadata_json)
         task.metadata_json = metadata
-    if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
+    if status_for_timestamp in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
         task.completed_at = datetime.now(timezone.utc)
 
 

@@ -125,6 +125,21 @@ async def test_health_includes_event_loop_component() -> None:
 
 
 @pytest.mark.asyncio
+async def test_health_includes_runtime_control_bus_component() -> None:
+    from app.main import health_check
+    from app.services.daemon_liveness import reset_daemon_liveness
+    from app.services.rls_runtime_guard import reset_runtime_rls_role_guard_for_tests
+
+    reset_daemon_liveness()
+    reset_runtime_rls_role_guard_for_tests()
+
+    response = await health_check()
+
+    runtime_control_bus = response.components["runtime_control_bus"]
+    assert {"running", "received", "last_type", "last_error", "restart_count"} <= set(runtime_control_bus)
+
+
+@pytest.mark.asyncio
 async def test_health_degrades_when_db_pool_saturated(monkeypatch) -> None:
     from app.main import health_check
     from app.services.daemon_liveness import reset_daemon_liveness

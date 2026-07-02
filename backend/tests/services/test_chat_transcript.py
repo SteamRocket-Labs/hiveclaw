@@ -158,9 +158,17 @@ async def test_append_session_event_api_role_does_not_bridge_to_t0(monkeypatch, 
     tenant_id = uuid4()
     session_id = uuid4()
     db = _FakeDB()
+    published = []
+
+    async def fake_publish_transcript_t0_bridge(**kwargs):
+        published.append(kwargs)
 
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
     monkeypatch.setattr(transcript, "get_settings", lambda: SimpleNamespace(HIVE_PROCESS_ROLE="api"))
+    monkeypatch.setattr(
+        "app.services.runtime_control_bus.publish_transcript_t0_bridge",
+        fake_publish_transcript_t0_bridge,
+    )
 
     result = await transcript.append_session_event(
         db=db,
@@ -179,3 +187,12 @@ async def test_append_session_event_api_role_does_not_bridge_to_t0(monkeypatch, 
     assert len(transcript_events) == 1
     assert result.t0_result is None
     assert replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path) == []
+    assert published == [
+        {
+            "transcript_event_id": result.event_id,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "tenant_id": tenant_id,
+        }
+    ]
+    assert transcript_events[0].metadata_json["t0_bridge_pending"] is True

@@ -1003,6 +1003,23 @@ def unregister_web_chat_run_for_test(run_id: str) -> None:
     _TASKS.pop(str(run_id), None)
 
 
+def active_web_chat_run_count() -> int:
+    """Return currently dispatched in-process web/runtime chat runs."""
+    done_keys = []
+    for run_id, task in _TASKS.items():
+        done = getattr(task, "done", None)
+        if callable(done) and done():
+            done_keys.append(run_id)
+    for run_id in done_keys:
+        _TASKS.pop(run_id, None)
+    return len(_TASKS)
+
+
+def web_chat_run_capacity_remaining(*, max_concurrent: int | None = None) -> int:
+    limit = max_concurrent if max_concurrent is not None else get_settings().RUNTIME_TASK_WORKER_MAX_CONCURRENT
+    return max(0, int(limit) - active_web_chat_run_count())
+
+
 def dispatch_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> bool:
     run_uuid = _run_id(run_id)
     run_key = run_uuid.hex
@@ -1567,6 +1584,10 @@ async def cancel_web_chat_run(
 
 async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
     """Restart durable web-chat runs left active by a worker restart."""
+    capacity = web_chat_run_capacity_remaining()
+    if capacity <= 0:
+        logger.info("[WebChatRun] Startup resume deferred because runtime worker capacity is full")
+        return []
     async with _async_session() as db, enter_rls_bypass(db, reason="startup resume persisted web-chat runs"):
         result = await db.execute(
             select(RuntimeTask)
@@ -1575,7 +1596,7 @@ async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
                 RuntimeTask.status.in_(_ACTIVE_STATUSES),
             )
             .order_by(RuntimeTask.started_at.asc().nulls_last(), RuntimeTask.created_at.asc())
-            .limit(limit)
+            .limit(min(limit, capacity))
         )
         tasks = result.scalars().all()
         resumed: list[RuntimeTask] = []
@@ -1602,7 +1623,7 @@ async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
             await db.commit()
 
     resumed_ids: list[str] = []
-    for task in resumed:
+    for task in resumed[:capacity]:
         if dispatch_web_chat_run(task.id):
             resumed_ids.append(task.id.hex)
     return resumed_ids

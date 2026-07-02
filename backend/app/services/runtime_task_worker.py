@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.database import async_session, enter_rls_bypass
 from app.models.runtime_task import RuntimeTask
 from app.services.runtime_task_claim_service import RuntimeTaskClaimService
-from app.services.web_chat_runtime import dispatch_web_chat_run, is_executable_chat_task_type
+from app.services.web_chat_runtime import active_web_chat_run_count, dispatch_web_chat_run, is_executable_chat_task_type
 
 
 _LOCAL_WAKEUP_EVENT: asyncio.Event | None = None
@@ -59,6 +59,14 @@ def runtime_task_worker_enabled() -> bool:
     return bool(settings.RUNTIME_TASK_WORKER_ENABLED) and role not in {"api", "read_model"}
 
 
+def _claim_batch_size_for_available_slots() -> int:
+    settings = _settings()
+    max_concurrent = max(1, int(settings.RUNTIME_TASK_WORKER_MAX_CONCURRENT))
+    configured_batch = max(1, int(settings.RUNTIME_TASK_WORKER_BATCH_SIZE))
+    available_slots = max(0, max_concurrent - active_web_chat_run_count())
+    return min(configured_batch, available_slots)
+
+
 async def notify_runtime_task_worker(*, reason: str, runtime_task_id: UUID | str | None = None) -> None:
     event = _wakeup_event()
     event.set()
@@ -99,6 +107,10 @@ async def _redis_wakeup_listener() -> None:
 async def claim_and_dispatch_once(*, worker_id: str | None = None) -> list[str]:
     settings = _settings()
     claimed_ids: list[str] = []
+    batch_size = _claim_batch_size_for_available_slots()
+    if batch_size <= 0:
+        _STATE["last_claimed_count"] = 0
+        return claimed_ids
     async with async_session() as db, enter_rls_bypass(db, reason="runtime task worker claim pending executable tasks"):
         service = RuntimeTaskClaimService(
             db=db,
@@ -106,7 +118,7 @@ async def claim_and_dispatch_once(*, worker_id: str | None = None) -> list[str]:
             task_types=("web_chat_turn", "goal_continuation", "team_member", "advanced_plan"),
             lease_seconds=settings.RUNTIME_TASK_CLAIM_LEASE_SECONDS,
         )
-        claimed = await service.claim_available(batch_size=settings.RUNTIME_TASK_WORKER_BATCH_SIZE)
+        claimed = await service.claim_available(batch_size=batch_size)
 
     for task in claimed:
         if _dispatch_claimed_task(task):

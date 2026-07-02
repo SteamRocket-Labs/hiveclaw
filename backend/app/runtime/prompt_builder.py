@@ -521,7 +521,6 @@ def build_dynamic_prompt_suffix(
     budget_profile: ContextBudget | None = None,
     latest_user_query: str = "",
     memory_snapshot: str = "",
-    memory_navigation: str = "",
     skill_catalog: str = "",
     user_name: str = "",
     channel: str = "",
@@ -530,7 +529,7 @@ def build_dynamic_prompt_suffix(
 ) -> str:
     """Build the per-round dynamic suffix.
 
-    Contains: § Memory, § Memory Navigation, runtime metadata,
+    Contains: § Memory, runtime metadata,
     active runtime tool groups, § Skills catalog, external knowledge retrieval
     results, § Environment, and request-specific suffix.
     These CAN change between rounds within the same session.
@@ -572,14 +571,6 @@ def build_dynamic_prompt_suffix(
     if memory_snapshot:
         snapshot_cap = max(int(memory_budget_chars), 1500)
         parts.append(build_memory_section(memory_snapshot, budget_chars=snapshot_cap))
-
-    # § Memory Navigation (spec §8 / §12 P6) — heat-ordered entry index as
-    # its own section (never inside soul); pairs with load_memory for
-    # progressive disclosure.
-    if memory_navigation:
-        navigation_block = _trim_block(memory_navigation, budget_chars=4000)
-        if navigation_block:
-            parts.append(navigation_block)
 
     if session_learning_projection:
         learning_block = _trim_block(session_learning_projection, budget_chars=1200)

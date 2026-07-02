@@ -86,9 +86,8 @@ def _append_quarantine_archive(agent_root: Path, actions: list[dict[str, str]]) 
 def repair_agent_memory_hygiene(data_root: Path, agent_id: uuid.UUID, *, dry_run: bool = True) -> dict[str, Any]:
     """Repair one agent workspace's memory purity issues.
 
-    Dirty T3 prose originals are archived by ``backfill_t3_prose``; retired
-    stores and dead reflection stubs are moved to ``memory/retired_artifacts``
-    and recorded in ``memory/archive.md``.
+    Retired stores and dead reflection stubs are moved to
+    ``memory/retired_artifacts`` and recorded in ``memory/archive.md``.
     """
     root = Path(data_root)
     agent_root = root / str(agent_id)

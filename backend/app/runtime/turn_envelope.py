@@ -207,7 +207,6 @@ def _dynamic_input_sections(
     active_tool_groups: list[dict[str, Any]] | None,
     available_deferred_tools: list[str] | tuple[str, ...] | None,
     memory_snapshot: str,
-    memory_navigation: str,
     runtime_metadata_context: str,
     permissions_context: str,
     retrieval_context: str,
@@ -222,7 +221,6 @@ def _dynamic_input_sections(
             sections.append(name)
 
     add("memory_context", bool(str(memory_snapshot or "").strip()))
-    add("memory_navigation", bool(str(memory_navigation or "").strip()))
     add("runtime_metadata_context", bool(str(runtime_metadata_context or "").strip()))
     add("permissions_context", bool(str(permissions_context or "").strip()))
     add("active_tool_groups", bool(active_tool_groups))
@@ -260,7 +258,6 @@ def build_runtime_prompt_assembly_manifest(
     active_tool_groups: list[dict[str, Any]] | None = None,
     available_deferred_tools: list[str] | tuple[str, ...] | None = None,
     memory_snapshot: str = "",
-    memory_navigation: str = "",
     runtime_metadata_context: str = "",
     permissions_context: str = "",
     retrieval_context: str = "",
@@ -278,7 +275,6 @@ def build_runtime_prompt_assembly_manifest(
         active_tool_groups=active_tool_groups,
         available_deferred_tools=available_deferred_tools,
         memory_snapshot=memory_snapshot,
-        memory_navigation=memory_navigation,
         runtime_metadata_context=runtime_metadata_context,
         permissions_context=permissions_context,
         retrieval_context=retrieval_context,

@@ -215,7 +215,6 @@ BuildSystemPrompt = Callable[[InvocationRequest, Any, str, str | None], Awaitabl
 ResolveMemoryContext = Callable[[InvocationRequest, Any], Awaitable[str] | str]
 ResolveRuntimeMetadataContext = Callable[[InvocationRequest, Any], Awaitable[str] | str]
 ResolveRetrievalContext = Callable[[InvocationRequest, Any], Awaitable[str] | str]
-ResolveMemoryNavigationContext = Callable[[InvocationRequest, Any], Awaitable[str] | str]
 GetTools = Callable[[Any, bool], Awaitable[list[dict]] | list[dict]]
 ResolveToolExpansion = Callable[
     [InvocationRequest, str, dict[str, Any]],
@@ -256,7 +255,6 @@ class KernelDependencies:
     resolve_tool_expansion: ResolveToolExpansion | None = None
     resolve_runtime_metadata_context: ResolveRuntimeMetadataContext | None = None
     resolve_retrieval_context: ResolveRetrievalContext | None = None
-    resolve_memory_navigation_context: ResolveMemoryNavigationContext | None = None
     apply_vision_transform: ApplyVisionTransform | None = None
     apply_cache_hints: ApplyCacheHints | None = None
 
@@ -3079,14 +3077,6 @@ class AgentKernel:
                 resolved_retrieval_context = await _maybe_await(
                     self._deps.resolve_retrieval_context(request, runtime_config.tenant_id)
                 )
-            resolved_memory_navigation_context = ""
-            if self._deps.resolve_memory_navigation_context:
-                try:
-                    resolved_memory_navigation_context = await _maybe_await(
-                        self._deps.resolve_memory_navigation_context(request, runtime_config.tenant_id)
-                    )
-                except Exception as exc:  # noqa: BLE001 — navigation is an accelerator, never blocks invocation
-                    logger.debug("[Kernel] Memory navigation skipped for agent %s: %s", request.agent_id, exc)
             resolved_runtime_metadata_context = ""
             if self._deps.resolve_runtime_metadata_context:
                 try:
@@ -3170,7 +3160,6 @@ class AgentKernel:
                     active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                     available_deferred_tools=available_deferred_tools,
                     memory_snapshot=resolved_memory_context,
-                    memory_navigation=resolved_memory_navigation_context,
                     skill_catalog=request.skill_catalog,
                     runtime_metadata_context=resolved_runtime_metadata_context,
                     permissions_context=resolved_permissions_context,
@@ -3209,7 +3198,6 @@ class AgentKernel:
                     active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                     available_deferred_tools=available_deferred_tools,
                     memory_snapshot=resolved_memory_context,
-                    memory_navigation=resolved_memory_navigation_context,
                     skill_catalog=request.skill_catalog,
                     runtime_metadata_context=resolved_runtime_metadata_context,
                     permissions_context=resolved_permissions_context,
@@ -3267,7 +3255,6 @@ class AgentKernel:
                     active_tool_groups=session_ctx.active_tool_groups,
                     available_deferred_tools=available_deferred_tools,
                     memory_snapshot=resolved_memory_context,
-                    memory_navigation=resolved_memory_navigation_context,
                     runtime_metadata_context=resolved_runtime_metadata_context,
                     permissions_context=resolved_permissions_context,
                     retrieval_context=resolved_retrieval_context,
@@ -4048,7 +4035,6 @@ class AgentKernel:
                                             active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                             available_deferred_tools=available_deferred_tools,
                                             memory_snapshot=resolved_memory_context,
-                                            memory_navigation=resolved_memory_navigation_context,
                                             skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,
                                             permissions_context=resolved_permissions_context,
@@ -4148,7 +4134,6 @@ class AgentKernel:
                                             active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                             available_deferred_tools=available_deferred_tools,
                                             memory_snapshot=resolved_memory_context,
-                                            memory_navigation=resolved_memory_navigation_context,
                                             skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,
                                             permissions_context=resolved_permissions_context,
@@ -4240,7 +4225,6 @@ class AgentKernel:
                                                 else [],
                                                 available_deferred_tools=available_deferred_tools,
                                                 memory_snapshot=resolved_memory_context,
-                                                memory_navigation=resolved_memory_navigation_context,
                                                 skill_catalog=request.skill_catalog,
                                                 runtime_metadata_context=resolved_runtime_metadata_context,
                                                 permissions_context=resolved_permissions_context,
@@ -5008,7 +4992,6 @@ class AgentKernel:
                                                     active_tool_groups=session_context.active_tool_groups,
                                                     available_deferred_tools=available_deferred_tools,
                                                     memory_snapshot=resolved_memory_context,
-                                                    memory_navigation=resolved_memory_navigation_context,
                                                     skill_catalog=request.skill_catalog,
                                                     runtime_metadata_context=resolved_runtime_metadata_context,
                                                     permissions_context=resolved_permissions_context,

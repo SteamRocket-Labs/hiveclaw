@@ -253,3 +253,36 @@
 
 **接线证据（grep）**：`rebuild_reference_index` 生产调用点 = t2_retention.py:70（heartbeat 链）+ reference_index.py:261（惰性）+ migrate_memory_two_planes.py:189；`refresh_consolidation_debt` 生产调用点 = heartbeat 维护批 `_run_consolidation_debt_refresh`；`build_memory_observability` 消费者 = api/agent_knowledge.py observability 端点。
 **测试证据**：`tests/memory/test_c8_derived_tables.py` 8 红→8 绿；tests/memory + read model + heartbeat_kairos = 336 passed（唯一改造=路由守卫 six→seven）；ruff check/format 全过。全量 `pytest tests -q` = **1 failed, 5259 passed, 1 skipped**（唯一失败仍为并行 session 的 `test_self_evolution_bakeoff`，归属外部）。
+
+**Part I commit：** `80d207e5`（7 files，+645/−8）。
+
+## Part J 终验收（2026-07-02 收口）
+
+### memory_navigation 惰性形参链补摘（Part H 挂账清偿）
+
+另一 session 的 engine/contracts 改动已收敛入库，engine.py 可安全动刀：`ResolveMemoryNavigationContext` 类型别名、`KernelDependencies.resolve_memory_navigation_context` 字段、解析块（3082-3089）、7 处 `memory_navigation=` 传参全删；`prompt_builder.build_dynamic_prompt_suffix` 形参与 § Memory Navigation 渲染块删；`turn_envelope` manifest 字段（形参×2/add 行/传参）删；`test_prompt_cache_integration` 的 navigation callback 素材与 2 条断言摘除（frozen/dynamic 缓存边界语义由 retrieval 断言继续钉住）。摘后 kernel+runtime 套件 869 passed。附带清除 `hygiene.py` 注释里的 `backfill_t3_prose` 死指针。
+
+### 退役零残留终查（grep app/ 全量）
+
+`parse_t3_facts` / `T3_FILE_SPECS` / `build_t3_entry_manifest` / `mark_t3_entry_promoted` / `ACCEPTED_T3_TARGETS` / `memory_navigation` / `ResolveMemoryNavigationContext` / `legacy_migration` / `scene_curator` / `wiki_curator` / `retrieval_eval` / `backfill_t3_prose` / `validate_and_normalize_t3` / `t2_rerank` 全部 = **0**。`looks_episodic_observation` 仅存 explicit_overlay 定义 + memory handler 消费（护栏迁移后的正确存活）。
+
+### spec §7.1 五不变量自检（逐条证据）
+
+1. **所有文件产出有明确 writer**：四区文件 = Platform Gate 四操作唯一写入（HR/agent_manager 只产骨架）；T2 包 = segment_package builder；explicit = save_memory 写门；soul.md = Dream soul 双 gate；index.sqlite = rebuild_reference_index 单 writer + debt 实时 upsert（同模块族）；control sidecars 与 wiki_map 各有单一模块 writer。
+2. **侧写只收敛、知识只成网**：profile plane 仅 upsert_entry/retire_entry + rewrite_file 收敛环（convergence_note 必填、拒清空、tombstone 声明）；knowledge plane 仅 upsert_page（强制 ≥1 Relations 边、Contradictions 保留）；`TARGET_VIEW_VALUES` 收缩两平面四值。
+3. **智能步骤 LLM 全视野、读取零 LLM**：T2 summary/labels 全 corpus 单次 LLM 调用；T3 consolidation neighborhood 两平面区块全量注入；C7 迁移 plan 全 legacy corpus；读侧 resident 整份直读 + BM25/PPR 检索，rerank 已删。
+4. **证据不可变 + T2 永不硬删 + 活引用 tombstone**：t2-/ex-/fb- 短 id 不可变；retention 只归档 `.archive/t2/**`，归档后 id 经 id_resolution 仍解析（短 id 随迁）；rewrite/retire 落 `control/tombstones.jsonl`；C8 把两平面证据引用接进反向索引（plane 引用计数保护热区）。
+5. **语义写入全过 gate、soul 过 owner、durable 不绕 gate**：write_gate 封禁 memory/ 直写；soul 变更走提名+Soul Memory Gate+Platform Soul Gate；explicit 唯一入口 save_memory（PL4 拒绝）；skill 候选晋升的双向链由平台记账（mark_profile_entry_promoted）。
+
+### 无双轨自检
+
+旧 T3 四文件运行时 writer = 0（仅迁移工具重组 + 归档只读扫描）；读侧唯一路径 = plane_read + retriever(resident)/wiki_retrieval(检索)；t3_store/understanding_store/scene·wiki curator/navigation/rerank/entry-manifest 生态全部单轨退役，无新旧并行循环。
+
+### 终验收数字
+
+kernel+runtime 套件 = **869 passed**；全量 `pytest tests -q` = **1 failed, 5259 passed, 1 skipped**——唯一失败 `test_self_evolution_bakeoff` 为并行 session eval 拆弹 WIP 面（Part H/I/J 三轮全量一致，干净 HEAD 归属已验证）；ruff check/format 全过。
+
+### 交付边界与 owner 待办
+
+- 生产存量数据迁移属唯一不可逆步骤：工具 `python -m app.scripts.migrate_memory_two_planes`（dry-run 默认；`--apply --confirm` 才落盘；无模型配置自动 held）。代码已全切两平面，**存量 agent 的 t3 四文件重组需 owner 在生产环境执行**（先 dry-run 审 plan，再 apply）。
+- engine 内其余另一 session 活跃面未触碰；`test_self_evolution_bakeoff` 修复归其 eval 拆弹主线。

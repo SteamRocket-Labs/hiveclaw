@@ -57,10 +57,6 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
         retrieval_calls.append(value)
         return value
 
-    async def resolve_memory_navigation_context(request, tenant_id):
-        del request, tenant_id
-        return "## Memory Navigation\n| mem_safe | knowledge.md | project | 1 | 0 | never | public note |"
-
     fake_client = _FakeClient(
         [
             SimpleNamespace(content="first", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
@@ -75,7 +71,6 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
             build_system_prompt=build_system_prompt,
             resolve_memory_context=lambda *_args, **_kwargs: "SNAPSHOT_BLOCK",
             resolve_retrieval_context=resolve_retrieval_context,
-            resolve_memory_navigation_context=resolve_memory_navigation_context,
             get_tools=lambda *_args, **_kwargs: [],
             maybe_compress_messages=lambda messages, **_kwargs: messages,
             create_client=lambda _model: fake_client,
@@ -120,8 +115,6 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
     assert second_dynamic.count("SNAPSHOT_BLOCK") == 1
     assert "RETRIEVAL_1" in first_dynamic
     assert "RETRIEVAL_2" in second_dynamic
-    assert "## Memory Navigation" in first_dynamic
-    assert "mem_safe" in second_dynamic
 
 
 @pytest.mark.asyncio

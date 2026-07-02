@@ -146,7 +146,7 @@ function checkpointEventIdFromPayload(actionResult: Record<string, unknown> | nu
     );
 }
 
-function trimMessagesBeforeTranscriptEvent(
+export function trimMessagesBeforeTranscriptEvent(
     messages: AgentChatMessage[],
     checkpointEventId: string,
     checkpointCreatedAt?: string,

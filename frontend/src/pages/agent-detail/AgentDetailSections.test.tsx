@@ -5369,3 +5369,31 @@ describe('AgentDetail extracted sections', () => {
     expect(skippedMarkup).toContain('no_handler_registered');
   });
 });
+
+describe('rewind trim fallback (never a silent no-op)', () => {
+  it('falls back to the checkpoint timestamp when live messages lack transcript event ids', async () => {
+    const { trimMessagesBeforeTranscriptEvent } = await import('../AgentDetail');
+    const messages = [
+      { id: 'm1', role: 'user', content: 'old', timestamp: '2026-07-02T10:00:00Z' },
+      { id: 'm2', role: 'assistant', content: 'old answer', timestamp: '2026-07-02T10:01:00Z' },
+      { id: 'm3', role: 'user', content: 'rewound prompt', timestamp: '2026-07-02T10:05:00Z' },
+      { id: 'm4', role: 'assistant', content: 'tail', timestamp: '2026-07-02T10:06:00Z' },
+    ] as unknown as import('./chatRuntime').AgentChatMessage[];
+
+    const trimmed = trimMessagesBeforeTranscriptEvent(messages, 'evt-missing', '2026-07-02T10:05:00Z');
+
+    expect(trimmed.map((message) => message.id)).toEqual(['m1', 'm2']);
+  });
+
+  it('still prefers the exact transcript event anchor when present', async () => {
+    const { trimMessagesBeforeTranscriptEvent } = await import('../AgentDetail');
+    const messages = [
+      { id: 'm1', transcriptEventId: 'evt-1', role: 'user', content: 'a', timestamp: '2026-07-02T09:00:00Z' },
+      { id: 'm2', transcriptEventId: 'evt-2', role: 'user', content: 'b', timestamp: '2026-07-02T10:00:00Z' },
+    ] as unknown as import('./chatRuntime').AgentChatMessage[];
+
+    const trimmed = trimMessagesBeforeTranscriptEvent(messages, 'evt-2', '2026-07-02T09:30:00Z');
+
+    expect(trimmed.map((message) => message.id)).toEqual(['m1']);
+  });
+});

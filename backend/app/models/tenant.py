@@ -42,6 +42,14 @@ class Tenant(Base):
     default_tokens_per_day: Mapped[int | None] = mapped_column(Integer)
     default_tokens_per_month: Mapped[int | None] = mapped_column(Integer)
 
+    # Company-level hard token quotas and counters.
+    quota_tokens_per_day: Mapped[int | None] = mapped_column(Integer)
+    quota_tokens_per_month: Mapped[int | None] = mapped_column(Integer)
+    tokens_used_today: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_used_month: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_used_total: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # Desktop sync: global version counter bumped on any Desktop-visible resource change (ARCHITECTURE.md §6.6)
     sync_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
 

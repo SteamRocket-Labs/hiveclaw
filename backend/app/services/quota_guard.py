@@ -1,6 +1,10 @@
 """Usage quota guard — token-only enforcement.
 
-The only usage limit is token consumption per employee (daily/monthly).
+Token limits exist at three scopes:
+* tenant/company hard cap
+* agent hard cap
+* employee/user cap
+
 All other limits (message count, LLM calls, agent count, TTL) have been removed.
 """
 
@@ -21,46 +25,170 @@ class QuotaExceeded(Exception):
         super().__init__(message)
 
 
-async def check_user_token_quota(user_id: uuid.UUID) -> None:
-    """Check if user has remaining daily/monthly token budget.
+def _coerce_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
 
-    Admin users (org_admin, platform_admin) are exempt.
+
+def _reset_user_or_tenant_counter(subject, *, now: datetime) -> bool:
+    changed = False
+    reset_at = getattr(subject, "tokens_reset_at", None)
+    if reset_at is None:
+        subject.tokens_reset_at = now
+        return True
+    if now.date() > reset_at.date():
+        subject.tokens_used_today = 0
+        changed = True
+    if now.month != reset_at.month or now.year != reset_at.year:
+        subject.tokens_used_month = 0
+        changed = True
+    if changed:
+        subject.tokens_reset_at = now
+    return changed
+
+
+def _reset_agent_counter(agent, *, now: datetime) -> bool:
+    changed = False
+    if agent.last_daily_reset is None:
+        agent.last_daily_reset = now
+        changed = True
+    elif now.date() > agent.last_daily_reset.date():
+        agent.tokens_used_today = 0
+        agent.last_daily_reset = now
+        changed = True
+    if agent.last_monthly_reset is None:
+        agent.last_monthly_reset = now
+        changed = True
+    elif now.month != agent.last_monthly_reset.month or now.year != agent.last_monthly_reset.year:
+        agent.tokens_used_month = 0
+        agent.last_monthly_reset = now
+        changed = True
+    return changed
+
+
+def _raise_if_limit_reached(
+    *,
+    scope_label: str,
+    quota_type: str,
+    used: int | None,
+    limit: int | None,
+) -> None:
+    if limit and (used or 0) >= limit:
+        raise QuotaExceeded(
+            f"{scope_label} token limit reached ({(used or 0):,}/{limit:,}).",
+            quota_type=quota_type,
+        )
+
+
+async def check_user_token_quota(
+    user_id: uuid.UUID | str | None,
+    *,
+    agent_id: uuid.UUID | str | None = None,
+    tenant_id: uuid.UUID | str | None = None,
+) -> None:
+    """Check if the invocation has remaining daily/monthly token budget.
+
+    Admin users (org_admin, platform_admin) are exempt only from their personal
+    user-level cap. Tenant and agent hard caps are never bypassed by role.
     Resets counters automatically when the period rolls over.
     """
+    from app.models.agent import Agent
+    from app.models.tenant import Tenant
     from app.models.user import User
 
-    async with async_session() as db, enter_rls_bypass(db, reason=f"token quota check for user {user_id}"):
-        result = await db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
-        if not user:
-            return
+    checked_user_id = _coerce_uuid(user_id)
+    checked_agent_id = _coerce_uuid(agent_id)
+    checked_tenant_id = _coerce_uuid(tenant_id)
+    if checked_user_id is None and checked_agent_id is None and checked_tenant_id is None:
+        return
 
-        # Admin users are exempt
-        if user.role in ("platform_admin", "org_admin"):
-            return
+    reason_parts = []
+    if checked_user_id is not None:
+        reason_parts.append(f"user {checked_user_id}")
+    if checked_agent_id is not None:
+        reason_parts.append(f"agent {checked_agent_id}")
+    if checked_tenant_id is not None:
+        reason_parts.append(f"tenant {checked_tenant_id}")
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason=f"token quota check for {' / '.join(reason_parts)}"),
+    ):
+        user = None
+        if checked_user_id is not None:
+            user = (await db.execute(select(User).where(User.id == checked_user_id))).scalar_one_or_none()
 
+        agent = None
+        if checked_agent_id is not None:
+            agent = (await db.execute(select(Agent).where(Agent.id == checked_agent_id))).scalar_one_or_none()
+            if agent is not None:
+                checked_tenant_id = checked_tenant_id or agent.tenant_id
+                if user is None:
+                    checked_user_id = agent.owner_user_id or agent.creator_id
+                    user = (await db.execute(select(User).where(User.id == checked_user_id))).scalar_one_or_none()
+
+        if checked_tenant_id is None and user is not None:
+            checked_tenant_id = user.tenant_id
+
+        tenant = None
+        if checked_tenant_id is not None:
+            tenant = (await db.execute(select(Tenant).where(Tenant.id == checked_tenant_id))).scalar_one_or_none()
+
+        if user is None and agent is None and tenant is None:
+            return
         now = datetime.now(timezone.utc)
+        changed = False
 
-        # Daily reset
-        if user.tokens_reset_at and now.date() > user.tokens_reset_at.date():
-            user.tokens_used_today = 0
-            await db.commit()
-
-        # Monthly reset
-        if user.tokens_reset_at and now.month != user.tokens_reset_at.month:
-            user.tokens_used_month = 0
-            await db.commit()
-
-        # Check daily token limit
-        if user.quota_tokens_per_day and user.tokens_used_today >= user.quota_tokens_per_day:
-            raise QuotaExceeded(
-                f"Daily token limit reached ({user.tokens_used_today:,}/{user.quota_tokens_per_day:,}).",
-                quota_type="tokens_daily",
+        if tenant is not None:
+            changed = _reset_user_or_tenant_counter(tenant, now=now) or changed
+            _raise_if_limit_reached(
+                scope_label="Tenant daily",
+                quota_type="tenant_tokens_daily",
+                used=tenant.tokens_used_today,
+                limit=tenant.quota_tokens_per_day,
+            )
+            _raise_if_limit_reached(
+                scope_label="Tenant monthly",
+                quota_type="tenant_tokens_monthly",
+                used=tenant.tokens_used_month,
+                limit=tenant.quota_tokens_per_month,
             )
 
-        # Check monthly token limit
-        if user.quota_tokens_per_month and user.tokens_used_month >= user.quota_tokens_per_month:
-            raise QuotaExceeded(
-                f"Monthly token limit reached ({user.tokens_used_month:,}/{user.quota_tokens_per_month:,}).",
-                quota_type="tokens_monthly",
+        if agent is not None:
+            changed = _reset_agent_counter(agent, now=now) or changed
+            _raise_if_limit_reached(
+                scope_label="Agent daily",
+                quota_type="agent_tokens_daily",
+                used=agent.tokens_used_today,
+                limit=agent.quota_tokens_per_day,
             )
+            _raise_if_limit_reached(
+                scope_label="Agent monthly",
+                quota_type="agent_tokens_monthly",
+                used=agent.tokens_used_month,
+                limit=agent.quota_tokens_per_month,
+            )
+
+        if user is not None:
+            changed = _reset_user_or_tenant_counter(user, now=now) or changed
+            if user.role not in ("platform_admin", "org_admin"):
+                _raise_if_limit_reached(
+                    scope_label="Daily",
+                    quota_type="tokens_daily",
+                    used=user.tokens_used_today,
+                    limit=user.quota_tokens_per_day,
+                )
+                _raise_if_limit_reached(
+                    scope_label="Monthly",
+                    quota_type="tokens_monthly",
+                    used=user.tokens_used_month,
+                    limit=user.quota_tokens_per_month,
+                )
+
+        if changed:
+            await db.commit()

@@ -1102,9 +1102,15 @@ async def _resolve_quota_user_id(request: AgentInvocationRequest) -> uuid.UUID |
 async def _enforce_invocation_quota(request: AgentInvocationRequest) -> AgentInvocationResult | None:
     try:
         quota_user_id = await _resolve_quota_user_id(request)
-        if quota_user_id is None:
+        if quota_user_id is None and request.agent_id is None:
             return None
-        await check_user_token_quota(quota_user_id)
+        quota_check_params = inspect.signature(check_user_token_quota).parameters
+        if "agent_id" in quota_check_params or any(
+            param.kind is inspect.Parameter.VAR_KEYWORD for param in quota_check_params.values()
+        ):
+            await check_user_token_quota(quota_user_id, agent_id=request.agent_id)
+        else:
+            await check_user_token_quota(quota_user_id)
         return None
     except QuotaExceeded as exc:
         event = {

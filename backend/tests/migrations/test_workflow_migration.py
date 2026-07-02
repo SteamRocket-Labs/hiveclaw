@@ -35,7 +35,19 @@ _INVOCATION_IDENTITY_COLUMNS = (
     "execution_identity_id",
     "execution_identity_label",
 )
-_CURRENT_CLOSURE_HEAD = "invocation_span_execution_identity_0703"
+_TENANT_TOKEN_QUOTA_COLUMNS = (
+    "quota_tokens_per_day",
+    "quota_tokens_per_month",
+    "tokens_used_today",
+    "tokens_used_month",
+    "tokens_used_total",
+    "tokens_reset_at",
+)
+_AGENT_TOKEN_QUOTA_COLUMNS = (
+    "quota_tokens_per_day",
+    "quota_tokens_per_month",
+)
+_CURRENT_CLOSURE_HEAD = "token_quota_hard_caps_0703"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:
@@ -214,6 +226,43 @@ async def _assert_invocation_span_identity_columns(database_url: str) -> None:
     assert found == set(_INVOCATION_IDENTITY_COLUMNS)
 
 
+async def _assert_token_quota_hard_cap_columns(database_url: str) -> None:
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            tenant_rows = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name = 'tenants'
+                          AND column_name = ANY(:names)
+                        """
+                    ),
+                    {"names": list(_TENANT_TOKEN_QUOTA_COLUMNS)},
+                )
+            ).all()
+            agent_rows = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name = 'agents'
+                          AND column_name = ANY(:names)
+                        """
+                    ),
+                    {"names": list(_AGENT_TOKEN_QUOTA_COLUMNS)},
+                )
+            ).all()
+    finally:
+        await engine.dispose()
+
+    assert {row.column_name for row in tenant_rows} == set(_TENANT_TOKEN_QUOTA_COLUMNS)
+    assert {row.column_name for row in agent_rows} == set(_AGENT_TOKEN_QUOTA_COLUMNS)
+
+
 async def test_upgrade_path_creates_workflow_tables_with_forced_rls(chain_migrated_pg_url):
     """The migration's own DDL (executed, not stamped) must produce the contract."""
     await _assert_workflow_tables_forced_rls(chain_migrated_pg_url)
@@ -255,6 +304,14 @@ async def test_upgrade_path_adds_invocation_span_execution_identity_columns(chai
 
 async def test_bootstrap_path_adds_invocation_span_execution_identity_columns(migrated_pg_url):
     await _assert_invocation_span_identity_columns(migrated_pg_url)
+
+
+async def test_upgrade_path_adds_token_quota_hard_cap_columns(chain_migrated_pg_url):
+    await _assert_token_quota_hard_cap_columns(chain_migrated_pg_url)
+
+
+async def test_bootstrap_path_adds_token_quota_hard_cap_columns(migrated_pg_url):
+    await _assert_token_quota_hard_cap_columns(migrated_pg_url)
 
 
 async def test_upgrade_path_adds_chat_message_thinking_signature(chain_migrated_pg_url):

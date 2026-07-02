@@ -128,6 +128,31 @@ def _coerce_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
         return None
 
 
+def _reset_user_or_tenant_counter(subject: Any, *, now: datetime) -> None:
+    reset_at = getattr(subject, "tokens_reset_at", None)
+    if reset_at is None:
+        subject.tokens_reset_at = now
+        return
+    if now.date() > reset_at.date():
+        subject.tokens_used_today = 0
+    if now.month != reset_at.month or now.year != reset_at.year:
+        subject.tokens_used_month = 0
+    subject.tokens_reset_at = now
+
+
+def _reset_agent_counter(agent: Any, *, now: datetime) -> None:
+    if agent.last_daily_reset is None:
+        agent.last_daily_reset = now
+    elif now.date() > agent.last_daily_reset.date():
+        agent.tokens_used_today = 0
+        agent.last_daily_reset = now
+    if agent.last_monthly_reset is None:
+        agent.last_monthly_reset = now
+    elif now.month != agent.last_monthly_reset.month or now.year != agent.last_monthly_reset.year:
+        agent.tokens_used_month = 0
+        agent.last_monthly_reset = now
+
+
 async def _record_token_usage_event(
     *,
     tenant_id: uuid.UUID | None,
@@ -144,9 +169,19 @@ async def _record_token_usage_event(
         return
     try:
         from app.database import tenant_scoped_session
+        from app.models.tenant import Tenant
         from app.models.token_usage_event import TokenUsageEvent
+        from sqlalchemy import select
 
         async with tenant_scoped_session(tenant_id) as db:
+            now = datetime.now(timezone.utc)
+            if tenant_id is not None:
+                tenant = (await db.execute(select(Tenant).where(Tenant.id == tenant_id))).scalar_one_or_none()
+                if tenant:
+                    _reset_user_or_tenant_counter(tenant, now=now)
+                    tenant.tokens_used_today = (tenant.tokens_used_today or 0) + tokens
+                    tenant.tokens_used_month = (tenant.tokens_used_month or 0) + tokens
+                    tenant.tokens_used_total = (tenant.tokens_used_total or 0) + tokens
             db.add(
                 TokenUsageEvent(
                     tenant_id=tenant_id,
@@ -189,6 +224,7 @@ async def record_token_usage(
     try:
         from app.database import tenant_scoped_session
         from app.models.agent import Agent
+        from app.models.tenant import Tenant
         from app.models.user import User
         from app.services.tenant_resolver import resolve_tenant_for_agent
         from sqlalchemy import select
@@ -200,10 +236,20 @@ async def record_token_usage(
         # the same tenant.
         tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tenant_id) as db:
+            now = datetime.now(timezone.utc)
+            tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+            tenant = tenant_result.scalar_one_or_none()
+            if tenant:
+                _reset_user_or_tenant_counter(tenant, now=now)
+                tenant.tokens_used_today = (tenant.tokens_used_today or 0) + tokens
+                tenant.tokens_used_month = (tenant.tokens_used_month or 0) + tokens
+                tenant.tokens_used_total = (tenant.tokens_used_total or 0) + tokens
+
             # Agent stats (tracking only)
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if agent:
+                _reset_agent_counter(agent, now=now)
                 agent.tokens_used_today = (agent.tokens_used_today or 0) + tokens
                 agent.tokens_used_month = (agent.tokens_used_month or 0) + tokens
                 agent.tokens_used_total = (agent.tokens_used_total or 0) + tokens
@@ -219,13 +265,7 @@ async def record_token_usage(
                 user_result = await db.execute(select(User).where(User.id == user_id))
                 user = user_result.scalar_one_or_none()
                 if user:
-                    now = datetime.now(timezone.utc)
-                    # Daily reset
-                    if user.tokens_reset_at and now.date() > user.tokens_reset_at.date():
-                        user.tokens_used_today = 0
-                    # Monthly reset
-                    if user.tokens_reset_at and now.month != user.tokens_reset_at.month:
-                        user.tokens_used_month = 0
+                    _reset_user_or_tenant_counter(user, now=now)
 
                     user.tokens_used_today = (user.tokens_used_today or 0) + tokens
                     user.tokens_used_month = (user.tokens_used_month or 0) + tokens

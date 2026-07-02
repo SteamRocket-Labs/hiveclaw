@@ -69,7 +69,9 @@ class Agent(Base):
     primary_model_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("llm_models.id"))
     fallback_model_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("llm_models.id"))
 
-    # Token usage stats (tracking only — enforcement is at User level)
+    # Token usage stats plus optional per-agent hard caps.
+    quota_tokens_per_day: Mapped[int | None] = mapped_column(Integer)
+    quota_tokens_per_month: Mapped[int | None] = mapped_column(Integer)
     tokens_used_today: Mapped[int] = mapped_column(Integer, default=0)
     tokens_used_month: Mapped[int] = mapped_column(Integer, default=0)
     last_daily_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -33,7 +33,7 @@ class _FakeScalarResult:
 
 @pytest.fixture(autouse=True)
 def _allow_invocation_quota(monkeypatch):
-    async def allow(_user_id):
+    async def allow(_user_id, **_kwargs):
         return None
 
     monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", allow, raising=False)
@@ -74,6 +74,46 @@ async def test_invoke_agent_enforces_user_token_quota_before_kernel(monkeypatch)
     assert kernel_called is False
     assert result.tokens_used == 0
     assert "Daily token limit reached" in result.content
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_passes_agent_to_token_quota_before_kernel(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+    from app.services.quota_guard import QuotaExceeded
+
+    user_id = uuid4()
+    subject_agent_id = uuid4()
+    kernel_called = False
+
+    async def fake_check_user_token_quota(checked_user_id, *, agent_id=None, tenant_id=None):
+        assert checked_user_id == user_id
+        assert agent_id == subject_agent_id
+        assert tenant_id is None
+        raise QuotaExceeded("Agent daily token limit reached (50/50).", quota_type="agent_tokens_daily")
+
+    class FakeKernel:
+        async def handle(self, _request):
+            nonlocal kernel_called
+            kernel_called = True
+            raise AssertionError("kernel must not run after quota denial")
+
+    monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", fake_check_user_token_quota, raising=False)
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=subject_agent_id,
+            user_id=user_id,
+        )
+    )
+
+    assert kernel_called is False
+    assert result.terminal_reason.value == "quota_denied"
+    assert "Agent daily token limit" in result.content
 
 
 @pytest.mark.asyncio

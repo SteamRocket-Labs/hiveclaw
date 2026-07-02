@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, event, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, event, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
@@ -17,6 +17,24 @@ class Agent(Base):
     """
 
     __tablename__ = "agents"
+    __table_args__ = (
+        Index(
+            "ix_agents_tenant_active_created_at",
+            "tenant_id",
+            "deleted_at",
+            "deactivated_at",
+            "agent_class",
+            "created_at",
+        ),
+        Index(
+            "ix_agents_creator_tenant_active_created_at",
+            "creator_id",
+            "tenant_id",
+            "deleted_at",
+            "deactivated_at",
+            "created_at",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -124,6 +142,14 @@ class AgentPermission(Base):
     """Access permission for a digital employee."""
 
     __tablename__ = "agent_permissions"
+    __table_args__ = (
+        Index(
+            "ix_agent_permissions_scope_lookup",
+            "scope_type",
+            "scope_id",
+            "agent_id",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)

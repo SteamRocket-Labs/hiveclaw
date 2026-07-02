@@ -113,6 +113,14 @@ def _volume_bound_startup_enabled() -> bool:
     return _process_role() != "api"
 
 
+def _schema_bootstrap_startup_enabled() -> bool:
+    return _process_role() != "api"
+
+
+def _data_bootstrap_startup_enabled() -> bool:
+    return _process_role() != "api"
+
+
 _API_ROLE_PREFIXES = (
     "/api/auth/",
     "/api/v1/auth/",
@@ -270,29 +278,34 @@ async def lifespan(app: FastAPI):
     validate_secrets_provider_config(settings.SECRETS_MASTER_KEY or None, debug=settings.DEBUG)
     init_secrets_provider(settings.SECRETS_MASTER_KEY or None)
 
-    # ── Step 0c: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
-    try:
-        from app.database import Base, schema_engine
-        from app.models import import_all_models
+    # ── Step 0c: Ensure all DB tables exist (idempotent, safe to run on runtime startup) ──
+    if _schema_bootstrap_startup_enabled():
+        try:
+            from app.database import Base, schema_engine
+            from app.models import import_all_models
 
-        import_all_models()
+            import_all_models()
 
-        # Schema bootstrap runs on the owner connection (schema_engine): after the
-        # stage-3 role flip the app engine is the non-owner app_rls role, which
-        # cannot create_all / apply policies. Pre-cutover schema_engine IS engine.
-        async with schema_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            from app.db_bootstrap import apply_rls_policies
+            # Schema bootstrap runs on the owner connection (schema_engine): after the
+            # stage-3 role flip the app engine is the non-owner app_rls role, which
+            # cannot create_all / apply policies. Pre-cutover schema_engine IS engine.
+            async with schema_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+                from app.db_bootstrap import apply_rls_policies
 
-            await conn.run_sync(apply_rls_policies)
-            # Add enum values to channel_type_enum if they don't exist yet (idempotent)
-            for _ch_val in ("telegram",):
-                await conn.execute(
-                    __import__("sqlalchemy").text(f"ALTER TYPE channel_type_enum ADD VALUE IF NOT EXISTS '{_ch_val}'")
-                )
-        logger.info("[startup] Database tables ready")
-    except Exception as e:
-        logger.warning(f"[startup] create_all failed: {e}")
+                await conn.run_sync(apply_rls_policies)
+                # Add enum values to channel_type_enum if they don't exist yet (idempotent)
+                for _ch_val in ("telegram",):
+                    await conn.execute(
+                        __import__("sqlalchemy").text(
+                            f"ALTER TYPE channel_type_enum ADD VALUE IF NOT EXISTS '{_ch_val}'"
+                        )
+                    )
+            logger.info("[startup] Database tables ready")
+        except Exception as e:
+            logger.warning(f"[startup] create_all failed: {e}")
+    else:
+        logger.info("[startup] schema bootstrap skipped for no-volume API role")
 
     # Verify the application runtime database role after schema bootstrap. This
     # is deliberately outside the create_all try/except: strict enforcement must
@@ -324,23 +337,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Plan Mode handoff registration failed (non-fatal): {e}")
 
-    # Startup: seed data — each step isolated so one failure doesn't block others
-    logger.info("[startup] seeding...")
+    # Startup: seed data — each step isolated so one failure doesn't block others.
+    # No-volume API roles must stay request-focused; runtime backend performs DB/data bootstrap.
+    if _data_bootstrap_startup_enabled():
+        logger.info("[startup] seeding...")
 
-    # Seed default company (Tenant) — required before users can register
-    try:
-        from app.models.tenant import Tenant
-        from app.database import async_session as _session
-        from sqlalchemy import select as _select
+        # Seed default company (Tenant) — required before users can register
+        try:
+            from app.models.tenant import Tenant
+            from app.database import async_session as _session
+            from sqlalchemy import select as _select
 
-        async with _session() as _db:
-            _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
-            if not _existing.scalar_one_or_none():
-                _db.add(Tenant(name="Default", slug="default", im_provider="web_only"))
-                await _db.commit()
-                logger.info("[startup] Default company created")
-    except Exception as e:
-        logger.warning(f"[startup] Default company seed failed: {e}")
+            async with _session() as _db:
+                _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
+                if not _existing.scalar_one_or_none():
+                    _db.add(Tenant(name="Default", slug="default", im_provider="web_only"))
+                    await _db.commit()
+                    logger.info("[startup] Default company created")
+        except Exception as e:
+            logger.warning(f"[startup] Default company seed failed: {e}")
+    else:
+        logger.info("[startup] data bootstrap seed skipped for no-volume API role")
 
     # Migrate old shared enterprise_info/ → enterprise_info_{first_tenant_id}/
     if _volume_bound_startup_enabled():
@@ -379,36 +396,39 @@ async def lifespan(app: FastAPI):
     # the agents still had them (runtime kept working via the legacy fallback).
     # Run it per-tenant on every startup; existing server_key rows are skipped,
     # so it is safe and cheap to re-run.
-    try:
-        import importlib as _il_mcp
-        import pkgutil as _pkg_mcp
-        import app.models as _am_mcp
+    if _data_bootstrap_startup_enabled():
+        try:
+            import importlib as _il_mcp
+            import pkgutil as _pkg_mcp
+            import app.models as _am_mcp
 
-        for _mod in _pkg_mcp.iter_modules(_am_mcp.__path__):
-            _il_mcp.import_module(f"app.models.{_mod.name}")
-        from app.services.mcp_backfill_service import backfill_tenant_mcp_servers as _bf_mcp
-        from app.models.tenant import Tenant as _T_mcp
-        from app.database import async_session as _ses_mcp
-        from sqlalchemy import select as _sel_mcp
+            for _mod in _pkg_mcp.iter_modules(_am_mcp.__path__):
+                _il_mcp.import_module(f"app.models.{_mod.name}")
+            from app.services.mcp_backfill_service import backfill_tenant_mcp_servers as _bf_mcp
+            from app.models.tenant import Tenant as _T_mcp
+            from app.database import async_session as _ses_mcp
+            from sqlalchemy import select as _sel_mcp
 
-        _bf_servers = 0
-        async with _ses_mcp() as _db_mcp:
-            _tenants_mcp = await _db_mcp.execute(_sel_mcp(_T_mcp))
-            for _tenant_mcp in _tenants_mcp.scalars().all():
-                try:
-                    _bf_r = await _bf_mcp(_db_mcp, _tenant_mcp.id)
-                    _bf_servers += int(_bf_r.get("servers", 0))
-                except Exception as _bf_e:
-                    logger.warning(f"[startup] MCP backfill failed for tenant {_tenant_mcp.id}: {_bf_e}")
-        if _bf_servers:
-            logger.info(f"[startup] MCP backfill: created {_bf_servers} new server(s)")
-    except Exception as e:
-        logger.warning(f"[startup] MCP backfill step failed (non-fatal): {e}")
+            _bf_servers = 0
+            async with _ses_mcp() as _db_mcp:
+                _tenants_mcp = await _db_mcp.execute(_sel_mcp(_T_mcp))
+                for _tenant_mcp in _tenants_mcp.scalars().all():
+                    try:
+                        _bf_r = await _bf_mcp(_db_mcp, _tenant_mcp.id)
+                        _bf_servers += int(_bf_r.get("servers", 0))
+                    except Exception as _bf_e:
+                        logger.warning(f"[startup] MCP backfill failed for tenant {_tenant_mcp.id}: {_bf_e}")
+            if _bf_servers:
+                logger.info(f"[startup] MCP backfill: created {_bf_servers} new server(s)")
+        except Exception as e:
+            logger.warning(f"[startup] MCP backfill step failed (non-fatal): {e}")
 
-    try:
-        await seed_builtin_tools()
-    except Exception as e:
-        logger.warning(f"[startup] Builtin tools seed failed: {e}")
+        try:
+            await seed_builtin_tools()
+        except Exception as e:
+            logger.warning(f"[startup] Builtin tools seed failed: {e}")
+    else:
+        logger.info("[startup] MCP/tool DB seed skipped for no-volume API role")
 
     # Hard invariant (Step 0): no CORE tool may also be a pack member. Fail-fast
     # at startup so CORE∩pack drift is caught at deploy time, not in production.
@@ -485,21 +505,24 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("[startup] T2 job sweep skipped for no-volume API role")
 
-    try:
-        from app.services.skill_seeder import (
-            cleanup_retired_builtin_skills,
-            push_default_skills_to_existing_agents,
-            seed_skills,
-        )
+    if _data_bootstrap_startup_enabled():
+        try:
+            from app.services.skill_seeder import (
+                cleanup_retired_builtin_skills,
+                push_default_skills_to_existing_agents,
+                seed_skills,
+            )
 
-        await seed_skills()
-        if _volume_bound_startup_enabled():
-            await cleanup_retired_builtin_skills()
-            await push_default_skills_to_existing_agents()
-        else:
-            logger.info("[startup] skill workspace maintenance skipped for no-volume API role")
-    except Exception as e:
-        logger.warning(f"[startup] Skills seed failed: {e}")
+            await seed_skills()
+            if _volume_bound_startup_enabled():
+                await cleanup_retired_builtin_skills()
+                await push_default_skills_to_existing_agents()
+            else:
+                logger.info("[startup] skill workspace maintenance skipped for no-volume API role")
+        except Exception as e:
+            logger.warning(f"[startup] Skills seed failed: {e}")
+    else:
+        logger.info("[startup] skill DB seed skipped for no-volume API role")
 
     if _volume_bound_startup_enabled():
         try:
@@ -546,16 +569,19 @@ async def lifespan(app: FastAPI):
     # Backfill reply_context for triggers created before the unified-delivery
     # refactor — those triggers have reply_context=NULL and cannot deliver
     # results back to TG/WeChat/Feishu channels.
-    try:
-        from app.services.trigger_daemon import backfill_null_reply_contexts
+    if _data_bootstrap_startup_enabled():
+        try:
+            from app.services.trigger_daemon import backfill_null_reply_contexts
 
-        result = await backfill_null_reply_contexts()
-        if result["patched"]:
-            logger.info(
-                "[startup] Backfilled {} trigger reply_contexts (skipped {})", result["patched"], result["skipped"]
-            )
-    except Exception as e:
-        logger.warning(f"[startup] Trigger reply_context backfill failed: {e}")
+            result = await backfill_null_reply_contexts()
+            if result["patched"]:
+                logger.info(
+                    "[startup] Backfilled {} trigger reply_contexts (skipped {})", result["patched"], result["skipped"]
+                )
+        except Exception as e:
+            logger.warning(f"[startup] Trigger reply_context backfill failed: {e}")
+    else:
+        logger.info("[startup] trigger reply_context backfill skipped for no-volume API role")
 
     # Start background tasks (always, even if seeding failed)
     try:

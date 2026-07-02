@@ -110,11 +110,30 @@ async def create_task(
     # Commit so the background executor can see the task in its own session
     await db.commit()
 
-    # Fire background execution
-    import asyncio
-    from app.services.task_executor import execute_task
+    runtime_task_id = uuid.uuid4()
+    try:
+        from app.services.runtime_task_service import create_runtime_task_record
+        from app.services.runtime_task_worker import notify_runtime_task_worker
 
-    asyncio.create_task(execute_task(task.id, agent_id))
+        await create_runtime_task_record(
+            task_id=runtime_task_id.hex,
+            task_type="business_task",
+            status="pending",
+            parent_agent_id=agent_id,
+            child_agent_id=agent_id,
+            child_agent_name=getattr(agent, "name", None),
+            prompt=data.description,
+            trace_id=f"business_task:{runtime_task_id.hex}",
+            depth=1,
+            metadata_json={
+                "business_task_id": str(task.id),
+                "user_id": str(current_user.id),
+                "source": "tasks_api",
+            },
+        )
+        await notify_runtime_task_worker(reason="business_task_created", runtime_task_id=runtime_task_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to enqueue task execution: {exc}") from exc
 
     return task_out
 

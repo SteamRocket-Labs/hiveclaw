@@ -32,7 +32,7 @@ from app.config import get_settings
 from app.runtime.workflow_admission import _resolve_args_path, estimate_wait_seconds
 from app.runtime.workflow_compiler import CompiledWorkflow
 from app.runtime.workflow_definition import FanoutStep, WaitUntilStep
-from app.runtime.workflow_engine import LeafExecutor, LeafOutcome, LeafRequest
+from app.runtime.workflow_engine import LeafExecutor, LeafOutcome, LeafRequest, WorkflowRunOutcome
 from app.services.workflow_runtime_service import WorkflowRunHandle, WorkflowRuntimeService
 
 logger = logging.getLogger(__name__)
@@ -195,6 +195,7 @@ async def start_ephemeral_workflow_for_agent(
     parent_session_id: uuid.UUID | str | None = None,
     root_session_id: uuid.UUID | str | None = None,
     run_metadata: dict[str, Any] | None = None,
+    enqueue_only: bool = False,
 ) -> WorkflowRunHandle:
     """Resolve agent runtime → build governed leaf executor → start the run.
 
@@ -238,7 +239,15 @@ async def start_ephemeral_workflow_for_agent(
         parent_session_id=parent_session_id,
         root_session_id=root_session_id,
         run_metadata=run_metadata,
+        enqueue_only=enqueue_only,
     )
+    if enqueue_only:
+        try:
+            from app.services.runtime_task_worker import notify_runtime_task_worker
+
+            await notify_runtime_task_worker(reason="workflow_run_created", runtime_task_id=handle.run_id)
+        except Exception as exc:
+            logger.warning("[Workflow] runtime task worker wakeup failed for %s: %s", handle.run_id, exc)
 
     if ledger_todo_id:
         # Observation surface only — mirrors the run onto the agent's ledger
@@ -256,6 +265,30 @@ async def start_ephemeral_workflow_for_agent(
             logger.warning("[Workflow] ledger todo %s mirror failed (non-fatal): %s", ledger_todo_id, exc)
 
     return handle
+
+
+async def execute_claimed_workflow_run(
+    run_id: uuid.UUID | str, *, session_factory=None, spawn=spawn_subagent
+) -> WorkflowRunOutcome:
+    service = WorkflowRuntimeService(session_factory=session_factory)
+    from sqlalchemy import select
+
+    from app.database import async_session, enter_rls_bypass
+    from app.models.runtime_task import RuntimeTask
+
+    async with async_session() as db, enter_rls_bypass(db, reason="workflow worker claim tenant resolve"):
+        task = (
+            await db.execute(select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(str(run_id))))
+        ).scalar_one_or_none()
+    if task is None or task.task_type != "workflow":
+        raise LookupError(f"workflow run {run_id} not found")
+    tenant_value = (task.metadata_json or {}).get("tenant_id") or task.tenant_id
+    if not tenant_value:
+        raise LookupError(f"workflow run {run_id} has no tenant")
+    executor = build_resumable_workflow_leaf_executor(session_factory=session_factory, spawn=spawn)
+    return await service.resume_run(
+        uuid.UUID(str(run_id)), tenant_id=uuid.UUID(str(tenant_value)), leaf_executor=executor
+    )
 
 
 def build_resumable_workflow_leaf_executor(

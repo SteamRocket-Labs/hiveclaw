@@ -43,9 +43,13 @@ def test_api_role_disables_volume_bound_startup(monkeypatch):
 
     monkeypatch.setattr(main_mod.settings, "HIVE_PROCESS_ROLE", "api")
     assert main_mod._volume_bound_startup_enabled() is False
+    assert main_mod._schema_bootstrap_startup_enabled() is False
+    assert main_mod._data_bootstrap_startup_enabled() is False
 
     monkeypatch.setattr(main_mod.settings, "HIVE_PROCESS_ROLE", "runtime")
     assert main_mod._volume_bound_startup_enabled() is True
+    assert main_mod._schema_bootstrap_startup_enabled() is True
+    assert main_mod._data_bootstrap_startup_enabled() is True
 
 
 def test_api_role_path_boundary_allows_control_plane_and_rejects_volume_paths():

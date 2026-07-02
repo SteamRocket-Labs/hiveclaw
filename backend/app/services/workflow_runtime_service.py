@@ -74,8 +74,10 @@ def _workflow_runtime_action_payload(
     step_id: str | None = None,
     result_ref: str | None = None,
 ) -> dict[str, Any]:
-    event_type = "runtime_action_progress" if step_id else _WORKFLOW_RUNTIME_ACTION_BY_RUN_STATUS.get(
-        status, "runtime_action_progress"
+    event_type = (
+        "runtime_action_progress"
+        if step_id
+        else _WORKFLOW_RUNTIME_ACTION_BY_RUN_STATUS.get(status, "runtime_action_progress")
     )
     subject = f"Workflow step {step_id}" if step_id else "Workflow run"
     payload: dict[str, Any] = {
@@ -743,6 +745,7 @@ class WorkflowRuntimeService:
         parent_session_id: uuid.UUID | str | None = None,
         root_session_id: uuid.UUID | str | None = None,
         run_metadata: dict[str, Any] | None = None,
+        enqueue_only: bool = False,
     ) -> WorkflowRunHandle:
         if not get_settings().WORKFLOW_RUNTIME_ENABLED:
             raise WorkflowAdmissionError("workflow runtime disabled by feature flag WORKFLOW_RUNTIME_ENABLED")
@@ -781,7 +784,7 @@ class WorkflowRuntimeService:
                 id=run_id,
                 task_type="workflow",
                 tenant_id=tenant_id,
-                status="running",
+                status="pending" if enqueue_only else "running",
                 parent_agent_id=agent_id,
                 parent_session_id=parent_session_value,
                 child_session_id=parent_session_value,
@@ -815,7 +818,7 @@ class WorkflowRuntimeService:
             run_id=run_id,
             parent_session_id=parent_session_value,
             root_session_id=root_session_value,
-            status="running",
+            status="pending" if enqueue_only else "running",
             definition_source=definition_source,
             definition_hash=compiled.definition_hash,
         )
@@ -838,6 +841,12 @@ class WorkflowRuntimeService:
             definition_hash=compiled.definition_hash,
             extra={"definition_source": definition_source},
         )
+
+        if enqueue_only:
+            return WorkflowRunHandle(
+                run_id=run_id,
+                outcome=WorkflowRunOutcome(status="pending", reason="queued_for_worker_claim"),
+            )
 
         outcome = await self._execute(
             compiled, run_id=run_id, tenant_id=tenant_id, args=args, leaf_executor=leaf_executor
@@ -879,9 +888,7 @@ class WorkflowRuntimeService:
         new_session_id = uuid.uuid4()
         try:
             async with self._session(tenant_id) as session:
-                agent = (
-                    await session.execute(select(Agent).where(Agent.id == agent_id))
-                ).scalar_one_or_none()
+                agent = (await session.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
                 # Headless runs may carry no user; the agent always has an owning
                 # principal (owner → creator → sponsor) — a valid users.id FK so
                 # the multi-tenant ChatSession row is well-formed.
@@ -918,9 +925,7 @@ class WorkflowRuntimeService:
                         },
                     )
                 )
-                task = (
-                    await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))
-                ).scalar_one_or_none()
+                task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one_or_none()
                 if task is not None:
                     task.parent_session_id = str(new_session_id)
                     task.child_session_id = str(new_session_id)
@@ -986,11 +991,7 @@ class WorkflowRuntimeService:
             definition_hash=definition_hash,
             reason=reason,
         )
-        payloads = (
-            (payload, runtime_payload)
-            if status == "running"
-            else (runtime_payload, payload)
-        )
+        payloads = (payload, runtime_payload) if status == "running" else (runtime_payload, payload)
         try:
             async with self._session(tenant_id) as session:
                 for event_payload in payloads:
@@ -1159,7 +1160,11 @@ class WorkflowRuntimeService:
                 .all()
             )
             leaf_calls = (
-                (await session.execute(select(WorkflowLeafCall).where(WorkflowLeafCall.run_id == uuid.UUID(str(run_id)))))
+                (
+                    await session.execute(
+                        select(WorkflowLeafCall).where(WorkflowLeafCall.run_id == uuid.UUID(str(run_id)))
+                    )
+                )
                 .scalars()
                 .all()
             )
@@ -1365,7 +1370,9 @@ class WorkflowRuntimeService:
             logger.warning("[Workflow] completion delivery failed (non-fatal): %s", exc)
 
     @staticmethod
-    def _completion_task_summary(*, run_id: uuid.UUID, status: str, reason: str | None, outputs: dict[str, Any] | None) -> str:
+    def _completion_task_summary(
+        *, run_id: uuid.UUID, status: str, reason: str | None, outputs: dict[str, Any] | None
+    ) -> str:
         parts = [f"Workflow run {run_id} finished: {status}."]
         if reason:
             parts.append(f"Reason: {reason}")
@@ -1432,14 +1439,24 @@ class WorkflowRuntimeService:
             async with self._session(tenant_id) as session:
                 parent_session = (
                     await session.execute(
-                        select(ChatSession).where(ChatSession.id == parent_session_uuid, ChatSession.agent_id == agent_id)
+                        select(ChatSession).where(
+                            ChatSession.id == parent_session_uuid, ChatSession.agent_id == agent_id
+                        )
                     )
                 ).scalar_one_or_none()
                 parent_agent = (await session.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
-                owner_id = metadata.get("user_id") or getattr(parent_session, "user_id", None) or getattr(parent_agent, "creator_id", None)
+                owner_id = (
+                    metadata.get("user_id")
+                    or getattr(parent_session, "user_id", None)
+                    or getattr(parent_agent, "creator_id", None)
+                )
                 owner = (
-                    await session.execute(select(User).where(User.id == uuid.UUID(str(owner_id))))
-                ).scalar_one_or_none() if owner_id else None
+                    (
+                        await session.execute(select(User).where(User.id == uuid.UUID(str(owner_id))))
+                    ).scalar_one_or_none()
+                    if owner_id
+                    else None
+                )
                 if parent_session is None or parent_agent is None or owner is None:
                     return
                 await continue_parent_session_with_task_notification(
@@ -1661,9 +1678,7 @@ class WorkflowRuntimeService:
             task_metadata = dict(task.metadata_json or {})
             if task_metadata.get("dynamic_workflow"):
                 steps = (
-                    (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id)))
-                    .scalars()
-                    .all()
+                    (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id))).scalars().all()
                 )
                 leaf_calls = (
                     (await session.execute(select(WorkflowLeafCall).where(WorkflowLeafCall.run_id == run_id)))

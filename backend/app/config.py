@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     RUNTIME_TASK_WORKER_ID: str = ""
     RUNTIME_TASK_WORKER_BATCH_SIZE: int = 4
     RUNTIME_TASK_WORKER_MAX_CONCURRENT: int = 8
+    RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS: str = (
+        "web_chat_turn=8,goal_continuation=4,team_member=4,advanced_plan=2,"
+        "workflow=8,delegation=16,business_task=4"
+    )
     RUNTIME_TASK_CLAIM_LEASE_SECONDS: int = 180
     RUNTIME_TASK_CLAIM_POLL_SECONDS: float = 1.0
     RUNTIME_TASK_WAKEUP_CHANNEL: str = "hive:runtime_tasks:wakeup"

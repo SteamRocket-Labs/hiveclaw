@@ -142,6 +142,7 @@ async def start_workflow_endpoint(
             user_id=getattr(current_user, "id", None),
             confirmed_plan_id=payload.confirmed_plan_id,
             ledger_todo_id=payload.ledger_todo_id,
+            enqueue_only=True,
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

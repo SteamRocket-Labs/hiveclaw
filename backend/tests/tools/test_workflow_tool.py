@@ -213,7 +213,9 @@ async def test_preview_workflow_rejects_over_threshold_fanout_before_start():
             }
         ],
     }
-    result = await preview_workflow(uuid.uuid4(), {"definition": definition, "args": {"targets": [f"t{i}" for i in range(64)]}})
+    result = await preview_workflow(
+        uuid.uuid4(), {"definition": definition, "args": {"targets": [f"t{i}" for i in range(64)]}}
+    )
     payload = json.loads(result)
 
     assert payload["ok"] is False
@@ -313,6 +315,7 @@ async def test_start_workflow_low_risk_launches(monkeypatch):
     assert captured["agent_id"] == agent_id
     assert captured["definition"]["name"] == "read-probe"
     assert captured["parent_session_id"] == "session-workflow"
+    assert captured["enqueue_only"] is True
 
 
 async def test_start_workflow_persists_dynamic_proposal_binding(monkeypatch):

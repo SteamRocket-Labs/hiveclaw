@@ -18,3 +18,12 @@ def test_backend_entrypoint_runs_as_root_before_dropping_to_hive() -> None:
     assert "\nUSER hive\n" not in before_entrypoint
     assert "chown -R hive:hive /data" in entrypoint
     assert 'exec su hive -s /bin/bash -c "exec uvicorn' in entrypoint
+
+
+def test_backend_entrypoint_skips_schema_bootstrap_for_api_role() -> None:
+    backend_root = Path(__file__).resolve().parents[2]
+    entrypoint = (backend_root / "entrypoint.sh").read_text(encoding="utf-8")
+
+    assert 'if [ "${HIVE_PROCESS_ROLE:-runtime}" != "api" ]; then' in entrypoint
+    assert 'echo "[entrypoint] API role: skipping schema/bootstrap migrations before uvicorn"' in entrypoint
+    assert 'echo "[entrypoint] Step 3: Starting uvicorn..."' in entrypoint

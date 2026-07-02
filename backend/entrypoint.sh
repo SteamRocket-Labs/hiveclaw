@@ -29,6 +29,7 @@ case "$SCHEMA_URL" in
   postgresql://*) SCHEMA_URL="postgresql+asyncpg://${SCHEMA_URL#postgresql://}" ;;
 esac
 
+if [ "${HIVE_PROCESS_ROLE:-runtime}" != "api" ]; then
 echo "[entrypoint] Step 1: Creating/verifying database tables..."
 
 DATABASE_URL="$SCHEMA_URL" python << 'PYEOF'
@@ -179,6 +180,9 @@ DATABASE_URL="$SCHEMA_URL" python -m app.scripts.grant_rls_app_role || echo "[en
 if [ "$RLS_BACKFILL_ON_DEPLOY" = "1" ]; then
     echo "[entrypoint] Step 2.7: Stage-2b tenant_id backfill in background (non-blocking)..."
     DATABASE_URL="$SCHEMA_URL" python -m app.scripts.backfill_stage2b_tenant_id --apply --confirm &
+fi
+else
+    echo "[entrypoint] API role: skipping schema/bootstrap migrations before uvicorn"
 fi
 
 # Step 2.7: Auto-authenticate lark-cli if Feishu app credentials are available

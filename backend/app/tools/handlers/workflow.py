@@ -44,6 +44,7 @@ _DEFINITION_PARAM = {
     ),
 }
 
+
 def _cache_dynamic_workflow_proposal(proposal: dict[str, Any]) -> None:
     proposal_id = str(proposal.get("proposal_id") or "").strip()
     if not proposal_id:
@@ -161,8 +162,14 @@ async def propose_dynamic_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
             "properties": {
                 "definition": _DEFINITION_PARAM,
                 "args": {"type": "object", "description": "Arguments matching the definition's args_schema."},
-                "proposal_id": {"type": "string", "description": "Dynamic Workflow proposal_id, if previewing a candidate."},
-                "candidate_id": {"type": "string", "description": "Dynamic Workflow candidate_id, if previewing a candidate."},
+                "proposal_id": {
+                    "type": "string",
+                    "description": "Dynamic Workflow proposal_id, if previewing a candidate.",
+                },
+                "candidate_id": {
+                    "type": "string",
+                    "description": "Dynamic Workflow candidate_id, if previewing a candidate.",
+                },
             },
             "required": ["definition"],
         },
@@ -323,9 +330,13 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
                 ensure_ascii=False,
             )
         if proposal_id and preview_proposal_id and proposal_id != preview_proposal_id:
-            return json.dumps({"ok": False, "error": "start_workflow proposal_id differs from preview_workflow"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "error": "start_workflow proposal_id differs from preview_workflow"}, ensure_ascii=False
+            )
         if candidate_id and preview_candidate_id and candidate_id != preview_candidate_id:
-            return json.dumps({"ok": False, "error": "start_workflow candidate_id differs from preview_workflow"}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": False, "error": "start_workflow candidate_id differs from preview_workflow"}, ensure_ascii=False
+            )
         proposal_id = proposal_id or preview_proposal_id
         candidate_id = candidate_id or preview_candidate_id
         dynamic_candidate = mapping((preview_record or {}).get("dynamic_candidate"))
@@ -347,6 +358,7 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
             root_session_id=session_id,
             definition_source="dynamic_workflow" if proposal_id or candidate_id else "ephemeral",
             run_metadata=run_metadata,
+            enqueue_only=True,
         )
     except (WorkflowCompileError, WorkflowAdmissionError, LookupError) as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)

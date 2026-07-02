@@ -18,6 +18,16 @@ from app.services.web_chat_runtime import active_web_chat_run_count, dispatch_we
 
 
 _LOCAL_WAKEUP_EVENT: asyncio.Event | None = None
+SUPPORTED_RUNTIME_TASK_TYPES = (
+    "web_chat_turn",
+    "goal_continuation",
+    "team_member",
+    "advanced_plan",
+    "workflow",
+    "delegation",
+    "business_task",
+)
+_DISPATCHED_TASKS: dict[str, tuple[str, asyncio.Task]] = {}
 _STATE: dict[str, Any] = {
     "running": False,
     "worker_id": None,
@@ -59,11 +69,64 @@ def runtime_task_worker_enabled() -> bool:
     return bool(settings.RUNTIME_TASK_WORKER_ENABLED) and role not in {"api", "read_model"}
 
 
+def _parse_task_type_limits(raw_limits: str | None = None) -> dict[str, int]:
+    raw = str(raw_limits if raw_limits is not None else _settings().RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS or "")
+    limits: dict[str, int] = {}
+    for item in raw.split(","):
+        if "=" not in item:
+            continue
+        task_type, value = item.split("=", 1)
+        task_type = task_type.strip()
+        if task_type not in SUPPORTED_RUNTIME_TASK_TYPES:
+            continue
+        try:
+            limits[task_type] = max(0, int(value.strip()))
+        except ValueError:
+            continue
+    return limits
+
+
+def _cleanup_dispatched_tasks() -> None:
+    done_keys = [run_id for run_id, (_task_type, task) in _DISPATCHED_TASKS.items() if task.done()]
+    for run_id in done_keys:
+        _DISPATCHED_TASKS.pop(run_id, None)
+
+
+def _active_dispatched_task_type_counts() -> dict[str, int]:
+    _cleanup_dispatched_tasks()
+    counts: dict[str, int] = {}
+    for task_type, _task in _DISPATCHED_TASKS.values():
+        counts[task_type] = counts.get(task_type, 0) + 1
+    return counts
+
+
+def _total_active_runtime_task_count() -> int:
+    return active_web_chat_run_count() + sum(_active_dispatched_task_type_counts().values())
+
+
+def _task_type_capacity_remaining(task_type: str) -> int:
+    limits = _parse_task_type_limits()
+    limit = limits.get(task_type)
+    if limit is None:
+        return 0
+    if task_type in {"web_chat_turn", "goal_continuation", "team_member", "advanced_plan"}:
+        active = active_web_chat_run_count()
+    else:
+        active = _active_dispatched_task_type_counts().get(task_type, 0)
+    return max(0, limit - active)
+
+
+def _claimable_task_types_for_available_capacity() -> tuple[str, ...]:
+    return tuple(
+        task_type for task_type in SUPPORTED_RUNTIME_TASK_TYPES if _task_type_capacity_remaining(task_type) > 0
+    )
+
+
 def _claim_batch_size_for_available_slots() -> int:
     settings = _settings()
     max_concurrent = max(1, int(settings.RUNTIME_TASK_WORKER_MAX_CONCURRENT))
     configured_batch = max(1, int(settings.RUNTIME_TASK_WORKER_BATCH_SIZE))
-    available_slots = max(0, max_concurrent - active_web_chat_run_count())
+    available_slots = max(0, max_concurrent - _total_active_runtime_task_count())
     return min(configured_batch, available_slots)
 
 
@@ -111,11 +174,15 @@ async def claim_and_dispatch_once(*, worker_id: str | None = None) -> list[str]:
     if batch_size <= 0:
         _STATE["last_claimed_count"] = 0
         return claimed_ids
+    claimable_task_types = _claimable_task_types_for_available_capacity()
+    if not claimable_task_types:
+        _STATE["last_claimed_count"] = 0
+        return claimed_ids
     async with async_session() as db, enter_rls_bypass(db, reason="runtime task worker claim pending executable tasks"):
         service = RuntimeTaskClaimService(
             db=db,
             worker_id=worker_id or _worker_id(),
-            task_types=("web_chat_turn", "goal_continuation", "team_member", "advanced_plan"),
+            task_types=claimable_task_types,
             lease_seconds=settings.RUNTIME_TASK_CLAIM_LEASE_SECONDS,
         )
         claimed = await service.claim_available(batch_size=batch_size)
@@ -133,8 +200,73 @@ async def claim_and_dispatch_once(*, worker_id: str | None = None) -> list[str]:
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
     if is_executable_chat_task_type(getattr(task, "task_type", None)):
         return dispatch_web_chat_run(task.id)
+    if task.task_type == "workflow":
+        return _dispatch_async_runtime_task(task, _execute_claimed_workflow_task(task.id), task_type="workflow")
+    if task.task_type == "delegation":
+        return _dispatch_async_runtime_task(task, _execute_claimed_delegation_task(task.id), task_type="delegation")
+    if task.task_type == "business_task":
+        return _dispatch_async_runtime_task(task, _execute_claimed_business_task(task.id), task_type="business_task")
     logger.warning("[RuntimeTaskWorker] Claimed unsupported task type {}; leaving task {}", task.task_type, task.id)
     return False
+
+
+def _dispatch_async_runtime_task(task: RuntimeTask, coro, *, task_type: str) -> bool:
+    run_key = task.id.hex
+    if run_key in _DISPATCHED_TASKS:
+        return False
+    async_task = asyncio.create_task(coro, name=f"runtime-{task_type}-{run_key}")
+    _DISPATCHED_TASKS[run_key] = (task_type, async_task)
+    async_task.add_done_callback(lambda _task, run_id=run_key: _DISPATCHED_TASKS.pop(run_id, None))
+    return True
+
+
+async def _execute_claimed_workflow_task(run_id: UUID) -> None:
+    try:
+        from app.services.workflow_launch import execute_claimed_workflow_run
+
+        await execute_claimed_workflow_run(run_id)
+    except Exception as exc:  # noqa: BLE001 - worker loop must keep running.
+        _STATE["last_error"] = f"workflow:{type(exc).__name__}:{str(exc)[:300]}"
+        logger.exception("[RuntimeTaskWorker] workflow task {} failed", run_id)
+
+
+async def _execute_claimed_delegation_task(task_id: UUID) -> None:
+    try:
+        from app.agents.orchestrator import dispatch_persisted_async_delegation
+
+        ok = await dispatch_persisted_async_delegation(task_id.hex)
+        if not ok:
+            logger.warning("[RuntimeTaskWorker] delegation task {} could not be dispatched", task_id)
+    except Exception as exc:  # noqa: BLE001
+        _STATE["last_error"] = f"delegation:{type(exc).__name__}:{str(exc)[:300]}"
+        logger.exception("[RuntimeTaskWorker] delegation task {} failed", task_id)
+
+
+async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
+    try:
+        from app.services.runtime_task_service import get_runtime_task_record, update_runtime_task_record
+        from app.services.task_executor import execute_task
+
+        record = await get_runtime_task_record(runtime_task_id.hex)
+        metadata = record.get("metadata") if record else {}
+        business_task_id = metadata.get("business_task_id") if isinstance(metadata, dict) else None
+        agent_id = record.get("parent_agent_id") if record else None
+        if not business_task_id or not agent_id:
+            await update_runtime_task_record(
+                runtime_task_id.hex,
+                status="failed",
+                result_summary="business_task RuntimeTask is missing business_task_id or parent_agent_id",
+            )
+            return
+        await execute_task(UUID(str(business_task_id)), UUID(str(agent_id)))
+        await update_runtime_task_record(
+            runtime_task_id.hex,
+            status="completed",
+            result_summary=f"business task {business_task_id} completed",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _STATE["last_error"] = f"business_task:{type(exc).__name__}:{str(exc)[:300]}"
+        logger.exception("[RuntimeTaskWorker] business task {} failed", runtime_task_id)
 
 
 async def start_runtime_task_worker_loop() -> None:

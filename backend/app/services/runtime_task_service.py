@@ -39,6 +39,7 @@ def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
         "task_id": task.id.hex,
         "task_type": task.task_type,
         "status": task.status,
+        "tenant_id": str(task.tenant_id) if task.tenant_id else None,
         "parent_agent_id": str(task.parent_agent_id) if task.parent_agent_id else None,
         "child_agent_id": str(task.child_agent_id) if task.child_agent_id else None,
         "child_agent_name": task.child_agent_name,

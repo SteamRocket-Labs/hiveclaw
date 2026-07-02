@@ -183,7 +183,7 @@ async def test_delegate_async_serializes_duplicate_work_with_coordination_lease(
     first = await delegate_async(**kwargs)
     second = await delegate_async(**kwargs)
 
-    assert first.status == "running"
+    assert first.status == "queued"
     assert first.coordination_lease_id
     assert second.status == "blocked_by_lease"
     assert second.blocked_by_lease_id == first.coordination_lease_id
@@ -197,10 +197,13 @@ async def test_delegate_async_captures_execution_identity_before_background_spaw
 
     target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
-    captured = {}
+    created: dict = {}
+    spawned: list[dict] = []
+    wakeups: list[dict] = []
 
-    async def fake_create_runtime_task_record(**_kwargs):
-        return None
+    async def fake_create_runtime_task_record(**kwargs):
+        created.update(kwargs)
+        return kwargs["task_id"]
 
     async def fake_update_runtime_task_record(*_args, **_kwargs):
         return None
@@ -208,15 +211,17 @@ async def test_delegate_async_captures_execution_identity_before_background_spaw
     async def fake_persist_delegation_event(**_kwargs):
         return None
 
+    async def fake_notify_runtime_task_worker(**kwargs):
+        wakeups.append(kwargs)
+
     def fake_spawn_async_delegation_task(*, task_id, request, trace_id):
-        captured["task_id"] = task_id
-        captured["request"] = request
-        captured["trace_id"] = trace_id
+        spawned.append({"task_id": task_id, "request": request, "trace_id": trace_id})
 
     monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_runtime_task_record)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr("app.agents.orchestrator._persist_delegation_event", fake_persist_delegation_event)
     monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", fake_spawn_async_delegation_task)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify_runtime_task_worker)
 
     user_id = uuid4()
     set_execution_identity(
@@ -234,11 +239,65 @@ async def test_delegate_async_captures_execution_identity_before_background_spaw
     finally:
         clear_execution_identity()
 
-    assert handle.status == "running"
-    assert captured["request"].execution_identity is not None
-    assert captured["request"].execution_identity.identity_type == "delegated_user"
-    assert captured["request"].execution_identity.identity_id == user_id
-    assert captured["request"].execution_identity.label == "User via Feishu"
+    assert handle.status == "queued"
+    assert spawned == []
+    assert wakeups == [{"reason": "delegation_created", "runtime_task_id": handle.task_id}]
+    metadata = created["metadata_json"]
+    assert metadata["execution_identity"]["identity_type"] == "delegated_user"
+    assert metadata["execution_identity"]["identity_id"] == str(user_id)
+    assert metadata["execution_identity"]["label"] == "User via Feishu"
+
+
+@pytest.mark.asyncio
+async def test_delegate_async_enqueues_for_worker_claim_instead_of_in_process_spawn(monkeypatch):
+    from app.agents.orchestrator import delegate_async
+
+    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful")
+    target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
+    created: dict = {}
+    updates: list[tuple[tuple, dict]] = []
+    wakeups: list[dict] = []
+    spawned: list[dict] = []
+
+    async def fake_create_runtime_task_record(**kwargs):
+        created.update(kwargs)
+        return kwargs["task_id"]
+
+    async def fake_update_runtime_task_record(*args, **kwargs):
+        updates.append((args, kwargs))
+        return True
+
+    async def fake_persist_delegation_event(**_kwargs):
+        return None
+
+    async def fake_notify_runtime_task_worker(**kwargs):
+        wakeups.append(kwargs)
+
+    def fake_spawn_async_delegation_task(**kwargs):
+        spawned.append(kwargs)
+
+    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._persist_delegation_event", fake_persist_delegation_event)
+    monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", fake_spawn_async_delegation_task)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify_runtime_task_worker)
+
+    handle = await delegate_async(
+        target=target,
+        target_model=target_model,
+        conversation_messages=[{"role": "user", "content": "Prepare the market map"}],
+        owner_id=uuid4(),
+        session_id="session-worker-claim",
+        parent_agent_id=uuid4(),
+        parent_session_id="parent-session-worker-claim",
+    )
+
+    assert handle.status == "queued"
+    assert created["task_type"] == "delegation"
+    assert created["status"] == "pending"
+    assert spawned == []
+    assert updates == []
+    assert wakeups == [{"reason": "delegation_created", "runtime_task_id": handle.task_id}]
 
 
 @pytest.mark.asyncio
@@ -633,21 +692,17 @@ async def test_peer_agent_delegation_profile_inherits_capability_token_scope(mon
 
 @pytest.mark.asyncio
 async def test_delegate_async_returns_handle_immediately(monkeypatch):
-    from app.agents.orchestrator import delegate_async, check_async_delegation
+    from app.agents.orchestrator import delegate_async
 
-    completed = asyncio.Event()
-
-    async def fake_invoke(invocation):
-        await completed.wait()
-        return SimpleNamespace(content="async result")
+    created: dict = {}
 
     async def fake_create_task_record(**kwargs):
+        created.update(kwargs)
         return kwargs["task_id"]
 
     async def fake_update_runtime_task_record(*args, **kwargs):
         return True
 
-    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
     monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_task_record)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
 
@@ -665,19 +720,9 @@ async def test_delegate_async_returns_handle_immediately(monkeypatch):
 
     assert handle.task_id
     assert handle.target_name == "Worker"
-
-    # Task should be running
-    status = await check_async_delegation(handle.task_id)
-    assert status["status"] == "running"
-
-    # Let the task complete
-    completed.set()
-    await asyncio.sleep(0.05)
-
-    # Now it should be completed
-    status = await check_async_delegation(handle.task_id)
-    assert status["status"] == "completed"
-    assert status["result"] == "async result"
+    assert handle.status == "queued"
+    assert created["task_type"] == "delegation"
+    assert created["status"] == "pending"
 
 
 @pytest.mark.asyncio
@@ -1140,9 +1185,20 @@ async def test_cancel_async_delegation_marks_task_killed(monkeypatch):
         persisted.append(("update", {"task_id": task_id, **kwargs}))
         return True
 
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == handle.task_id
+        return {
+            "task_id": task_id,
+            "status": "pending",
+            "parent_agent_id": str(owner_id),
+            "child_session_id": "sess-kill",
+            "parent_session_id": None,
+        }
+
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
     monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_task)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_task)
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
 
     target = SimpleNamespace(id=uuid4(), name="KillableWorker", role_description="")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
@@ -1236,7 +1292,15 @@ async def test_cancel_async_delegation_rejects_other_parent(monkeypatch):
         await never_finish.wait()
         return SimpleNamespace(content="done")
 
+    async def fake_create_task(**kwargs):
+        return kwargs["task_id"]
+
+    async def fake_update_task(*args, **kwargs):
+        return True
+
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
+    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_task)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_task)
 
     target = SimpleNamespace(id=uuid4(), name="KillableWorker", role_description="")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
@@ -1250,6 +1314,17 @@ async def test_cancel_async_delegation_rejects_other_parent(monkeypatch):
         session_id="sess-kill-owner",
         parent_agent_id=owner_a,
     )
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == handle.task_id
+        return {
+            "task_id": task_id,
+            "status": "pending",
+            "parent_agent_id": str(owner_a),
+            "child_session_id": "sess-kill-owner",
+        }
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
 
     status = await cancel_async_delegation(handle.task_id, parent_agent_id=uuid4())
     assert status["status"] == "forbidden"
@@ -1267,34 +1342,64 @@ async def test_check_async_delegation_not_found():
 
 @pytest.mark.asyncio
 async def test_delegate_async_handles_failure(monkeypatch):
-    from app.agents.orchestrator import delegate_async, check_async_delegation
+    from app.agents.orchestrator import _async_tasks, dispatch_persisted_async_delegation
 
     async def fake_invoke(invocation):
         raise RuntimeError("LLM exploded")
 
-    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
-
+    task_id = uuid4().hex
+    owner_id = uuid4()
     target = SimpleNamespace(id=uuid4(), name="Crasher", role_description="")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    updates: list[tuple[str, dict]] = []
 
-    handle = await delegate_async(
-        target=target,
-        target_model=model,
-        conversation_messages=[{"role": "user", "content": "crash"}],
-        owner_id=uuid4(),
-        session_id="sess-2",
-    )
+    async def fake_get_runtime_task_record(task_id_arg):
+        assert task_id_arg == task_id
+        return {
+            "task_id": task_id,
+            "task_type": "delegation",
+            "status": "running",
+            "trace_id": "trace-failure",
+            "parent_agent_id": str(uuid4()),
+            "child_agent_id": str(target.id),
+            "child_session_id": "sess-2",
+            "depth": 1,
+            "metadata": {
+                "owner_id": str(owner_id),
+                "target_agent_id": str(target.id),
+                "conversation_messages": [{"role": "user", "content": "crash"}],
+                "tool_profile": "review_readonly",
+            },
+        }
 
+    async def fake_resolve_target_runtime(child_agent_id):
+        assert child_agent_id == target.id
+        return target, model
+
+    async def fake_update_runtime_task_record(task_id_arg, **kwargs):
+        updates.append((task_id_arg, kwargs))
+        return True
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+
+    assert await dispatch_persisted_async_delegation(task_id) is True
     await asyncio.sleep(0.05)
 
-    status = await check_async_delegation(handle.task_id)
-    assert status["status"] == "failed"
-    assert "failed" in status["result"]
+    assert any(task_id_arg == task_id and payload.get("status") == "failed" for task_id_arg, payload in updates)
+    _async_tasks.clear()
 
 
 @pytest.mark.asyncio
 async def test_list_async_delegations(monkeypatch):
-    from app.agents.orchestrator import delegate_async, list_async_delegations
+    from app.agents.orchestrator import (
+        AgentDelegationRequest,
+        _async_tasks,
+        _spawn_async_delegation_task,
+        list_async_delegations,
+    )
 
     never_finish = asyncio.Event()
 
@@ -1306,27 +1411,39 @@ async def test_list_async_delegations(monkeypatch):
 
     target = SimpleNamespace(id=uuid4(), name="Lister", role_description="")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
-
-    handle = await delegate_async(
-        target=target,
-        target_model=model,
-        conversation_messages=[{"role": "user", "content": "list test"}],
-        owner_id=uuid4(),
-        session_id="sess-3",
+    task_id = uuid4().hex
+    _spawn_async_delegation_task(
+        task_id=task_id,
+        trace_id="trace-list",
+        request=AgentDelegationRequest(
+            target=target,
+            target_model=model,
+            conversation_messages=[{"role": "user", "content": "list test"}],
+            owner_id=uuid4(),
+            session_id="sess-3",
+            parent_agent_id=uuid4(),
+            trace_id="trace-list",
+        ),
     )
 
     tasks = list_async_delegations()
-    assert any(t["task_id"] == handle.task_id for t in tasks)
+    assert any(t["task_id"] == task_id for t in tasks)
     assert any(t["status"] == "running" for t in tasks)
 
     # Cleanup
     never_finish.set()
     await asyncio.sleep(0.05)
+    _async_tasks.clear()
 
 
 @pytest.mark.asyncio
 async def test_list_async_delegations_filters_by_parent_agent(monkeypatch):
-    from app.agents.orchestrator import check_async_delegation, delegate_async, list_async_delegations
+    from app.agents.orchestrator import (
+        AgentDelegationRequest,
+        _async_tasks,
+        _spawn_async_delegation_task,
+        list_async_delegations,
+    )
 
     never_finish = asyncio.Event()
 
@@ -1340,74 +1457,97 @@ async def test_list_async_delegations_filters_by_parent_agent(monkeypatch):
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
     owner_a = uuid4()
     owner_b = uuid4()
-
-    handle_a = await delegate_async(
-        target=target,
-        target_model=model,
-        conversation_messages=[{"role": "user", "content": "task-a"}],
-        owner_id=uuid4(),
-        session_id="sess-scope-a",
-        parent_agent_id=owner_a,
+    task_a = uuid4().hex
+    task_b = uuid4().hex
+    _spawn_async_delegation_task(
+        task_id=task_a,
+        trace_id="trace-scope-a",
+        request=AgentDelegationRequest(
+            target=target,
+            target_model=model,
+            conversation_messages=[{"role": "user", "content": "task-a"}],
+            owner_id=uuid4(),
+            session_id="sess-scope-a",
+            parent_agent_id=owner_a,
+            trace_id="trace-scope-a",
+        ),
     )
-    handle_b = await delegate_async(
-        target=target,
-        target_model=model,
-        conversation_messages=[{"role": "user", "content": "task-b"}],
-        owner_id=uuid4(),
-        session_id="sess-scope-b",
-        parent_agent_id=owner_b,
+    _spawn_async_delegation_task(
+        task_id=task_b,
+        trace_id="trace-scope-b",
+        request=AgentDelegationRequest(
+            target=target,
+            target_model=model,
+            conversation_messages=[{"role": "user", "content": "task-b"}],
+            owner_id=uuid4(),
+            session_id="sess-scope-b",
+            parent_agent_id=owner_b,
+            trace_id="trace-scope-b",
+        ),
     )
 
     tasks = list_async_delegations(parent_agent_id=owner_a)
     task_ids = {task["task_id"] for task in tasks}
-    assert handle_a.task_id in task_ids
-    assert handle_b.task_id not in task_ids
+    assert task_a in task_ids
+    assert task_b not in task_ids
 
     never_finish.set()
     await asyncio.sleep(0.05)
-    await check_async_delegation(handle_a.task_id)
-    await check_async_delegation(handle_b.task_id)
+    _async_tasks.clear()
 
 
 @pytest.mark.asyncio
 async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
-    from app.agents.orchestrator import check_async_delegation, delegate_async
+    from app.agents.orchestrator import _async_tasks, dispatch_persisted_async_delegation
 
-    persisted: list[tuple[str, dict]] = []
+    task_id = uuid4().hex
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    updates: list[tuple[str, dict]] = []
 
-    async def fake_create_task(**kwargs):
-        persisted.append(("create", kwargs))
-        return kwargs["task_id"]
+    async def fake_get_runtime_task_record(task_id_arg):
+        assert task_id_arg == task_id
+        return {
+            "task_id": task_id,
+            "task_type": "delegation",
+            "status": "running",
+            "trace_id": "trace-runtime",
+            "parent_agent_id": str(parent_agent_id),
+            "child_agent_id": str(target.id),
+            "child_session_id": "sess-runtime",
+            "depth": 1,
+            "metadata": {
+                "owner_id": str(owner_id),
+                "target_agent_id": str(target.id),
+                "conversation_messages": [{"role": "user", "content": "do research"}],
+                "tool_profile": "review_readonly",
+            },
+        }
 
-    async def fake_update_task(task_id, **kwargs):
-        persisted.append(("update", {"task_id": task_id, **kwargs}))
+    async def fake_resolve_target_runtime(child_agent_id):
+        assert child_agent_id == target.id
+        return target, model
 
     async def fake_invoke(_invocation):
         return SimpleNamespace(content="async result")
 
+    async def fake_update_task(task_id_arg, **kwargs):
+        updates.append((task_id_arg, kwargs))
+        return True
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
-    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_task)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_task)
 
-    target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
-    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
-
-    handle = await delegate_async(
-        target=target,
-        target_model=model,
-        conversation_messages=[{"role": "user", "content": "do research"}],
-        owner_id=uuid4(),
-        session_id="sess-runtime",
-        parent_agent_id=uuid4(),
-    )
-
+    assert await dispatch_persisted_async_delegation(task_id) is True
     await asyncio.sleep(0.05)
-    status = await check_async_delegation(handle.task_id)
 
-    assert status["status"] == "completed"
-    assert persisted[0][0] == "create"
-    assert persisted[0][1]["task_id"] == handle.task_id
-    assert any(kind == "update" and payload["status"] == "completed" for kind, payload in persisted)
+    assert any(task_id_arg == task_id and payload.get("status") == "running" for task_id_arg, payload in updates)
+    assert any(task_id_arg == task_id and payload.get("status") == "completed" for task_id_arg, payload in updates)
+    _async_tasks.clear()
 
 
 # ── P0-3a/b: cycle detection on shared trace_id ────────────────────────
@@ -2023,7 +2163,10 @@ def test_delegation_child_tool_results_bind_workspace_artifacts() -> None:
     block = source[marker_index : source.index("invocation = AgentInvocationRequest", marker_index)]
     assert "tool_session_write_paths" in block
     assert "artifact_paths" in block
-    assert "create_chat_artifacts_for_message" in source[source.index("async def _append_child_transcript_event") : marker_index]
+    assert (
+        "create_chat_artifacts_for_message"
+        in source[source.index("async def _append_child_transcript_event") : marker_index]
+    )
 
 
 @pytest.mark.asyncio

@@ -547,6 +547,9 @@ vi.mock('@tanstack/react-query', () => ({
                     runtime_kind: 'team_member',
                     label: 'Reviewer',
                     status: 'running',
+                    elapsed_seconds: 95,
+                    total_tokens: 3600,
+                    tool_use_count: 4,
                     child_session_id: 'member-session-1',
                     enterable: true,
                     summary: 'Checking runtime panel evidence.',
@@ -570,6 +573,9 @@ vi.mock('@tanstack/react-query', () => ({
                 runtime_kind: 'workflow',
                 label: 'ccplus-closure-audit',
                 status: 'running',
+                elapsed_seconds: 125,
+                token_count: 4200,
+                tool_count: 3,
                 steps: [{ id: 'workflow-step-1', label: 'Review plan', status: 'completed' }],
                 leaf_calls: [{ id: 'workflow-leaf-1', label: 'Leaf check', status: 'completed', enterable: false }],
               },
@@ -596,6 +602,9 @@ vi.mock('@tanstack/react-query', () => ({
                 runtime_kind: 'runtime_task',
                 label: 'web chat turn',
                 status: 'running',
+                elapsed_seconds: 25,
+                token_count: 900,
+                tool_use_count: 1,
               },
             ],
             raw: [
@@ -3418,7 +3427,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="chat-work-ledger-popover"');
   });
 
-  it('renders workspace documents and collaboration status without governance or tool statistics in the right panel', () => {
+  it('renders grouped workspace documents, runtime metrics, and collaboration status in the right panel', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Runtime Bot' }}
@@ -3488,6 +3497,19 @@ describe('AgentDetail extracted sections', () => {
                 path: 'workspace/runtime-report.md',
                 previewKind: 'markdown',
                 size: 2048,
+                runtimeTaskId: 'run-1',
+                snapshotHash: 'sha256-runtime',
+              },
+              {
+                name: 'historical-report.md',
+                path: 'workspace/historical-report.md',
+                previewKind: 'markdown',
+                source: 'historical_session',
+              },
+              {
+                name: 'scratch.txt',
+                path: 'workspace/scratch.txt',
+                previewKind: 'text',
               },
             ],
           },
@@ -3549,9 +3571,27 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="chat-work-ledger-summary"');
     expect(markup).toContain('Task 1-2 of 2');
     expect(markup).toContain('Session artifacts');
+    expect(markup).toContain('data-testid="session-workspace-documents-current"');
+    expect(markup).toContain('Current session');
     expect(markup).toContain('runtime-report.md');
+    expect(markup).toContain('data-testid="session-workspace-documents-historical"');
+    expect(markup).toContain('Historical');
+    expect(markup).toContain('historical-report.md');
+    expect(markup).toContain('data-testid="session-workspace-documents-unattributed"');
+    expect(markup).toContain('Unattributed');
+    expect(markup).toContain('scratch.txt');
     expect(markup).toContain('data-testid="session-runtime-divider"');
     expect(markup).toContain('data-testid="session-runtime-collaboration"');
+    expect(markup).toContain('data-testid="session-runtime-main-row"');
+    expect(markup).toContain('Runtime panel session');
+    expect(markup).toContain('data-testid="session-runtime-metrics"');
+    expect(markup).toContain('Running 4');
+    expect(markup).toContain('Elapsed');
+    expect(markup).toContain('2m 5s');
+    expect(markup).toContain('Tokens');
+    expect(markup).toContain('8.7K');
+    expect(markup).toContain('Tools');
+    expect(markup).toContain('8');
     expect(markup).toContain('Research Team');
     expect(markup).toContain('Reviewer');
     expect(markup).toContain('data-testid="session-agent-team-member-actions"');
@@ -3686,6 +3726,15 @@ describe('AgentDetail extracted sections', () => {
       summary: 'fanout then critic',
       childSessionId: null,
       enterable: false,
+      metrics: {
+        elapsedSeconds: null,
+        elapsedLabel: null,
+        tokenCount: null,
+        tokenLabel: null,
+        toolUseCount: null,
+        toolUseLabel: null,
+        lastActivityLabel: null,
+      },
       members: [],
       steps: [
         {
@@ -3697,6 +3746,15 @@ describe('AgentDetail extracted sections', () => {
           summary: '',
           childSessionId: null,
           enterable: false,
+          metrics: {
+            elapsedSeconds: null,
+            elapsedLabel: null,
+            tokenCount: null,
+            tokenLabel: null,
+            toolUseCount: null,
+            toolUseLabel: null,
+            lastActivityLabel: null,
+          },
           members: [],
           steps: [],
           leafCalls: [],
@@ -3713,6 +3771,15 @@ describe('AgentDetail extracted sections', () => {
           summary: 'No child session attached',
           childSessionId: null,
           enterable: false,
+          metrics: {
+            elapsedSeconds: null,
+            elapsedLabel: null,
+            tokenCount: null,
+            tokenLabel: null,
+            toolUseCount: null,
+            toolUseLabel: null,
+            lastActivityLabel: null,
+          },
           members: [],
           steps: [],
           leafCalls: [],

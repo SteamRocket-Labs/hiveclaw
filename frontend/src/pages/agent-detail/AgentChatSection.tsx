@@ -35,9 +35,12 @@ import SlashCommandMenu from './SlashCommandMenu';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import {
-  buildRuntimeSectionsModel,
+  buildSessionRightPanelModel,
   buildThreadTimeline,
+  buildWorkflowRunWindowModel,
   type RuntimeSectionItemModel,
+  type WorkspaceDocumentGroupModel,
+  type WorkspaceDocumentModel,
   type ThreadTimelineModel,
 } from '../session-workbench/timelineModel';
 import { chatApi, type RecordSessionFeedbackInput } from '../../api/domains/chat';
@@ -1405,16 +1408,6 @@ function ArtifactCards({
 
 type RuntimeRecord = Record<string, unknown>;
 
-type WorkspaceDocumentRow = {
-  key: string;
-  name: string;
-  path: string;
-  previewKind?: string;
-  size?: number;
-  source?: string;
-  artifact: ChatArtifactPart;
-};
-
 function isRuntimeRecord(value: unknown): value is RuntimeRecord {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -1455,31 +1448,11 @@ function stringValue(value: unknown): string {
   return String(value);
 }
 
-function collectWorkspaceDocuments(messages: AgentChatMessage[]): WorkspaceDocumentRow[] {
-  const docs = new Map<string, WorkspaceDocumentRow>();
-  messages.forEach((message) => {
-    (message.artifacts || []).forEach((artifact) => {
-      if (!artifact.path) return;
-      const key = `${artifact.id || 'workspace-current'}:${artifact.path}`;
-      if (docs.has(key)) return;
-      docs.set(key, {
-        key,
-        name: artifact.name || artifact.path.split('/').pop() || artifact.path,
-        path: artifact.path,
-        previewKind: artifact.previewKind,
-        size: artifact.size,
-        source: artifact.source,
-        artifact,
-      });
-    });
-  });
-  return Array.from(docs.values()).slice(0, 12);
-}
-
-
 function SessionRuntimePanel({
   messages,
   sessionWorkbench,
+  activeSession,
+  activeRunStatus,
   collapsed = false,
   onToggleCollapsed,
   onOpenDocument,
@@ -1488,6 +1461,8 @@ function SessionRuntimePanel({
 }: {
   messages: AgentChatMessage[];
   sessionWorkbench: SessionWorkbench | null;
+  activeSession?: Record<string, unknown> | null;
+  activeRunStatus?: string | null;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   onOpenDocument?: (artifact: ChatArtifactPart) => void | Promise<unknown>;
@@ -1495,14 +1470,27 @@ function SessionRuntimePanel({
   onSelectWorkflowRun?: (workflow: RuntimeSectionItemModel) => void | Promise<unknown>;
 }) {
   const { t } = useTranslation();
-  const docs = collectWorkspaceDocuments(messages);
-  const runtimeSections = buildRuntimeSectionsModel(sessionWorkbench as Record<string, unknown> | null);
-  const collaborationCount = runtimeSections.summary.total;
+  const rightPanel = buildSessionRightPanelModel({
+    messages,
+    sessionWorkbench: sessionWorkbench as Record<string, unknown> | null,
+    activeSession,
+    activeRunStatus,
+  });
+  const docs = rightPanel.workspaceDocuments;
+  const runtimeSections = rightPanel.runtimeSections;
+  const collaborationCount = rightPanel.runtimeMetrics.runningCount > 0
+    ? `Running ${rightPanel.runtimeMetrics.runningCount}`
+    : `${rightPanel.runtimeMetrics.totalCount} total`;
+  const metricSummary = (item: RuntimeSectionItemModel): string => [
+    item.metrics.elapsedLabel,
+    item.metrics.tokenLabel ? `${item.metrics.tokenLabel} tokens` : null,
+    item.metrics.toolUseLabel ? `${item.metrics.toolUseLabel} tools` : null,
+  ].filter(Boolean).join(' · ');
 
   const renderRuntimeItem = (item: RuntimeSectionItemModel, fallback: string) => {
     const sessionId = item.childSessionId;
     const clickable = Boolean(item.enterable && sessionId && onSelectSession);
-    const meta = [item.id, item.runtimeKind, item.summary, sessionId ? `session:${sessionId}` : ''].filter(Boolean).join(' · ');
+    const meta = [item.id, item.runtimeKind, item.summary, sessionId ? `session:${sessionId}` : '', metricSummary(item)].filter(Boolean).join(' · ');
     const content = (
       <>
         <span className="session-runtime-row-main">
@@ -1529,7 +1517,7 @@ function SessionRuntimePanel({
   };
 
   const renderWorkflowRoot = (workflow: RuntimeSectionItemModel, fallback: string) => {
-    const meta = [workflow.id, workflow.runtimeKind, workflow.summary].filter(Boolean).join(' · ');
+    const meta = [workflow.id, workflow.runtimeKind, workflow.summary, metricSummary(workflow)].filter(Boolean).join(' · ');
     const content = (
       <>
         <span className="session-runtime-row-main">
@@ -1589,7 +1577,7 @@ function SessionRuntimePanel({
         {label}
       </button>
     );
-    const meta = [member.id, member.runtimeKind, member.summary, sessionId ? `session:${sessionId}` : ''].filter(Boolean).join(' · ');
+    const meta = [member.id, member.runtimeKind, member.summary, sessionId ? `session:${sessionId}` : '', metricSummary(member)].filter(Boolean).join(' · ');
     return (
       <div key={member.id || fallback} className="session-runtime-row" data-testid="session-agent-team-member-row">
         <span className="session-runtime-row-main">
@@ -1650,6 +1638,49 @@ function SessionRuntimePanel({
     </div>
   );
 
+  const renderDocumentRow = (doc: WorkspaceDocumentModel) => (
+    <button
+      key={doc.key}
+      type="button"
+      className="session-runtime-doc-row"
+      onClick={() => onOpenDocument?.(doc.artifact)}
+    >
+      <IconFileText size={15} />
+      <span>
+        <strong>{doc.name}</strong>
+        <small>{[doc.previewKind, doc.status, formatArtifactSize(doc.size), doc.path].filter(Boolean).join(' · ')}</small>
+      </span>
+    </button>
+  );
+
+  const renderDocumentGroup = (group: WorkspaceDocumentGroupModel, testId: string) => {
+    if (group.items.length === 0) return null;
+    const title = t(`sessionWorkbench.rightPanel.documentGroups.${group.key}`, group.title);
+    const body = <div className="session-runtime-list">{group.items.map(renderDocumentRow)}</div>;
+    if (group.collapsedByDefault) {
+      return (
+        <details key={group.key} data-testid={testId} className="session-runtime-doc-group">
+          <summary>
+            <span>{title}</span>
+            <strong>{group.items.length}</strong>
+          </summary>
+          {body}
+        </details>
+      );
+    }
+    return (
+      <div key={group.key} data-testid={testId} className="session-runtime-doc-group is-open">
+        <div className="session-runtime-doc-group-title">
+          <span>{title}</span>
+          <strong>{group.items.length}</strong>
+        </div>
+        {body}
+      </div>
+    );
+  };
+
+  const sessionWindow = rightPanel.sessionWindow;
+
   if (collapsed) {
     return (
       <aside data-testid="session-runtime-panel" className="session-runtime-panel is-collapsed">
@@ -1691,30 +1722,17 @@ function SessionRuntimePanel({
             <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.session', 'Session')}</div>
             <h3>{t('sessionWorkbench.rightPanel.sessionArtifacts', 'Session artifacts')}</h3>
           </div>
-          <span>{docs.length}</span>
+          <span>{docs.total}</span>
         </div>
-        {docs.length === 0 ? (
+        {docs.total === 0 ? (
           <div className="session-runtime-empty">
             {t('sessionWorkbench.rightPanel.noSessionArtifacts', 'No delivered artifacts in this session yet.')}
           </div>
         ) : (
-          <div className="session-runtime-list">
-            {docs.map((doc) => {
-              return (
-                <button
-                  key={doc.key}
-                  type="button"
-                  className="session-runtime-doc-row"
-                  onClick={() => onOpenDocument?.(doc.artifact)}
-                >
-                  <IconFileText size={15} />
-                  <span>
-                    <strong>{doc.name}</strong>
-                    <small>{[doc.previewKind, formatArtifactSize(doc.size), doc.path].filter(Boolean).join(' · ')}</small>
-                  </span>
-                </button>
-              );
-            })}
+          <div className="session-runtime-doc-groups">
+            {renderDocumentGroup(docs.currentSession, 'session-workspace-documents-current')}
+            {renderDocumentGroup(docs.historical, 'session-workspace-documents-historical')}
+            {renderDocumentGroup(docs.unattributed, 'session-workspace-documents-unattributed')}
           </div>
         )}
       </section>
@@ -1732,6 +1750,43 @@ function SessionRuntimePanel({
             <h3>{t('sessionWorkbench.rightPanel.collaboration', 'Collaboration')}</h3>
           </div>
           <span>{collaborationCount}</span>
+        </div>
+
+        {sessionWindow && (
+          <div data-testid="session-runtime-main-row" className="session-runtime-card">
+            <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.mainSession', 'Main session')}</div>
+            <div className="session-runtime-row">
+              <span className="session-runtime-row-main">
+                <span className="session-runtime-row-title">{sessionWindow.label}</span>
+                <span className="session-runtime-row-meta">
+                  {[sessionWindow.kind, sessionWindow.sessionId ? `session:${sessionWindow.sessionId}` : '', sessionWindow.metrics.lastActivityLabel]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </span>
+              </span>
+              <span className="session-runtime-status">{sessionWindow.status}</span>
+            </div>
+          </div>
+        )}
+
+        <div data-testid="session-runtime-metrics" className="session-runtime-card">
+          <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.runtimeMetrics', 'Runtime metrics')}</div>
+          <div className="session-runtime-metric-row">
+            <span>{t('sessionWorkbench.rightPanel.runningSummary', 'Running')}</span>
+            <strong>{rightPanel.runtimeMetrics.runningCount}</strong>
+          </div>
+          <div className="session-runtime-metric-row">
+            <span>{t('sessionWorkbench.rightPanel.elapsed', 'Elapsed')}</span>
+            <strong>{rightPanel.runtimeMetrics.elapsedLabel || '-'}</strong>
+          </div>
+          <div className="session-runtime-metric-row">
+            <span>{t('sessionWorkbench.rightPanel.tokens', 'Tokens')}</span>
+            <strong>{rightPanel.runtimeMetrics.tokenLabel || '-'}</strong>
+          </div>
+          <div className="session-runtime-metric-row">
+            <span>{t('sessionWorkbench.rightPanel.tools', 'Tools')}</span>
+            <strong>{rightPanel.runtimeMetrics.toolUseLabel || '-'}</strong>
+          </div>
         </div>
 
         {renderRuntimeSection(
@@ -1819,13 +1874,14 @@ export function WorkflowRunFocusPanel({
   onSelectSession?: (sessionId: string) => void | Promise<unknown>;
 }) {
   const { t } = useTranslation();
-  const leafCalls = workflow.leafCalls || [];
-  const steps = workflow.steps || [];
+  const windowModel = buildWorkflowRunWindowModel(workflow);
+  const leafCalls = windowModel.leafCalls || [];
+  const steps = windowModel.steps || [];
   const meta = [
-    workflow.id,
-    workflow.runtimeKind,
-    workflow.summary,
-    workflow.childSessionId ? `session:${workflow.childSessionId}` : '',
+    windowModel.meta,
+    windowModel.metrics.elapsedLabel,
+    windowModel.metrics.tokenLabel ? `${windowModel.metrics.tokenLabel} tokens` : '',
+    windowModel.metrics.toolUseLabel ? `${windowModel.metrics.toolUseLabel} tools` : '',
   ].filter(Boolean).join(' · ');
   const renderStep = (step: RuntimeSectionItemModel, index: number) => (
     <div
@@ -1891,9 +1947,9 @@ export function WorkflowRunFocusPanel({
       <div className="session-runtime-section-header">
         <div>
           <div className="session-tui-kicker">
-            {t('sessionWorkbench.workflowRunWindow.breadcrumb', 'Main > Dynamic Workflow')}
+            {t('sessionWorkbench.workflowRunWindow.breadcrumb', windowModel.breadcrumb)}
           </div>
-          <h3>{workflow.label || workflow.id}</h3>
+          <h3>{windowModel.label}</h3>
           {meta ? <small>{meta}</small> : null}
         </div>
         <button
@@ -4144,6 +4200,8 @@ export default function AgentChatSection({
         <SessionRuntimePanel
           messages={visibleTimeline}
           sessionWorkbench={sessionWorkbench}
+          activeSession={activeSession as Record<string, unknown> | null}
+          activeRunStatus={activeRunStatus}
           collapsed={runtimePanelCollapsed}
           onToggleCollapsed={() => setRuntimePanelCollapsed((value) => !value)}
           onOpenDocument={openArtifact}

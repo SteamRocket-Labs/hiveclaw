@@ -1294,6 +1294,45 @@ select:focus {
   gap: 5px;
 }
 
+.session-runtime-doc-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.session-runtime-doc-group {
+  display: grid;
+  gap: 6px;
+}
+
+.session-runtime-doc-group summary,
+.session-runtime-doc-group-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-tiny);
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.session-runtime-doc-group summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.session-runtime-doc-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.session-runtime-doc-group summary strong,
+.session-runtime-doc-group-title strong {
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-meta);
+  font-weight: 700;
+}
+
 .session-runtime-doc-row {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);

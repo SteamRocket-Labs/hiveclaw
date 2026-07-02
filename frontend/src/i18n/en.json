@@ -82,7 +82,27 @@
       "runs": "Runs",
       "noRuns": "No runtime runs recorded.",
       "rawEvents": "Raw",
-      "noRawEvents": "No raw runtime events."
+      "noRawEvents": "No raw runtime events.",
+      "documentGroups": {
+        "currentSession": "Current session",
+        "historical": "Historical",
+        "unattributed": "Unattributed"
+      },
+      "mainSession": "Main session",
+      "runtimeMetrics": "Runtime metrics",
+      "runningSummary": "Running",
+      "elapsed": "Elapsed",
+      "tokens": "Tokens",
+      "tools": "Tools",
+      "memberEnter": "Enter",
+      "memberEnterTitle": "Open member session",
+      "memberEnterDisabled": "No member session is available",
+      "memberSend": "Send",
+      "memberSendDisabled": "Enter the member session to send a follow-up from its composer",
+      "memberResume": "Resume",
+      "memberResumeDisabled": "Resume is available from the member session active-run controls",
+      "memberClose": "Close",
+      "memberCloseDisabled": "Team close is available from the Agent Team control surface"
     },
     "workflowRunWindow": {
       "title": "Workflow Run Window",

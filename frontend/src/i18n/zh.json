@@ -82,7 +82,27 @@
       "runs": "运行",
       "noRuns": "当前没有 runtime run 记录。",
       "rawEvents": "原始事件",
-      "noRawEvents": "当前没有原始 runtime 事件。"
+      "noRawEvents": "当前没有原始 runtime 事件。",
+      "documentGroups": {
+        "currentSession": "当前会话",
+        "historical": "历史",
+        "unattributed": "未归属"
+      },
+      "mainSession": "主会话",
+      "runtimeMetrics": "运行指标",
+      "runningSummary": "运行中",
+      "elapsed": "耗时",
+      "tokens": "Token",
+      "tools": "工具",
+      "memberEnter": "进入",
+      "memberEnterTitle": "打开成员会话",
+      "memberEnterDisabled": "没有可进入的成员会话",
+      "memberSend": "发送",
+      "memberSendDisabled": "进入成员会话后，从该会话输入框发送后续消息",
+      "memberResume": "恢复",
+      "memberResumeDisabled": "恢复入口在成员会话的运行控制区",
+      "memberClose": "关闭",
+      "memberCloseDisabled": "关闭 Team 的入口在 Agent Team 控制面"
     },
     "workflowRunWindow": {
       "title": "Workflow Run Window",

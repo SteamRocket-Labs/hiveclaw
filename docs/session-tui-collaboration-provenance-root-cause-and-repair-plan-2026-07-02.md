@@ -1028,6 +1028,47 @@ cd frontend && npm run build
 # tsc && vite build passed
 ```
 
+### Part 16 — B4 §8-D metrics / named models / Workspace grouping（2026-07-02）
+
+红测：
+
+- `timelineModel.test.ts::keeps agent teams...`：旧 `RuntimeSectionItemModel` 没有 `metrics`，无法表达 elapsed / tokens / tool count，`summary.running` 也不存在。
+- `timelineModel.test.ts::builds named session workbench models...`：旧代码没有 `SessionWindowModel`、`CheckpointTimelineNode`、`SessionRightPanelModel`、`RuntimeSectionModel`、`WorkflowRunWindowModel` 命名出口。
+- `AgentDetailSections.test.tsx::renders grouped workspace documents...`：旧右栏 Workspace Documents 是扁平列表，没有 Current session / Historical / Unattributed 分组；Collaboration header 仍显示总数，没有 `Running N` 与 elapsed / tokens / tools 指标行，也没有 main session row。
+
+红测验证：
+
+```bash
+cd frontend && npm run test -- src/pages/session-workbench/timelineModel.test.ts --run
+# failed: missing metrics / buildSessionWindowModel is not a function
+
+cd frontend && npm run test -- \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  --run -t "grouped workspace documents|named session workbench models"
+# failed: missing data-testid="session-workspace-documents-current"
+```
+
+变更：
+
+- `timelineModel.ts` 新增并导出五个命名模型：`SessionWindowModel`、`CheckpointTimelineNode`、`SessionRightPanelModel`、`RuntimeSectionModel`、`WorkflowRunWindowModel`。
+- `RuntimeSectionItemModel` 增加 `metrics`，解析 `elapsed_seconds` / `token_count` / `tool_use_count` 等字段；右栏指标按 team + member + subagent + workflow root + background + notification + run + raw 聚合，不把 workflow step/leaf 明细重复计数。
+- Workspace Documents 改为模型层分组：`Current session` / `Historical` / `Unattributed`，历史与未归属默认折叠；UI 使用 session-native group testid。
+- 右栏 Collaboration 增加 main session row、`Running N` summary、Runtime metrics 卡片（elapsed / tokens / tools），Workflow Run Window 改为消费 `WorkflowRunWindowModel`。
+- 补齐新增 Session Workbench UI 文案的 `en` / `zh` i18n key；保留现有 eval retirement 脏改不进入本 commit。
+
+验证：
+
+```bash
+cd frontend && npm run test -- \
+  src/pages/session-workbench/timelineModel.test.ts \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  --run
+# 2 passed files, 92 passed tests
+
+cd frontend && npm run build
+# tsc && vite build passed
+```
+
 ### Part 14 — B2 persistence terminal reason 与 terminal marker 并发幂等（2026-07-02）
 
 红测：

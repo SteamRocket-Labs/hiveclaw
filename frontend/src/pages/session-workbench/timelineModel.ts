@@ -5,7 +5,7 @@ import {
   isDisclosureStepMessage,
   type RunTimelineSnapshot,
 } from '../agent-detail/chatDisclosureReducer';
-import type { AgentChatMessage, ChatRuntimeSummary } from '../agent-detail/chatRuntime';
+import type { AgentChatMessage, ChatArtifactPart, ChatRuntimeSummary } from '../agent-detail/chatRuntime';
 
 export type ThreadTimelineCell =
   | {
@@ -114,6 +114,51 @@ export type RuntimeSectionName =
   | 'runs'
   | 'raw';
 
+export type SessionWindowKind = 'main' | 'team_member' | 'subagent' | 'workflow' | 'background';
+export type SessionWindowStatus = 'running' | 'waiting' | 'blocked' | 'completed' | 'failed' | 'cancelled' | 'idle' | 'unknown';
+export type SessionWindowTone = 'neutral' | 'running' | 'waiting' | 'blocked' | 'completed' | 'failed';
+
+export interface RuntimeMetricModel {
+  elapsedSeconds: number | null;
+  elapsedLabel: string | null;
+  tokenCount: number | null;
+  tokenLabel: string | null;
+  toolUseCount: number | null;
+  toolUseLabel: string | null;
+  lastActivityLabel: string | null;
+}
+
+export interface SessionWindowModel {
+  id: string;
+  kind: SessionWindowKind;
+  label: string;
+  status: SessionWindowStatus;
+  selected?: boolean;
+  activeTabLabel?: string;
+  tabTone?: SessionWindowTone;
+  accentColor?: string;
+  preset?: string;
+  teamId?: string;
+  memberId?: string;
+  sessionId?: string;
+  runtimeTaskId?: string;
+  elapsedSeconds?: number;
+  tokenCount?: number;
+  toolUseCount?: number;
+  lastActivityLabel?: string;
+  metrics: RuntimeMetricModel;
+}
+
+export interface CheckpointTimelineNode {
+  id: string;
+  sequence: number;
+  label: string;
+  state: 'past' | 'current_head' | 'rewound_tail' | 'new_tail' | 'branch_anchor' | 'compacted_scope';
+  checkpointEventId: string;
+  branchSessionIds: string[];
+  compacted?: boolean;
+}
+
 export interface RuntimeSectionItemModel {
   id: string;
   label: string;
@@ -123,10 +168,80 @@ export interface RuntimeSectionItemModel {
   summary: string;
   childSessionId: string | null;
   enterable: boolean;
+  metrics: RuntimeMetricModel;
   members: RuntimeSectionItemModel[];
   steps: RuntimeSectionItemModel[];
   leafCalls: RuntimeSectionItemModel[];
   raw: Record<string, unknown>;
+}
+
+export interface RuntimeSectionModel {
+  key: RuntimeSectionName;
+  title: string;
+  items: RuntimeSectionItemModel[];
+  count: number;
+  runningCount: number;
+}
+
+export type WorkspaceDocumentGroupKey = 'currentSession' | 'historical' | 'unattributed';
+
+export interface WorkspaceDocumentModel {
+  key: string;
+  name: string;
+  path: string;
+  previewKind?: string;
+  size?: number;
+  source?: string;
+  group: WorkspaceDocumentGroupKey;
+  status: 'current' | 'snapshot' | 'historical' | 'unattributed';
+  artifact: ChatArtifactPart;
+}
+
+export interface WorkspaceDocumentGroupModel {
+  key: WorkspaceDocumentGroupKey;
+  title: string;
+  collapsedByDefault: boolean;
+  items: WorkspaceDocumentModel[];
+}
+
+export interface WorkspaceDocumentsModel {
+  total: number;
+  currentSession: WorkspaceDocumentGroupModel;
+  historical: WorkspaceDocumentGroupModel;
+  unattributed: WorkspaceDocumentGroupModel;
+}
+
+export interface SessionRightPanelModel {
+  workspaceDocuments: WorkspaceDocumentsModel;
+  runtimeSections: RuntimeSectionsModel;
+  runtimeTables: RuntimeSectionModel[];
+  runtimeMetrics: RuntimeMetricModel & {
+    runningCount: number;
+    totalCount: number;
+  };
+  context: Record<string, unknown> | null;
+  governance: Record<string, unknown> | null;
+  commands: Record<string, unknown> | null;
+  runs: RuntimeSectionModel;
+  team: RuntimeSectionModel;
+  subagents: RuntimeSectionModel;
+  workflow: RuntimeSectionModel;
+  artifacts: WorkspaceDocumentsModel;
+  raw: RuntimeSectionModel;
+  sessionWindow: SessionWindowModel | null;
+}
+
+export interface WorkflowRunWindowModel {
+  id: string;
+  label: string;
+  status: string;
+  breadcrumb: string;
+  meta: string;
+  childSessionId: string | null;
+  metrics: RuntimeMetricModel;
+  steps: RuntimeSectionItemModel[];
+  leafCalls: RuntimeSectionItemModel[];
+  raw: RuntimeSectionItemModel;
 }
 
 export interface RuntimeSectionsModel {
@@ -146,6 +261,7 @@ export interface RuntimeSectionsModel {
     notifications: number;
     runs: number;
     raw: number;
+    running: number;
   };
 }
 
@@ -210,6 +326,62 @@ function readString(source: Record<string, unknown>, keys: string[], fallback = 
   return fallback;
 }
 
+function readNumber(source: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  }
+  return null;
+}
+
+function formatElapsedLabel(seconds: number | null): string | null {
+  if (seconds === null || seconds < 0) return null;
+  const rounded = Math.round(seconds);
+  const minutes = Math.floor(rounded / 60);
+  const remainingSeconds = rounded % 60;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours > 0) return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  if (minutes > 0) return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+  return `${remainingSeconds}s`;
+}
+
+function readRuntimeMetrics(item: Record<string, unknown>): RuntimeMetricModel {
+  const existing = asRecord(item.metrics);
+  if (existing) {
+    const elapsedSeconds = readNumber(existing, ['elapsedSeconds', 'elapsed_seconds']);
+    const tokenCount = readNumber(existing, ['tokenCount', 'token_count']);
+    const toolUseCount = readNumber(existing, ['toolUseCount', 'tool_use_count']);
+    return {
+      elapsedSeconds,
+      elapsedLabel: readString(existing, ['elapsedLabel', 'elapsed_label'], '') || formatElapsedLabel(elapsedSeconds),
+      tokenCount,
+      tokenLabel: readString(existing, ['tokenLabel', 'token_label'], '') || compactTokenCount(tokenCount),
+      toolUseCount,
+      toolUseLabel: readString(existing, ['toolUseLabel', 'tool_use_label'], '') || (toolUseCount === null ? null : String(toolUseCount)),
+      lastActivityLabel: readString(existing, ['lastActivityLabel', 'last_activity_label'], '') || null,
+    };
+  }
+  const usage = asRecord(item.usage);
+  const elapsedSeconds = readNumber(item, ['elapsed_seconds', 'elapsedSeconds', 'duration_seconds', 'durationSeconds']);
+  const tokenCount =
+    readNumber(item, ['token_count', 'tokenCount', 'total_tokens', 'totalTokens', 'tokens'])
+    ?? (usage ? readNumber(usage, ['total_tokens', 'totalTokens', 'tokens']) : null);
+  const explicitToolCount = readNumber(item, ['tool_use_count', 'toolUseCount', 'tool_count', 'toolCount', 'tools_count', 'toolsCount']);
+  const toolUseCount = explicitToolCount ?? (Array.isArray(item.used_tools) ? item.used_tools.length : null);
+  const lastActivityLabel = readString(item, ['last_activity_label', 'lastActivityLabel', 'last_activity_at', 'updated_at'], '') || null;
+  return {
+    elapsedSeconds,
+    elapsedLabel: formatElapsedLabel(elapsedSeconds),
+    tokenCount,
+    tokenLabel: compactTokenCount(tokenCount),
+    toolUseCount,
+    toolUseLabel: toolUseCount === null ? null : String(toolUseCount),
+    lastActivityLabel,
+  };
+}
+
 function readBoolean(source: Record<string, unknown>, key: string): boolean | null {
   const value = source[key];
   return typeof value === 'boolean' ? value : null;
@@ -260,11 +432,32 @@ function normalizeRuntimeSectionItem(
     summary: readString(item, ['summary', 'description', 'content'], ''),
     childSessionId,
     enterable: explicitEnterable ?? Boolean(childSessionId),
+    metrics: readRuntimeMetrics(item),
     members,
     steps,
     leafCalls,
     raw: item,
   };
+}
+
+function flattenRuntimeItems(items: RuntimeSectionItemModel[]): RuntimeSectionItemModel[] {
+  return items.flatMap((item) => [item, ...flattenRuntimeItems(item.members), ...flattenRuntimeItems(item.steps), ...flattenRuntimeItems(item.leafCalls)]);
+}
+
+function runtimeMetricItems(sections: Omit<RuntimeSectionsModel, 'summary'>): RuntimeSectionItemModel[] {
+  return [
+    ...sections.agentTeams.flatMap((team) => [team, ...team.members]),
+    ...sections.subagents,
+    ...sections.workflows,
+    ...sections.background,
+    ...sections.notifications,
+    ...sections.runs,
+    ...sections.raw,
+  ];
+}
+
+function isRunningRuntimeItem(item: RuntimeSectionItemModel): boolean {
+  return String(item.status || item.state || '').toLowerCase() === 'running';
 }
 
 function normalizeRuntimeSectionItems(
@@ -297,6 +490,7 @@ function legacyRuntimeSections(sessionWorkbench?: Record<string, unknown> | null
 }
 
 function buildRuntimeSectionsSummary(sections: Omit<RuntimeSectionsModel, 'summary'>): RuntimeSectionsModel {
+  const metricItems = runtimeMetricItems(sections);
   const summary = {
     agentTeams: sections.agentTeams.length,
     subagents: sections.subagents.length,
@@ -305,6 +499,7 @@ function buildRuntimeSectionsSummary(sections: Omit<RuntimeSectionsModel, 'summa
     notifications: sections.notifications.length,
     runs: sections.runs.length,
     raw: sections.raw.length,
+    running: metricItems.filter(isRunningRuntimeItem).length,
   };
   return {
     ...sections,
@@ -313,6 +508,38 @@ function buildRuntimeSectionsSummary(sections: Omit<RuntimeSectionsModel, 'summa
       total: summary.agentTeams + summary.subagents + summary.workflows + summary.background + summary.notifications + summary.runs + summary.raw,
     },
   };
+}
+
+const RUNTIME_SECTION_TITLES: Record<RuntimeSectionName, string> = {
+  agent_teams: 'Agent Teams',
+  subagents: 'Sub-agents',
+  workflows: 'Dynamic Workflow',
+  background: 'Background agents',
+  notifications: 'Notifications',
+  runs: 'Runs',
+  raw: 'Raw',
+};
+
+function runtimeSectionModel(key: RuntimeSectionName, items: RuntimeSectionItemModel[]): RuntimeSectionModel {
+  return {
+    key,
+    title: RUNTIME_SECTION_TITLES[key],
+    items,
+    count: items.length,
+    runningCount: flattenRuntimeItems(items).filter(isRunningRuntimeItem).length,
+  };
+}
+
+function buildRuntimeSectionModels(runtimeSections: RuntimeSectionsModel): RuntimeSectionModel[] {
+  return [
+    runtimeSectionModel('agent_teams', runtimeSections.agentTeams),
+    runtimeSectionModel('subagents', runtimeSections.subagents),
+    runtimeSectionModel('workflows', runtimeSections.workflows),
+    runtimeSectionModel('background', runtimeSections.background),
+    runtimeSectionModel('notifications', runtimeSections.notifications),
+    runtimeSectionModel('runs', runtimeSections.runs),
+    runtimeSectionModel('raw', runtimeSections.raw),
+  ];
 }
 
 export function buildRuntimeSectionsModel(sessionWorkbench?: Record<string, unknown> | null): RuntimeSectionsModel {
@@ -328,6 +555,224 @@ export function buildRuntimeSectionsModel(sessionWorkbench?: Record<string, unkn
     runs: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'runs'), 'runtime_task'),
     raw: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'raw'), 'raw_event'),
   });
+}
+
+function workspaceDocumentGroup(artifact: ChatArtifactPart): WorkspaceDocumentGroupKey {
+  const source = String(artifact.source || '').toLowerCase();
+  if (source.includes('historical')) return 'historical';
+  if (
+    artifact.runtimeTaskId
+    || artifact.snapshotHash
+    || artifact.snapshotStoragePath
+    || source.includes('terminal')
+    || source.includes('artifact_delivery')
+  ) {
+    return 'currentSession';
+  }
+  return 'unattributed';
+}
+
+function workspaceDocumentStatus(artifact: ChatArtifactPart, group: WorkspaceDocumentGroupKey): WorkspaceDocumentModel['status'] {
+  if (group === 'historical') return 'historical';
+  if (group === 'unattributed') return 'unattributed';
+  if (artifact.snapshotHash || artifact.snapshotStoragePath) return 'snapshot';
+  return 'current';
+}
+
+export function buildWorkspaceDocumentsModel(messages: AgentChatMessage[]): WorkspaceDocumentsModel {
+  const docs = new Map<string, WorkspaceDocumentModel>();
+  messages.forEach((message) => {
+    (message.artifacts || []).forEach((artifact) => {
+      if (!artifact.path) return;
+      const group = workspaceDocumentGroup(artifact);
+      const key = `${artifact.id || group}:${artifact.path}`;
+      if (docs.has(key)) return;
+      docs.set(key, {
+        key,
+        name: artifact.name || artifact.path.split('/').pop() || artifact.path,
+        path: artifact.path,
+        previewKind: artifact.previewKind,
+        size: artifact.size,
+        source: artifact.source,
+        group,
+        status: workspaceDocumentStatus(artifact, group),
+        artifact,
+      });
+    });
+  });
+  const values = Array.from(docs.values()).slice(0, 18);
+  const currentSession = values.filter((doc) => doc.group === 'currentSession');
+  const historical = values.filter((doc) => doc.group === 'historical');
+  const unattributed = values.filter((doc) => doc.group === 'unattributed');
+  return {
+    total: values.length,
+    currentSession: { key: 'currentSession', title: 'Current session', collapsedByDefault: false, items: currentSession },
+    historical: { key: 'historical', title: 'Historical', collapsedByDefault: true, items: historical },
+    unattributed: { key: 'unattributed', title: 'Unattributed', collapsedByDefault: true, items: unattributed },
+  };
+}
+
+function aggregateRuntimeMetrics(runtimeSections: RuntimeSectionsModel): RuntimeMetricModel & { runningCount: number; totalCount: number } {
+  const allItems = runtimeMetricItems(runtimeSections);
+  const elapsedValues = allItems.map((item) => item.metrics.elapsedSeconds).filter((value): value is number => value !== null);
+  const tokenValues = allItems.map((item) => item.metrics.tokenCount).filter((value): value is number => value !== null);
+  const toolValues = allItems.map((item) => item.metrics.toolUseCount).filter((value): value is number => value !== null);
+  const elapsedSeconds = elapsedValues.length ? Math.max(...elapsedValues) : null;
+  const tokenCount = tokenValues.length ? tokenValues.reduce((sum, value) => sum + value, 0) : null;
+  const toolUseCount = toolValues.length ? toolValues.reduce((sum, value) => sum + value, 0) : null;
+  const lastActivityLabel = allItems.find((item) => item.metrics.lastActivityLabel)?.metrics.lastActivityLabel ?? null;
+  return {
+    elapsedSeconds,
+    elapsedLabel: formatElapsedLabel(elapsedSeconds),
+    tokenCount,
+    tokenLabel: compactTokenCount(tokenCount),
+    toolUseCount,
+    toolUseLabel: toolUseCount === null ? null : String(toolUseCount),
+    lastActivityLabel,
+    runningCount: allItems.filter(isRunningRuntimeItem).length,
+    totalCount: allItems.length,
+  };
+}
+
+function normalizeSessionWindowStatus(status: unknown): SessionWindowStatus {
+  const value = String(status || '').toLowerCase();
+  if (value === 'running' || value === 'waiting' || value === 'blocked' || value === 'completed' || value === 'failed' || value === 'cancelled') {
+    return value;
+  }
+  if (value === 'canceled') return 'cancelled';
+  if (value === 'idle' || value === '') return 'idle';
+  return 'unknown';
+}
+
+function sessionWindowTone(status: SessionWindowStatus): SessionWindowTone {
+  if (status === 'running') return 'running';
+  if (status === 'waiting') return 'waiting';
+  if (status === 'blocked') return 'blocked';
+  if (status === 'completed') return 'completed';
+  if (status === 'failed' || status === 'cancelled') return 'failed';
+  return 'neutral';
+}
+
+export function buildSessionWindowModel(
+  session?: Record<string, unknown> | null,
+  activeRunStatus?: string | null,
+): SessionWindowModel | null {
+  if (!session) return null;
+  const metadata = asRecord(session.transcript_metadata_json) ?? asRecord(session.metadata_json) ?? asRecord(session.metadata) ?? {};
+  const sourceChannel = readString(session, ['source_channel', 'runtime_source', 'session_kind'], '').toLowerCase();
+  const kind: SessionWindowKind = sourceChannel.includes('team_member') || (metadata.team_id && metadata.member_name)
+    ? 'team_member'
+    : sourceChannel.includes('subagent')
+      ? 'subagent'
+      : sourceChannel.includes('workflow')
+        ? 'workflow'
+        : sourceChannel.includes('background')
+          ? 'background'
+          : 'main';
+  const id = readString(session, ['id', 'chat_session_id', 'session_id'], 'session');
+  const memberName = readString(metadata, ['member_name', 'name'], '') || readString(session, ['member_name'], '');
+  const label = memberName || readString(session, ['title', 'name'], id).split('/').pop()?.trim() || id;
+  const status = normalizeSessionWindowStatus(activeRunStatus || session.status);
+  const metrics = readRuntimeMetrics({ ...session, ...metadata });
+  return {
+    id,
+    kind,
+    label,
+    status,
+    selected: true,
+    activeTabLabel: kind === 'team_member' ? `Agent: ${label}` : label,
+    tabTone: sessionWindowTone(status),
+    teamId: readString(metadata, ['team_id'], '') || undefined,
+    memberId: readString(metadata, ['member_id'], '') || readString(session, ['member_id'], '') || undefined,
+    sessionId: id,
+    runtimeTaskId: readString(metadata, ['runtime_task_id'], '') || readString(session, ['runtime_task_id'], '') || undefined,
+    elapsedSeconds: metrics.elapsedSeconds ?? undefined,
+    tokenCount: metrics.tokenCount ?? undefined,
+    toolUseCount: metrics.toolUseCount ?? undefined,
+    lastActivityLabel: metrics.lastActivityLabel ?? undefined,
+    metrics,
+  };
+}
+
+export function buildCheckpointTimelineNodes(
+  sessionIndex?: SessionIndex | null,
+  branchLineage?: Array<{ id: unknown; parent_session_id?: unknown }> | null,
+): CheckpointTimelineNode[] {
+  const checkpoints = Array.isArray(sessionIndex?.checkpoints) ? sessionIndex.checkpoints : [];
+  let currentHeadIndex = -1;
+  checkpoints.forEach((checkpoint, index) => {
+    const record = checkpoint as Record<string, unknown>;
+    if (!record.compacted && !record.compacted_scope) currentHeadIndex = index;
+  });
+  const branchIds = (branchLineage || [])
+    .filter((row) => row.parent_session_id)
+    .map((row) => String(row.id));
+  return checkpoints.map((checkpoint, index) => {
+    const record = checkpoint as Record<string, unknown>;
+    const checkpointEventId = readString(record, ['checkpoint_event_id', 'event_id', 'id'], `checkpoint-${index + 1}`);
+    const compacted = Boolean(record.compacted || record.compacted_scope);
+    return {
+      id: checkpointEventId,
+      sequence: readNumber(record, ['sequence', 'turn_index']) ?? index + 1,
+      label: readString(record, ['label', 'checkpoint_kind', 'kind', 'role', 'id'], checkpointEventId),
+      state: compacted ? 'compacted_scope' : (index === currentHeadIndex ? 'current_head' : 'past'),
+      checkpointEventId,
+      branchSessionIds: index === 0 ? branchIds : [],
+      compacted: compacted || undefined,
+    };
+  });
+}
+
+export function buildWorkflowRunWindowModel(workflow: RuntimeSectionItemModel): WorkflowRunWindowModel {
+  return {
+    id: workflow.id,
+    label: workflow.label || workflow.id,
+    status: workflow.status || 'unknown',
+    breadcrumb: 'Main > Dynamic Workflow',
+    meta: [workflow.id, workflow.runtimeKind, workflow.summary, workflow.childSessionId ? `session:${workflow.childSessionId}` : '']
+      .filter(Boolean)
+      .join(' · '),
+    childSessionId: workflow.childSessionId,
+    metrics: workflow.metrics,
+    steps: workflow.steps,
+    leafCalls: workflow.leafCalls,
+    raw: workflow,
+  };
+}
+
+export function buildSessionRightPanelModel({
+  messages,
+  sessionWorkbench,
+  activeSession,
+  activeRunStatus,
+}: {
+  messages: AgentChatMessage[];
+  sessionWorkbench?: SessionWorkbench | Record<string, unknown> | null;
+  activeSession?: Record<string, unknown> | null;
+  activeRunStatus?: string | null;
+}): SessionRightPanelModel {
+  const workbenchRecord = asRecord(sessionWorkbench) ?? null;
+  const runtimeSections = buildRuntimeSectionsModel(workbenchRecord);
+  const runtimeTables = buildRuntimeSectionModels(runtimeSections);
+  const sectionByKey = new Map(runtimeTables.map((section) => [section.key, section]));
+  const fallbackSection = (key: RuntimeSectionName) => runtimeSectionModel(key, []);
+  const workspaceDocuments = buildWorkspaceDocumentsModel(messages);
+  return {
+    workspaceDocuments,
+    runtimeSections,
+    runtimeTables,
+    runtimeMetrics: aggregateRuntimeMetrics(runtimeSections),
+    context: asRecord(workbenchRecord?.context_policy),
+    governance: asRecord(workbenchRecord?.permission_profile),
+    commands: asRecord(workbenchRecord?.controls),
+    runs: sectionByKey.get('runs') ?? fallbackSection('runs'),
+    team: sectionByKey.get('agent_teams') ?? fallbackSection('agent_teams'),
+    subagents: sectionByKey.get('subagents') ?? fallbackSection('subagents'),
+    workflow: sectionByKey.get('workflows') ?? fallbackSection('workflows'),
+    artifacts: workspaceDocuments,
+    raw: sectionByKey.get('raw') ?? fallbackSection('raw'),
+    sessionWindow: buildSessionWindowModel(activeSession ?? asRecord(workbenchRecord?.session), activeRunStatus),
+  };
 }
 
 function messageId(message: AgentChatMessage, fallback: string): string {

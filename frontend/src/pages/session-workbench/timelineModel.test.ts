@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCompletionWakeModel, buildRuntimeSectionsModel, buildThreadTimeline } from './timelineModel';
+import {
+  buildCheckpointTimelineNodes,
+  buildCompletionWakeModel,
+  buildRuntimeSectionsModel,
+  buildSessionRightPanelModel,
+  buildSessionWindowModel,
+  buildThreadTimeline,
+  buildWorkflowRunWindowModel,
+} from './timelineModel';
 import type { AgentChatMessage } from '../agent-detail/chatRuntime';
 import type { SessionIndex } from '../../api/domains/chat';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
@@ -268,6 +276,9 @@ describe('session workbench timeline model', () => {
             runtime_kind: 'agent_team',
             label: 'ABS research team',
             status: 'running',
+            elapsed_seconds: 125,
+            token_count: 4200,
+            tool_use_count: 3,
             enterable: true,
             chat_session_id: 'team-session',
             members: [
@@ -276,6 +287,9 @@ describe('session workbench timeline model', () => {
                 runtime_kind: 'team_member',
                 label: 'CLO analyst',
                 status: 'completed',
+                elapsed_seconds: 65,
+                total_tokens: 1800,
+                tool_count: 2,
                 enterable: true,
                 child_session_id: 'member-session',
               },
@@ -352,6 +366,14 @@ describe('session workbench timeline model', () => {
       label: 'ABS research team',
       childSessionId: 'team-session',
       enterable: true,
+      metrics: {
+        elapsedSeconds: 125,
+        elapsedLabel: '2m 5s',
+        tokenCount: 4200,
+        tokenLabel: '4.2K',
+        toolUseCount: 3,
+        toolUseLabel: '3',
+      },
     });
     expect(model.agentTeams[0].members).toEqual([
       expect.objectContaining({
@@ -359,6 +381,11 @@ describe('session workbench timeline model', () => {
         runtimeKind: 'team_member',
         childSessionId: 'member-session',
         enterable: true,
+        metrics: expect.objectContaining({
+          elapsedLabel: '1m 5s',
+          tokenLabel: '1.8K',
+          toolUseLabel: '2',
+        }),
       }),
     ]);
     expect(model.subagents.map((item) => item.runtimeKind)).toEqual(['subagent']);
@@ -374,5 +401,131 @@ describe('session workbench timeline model', () => {
     expect(model.runs.map((item) => item.runtimeKind)).toEqual(['runtime_task']);
     expect(model.raw.map((item) => item.runtimeKind)).toEqual(['raw_event']);
     expect(model.summary.total).toBe(7);
+    expect(model.summary.running).toBe(3);
+  });
+
+  it('builds named session workbench models for windows, checkpoints, right panel, runtime sections, and workflow run windows', () => {
+    const messages: AgentChatMessage[] = [
+      {
+        role: 'assistant',
+        content: 'Delivered current report.',
+        artifacts: [
+          {
+            id: 'artifact-current',
+            name: 'current-report.md',
+            path: 'workspace/current-report.md',
+            previewKind: 'markdown',
+            size: 2048,
+            runtimeTaskId: 'run-1',
+            snapshotHash: 'sha256-current',
+          },
+          {
+            id: 'artifact-historical',
+            name: 'old-report.md',
+            path: 'workspace/old-report.md',
+            previewKind: 'markdown',
+            source: 'historical_session',
+          },
+          {
+            id: 'artifact-unattributed',
+            name: 'scratch.txt',
+            path: 'workspace/scratch.txt',
+            previewKind: 'text',
+          },
+        ],
+      },
+    ];
+    const runtimeSections = buildRuntimeSectionsModel({
+      runtime_sections: {
+        workflows: [
+          {
+            id: 'workflow-1',
+            runtime_kind: 'workflow',
+            label: 'Dynamic Workflow',
+            status: 'waiting',
+            elapsed_seconds: 90,
+            total_tokens: 8000,
+            tool_use_count: 5,
+            child_session_id: 'workflow-session',
+            steps: [{ id: 'step-1', label: 'Gate review', status: 'waiting' }],
+            leaf_calls: [{ id: 'leaf-1', label: 'Research leaf', status: 'completed' }],
+          },
+        ],
+        subagents: [
+          {
+            id: 'subagent-1',
+            runtime_kind: 'subagent',
+            label: 'Reviewer',
+            status: 'running',
+            elapsed_seconds: 30,
+            token_count: 1200,
+            tool_count: 1,
+          },
+        ],
+      },
+    });
+
+    const sessionWindow = buildSessionWindowModel({
+      id: 'member-session',
+      session_kind: 'team_member',
+      source_channel: 'agent_team',
+      title: 'Research Team / Reviewer',
+      transcript_metadata_json: { team_id: 'team-1', member_name: 'Reviewer', member_role: 'audit' },
+    }, 'running');
+    const checkpointNodes = buildCheckpointTimelineNodes({
+      checkpoints: [
+        { id: 'cp-1', checkpoint_event_id: 'evt-1', checkpoint_kind: 'user_turn_stop' },
+        { id: 'cp-2', checkpoint_event_id: 'evt-2', checkpoint_kind: 'assistant_turn_stop', compacted: true },
+      ],
+    } as unknown as SessionIndex, [{ id: 'branch-1', parent_session_id: 'member-session' }]);
+    const rightPanel = buildSessionRightPanelModel({
+      messages,
+      sessionWorkbench: { runtime_sections: { workflows: runtimeSections.workflows, subagents: runtimeSections.subagents } } as unknown as SessionWorkbench,
+      activeSession: { id: 'member-session', title: 'Member session' },
+      activeRunStatus: 'running',
+    });
+    const workflowWindow = buildWorkflowRunWindowModel(runtimeSections.workflows[0]);
+
+    expect(sessionWindow).toMatchObject({
+      id: 'member-session',
+      kind: 'team_member',
+      label: 'Reviewer',
+      activeTabLabel: 'Agent: Reviewer',
+      tabTone: 'running',
+      teamId: 'team-1',
+      sessionId: 'member-session',
+    });
+    expect(checkpointNodes).toEqual([
+      expect.objectContaining({ id: 'evt-1', sequence: 1, state: 'current_head', branchSessionIds: ['branch-1'] }),
+      expect.objectContaining({ id: 'evt-2', sequence: 2, state: 'compacted_scope', compacted: true }),
+    ]);
+    expect(rightPanel.workspaceDocuments.currentSession.items.map((item) => item.name)).toEqual(['current-report.md']);
+    expect(rightPanel.workspaceDocuments.historical.items.map((item) => item.name)).toEqual(['old-report.md']);
+    expect(rightPanel.workspaceDocuments.unattributed.items.map((item) => item.name)).toEqual(['scratch.txt']);
+    expect(rightPanel.runtimeTables.map((section) => section.key)).toEqual([
+      'agent_teams',
+      'subagents',
+      'workflows',
+      'background',
+      'notifications',
+      'runs',
+      'raw',
+    ]);
+    expect(rightPanel.runtimeMetrics).toMatchObject({
+      runningCount: 1,
+      totalCount: 2,
+      elapsedLabel: '1m 30s',
+      tokenLabel: '9.2K',
+      toolUseLabel: '6',
+    });
+    expect(workflowWindow).toMatchObject({
+      id: 'workflow-1',
+      label: 'Dynamic Workflow',
+      status: 'waiting',
+      breadcrumb: 'Main > Dynamic Workflow',
+      metrics: expect.objectContaining({ elapsedLabel: '1m 30s', tokenLabel: '8.0K', toolUseLabel: '5' }),
+    });
+    expect(workflowWindow.steps).toHaveLength(1);
+    expect(workflowWindow.leafCalls).toHaveLength(1);
   });
 });

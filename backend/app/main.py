@@ -136,6 +136,8 @@ _API_ROLE_PREFIXES = (
     "/api/v1/feature-flags/",
     "/api/notification/",
     "/api/v1/notification/",
+    "/api/notifications/",
+    "/api/v1/notifications/",
     "/api/desktop-auth/",
     "/api/v1/desktop-auth/",
     "/api/desktop-sync/",

@@ -7,6 +7,7 @@ describe('runtime pool nginx routing', () => {
         expect(nginxConf).toContain('set $backend_api_upstream backend-api:8000;');
         expect(nginxConf).toContain('set $backend_runtime_upstream backend:8000;');
         expect(nginxConf).toContain('location ~ ^/api/(v1/)?auth/');
+        expect(nginxConf).toContain('notifications');
         expect(nginxConf).toContain('location ~ ^/api/(v1/)?agents/[^/]+/sessions/[^/]+/runs');
         expect(nginxConf).toContain('location /api/');
         expect(nginxConf).toContain('proxy_pass http://$backend_runtime_upstream;');

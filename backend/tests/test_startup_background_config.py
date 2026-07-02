@@ -59,6 +59,8 @@ def test_api_role_path_boundary_allows_control_plane_and_rejects_volume_paths():
 
     assert main_mod._api_role_allows_path("/api/health") is True
     assert main_mod._api_role_allows_path("/api/auth/login") is True
+    assert main_mod._api_role_allows_path("/api/notifications/unread-count") is True
+    assert main_mod._api_role_allows_path("/api/v1/notifications/unread-count") is True
     assert main_mod._api_role_allows_path("/api/agents") is True
     assert main_mod._api_role_allows_path("/api/agents/") is True
     assert main_mod._api_role_allows_path("/api/v1/agents/") is True

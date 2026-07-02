@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -112,7 +113,7 @@ def _prompt_manifest_payload(*, active_run: Any, session: ChatSession, turn_enve
         session_metadata.get("prompt_assembly_manifest")
     )
     if runtime_manifest:
-        return runtime_manifest
+        return _compact_runtime_task_metadata(runtime_manifest)
     return build_prompt_assembly_manifest(turn_envelope)
 
 
@@ -151,8 +152,6 @@ def _compact_runtime_task_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     metadata stays on the RuntimeTask row and internal builders keep reading
     the ORM object directly.
     """
-    import json
-
     compact: dict[str, Any] = {}
     for key, value in metadata.items():
         if isinstance(value, str):
@@ -169,6 +168,81 @@ def _compact_runtime_task_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
             compact[key] = dict(_WORKBENCH_METADATA_OMITTED) if oversize else value
             continue
         compact[key] = value
+    return compact
+
+
+_WORKBENCH_EVENT_CONTENT_CHAR_LIMIT = 8_000
+_WORKBENCH_EVENT_METADATA_TEXT_CHAR_LIMIT = 2_000
+_WORKBENCH_EVENT_METADATA_VALUE_BYTE_LIMIT = 8_000
+_WORKBENCH_EVENT_HEAVY_KEYS = {
+    "blob",
+    "bytes",
+    "content_replacement",
+    "data",
+    "file_content",
+    "html",
+    "inline_content",
+    "payload",
+    "raw",
+}
+
+
+def _workbench_json_size(value: Any) -> int:
+    try:
+        return len(json.dumps(value, default=str, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return _WORKBENCH_EVENT_METADATA_VALUE_BYTE_LIMIT + 1
+
+
+def _compact_workbench_event_text(value: str, limit: int) -> tuple[str, bool]:
+    if len(value) <= limit:
+        return value, False
+    return f"{value[:limit]}...[truncated for workbench]", True
+
+
+def _compact_workbench_event_metadata(metadata: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    compact: dict[str, Any] = {}
+    truncated = False
+    for key, value in metadata.items():
+        key = str(key)
+        value_size = _workbench_json_size(value)
+        if key in _WORKBENCH_EVENT_HEAVY_KEYS and value_size > 512:
+            truncated = True
+            continue
+        if isinstance(value, str):
+            compact_value, value_truncated = _compact_workbench_event_text(
+                value,
+                _WORKBENCH_EVENT_METADATA_TEXT_CHAR_LIMIT,
+            )
+            compact[key] = compact_value
+            truncated = truncated or value_truncated
+            continue
+        if isinstance(value, (dict, list)) and value_size > _WORKBENCH_EVENT_METADATA_VALUE_BYTE_LIMIT:
+            compact[key] = dict(_WORKBENCH_METADATA_OMITTED)
+            truncated = True
+            continue
+        compact[key] = value
+    if truncated:
+        compact["_workbench_truncated"] = True
+    return compact, truncated
+
+
+def _compact_workbench_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = dict(payload)
+    truncated = False
+    content = compact.get("content")
+    if isinstance(content, str):
+        compact["content"], content_truncated = _compact_workbench_event_text(
+            content,
+            _WORKBENCH_EVENT_CONTENT_CHAR_LIMIT,
+        )
+        truncated = truncated or content_truncated
+
+    metadata, metadata_truncated = _compact_workbench_event_metadata(_mapping(compact.get("metadata")))
+    truncated = truncated or metadata_truncated
+    if truncated:
+        metadata["_workbench_truncated"] = True
+    compact["metadata"] = metadata
     return compact
 
 
@@ -217,7 +291,7 @@ def _runtime_task_runtime_row(task: RuntimeTask, *, runtime_kind: str | None = N
         "created_at": _iso(getattr(task, "created_at", None)),
         "started_at": _iso(getattr(task, "started_at", None)),
         "completed_at": _iso(getattr(task, "completed_at", None)),
-        "metadata": metadata,
+        "metadata": _compact_runtime_task_metadata(metadata),
     }
     if metadata.get("subagent_type"):
         row["subagent_type"] = metadata.get("subagent_type")
@@ -619,11 +693,11 @@ def _workflow_controls_payload(
         "status": getattr(task, "status", None),
         "gate_status": gate_status,
         "wait_status": wait_status,
-        "waiting_for_signal": waiting_for_signal or None,
+        "waiting_for_signal": _compact_runtime_task_metadata(waiting_for_signal) if waiting_for_signal else None,
         "repairable": repairable,
-        "repair_plan": repair_plan,
+        "repair_plan": _compact_runtime_task_metadata(repair_plan),
         "promotion_eligible": promotion_eligible,
-        "promotion_eligibility": promotion_eligibility,
+        "promotion_eligibility": _compact_runtime_task_metadata(promotion_eligibility),
         "actions": [
             action_payload(
                 "resume", enabled=can_resume, reason=waiting_for_signal.get("reason") or repair_plan.get("strategy")
@@ -674,12 +748,14 @@ def _workflow_section_item(task: RuntimeTask, journal: dict[str, Any] | None) ->
     dynamic_workflow = _mapping(metadata.get("dynamic_workflow"))
     item = _runtime_task_runtime_row(task, runtime_kind="workflow")
     item["definition_source"] = metadata.get("definition_source") or dynamic_workflow.get("definition_source")
-    item["dynamic_workflow"] = dynamic_workflow
+    item["dynamic_workflow"] = _compact_runtime_task_metadata(dynamic_workflow)
     item["proposal_id"] = dynamic_workflow.get("proposal_id") or metadata.get("proposal_id")
     item["preview_hash"] = dynamic_workflow.get("preview_hash") or metadata.get("preview_hash")
-    item["waiting_for_signal"] = metadata.get("waiting_for_signal")
-    item["repair_plan"] = metadata.get("repair_plan") or dynamic_workflow.get("repair_plan") or {}
-    item["promotion_eligibility"] = metadata.get("promotion_eligibility") or {}
+    item["waiting_for_signal"] = _compact_runtime_task_metadata(_mapping(metadata.get("waiting_for_signal")))
+    item["repair_plan"] = _compact_runtime_task_metadata(
+        _mapping(metadata.get("repair_plan") or dynamic_workflow.get("repair_plan"))
+    )
+    item["promotion_eligibility"] = _compact_runtime_task_metadata(_mapping(metadata.get("promotion_eligibility")))
     journal = _mapping(journal)
     item["steps"] = list(journal.get("steps") or [])
     item["leaf_calls"] = [
@@ -1405,8 +1481,8 @@ async def build_session_workbench(
         timeline_limit = WORKBENCH_DEFAULT_TIMELINE_LIMIT
     timeline_limit = min(timeline_limit, WORKBENCH_MAX_TIMELINE_LIMIT)
     events, truth_source = await _load_events(db, agent=agent, session=session, limit=timeline_limit)
-    checkpoints = _checkpoint_payloads(events)
-    latest_event = _event_payload(events[-1]) if events else None
+    checkpoints = [_compact_workbench_event_payload(payload) for payload in _checkpoint_payloads(events)]
+    latest_event = _compact_workbench_event_payload(_event_payload(events[-1])) if events else None
     active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
     active_run_projection = _active_run_with_event_refs(active_run, events)
     runtime_tasks = await _list_runtime_tasks(db, agent_id=agent.id, session_id=session.id)

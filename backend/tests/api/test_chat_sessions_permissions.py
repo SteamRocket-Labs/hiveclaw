@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -523,6 +524,50 @@ async def test_get_session_transcript_returns_replayable_events(monkeypatch):
             "created_at": "2026-06-20T12:00:00+00:00",
         }
     ]
+    assert db.commits == 1
+
+
+def test_serialize_transcript_event_bounds_large_ui_payload():
+    import app.api.chat_sessions as chat_sessions_api
+
+    session_id = uuid4()
+    event = SimpleNamespace(
+        id=uuid4(),
+        sequence=7,
+        session_id=session_id,
+        run_id=None,
+        message_id=None,
+        actor_type="assistant",
+        event_type="artifact_delivery",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        content="c" * 80_000,
+        parts_json=[
+            {
+                "type": "artifact",
+                "artifact_id": "artifact-1",
+                "filename": "report.md",
+                "inline_content": "p" * 600_000,
+            }
+        ],
+        metadata_json={
+            "role": "assistant",
+            "artifact_id": "artifact-1",
+            "artifact_ids": ["artifact-1"],
+            "content_replacement": {"inline_content": "m" * 600_000},
+        },
+        created_at=None,
+    )
+
+    payload = chat_sessions_api._serialize_transcript_event(event)
+
+    encoded = json.dumps(payload, default=str)
+    assert len(encoded) < 40_000
+    assert len(payload["content"]) < 20_000
+    assert payload["metadata"]["_payload_truncated"] is True
+    assert payload["metadata"]["artifact_ids"] == ["artifact-1"]
+    assert "inline_content" not in payload["parts"][0]
+    assert "content_replacement" not in payload["metadata"]
 
 
 @pytest.mark.asyncio

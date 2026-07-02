@@ -769,7 +769,187 @@ def _transcript_role_for_event(event: ChatTranscriptEvent) -> str:
     return "event"
 
 
+_TRANSCRIPT_CONTENT_CHAR_LIMIT = 16_000
+_TRANSCRIPT_PART_TEXT_CHAR_LIMIT = 4_000
+_TRANSCRIPT_METADATA_TEXT_CHAR_LIMIT = 2_000
+_TRANSCRIPT_METADATA_VALUE_BYTE_LIMIT = 8_000
+_TRANSCRIPT_PART_VALUE_BYTE_LIMIT = 8_000
+_TRANSCRIPT_HEAVY_PAYLOAD_KEYS = {
+    "blob",
+    "bytes",
+    "content_replacement",
+    "data",
+    "file_content",
+    "html",
+    "inline_content",
+    "payload",
+    "raw",
+    "text_delta",
+}
+_TRANSCRIPT_METADATA_KEEP_KEYS = {
+    "artifact_id",
+    "artifact_ids",
+    "command",
+    "filename",
+    "kind",
+    "message_id",
+    "mime_type",
+    "name",
+    "path",
+    "role",
+    "run_id",
+    "size",
+    "source",
+    "status",
+    "summary",
+    "title",
+    "tool_call_id",
+    "tool_name",
+    "turn_id",
+    "type",
+    "url",
+}
+
+
+def _json_size_bytes(value: Any) -> int:
+    try:
+        return len(json.dumps(value, default=str, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return _TRANSCRIPT_METADATA_VALUE_BYTE_LIMIT + 1
+
+
+def _truncate_text_for_transcript(value: str, limit: int) -> tuple[str, bool]:
+    if len(value) <= limit:
+        return value, False
+    return f"{value[:limit]}...[truncated]", True
+
+
+def _compact_transcript_json_value(
+    value: Any,
+    *,
+    text_limit: int,
+    byte_limit: int,
+) -> tuple[Any, bool]:
+    if isinstance(value, str):
+        return _truncate_text_for_transcript(value, text_limit)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value, False
+    if _json_size_bytes(value) <= byte_limit:
+        return value, False
+    if isinstance(value, list):
+        compact_items: list[Any] = []
+        truncated = False
+        for item in value[:20]:
+            compact_item, item_truncated = _compact_transcript_json_value(
+                item,
+                text_limit=min(text_limit, 512),
+                byte_limit=min(byte_limit, 2_000),
+            )
+            compact_items.append(compact_item)
+            truncated = truncated or item_truncated
+        if len(value) > 20:
+            truncated = True
+        return compact_items, True
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        truncated = False
+        for key, item in value.items():
+            if key in _TRANSCRIPT_HEAVY_PAYLOAD_KEYS:
+                truncated = True
+                continue
+            if _json_size_bytes(item) > byte_limit:
+                truncated = True
+                continue
+            compact_item, item_truncated = _compact_transcript_json_value(
+                item,
+                text_limit=min(text_limit, 512),
+                byte_limit=min(byte_limit, 2_000),
+            )
+            compact[str(key)] = compact_item
+            truncated = truncated or item_truncated
+        return compact, True
+    return {"omitted_oversize_value": True, "transcript_projection": True}, True
+
+
+def _compact_transcript_part(part: Any) -> tuple[Any, bool]:
+    if not isinstance(part, dict):
+        return _compact_transcript_json_value(
+            part,
+            text_limit=_TRANSCRIPT_PART_TEXT_CHAR_LIMIT,
+            byte_limit=_TRANSCRIPT_PART_VALUE_BYTE_LIMIT,
+        )
+
+    compact: dict[str, Any] = {}
+    omitted_keys: list[str] = []
+    truncated = False
+    for key, value in part.items():
+        key = str(key)
+        if key in _TRANSCRIPT_HEAVY_PAYLOAD_KEYS and _json_size_bytes(value) > 512:
+            omitted_keys.append(key)
+            truncated = True
+            continue
+        if _json_size_bytes(value) > _TRANSCRIPT_PART_VALUE_BYTE_LIMIT:
+            omitted_keys.append(key)
+            truncated = True
+            continue
+        compact_value, value_truncated = _compact_transcript_json_value(
+            value,
+            text_limit=_TRANSCRIPT_PART_TEXT_CHAR_LIMIT,
+            byte_limit=_TRANSCRIPT_PART_VALUE_BYTE_LIMIT,
+        )
+        compact[key] = compact_value
+        truncated = truncated or value_truncated
+    if omitted_keys:
+        compact["_omitted_keys"] = omitted_keys
+    if truncated:
+        compact["_payload_truncated"] = True
+    return compact, truncated
+
+
+def _compact_transcript_metadata(metadata: Any, truncations: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {}
+
+    compact: dict[str, Any] = {}
+    for key, value in metadata.items():
+        key = str(key)
+        value_size = _json_size_bytes(value)
+        if key in _TRANSCRIPT_HEAVY_PAYLOAD_KEYS and value_size > 512:
+            truncations.append({"field": f"metadata.{key}", "original_bytes": value_size})
+            continue
+        if key not in _TRANSCRIPT_METADATA_KEEP_KEYS and value_size > _TRANSCRIPT_METADATA_VALUE_BYTE_LIMIT:
+            truncations.append({"field": f"metadata.{key}", "original_bytes": value_size})
+            continue
+        compact_value, truncated = _compact_transcript_json_value(
+            value,
+            text_limit=_TRANSCRIPT_METADATA_TEXT_CHAR_LIMIT,
+            byte_limit=_TRANSCRIPT_METADATA_VALUE_BYTE_LIMIT,
+        )
+        compact[key] = compact_value
+        if truncated:
+            truncations.append({"field": f"metadata.{key}", "original_bytes": value_size})
+    return compact
+
+
 def _serialize_transcript_event(event: ChatTranscriptEvent) -> dict:
+    truncations: list[dict[str, Any]] = []
+    content = event.content or ""
+    content, content_truncated = _truncate_text_for_transcript(content, _TRANSCRIPT_CONTENT_CHAR_LIMIT)
+    if content_truncated:
+        truncations.append({"field": "content", "original_chars": len(event.content or "")})
+
+    parts: list[Any] = []
+    for index, part in enumerate(event.parts_json or []):
+        compact_part, truncated = _compact_transcript_part(part)
+        parts.append(compact_part)
+        if truncated:
+            truncations.append({"field": f"parts[{index}]", "original_bytes": _json_size_bytes(part)})
+
+    metadata = _compact_transcript_metadata(event.metadata_json or {}, truncations)
+    if truncations:
+        metadata["_payload_truncated"] = True
+        metadata["_payload_truncations"] = truncations
+
     return {
         "id": str(event.id),
         "sequence": event.sequence,
@@ -782,9 +962,9 @@ def _serialize_transcript_event(event: ChatTranscriptEvent) -> dict:
         "role": _transcript_role_for_event(event),
         "visibility_scope": event.visibility_scope,
         "listed_surface": event.listed_surface,
-        "content": event.content or "",
-        "parts": event.parts_json or [],
-        "metadata": event.metadata_json or {},
+        "content": content,
+        "parts": parts,
+        "metadata": metadata,
         "created_at": event.created_at.isoformat() if event.created_at else None,
     }
 
@@ -1394,13 +1574,15 @@ async def get_session_workbench(
         current_user=current_user,
     )
     include_sections = {part.strip() for part in include.split(",") if part.strip()}
-    return await build_session_workbench(
+    payload = await build_session_workbench(
         db,
         agent=agent,
         session=session,
         timeline_limit=timeline_limit,
         include=include_sections,
     )
+    await db.commit()
+    return payload
 
 
 @router.get("/{agent_id}/sessions/{session_id}/export")
@@ -1416,7 +1598,9 @@ async def export_session_json(
         session_id=session_id,
         current_user=current_user,
     )
-    return await build_session_json_export(db, agent=agent, session=session)
+    payload = await build_session_json_export(db, agent=agent, session=session)
+    await db.commit()
+    return payload
 
 
 @router.get("/{agent_id}/sessions/{session_id}/runs/active")
@@ -1817,7 +2001,9 @@ async def read_thread(
         session_id=session_id,
         current_user=current_user,
     )
-    return await build_session_json_export(db, agent=agent, session=session)
+    payload = await build_session_json_export(db, agent=agent, session=session)
+    await db.commit()
+    return payload
 
 
 @router.get("/{agent_id}/sessions/{session_id}/transcript")
@@ -1876,7 +2062,9 @@ async def get_session_transcript(
             .limit(limit)
         )
         rows = list(events_result.scalars().all())
-    return [_serialize_transcript_event(event) for event in rows]
+    payload = [_serialize_transcript_event(event) for event in rows]
+    await db.commit()
+    return payload
 
 
 @router.post("/{agent_id}/sessions/{session_id}/runs/{run_id}/cancel")

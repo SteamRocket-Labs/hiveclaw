@@ -912,6 +912,34 @@ async def test_workbench_default_omits_heavy_derived_sections(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_workbench_default_bounds_turn_event_payload(monkeypatch):
+    import app.services.session_control_plane as service
+
+    agent, session = _slim_agent_session()
+    seen_limits: list[int] = []
+    event = _slim_event(
+        61,
+        event_type="assistant_message",
+        role="assistant",
+        metadata={
+            "role": "assistant",
+            "content_replacement": {"inline_content": "m" * 80_000},
+            "small": "kept",
+        },
+    )
+    event.content = "c" * 80_000
+    _patch_slim_workbench_deps(monkeypatch, service, events=[event], seen_limits=seen_limits)
+
+    result = await service.build_session_workbench(object(), agent=agent, session=session)
+
+    latest_event = result["turn"]["latest_event"]
+    assert len(latest_event["content"]) < 10_000
+    assert latest_event["metadata"]["_workbench_truncated"] is True
+    assert latest_event["metadata"]["small"] == "kept"
+    assert "content_replacement" not in latest_event["metadata"]
+
+
+@pytest.mark.asyncio
 async def test_workbench_include_restores_heavy_sections(monkeypatch):
     import app.services.session_control_plane as service
 
@@ -1053,3 +1081,43 @@ def test_runtime_task_payload_bounds_oversize_metadata_values():
     import json as _json
 
     assert len(_json.dumps(metadata, default=str)) < 5_000
+
+
+def test_runtime_task_runtime_row_bounds_oversize_metadata_values():
+    import app.services.session_control_plane as service
+
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type="subagent",
+        status="running",
+        parent_agent_id=uuid4(),
+        child_agent_id=uuid4(),
+        parent_session_id="parent",
+        child_session_id="child",
+        trace_id="trace",
+        created_at=now,
+        started_at=now,
+        completed_at=None,
+        result_summary="summary",
+        token_usage={},
+        metadata_json={
+            "subagent_type": "research",
+            "turn_id": "turn-1",
+            "restart_replay_journal": [{"event": "x" * 4000} for _ in range(50)],
+            "pending_user_messages": [{"content": "y" * 5000}],
+        },
+    )
+
+    row = service._runtime_task_runtime_row(task, runtime_kind="subagent")
+
+    assert row["metadata"]["subagent_type"] == "research"
+    assert row["metadata"]["turn_id"] == "turn-1"
+    assert row["metadata"]["restart_replay_journal"] == {
+        "omitted_oversize_value": True,
+        "workbench_projection": True,
+    }
+    assert row["metadata"]["pending_user_messages"] == {
+        "omitted_oversize_value": True,
+        "workbench_projection": True,
+    }

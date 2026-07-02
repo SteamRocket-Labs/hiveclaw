@@ -95,6 +95,33 @@ def test_legacy_read_knobs_are_retired() -> None:
         assert not hasattr(MemoryRetriever, retired_method)
 
 
+def test_plane_read_legacy_t3_fallback_is_observable(data_root: Path, agent_id: uuid.UUID) -> None:
+    """Before an agent is migrated, flat-T3 data must not disappear silently.
+
+    The fallback is explicitly marked `migration_required` so operators see the
+    debt instead of reintroducing legacy flat-T3 as a normal read path.
+    """
+    from app.memory.plane_read import load_plane_entries, search_plane_facts
+
+    t3_dir = data_root / str(agent_id) / "memory" / "t3"
+    t3_dir.mkdir(parents=True)
+    (t3_dir / "user.md").write_text(
+        "# T3 User\n\n- [2026-04-06] salary planning requires concise summaries\n",
+        encoding="utf-8",
+    )
+
+    hits = search_plane_facts(data_root, agent_id, "salary planning", limit=3)
+
+    assert hits
+    assert hits[0]["source"] == "memory/t3/user.md"
+    assert hits[0]["metadata"]["migration_required"] is True
+    assert hits[0]["metadata"]["legacy_t3"] is True
+
+    loaded = load_plane_entries(data_root, agent_id, [hits[0]["id"]])
+    assert loaded[0]["source"] == "memory/t3/user.md"
+    assert loaded[0]["metadata"]["migration_required"] is True
+
+
 @pytest.mark.asyncio
 async def test_retrieve_no_files(data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever) -> None:
     items = await retriever.retrieve(agent_id, "anything", session_id=None, tenant_id=None)

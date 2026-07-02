@@ -52,16 +52,41 @@ class TestProgrammaticDedup:
 
 
 class TestT3ReadWriteBoundary:
-    def test_reads_canonical_t3_files(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        memory_dir = tmp_agent_dir / str(agent_id) / "memory" / "t3"
-        (memory_dir / "user.md").write_text("# T3 User\n- [2026-04-06] test\n", encoding="utf-8")
+    def test_reads_two_plane_t3_documents(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        memory_dir = tmp_agent_dir / str(agent_id) / "memory"
+        (memory_dir / "self").mkdir(parents=True, exist_ok=True)
+        (memory_dir / "knowledge").mkdir(parents=True, exist_ok=True)
+        (memory_dir / "self" / "self.md").write_text(
+            "## 方法\n\n### Verification discipline\n<!-- id: self-verification -->\nAlways run focused tests first.\n",
+            encoding="utf-8",
+        )
+        (memory_dir / "knowledge" / "testing-policy.md").write_text(
+            "---\ntitle: Testing Policy\nstatus: active\n---\n\n## Current Claim\nFocused tests precede full suite.\n",
+            encoding="utf-8",
+        )
 
         with patch("app.services.auto_dream.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             result = _read_all_t3(agent_id)
 
-        assert "t3/user.md" in result
-        assert "test" in result["t3/user.md"]
+        assert "memory/self/self.md" in result
+        assert "Always run focused tests first" in result["memory/self/self.md"]
+        assert "memory/knowledge/testing-policy.md" in result
+        assert "Focused tests precede full suite" in result["memory/knowledge/testing-policy.md"]
+
+    def test_legacy_flat_t3_before_migration_is_observable_fallback(
+        self, agent_id: uuid.UUID, tmp_agent_dir: Path
+    ) -> None:
+        memory_dir = tmp_agent_dir / str(agent_id) / "memory" / "t3"
+        (memory_dir / "user.md").write_text("# T3 User\n- [2026-04-06] User prefers concise\n", encoding="utf-8")
+
+        with patch("app.services.auto_dream.get_settings") as mock:
+            mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            result = _read_all_t3(agent_id)
+
+        assert "migration_required/memory/t3/user.md" in result
+        assert "User prefers concise" in result["migration_required/memory/t3/user.md"]
+        assert "legacy flat-T3 corpus" in result["migration_required/memory/t3/user.md"]
 
     def test_direct_t3_write_is_refused(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         with (
@@ -74,16 +99,17 @@ class TestT3ReadWriteBoundary:
 
 class TestConsolidateT3:
     def test_mechanical_consolidation_is_noop(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        memory_dir = tmp_agent_dir / str(agent_id) / "memory" / "t3"
-        before = "# T3 User\n- [2026-04-06] User prefers concise output\n" * 2
-        (memory_dir / "user.md").write_text(before, encoding="utf-8")
+        memory_dir = tmp_agent_dir / str(agent_id) / "memory" / "self"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        before = "## 方法\n\n### Concise output\n<!-- id: self-concise -->\nUser prefers concise output.\n"
+        (memory_dir / "self.md").write_text(before, encoding="utf-8")
 
         with patch("app.services.auto_dream.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             stats = _consolidate_t3_files(agent_id)
 
-        assert stats["t3/user.md"] == 0
-        assert (memory_dir / "user.md").read_text(encoding="utf-8") == before
+        assert stats["memory/self/self.md"] == 0
+        assert (memory_dir / "self.md").read_text(encoding="utf-8") == before
 
 
 class TestTruncateT2:

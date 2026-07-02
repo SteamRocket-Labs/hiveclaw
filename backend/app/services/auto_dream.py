@@ -2,7 +2,7 @@
 
 Dream works on canonical markdown layers:
   - T2 Segment Packages (`memory/t2/sessions/*/segments/*`, with legacy read-only support for `memory/sessions/*/segments/*`)
-  - accepted T3 memory (`memory/t3/{episodes,user,worker,capabilities}.md`)
+  - accepted two-plane T3 memory (`memory/self`, `memory/profiles`, `memory/knowledge`, `memory/milestones`)
   - soul.md for high-signal identity promotion
 
 The runtime now uses a programmatic md-only consolidation path. Legacy semantic
@@ -103,7 +103,7 @@ _AUTO_DREAM_SYSTEM_PROMPT = f"""\
 You are the dream sub-agent: the **Reconsolidator + IdentityPromoter**. You
   run about once a day. Your job:
 - Reconsolidator: inspect accepted T3 long-term memory
-  (`memory/t3/{{episodes,user,worker,capabilities}}.md`) and propose lifecycle
+  (two-plane `memory/self`, `memory/profiles`, `memory/knowledge`, `memory/milestones`) and propose lifecycle
   concerns only as review/audit signals. You do not directly rewrite accepted
   T3; T3 changes go through T3 Consolidator -> Memory Gate -> Platform Gate.
 - IdentityPromoter: promote stable, repeatedly evidenced patterns into the
@@ -150,7 +150,7 @@ No prose, no markdown, no code fences — just raw JSON.
 _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE = """\
 <agent_context>
 Agent: {agent_name}
-Task: inspect accepted T3 memory and produce a Soul Candidate Package when identity-grade evidence exists.
+Task: inspect accepted two-plane T3 memory and produce a Soul Candidate Package when identity-grade evidence exists.
 </agent_context>
 
 <current_soul>
@@ -167,10 +167,10 @@ when proposing a change:
 
 | soul_block_type | criteria | expected source_file |
 |---|---|---|
-| soul_principle | Always-on behavioral principle that affects future cooperation | t3/worker.md or t3/capabilities.md |
-| soul_user_model | Stable user/principal preference, constraint, or collaboration model | t3/user.md |
-| soul_quality_bar | Durable quality standard or verification threshold | t3/worker.md or t3/capabilities.md |
-| soul_redline | Durable boundary or failure prevention rule | t3/worker.md |
+| soul_principle | Always-on behavioral principle that affects future cooperation | memory/self/self.md or memory/knowledge/<slug>.md |
+| soul_user_model | Stable user/principal preference, constraint, or collaboration model | memory/profiles/owner.md or memory/profiles/collaborators.md |
+| soul_quality_bar | Durable quality standard or verification threshold | memory/self/self.md or memory/knowledge/<slug>.md |
+| soul_redline | Durable boundary or failure prevention rule | memory/self/self.md |
 
 Allowed enum: soul_principle|soul_user_model|soul_quality_bar|soul_redline.
 If a T3 line does not clearly fit one of these four block types, do not submit a soul_candidate.
@@ -178,10 +178,10 @@ If a T3 line does not clearly fit one of these four block types, do not submit a
 
 <few_shot_example_1>
 <input_t3>
-### memory/t3/user.md
+### memory/profiles/owner.md
 <t3_user_memory id="u-no-emoji">User rejected emoji in responses across repeated corrections.</t3_user_memory>
 
-### memory/t3/capabilities.md
+### memory/knowledge/rg-workflow.md
 <t3_capability id="cap-rg">Using ripgrep (rg) instead of grep was faster on the backend/ dir.</t3_capability>
 <t3_capability id="cap-three-phase">Three-phase workflow (analyze -> edit -> test) caught a regression grep missed.</t3_capability>
 </input_t3>
@@ -192,15 +192,15 @@ If a T3 line does not clearly fit one of these four block types, do not submit a
   "soul_candidate": {{
     "target": "soul.md",
     "soul_pitch_md": "# Soul Pitch\\n\\nAccepted T3 shows repeated user correction against emoji. This should become a narrow user-model rule, not a broad personality rewrite. Ripgrep remains T3 capability evidence only.",
-    "soul_patch_md": "# Soul Patch\\n\\n<soul_user_model id=\\"user-no-emoji\\" stability=\\"stable\\">\\nNever use emoji in responses unless the user explicitly asks for them.\\n<source_refs>\\n<source_ref ref=\\"t3:memory/t3/user.md#u-no-emoji\\" />\\n</source_refs>\\n<applies_when>Writing user-visible responses.</applies_when>\\n<does_not_apply_when>User explicitly requests emoji or a UI/icon asset requires it.</does_not_apply_when>\\n</soul_user_model>",
-    "soul_md_next": "---\\nschema: hive.soul.v2\\nrole: agent_identity\\n---\\n\\n# Soul\\n\\n<soul_user_model id=\\"user-no-emoji\\" stability=\\"stable\\">\\nNever use emoji in responses unless the user explicitly asks for them.\\n<source_refs>\\n<source_ref ref=\\"t3:memory/t3/user.md#u-no-emoji\\" />\\n</source_refs>\\n<applies_when>Writing user-visible responses.</applies_when>\\n<does_not_apply_when>User explicitly requests emoji or a UI/icon asset requires it.</does_not_apply_when>\\n</soul_user_model>",
-    "source_refs": ["t3:memory/t3/user.md#u-no-emoji"],
+    "soul_patch_md": "# Soul Patch\\n\\n<soul_user_model id=\\"user-no-emoji\\" stability=\\"stable\\">\\nNever use emoji in responses unless the user explicitly asks for them.\\n<source_refs>\\n<source_ref ref=\\"t3:memory/profiles/owner.md#u-no-emoji\\" />\\n</source_refs>\\n<applies_when>Writing user-visible responses.</applies_when>\\n<does_not_apply_when>User explicitly requests emoji or a UI/icon asset requires it.</does_not_apply_when>\\n</soul_user_model>",
+    "soul_md_next": "---\\nschema: hive.soul.v2\\nrole: agent_identity\\n---\\n\\n# Soul\\n\\n<soul_user_model id=\\"user-no-emoji\\" stability=\\"stable\\">\\nNever use emoji in responses unless the user explicitly asks for them.\\n<source_refs>\\n<source_ref ref=\\"t3:memory/profiles/owner.md#u-no-emoji\\" />\\n</source_refs>\\n<applies_when>Writing user-visible responses.</applies_when>\\n<does_not_apply_when>User explicitly requests emoji or a UI/icon asset requires it.</does_not_apply_when>\\n</soul_user_model>",
+    "source_refs": ["t3:memory/profiles/owner.md#u-no-emoji"],
     "requires_owner_approval": false
   }},
   "t3_patch_concerns": [],
   "preservation_flags": [
     {{
-      "file": "t3/user.md",
+      "file": "memory/profiles/owner.md",
       "content": "Never use emoji in responses",
       "reason": "foundational user preference — pin against future cap eviction"
     }}
@@ -211,7 +211,7 @@ If a T3 line does not clearly fit one of these four block types, do not submit a
 
 <few_shot_example_2>
 <input_t3>
-### memory/t3/user.md
+### memory/profiles/owner.md
 <t3_user_memory id="u-language-old">User prefers Japanese for internal messaging.</t3_user_memory>
 <t3_user_memory id="u-language-new">User now wants all responses in Chinese going forward.</t3_user_memory>
 </input_t3>
@@ -222,7 +222,7 @@ If a T3 line does not clearly fit one of these four block types, do not submit a
   "soul_candidate": null,
   "t3_patch_concerns": [
     {{
-      "file": "t3/user.md",
+      "file": "memory/profiles/owner.md",
       "new": "User now wants all responses in Chinese going forward",
       "old": "User prefers Japanese for internal messaging",
       "resolution": "kept_new",
@@ -274,17 +274,19 @@ fine; empty-array form is also fine. Any other shape is a parse failure.
     "soul_patch_md": "<full Markdown/XML patch authored by the Dream/Soul Writer Agent>",
     "soul_md_next": "<complete next soul.md content using hive.soul.v2>",
     "source_refs": [
-      "t3:memory/t3/episodes.md#block-id",
-      "t3:memory/t3/user.md#block-id",
-      "t3:memory/t3/worker.md#block-id",
-      "t3:memory/t3/capabilities.md#block-id"
+      "t3:memory/self/self.md#block-id",
+      "t3:memory/profiles/owner.md#block-id",
+      "t3:memory/profiles/collaborators.md#block-id",
+      "t3:memory/profiles/domain.md#block-id",
+      "t3:memory/knowledge/<slug>.md#block-id",
+      "t3:memory/milestones/<slug>.md#block-id"
     ],
     "requires_owner_approval": false
   }},
   "t3_patch_concerns": [
     {{
-      "file": "t3/episodes.md|t3/user.md|t3/worker.md|t3/capabilities.md",
-      "source_refs": ["t3:memory/t3/user.md#block-id"],
+      "file": "memory/self/self.md|memory/profiles/owner.md|memory/profiles/collaborators.md|memory/profiles/domain.md|memory/knowledge/<slug>.md|memory/milestones/<slug>.md",
+      "source_refs": ["t3:memory/profiles/owner.md#block-id"],
       "concern_type": "duplicate|stale|contradiction|too_broad",
       "recommendation": "<what the T3 Consolidator should revisit>",
       "reason": "<why this is only a concern, not a Dream write>"
@@ -1544,17 +1546,10 @@ _T3_MAX_ENTRIES_PER_FILE = 50
 
 
 def _read_all_t3(agent_id: uuid.UUID) -> dict[str, str]:
-    """Read all T3 memory files. Returns {filename: content}."""
-    memory_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory"
-    result: dict[str, str] = {}
-    for fname in _T3_FILES:
-        fpath = memory_dir / fname
-        if fpath.exists():
-            try:
-                result[fname] = fpath.read_text(encoding="utf-8", errors="replace")
-            except Exception as exc:
-                logger.warning("[Dream] Failed to read T3 %s: %s", fpath, exc)
-    return result
+    """Read accepted T3 memory through the unified two-plane read surface."""
+    from app.memory.plane_read import list_t3_memory_documents
+
+    return list_t3_memory_documents(Path(get_settings().AGENT_DATA_DIR), agent_id)
 
 
 def _write_t3_file(agent_id: uuid.UUID, filename: str, content: str) -> None:
@@ -1668,7 +1663,7 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
     must not rewrite accepted T3 files directly.
     """
     t3_files = _read_all_t3(agent_id)
-    return {fname: 0 for fname in _T3_FILES if fname in t3_files}
+    return {fname: 0 for fname in t3_files}
 
 
 def _truncate_t2(agent_id: uuid.UUID, keep: int = 10) -> int:

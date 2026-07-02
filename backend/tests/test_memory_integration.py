@@ -398,7 +398,7 @@ class TestFullPipeline:
             with pytest.raises(RuntimeError, match="direct T3 write refused"):
                 _write_t3_file(agent_id, "t3/user.md", "# T3 User\n")
             stats = _consolidate_t3_files(agent_id)
-        assert stats["t3/user.md"] == 0
+        assert stats["migration_required/memory/t3/user.md"] == 0
 
     def test_t2_truncation(self, tmp_path: Path) -> None:
         """Phase 6: T2 retention archives only absorbed entries beyond cap."""

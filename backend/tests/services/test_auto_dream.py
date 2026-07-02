@@ -861,7 +861,7 @@ class TestConsolidateRespectsPreservation:
 
         final = t3_path.read_text(encoding="utf-8")
         assert final == original_content
-        assert stats["t3/user.md"] == 0
+        assert sum(stats.values()) == 0
 
 
 @pytest.mark.asyncio
@@ -882,7 +882,7 @@ class TestRunDreamIntegration:
             patch("app.services.auto_dream._dream_llm_consolidate", return_value=None) as mock_llm,
             patch(
                 "app.services.auto_dream._read_all_t3",
-                return_value={"t3/user.md": "# T3 User\n\n- [2026-04-10] prefer concise\n"},
+                return_value={"memory/profiles/owner.md": "# Owner Profile\n\n- [2026-04-10] prefer concise\n"},
             ),
         ):
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
@@ -1083,7 +1083,8 @@ class TestDreamUserPromptTemplateStructure:
 
     def test_source_file_enum_is_complete(self) -> None:
         t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
-        assert "t3/episodes.md|t3/user.md|t3/worker.md|t3/capabilities.md" in t
+        assert "memory/self/self.md|memory/profiles/owner.md|memory/profiles/collaborators.md" in t
+        assert "memory/knowledge/<slug>.md|memory/milestones/<slug>.md" in t
 
     def test_hard_rules_preserve_prompt_injection_guardrail(self) -> None:
         t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
@@ -1107,8 +1108,8 @@ class TestDreamUserPromptBuilder:
             "Alice",
             "# Soul\n\n## Identity\n- Name: Alice",
             {
-                "t3/user.md": "# T3 User\n\n- [2026-04-10] prefers concise output",
-                "t3/capabilities.md": "# T3 Capabilities\n\n- [2026-04-11] TDD-first",
+                "memory/profiles/owner.md": "# Owner Profile\n\n- [2026-04-10] prefers concise output",
+                "memory/knowledge/tdd-first.md": "# TDD First\n\n- [2026-04-11] TDD-first",
             },
         )
         assert "Agent: Alice" in out
@@ -1149,7 +1150,7 @@ class TestDreamUserPromptBuilder:
         the total fits the input budget. Per-section caps engage only over
         budget (same philosophy as compaction P0 / heartbeat C1)."""
         soul = "S" * 5_000  # over the old per-section cap (3K), under total budget
-        t3 = {"t3/user.md": "F" * 6_000}  # over the old per-file cap (4K)
+        t3 = {"memory/profiles/owner.md": "F" * 6_000}  # over the old per-file cap (4K)
 
         out = _build_dream_consolidation_user_prompt("A", soul, t3)
 
@@ -1161,7 +1162,7 @@ class TestDreamUserPromptBuilder:
         from app.services.auto_dream import _DREAM_INPUT_TOTAL_BUDGET_CHARS
 
         big = "X" * (_DREAM_INPUT_TOTAL_BUDGET_CHARS + 10_000)
-        out = _build_dream_consolidation_user_prompt("A", "soul", {"t3/user.md": big})
+        out = _build_dream_consolidation_user_prompt("A", "soul", {"memory/profiles/owner.md": big})
 
         assert "truncated" in out  # observable marker
         assert len(out) < len(big)  # actually bounded
@@ -1177,7 +1178,7 @@ def test_dream_consolidator_template_is_loaded_into_prompt() -> None:
     out = _build_dream_consolidation_user_prompt(
         "Alice",
         "# Soul\n",
-        {"t3/user.md": "- [2026-05-02] User requires evidence-tagged memory"},
+        {"memory/profiles/owner.md": "- [2026-05-02] User requires evidence-tagged memory"},
     )
 
     assert "memory_promotion_candidate" not in out

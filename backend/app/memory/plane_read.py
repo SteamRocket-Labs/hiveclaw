@@ -14,13 +14,14 @@ import re
 import uuid
 from pathlib import Path
 
-from app.memory.t3_platform_gate import PROFILE_PLANE_TARGETS
+from app.memory.t3_platform_gate import LEGACY_T3_FILES, PROFILE_PLANE_TARGETS
 
 logger = logging.getLogger(__name__)
 
 _ENTRY_HEADER_RE = re.compile(r"^###\s+(?P<heading>.+)$")
 _ENTRY_ID_RE = re.compile(r"<!--\s*id:\s*(?P<entry_id>[A-Za-z0-9:_.-]+)\s*-->")
 _PREVIEW_CHARS = 160
+_LEGACY_ID_PREFIX = "legacy_t3:"
 
 
 def list_profile_entries(data_root: Path | str, agent_id: uuid.UUID | str) -> list[dict]:
@@ -65,6 +66,44 @@ def list_knowledge_pages(data_root: Path | str, agent_id: uuid.UUID | str) -> li
                 }
             )
     return pages
+
+
+def list_t3_memory_documents(data_root: Path | str, agent_id: uuid.UUID | str) -> dict[str, str]:
+    """Return the accepted T3 substrate as documents for Soul/Dream review.
+
+    Normal mode reads the two-plane layout only. If an agent has not yet been
+    migrated and no two-plane documents exist, legacy flat-T3 files are exposed
+    with a `migration_required/` key and an in-band warning so the read is
+    observable rather than a silent revival of the retired layout.
+    """
+    profile_entries = list_profile_entries(data_root, agent_id)
+    pages = list_knowledge_pages(data_root, agent_id)
+    documents: dict[str, str] = {}
+    grouped: dict[str, list[str]] = {}
+    for entry in profile_entries:
+        grouped.setdefault(str(entry["source"]), []).append(str(entry["content"]))
+    for source, chunks in sorted(grouped.items()):
+        documents[source] = "\n\n".join(chunk for chunk in chunks if chunk.strip()).strip()
+    for page in pages:
+        source = str(page.get("source") or "")
+        content = str(page.get("content") or "")
+        if source and content.strip():
+            documents[source] = content
+    if documents:
+        return documents
+
+    legacy = _read_legacy_flat_t3_files(data_root, agent_id)
+    if not legacy:
+        return {}
+    logger.warning(
+        "Legacy flat-T3 corpus present for %s but two-plane migration is not applied; "
+        "serving observable migration_required fallback",
+        agent_id,
+    )
+    return {
+        f"migration_required/{source}": _legacy_migration_required_document(source=source, content=content)
+        for source, content in legacy.items()
+    }
 
 
 def search_plane_facts(
@@ -120,6 +159,8 @@ def search_plane_facts(
                         "metadata": {"sensitivity": "PL1_public"},
                     }
                 )
+    if not results and not _has_two_plane_documents(data_root, agent_id):
+        results.extend(_search_legacy_flat_t3(data_root, agent_id, query, limit=limit))
     return results[: max(1, limit)]
 
 
@@ -148,6 +189,10 @@ def load_plane_entries(data_root: Path | str, agent_id: uuid.UUID | str, ids: li
                 }
             )
             continue
+        legacy = _load_legacy_flat_t3_entry(root, agent_id, raw_id)
+        if legacy is not None:
+            loaded.append(legacy)
+            continue
         ref = resolve_memory_ref(agent_id=agent_id, data_root=root, ref=raw_id)
         if ref is None or ref.kind == "explicit_entry":
             # explicit overlay entries ride their own lane (load/update/retire
@@ -171,6 +216,110 @@ def load_plane_entries(data_root: Path | str, agent_id: uuid.UUID | str, ids: li
                 }
             )
     return loaded
+
+
+def _has_two_plane_documents(data_root: Path | str, agent_id: uuid.UUID | str) -> bool:
+    return bool(list_profile_entries(data_root, agent_id) or list_knowledge_pages(data_root, agent_id))
+
+
+def _read_legacy_flat_t3_files(data_root: Path | str, agent_id: uuid.UUID | str) -> dict[str, str]:
+    root = Path(data_root) / str(agent_id)
+    found: dict[str, str] = {}
+    for relative in LEGACY_T3_FILES:
+        path = root / relative
+        if not path.exists():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError as exc:
+            logger.warning("Legacy flat-T3 read failed for %s: %s", path, exc)
+            continue
+        if content:
+            found[relative] = content
+    return found
+
+
+def _legacy_migration_required_document(*, source: str, content: str) -> str:
+    return (
+        "<migration_required source=\"legacy_flat_t3\">\n"
+        f"The legacy flat-T3 corpus at {source} has not been migrated to the two-plane layout. "
+        "Use this content only as compatibility evidence and schedule "
+        "`python -m app.scripts.migrate_memory_two_planes --apply --confirm` before treating it as normal T3.\n"
+        "</migration_required>\n\n"
+        f"{content}"
+    )
+
+
+def _search_legacy_flat_t3(
+    data_root: Path | str,
+    agent_id: uuid.UUID | str,
+    query: str,
+    *,
+    limit: int,
+) -> list[dict]:
+    terms = [term for term in re.split(r"\W+", (query or "").strip().lower()) if term]
+    if not terms:
+        return []
+    hits: list[dict] = []
+    for source, content in _read_legacy_flat_t3_files(data_root, agent_id).items():
+        for index, raw_line in enumerate(content.splitlines(), start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            haystack = line.lower()
+            if not any(term in haystack for term in terms):
+                continue
+            hits.append(
+                {
+                    "id": f"{_LEGACY_ID_PREFIX}{source}#{index}",
+                    "category": "legacy_flat_t3",
+                    "content": line,
+                    "preview": _preview(line),
+                    "timestamp": "",
+                    "source": source,
+                    "metadata": {
+                        "sensitivity": "PL1_public",
+                        "legacy_t3": True,
+                        "migration_required": True,
+                    },
+                }
+            )
+            if len(hits) >= max(1, limit):
+                return hits
+    return hits
+
+
+def _load_legacy_flat_t3_entry(root: Path, agent_id: uuid.UUID | str, raw_id: str) -> dict | None:
+    if not raw_id.startswith(_LEGACY_ID_PREFIX):
+        return None
+    payload = raw_id[len(_LEGACY_ID_PREFIX) :]
+    source, _sep, line_raw = payload.partition("#")
+    if not source or not line_raw.isdigit():
+        return None
+    path = root / str(agent_id) / source
+    if not path.exists():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    line_number = int(line_raw)
+    if line_number < 1 or line_number > len(lines):
+        return None
+    content = lines[line_number - 1].strip()
+    if not content:
+        return None
+    return {
+        "id": raw_id,
+        "category": "legacy_flat_t3",
+        "content": content,
+        "source": source,
+        "timestamp": "",
+        "metadata": {
+            "legacy_t3": True,
+            "migration_required": True,
+        },
+    }
 
 
 def _parse_entries(content: str, *, source: str) -> list[dict]:

@@ -105,9 +105,10 @@ def test_t3_consolidate_is_noop_for_accepted_files(agent_env) -> None:
     from app.services.auto_dream import _consolidate_t3_files
 
     agent_id, _root, mem_dir = agent_env
-    target = mem_dir / "t3" / "capabilities.md"
+    (mem_dir / "knowledge").mkdir(parents=True, exist_ok=True)
+    target = mem_dir / "knowledge" / "capability-notes.md"
     target.write_text(
-        "# T3 Capabilities\n\n"
+        "---\ntitle: Capability Notes\nstatus: active\n---\n\n"
         + "\n".join(f"- [2026-01-{(i % 28) + 1:02d}] distinct capability note {i}" for i in range(60))
         + "\n",
         encoding="utf-8",
@@ -117,7 +118,7 @@ def test_t3_consolidate_is_noop_for_accepted_files(agent_env) -> None:
     stats = _consolidate_t3_files(agent_id)
 
     assert target.read_text(encoding="utf-8") == before
-    assert stats["t3/capabilities.md"] == 0
+    assert stats["memory/knowledge/capability-notes.md"] == 0
     assert not (mem_dir / "archive.md").exists()
 
 
@@ -166,5 +167,4 @@ def test_native_t3_active_file_set_is_canonical() -> None:
     )
     assert is_accepted_t3_target("memory/knowledge/some-page.md")
     assert not is_accepted_t3_target("memory/t3/episodes.md")
-
 

@@ -308,12 +308,13 @@ def test_empty_workspace_returns_empty_structures(tmp_path: Path) -> None:
     assert list_knowledge_candidates(tmp_path, agent_id)["skillCandidates"] == []
 
 
-def test_knowledge_router_registers_six_get_routes() -> None:
+def test_knowledge_router_registers_seven_get_routes() -> None:
     from app.api.agent_knowledge import router
 
     paths = {route.path for route in router.routes}
     assert paths == {
         "/agents/{agent_id}/knowledge/overview",
+        "/agents/{agent_id}/knowledge/observability",
         "/agents/{agent_id}/knowledge/pages",
         "/agents/{agent_id}/knowledge/pages/{page_id:path}",
         "/agents/{agent_id}/knowledge/entries",

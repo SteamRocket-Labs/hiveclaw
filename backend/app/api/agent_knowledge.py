@@ -77,6 +77,20 @@ async def get_overview(
     return build_knowledge_overview(_data_root(), agent_id)
 
 
+@router.get("/observability")
+async def get_observability(
+    agent_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """C8 memory-pipeline observability: consolidation-debt state + trajectory
+    and per-axis T2 label aggregates from the derived index tables."""
+    await check_agent_access(db, current_user, agent_id)
+    from app.services.knowledge_read_model import build_memory_observability
+
+    return build_memory_observability(_data_root(), agent_id)
+
+
 @router.get("/pages")
 async def get_pages(
     agent_id: uuid.UUID,

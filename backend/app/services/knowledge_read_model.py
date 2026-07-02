@@ -298,11 +298,7 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
 
     root = _agent_root(data_root, agent_id)
     soul_text = _read_text(root / "soul.md")
-    soul_blocks = [
-        line.strip()
-        for line in soul_text.splitlines()
-        if line.strip().lower().startswith("<soul_")
-    ]
+    soul_blocks = [line.strip() for line in soul_text.splitlines() if line.strip().lower().startswith("<soul_")]
     soul_sections = len(soul_blocks) or sum(1 for line in soul_text.splitlines() if line.startswith("## "))
     frozen_sections = sum(1 for line in soul_blocks if 'frozen="true"' in line.lower())
 
@@ -445,9 +441,11 @@ def list_knowledge_entries(
 
     entries: list[dict] = []
     plane_rows = [
-        {**row, "category": "profile_plane", "timestamp": "", "metadata": {}} for row in list_profile_entries(data_root, agent_id)
+        {**row, "category": "profile_plane", "timestamp": "", "metadata": {}}
+        for row in list_profile_entries(data_root, agent_id)
     ] + [
-        {**row, "category": row["kind"], "timestamp": "", "metadata": {}} for row in list_knowledge_pages(data_root, agent_id)
+        {**row, "category": row["kind"], "timestamp": "", "metadata": {}}
+        for row in list_knowledge_pages(data_root, agent_id)
     ]
     del principal_stack  # two-plane rows are PL1; sensitive claims stay in governed evidence
     for entry in plane_rows:
@@ -560,3 +558,66 @@ def list_knowledge_candidates(data_root: Path, agent_id: uuid.UUID) -> dict:
         "soulCandidates": soul_candidates,
         "heldCurations": held[-50:],
     }
+
+
+def build_memory_observability(data_root: Path, agent_id: uuid.UUID) -> dict:
+    """C8 observability read model over the derived index tables: latest debt
+    state (control sidecar), debt trajectory, and per-axis label aggregates.
+    Derived data only — absence reads as empty, never as an error."""
+    import sqlite3
+
+    from app.memory.reference_index import index_db_path
+
+    root = _agent_root(data_root, agent_id)
+    debt = _read_json(root / "memory" / "control" / "consolidation_debt.json")
+    debt_payload = (
+        {
+            "assessed_at": str(debt.get("generated_at") or ""),
+            "pending_packages": debt.get("pending_packages"),
+            "pending_stitch_packages": debt.get("pending_stitch_packages"),
+            "oldest_pending_age_hours": debt.get("oldest_pending_age_hours"),
+            "held_jobs": debt.get("held_jobs"),
+            "exhausted_jobs": debt.get("exhausted_jobs"),
+            "active_explicit_entries": debt.get("active_explicit_entries"),
+            "oldest_explicit_age_hours": debt.get("oldest_explicit_age_hours"),
+            "stalled": bool(debt.get("stalled")),
+            "stall_reasons": debt.get("stall_reasons") or [],
+        }
+        if debt
+        else {}
+    )
+
+    debt_history: list[dict] = []
+    label_axes: dict[str, dict[str, int]] = {}
+    db_path = index_db_path(data_root, agent_id)
+    if db_path.exists():
+        try:
+            with sqlite3.connect(db_path) as conn:
+                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+                if "consolidation_debt_history" in tables:
+                    debt_history = [
+                        {
+                            "assessed_at": row[0],
+                            "pending_packages": row[1],
+                            "pending_stitch_packages": row[2],
+                            "oldest_pending_age_hours": row[3],
+                            "held_jobs": row[4],
+                            "exhausted_jobs": row[5],
+                            "active_explicit_entries": row[6],
+                            "oldest_explicit_age_hours": row[7],
+                            "stalled": bool(row[8]),
+                            "stall_reasons": json.loads(row[9] or "[]"),
+                        }
+                        for row in conn.execute(
+                            "SELECT * FROM consolidation_debt_history ORDER BY assessed_at DESC LIMIT 100"
+                        )
+                    ]
+                if "t2_label_axes" in tables:
+                    for axis, value, count in conn.execute(
+                        "SELECT axis, value, COUNT(*) FROM t2_label_axes GROUP BY axis, value"
+                    ):
+                        label_axes.setdefault(str(axis), {})[str(value)] = int(count)
+        except (sqlite3.Error, ValueError) as exc:
+            logger.warning("Memory observability index read failed for %s: %s", agent_id, exc)
+
+    return {"debt": debt_payload, "debt_history": debt_history, "label_axes": label_axes}

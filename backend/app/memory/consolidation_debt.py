@@ -19,6 +19,7 @@ heartbeat wrapper; the module itself stays parameterized.
 from __future__ import annotations
 
 import json
+import sqlite3
 import logging
 import re
 import uuid
@@ -194,6 +195,7 @@ async def refresh_consolidation_debt(
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _append_history_and_sync_table(root=root, agent_id=agent_id, report=report, assessed_at=current.isoformat())
 
     return ConsolidationDebtReport(
         agent_id=report.agent_id,
@@ -208,6 +210,66 @@ async def refresh_consolidation_debt(
         stall_reasons=report.stall_reasons,
         alerted=alerted,
     )
+
+
+def _append_history_and_sync_table(
+    *,
+    root: Path,
+    agent_id: uuid.UUID | str,
+    report: ConsolidationDebtReport,
+    assessed_at: str,
+) -> None:
+    """C8 debt ledger: append the observation to the jsonl record (truth) and
+    upsert the derived ``consolidation_debt_history`` row so observability can
+    query the trajectory without replaying the log. Best-effort — the sidecar
+    above already recorded the latest state."""
+    record = {
+        "assessed_at": assessed_at,
+        "pending_packages": report.pending_packages,
+        "pending_stitch_packages": report.pending_stitch_packages,
+        "oldest_pending_age_hours": report.oldest_pending_age_hours,
+        "held_jobs": report.held_jobs,
+        "exhausted_jobs": report.exhausted_jobs,
+        "active_explicit_entries": report.active_explicit_entries,
+        "oldest_explicit_age_hours": report.oldest_explicit_age_hours,
+        "stalled": report.stalled,
+        "stall_reasons": list(report.stall_reasons),
+    }
+    try:
+        from app.memory.reference_index import DEBT_HISTORY_RELATIVE, index_db_path
+
+        history_path = root / str(agent_id) / "memory" / DEBT_HISTORY_RELATIVE
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        with history_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        db_path = index_db_path(root, agent_id)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS consolidation_debt_history (assessed_at TEXT PRIMARY KEY,"
+                " pending_packages INTEGER NOT NULL, pending_stitch_packages INTEGER NOT NULL,"
+                " oldest_pending_age_hours REAL, held_jobs INTEGER NOT NULL, exhausted_jobs INTEGER NOT NULL,"
+                " active_explicit_entries INTEGER NOT NULL, oldest_explicit_age_hours REAL,"
+                " stalled INTEGER NOT NULL, stall_reasons TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO consolidation_debt_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record["assessed_at"],
+                    record["pending_packages"],
+                    record["pending_stitch_packages"],
+                    record["oldest_pending_age_hours"],
+                    record["held_jobs"],
+                    record["exhausted_jobs"],
+                    record["active_explicit_entries"],
+                    record["oldest_explicit_age_hours"],
+                    1 if record["stalled"] else 0,
+                    json.dumps(record["stall_reasons"], ensure_ascii=False),
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001 - derived accounting must not break the debt refresh itself
+        logger.warning("Consolidation debt history sync failed for agent %s: %s", agent_id, exc)
 
 
 async def _emit_stall_alert(report: ConsolidationDebtReport) -> None:

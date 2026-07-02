@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import uuid
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +41,8 @@ class ReferenceIndexRebuildReport:
     referrers: int
     refs: int
     packages: int
+    label_axis_rows: int = 0
+    debt_history_rows: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,10 +75,20 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
     package_id_to_ref = {package["package_id"]: package["ref"] for package in packages if package["package_id"]}
     archive_times = _archive_times(root, agent_id)
 
+    short_id_to_ref = {
+        _short_id_from_package_id(package["package_id"]): package["ref"]
+        for package in packages
+        if _short_id_from_package_id(package["package_id"])
+    }
+
     rows: list[tuple[str, str, str]] = []
     rows.extend(_t3_reference_rows(root, agent_id))
+    rows.extend(_plane_reference_rows(root, agent_id, short_id_to_ref))
     rows.extend(_explicit_reference_rows(root, agent_id))
     rows.extend(_episode_reference_rows(packages, package_id_to_ref))
+
+    label_rows = _label_axis_rows(packages)
+    debt_rows = _debt_history_rows(root, agent_id)
 
     resolution_rows: list[tuple[str, str, str, str]] = []
     for package in packages:
@@ -93,6 +107,8 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
         conn.execute("DROP TABLE IF EXISTS refs")
         conn.execute("DROP TABLE IF EXISTS id_resolution")
         conn.execute("DROP TABLE IF EXISTS tombstones")
+        conn.execute("DROP TABLE IF EXISTS t2_label_axes")
+        conn.execute("DROP TABLE IF EXISTS consolidation_debt_history")
         conn.execute(
             "CREATE TABLE refs (source_ref TEXT NOT NULL, referrer TEXT NOT NULL, referrer_kind TEXT NOT NULL,"
             " PRIMARY KEY (source_ref, referrer))"
@@ -102,10 +118,26 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
             " path TEXT NOT NULL, archived_at TEXT NOT NULL)"
         )
         conn.execute("CREATE TABLE tombstones (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL, job_id TEXT)")
+        conn.execute(
+            "CREATE TABLE t2_label_axes (package_ref TEXT NOT NULL, session_id TEXT NOT NULL,"
+            " axis TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (package_ref, axis, value))"
+        )
+        conn.execute(
+            "CREATE TABLE consolidation_debt_history (assessed_at TEXT PRIMARY KEY,"
+            " pending_packages INTEGER NOT NULL, pending_stitch_packages INTEGER NOT NULL,"
+            " oldest_pending_age_hours REAL, held_jobs INTEGER NOT NULL, exhausted_jobs INTEGER NOT NULL,"
+            " active_explicit_entries INTEGER NOT NULL, oldest_explicit_age_hours REAL,"
+            " stalled INTEGER NOT NULL, stall_reasons TEXT NOT NULL)"
+        )
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         conn.executemany("INSERT OR IGNORE INTO refs VALUES (?, ?, ?)", rows)
         conn.executemany("INSERT OR REPLACE INTO id_resolution VALUES (?, ?, ?, ?)", resolution_rows)
         conn.executemany("INSERT OR REPLACE INTO tombstones VALUES (?, ?, ?)", tombstone_rows)
+        conn.executemany("INSERT OR IGNORE INTO t2_label_axes VALUES (?, ?, ?, ?)", label_rows)
+        conn.executemany(
+            "INSERT OR REPLACE INTO consolidation_debt_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            debt_rows,
+        )
         conn.execute(
             "INSERT OR REPLACE INTO meta VALUES ('rebuilt_at', ?)",
             (datetime.now(UTC).isoformat(),),
@@ -115,6 +147,8 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
         referrers=len(rows),
         refs=len({row[0] for row in rows}),
         packages=len(packages),
+        label_axis_rows=len(label_rows),
+        debt_history_rows=len(debt_rows),
     )
 
 
@@ -320,6 +354,185 @@ def _t3_reference_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str,
             referrer = f"t3:{filename}#{parsed.block_id}"
             for ref in _split_refs(parsed.metadata.get("source_refs")):
                 rows.append((ref, referrer, "t3_block"))
+    return rows
+
+
+_EVIDENCE_REF_RE = re.compile(r"t2://[^\s\)\]\"',，;；]+|\b(?:t2|ex|fb)-[0-9a-zA-Z][0-9a-zA-Z_-]{3,}\b")
+_ENTRY_ANCHOR_RE = re.compile(r"<!--\s*id:\s*([^\s>]+)\s*-->")
+
+_PROFILE_PLANE_FILES = (
+    Path("memory") / "self" / "self.md",
+    Path("memory") / "profiles" / "owner.md",
+    Path("memory") / "profiles" / "collaborators.md",
+    Path("memory") / "profiles" / "domain.md",
+)
+
+
+def _plane_reference_rows(
+    root: Path,
+    agent_id: uuid.UUID | str,
+    short_id_to_ref: dict[str, str],
+) -> list[tuple[str, str, str]]:
+    """Evidence refs from the two-plane surfaces (spec §4.1: entries cite
+    immutable t2-/ex-/fb- ids). Each hit lands twice when a short id maps to a
+    package: once under the short id and once under the canonical ``t2://``
+    ref, so retention's URI-keyed reference counts see plane citations."""
+    agent_root = root / str(agent_id)
+    rows: list[tuple[str, str, str]] = []
+
+    def _emit(refs: set[str], referrer: str, kind: str) -> None:
+        for ref in sorted(refs):
+            rows.append((ref, referrer, kind))
+            canonical = short_id_to_ref.get(ref)
+            if canonical:
+                rows.append((canonical, referrer, kind))
+
+    for relative in _PROFILE_PLANE_FILES:
+        path = agent_root / relative
+        if not path.exists():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.warning("Reference index skipped unreadable plane file %s: %s", path, exc)
+            continue
+        for entry_id, body in _iter_anchored_entries(content):
+            _emit(set(_EVIDENCE_REF_RE.findall(body)), f"profile:{relative.name}#{entry_id}", "profile_entry")
+
+    mem_dir = agent_root / "memory"
+    for subdir, kind in (("knowledge", "knowledge_page"), ("milestones", "milestone_page")):
+        directory = mem_dir / subdir
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.md")):
+            try:
+                content = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            _emit(set(_EVIDENCE_REF_RE.findall(content)), f"page:{subdir}/{path.stem}", kind)
+    return rows
+
+
+def _iter_anchored_entries(content: str) -> list[tuple[str, str]]:
+    """Split a profile-plane file into (entry_id, body) chunks by ``### `` +
+    ``<!-- id: -->`` anchors; anchor-less text folds into the previous entry."""
+    entries: list[tuple[str, str]] = []
+    current_id = ""
+    current_lines: list[str] = []
+    for line in content.splitlines():
+        if line.startswith("### "):
+            if current_id and current_lines:
+                entries.append((current_id, "\n".join(current_lines)))
+            current_id = ""
+            current_lines = [line]
+            continue
+        anchor = _ENTRY_ANCHOR_RE.search(line)
+        if anchor and not current_id:
+            current_id = anchor.group(1)
+        current_lines.append(line)
+    if current_id and current_lines:
+        entries.append((current_id, "\n".join(current_lines)))
+    return entries
+
+
+_LABEL_SINGLE_AXES = ("continuity_state", "confidence", "source_integrity")
+_LABEL_MULTI_AXES = (("risk_flag", ".//risk_flag"), ("system", ".//system"), ("memory_domain", ".//memory_domain"))
+
+
+def _label_axis_rows(packages: list[dict]) -> list[tuple[str, str, str, str]]:
+    """Split each live package's labels.md into per-axis rows. Missing axes
+    stay absent — derived observability never guesses (evidence-gap rule)."""
+    rows: list[tuple[str, str, str, str]] = []
+    for package in packages:
+        if package["archived"] or package["kind"] != "segment":
+            continue
+        labels_path = package["dir"] / "labels.md"
+        if not labels_path.exists():
+            continue
+        try:
+            content = labels_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.warning("Reference index skipped unreadable labels %s: %s", labels_path, exc)
+            continue
+        node = _parse_labels_block(content)
+        if node is None:
+            continue
+        package_ref = _short_id_from_package_id(package["package_id"]) or package["ref"]
+        session_id = str(package["manifest"].get("session_id") or "")
+
+        def _add(axis: str, value: str) -> None:
+            cleaned = " ".join(str(value or "").split())
+            if cleaned:
+                rows.append((package_ref, session_id, axis, cleaned))
+
+        for axis in _LABEL_SINGLE_AXES:
+            found = node.find(f".//{axis}")
+            if found is not None:
+                _add(axis, "".join(found.itertext()))
+        for axis, xpath in _LABEL_MULTI_AXES:
+            for found in node.findall(xpath):
+                _add(axis, "".join(found.itertext()))
+        self_signal = node.find(".//self_signal")
+        if self_signal is not None:
+            _add("self_signal", self_signal.get("present") or "true")
+        for nutrient in node.findall(".//nutrient"):
+            _add("nutrient_plane", nutrient.get("plane") or "")
+        milestone = node.find(".//milestone_signal")
+        if milestone is not None:
+            _add("milestone_criteria", milestone.get("criteria") or "unspecified")
+    return rows
+
+
+def _parse_labels_block(markdown: str) -> ET.Element | None:
+    match = re.search(r"<t2_labels\b.*?</t2_labels>", markdown, re.DOTALL)
+    if match is None:
+        return None
+    try:
+        return ET.fromstring(match.group(0))
+    except ET.ParseError as exc:
+        logger.warning("Reference index skipped unparseable t2_labels block: %s", exc)
+        return None
+
+
+DEBT_HISTORY_RELATIVE = Path("control") / "consolidation_debt_history.jsonl"
+
+
+def _debt_history_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple]:
+    """Replay the append-only debt observation log into the derived table."""
+    history_path = root / str(agent_id) / "memory" / DEBT_HISTORY_RELATIVE
+    if not history_path.exists():
+        return []
+    rows: list[tuple] = []
+    try:
+        lines = history_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        logger.warning("Reference index skipped unreadable debt history %s: %s", history_path, exc)
+        return []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            logger.warning("Reference index skipped malformed debt history line for %s", agent_id)
+            continue
+        if not isinstance(record, dict) or not record.get("assessed_at"):
+            continue
+        rows.append(
+            (
+                str(record.get("assessed_at")),
+                int(record.get("pending_packages") or 0),
+                int(record.get("pending_stitch_packages") or 0),
+                record.get("oldest_pending_age_hours"),
+                int(record.get("held_jobs") or 0),
+                int(record.get("exhausted_jobs") or 0),
+                int(record.get("active_explicit_entries") or 0),
+                record.get("oldest_explicit_age_hours"),
+                1 if record.get("stalled") else 0,
+                json.dumps(record.get("stall_reasons") or [], ensure_ascii=False),
+            )
+        )
     return rows
 
 

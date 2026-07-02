@@ -238,3 +238,18 @@
 **进度 2 收尾（同 commit）**：`GET /agents/{id}/memory` facts 端点从已删 `parse_t3_facts` 切 `plane_read`（profile 条目 + knowledge/milestones 页元数据，零前端/测试消费者验证后保留为两平面查看面）；`.github/workflows/harness-ci.yml` 摘除指向已删 `retrieval_eval` 模块的死步骤（CI 否则必炸），`test_harness_ci_workflow` 守卫翻转为 `not in` 断言；`wiki_retrieval.py` 模块 docstring 死指针清除。事故记录：删除 `parse_t3_facts` 时误切 `_CJK_RANGE_RE` 常量（存活 `_bm25_tokenize` 依赖）致 tests/memory 3 失败，恢复常量后归绿——bm25 簇消费者为 `wiki_retrieval.py`（PPR 检索层）已 grep 钉死。
 **退役零残留核查（grep 全仓）**：`parse_t3_facts`/`_filter_facts_by_date`/`T3_FILE_SPECS`/`build_t3_entry_manifest`/`ACCEPTED_T3_TARGETS`/`legacy_migration`/`scene_curator`/`wiki_curator`/`ParsedMemoryEntry`/`T3MemoryEntry` = 0；`understanding_store`/`t3_store` 仅存"退役契约"架构守卫断言与来源归属注释；`memory_navigation` 仅存 engine/prompt_builder/turn_envelope 惰性形参链（invoker 供给恒 None → 恒空字符串，Part J 与 contracts 字段一并摘除）。
 **测试证据**：tests/memory + api/test_memory_api + tools/test_memory_handler + services/test_auto_dream = 373 passed；全量 `pytest tests -q` = **1 failed, 5251 passed, 1 skipped**（唯一失败 `test_self_evolution_bakeoff` 属并行 session eval 拆弹 WIP 面，干净归属已验证）；ruff check/format 全过。
+
+**Part H commit：** `90018a21`（84 files，+999/−6920；hunk 级 staging 零 eval WIP 泄漏——skill_distiller 只取 `_CANDIDATE_MARKERS`/`mark_profile_entry_promoted` 两 hunk，harness-ci.yml 只取 retrieval_eval 步骤删除 hunk；commit 后干净 HEAD worktree 复验 `test_skill_distiller + test_promotion_hard_gate + test_harness_ci_workflow + tests/memory + test_candidate_lane = 348 passed` 证明混改拆分后 HEAD 自洽）。
+
+## Part I C8 SQLite 派生表补全（spec §6.4）
+
+**范围核对**：五件套中反向 ref 索引 / id 解析 / 引用计数三件 Part G/C9 已建；本 part 补齐 `t2_label_axes`（复合标签分轴）与 `consolidation_debt_history`（debt 台账表），并顺手修复 Part H 漏网的真实缺口。
+
+- **`t2_label_axes`**（`reference_index.py`）：rebuild 时解析每个 live segment 包的 labels.md `<t2_labels>` 块 → 按轴入行（continuity_state / confidence / source_integrity / risk_flag / system / memory_domain / nutrient_plane / self_signal / milestone_criteria）；缺轴=无行（evidence-gap 纪律，不猜）；package_ref 用 spec §4.1 短 id。
+- **`consolidation_debt_history`**：append-only 观测真相 = `memory/control/consolidation_debt_history.jsonl`（`refresh_consolidation_debt` 每次评估追加 + 同步 upsert 表行，best-effort 不破坏 debt 刷新本身）；rebuild 从 jsonl 重放全表——删 index.sqlite 后两表均从 MD/jsonl 还原（纯派生红测钉死）。
+- **Part H 漏网修复（真实缺口）**：`_t3_reference_rows` 只扫已退役的 `t3/` 四文件，两平面证据引用（self/profiles 条目 `- 证据: t2-x` 行、knowledge/milestones 页 Evidence 段）无人扫 → retention 会把被平面引用的 T2 当零引用归档。新增 `_plane_reference_rows`：短 id 命中同时落短 id 行 + 规范化 `t2://` URI 行（retention 按 URI 计数）；旧 t3/ 扫描保留（迁移前存量兼容）。红测：`test_plane_evidence_refs_count_for_retention`（knowledge 页 + self.md 各引一次 → URI 计数 = 2）。
+- **读者接线**：`knowledge_read_model.build_memory_observability`（debt 最新态 + 轨迹 ≤100 行 + label 轴聚合 COUNT；空 agent 返回空结构不抛错）→ 新 API `GET /agents/{agent_id}/knowledge/observability`（`api/agent_knowledge.py`，与既有六端点同构薄封装，check_agent_access 门）。路由守卫测试 six→seven 更新。
+- **触发面（零新链）**：rebuild 扩展自动被既有触发点覆盖——`t2_retention`（heartbeat 维护批）、`_ensure_index` 惰性、迁移工具；debt 表行由 heartbeat 维护批的 `refresh_consolidation_debt` 实时 upsert。
+
+**接线证据（grep）**：`rebuild_reference_index` 生产调用点 = t2_retention.py:70（heartbeat 链）+ reference_index.py:261（惰性）+ migrate_memory_two_planes.py:189；`refresh_consolidation_debt` 生产调用点 = heartbeat 维护批 `_run_consolidation_debt_refresh`；`build_memory_observability` 消费者 = api/agent_knowledge.py observability 端点。
+**测试证据**：`tests/memory/test_c8_derived_tables.py` 8 红→8 绿；tests/memory + read model + heartbeat_kairos = 336 passed（唯一改造=路由守卫 six→seven）；ruff check/format 全过。全量 `pytest tests -q` = **1 failed, 5259 passed, 1 skipped**（唯一失败仍为并行 session 的 `test_self_evolution_bakeoff`，归属外部）。

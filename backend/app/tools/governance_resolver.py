@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
@@ -18,9 +22,78 @@ from app.tools.runtime import ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 
+_GOVERNANCE_LOOKUP_CACHE_TTL_SECONDS = 15.0
+_GOVERNANCE_LOOKUP_CACHE_MAX_ENTRIES = 2048
+
+
+@dataclass(slots=True)
+class _CacheEntry:
+    expires_at: float
+    value: Any
+
+
+class _TtlSingleFlightCache:
+    """Short-lived async cache that coalesces concurrent lookups by key."""
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = _GOVERNANCE_LOOKUP_CACHE_TTL_SECONDS,
+        max_entries: int = _GOVERNANCE_LOOKUP_CACHE_MAX_ENTRIES,
+    ) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._max_entries = max_entries
+        self._entries: dict[object, _CacheEntry] = {}
+        self._locks: dict[object, asyncio.Lock] = {}
+
+    async def get(self, key: object, loader: Callable[[], Awaitable[Any]]) -> Any:
+        now = time.monotonic()
+        entry = self._entries.get(key)
+        if entry is not None and entry.expires_at > now:
+            return entry.value
+
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            now = time.monotonic()
+            entry = self._entries.get(key)
+            if entry is not None and entry.expires_at > now:
+                return entry.value
+
+            value = await loader()
+            self._entries[key] = _CacheEntry(expires_at=time.monotonic() + self._ttl_seconds, value=value)
+            self._prune()
+            return value
+
+    def clear(self) -> None:
+        self._entries.clear()
+        self._locks.clear()
+
+    def _prune(self) -> None:
+        if len(self._entries) <= self._max_entries:
+            return
+        now = time.monotonic()
+        expired = [key for key, entry in self._entries.items() if entry.expires_at <= now]
+        for key in expired:
+            self._entries.pop(key, None)
+            self._locks.pop(key, None)
+        while len(self._entries) > self._max_entries:
+            key = next(iter(self._entries))
+            self._entries.pop(key, None)
+            self._locks.pop(key, None)
+
 
 class ToolGovernanceResolver:
     """Build governance context and dependency wrappers for tool runtime."""
+
+    def __init__(self, *, lookup_cache_ttl_seconds: float = _GOVERNANCE_LOOKUP_CACHE_TTL_SECONDS) -> None:
+        self._security_zone_cache = _TtlSingleFlightCache(ttl_seconds=lookup_cache_ttl_seconds)
+        self._capability_cache = _TtlSingleFlightCache(ttl_seconds=lookup_cache_ttl_seconds)
+        self._mcp_tool_mode_cache = _TtlSingleFlightCache(ttl_seconds=lookup_cache_ttl_seconds)
+
+    def clear_lookup_cache(self) -> None:
+        self._security_zone_cache.clear()
+        self._capability_cache.clear()
+        self._mcp_tool_mode_cache.clear()
 
     async def build_context(
         self,
@@ -50,29 +123,36 @@ class ToolGovernanceResolver:
 
     def build_dependencies(self) -> GovernanceDependencies:
         async def _resolve_security_zone(agent_id: uuid.UUID) -> str:
-            try:
-                async with async_session() as db:
-                    async with enter_rls_bypass(db, reason=f"security-zone resolution for agent {agent_id}"):
-                        result = await db.execute(select(Agent).where(Agent.id == agent_id))
-                        agent = result.scalar_one_or_none()
-                        zone = getattr(agent, "security_zone", None)
-                        if not zone:
-                            logger.warning(
-                                "[Governance] Agent %s has no security_zone set — defaulting to 'restricted'", agent_id
-                            )
-                    await db.rollback()
-                    return zone or "restricted"
-            except Exception as exc:
-                logger.error(
-                    "[Governance] Failed to resolve security zone for %s: %s — defaulting to 'restricted'",
-                    agent_id,
-                    exc,
-                )
-                return "restricted"
+            async def _load() -> str:
+                try:
+                    async with async_session() as db:
+                        async with enter_rls_bypass(db, reason=f"security-zone resolution for agent {agent_id}"):
+                            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+                            agent = result.scalar_one_or_none()
+                            zone = getattr(agent, "security_zone", None)
+                            if not zone:
+                                logger.warning(
+                                    "[Governance] Agent %s has no security_zone set — defaulting to 'restricted'",
+                                    agent_id,
+                                )
+                        await db.rollback()
+                        return zone or "restricted"
+                except Exception as exc:
+                    logger.error(
+                        "[Governance] Failed to resolve security zone for %s: %s — defaulting to 'restricted'",
+                        agent_id,
+                        exc,
+                    )
+                    return "restricted"
+
+            return await self._security_zone_cache.get(agent_id, _load)
 
         async def _check_capability(tenant_id: uuid.UUID, agent_id: uuid.UUID, tool_name: str):
-            async with tenant_scoped_session(tenant_id) as db:
-                return await check_capability(db, tenant_id, agent_id, tool_name)
+            async def _load():
+                async with tenant_scoped_session(tenant_id) as db:
+                    return await check_capability(db, tenant_id, agent_id, tool_name)
+
+            return await self._capability_cache.get((tenant_id, agent_id, tool_name), _load)
 
         async def _write_audit_event(**kwargs) -> None:
             # RLS: security_audit_events is policied (stage-2a). Scope to the
@@ -129,28 +209,32 @@ class ToolGovernanceResolver:
             target = arguments.get("tool_name") if tool_name == "call_mcp_tool" else tool_name
             if not target or not isinstance(target, str):
                 return None
-            from app.models.tool import AgentTool, Tool
-            from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
-            async with async_session() as db:
-                async with enter_rls_bypass(db, reason=f"MCP tool-mode resolution for agent {agent_id}"):
-                    result = await db.execute(
-                        select(Tool)
-                        .join(AgentTool, AgentTool.tool_id == Tool.id)
-                        .where(
-                            AgentTool.agent_id == agent_id,
-                            AgentTool.enabled.is_(True),
-                            Tool.name == target,
-                            Tool.type == "mcp",
-                            Tool.enabled.is_(True),
+            async def _load() -> str | None:
+                from app.models.tool import AgentTool, Tool
+                from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
+
+                async with async_session() as db:
+                    async with enter_rls_bypass(db, reason=f"MCP tool-mode resolution for agent {agent_id}"):
+                        result = await db.execute(
+                            select(Tool)
+                            .join(AgentTool, AgentTool.tool_id == Tool.id)
+                            .where(
+                                AgentTool.agent_id == agent_id,
+                                AgentTool.enabled.is_(True),
+                                Tool.name == target,
+                                Tool.type == "mcp",
+                                Tool.enabled.is_(True),
+                            )
                         )
-                    )
-                    tool = result.scalar_one_or_none()
-                    mode = None
-                    if tool is not None:
-                        mode = await resolve_agent_mcp_tool_mode(db, agent_id, tool)
-                await db.rollback()
-                return mode
+                        tool = result.scalar_one_or_none()
+                        mode = None
+                        if tool is not None:
+                            mode = await resolve_agent_mcp_tool_mode(db, agent_id, tool)
+                    await db.rollback()
+                    return mode
+
+            return await self._mcp_tool_mode_cache.get((agent_id, target), _load)
 
         return GovernanceDependencies(
             resolve_security_zone=_resolve_security_zone,

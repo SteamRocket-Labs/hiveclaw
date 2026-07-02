@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -196,7 +197,8 @@ async def test_resolver_mcp_mode_unwraps_target_and_fast_paths(monkeypatch):
     # 2. dynamic MCP tool name governs itself
     mode = await deps.resolve_mcp_tool_mode(agent_id, "notion_search", {})
     assert mode == "approval"
-    assert mcp_session.rollback_count == 2
+    assert mode_calls == [(agent_id, "notion_search")]
+    assert mcp_session.rollback_count == 1
 
     # 3. not an MCP Tool row → None fast path, mode resolution untouched
     mode_calls.clear()
@@ -274,3 +276,86 @@ async def test_resolver_mcp_mode_lookup_is_scoped_to_enabled_agent_assignment(mo
     assert "agent_tools.agent_id" in sql
     assert "agent_tools.enabled" in sql
     assert "tools.enabled" in sql
+
+
+@pytest.mark.asyncio
+async def test_governance_resolver_coalesces_concurrent_security_zone_lookup(monkeypatch):
+    from app.tools.governance_resolver import ToolGovernanceResolver
+
+    agent_id = uuid4()
+    sessions = []
+
+    class _FakeScalarResult:
+        def scalar_one_or_none(self):
+            return SimpleNamespace(security_zone="restricted")
+
+    class _FakeSession:
+        async def __aenter__(self):
+            sessions.append(self)
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, _query):
+            await asyncio.sleep(0.01)
+            return _FakeScalarResult()
+
+        async def rollback(self):
+            return None
+
+    monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: _FakeSession())
+
+    deps = ToolGovernanceResolver().build_dependencies()
+    results = await asyncio.gather(*(deps.resolve_security_zone(agent_id) for _ in range(12)))
+
+    assert results == ["restricted"] * 12
+    assert len(sessions) == 1
+
+    assert await deps.resolve_security_zone(agent_id) == "restricted"
+    assert len(sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_governance_resolver_coalesces_concurrent_capability_lookup(monkeypatch):
+    from app.tools.governance_resolver import ToolGovernanceResolver
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    sessions = []
+    capability_calls = []
+
+    class _FakeSession:
+        async def __aenter__(self):
+            sessions.append(self)
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_check_capability(db, tenant_uuid, agent_uuid, tool_name):
+        capability_calls.append((db, tenant_uuid, agent_uuid, tool_name))
+        await asyncio.sleep(0.01)
+        return SimpleNamespace(
+            allowed=True,
+            denied=False,
+            escalate_to_l3=False,
+            capability="external.web.search",
+            reason="",
+            policy_found=False,
+        )
+
+    monkeypatch.setattr("app.tools.governance_resolver.tenant_scoped_session", lambda *a, **k: _FakeSession())
+    monkeypatch.setattr("app.tools.governance_resolver.check_capability", fake_check_capability)
+
+    deps = ToolGovernanceResolver().build_dependencies()
+    results = await asyncio.gather(*(deps.check_capability(tenant_id, agent_id, "web_search") for _ in range(12)))
+
+    assert [result.capability for result in results] == ["external.web.search"] * 12
+    assert len(sessions) == 1
+    assert len(capability_calls) == 1
+
+    cached = await deps.check_capability(tenant_id, agent_id, "web_search")
+    assert cached.capability == "external.web.search"
+    assert len(sessions) == 1
+    assert len(capability_calls) == 1

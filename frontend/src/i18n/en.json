@@ -64,7 +64,6 @@
       "sessionArtifacts": "Session artifacts",
       "noSessionArtifacts": "No delivered artifacts in this session yet.",
       "collaboration": "Collaboration",
-      "agentTeamSubagent": "Agent Team / Sub-agent",
       "agentTeams": "Agent Teams",
       "noAgentTeams": "No Agent Team containers in this session.",
       "noTeamMembers": "No team members have started yet.",

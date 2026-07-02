@@ -64,7 +64,6 @@
       "sessionArtifacts": "会话交付物",
       "noSessionArtifacts": "当前会话还没有交付物。",
       "collaboration": "协作状态",
-      "agentTeamSubagent": "Agent Team / Sub-agent",
       "agentTeams": "Agent Team",
       "noAgentTeams": "当前会话没有 Agent Team 容器。",
       "noTeamMembers": "还没有 Team member 启动。",

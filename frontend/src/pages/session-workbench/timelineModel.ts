@@ -450,11 +450,11 @@ function normalizeRuntimeSectionItem(
   const item = asRecord(value);
   if (!item) return null;
   const runtimeKind = readString(item, ['runtime_kind', 'runtimeKind', 'kind', 'type'], fallbackKind);
-  const id = readString(item, ['id', 'chat_session_id', 'child_session_id', 'runtime_task_id', 'workflow_run_id'], `${fallbackKind}-${index}`);
+  const id = readString(item, ['id', 'chat_session_id', 'child_session_id', 'child_session', 'runtime_task_id', 'workflow_run_id'], `${fallbackKind}-${index}`);
   const label = readString(item, ['label', 'name', 'title', 'role', 'runtime_task_id'], id);
   const status = readString(item, ['status', 'state'], 'unknown');
   const state = readString(item, ['state', 'status'], status);
-  const childSessionId = readString(item, ['child_session_id', 'childSessionId', 'chat_session_id', 'chatSessionId'], '') || null;
+  const childSessionId = readString(item, ['child_session_id', 'child_session', 'childSessionId', 'chat_session_id', 'chatSessionId'], '') || null;
   const explicitEnterable = readBoolean(item, 'enterable');
   const members = Array.isArray(item.members)
     ? item.members

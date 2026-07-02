@@ -404,6 +404,30 @@ describe('session workbench timeline model', () => {
     expect(model.summary.running).toBe(3);
   });
 
+  it('normalizes bare child_session references into enterable child session ids', () => {
+    const model = buildRuntimeSectionsModel({
+      runtime_sections: {
+        subagents: [
+          {
+            id: 'subagent-legacy',
+            runtime_kind: 'subagent',
+            label: 'Legacy child session payload',
+            status: 'running',
+            child_session: 'child-session-legacy',
+          },
+        ],
+      },
+    });
+
+    expect(model.subagents).toEqual([
+      expect.objectContaining({
+        id: 'subagent-legacy',
+        childSessionId: 'child-session-legacy',
+        enterable: true,
+      }),
+    ]);
+  });
+
   it('builds named session workbench models for windows, checkpoints, right panel, runtime sections, and workflow run windows', () => {
     const messages: AgentChatMessage[] = [
       {

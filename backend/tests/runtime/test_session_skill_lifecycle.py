@@ -86,13 +86,16 @@ def test_turn_write_tracking_scopes_delivery_without_losing_recent_writes() -> N
 
     assert s.recent_writes == ["workspace/old.md"]
     assert s.current_turn_writes == []
-    assert s.consume_turn_writes() == []
+    assert not hasattr(s, "consume_turn_writes")
 
     s.track_file_write("workspace/new.md")
 
     assert s.recent_writes == ["workspace/old.md", "workspace/new.md"]
     assert s.current_turn_writes == ["workspace/new.md"]
-    assert s.consume_turn_writes() == ["workspace/new.md"]
+
+    s.begin_turn()
+
+    assert s.recent_writes == ["workspace/old.md", "workspace/new.md"]
     assert s.current_turn_writes == []
 
 

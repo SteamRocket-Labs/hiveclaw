@@ -253,12 +253,6 @@ class SessionContext:
         """Start a new model turn while keeping cross-turn restoration state."""
         self.current_turn_writes.clear()
 
-    def consume_turn_writes(self) -> list[str]:
-        """Return and clear workspace writes created during the current turn."""
-        writes = list(self.current_turn_writes)
-        self.current_turn_writes.clear()
-        return writes
-
     def track_tool_outcome(self, tool_name: str, summary: str) -> None:
         """Record a high-value tool outcome for post-compact restoration. Keeps last 5."""
         self.recent_tool_outcomes.append({"tool": tool_name, "summary": summary[:300]})

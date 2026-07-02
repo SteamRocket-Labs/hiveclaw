@@ -1474,3 +1474,49 @@ cd backend && source .venv/bin/activate && ruff check \
   tests/services/test_cc_codex_parity_substrate.py
 # All checks passed
 ```
+
+### Part 25 — C6 child_session / i18n / turn-writes 收尾（2026-07-02）
+
+红测：
+
+- `timelineModel.test.ts` 新增 `normalizes bare child_session references into enterable child session ids`，要求历史/兼容 payload 只提供裸 `child_session` 时仍归一为 `childSessionId`，并自动 `enterable=true`。
+- `test_session_skill_lifecycle.py` 将 turn write 测试改为要求 `SessionContext` 不再暴露 `consume_turn_writes`，避免再次出现“读出并清空当前 turn 写入”的死 API。
+
+红测验证：
+
+```bash
+cd frontend && npm run test -- src/pages/session-workbench/timelineModel.test.ts --run -t "bare child_session"
+# failed: childSessionId was null and enterable was false
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/runtime/test_session_skill_lifecycle.py::test_turn_write_tracking_scopes_delivery_without_losing_recent_writes \
+  -q
+# failed: SessionContext still had consume_turn_writes
+```
+
+变更：
+
+- `timelineModel.ts` 的 runtime section normalizer 将 `child_session` 加入 `id` 与 `childSessionId` 读取候选，兼容后端/旧事件里裸 child-session 字段。
+- `SessionContext` 删除 `consume_turn_writes()`；当前 turn 交付归属只读 `current_turn_writes`，由 `begin_turn()` 在新 turn 开始时清空，避免中途消费导致后续交付物归属丢失。
+- `en.json` / `zh.json` 删除旧 `sessionWorkbench.rightPanel.agentTeamSubagent` 合并标题 key；该 key 无消费者，且会继续暗示 Agent Team 与 Sub-agent 是同一栏。
+
+验证：
+
+```bash
+cd frontend && npm run test -- src/pages/session-workbench/timelineModel.test.ts --run
+# 10 passed
+
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_session_skill_lifecycle.py -q
+# 14 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/runtime/session.py \
+  tests/runtime/test_session_skill_lifecycle.py
+# All checks passed
+
+node -e "JSON.parse(require('fs').readFileSync('frontend/src/i18n/en.json','utf8')); JSON.parse(require('fs').readFileSync('frontend/src/i18n/zh.json','utf8')); console.log('i18n json ok')"
+# i18n json ok
+
+rg -n "consume_turn_writes|agentTeamSubagent" backend/app frontend/src -g '*.py' -g '*.ts' -g '*.tsx' -g '*.json'
+# no production/frontend i18n matches
+```

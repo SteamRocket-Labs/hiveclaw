@@ -1403,3 +1403,28 @@ cd backend && source .venv/bin/activate && ruff check \
   tests/services/test_chat_artifact_delivery.py
 # All checks passed
 ```
+
+### Part 23 — C4 Session UI interactive click coverage（2026-07-02）
+
+缺口：
+
+- 之前 Dynamic Workflow Run Window 主要是 `renderToStaticMarkup()` 字符串断言，只能证明按钮和 testid 被渲染，不能证明 `Resume/Repair/Cancel/Promote` 这类操作按钮真实绑定到了 `onWorkflowAction()`。
+- workflow leaf row 也只断言“有 child session 时可进入 / 无 child session 时 detail-only”的 markup，缺少实际 enter callback 覆盖。
+
+变更：
+
+- `AgentDetailSections.test.tsx` 新增 `findElementByTestId()` element-tree helper，用当前项目已有 React/Vitest 栈直接遍历组件输出，不新增 Testing Library/jsdom 依赖。
+- 新增 `wires Dynamic Workflow control clicks and enterable leaf sessions`：直接调用 `WorkflowRunFocusPanel()` 生成 React tree，找到 `session-workflow-action-resume`、`session-workflow-action-promote`、`session-workflow-leaf-enter`；验证 enabled action 的 `onClick` 传出 `action/runId/previewId/workflow.id`，disabled promote 保持 disabled，enterable leaf 调用 `onSelectSession('leaf-session-1')`。
+- 保留原有 Dynamic Workflow markup 测试，继续覆盖 gate/wait/status/testid 表达。
+
+验证：
+
+```bash
+cd frontend && npm run test -- \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  --run -t "Dynamic Workflow run window|wires Dynamic Workflow"
+# 1 passed file, 2 passed tests
+
+cd frontend && npm run test -- src/pages/agent-detail/AgentDetailSections.test.tsx --run
+# 1 passed file, 85 passed tests
+```

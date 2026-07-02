@@ -46,6 +46,25 @@ import type { PlanRequest } from '../../api/domains/plans';
 
 const queryKeyCalls = vi.hoisted(() => [] as unknown[][]);
 
+function findElementByTestId(node: React.ReactNode, testId: string): React.ReactElement<Record<string, any>> {
+  if (!React.isValidElement(node)) {
+    throw new Error(`Unable to find ${testId}`);
+  }
+  const element = node as React.ReactElement<Record<string, any>>;
+  if (element.props?.['data-testid'] === testId) {
+    return element;
+  }
+  const children = React.Children.toArray(element.props?.children);
+  for (const child of children) {
+    try {
+      return findElementByTestId(child, testId);
+    } catch {
+      continue;
+    }
+  }
+  throw new Error(`Unable to find ${testId}`);
+}
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallbackOrOptions?: string | Record<string, unknown>, options?: Record<string, unknown>) => {
@@ -3826,6 +3845,90 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-workflow-leaf-detail"');
     expect(markup).toContain('CLO source review');
     expect(markup).not.toContain('data-testid="session-workflow-leaf-enter"');
+  });
+
+  it('wires Dynamic Workflow control clicks and enterable leaf sessions', () => {
+    const workflow = {
+      id: 'workflow-run-1',
+      label: 'ABS diligence workflow',
+      status: 'running',
+      state: 'running',
+      runtimeKind: 'workflow',
+      summary: 'fanout then critic',
+      childSessionId: null,
+      enterable: false,
+      metrics: {
+        elapsedSeconds: null,
+        elapsedLabel: null,
+        tokenCount: null,
+        tokenLabel: null,
+        toolUseCount: null,
+        toolUseLabel: null,
+        lastActivityLabel: null,
+      },
+      workflow_controls: {
+        run_id: 'workflow-run-1',
+        gate_status: 'waiting',
+        wait_status: 'waiting_for_signal',
+        actions: [
+          { action: 'resume', enabled: true, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'waiting for gate signal' },
+          { action: 'promote', enabled: false, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'needs another clean run' },
+        ],
+      },
+      members: [],
+      steps: [],
+      leafCalls: [
+        {
+          id: 'leaf-1',
+          label: 'CLO source review',
+          status: 'running',
+          state: 'running',
+          runtimeKind: 'workflow_leaf',
+          summary: 'Child session attached',
+          childSessionId: 'leaf-session-1',
+          enterable: true,
+          metrics: {
+            elapsedSeconds: null,
+            elapsedLabel: null,
+            tokenCount: null,
+            tokenLabel: null,
+            toolUseCount: null,
+            toolUseLabel: null,
+            lastActivityLabel: null,
+          },
+          members: [],
+          steps: [],
+          leafCalls: [],
+          raw: {},
+        },
+      ],
+      raw: {},
+    };
+    const workflowActions: string[] = [];
+    const selectedSessions: string[] = [];
+
+    const tree = WorkflowRunFocusPanel({
+      workflow,
+      onClose: vi.fn(),
+      onSelectSession: (sessionId) => {
+        selectedSessions.push(sessionId);
+      },
+      onWorkflowAction: (action, item) => {
+        workflowActions.push(`${action.action}:${action.runId}:${action.previewId}:${item.id}`);
+      },
+    });
+
+    const resumeButton = findElementByTestId(tree, 'session-workflow-action-resume');
+    const promoteButton = findElementByTestId(tree, 'session-workflow-action-promote');
+    const leafEnter = findElementByTestId(tree, 'session-workflow-leaf-enter');
+
+    expect(resumeButton.props.disabled).toBe(false);
+    expect(promoteButton.props.disabled).toBe(true);
+    resumeButton.props.onClick();
+    leafEnter.props.onClick();
+
+    expect(workflowActions).toEqual(['resume:workflow-run-1:preview-1:workflow-run-1']);
+    expect(selectedSessions).toEqual(['leaf-session-1']);
   });
 
   it('keeps branch GitLine on the root checkpoint axis and exposes a return-to-main node', () => {

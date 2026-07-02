@@ -113,6 +113,8 @@ def _write_h4_canary(
         status="completed",
         delta="Harness canary completed: durable long-task artifacts were written.",
         output_paths=[plan["path"]],
+        completed_todo_ids=["acceptance-1", "acceptance-2", "acceptance-3", "acceptance-4"],
+        completed_verification_ids=["verify-1"],
         data_root=data_root,
     )
     validation = validate_long_task_run(

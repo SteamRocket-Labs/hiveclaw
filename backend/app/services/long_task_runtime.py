@@ -277,36 +277,3 @@ async def record_long_task_plan(
         },
     )
     return artifact
-
-
-async def record_long_task_progress(
-    *,
-    agent_id: uuid.UUID,
-    runtime_task_id: uuid.UUID,
-    status: str,
-    delta: str,
-    output_paths: list[str] | None = None,
-    blocked_reason: str | None = None,
-    completed_todo_ids: list[str] | None = None,
-    completed_verification_ids: list[str] | None = None,
-    auto_complete_ledger: bool = True,
-    data_root: str | Path | None = None,
-) -> dict[str, Any]:
-    artifact = append_long_task_progress_artifact(
-        agent_id=agent_id,
-        runtime_task_id=runtime_task_id,
-        status=status,
-        delta=delta,
-        output_paths=output_paths,
-        blocked_reason=blocked_reason,
-        completed_todo_ids=completed_todo_ids,
-        completed_verification_ids=completed_verification_ids,
-        auto_complete_ledger=auto_complete_ledger,
-        data_root=data_root,
-    )
-    await update_runtime_task_record(
-        runtime_task_id.hex,
-        status=status if status in {"pending", "running", "completed", "failed", "killed", "skipped"} else "running",
-        metadata_json={"long_task_progress": artifact, "agent_work_ledger": artifact.get("work_ledger")},
-    )
-    return artifact

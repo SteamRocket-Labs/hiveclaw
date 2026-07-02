@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -39,6 +41,13 @@ def test_self_evolution_bakeoff_uses_hive_absolute_gate_when_hermes_unavailable(
     assert safety["hermes_score"] is None
     assert all("contains" not in check for check in next_turn["hive_evidence"])
     assert "Session Learning" in report["hive"]["scenarios"]["next_turn_adaptation"]["transcript"]
+    long_task_transcript = json.loads(report["hive"]["scenarios"]["long_task_resume"]["transcript"])
+    work_ledger = long_task_transcript["work_ledger"]
+    assert work_ledger["open_required_todos"] == [
+        "Report includes canary status.",
+        "Report includes rollback checklist.",
+    ]
+    assert work_ledger["verification_pending"] == ["pytest tests/services/test_long_task_runtime.py"]
     assert report["cost_latency"]["visible"] is True
     assert report["cost_latency"]["bounded"] is True
 

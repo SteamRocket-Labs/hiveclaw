@@ -52,6 +52,7 @@ def _trigger(agent_id):
 
 
 async def test_harness_canary_writes_runtime_task_artifacts_and_evolution_ledger(tmp_path):
+    from app.services.agent_work_ledger import load_agent_work_ledger
     from app.services.harness_canary import run_harness_canary
     from app.services.harness_validation_report import audit_agent_harness_snapshot
 
@@ -88,6 +89,14 @@ async def test_harness_canary_writes_runtime_task_artifacts_and_evolution_ledger
     assert (artifact_root / "plan.json").exists()
     assert (artifact_root / "progress.jsonl").exists()
     assert (artifact_root / "validation_report.json").exists()
+    work_ledger = load_agent_work_ledger(
+        agent_id=agent.id,
+        runtime_task_id=runtime_task.id,
+        data_root=tmp_path,
+    )
+    assert work_ledger is not None
+    assert {item["status"] for item in work_ledger["todo_items"]} == {"completed"}
+    assert {item["status"] for item in work_ledger["verification"]} == {"completed"}
     assert (agent_root / "evolution" / "evolution_ledger.jsonl").exists()
     assert (agent_root / "evolution" / "evolution_validation_report.json").exists()
 

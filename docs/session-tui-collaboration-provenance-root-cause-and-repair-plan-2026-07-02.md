@@ -907,3 +907,46 @@ cd backend && source .venv/bin/activate && ruff check \
 3. **B1–B7 硬门补做**：D4 模型声明交付物 + file-changes 侧通道；persistence 专属 terminal reason；G2 member window；§8-D 四缺项；Workflow gate/repair + 门槛测试；§8-A.4 Agent Team 合约后拦截；PlanCard 前端 half。
 4. **C 加固**：真实 PG/`ON CONFLICT` 并发幂等、per-run 结构或正式修订、快照 GC/retention、交互级点击测试、goal/advanced_plan 边界重审。
 5. **D 生产**：A+B 完成后 push/deploy，再跑 §10.4 smoke。
+
+### Part 11 — A1 canary long-task ledger 回归修复（2026-07-02）
+
+红测：
+
+- `test_harness_canary_writes_runtime_task_artifacts_and_evolution_ledger`：`append_long_task_progress_artifact(auto_complete_ledger=False)` 后，canary 的 terminal completed 不再静默完成 required todo/verification；`validate_long_task_run()` 因 ledger open items 返回 `long_task_validation_passed=False`。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_harness_canary.py::test_harness_canary_writes_runtime_task_artifacts_and_evolution_ledger \
+  -q
+# failed: runtime_task.metadata_json["long_task_validation_passed"] is False
+```
+
+变更：
+
+- `harness_canary.py` 在 completed progress 中显式传入 `completed_todo_ids=["acceptance-1"... "acceptance-4"]` 与 `completed_verification_ids=["verify-1"]`，保持“不静默完成”的全局语义，同时让 canary 这种验证性任务显式闭合。
+- `test_harness_canary_writes_runtime_task_artifacts_and_evolution_ledger` 增加 ledger 状态断言：所有 canary acceptance / verification 必须实际为 `completed`。
+- `self_evolution_bakeoff` 的 long-task resume 场景保持 `running` WIP；测试新增断言 `open_required_todos` 与 `verification_pending` 仍存在，避免 bakeoff 被误修成自动完成。
+- 删除无调用者的 `record_long_task_progress` compatibility wrapper，避免它的旧默认 `auto_complete_ledger=True` 重新引入静默完成语义。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_harness_canary.py \
+  tests/services/test_long_task_runtime.py \
+  tests/services/test_long_task_validation.py \
+  tests/services/test_harness_validation_report.py \
+  tests/evals/test_self_evolution_bakeoff.py \
+  -q
+# 18 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/harness_canary.py \
+  app/services/long_task_runtime.py \
+  app/evals/self_evolution_bakeoff.py \
+  tests/services/test_harness_canary.py \
+  tests/evals/test_self_evolution_bakeoff.py
+# All checks passed
+```

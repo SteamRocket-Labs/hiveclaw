@@ -59,4 +59,20 @@
 
 **回归：** 受影响面 `tests/memory + tests/services/test_heartbeat.py + tests/runtime/test_t0_to_t2_session_close.py` = 411 passed。全量 `pytest tests -q` = **5308 passed, 1 failed, 1 skipped**；唯一失败 `test_harness_canary_writes_runtime_task_artifacts_and_evolution_ledger`（`long_task_validation_passed=False`）经干净 HEAD（fa383cde）worktree 复跑**同样失败**——main 既有失败，与 C9-1 无关（已单独上报 owner）。
 
-**Commit：** （见下方 hash）
+**Commit：** `ada7a97a`（6 files, +934/-1；main.py 采用 hunk 级 staging，规避与另一 session 的 eval 拆弹 WIP 混提交）
+
+#### C9-2 consolidation-debt 台账 + 停滞告警（2026-07-02）
+
+**改动：**
+- 新增 `backend/app/memory/consolidation_debt.py`：`assess_consolidation_debt`（纯测量：pending t3_intake 包（segments+episodes 双面）、待 stitch 段（trigger 无产物）、held/exhausted job、active explicit 条目、最老龄）+ `refresh_consolidation_debt`（落盘 `memory/control/consolidation_debt.json` + 停滞时一次性 `memory_consolidation_stalled` audit 告警，恢复清除标记、再停滞重新告警）。
+- `config.py` 增 `MEMORY_DEBT_PENDING_AGE_ALERT_HOURS=48` / `MEMORY_DEBT_EXPLICIT_AGE_ALERT_HOURS=72`（停滞阈值归 config，插入位避开 eval WIP hunk）。
+- `services/heartbeat.py`：`_run_consolidation_debt_refresh` wrapper（读 settings 阈值传参，模块保持参数化）+ `_execute_heartbeat` 维护批调用（sweep 之后，best-effort）。
+- 停滞判定：pending 包超龄 / explicit 条目超龄 / 存在 retry-exhausted job（`t2_jobs_retry_exhausted`——C9-1 的 job 级告警是即时事件，debt 台账提供持续可见面）。episode stitch job 的 held 滞留按范围边界决定 1 经"待 stitch 段"计数覆盖。
+
+**红测（先红后绿）：** `backend/tests/memory/test_consolidation_debt.py`，14 用例——RED（ModuleNotFoundError + wrapper/config 断言全红）→ GREEN 14 passed。覆盖：空库全零、pending 计数与龄（segments+episodes）、absorbed/reinforced/contested/retired 排除、allowed_next=none/archive 不计、待 stitch 判定（有产物不计）、held/exhausted 计数、explicit active 计数与龄、停滞一次性告警＋恢复清标＋再停滞重告警（核心生命周期测试）、exhausted 触发停滞、explicit 超龄触发停滞、control 报告落盘、heartbeat wrapper 真跑真数据、`_execute_heartbeat` 接线断言、settings 阈值存在。
+
+**接线证据（grep）：** `app/services/heartbeat.py` `_execute_heartbeat` 内 `debt_report = await _run_consolidation_debt_refresh(agent_id)`。退役：无（纯新增）。
+
+**回归：** ruff 全过；受影响面 `tests/memory + tests/services/test_heartbeat.py` = 411 passed；全量数字见 commit 时记录。
+
+**Commit：** `<c9-2-hash>`

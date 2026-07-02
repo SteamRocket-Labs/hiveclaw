@@ -1338,6 +1338,28 @@ async def _run_t2_job_sweep(agent_id: uuid.UUID):
     return await sweep_t2_jobs(agent_id=agent_id, data_root=Path(get_settings().AGENT_DATA_DIR))
 
 
+async def _run_consolidation_debt_refresh(agent_id: uuid.UUID):
+    """C9-2: refresh the consolidation-debt ledger and alert on stalls."""
+    from app.config import get_settings
+    from app.memory.consolidation_debt import (
+        DEFAULT_EXPLICIT_AGE_ALERT_HOURS,
+        DEFAULT_PENDING_AGE_ALERT_HOURS,
+        refresh_consolidation_debt,
+    )
+
+    settings = get_settings()
+    return await refresh_consolidation_debt(
+        agent_id=agent_id,
+        data_root=Path(settings.AGENT_DATA_DIR),
+        pending_age_alert_hours=float(
+            getattr(settings, "MEMORY_DEBT_PENDING_AGE_ALERT_HOURS", DEFAULT_PENDING_AGE_ALERT_HOURS)
+        ),
+        explicit_age_alert_hours=float(
+            getattr(settings, "MEMORY_DEBT_EXPLICIT_AGE_ALERT_HOURS", DEFAULT_EXPLICIT_AGE_ALERT_HOURS)
+        ),
+    )
+
+
 async def _execute_heartbeat(
     agent_id: uuid.UUID,
     *,
@@ -1427,6 +1449,19 @@ async def _execute_heartbeat(
                     )
             except Exception as _sweep_err:
                 logger.warning("[Heartbeat] T2 job sweep failed for {}: {}", agent_id, _sweep_err)
+
+            try:
+                debt_report = await _run_consolidation_debt_refresh(agent_id)
+                if debt_report.stalled:
+                    logger.warning(
+                        "[Heartbeat] Memory consolidation stalled for {}: reasons={} pending={} oldest_age_h={}",
+                        agent_id,
+                        list(debt_report.stall_reasons),
+                        debt_report.pending_packages,
+                        debt_report.oldest_pending_age_hours,
+                    )
+            except Exception as _debt_err:
+                logger.warning("[Heartbeat] Consolidation debt refresh failed for {}: {}", agent_id, _debt_err)
 
             if not (agent.primary_model_id or agent.fallback_model_id):
                 logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")

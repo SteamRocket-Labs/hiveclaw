@@ -174,6 +174,12 @@ class Settings(BaseSettings):
     # persistent signal resumes.
     WORKFLOW_DAEMON_INTERVAL_SECONDS: int = 15
 
+    # Consolidation-debt stall thresholds (C9-2, memory-system-spec §6.2.2):
+    # a reviewed T2 package or an active explicit overlay entry older than
+    # this without being consolidated marks the memory pipeline as stalled.
+    MEMORY_DEBT_PENDING_AGE_ALERT_HOURS: float = 48.0
+    MEMORY_DEBT_EXPLICIT_AGE_ALERT_HOURS: float = 72.0
+
     # Coordination backend (Phase 17 wiring)
     # "postgres" — durable PostgreSQL-backed coordination (default). This keeps
     # prompt-facing Team Context / Teammate Mailbox on the same truth source as

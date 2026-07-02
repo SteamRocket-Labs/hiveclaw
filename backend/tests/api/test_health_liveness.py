@@ -85,6 +85,74 @@ async def test_health_includes_code_execution_sandbox_probe_component(monkeypatc
     assert response.components["code_execution_sandbox_probe"]["network_denied"] is True
 
 
+@pytest.mark.asyncio
+async def test_health_includes_db_pool_component() -> None:
+    from app.main import health_check
+    from app.services.daemon_liveness import reset_daemon_liveness
+    from app.services.rls_runtime_guard import reset_runtime_rls_role_guard_for_tests
+
+    reset_daemon_liveness()
+    reset_runtime_rls_role_guard_for_tests()
+
+    response = await health_check()
+
+    pool = response.components["db_pool"]
+    assert {
+        "size",
+        "checked_out",
+        "checked_in",
+        "overflow",
+        "max_overflow",
+        "pool_timeout_seconds",
+        "capacity",
+        "saturation_pct",
+    } <= set(pool)
+
+
+@pytest.mark.asyncio
+async def test_health_includes_event_loop_component() -> None:
+    from app.main import health_check
+    from app.services.daemon_liveness import reset_daemon_liveness
+    from app.services.rls_runtime_guard import reset_runtime_rls_role_guard_for_tests
+
+    reset_daemon_liveness()
+    reset_runtime_rls_role_guard_for_tests()
+
+    response = await health_check()
+
+    loop_stats = response.components["event_loop"]
+    assert {"last_lag_ms", "max_lag_ms", "sample_interval_seconds", "samples", "running"} <= set(loop_stats)
+
+
+@pytest.mark.asyncio
+async def test_health_degrades_when_db_pool_saturated(monkeypatch) -> None:
+    from app.main import health_check
+    from app.services.daemon_liveness import reset_daemon_liveness
+    from app.services.rls_runtime_guard import reset_runtime_rls_role_guard_for_tests
+
+    reset_daemon_liveness()
+    reset_runtime_rls_role_guard_for_tests()
+
+    def fake_snapshot() -> dict:
+        return {
+            "size": 20,
+            "checked_out": 30,
+            "checked_in": 0,
+            "overflow": 10,
+            "max_overflow": 10,
+            "pool_timeout_seconds": 30,
+            "capacity": 30,
+            "saturation_pct": 100.0,
+        }
+
+    monkeypatch.setattr("app.database.snapshot_db_pool", fake_snapshot)
+
+    response = await health_check()
+
+    assert response.status == "degraded"
+    assert response.components["db_pool"]["saturation_pct"] == 100.0
+
+
 def test_prometheus_exports_daemon_liveness_metrics() -> None:
     from app.memory.metrics import render_prometheus
     from app.services.daemon_liveness import (

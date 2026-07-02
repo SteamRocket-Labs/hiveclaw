@@ -159,6 +159,10 @@ async def lifespan(app: FastAPI):
     intercept_standard_logging()
     logger.info("[startup] Logging configured")
 
+    from app.services.event_loop_monitor import event_loop_lag_monitor
+
+    event_loop_lag_monitor.start()
+
     import asyncio
     import os
     from app.services.evolution_daemon import start_evolution_daemon
@@ -521,6 +525,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    await event_loop_lag_monitor.stop()
     try:
         request_default_workflow_drain()
     except Exception as exc:
@@ -656,9 +661,12 @@ app.include_router(metrics_router)
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])
 async def health_check():
     """Health check endpoint."""
+    from app.database import snapshot_db_pool
     from app.services.daemon_liveness import daemon_health_status, daemon_liveness_snapshot
+    from app.services.event_loop_monitor import event_loop_lag_monitor
     from app.services.rls_runtime_guard import latest_runtime_rls_role_health
 
+    db_pool = snapshot_db_pool()
     rls_runtime_role = latest_runtime_rls_role_health()
     try:
         sandbox_probe = await latest_sandbox_probe_health()
@@ -678,6 +686,8 @@ async def health_check():
         and status == "ok"
     ):
         status = "degraded"
+    if db_pool["saturation_pct"] >= 100.0 and status == "ok":
+        status = "degraded"
     return HealthResponse(
         status=status,
         version=settings.APP_VERSION,
@@ -685,5 +695,7 @@ async def health_check():
             "daemons": daemon_liveness_snapshot(),
             "rls_runtime_role": rls_runtime_role,
             "code_execution_sandbox_probe": sandbox_probe,
+            "db_pool": db_pool,
+            "event_loop": event_loop_lag_monitor.snapshot(),
         },
     )

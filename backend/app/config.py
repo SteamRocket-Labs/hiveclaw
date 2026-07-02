@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     # if DATABASE_URL connects as a PostgreSQL superuser or a BYPASSRLS role.
     # Local one-off tests may set "warn" or "off" explicitly.
     RLS_RUNTIME_ROLE_ENFORCEMENT: str = "strict"
+    # Connection pool sizing. Single-process deployments share ONE pool across
+    # all HTTP requests, websockets, daemons, and agent runs — size accordingly,
+    # and keep (workers × (DB_POOL_SIZE + DB_MAX_OVERFLOW)) below PG max_connections.
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+    # Requests slower than this log a structured `slow_request` warning.
+    SLOW_REQUEST_WARN_SECONDS: float = 1.0
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"

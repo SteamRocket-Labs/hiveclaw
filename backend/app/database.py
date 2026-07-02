@@ -16,6 +16,7 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+
 def _normalize_async_url(url: str) -> str:
     """Coerce a bare ``postgresql://`` URL (e.g. a Railway ``${{Postgres.DATABASE_URL}}``
     reference) to the ``+asyncpg`` driver the async engine requires. Both the app
@@ -26,12 +27,42 @@ def _normalize_async_url(url: str) -> str:
     return url
 
 
+def _engine_pool_kwargs(settings) -> dict[str, int]:
+    return {
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "pool_timeout": settings.DB_POOL_TIMEOUT,
+    }
+
+
 engine = create_async_engine(
     _normalize_async_url(settings.DATABASE_URL),
     echo=settings.DEBUG,
-    pool_size=20,
-    max_overflow=10,
+    **_engine_pool_kwargs(settings),
 )
+
+
+def snapshot_db_pool() -> dict:
+    """Point-in-time occupancy of the shared connection pool (health surface).
+
+    `overflow` is SQLAlchemy's raw counter — negative until the base pool has
+    been fully populated once.
+    """
+    pool = engine.pool
+    size = pool.size()
+    capacity = size + settings.DB_MAX_OVERFLOW
+    checked_out = pool.checkedout()
+    return {
+        "size": size,
+        "checked_out": checked_out,
+        "checked_in": pool.checkedin(),
+        "overflow": pool.overflow(),
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "pool_timeout_seconds": settings.DB_POOL_TIMEOUT,
+        "capacity": capacity,
+        "saturation_pct": round(100.0 * checked_out / max(1, capacity), 1),
+    }
+
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

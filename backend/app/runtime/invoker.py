@@ -305,9 +305,12 @@ def _tool_frame_kwargs_from_session_context(session_context: SessionContext | No
     t0_refs = metadata.get("t0_refs") or metadata.get("t0_event_refs") or ()
     if isinstance(t0_refs, str):
         t0_refs = (t0_refs,)
-    round_state = metadata.get("round_state") if isinstance(metadata.get("round_state"), dict) else {}
+    round_state = dict(metadata.get("round_state") if isinstance(metadata.get("round_state"), dict) else {})
+    execution_contract = _execution_contract_from_session_context(session_context)
+    if execution_contract and not isinstance(round_state.get("execution_contract"), dict):
+        round_state["execution_contract"] = execution_contract
     result: dict[str, Any] = {
-        "round_state": dict(round_state or {}),
+        "round_state": round_state,
         "t0_refs": tuple(str(ref) for ref in (t0_refs or ()) if str(ref).strip()),
     }
     if metadata.get("turn_id"):
@@ -322,6 +325,24 @@ def _tool_frame_kwargs_from_session_context(session_context: SessionContext | No
     if origin_channel:
         result["origin_channel"] = str(origin_channel)
     return result
+
+
+def _execution_contract_from_session_context(session_context: SessionContext | None) -> dict[str, Any] | None:
+    if session_context is None:
+        return None
+    plan_state = getattr(session_context, "plan_mode", None)
+    state_contract = getattr(plan_state, "execution_contract", None)
+    if isinstance(state_contract, dict) and state_contract:
+        return dict(state_contract)
+    metadata = getattr(session_context, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    mirror = metadata.get("plan_mode")
+    if isinstance(mirror, dict) and isinstance(mirror.get("execution_contract"), dict) and mirror["execution_contract"]:
+        return dict(mirror["execution_contract"])
+    if isinstance(metadata.get("execution_contract"), dict) and metadata["execution_contract"]:
+        return dict(metadata["execution_contract"])
+    return None
 
 
 async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:

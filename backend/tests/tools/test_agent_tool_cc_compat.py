@@ -11,7 +11,7 @@ import pytest
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
 
-def _request(arguments: dict) -> ToolExecutionRequest:
+def _request(arguments: dict, *, round_state: dict | None = None) -> ToolExecutionRequest:
     return ToolExecutionRequest(
         tool_name="spawn_subagent",
         arguments=arguments,
@@ -21,6 +21,7 @@ def _request(arguments: dict) -> ToolExecutionRequest:
             tenant_id=str(uuid4()),
             workspace=Path("/tmp"),
             session_id=str(uuid4()),
+            round_state=round_state,
         ),
     )
 
@@ -149,6 +150,41 @@ async def test_spawn_subagent_team_name_and_name_routes_to_teammate_branch(monke
         "subagent_type": "critic",
         "model": "",
         "mode": "",
+    }
+
+
+@pytest.mark.asyncio
+async def test_spawn_subagent_rejects_plain_worker_when_plan_requires_agent_team() -> None:
+    import app.tools.handlers.subagent as handler_mod
+
+    out = await handler_mod.spawn_subagent_tool(
+        _request(
+            {
+                "prompt": "Split this into the approved team.",
+                "subagent_type": "critic",
+            },
+            round_state={
+                "execution_contract": {
+                    "type": "agent_team",
+                    "name": "ABS research team",
+                    "members": [{"name": "structure-analyst"}],
+                }
+            },
+        )
+    )
+    payload = json.loads(out)
+
+    assert payload == {
+        "ok": False,
+        "error": "agent_team_contract_required",
+        "message": (
+            "The confirmed plan requires Agent Team execution. Call team_create first, then spawn teammates "
+            "with spawn_subagent using both team_name and name."
+        ),
+        "required_tool": "team_create",
+        "teammate_creation_tool": "spawn_subagent",
+        "expected_arguments": {"team_name": "ABS research team", "name": "<member_name>"},
+        "contract_type": "agent_team",
     }
 
 

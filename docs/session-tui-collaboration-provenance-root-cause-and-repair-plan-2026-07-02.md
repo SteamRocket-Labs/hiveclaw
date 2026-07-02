@@ -1028,6 +1028,50 @@ cd frontend && npm run build
 # tsc && vite build passed
 ```
 
+### Part 18 — B6 Agent Team execution contract 后拦截（2026-07-02）
+
+红测：
+
+- `test_spawn_subagent_rejects_plain_worker_when_plan_requires_agent_team`：旧 `spawn_subagent` 在 `round_state.execution_contract.type=agent_team` 且没有 `team_name + name` 时继续走普通 Sub-agent 路径，甚至进入 parent model DB resolution；这会把用户明确批准的 Agent Team 计划退化成 Sub-agent。
+- `test_execute_tool_receives_plan_execution_contract_in_round_state`：旧 `invoker._tool_frame_kwargs_from_session_context()` 只传 `metadata.round_state`，不把 `SessionContext.plan_mode.execution_contract` / metadata mirror 合入 tool runtime context，handler 无法看见 confirmed execution contract。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/tools/test_agent_tool_cc_compat.py::test_spawn_subagent_rejects_plain_worker_when_plan_requires_agent_team \
+  tests/runtime/test_invoker.py::test_execute_tool_receives_plan_execution_contract_in_round_state \
+  -q
+# failed:
+# - spawn_subagent fell through to _resolve_parent_runtime instead of returning agent_team_contract_required
+# - round_state was {'round': 2}, missing execution_contract
+```
+
+变更：
+
+- `runtime/invoker.py` 新增 `_execution_contract_from_session_context()`，按优先级读取 typed `SessionContext.plan_mode.execution_contract`、legacy `metadata.plan_mode.execution_contract`、以及 confirmed handoff 的 top-level `metadata.execution_contract`。
+- `runtime/invoker.py::_tool_frame_kwargs_from_session_context()` 将 execution contract 合入 `round_state.execution_contract`，同时保留已有 round fields，不覆盖已有显式 round contract。
+- `tools/handlers/subagent.py` 新增 Agent Team contract fail-closed guard：当 confirmed execution contract 要求 Agent Team，但本次 `spawn_subagent` 未同时提供 `team_name` 与 `name`，直接返回结构化错误 `agent_team_contract_required`，提示先 `team_create`，再用 `spawn_subagent(team_name + name)` 创建 teammate。
+- 该 guard 放在 `_resolve_parent_runtime()` 之前，避免错误路径进入 DB/model 解析或普通 Sub-agent 执行。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/tools/test_agent_tool_cc_compat.py \
+  tests/runtime/test_invoker.py::test_execute_tool_receives_session_frame_metadata \
+  tests/runtime/test_invoker.py::test_execute_tool_receives_plan_execution_contract_in_round_state \
+  -q
+# 9 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/runtime/invoker.py \
+  app/tools/handlers/subagent.py \
+  tests/tools/test_agent_tool_cc_compat.py \
+  tests/runtime/test_invoker.py
+# All checks passed
+```
+
 ### Part 17 — B5 Workflow gate / wait / resume / repair session-native 表达（2026-07-02）
 
 红测：

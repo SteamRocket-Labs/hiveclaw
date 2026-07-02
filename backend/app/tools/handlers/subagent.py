@@ -292,6 +292,35 @@ def _permission_profile_allowed_tools(arguments: dict[str, Any]) -> tuple[str, .
     return tuple(dict.fromkeys(str(item).strip() for item in raw_allowed if str(item).strip()))
 
 
+def _agent_team_execution_contract(request: ToolExecutionRequest) -> dict[str, Any] | None:
+    round_state = getattr(request.context, "round_state", None)
+    if not isinstance(round_state, dict):
+        return None
+    contract = round_state.get("execution_contract")
+    if not isinstance(contract, dict) or not contract:
+        return None
+    contract_type = str(contract.get("type") or "").strip()
+    if contract_type not in {"agent_team", "team"}:
+        return None
+    return dict(contract)
+
+
+def _agent_team_contract_required_payload(contract: dict[str, Any]) -> dict[str, Any]:
+    team_name = str(contract.get("name") or contract.get("team_name") or "").strip()
+    return {
+        "ok": False,
+        "error": "agent_team_contract_required",
+        "message": (
+            "The confirmed plan requires Agent Team execution. Call team_create first, then spawn teammates "
+            "with spawn_subagent using both team_name and name."
+        ),
+        "required_tool": "team_create",
+        "teammate_creation_tool": "spawn_subagent",
+        "expected_arguments": {"team_name": team_name or "<team_name>", "name": "<member_name>"},
+        "contract_type": "agent_team",
+    }
+
+
 async def _load_parent_messages_for_fork(
     *,
     agent_id: uuid.UUID,
@@ -394,6 +423,9 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
 
     team_name = str(normalized_args.get("team_name") or "").strip()
     member_name = str(normalized_args.get("name") or "").strip()
+    agent_team_contract = _agent_team_execution_contract(request)
+    if agent_team_contract and not (team_name and member_name):
+        return _json(_agent_team_contract_required_payload(agent_team_contract))
     if team_name and member_name:
         try:
             return _json(

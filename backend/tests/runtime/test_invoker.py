@@ -552,6 +552,61 @@ async def test_execute_tool_receives_session_frame_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_receives_plan_execution_contract_in_round_state(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request
+    from app.runtime.session import PlanModeState, SessionContext
+
+    seen: dict[str, object] = {}
+
+    async def fake_execute_tool(
+        tool_name,
+        args,
+        *,
+        agent_id,
+        user_id,
+        round_state=None,
+        **_kwargs,
+    ):
+        seen.update(
+            {
+                "tool_name": tool_name,
+                "args": args,
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "round_state": round_state,
+            }
+        )
+        return "tool-ok"
+
+    async def emit_event(_payload):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.execute_tool", fake_execute_tool)
+    agent_id = uuid4()
+    user_id = uuid4()
+    contract = {"type": "agent_team", "name": "ABS research team"}
+    session = SessionContext(
+        session_id="session-1",
+        metadata={"round_state": {"round": 2}},
+        plan_mode=PlanModeState(active=False, execution_contract=contract),
+    )
+    request = AgentInvocationRequest(
+        model=object(),
+        messages=[{"role": "user", "content": "execute approved plan"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=agent_id,
+        user_id=user_id,
+        session_context=session,
+    )
+
+    result = await _execute_tool_with_request("spawn_subagent", {"prompt": "work"}, request, emit_event)
+
+    assert result == "tool-ok"
+    assert seen["round_state"] == {"round": 2, "execution_contract": contract}
+
+
+@pytest.mark.asyncio
 async def test_resolve_tool_expansion_ignores_load_skill_for_schema_loading(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
 

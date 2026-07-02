@@ -784,7 +784,8 @@ export default function Dashboard() {
     const { data: agents = [], isLoading } = useQuery({
         queryKey: ['agents', currentTenant],
         queryFn: () => agentApi.list(currentTenant || undefined),
-        refetchInterval: 15000,
+        staleTime: 30000,
+        refetchInterval: 60000,
     });
 
     const [allTasks, setAllTasks] = useState<Task[]>([]);

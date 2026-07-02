@@ -218,6 +218,25 @@ describe('request cleanup adapters', () => {
     expect(get).toHaveBeenCalledWith('/agents/agent-1/sessions?scope=all');
   });
 
+  it('routes agent lists through the summary projection by default', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+      };
+    });
+    const { agentApi } = await import('./domains/agents');
+    const { get } = await import('./core/request');
+    vi.mocked(get).mockResolvedValue([]);
+
+    await agentApi.list();
+    await agentApi.list('tenant-1');
+
+    expect(get).toHaveBeenNthCalledWith(1, '/agents/?summary=true');
+    expect(get).toHaveBeenNthCalledWith(2, '/agents/?tenant_id=tenant-1&summary=true');
+  });
+
   it('routes durable chat run APIs through chatApi', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

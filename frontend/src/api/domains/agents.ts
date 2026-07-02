@@ -85,7 +85,13 @@ export interface AgentChannelCapability {
 
 export const agentApi = {
   getHrAgent: () => get<HrAgentInfo>('/agents/system/hr'),
-  list: (tenantId?: string) => get<Agent[]>(`/agents/${tenantId ? `?tenant_id=${tenantId}` : ''}`),
+  list: (tenantId?: string, options?: { summary?: boolean }) => {
+    const params = new URLSearchParams();
+    if (tenantId) params.set('tenant_id', tenantId);
+    if (options?.summary !== false) params.set('summary', 'true');
+    const query = params.toString();
+    return get<Agent[]>(`/agents/${query ? `?${query}` : ''}`);
+  },
   getById: (id: string) => get<Agent>(`/agents/${id}`),
   getCapabilityInstalls: (id: string) => get<AgentCapabilityInstall[]>(`/agents/${id}/capability-installs`),
   getChannelCapabilities: (id: string) => get<AgentChannelCapability[]>(`/agents/${id}/channel-capabilities`),

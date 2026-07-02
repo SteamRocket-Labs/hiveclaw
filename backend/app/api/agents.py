@@ -1,5 +1,6 @@
 """Agent (Digital Employee) API routes."""
 
+from collections.abc import Mapping
 import logging
 import shutil
 import uuid
@@ -8,7 +9,7 @@ import inspect
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -34,6 +35,8 @@ from app.services.mcp_server_service import get_agent_mcp_servers
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+AGENT_LIST_ROLE_DESCRIPTION_CHARS = 320
 
 
 async def _lazy_reset_token_counters(agent: Agent, db: AsyncSession) -> bool:
@@ -72,6 +75,57 @@ def _agent_out_dict(agent: Agent) -> dict:
     return normalize_agent_heartbeat_output(_agent_out(agent).model_dump())
 
 
+def _agent_list_summary_stmt():
+    return select(
+        Agent.id.label("id"),
+        Agent.name.label("name"),
+        Agent.avatar_url.label("avatar_url"),
+        func.left(func.coalesce(Agent.role_description, ""), AGENT_LIST_ROLE_DESCRIPTION_CHARS).label(
+            "role_description"
+        ),
+        Agent.status.label("status"),
+        Agent.creator_id.label("creator_id"),
+        Agent.sponsor_user_id.label("sponsor_user_id"),
+        Agent.participant_id.label("participant_id"),
+        Agent.owner_user_id.label("owner_user_id"),
+        Agent.tenant_id.label("tenant_id"),
+        Agent.primary_model_id.label("primary_model_id"),
+        Agent.fallback_model_id.label("fallback_model_id"),
+        func.coalesce(Agent.tokens_used_today, 0).label("tokens_used_today"),
+        func.coalesce(Agent.tokens_used_month, 0).label("tokens_used_month"),
+        func.coalesce(Agent.tokens_used_total, 0).label("tokens_used_total"),
+        func.coalesce(Agent.max_tool_rounds, 200).label("max_tool_rounds"),
+        func.coalesce(Agent.max_triggers, 20).label("max_triggers"),
+        func.coalesce(Agent.min_poll_interval_min, 5).label("min_poll_interval_min"),
+        func.coalesce(Agent.webhook_rate_limit, 5).label("webhook_rate_limit"),
+        Agent.last_heartbeat_at.label("last_heartbeat_at"),
+        Agent.timezone.label("timezone"),
+        Agent.agent_type.label("agent_type"),
+        Agent.agent_class.label("agent_class"),
+        Agent.security_zone.label("security_zone"),
+        Agent.execution_mode.label("execution_mode"),
+        Agent.created_at.label("created_at"),
+        Agent.last_active_at.label("last_active_at"),
+        Agent.deleted_at.label("deleted_at"),
+        Agent.deactivated_at.label("deactivated_at"),
+        Agent.deactivation_reason.label("deactivation_reason"),
+    )
+
+
+def _agent_list_out_from_mapping(row: Mapping[str, object]) -> AgentOut:
+    role_description = str(row.get("role_description") or "")
+    if len(role_description) > AGENT_LIST_ROLE_DESCRIPTION_CHARS:
+        role_description = role_description[: AGENT_LIST_ROLE_DESCRIPTION_CHARS - 3].rstrip() + "..."
+
+    data = dict(row)
+    data["role_description"] = role_description
+    data["bio"] = None
+    data["welcome_message"] = None
+    data["creator_username"] = None
+    data["smart_model_routing"] = None
+    return AgentOut.model_validate(normalize_agent_heartbeat_output(data))
+
+
 @router.get("/", response_model=list[AgentOut])
 async def list_agents(
     tenant_id: uuid.UUID | None = None,
@@ -82,28 +136,20 @@ async def list_agents(
     # platform_admin & org_admin see all agents (optionally filtered by tenant)
     if current_user.role in ("platform_admin", "org_admin"):
         target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-        stmt = select(Agent).where(
+        stmt = _agent_list_summary_stmt().where(
             Agent.tenant_id == target_tenant_id,
             Agent.agent_class != "internal_system",
             agent_lifecycle_active_clause(),
         )
         result = await db.execute(stmt.order_by(Agent.created_at.desc()))
-        agents = result.scalars().all()
-        # Lazy reset token counters
-        needs_flush = False
-        for a in agents:
-            if await _lazy_reset_token_counters(a, db):
-                needs_flush = True
-        if needs_flush:
-            await db.commit()
-        return [_agent_out(a) for a in agents]
+        return [_agent_list_out_from_mapping(row) for row in result.mappings().all()]
 
     # All users see their own created agents + permitted
     # All scoped to user's tenant
     user_tenant = current_user.tenant_id
 
     # Get agents user created (within their tenant), excluding system agents
-    created = select(Agent).where(
+    created_ids = select(Agent.id).where(
         Agent.creator_id == current_user.id,
         Agent.tenant_id == user_tenant,
         Agent.agent_class != "internal_system",
@@ -116,30 +162,19 @@ async def list_agents(
         | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
         | ((AgentPermission.scope_type == "department") & (AgentPermission.scope_id == current_user.department_id))
     )
-    permitted = select(Agent).where(
-        Agent.id.in_(permitted_ids),
-        Agent.tenant_id == user_tenant,
-        Agent.agent_class != "internal_system",
-        agent_lifecycle_active_clause(),
-    )
-
     # Union
-    from sqlalchemy import union_all
-
-    combined = union_all(created, permitted).subquery()
+    combined = union_all(created_ids, permitted_ids).subquery()
     result = await db.execute(
-        select(Agent).where(Agent.id.in_(select(combined.c.id))).order_by(Agent.created_at.desc())
+        _agent_list_summary_stmt()
+        .where(
+            Agent.id.in_(select(combined.c.id)),
+            Agent.tenant_id == user_tenant,
+            Agent.agent_class != "internal_system",
+            agent_lifecycle_active_clause(),
+        )
+        .order_by(Agent.created_at.desc())
     )
-    agents = result.scalars().all()
-    # Lazy reset token counters
-    needs_flush = False
-    for a in agents:
-        if await _lazy_reset_token_counters(a, db):
-            needs_flush = True
-    if needs_flush:
-        await db.commit()
-    return [_agent_out(a) for a in agents]
-
+    return [_agent_list_out_from_mapping(row) for row in result.mappings().all()]
 
 HR_AGENT_NAME = "__system_hr__"
 HR_TEMPLATE_VERSION = "hr-flow-v3-company-knowledge-history-2026-06-21"

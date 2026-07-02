@@ -298,7 +298,8 @@ export default function Layout() {
     const { data: agents = [] } = useQuery({
         queryKey: ['agents', currentTenant],
         queryFn: () => agentApi.list(currentTenant || undefined),
-        refetchInterval: 30000,
+        staleTime: 30000,
+        refetchInterval: 120000,
     });
 
     const handleLogout = () => {

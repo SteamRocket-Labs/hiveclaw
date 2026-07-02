@@ -104,6 +104,9 @@ def t3_spec_for_category(category: str) -> dict:
     return _CATEGORY_TO_SPEC.get(category, _CATEGORY_TO_SPEC["general"])
 
 
+TWO_PLANE_DIRS: tuple[str, ...] = ("self", "profiles", "knowledge", "milestones")
+
+
 def ensure_t3_layout(data_root: Path, agent_id: uuid.UUID) -> Path:
     mem_dir = memory_dir(data_root, agent_id)
     mem_dir.mkdir(parents=True, exist_ok=True)
@@ -112,6 +115,11 @@ def ensure_t3_layout(data_root: Path, agent_id: uuid.UUID) -> Path:
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{spec['header']}\n\n", encoding="utf-8")
+    # Two-plane layout (spec §1.1/§5): profile plane (self/profiles) +
+    # knowledge plane (knowledge/milestones). Directories only — files are
+    # created by governed writers (Platform Gate / HR bootstrap), not here.
+    for subdir in TWO_PLANE_DIRS:
+        (mem_dir / subdir).mkdir(parents=True, exist_ok=True)
     return mem_dir
 
 

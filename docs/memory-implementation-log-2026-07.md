@@ -124,4 +124,16 @@
 
 **接线证据：** `memory_service.py build_memory_context` 内 `load_resident_memory`/`check_resident_budget`/`_retrieve_knowledge_pages`（经 retriever.retrieve 主流程 always-on）。退役：无（旧 t3 direct 读法保持至 Part H 收口）。
 
-**回归：** ruff 全过；受影响面 tests/memory+tests/runtime = 1043 passed；全量数字随 commit 记录。
+**回归：** ruff 全过；受影响面 tests/memory+tests/runtime = 1043 passed；全量 = 5352 passed / 1 failed / 1 skipped——唯一失败 `test_alembic_single_head_is_current_closure_head` 系另一 session 的 commit `1378bf74` 新增 migration 未同步测试内 pin 常量（`retire_atlassian_rovo_0629` vs 新 head `web_chat_final_message_idempotency_0702`），非本 part 面，留给该 session 收尾（终汇报向 owner 点名）。
+
+**Commit：** `7f53ad6d`（8 files, +708/-18；config.py hunk 级 staging）。
+
+### Part B T3 Platform Gate 四区化（2026-07-02）
+
+**改动：**
+- `t3_platform_gate.py`：目标集从旧四文件扩展为三类——固定收敛文件 `PROFILE_PLANE_TARGETS`（self/self.md + profiles×3）、动态页 `memory/(knowledge|milestones)/<slug>.md`（slug 正则排除 `/`、`.`，路径穿越无法通过校验）、旧四文件兼容（Part H 收口）。新操作：`upsert_page`（整页写入；**新 knowledge 页强制 ≥1 Relations 边，前向引用算数**，孤儿页 hold）、`upsert_entry`（### markdown 条目，`<!-- id: -->` 锚定，同 id 原位替换、按 `## section` 定位插入，缺 section 自动创建）、`retire_entry`（**机械只标记** `<!-- retired: -->`，收敛环工序 4 负责真正删除——gate 永不机械删除 LLM 内容）。base_revision/evidence/rubric 纪律原样继承；`_read_target` 容错不存在文件（新文件 empty-sha 语义）。
+- `md_store.ensure_t3_layout`：增建 `TWO_PLANE_DIRS`（self/profiles/knowledge/milestones，只建目录——文件由 governed writer 创建）。
+
+**红测：** `tests/memory/test_t3_gate_four_planes.py` 13 用例，RED（10 失败）→ GREEN 13 passed。覆盖：新 knowledge 页 commit、无 Relations hold、前向引用满足成网、stale sha rebase、milestones 无需 Relations、slug 三种非法形态、self 条目建/改（同 id 原位替换唯一性）、retire 标记不删内容、缺 id 注释 hold、无 t2/explicit 证据 hold、legacy XML block 兼容、layout 建新目录。
+
+**回归：** ruff 全过；tests/memory 411 passed；全量随 commit 记录。

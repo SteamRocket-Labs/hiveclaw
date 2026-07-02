@@ -26,7 +26,23 @@ ACCEPTED_T3_TARGETS: tuple[str, ...] = (
     "memory/t3/capabilities.md",
 )
 
-TARGET_VIEW_VALUES = frozenset({"episodes", "user", "worker", "capabilities"})
+# Two-plane fixed convergent files (spec §1.1): written as ### markdown
+# entries anchored by `<!-- id: ... -->` through upsert_entry/retire_entry.
+PROFILE_PLANE_TARGETS: tuple[str, ...] = (
+    "memory/self/self.md",
+    "memory/profiles/owner.md",
+    "memory/profiles/collaborators.md",
+    "memory/profiles/domain.md",
+)
+# Dynamic knowledge-plane pages (spec §3.4/§3.5): whole-page upsert_page.
+# Slug charset excludes '/' and '.', so traversal cannot pass validation.
+_DYNAMIC_TARGET_RE = re.compile(r"^memory/(?:knowledge|milestones)/[a-z0-9][a-z0-9-]{0,78}\.md$")
+_RELATION_EDGE_RE = re.compile(r"^-\s+[a-z_]+\s+\[\[[^\]]+\]\]\s*$", re.MULTILINE)
+_ENTRY_ID_COMMENT_RE = re.compile(r"<!--\s*id:\s*(?P<entry_id>[A-Za-z0-9:_.-]+)\s*-->")
+
+TARGET_VIEW_VALUES = frozenset(
+    {"episodes", "user", "worker", "capabilities", "self", "profiles", "knowledge", "milestones"}
+)
 CONSOLIDATION_MODE_VALUES = frozenset({"create", "merge", "supersede", "reinforce", "contradict", "retract", "noop"})
 SOURCE_COVERAGE_VALUES = frozenset({"single_session", "multi_session", "explicit_user", "tool_verified", "weak"})
 STABILITY_VALUES = frozenset({"ephemeral", "short_lived", "evolving", "stable"})
@@ -68,7 +84,18 @@ class T3PlatformGateResult:
 
 
 def is_accepted_t3_target(path: str) -> bool:
-    return _normalize_target(path) in ACCEPTED_T3_TARGETS
+    normalized = _normalize_target(path)
+    if normalized in ACCEPTED_T3_TARGETS or normalized in PROFILE_PLANE_TARGETS:
+        return True
+    return bool(_DYNAMIC_TARGET_RE.match(normalized))
+
+
+def is_dynamic_page_target(path: str) -> bool:
+    return bool(_DYNAMIC_TARGET_RE.match(_normalize_target(path)))
+
+
+def is_profile_plane_target(path: str) -> bool:
+    return _normalize_target(path) in PROFILE_PLANE_TARGETS
 
 
 def file_sha256(path: Path) -> str:
@@ -135,7 +162,9 @@ def apply_t3_consolidation_patch(
                 target=target,
                 expected_sha=expected_sha,
                 current_sha=current_sha,
-                current_content=current_path.read_text(encoding="utf-8", errors="replace") if current_path.exists() else "",
+                current_content=current_path.read_text(encoding="utf-8", errors="replace")
+                if current_path.exists()
+                else "",
             )
             return _write_manifest_result(
                 job_dir,
@@ -145,10 +174,7 @@ def apply_t3_consolidation_patch(
                 conflict_bundle_path=conflict_path,
             )
 
-    current_contents = {
-        target: _target_path(mem_dir, target).read_text(encoding="utf-8", errors="replace")
-        for target in targets
-    }
+    current_contents = {target: _read_target(mem_dir, target) for target in targets}
     updated_contents = dict(current_contents)
     committed_blocks: list[str] = []
     for change in list(patch.findall("./proposed_changes/append_block")) + list(
@@ -236,6 +262,64 @@ def apply_t3_consolidation_patch(
         )
         committed_blocks.append(block_id)
 
+    # -- two-plane operations (spec §3.2/§3.4/§3.5) --
+
+    for change in patch.findall("./proposed_changes/upsert_page"):
+        target = _normalize_target(change.attrib.get("target") or "")
+        page_content = (change.findtext("page_content") or "").strip()
+        if not is_dynamic_page_target(target):
+            issues.append(f"upsert_page target must be a knowledge/milestones page: {target or '<missing>'}")
+            continue
+        if not page_content:
+            issues.append(f"upsert_page missing page_content: {target}")
+            continue
+        is_new_page = not _target_path(mem_dir, target).exists() and not (current_contents.get(target) or "").strip()
+        if target.startswith("memory/knowledge/") and is_new_page and not _RELATION_EDGE_RE.search(page_content):
+            issues.append(f"new knowledge page must carry >=1 `## Relations` edge (forward references count): {target}")
+            continue
+        updated_contents[target] = page_content
+        committed_blocks.append(target)
+
+    for change in patch.findall("./proposed_changes/upsert_entry"):
+        target = _normalize_target(change.attrib.get("target") or "")
+        entry_id = str(change.attrib.get("entry_id") or "").strip()
+        section = str(change.attrib.get("section") or "").strip()
+        entry_content = (change.findtext("entry_content") or "").strip()
+        if not is_profile_plane_target(target):
+            issues.append(f"upsert_entry target must be a self/profiles file: {target or '<missing>'}")
+            continue
+        if not entry_id or not entry_content:
+            issues.append(f"upsert_entry missing entry_id/entry_content: {target}")
+            continue
+        id_match = _ENTRY_ID_COMMENT_RE.search(entry_content)
+        if not entry_content.startswith("###") or id_match is None or id_match.group("entry_id") != entry_id:
+            issues.append(f"upsert_entry content must start with ### and carry `<!-- id: {entry_id} -->`: {target}")
+            continue
+        content = updated_contents.get(target, "")
+        existing = _find_md_entry(content, entry_id)
+        if existing is not None:
+            updated_contents[target] = content.replace(existing, entry_content)
+        else:
+            updated_contents[target] = _insert_md_entry(content, section=section, entry_content=entry_content)
+        committed_blocks.append(entry_id)
+
+    for change in patch.findall("./proposed_changes/retire_entry"):
+        target = _normalize_target(change.attrib.get("target") or "")
+        entry_id = str(change.attrib.get("entry_id") or "").strip()
+        reason = str(change.attrib.get("reason") or "").strip()
+        if not is_profile_plane_target(target) or not entry_id:
+            issues.append("retire_entry missing profile-plane target/entry_id")
+            continue
+        content = updated_contents.get(target, "")
+        existing = _find_md_entry(content, entry_id)
+        if existing is None:
+            issues.append(f"retire_entry target entry missing in {target}: {entry_id}")
+            continue
+        updated_contents[target] = content.replace(
+            existing, _retire_md_entry(existing, entry_id=entry_id, job_id=job_id, reason=reason)
+        )
+        committed_blocks.append(entry_id)
+
     for change in patch.findall("./proposed_changes/reinforce_block"):
         target = _normalize_target(change.attrib.get("target") or "")
         block_id = str(change.attrib.get("block_id") or "").strip()
@@ -319,7 +403,9 @@ def _validate_patch_shape(patch: ET.Element, issues: list[str]) -> None:
     ):
         issues.append("patch must reference at least one T2 package or explicit overlay entry")
     for ref in evidence_refs:
-        if ref.startswith("t0://") and not any(src.startswith("t2://") or src.startswith("explicit://") for src in evidence_refs):
+        if ref.startswith("t0://") and not any(
+            src.startswith("t2://") or src.startswith("explicit://") for src in evidence_refs
+        ):
             issues.append(f"T0 ref is not traceable through T2/explicit source refs: {ref}")
     _validate_t0_refs_derivable_from_t2(patch, issues)
     _validate_target_labels(patch.find("./target_view_labels"), issues)
@@ -413,7 +499,11 @@ def _validate_review(review: ET.Element, issues: list[str]) -> None:
             issues.append(f"memory_gate_rubric score {name} must be 0-4")
             continue
         rationale = (node.findtext("rationale") or "").strip()
-        refs = [str(ref.text or "").strip() for ref in node.findall("./source_refs/source_ref") if str(ref.text or "").strip()]
+        refs = [
+            str(ref.text or "").strip()
+            for ref in node.findall("./source_refs/source_ref")
+            if str(ref.text or "").strip()
+        ]
         if not rationale:
             issues.append(f"memory_gate_rubric score {name} missing rationale")
         if not refs:
@@ -542,7 +632,9 @@ def _update_t2_package_manifest(
     manifest["t3_lifecycle_updated_at"] = now
     if status == "absorbed":
         manifest["absorbed_at"] = now
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return True
 
 
@@ -579,6 +671,75 @@ def _validate_block_content(block_content: str, *, block_id: str, target: str) -
     if block.tag != target_prefix:
         return f"block_content root for {target} must be {target_prefix}"
     return ""
+
+
+def _read_target(mem_dir: Path, target: str) -> str:
+    path = _target_path(mem_dir, target)
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _find_md_entry(content: str, entry_id: str) -> str | None:
+    """Locate one `###` markdown entry anchored by `<!-- id: entry_id -->`."""
+    lines = (content or "").splitlines()
+    entry_start: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            entry_start = index
+            continue
+        if stripped.startswith("## "):
+            entry_start = None
+            continue
+        match = _ENTRY_ID_COMMENT_RE.search(stripped)
+        if match and match.group("entry_id") == entry_id and entry_start is not None:
+            end = len(lines)
+            for probe in range(index + 1, len(lines)):
+                probe_stripped = lines[probe].strip()
+                if probe_stripped.startswith("### ") or probe_stripped.startswith("## "):
+                    end = probe
+                    break
+            return "\n".join(lines[entry_start:end]).rstrip()
+    return None
+
+
+def _insert_md_entry(content: str, *, section: str, entry_content: str) -> str:
+    """Insert an entry at the end of `## <section>`; create the section if absent."""
+    base = (content or "").rstrip()
+    entry = entry_content.strip()
+    if not section:
+        return f"{base}\n\n{entry}\n" if base else f"{entry}\n"
+    lines = base.splitlines()
+    section_header = f"## {section}"
+    section_start: int | None = None
+    for index, line in enumerate(lines):
+        if line.strip() == section_header:
+            section_start = index
+            break
+    if section_start is None:
+        prefix = f"{base}\n\n" if base else ""
+        return f"{prefix}{section_header}\n\n{entry}\n"
+    insert_at = len(lines)
+    for probe in range(section_start + 1, len(lines)):
+        if lines[probe].strip().startswith("## "):
+            insert_at = probe
+            break
+    new_lines = lines[:insert_at] + ["", entry, ""] + lines[insert_at:]
+    return "\n".join(new_lines).rstrip() + "\n"
+
+
+def _retire_md_entry(existing: str, *, entry_id: str, job_id: str, reason: str) -> str:
+    """Mark a profile-plane entry retired. Marking only — the convergence
+    loop (工序 4) removes retired entries during full rewrites; the gate
+    never deletes authored content mechanically."""
+    marker = f"<!-- retired: by {job_id} at {_now()}" + (f"; reason: {reason}" if reason else "") + " -->"
+    lines = existing.splitlines()
+    for index, line in enumerate(lines):
+        match = _ENTRY_ID_COMMENT_RE.search(line.strip())
+        if match and match.group("entry_id") == entry_id:
+            return "\n".join(lines[: index + 1] + [marker] + lines[index + 1 :])
+    return existing + "\n" + marker
 
 
 def _block_regex(block_id: str) -> re.Pattern[str]:

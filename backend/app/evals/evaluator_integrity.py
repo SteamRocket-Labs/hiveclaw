@@ -1,4 +1,4 @@
-"""E5: evaluator trust root — the graders + baselines that decide pass/fail must
+"""Evaluator trust root — graders that decide pass/fail must
 come from a PROTECTED source the candidate-under-test cannot modify.
 
 round2 §2.3 iron law 2 + the owner's finding (§4.2): a git-tracked expected hash
@@ -21,24 +21,18 @@ from dataclasses import asdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Files that constitute the evaluator trust root (graders + behavior runners).
+# Files that constitute the evaluator trust root (graders + local eval runners).
 # A change to any of these requires CODEOWNERS review from the protected base —
 # it can never be self-approved inside the candidate PR.
 EVALUATOR_RELATIVE_PATHS: tuple[str, ...] = (
     "app/evals/adversarial_suite.py",
     "app/evals/artifact_gate.py",
-    "app/evals/baseline.py",
     "app/evals/bakeoff_runtime.py",
-    "app/evals/ci_gate.py",
-    "app/evals/cost_budget.py",
-    "app/evals/hermes_baseline.py",
-    "app/evals/hive_live_runner.py",
     "app/evals/run.py",
     "app/evals/self_evolution_bakeoff.py",
     "app/evals/evaluator_integrity.py",
     "app/services/evolution_verification.py",
 )
-EVALUATOR_BASELINE_DIR = "app/evals/baselines"
 
 # Markers of an agent-writable path. Evaluator code must never live here, or the
 # agent could rewrite its own grader (DGM Node 114 / STOP use_sandbox=False).
@@ -78,11 +72,6 @@ def compute_evaluator_hashes(
     for rel in relative_paths:
         path = root / rel
         hashes[rel] = _hash_text(path.read_text(encoding="utf-8")) if path.is_file() else "<missing>"
-    baseline_dir = root / EVALUATOR_BASELINE_DIR
-    if baseline_dir.is_dir():
-        for baseline in sorted(baseline_dir.glob("*.json")):
-            rel = f"{EVALUATOR_BASELINE_DIR}/{baseline.name}"
-            hashes[rel] = _hash_text(baseline.read_text(encoding="utf-8"))
     return hashes
 
 
@@ -155,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             trusted_hashes=compute_evaluator_hashes(args.trusted_root),
             authorized_changes=args.authorized_changes,
         )
-    except Exception as exc:  # fail closed and let ci_gate emit the blocking exit code
+    except Exception as exc:  # fail closed; CI decides how to surface the report
         report = IntegrityReport(trusted=False, reason=f"evaluator integrity check failed: {exc}")
 
     payload = asdict(report)

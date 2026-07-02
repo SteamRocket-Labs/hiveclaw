@@ -61,14 +61,6 @@ const CONTROL_PLANE_CARDS: ControlPlaneCard[] = [
     group: 'runtime',
   },
   {
-    tab: 'eval_ci',
-    to: '/enterprise/eval-ci',
-    title: 'Behavior Evaluation',
-    description: 'Live behavior-eval runtime status, latest reports, and isolated eval model sync.',
-    icon: <IconChartBar size={18} stroke={1.6} />,
-    group: 'runtime',
-  },
-  {
     tab: 'tools',
     to: '/enterprise/tools',
     title: 'Capabilities & Tools',

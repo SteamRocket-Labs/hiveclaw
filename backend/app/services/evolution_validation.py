@@ -11,7 +11,7 @@ from app.services.evolution_ledger import load_evolution_ledger
 from app.services.evolution_manifest import validate_evolution_manifest
 
 
-PROMOTE_DECISIONS = {"promote", "promoted", "patch", "patched"}
+PROMOTE_DECISIONS = {"provisional", "promote", "promoted", "patch", "patched"}
 HOLD_DECISIONS = {"hold", "held", "defer", "deferred"}
 REJECT_DECISIONS = {"reject", "rejected"}
 
@@ -227,7 +227,7 @@ def _validate_candidate(
                     "Promotion decision has an unknown value.",
                     candidate_id=candidate_id,
                     evidence={"decision": decision_value},
-                    recommendation="Use promote/promoted or hold/held decision values.",
+                    recommendation="Use provisional/promote/promoted or hold/held decision values.",
                 )
             )
     return checks

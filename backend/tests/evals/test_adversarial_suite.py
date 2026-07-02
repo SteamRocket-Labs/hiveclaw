@@ -1,4 +1,4 @@
-"""E9: reward-hack adversarial suite — all four attacks must be blocked (red first).
+"""Reward-hack adversarial suite — all retained attacks must be blocked.
 
 The artifact attacks run the malicious candidate through a REAL subprocess (a
 faithful stand-in for the microVM's exit_code semantics) — not a hardcoded fake —
@@ -13,7 +13,6 @@ import json
 from app.evals.adversarial_suite import (
     attack_deleted_detection_marker,
     attack_fake_pass_claim,
-    attack_modified_baseline,
     attack_modified_grader,
     main,
     run_adversarial_suite,
@@ -42,10 +41,6 @@ def test_modified_grader_blocked() -> None:
     assert attack_modified_grader() is True
 
 
-def test_modified_baseline_blocked() -> None:
-    assert attack_modified_baseline() is True
-
-
 async def test_full_suite_all_blocked() -> None:
     report = await run_adversarial_suite(execute=_local_execute)
     assert report["all_blocked"] is True
@@ -54,7 +49,6 @@ async def test_full_suite_all_blocked() -> None:
         "deleted_detection_marker",
         "fake_pass_claim",
         "modified_grader",
-        "modified_baseline",
     }
 
 

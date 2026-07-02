@@ -102,60 +102,6 @@ export interface LLMTestResult {
   error?: string;
 }
 
-export interface EvalRuntimeStatus {
-  configured: boolean;
-  model?: {
-    provider?: string;
-    model?: string;
-    label?: string;
-    enabled?: boolean;
-    supports_vision?: boolean;
-    max_output_tokens?: number | null;
-    max_input_tokens?: number | null;
-    reasoning_mode?: string | null;
-    reasoning_effort?: string | null;
-    reasoning_budget_tokens?: number | null;
-    reasoning_display?: string | null;
-    preserve_reasoning?: boolean | null;
-    text_verbosity?: string | null;
-  } | null;
-  mirror?: {
-    source_model_id?: string;
-    provider?: string;
-    model?: string;
-    label?: string;
-    synced_at?: string;
-  } | null;
-  source_model?: {
-    source_model_id?: string;
-    provider?: string;
-    model?: string;
-    label?: string;
-  };
-}
-
-export interface EvalBehaviorScenarioSummary {
-  ready?: boolean;
-  score?: number | string | null;
-  score_breakdown?: Record<string, unknown> | null;
-  transcript_chars?: number;
-}
-
-export interface EvalBehaviorReportSummary {
-  kind?: string | null;
-  transport?: string | null;
-  benchmark_complete: boolean;
-  fallback_used: boolean;
-  runtime: Record<string, unknown>;
-  scenarios: Record<string, EvalBehaviorScenarioSummary>;
-}
-
-export interface EvalBehaviorReport {
-  available: boolean;
-  stored_at?: string | null;
-  summary?: EvalBehaviorReportSummary | null;
-}
-
 export interface EnterpriseStats {
   total_users: number;
   running_agents: number;
@@ -226,13 +172,6 @@ export const enterpriseApi = {
   getLLMProviders: () => get<LLMProviderSpec[]>('/enterprise/llm-providers'),
   setDefaultModel: (modelId: string, tenantId?: string) =>
     put<{ status: string }>(`/enterprise/llm-models/default${tenantId ? `?tenant_id=${tenantId}` : ''}`, { model_id: modelId }),
-  getEvalRuntimeStatus: () => get<EvalRuntimeStatus>('/enterprise/eval-ci/runtime'),
-  syncEvalRuntimeModel: (modelId: string, tenantId?: string) =>
-    post<EvalRuntimeStatus>(`/enterprise/eval-ci/runtime/model${tenantId ? `?tenant_id=${tenantId}` : ''}`, { model_id: modelId }),
-  getEvalBehaviorLatest: () => get<EvalBehaviorReport>('/enterprise/eval-ci/behavior/latest'),
-  runEvalBehavior: (scenarios?: string[]) =>
-    post<EvalBehaviorReport>('/enterprise/eval-ci/behavior/run', scenarios?.length ? { scenarios } : {}),
-
   /** Enterprise info */
   getInfo: () => get<EnterpriseInfo[]>('/enterprise/info'),
   updateInfo: (infoType: string, data: Record<string, unknown>) =>

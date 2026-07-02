@@ -70,11 +70,4 @@ describe('ControlPlane', () => {
     expect(markup).not.toContain('Company Admin');
   });
 
-  it('opens the behavior evaluation section instead of falling back to the overview dashboard', () => {
-    const markup = renderToStaticMarkup(<ControlPlane tab="eval_ci" />);
-
-    expect(markup).toContain('Behavior Evaluation');
-    expect(markup).toContain('Enterprise section eval_ci chrome=embedded');
-    expect(markup).not.toContain('Operating areas');
-  });
 });

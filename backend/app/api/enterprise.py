@@ -1,9 +1,7 @@
 """Enterprise management API routes: LLM pool, enterprise info, approvals, audit logs."""
 
 import logging
-import os
 import uuid
-from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -41,7 +39,7 @@ from app.services.secrets_provider import get_secrets_provider
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
-TENANT_SYSTEM_SETTING_KEYS = {"feishu_org_sync", "behavior_eval_runtime"}
+TENANT_SYSTEM_SETTING_KEYS = {"feishu_org_sync"}
 
 
 # ─── LLM Model Pool ────────────────────────────────────
@@ -71,205 +69,10 @@ class LLMTestRequest(BaseModel):
     provider_options: dict | None = None
 
 
-class EvalRuntimeModelSyncRequest(BaseModel):
-    model_id: uuid.UUID
-
-
-class EvalBehaviorRunRequest(BaseModel):
-    scenarios: list[str] | None = None
-
-
 def _llm_test_probe_max_tokens(provider: str, model: str | None) -> int:
     from app.services.llm_client import uses_openai_responses_api
 
     return 1024 if uses_openai_responses_api(provider, model) else 16
-
-
-def _eval_ci_api_endpoint(path: str) -> tuple[str, dict[str, str]]:
-    base_url = os.environ.get("HIVE_EVAL_API_URL", "").strip().rstrip("/")
-    token = os.environ.get("HIVE_EVAL_CI_TOKEN", "").strip()
-    if not base_url or not token:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="eval runtime backend is not configured")
-    api_base = base_url if base_url.endswith("/api") else f"{base_url}/api"
-    return f"{api_base}{path}", {"Authorization": f"Bearer {token}"}
-
-
-async def _call_eval_ci_runtime(method: str, path: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    url, headers = _eval_ci_api_endpoint(path)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            if method == "GET":
-                response = await client.get(url, headers=headers)
-            elif method == "POST":
-                response = await client.post(url, json=payload or {}, headers=headers)
-            else:
-                raise ValueError(f"unsupported eval runtime method: {method}")
-            response.raise_for_status()
-            data = response.json()
-            return data if isinstance(data, dict) else {"data": data}
-    except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:1000] if exc.response is not None else str(exc)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-
-
-def _public_eval_model_metadata(model: Any) -> dict[str, Any] | None:
-    if not isinstance(model, dict):
-        return None
-    public: dict[str, Any] = {}
-    for key in (
-        "provider",
-        "model",
-        "label",
-        "enabled",
-        "supports_vision",
-        "max_output_tokens",
-        "max_input_tokens",
-        "reasoning_mode",
-        "reasoning_effort",
-        "reasoning_budget_tokens",
-        "reasoning_display",
-        "preserve_reasoning",
-        "text_verbosity",
-    ):
-        if key in model:
-            public[key] = model[key]
-    return public
-
-
-def _public_eval_mirror_metadata(mirror: Any) -> dict[str, Any] | None:
-    if not isinstance(mirror, dict):
-        return None
-    public: dict[str, Any] = {}
-    for key in ("source_model_id", "provider", "model", "label", "synced_at"):
-        if key in mirror:
-            public[key] = mirror[key]
-    return public
-
-
-def _public_eval_ci_runtime_response(response: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "configured": bool(response.get("configured")),
-        "model": _public_eval_model_metadata(response.get("model")),
-        "mirror": _public_eval_mirror_metadata(response.get("mirror")),
-        "source_model": _public_eval_mirror_metadata(response.get("source_model")),
-    }
-
-
-def _public_behavior_eval_summary(report: dict[str, Any]) -> dict[str, Any]:
-    source = report.get("summary") if isinstance(report.get("summary"), dict) else report
-    scenarios: dict[str, Any] = {}
-    for name, entry in (source.get("scenarios") or {}).items():
-        if not isinstance(entry, dict):
-            continue
-        scenario: dict[str, Any] = {}
-        for key in ("ready", "score", "score_breakdown", "transcript_chars"):
-            if key in entry:
-                scenario[key] = entry[key]
-        scenarios[str(name)] = scenario
-
-    return {
-        "kind": source.get("kind"),
-        "transport": source.get("transport"),
-        "benchmark_complete": bool(source.get("benchmark_complete")),
-        "fallback_used": bool(source.get("fallback_used")),
-        "runtime": source.get("runtime") if isinstance(source.get("runtime"), dict) else {},
-        "scenarios": scenarios,
-    }
-
-
-def _public_behavior_eval_report(response: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "available": bool(response.get("available", True)),
-        "stored_at": response.get("stored_at"),
-        "summary": _public_behavior_eval_summary(response),
-    }
-
-
-def _eval_runtime_model_payload(model: LLMModel, *, tenant_id: uuid.UUID) -> dict[str, Any]:
-    return {
-        "source_model_id": str(model.id),
-        "source_tenant_id": str(tenant_id),
-        "provider": model.provider,
-        "model": model.model,
-        "api_key": model.api_key,
-        "base_url": model.base_url,
-        "label": model.label,
-        "enabled": True,
-        "supports_vision": getattr(model, "supports_vision", False),
-        "max_tokens_per_day": getattr(model, "max_tokens_per_day", None),
-        "max_output_tokens": getattr(model, "max_output_tokens", None),
-        "max_input_tokens": getattr(model, "max_input_tokens", None),
-        "temperature": getattr(model, "temperature", None),
-        "reasoning_mode": getattr(model, "reasoning_mode", None),
-        "reasoning_effort": getattr(model, "reasoning_effort", None),
-        "reasoning_budget_tokens": getattr(model, "reasoning_budget_tokens", None),
-        "reasoning_display": getattr(model, "reasoning_display", None),
-        "preserve_reasoning": getattr(model, "preserve_reasoning", None),
-        "text_verbosity": getattr(model, "text_verbosity", None),
-        "provider_options": getattr(model, "provider_options", None),
-    }
-
-
-@router.get("/eval-ci/runtime")
-async def get_eval_ci_runtime_status(
-    current_user: User = Depends(get_current_admin),
-):
-    """Read isolated eval backend runtime status from the unified company backend."""
-    return _public_eval_ci_runtime_response(await _call_eval_ci_runtime("GET", "/eval-ci/runtime"))
-
-
-@router.get("/eval-ci/behavior/latest")
-async def get_eval_ci_latest_behavior_report(
-    current_user: User = Depends(get_current_admin),
-):
-    """Read the latest isolated behavior-eval report without exposing CI internals."""
-    response = await _call_eval_ci_runtime("GET", "/eval-ci/behavior/latest?summary=true")
-    return _public_behavior_eval_report(response)
-
-
-@router.post("/eval-ci/behavior/run")
-async def run_eval_ci_behavior_report(
-    data: EvalBehaviorRunRequest | None = None,
-    current_user: User = Depends(get_current_admin),
-):
-    """Run behavior eval through the server-side CI token and return a compact admin summary."""
-    payload = {"scenarios": data.scenarios} if data and data.scenarios else {}
-    response = await _call_eval_ci_runtime("POST", "/eval-ci/behavior", payload=payload)
-    return _public_behavior_eval_report(response)
-
-
-@router.post("/eval-ci/runtime/model")
-async def sync_eval_ci_runtime_model(
-    data: EvalRuntimeModelSyncRequest,
-    tenant_id: str | None = None,
-    current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """Mirror a selected company model into the isolated eval backend."""
-    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    result = await db.execute(
-        select(LLMModel).where(
-            LLMModel.id == data.model_id,
-            LLMModel.tenant_id == target_tenant_id,
-        )
-    )
-    model = result.scalar_one_or_none()
-    if model is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not found")
-    if not model.enabled:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Model must be enabled before live eval sync")
-    payload = _eval_runtime_model_payload(model, tenant_id=target_tenant_id)
-    response = await _call_eval_ci_runtime("POST", "/eval-ci/runtime/model", payload=payload)
-    response["source_model"] = {
-        "model_id": str(model.id),
-        "source_model_id": str(model.id),
-        "provider": model.provider,
-        "model": model.model,
-        "label": model.label,
-    }
-    return _public_eval_ci_runtime_response(response)
 
 
 @router.post("/llm-test")

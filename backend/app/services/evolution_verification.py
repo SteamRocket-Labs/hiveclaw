@@ -379,38 +379,6 @@ def _run_human_confirmation_check(grader: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _run_agent_behavior_check(grader: dict[str, Any]) -> dict[str, Any]:
-    """E2: consume a behavior-eval report; pass only on a complete, trusted live run."""
-
-    report = grader.get("behavior_report")
-    if not isinstance(report, dict):
-        return _check_result(
-            check_type="agent_behavior_check",
-            passed=False,
-            message="missing behavior_report",
-            evidence={"grader_keys": sorted(grader.keys())},
-        )
-    from app.evals.hive_live_runner import behavior_eval_passed
-
-    passed = behavior_eval_passed(report)
-    scenarios = report.get("scenarios") or {}
-    not_ready = [name for name, entry in scenarios.items() if not entry.get("ready")]
-    transport = report.get("transport")
-    return _check_result(
-        check_type="agent_behavior_check",
-        passed=passed,
-        message=(
-            "behavior eval passed" if passed else f"behavior eval failed (transport={transport}, not_ready={not_ready})"
-        ),
-        evidence={
-            "transport": transport,
-            "benchmark_complete": report.get("benchmark_complete"),
-            "fallback_used": report.get("fallback_used"),
-            "not_ready": not_ready,
-        },
-    )
-
-
 def run_evolution_verification(
     *,
     workspace: Path,
@@ -432,8 +400,6 @@ def run_evolution_verification(
             checks.append(_run_llm_rubric_check(grader))
         elif grader_type == "human_confirmation":
             checks.append(_run_human_confirmation_check(grader))
-        elif grader_type == "agent_behavior_check":
-            checks.append(_run_agent_behavior_check(grader))
         else:
             checks.append(
                 _check_result(
@@ -581,54 +547,26 @@ def _artifact_gate_hard_gate(artifact_gate_report: dict[str, Any] | None) -> dic
     return {"decision": "hold", "reason": f"artifact execution gate failed: {reason}"}
 
 
-def _candidate_requires_regression_report(
-    candidate: dict[str, Any],
-    *,
-    artifact_gate_report: dict[str, Any] | None,
-) -> bool:
-    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
-    artifact_status = str((artifact_gate_report or {}).get("status") or "").strip().lower()
-    if bool(metadata.get("non_behavior_change")) and artifact_status == "not_applicable":
-        return False
-    return _candidate_requires_artifact_gate(candidate) or bool(metadata.get("requires_regression_report"))
-
-
-def decide_behavior_gated_promotion(
+def decide_provisional_promotion(
     candidate: dict[str, Any],
     *,
     verification_report: dict[str, Any] | None,
-    behavior_report: dict[str, Any] | None,
     regression_report: dict[str, Any] | None = None,
     artifact_gate_report: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    """E3: canonical hard promotion gate — verification passed AND behavior eval
-    passed (execution_passed) AND no baseline regression (no_regressions) AND
-    executable artifacts prove they run in the artifact execution gate.
+    """Hard floors passed -> provisional trial.
 
-    Composes E1 (regression_report from compare_to_baseline) + E2 (behavior_report
-    via behavior_eval_passed) + E6 (artifact execution) + static verification.
-    E8's CI eval path calls this with reports produced by the Hive live runner,
-    so a self-evolution candidate cannot promote without proving real,
-    non-regressed behavior and, for executable artifacts, a real sandbox run.
+    The retired behavior-eval and synthetic baseline regression reports are no
+    longer promotion prerequisites. Deterministic verification still fails
+    closed, and executable artifacts still need the artifact execution gate.
     """
 
-    base = decide_verified_promotion(
-        candidate,
-        verification_report=verification_report,
-        regression_report=regression_report,
-    )
+    del regression_report
+    base = decide_verified_promotion(candidate, verification_report=verification_report)
     if base["decision"] != "promote":
         return base
-    from app.evals.hive_live_runner import behavior_eval_passed
-
-    if not isinstance(behavior_report, dict) or not behavior_eval_passed(behavior_report):
-        return {"decision": "hold", "reason": "behavior eval did not pass (execution_passed required)"}
-    if _candidate_requires_regression_report(candidate, artifact_gate_report=artifact_gate_report) and not isinstance(
-        regression_report, dict
-    ):
-        return {"decision": "hold", "reason": "regression report is required"}
     if _candidate_requires_artifact_gate(candidate):
         artifact_gate = _artifact_gate_hard_gate(artifact_gate_report)
         if artifact_gate["decision"] != "promote":
             return artifact_gate
-    return {"decision": "promote", "reason": "verification + behavior eval passed, no regression"}
+    return {"decision": "provisional", "reason": "hard verification floors passed; enter provisional trial"}

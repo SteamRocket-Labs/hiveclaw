@@ -16,7 +16,6 @@ describe('workspace section routing', () => {
       '/enterprise/dashboard',
       '/enterprise/info',
       '/enterprise/llm',
-      '/enterprise/eval-ci',
       '/enterprise/memory',
       '/enterprise/digital-employees',
       '/enterprise/hr',

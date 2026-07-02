@@ -4,6 +4,37 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-07-02T04:13Z [sid:8c6e6b92]; branch:main; 56 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +53); last commit: 06a82cb6 retire the memory navigation prompt chain end to en
+- 2026-07-02T04:07Z [sid:0e349ad2]; branch:main; 56 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +53); last commit: 06a82cb6 retire the memory navigation prompt chain end to en
+- 2026-07-02T02:51Z [sid:8c6e6b92]; branch:main; 106 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +103); last commit: 48378fb2 fix session regression test fallout
+- 2026-07-02T00:50Z [sid:0e349ad2]; branch:main; 61 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +58); last commit: c46c7fe0 record c9 acceptance invariant check
+- 2026-07-02T00:26Z [sid:8c6e6b92]; branch:main; 60 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +57); last commit: fa383cde document session workflow repair verification
+- 2026-07-02T00:22Z [sid:69d2a846]; branch:main; 60 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +57); last commit: fa383cde document session workflow repair verification
+- 2026-07-02T00:21Z [sid:8c6e6b92]; branch:main; 60 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +57); last commit: fa383cde document session workflow repair verification
+- 2026-07-02T00:21Z [sid:ad3620f9]; branch:main; 60 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +57); last commit: fa383cde document session workflow repair verification
+- 2026-07-02T00:20Z [sid:8c6e6b92]; branch:main; 60 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +57); last commit: fa383cde document session workflow repair verification
+- 2026-07-02T00:18Z [sid:6db41d10]; branch:main; 58 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +55); last commit: fa383cde document session workflow repair verification
+- 2026-07-02T00:15Z [sid:8c6e6b92]; branch:main; 58 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +55); last commit: fa383cde document session workflow repair verification
+- 2026-07-02T00:05Z [sid:0e349ad2]; branch:main; 58 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +55); last commit: fa383cde document session workflow repair verification
+- 2026-07-01T23:47Z [sid:b7baf5ee]; branch:main; 60 files (harness-ci.yml, compact-snapshot.md, orphan-trail.md, +57); last commit: 63735420 fix work ledger session wip recovery
+- 2026-07-01T22:58Z [sid:8c6e6b92]; branch:main; 6 files (compact-snapshot.md, orphan-trail.md, agent_work_ledger.py, +3); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T22:33Z [sid:b7baf5ee]; branch:main; 6 files (compact-snapshot.md, orphan-trail.md, agent_work_ledger.py, +3); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T22:19Z [sid:e01debee]; branch:main; 6 files (compact-snapshot.md, orphan-trail.md, agent_work_ledger.py, +3); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T22:13Z [sid:8c6e6b92]; branch:main; 6 files (compact-snapshot.md, orphan-trail.md, agent_work_ledger.py, +3); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T22:05Z [sid:b7baf5ee]; branch:main; 6 files (compact-snapshot.md, orphan-trail.md, agent_work_ledger.py, +3); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:54Z [sid:8c6e6b92]; branch:main; 6 files (compact-snapshot.md, orphan-trail.md, agent_work_ledger.py, +3); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:53Z [sid:b7baf5ee]; branch:main; 6 files (compact-snapshot.md, orphan-trail.md, agent_work_ledger.py, +3); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:41Z [sid:8c6e6b92]; branch:main; 6 files (compact-snapshot.md, orphan-trail.md, agent_work_ledger.py, +3); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:35Z [sid:a66ff0eb]; branch:main; 5 files (orphan-trail.md, agent_work_ledger.py, test_agent_work_ledger.py, +2); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:34Z [sid:8c6e6b92]; branch:main; 5 files (orphan-trail.md, agent_work_ledger.py, test_agent_work_ledger.py, +2); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:32Z [sid:d0ac4980]; branch:main; 5 files (orphan-trail.md, agent_work_ledger.py, test_agent_work_ledger.py, +2); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:31Z [sid:8c6e6b92]; branch:main; 5 files (orphan-trail.md, agent_work_ledger.py, test_agent_work_ledger.py, +2); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:31Z [sid:17ae9299]; branch:main; 5 files (orphan-trail.md, agent_work_ledger.py, test_agent_work_ledger.py, +2); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:28Z [sid:8c6e6b92]; branch:main; 5 files (orphan-trail.md, agent_work_ledger.py, test_agent_work_ledger.py, +2); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:28Z [sid:b9ef48ef]; branch:main; 5 files (orphan-trail.md, agent_work_ledger.py, test_agent_work_ledger.py, +2); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:27Z [sid:8c6e6b92]; branch:main; 5 files (orphan-trail.md, agent_work_ledger.py, test_agent_work_ledger.py, +2); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:27Z [sid:fbaff6cb]; branch:main; 5 files (orphan-trail.md, agent_work_ledger.py, test_agent_work_ledger.py, +2); last commit: e90de966 Split digital employee management from HR agent pag
+- 2026-07-01T21:24Z [sid:8c6e6b92]; branch:main; 5 files (orphan-trail.md, agent_work_ledger.py, test_agent_work_ledger.py, +2); last commit: e90de966 Split digital employee management from HR agent pag
 - 2026-07-01T18:32Z [sid:b7baf5ee]; branch:main; 13 files (project.yml, orphan-trail.md, enterprise.py, +10); last commit: 5141c933 Create writable chat sessions atomically
 - 2026-07-01T18:14Z [sid:b3537fe6]; branch:main; 13 files (project.yml, orphan-trail.md, enterprise.py, +10); last commit: 5141c933 Create writable chat sessions atomically
 - 2026-07-01T18:10Z [sid:b7baf5ee]; branch:main; 13 files (project.yml, orphan-trail.md, enterprise.py, +10); last commit: 5141c933 Create writable chat sessions atomically
@@ -73,34 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-08T07:55Z [sid:78c277d5]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
 - 2026-06-08T02:32Z [sid:7f0e5932]; branch:main; 3 files (compact-snapshot.md, orphan-trail.md, plan-mode-cc-alignment.md); last commit: 974d6bf9 feat(plan-mode): ask_user_question CC-shaped questi
 - 2026-06-07T09:55Z [sid:859f0a68]; branch:main; 1 files (orphan-trail.md); last commit: dc8c1afa fix(llm): limit-coherence audit — two cross-limit g
-- 2026-06-07T08:37Z [sid:0df596fd]; branch:main; 1 files (orphan-trail.md); last commit: 2627bb8d fix(kernel): split CC and Hive runtime guidance cat
-- 2026-06-07T07:50Z [sid:859f0a68]; branch:main; 1 files (orphan-trail.md); last commit: 3d300b48 fix(llm): compaction-class output budgets → CC's 20
-- 2026-06-07T07:44Z [sid:0df596fd]; branch:main; 1 files (orphan-trail.md); last commit: 28f236fc docs(kernel): codify T-G3 runtime guidance alignmen
-- 2026-06-06T06:45Z [sid:859f0a68]; branch:main; 1 files (orphan-trail.md); last commit: b1b5b81b feat(kernel): T-G1 ReminderScheduler — transient in
-- 2026-06-06T06:42Z [sid:0df596fd]; branch:main; 1 files (orphan-trail.md); last commit: b1b5b81b feat(kernel): T-G1 ReminderScheduler — transient in
-- 2026-06-06T06:36Z [sid:859f0a68]; branch:main; 8 files (orphan-trail.md, engine.py, session.py, +5); last commit: 841311e7 fix(llm): unify auxiliary-call output budgets on th
-- 2026-06-06T03:38Z [sid:0df596fd]; branch:main; 1 files (orphan-trail.md); last commit: daa6f2b3 docs(guidance): runtime dynamic guidance audit v0.1
-- 2026-06-06T03:36Z [sid:859f0a68]; branch:main; 1 files (orphan-trail.md); last commit: 3e303a07 feat(evolution): recalibrate distillation cadence —
-- 2026-06-06T03:30Z [sid:0df596fd]; branch:main; 6 files (orphan-trail.md, config.py, auto_dream.py, +3); last commit: 717d59cb fix(tools): track_todo blockedBy=[] is an explicit 
-- 2026-06-06T03:26Z [sid:859f0a68]; branch:main; 1 files (orphan-trail.md); last commit: 717d59cb fix(tools): track_todo blockedBy=[] is an explicit 
-- 2026-06-06T03:25Z [sid:0df596fd]; branch:main; 1 files (orphan-trail.md); last commit: 717d59cb fix(tools): track_todo blockedBy=[] is an explicit 
-- 2026-06-06T02:56Z [sid:859f0a68]; branch:main; 1 files (orphan-trail.md); last commit: 717d59cb fix(tools): track_todo blockedBy=[] is an explicit 
-- 2026-06-06T02:44Z [sid:0df596fd]; branch:main; 4 files (orphan-trail.md, llm_client.py, memory_curation.py, +1); last commit: ff40cca2 docs(tool-call): close external-worktree caveat — t
-- 2026-06-06T02:35Z [sid:859f0a68]; branch:main; 7 files (orphan-trail.md, executing_actions.py, system.py, +4); last commit: 5ffab723 feat(subagent): evolution loop P0-P2 — memory → def
-- 2026-06-06T02:03Z [sid:0df596fd]; branch:main; 1 files (orphan-trail.md); last commit: 795062aa docs(tool-call): v0.5 finalized — CC source re-veri
-- 2026-06-06T02:01Z [sid:ab52e620]; branch:main; 1 files (orphan-trail.md); last commit: 795062aa docs(tool-call): v0.5 finalized — CC source re-veri
-- 2026-06-06T01:24Z [sid:859f0a68]; branch:main; 2 files (orphan-trail.md, execution-mode-spectrum.md); last commit: 19d6e05b docs(subagent): evolution loop design v0 — memory →
-- 2026-06-06T01:15Z [sid:ab52e620]; branch:main; 2 files (orphan-trail.md, execution-mode-spectrum.md); last commit: 36b1a6e9 fix(subagent): memory filename English-only — <name
-- 2026-06-06T01:05Z [sid:859f0a68]; branch:main; 2 files (orphan-trail.md, execution-mode-spectrum.md); last commit: 36b1a6e9 fix(subagent): memory filename English-only — <name
-- 2026-06-06T01:02Z [sid:ab52e620]; branch:main; 5 files (orphan-trail.md, subagent_memory.py, test_subagent_memory.py, +2); last commit: 116210fd docs: split tool-call philosophy (runtime) from ass
-- 2026-06-05T15:58Z [sid:64316370]; branch:main; 1 files (orphan-trail.md); last commit: 116210fd docs: split tool-call philosophy (runtime) from ass
-- 2026-06-05T14:54Z [sid:859f0a68]; branch:main; 3 files (orphan-trail.md, org-agent-asset-rights-model.md, workflow-source-capability.md); last commit: 89300a62 fix(subagent): stop host-T2 leakage + bring memory 
-- 2026-06-05T14:26Z [sid:64316370]; branch:main; 3 files (orphan-trail.md, org-agent-asset-rights-model.md, workflow-source-capability.md); last commit: f82a911e feat(subagent): AI-generated definitions — CC /agen
-- 2026-06-05T14:22Z [sid:859f0a68]; branch:main; 3 files (orphan-trail.md, org-agent-asset-rights-model.md, workflow-source-capability.md); last commit: f82a911e feat(subagent): AI-generated definitions — CC /agen
-- 2026-06-05T14:19Z [sid:64316370]; branch:main; 3 files (orphan-trail.md, org-agent-asset-rights-model.md, workflow-source-capability.md); last commit: f82a911e feat(subagent): AI-generated definitions — CC /agen
-- 2026-06-05T14:11Z [sid:859f0a68]; branch:main; 2 files (orphan-trail.md, org-agent-asset-rights-model.md); last commit: f82a911e feat(subagent): AI-generated definitions — CC /agen
-- 2026-06-05T14:10Z [sid:64316370]; branch:main; 2 files (orphan-trail.md, org-agent-asset-rights-model.md); last commit: f82a911e feat(subagent): AI-generated definitions — CC /agen
-- 2026-06-05T13:50Z [sid:859f0a68]; branch:main; 2 files (orphan-trail.md, org-agent-asset-rights-model.md); last commit: 41e82dd8 feat(workflow): asset-view IA for the workflows tab
-- 2026-06-05T11:42Z [sid:d8544712]; branch:main; 1 files (org-agent-asset-rights-model.md); last commit: c6d33daf Harden subagent definition parsing and name validat
-- 2026-06-05T08:55Z [sid:96a0f9cf]; branch:main; 5 files (orphan-trail.md, agent_knowledge.py, files.py, +2); last commit: 5064624b docs(subagent): §12 配置面与作用域设计 v4 — 双层作用域 + 人类入口（待拍板
-- 2026-06-05T08:45Z [sid:27e1f4c6]; branch:main; 5 files (agent_knowledge.py, files.py, engine.py, +2); last commit: 8c6627be feat(workflow)!: DR-6b 旧路径退役 — Deep Research 单一 wor

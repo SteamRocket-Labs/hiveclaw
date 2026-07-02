@@ -161,55 +161,8 @@ class DirectSkillCandidate:
     candidate_id: str
 
 
-_TERMINAL_SKILL_CANDIDATE_STATUSES = {"promoted", "patched", "held", "rejected", "archived"}
+_TERMINAL_SKILL_CANDIDATE_STATUSES = {"provisional", "promoted", "patched", "held", "rejected", "archived"}
 _REFEREE_SCORE_KEYS = ("common_vs_episodic", "scope", "overlap", "safety", "eval_readiness")
-
-
-def _candidate_behavior_report(candidate: dict[str, Any]) -> dict[str, Any] | None:
-    metadata = candidate.get("metadata") if isinstance(candidate, dict) else None
-    if not isinstance(metadata, dict):
-        return None
-    for key in ("behavior_report", "behavior_eval_report"):
-        report = metadata.get(key)
-        if isinstance(report, dict):
-            return report
-    return None
-
-
-def _runtime_behavior_report(runtime_config: Any) -> dict[str, Any] | None:
-    for key in ("skill_distiller_behavior_report", "behavior_eval_report", "behavior_report"):
-        report = getattr(runtime_config, key, None)
-        if isinstance(report, dict):
-            return report
-    return None
-
-
-async def _ensure_runtime_behavior_report(
-    *,
-    agent_id: uuid.UUID,
-    tenant_id: uuid.UUID | None,
-    runtime_config: Any,
-) -> dict[str, Any] | None:
-    report = _runtime_behavior_report(runtime_config)
-    if report is not None:
-        return report
-    if tenant_id is None:
-        return None
-    from app.evals.hive_live_runner import behavior_eval_passed
-    from app.services.tenant_behavior_eval_publisher import ensure_skill_distiller_behavior_report
-
-    report = await ensure_skill_distiller_behavior_report(
-        agent_id=agent_id,
-        tenant_id=tenant_id,
-        runtime_config=runtime_config,
-    )
-    if isinstance(report, dict) and behavior_eval_passed(report):
-        try:
-            setattr(runtime_config, "skill_distiller_behavior_report", report)
-        except Exception:
-            pass
-        return report
-    return None
 
 
 # ── Memory candidate lane (spec §12 P4) ──
@@ -720,7 +673,7 @@ def _commit_skill_markdown_exact(
             skill_origin=resolved_origin,
             evolvable=True,
             last_candidate_id=candidate_id,
-            state="active",
+            state="provisional" if status == "provisional" else "active",
             metadata={"committed_by": "skill_distiller", "commit_status": status},
         )
     except Exception as exc:  # pragma: no cover - registry telemetry must not break commit
@@ -729,8 +682,6 @@ def _commit_skill_markdown_exact(
 
 
 _SKILL_ARTIFACT_OK = "HIVE_SKILL_ARTIFACT_OK"
-_BEHAVIOR_BASELINE_SUITE = "core_behavior_v1"
-_BEHAVIOR_BASELINES_ROOT = Path(__file__).resolve().parents[1] / "evals" / "baselines"
 
 
 async def _run_skill_artifact_gate(*, rendered_markdown: str, candidate_path: str) -> dict[str, Any]:
@@ -776,61 +727,17 @@ def _stable_report_id(prefix: str, report: dict[str, Any] | None) -> str | None:
     return f"{prefix}:{digest}"
 
 
-def _skill_behavior_regression_report(behavior_report: dict[str, Any] | None) -> dict[str, Any]:
-    from app.evals.baseline import BaselineModelMismatchError, BaselineUnavailableError, check_model_match
-    from app.evals.baseline import compare_to_baseline, load_baseline
-
-    scenario_scores = (
-        {
-            str(name): float(entry.get("score") or 0.0)
-            for name, entry in (behavior_report.get("scenarios") or {}).items()
-            if isinstance(entry, dict)
-        }
-        if isinstance(behavior_report, dict)
-        else {}
-    )
-    base: dict[str, Any] = {
-        "suite": _BEHAVIOR_BASELINE_SUITE,
-        "passed": False,
-        "scenario_scores": scenario_scores,
-        "behavior_report_id": _stable_report_id("behavior_eval", behavior_report),
-    }
-    if not isinstance(behavior_report, dict):
-        return {**base, "reason": "behavior report missing"}
-    try:
-        baseline = load_baseline(_BEHAVIOR_BASELINE_SUITE, baselines_root=_BEHAVIOR_BASELINES_ROOT)
-        runtime = behavior_report.get("runtime") if isinstance(behavior_report.get("runtime"), dict) else {}
-        check_model_match(baseline, running_model=str(runtime.get("model") or "unknown"))
-        report = compare_to_baseline(scenario_scores, baseline).to_dict()
-        report.update(
-            {
-                "scenario_scores": scenario_scores,
-                "behavior_report_id": base["behavior_report_id"],
-                "baseline_version": baseline.get("baseline_version"),
-                "baseline_provisional": bool(baseline.get("provisional")),
-            }
-        )
-        return report
-    except (BaselineUnavailableError, BaselineModelMismatchError, ValueError) as exc:
-        return {**base, "reason": str(exc)}
-
-
 def _promotion_gate_metadata(
     *,
     verification_report: dict[str, Any],
-    behavior_report: dict[str, Any] | None,
     artifact_gate_report: dict[str, Any] | None,
-    regression_report: dict[str, Any],
     referee_review: SkillRefereeReview | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "verification_passed": verification_report["passed"],
-        "behavior_eval_present": behavior_report is not None,
-        "behavior_report_id": _stable_report_id("behavior_eval", behavior_report),
         "artifact_gate_report_id": _stable_report_id("artifact_gate", artifact_gate_report),
         "artifact_gate_report": artifact_gate_report,
-        "regression_report": regression_report,
         "referee_review": _referee_review_payload(referee_review) if referee_review is not None else None,
         **(extra or {}),
     }
@@ -1427,7 +1334,6 @@ async def _review_skill_with_llm(
     evidence: list[SessionWorkflowEvidence],
     verification_report: dict[str, Any],
     artifact_gate_report: dict[str, Any] | None,
-    regression_report: dict[str, Any],
     agent_id: uuid.UUID | None = None,
     tenant_id: uuid.UUID | None = None,
 ) -> SkillRefereeReview:
@@ -1467,8 +1373,6 @@ async def _review_skill_with_llm(
         f"{json.dumps(verification_report, ensure_ascii=False, sort_keys=True, default=str)[:6000]}\n\n"
         "artifact_gate_report:\n"
         f"{json.dumps(artifact_gate_report or {}, ensure_ascii=False, sort_keys=True, default=str)[:4000]}\n\n"
-        "regression_report:\n"
-        f"{json.dumps(regression_report, ensure_ascii=False, sort_keys=True, default=str)[:4000]}\n\n"
         "SKILL.md draft:\n"
         f"{rendered_markdown[:12000]}\n"
     )
@@ -1519,7 +1423,6 @@ async def _run_skill_referee_gate(
     evidence: list[SessionWorkflowEvidence],
     verification_report: dict[str, Any],
     artifact_gate_report: dict[str, Any] | None,
-    regression_report: dict[str, Any],
     agent_id: uuid.UUID | None,
     tenant_id: uuid.UUID | None,
 ) -> tuple[SkillRefereeReview, str | None]:
@@ -1533,7 +1436,6 @@ async def _run_skill_referee_gate(
             evidence=evidence,
             verification_report=verification_report,
             artifact_gate_report=artifact_gate_report,
-            regression_report=regression_report,
             agent_id=agent_id,
             tenant_id=tenant_id,
         )
@@ -1867,17 +1769,12 @@ async def run_skill_distillation_cycle(
             record_promotion_decision,
         )
         from app.services.evolution_verification import (
-            decide_behavior_gated_promotion,
+            decide_provisional_promotion,
             record_verification_eval,
             run_evolution_verification,
         )
 
         patch_relative_path = patch_target.relative_path
-        behavior_report = await _ensure_runtime_behavior_report(
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            runtime_config=runtime_config,
-        )
         candidate = record_evolution_candidate(
             workspace,
             target_type="skill_patch",
@@ -1894,7 +1791,6 @@ async def run_skill_distillation_cycle(
                 "reason": effective_draft.reason or conflict.reason,
                 "distillation_intent": distillation_intent,
                 "evidence_contrast": render_skill_evidence_contrast(evidence_for_candidate),
-                **({"behavior_report": behavior_report} if behavior_report is not None else {}),
             },
         )
         write_skill_candidate_package(
@@ -1931,8 +1827,6 @@ async def run_skill_distillation_cycle(
             verification_report=verification_report,
             dataset="skill_distiller.verified_skill_guard",
         )
-        behavior_report = _candidate_behavior_report(candidate)
-        regression_report = _skill_behavior_regression_report(behavior_report)
         artifact_gate_report = None
         if verification_report.get("passed"):
             package_draft_path = f"evolution/skill_candidates/{candidate['candidate_id']}/SKILL.md.draft"
@@ -1940,14 +1834,12 @@ async def run_skill_distillation_cycle(
                 rendered_markdown=rendered,
                 candidate_path=package_draft_path,
             )
-        promotion_decision = decide_behavior_gated_promotion(
+        promotion_decision = decide_provisional_promotion(
             candidate,
             verification_report=verification_report,
-            behavior_report=behavior_report,
-            regression_report=regression_report,
             artifact_gate_report=artifact_gate_report,
         )
-        if promotion_decision["decision"] != "promote":
+        if promotion_decision["decision"] != "provisional":
             record_promotion_decision(
                 workspace,
                 candidate_id=candidate["candidate_id"],
@@ -1956,9 +1848,7 @@ async def run_skill_distillation_cycle(
                 rollback_ref=patch_relative_path,
                 metadata=_promotion_gate_metadata(
                     verification_report=verification_report,
-                    behavior_report=behavior_report,
                     artifact_gate_report=artifact_gate_report,
-                    regression_report=regression_report,
                 ),
             )
             update_skill_candidate_record(
@@ -1988,7 +1878,6 @@ async def run_skill_distillation_cycle(
                 "reason": promotion_decision["reason"],
                 "verification_report": verification_report,
                 "artifact_gate_report": artifact_gate_report,
-                "regression_report": regression_report,
             }
 
         referee_review, referee_hold_reason = await _run_skill_referee_gate(
@@ -2001,7 +1890,6 @@ async def run_skill_distillation_cycle(
             evidence=evidence_for_candidate,
             verification_report=verification_report,
             artifact_gate_report=artifact_gate_report,
-            regression_report=regression_report,
             agent_id=agent_id,
             tenant_id=tenant_id,
         )
@@ -2014,9 +1902,7 @@ async def run_skill_distillation_cycle(
                 rollback_ref=patch_relative_path,
                 metadata=_promotion_gate_metadata(
                     verification_report=verification_report,
-                    behavior_report=behavior_report,
                     artifact_gate_report=artifact_gate_report,
-                    regression_report=regression_report,
                     referee_review=referee_review,
                 ),
             )
@@ -2047,7 +1933,6 @@ async def run_skill_distillation_cycle(
                 "reason": referee_hold_reason,
                 "verification_report": verification_report,
                 "artifact_gate_report": artifact_gate_report,
-                "regression_report": regression_report,
                 "referee_review": _referee_review_payload(referee_review),
                 **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
             }
@@ -2058,7 +1943,7 @@ async def run_skill_distillation_cycle(
             rendered_markdown=rendered,
             skill_name=effective_draft.name,
             overwrite=True,
-            status="patched",
+            status="provisional",
             candidate_id=candidate["candidate_id"],
             skill_origin=patch_skill_origin,
         )
@@ -2071,9 +1956,7 @@ async def run_skill_distillation_cycle(
                 rollback_ref=patch_relative_path,
                 metadata=_promotion_gate_metadata(
                     verification_report=verification_report,
-                    behavior_report=behavior_report,
                     artifact_gate_report=artifact_gate_report,
-                    regression_report=regression_report,
                     referee_review=referee_review,
                     extra={"save_result": save_result[:500]},
                 ),
@@ -2099,20 +1982,17 @@ async def run_skill_distillation_cycle(
                 "save_result": save_result,
                 "verification_report": verification_report,
                 "artifact_gate_report": artifact_gate_report,
-                "regression_report": regression_report,
             }
 
         record_promotion_decision(
             workspace,
             candidate_id=candidate["candidate_id"],
-            decision="patched",
+            decision="provisional",
             reason=promotion_decision["reason"],
             rollback_ref=patch_relative_path,
             metadata=_promotion_gate_metadata(
                 verification_report=verification_report,
-                behavior_report=behavior_report,
                 artifact_gate_report=artifact_gate_report,
-                regression_report=regression_report,
                 referee_review=referee_review,
                 extra={"save_result": save_result[:500]},
             ),
@@ -2120,7 +2000,7 @@ async def run_skill_distillation_cycle(
         update_skill_candidate_package_status(
             workspace=workspace,
             candidate_id=candidate["candidate_id"],
-            status="patched",
+            status="provisional",
             reason=promotion_decision["reason"],
             extra_metadata={"target_path": patch_relative_path},
         )
@@ -2132,21 +2012,21 @@ async def run_skill_distillation_cycle(
             workspace,
             workflow_signature=record.workflow_signature,
             skill_name=effective_draft.name,
-            blocker="patched",
-            last_status="patched",
-            last_note=effective_draft.reason or "Patched existing skill after verification.",
+            blocker="provisional",
+            last_status="provisional",
+            last_note=effective_draft.reason or "Patched existing skill for provisional trial.",
             last_updated_at=patched_at,
         )
         record_skill_lifecycle_event(
             workspace,
             skill_name=effective_draft.name,
-            status="patched",
-            note=effective_draft.reason or "Patched existing skill after verification.",
+            status="provisional",
+            note=effective_draft.reason or "Patched existing skill for provisional trial.",
         )
         state.last_promotion_at = patched_at
         save_distiller_state(workspace, state)
         return {
-            "status": "patched",
+            "status": "provisional",
             "processed_sessions": processed,
             "skill_name": effective_draft.name,
             "workflow_signature": record.workflow_signature,
@@ -2154,7 +2034,6 @@ async def run_skill_distillation_cycle(
             "evolution_validation": evolution_validation.get("report_artifact"),
             "verification_report": verification_report,
             "artifact_gate_report": artifact_gate_report,
-            "regression_report": regression_report,
             "workflow_candidates_recorded": workflow_candidates_recorded,
             "referee_review": _referee_review_payload(referee_review),
             **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
@@ -2165,16 +2044,11 @@ async def run_skill_distillation_cycle(
         record_promotion_decision,
     )
     from app.services.evolution_verification import (
-        decide_behavior_gated_promotion,
+        decide_provisional_promotion,
         record_verification_eval,
         run_evolution_verification,
     )
 
-    behavior_report = await _ensure_runtime_behavior_report(
-        agent_id=agent_id,
-        tenant_id=tenant_id,
-        runtime_config=runtime_config,
-    )
     candidate = record_evolution_candidate(
         workspace,
         target_type="skill",
@@ -2189,7 +2063,6 @@ async def run_skill_distillation_cycle(
             "declared_packs": list(draft.declared_packs),
             "distillation_intent": distillation_intent,
             "evidence_contrast": render_skill_evidence_contrast(evidence_for_candidate),
-            **({"behavior_report": behavior_report} if behavior_report is not None else {}),
         },
     )
     rollback_ref = f"skills/{_normalize_skill_folder_name(draft.name)}/SKILL.md"
@@ -2228,8 +2101,6 @@ async def run_skill_distillation_cycle(
         verification_report=verification_report,
         dataset="skill_distiller.verified_skill_guard",
     )
-    behavior_report = _candidate_behavior_report(candidate)
-    regression_report = _skill_behavior_regression_report(behavior_report)
     artifact_gate_report = None
     if verification_report.get("passed"):
         package_draft_path = f"evolution/skill_candidates/{candidate['candidate_id']}/SKILL.md.draft"
@@ -2237,14 +2108,12 @@ async def run_skill_distillation_cycle(
             rendered_markdown=rendered,
             candidate_path=package_draft_path,
         )
-    promotion_decision = decide_behavior_gated_promotion(
+    promotion_decision = decide_provisional_promotion(
         candidate,
         verification_report=verification_report,
-        behavior_report=behavior_report,
-        regression_report=regression_report,
         artifact_gate_report=artifact_gate_report,
     )
-    if promotion_decision["decision"] != "promote":
+    if promotion_decision["decision"] != "provisional":
         record_promotion_decision(
             workspace,
             candidate_id=candidate["candidate_id"],
@@ -2252,9 +2121,7 @@ async def run_skill_distillation_cycle(
             reason=promotion_decision["reason"],
             metadata=_promotion_gate_metadata(
                 verification_report=verification_report,
-                behavior_report=behavior_report,
                 artifact_gate_report=artifact_gate_report,
-                regression_report=regression_report,
             ),
         )
         update_skill_candidate_record(
@@ -2284,7 +2151,6 @@ async def run_skill_distillation_cycle(
             "reason": promotion_decision["reason"],
             "verification_report": verification_report,
             "artifact_gate_report": artifact_gate_report,
-            "regression_report": regression_report,
         }
 
     referee_review, referee_hold_reason = await _run_skill_referee_gate(
@@ -2297,7 +2163,6 @@ async def run_skill_distillation_cycle(
         evidence=evidence_for_candidate,
         verification_report=verification_report,
         artifact_gate_report=artifact_gate_report,
-        regression_report=regression_report,
         agent_id=agent_id,
         tenant_id=tenant_id,
     )
@@ -2309,9 +2174,7 @@ async def run_skill_distillation_cycle(
             reason=referee_hold_reason,
             metadata=_promotion_gate_metadata(
                 verification_report=verification_report,
-                behavior_report=behavior_report,
                 artifact_gate_report=artifact_gate_report,
-                regression_report=regression_report,
                 referee_review=referee_review,
             ),
         )
@@ -2342,7 +2205,6 @@ async def run_skill_distillation_cycle(
             "reason": referee_hold_reason,
             "verification_report": verification_report,
             "artifact_gate_report": artifact_gate_report,
-            "regression_report": regression_report,
             "referee_review": _referee_review_payload(referee_review),
             **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
         }
@@ -2353,7 +2215,7 @@ async def run_skill_distillation_cycle(
         rendered_markdown=rendered,
         skill_name=draft.name,
         overwrite=False,
-        status="promoted",
+        status="provisional",
         candidate_id=candidate["candidate_id"],
         skill_origin=ORIGIN_T3_AUTO_CREATED,
     )
@@ -2365,9 +2227,7 @@ async def run_skill_distillation_cycle(
             reason="save failed after verification",
             metadata=_promotion_gate_metadata(
                 verification_report=verification_report,
-                behavior_report=behavior_report,
                 artifact_gate_report=artifact_gate_report,
-                regression_report=regression_report,
                 referee_review=referee_review,
                 extra={"save_result": save_result[:500]},
             ),
@@ -2393,20 +2253,17 @@ async def run_skill_distillation_cycle(
             "save_result": save_result,
             "verification_report": verification_report,
             "artifact_gate_report": artifact_gate_report,
-            "regression_report": regression_report,
         }
 
     record_promotion_decision(
         workspace,
         candidate_id=candidate["candidate_id"],
-        decision="promoted",
+        decision="provisional",
         reason=promotion_decision["reason"],
         rollback_ref=rollback_ref,
         metadata=_promotion_gate_metadata(
             verification_report=verification_report,
-            behavior_report=behavior_report,
             artifact_gate_report=artifact_gate_report,
-            regression_report=regression_report,
             referee_review=referee_review,
             extra={"save_result": save_result[:500]},
         ),
@@ -2414,7 +2271,7 @@ async def run_skill_distillation_cycle(
     update_skill_candidate_package_status(
         workspace=workspace,
         candidate_id=candidate["candidate_id"],
-        status="promoted",
+        status="provisional",
         reason=promotion_decision["reason"],
         extra_metadata={"target_path": rollback_ref},
     )
@@ -2447,15 +2304,21 @@ async def run_skill_distillation_cycle(
         workspace,
         workflow_signature=record.workflow_signature,
         skill_name=draft.name,
-        blocker="promoted",
-        last_status="promoted",
-        last_note=draft.reason or "Promoted into a new skill.",
+        blocker="provisional",
+        last_status="provisional",
+        last_note=draft.reason or "Entered provisional trial as a new skill.",
         last_updated_at=promoted_at,
+    )
+    record_skill_lifecycle_event(
+        workspace,
+        skill_name=draft.name,
+        status="provisional",
+        note=draft.reason or "Entered provisional trial as a new skill.",
     )
     state.last_promotion_at = promoted_at
     save_distiller_state(workspace, state)
     return {
-        "status": "promoted",
+        "status": "provisional",
         "processed_sessions": processed,
         "skill_name": draft.name,
         "workflow_signature": record.workflow_signature,
@@ -2464,7 +2327,6 @@ async def run_skill_distillation_cycle(
         "workflow_candidates_recorded": workflow_candidates_recorded,
         "promoted_memory_candidates": promoted_memory_ids,
         "artifact_gate_report": artifact_gate_report,
-        "regression_report": regression_report,
         "referee_review": _referee_review_payload(referee_review),
         **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
     }

@@ -397,10 +397,7 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(
-            skill_candidate_loop_enabled=True,
-            skill_distiller_behavior_report=_passing_behavior_report(),
-        ),
+        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
@@ -410,7 +407,7 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     validation_path = workspace / "evolution" / "evolution_validation_report.json"
     review = (workspace / "evolution" / "skill_review.md").read_text(encoding="utf-8")
 
-    assert result["status"] == "promoted"
+    assert result["status"] == "provisional"
     assert result["evolution_validation_passed"] is True
     assert skill_path.exists()
     assert state_path.exists()
@@ -433,7 +430,7 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     assert (package_dir / "failure_cases.md").exists()
     manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema"] == "skill_candidate_package.v1"
-    assert manifest["status"] == "promoted"
+    assert manifest["status"] == "provisional"
     assert manifest["candidate_id"] == candidate_id
     assert manifest["draft_path"] == f"evolution/skill_candidates/{candidate_id}/SKILL.md.draft"
     assert manifest["referee_review_path"] == f"evolution/skill_candidates/{candidate_id}/referee_review.md"
@@ -445,13 +442,12 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     assert [check["type"] for check in verification_report["checks"]] == ["skill_guard"]
     assert result["artifact_gate_report"]["status"] == "passed"
     promotion_decisions = [record for record in ledger_records if record["schema"] == "evolution_promotion_decision.v1"]
-    regression_report = promotion_decisions[-1]["metadata"]["regression_report"]
-    assert regression_report["passed"] is True
-    assert regression_report["scenario_scores"]["coding"] == 100.0
+    assert promotion_decisions[-1]["decision"] == "provisional"
+    assert "regression_report" not in promotion_decisions[-1]["metadata"]
     assert captured_draft_kwargs["skill_candidate_drafts"][0]["candidate_id"] == "flywheel-candidate-1"
     assert "Build, migrate, restart" in captured_draft_kwargs["skill_candidate_drafts"][0]["content"]
     assert "Market Research Loop" in review
-    assert "[promoted]" in review
+    assert "[provisional]" in review
 
 
 @pytest.mark.asyncio
@@ -519,10 +515,7 @@ async def test_distiller_consumes_skill_candidate_package_without_session_eviden
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(
-            skill_candidate_loop_enabled=True,
-            skill_distiller_behavior_report=_passing_behavior_report(),
-        ),
+        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
@@ -535,7 +528,7 @@ async def test_distiller_consumes_skill_candidate_package_without_session_eviden
     ][-1]
     package_dir = workspace / "evolution" / "skill_candidates" / promoted_candidate["candidate_id"]
 
-    assert result["status"] == "promoted"
+    assert result["status"] == "provisional"
     assert result["processed_sessions"] == 0
     assert result["direct_candidate_id"] == candidate_id
     assert skill_path.exists()
@@ -612,10 +605,7 @@ async def test_distiller_holds_when_skill_referee_rejects(monkeypatch, tmp_path:
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(
-            skill_candidate_loop_enabled=True,
-            skill_distiller_behavior_report=_passing_behavior_report(),
-        ),
+        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
@@ -636,13 +626,8 @@ async def test_distiller_holds_when_skill_referee_rejects(monkeypatch, tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_distiller_cannot_promote_without_external_behavior_eval(monkeypatch, tmp_path: Path) -> None:
-    """Step 9 hard gate: a high-confidence, safe LLM draft must NOT promote when
-    no external behavior eval is present. LLM self-assessment alone can never
-    write a skill — decide_behavior_gated_promotion fail-closes to 'held' unless
-    an external (Hive live-run) behavior report passes. This pins the
-    'external eval, not LLM self-eval' invariant at the distiller level.
-    """
+async def test_distiller_enters_provisional_without_external_behavior_eval(monkeypatch, tmp_path: Path) -> None:
+    """A hard-floor-passing skill enters provisional trial without behavior eval."""
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
 
     workspace = tmp_path / "agent"
@@ -668,7 +653,7 @@ async def test_distiller_cannot_promote_without_external_behavior_eval(monkeypat
         del kwargs
         return DistilledSkillDraft(
             decision="promote",
-            confidence=0.95,  # high self-assessed confidence — would "pass" a self-eval gate
+            confidence=0.95,
             name="Market Research Loop",
             description="Run the internal market research workflow and save findings.",
             instructions_markdown="1. Search reputable sources.\n2. Fetch the best pages.\n3. Write a concise summary file.\n",
@@ -687,38 +672,36 @@ async def test_distiller_cannot_promote_without_external_behavior_eval(monkeypat
     monkeypatch.setattr("app.services.skill_distiller._load_internal_session_evidence", fake_evidence)
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft)
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
+    monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
 
     result = await run_skill_distillation_cycle(
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        # No skill_distiller_behavior_report → the external behavior eval is absent.
         runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
     skill_path = workspace / "skills" / "market-research-loop" / "SKILL.md"
-    assert result["status"] != "promoted", "self-eval alone must not promote a skill"
-    assert not skill_path.exists(), "no skill file may be written without a passing external behavior eval"
+    assert result["status"] == "provisional"
+    assert skill_path.exists()
 
     ledger_path = workspace / "evolution" / "evolution_ledger.jsonl"
-    if ledger_path.exists():
-        promotion_decisions = [
-            record for record in _jsonl_records(ledger_path) if record["schema"] == "evolution_promotion_decision.v1"
-        ]
-        assert promotion_decisions, "a held promotion decision must be recorded"
-        assert promotion_decisions[-1]["decision"] == "held"
+    promotion_decisions = [
+        record for record in _jsonl_records(ledger_path) if record["schema"] == "evolution_promotion_decision.v1"
+    ]
+    assert promotion_decisions[-1]["decision"] == "provisional"
+    assert "behavior_report_id" not in promotion_decisions[-1]["metadata"]
 
 
 @pytest.mark.asyncio
-async def test_distiller_fetches_tenant_behavior_report_before_promotion(monkeypatch, tmp_path: Path) -> None:
+async def test_distiller_does_not_fetch_tenant_behavior_report_before_provisional(monkeypatch, tmp_path: Path) -> None:
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
 
     workspace = tmp_path / "agent"
     workspace.mkdir(parents=True)
     tenant_id = uuid4()
     agent_id = uuid4()
-    published: list[dict] = []
 
     async def fake_evidence(*, agent_id, since_days, state, current_session_id):
         del agent_id, since_days, state, current_session_id
@@ -756,16 +739,8 @@ async def test_distiller_fetches_tenant_behavior_report_before_promotion(monkeyp
             ),
         )
 
-    async def fake_ensure_report(**kwargs):
-        published.append(kwargs)
-        return _passing_behavior_report()
-
     monkeypatch.setattr("app.services.skill_distiller._load_internal_session_evidence", fake_evidence)
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft)
-    monkeypatch.setattr(
-        "app.services.tenant_behavior_eval_publisher.ensure_skill_distiller_behavior_report",
-        fake_ensure_report,
-    )
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
     monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
 
@@ -778,12 +753,9 @@ async def test_distiller_fetches_tenant_behavior_report_before_promotion(monkeyp
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
-    assert result["status"] == "promoted"
+    assert result["status"] == "provisional"
     assert (workspace / "skills" / "tenant-deploy-verification" / "SKILL.md").exists()
-    assert published
-    assert published[0]["agent_id"] == agent_id
-    assert published[0]["tenant_id"] == tenant_id
-    assert runtime_config.skill_distiller_behavior_report == _passing_behavior_report()
+    assert not hasattr(runtime_config, "skill_distiller_behavior_report")
 
 
 @pytest.mark.asyncio
@@ -841,10 +813,7 @@ async def test_distiller_cannot_promote_when_artifact_gate_fails(monkeypatch, tm
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(
-            skill_candidate_loop_enabled=True,
-            skill_distiller_behavior_report=_passing_behavior_report(),
-        ),
+        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
@@ -915,10 +884,7 @@ async def test_run_skill_distillation_cycle_blocks_unsafe_skill_draft(monkeypatc
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(
-            skill_candidate_loop_enabled=True,
-            skill_distiller_behavior_report=_passing_behavior_report(),
-        ),
+        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
@@ -1005,10 +971,7 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(
-            skill_candidate_loop_enabled=True,
-            skill_distiller_behavior_report=_passing_behavior_report(),
-        ),
+        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
@@ -1019,7 +982,7 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
     eval_runs = [record for record in ledger_records if record["schema"] == "evolution_eval_run.v1"]
     promotion_decisions = [record for record in ledger_records if record["schema"] == "evolution_promotion_decision.v1"]
 
-    assert result["status"] == "patched"
+    assert result["status"] == "provisional"
     assert result["skill_name"] == "Web Research"
     assert result["evolution_validation_passed"] is True
     assert "Write a concise synthesis with source links." in skill_content
@@ -1035,11 +998,11 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
     assert (package_dir / "failure_cases.md").exists()
     manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema"] == "skill_candidate_package.v1"
-    assert manifest["status"] == "patched"
+    assert manifest["status"] == "provisional"
     assert manifest["target_path"] == "skills/web-research/SKILL.md"
     assert eval_runs[-1]["dataset"] == "skill_distiller.verified_skill_guard"
     assert eval_runs[-1]["passed"] is True
-    assert promotion_decisions[-1]["decision"] == "patched"
+    assert promotion_decisions[-1]["decision"] == "provisional"
     assert promotion_decisions[-1]["rollback_ref"] == "skills/web-research/SKILL.md"
 
 
@@ -1127,16 +1090,13 @@ async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeyp
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(
-            skill_candidate_loop_enabled=True,
-            skill_distiller_behavior_report=_passing_behavior_report(),
-        ),
+        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
     skill_content = (workspace / "skills" / "web-research" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert result["status"] == "patched"
+    assert result["status"] == "provisional"
     assert captured_draft_kwargs["distillation_intent"] == "patch"
     assert captured_draft_kwargs["target_skill_name"] == "Web Research"
     assert captured_draft_kwargs["workflow_signature"] == "web_search -> web_fetch"

@@ -13,6 +13,7 @@ from typing import Any
 
 from app.services.skill_candidate_package import write_skill_candidate_package
 from app.services.skill_evolution_registry import can_self_evolve_skill
+from app.services.skill_evolution_registry import get_skill_evolution_entry
 
 
 def record_skill_lifecycle_event(
@@ -543,4 +544,33 @@ def record_skill_runtime_usage(
             usage_event=usage_event,
             candidate_result=result,
         )
+    if used_skill and normalized_status in {"failed", "workaround"}:
+        registry_entry = get_skill_evolution_entry(workspace, primary_skill)
+        metadata = registry_entry.get("metadata") if isinstance(registry_entry, dict) else {}
+        is_provisional = (
+            isinstance(registry_entry, dict)
+            and str(registry_entry.get("state") or "").strip().lower() == "provisional"
+            and isinstance(metadata, dict)
+            and str(metadata.get("commit_status") or "").strip().lower() == "provisional"
+        )
+        candidate_id = str((registry_entry or {}).get("last_candidate_id") or "").strip()
+        rollback_ref = str((registry_entry or {}).get("target_path") or "").strip()
+        if is_provisional and candidate_id and rollback_ref:
+            from app.services.provisional_trial import evaluate_provisional_trial_signal
+
+            trial_result = evaluate_provisional_trial_signal(
+                workspace=workspace,
+                candidate_id=candidate_id,
+                rollback_ref=rollback_ref,
+                signal={
+                    "kind": "skill_runtime_failure",
+                    "status": normalized_status,
+                    "reason": note.strip(),
+                    "usage_event": usage_event,
+                },
+                negative_signal_count=int(result.get("patch_candidate_count") or 0),
+            )
+            if trial_result["decision"] == "rolled_back":
+                result["trial_decision"] = trial_result["decision"]
+                result["rollback_event"] = trial_result["rollback_event"]
     return result

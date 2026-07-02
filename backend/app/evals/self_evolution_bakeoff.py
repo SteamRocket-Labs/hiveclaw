@@ -485,8 +485,8 @@ def _score_hive(repo_root: Path) -> dict[str, Any]:
 
 
 def _normalize_hermes_scores(hermes_scores: dict[str, int] | None, *, hermes_root: Path) -> tuple[str, dict[str, int]]:
-    # E7: Hermes scores must come from a real live run (hermes_baseline /
-    # bakeoff_runtime). This module no longer accepts caller-injected scores:
+    # E7: Hermes scores must come from a real live run. This module no longer
+    # accepts caller-injected scores:
     # absent real-run evidence is 'unavailable' with empty scores, and the
     # cross-comparison gate is skipped (round2 §1.1: no fake Hive-vs-Hermes
     # numbers).

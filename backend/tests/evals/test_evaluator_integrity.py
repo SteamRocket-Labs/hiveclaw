@@ -1,4 +1,4 @@
-"""E5: evaluator trust root — graders/baselines come from a PROTECTED source the
+"""Evaluator trust root — graders come from a PROTECTED source the
 candidate-under-test cannot modify (red first).
 
 Encodes the owner's finding (round2 §4.2): a git-tracked expected hash in the
@@ -24,7 +24,7 @@ from app.evals.evaluator_integrity import (
 
 
 def test_unchanged_evaluator_is_trusted() -> None:
-    trusted = {"app/services/evolution_verification.py": "H1", "app/evals/baseline.py": "H2"}
+    trusted = {"app/services/evolution_verification.py": "H1", "app/evals/artifact_gate.py": "H2"}
     report = verify_evaluator_integrity(current_hashes=dict(trusted), trusted_hashes=trusted)
     assert report.trusted is True
     assert report.changed_paths == []
@@ -57,16 +57,8 @@ def test_change_with_protected_authorization_is_trusted() -> None:
     assert report.trusted is True
 
 
-def test_changed_baseline_is_untrusted() -> None:
-    trusted = {"app/evals/baselines/core_behavior_v1.json": "B0"}
-    current = {"app/evals/baselines/core_behavior_v1.json": "B1"}
-    report = verify_evaluator_integrity(current_hashes=current, trusted_hashes=trusted)
-    assert report.trusted is False
-    assert "app/evals/baselines/core_behavior_v1.json" in report.changed_paths
-
-
 def test_missing_evaluator_file_is_a_change() -> None:
-    trusted = {"app/evals/baseline.py": "H"}
+    trusted = {"app/evals/artifact_gate.py": "H"}
     current: dict[str, str] = {}
     report = verify_evaluator_integrity(current_hashes=current, trusted_hashes=trusted)
     assert report.trusted is False
@@ -74,13 +66,13 @@ def test_missing_evaluator_file_is_a_change() -> None:
 
 def test_compute_evaluator_hashes_stable_and_sensitive(tmp_path: Path) -> None:
     (tmp_path / "app" / "evals").mkdir(parents=True)
-    target = tmp_path / "app" / "evals" / "baseline.py"
+    target = tmp_path / "app" / "evals" / "artifact_gate.py"
     target.write_text("x = 1\n", encoding="utf-8")
-    h1 = compute_evaluator_hashes(tmp_path, relative_paths=("app/evals/baseline.py",))
-    h2 = compute_evaluator_hashes(tmp_path, relative_paths=("app/evals/baseline.py",))
+    h1 = compute_evaluator_hashes(tmp_path, relative_paths=("app/evals/artifact_gate.py",))
+    h2 = compute_evaluator_hashes(tmp_path, relative_paths=("app/evals/artifact_gate.py",))
     assert h1 == h2  # stable
     target.write_text("x = 2\n", encoding="utf-8")
-    h3 = compute_evaluator_hashes(tmp_path, relative_paths=("app/evals/baseline.py",))
+    h3 = compute_evaluator_hashes(tmp_path, relative_paths=("app/evals/artifact_gate.py",))
     assert h3 != h1  # sensitive to content
 
 
@@ -90,15 +82,15 @@ def test_evaluator_paths_are_outside_agent_workspace() -> None:
         assert_evaluator_outside_agent_workspace(rel)  # must not raise
 
 
-def test_integrity_root_covers_behavior_gate_files() -> None:
+def test_integrity_root_covers_retained_evaluator_files() -> None:
     required = {
         "app/evals/adversarial_suite.py",
         "app/evals/artifact_gate.py",
-        "app/evals/ci_gate.py",
-        "app/evals/cost_budget.py",
-        "app/evals/hermes_baseline.py",
-        "app/evals/hive_live_runner.py",
+        "app/evals/bakeoff_runtime.py",
         "app/evals/run.py",
+        "app/evals/self_evolution_bakeoff.py",
+        "app/evals/evaluator_integrity.py",
+        "app/services/evolution_verification.py",
     }
     assert required <= set(EVALUATOR_RELATIVE_PATHS)
 
@@ -112,7 +104,7 @@ def test_cli_writes_untrusted_integrity_report_for_changed_evaluator(tmp_path: P
     current = tmp_path / "current"
     trusted = tmp_path / "trusted"
     for root, content in ((current, "x = 2\n"), (trusted, "x = 1\n")):
-        path = root / "app" / "evals" / "baseline.py"
+        path = root / "app" / "evals" / "artifact_gate.py"
         path.parent.mkdir(parents=True)
         path.write_text(content, encoding="utf-8")
     output = tmp_path / "integrity.json"
@@ -131,4 +123,4 @@ def test_cli_writes_untrusted_integrity_report_for_changed_evaluator(tmp_path: P
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert exit_code == 0
     assert payload["trusted"] is False
-    assert "app/evals/baseline.py" in payload["changed_paths"]
+    assert "app/evals/artifact_gate.py" in payload["changed_paths"]

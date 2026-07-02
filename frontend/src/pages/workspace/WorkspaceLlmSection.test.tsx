@@ -170,8 +170,5 @@ describe('WorkspaceLlmSection', () => {
     expect(markup).toContain('Add Model');
     expect(markup).toContain('Claude Sonnet');
     expect(markup).toContain('Vision');
-    expect(markup).not.toContain('Live Behavior Eval Runtime');
-    expect(markup).not.toContain('HIVE_EVAL_TENANT_ID');
-    expect(markup).not.toContain('Eval User');
   });
 });

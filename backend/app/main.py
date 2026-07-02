@@ -26,7 +26,6 @@ from app.api.dingtalk import router as dingtalk_router
 from app.api.discord_bot import router as discord_router
 from app.api.email_channel import router as email_channel_router
 from app.api.enterprise import router as enterprise_router
-from app.api.eval_ci import router as eval_ci_router
 from app.api.feature_flags import router as feature_flags_router
 from app.api.feishu import router as feishu_router
 from app.api.files import enterprise_kb_router
@@ -581,7 +580,6 @@ _api_routers = [
     feishu_router,
     org_router,
     enterprise_router,
-    eval_ci_router,
     advanced_router,
     upload_router,
     a2a_router,

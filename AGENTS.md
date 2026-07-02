@@ -89,20 +89,13 @@ Hive is an open-source **multi-agent collaboration platform** — enterprise "di
 - **Stack:** FastAPI (Python 3.12) + React 19 (TypeScript 5) + PostgreSQL 15 + Redis 7
 - **Deployment:** Docker / Railway
 
-## Railway Deployment Rule — Use Only the Archive-Root Path
+## Railway Deployment Rule — Production Only, Archive-Root Path
 
-For Hive production/product and eval deployments, **always deploy both backend and frontend with the archive-root shape below**. Railway services are configured with `rootDirectory=backend` and `rootDirectory=frontend`, so the uploaded archive must preserve a top-level `backend/` or `frontend/` directory.
+For Hive production/product deployments, **always deploy backend and frontend with the archive-root shape below**. Railway services are configured with `rootDirectory=backend` and `rootDirectory=frontend`, so the uploaded archive must preserve a top-level `backend/` or `frontend/` directory.
 
-Do **not** use these commands for this repo:
+The retired Railway eval environment is not a default deploy target. Eval now reads production evidence and keeps deterministic gates in CI; see `docs/eval-system-spec.md`.
 
-```bash
-railway up --service backend --environment eval
-railway up backend --path-as-root --service backend --environment eval
-railway up frontend --path-as-root --service frontend --environment eval
-railway redeploy --from-source --service backend --environment eval
-```
-
-Those paths can make Railway read `/railway.json` while still looking for `snapshot-target-unpack/backend` or `snapshot-target-unpack/frontend`, causing build failures.
+Do **not** deploy from a package-root path for this repo. Commands that upload `backend` or `frontend` as the root can make Railway read `/railway.json` while still looking for `snapshot-target-unpack/backend` or `snapshot-target-unpack/frontend`, causing build failures.
 
 Use this exact pattern from the repo root:
 
@@ -114,25 +107,19 @@ git archive --format=tar HEAD backend | tar -xf - -C "$tmp_root/backend-root"
 git archive --format=tar HEAD frontend | tar -xf - -C "$tmp_root/frontend-root"
 
 cd "$tmp_root/backend-root"
-railway up --service backend --environment eval --project "$PROJECT_ID" --detach -m "deploy latest backend eval archive-root"
 railway up --service backend --environment production --project "$PROJECT_ID" --detach -m "deploy latest backend production archive-root"
 
 cd "$tmp_root/frontend-root"
-railway up --service frontend --environment eval --project "$PROJECT_ID" --detach -m "deploy latest frontend eval archive-root"
 railway up --service frontend --environment production --project "$PROJECT_ID" --detach -m "deploy latest frontend production archive-root"
 ```
 
-After submit, poll deployment status by service/environment until each target is `SUCCESS`, and then verify public health:
+After submit, poll production deployment status until each target is `SUCCESS`, and then verify public health:
 
 ```bash
-railway deployment list --service backend --environment eval --limit 1 --json
 railway deployment list --service backend --environment production --limit 1 --json
-railway deployment list --service frontend --environment eval --limit 1 --json
 railway deployment list --service frontend --environment production --limit 1 --json
 
-curl -fsS https://backend-eval.up.railway.app/api/health
 curl -fsS https://backend-production-326d.up.railway.app/api/health
-curl -I -fsS https://frontend-eval.up.railway.app/
 curl -I -fsS https://frontend-production-0346.up.railway.app/
 ```
 
@@ -141,6 +128,7 @@ curl -I -fsS https://frontend-production-0346.up.railway.app/
 Treat these documents as the current truth surface before making architecture claims:
 
 - `docs/hive-sota-master-goal.md` — canonical SOTA total goal, target matrix, and future loop-comparison ledger.
+- `docs/eval-system-spec.md` — current eval direction: no Railway eval clone, no nightly behavior gate, production evidence readout plus deterministic CI gates.
 - `docs/ccplus-north-star-contract-2026-06-24.md` — canonical CCPlus boundary contract: CC semantic baseline, Codex engineering delta, Hive-native evolution, local CLI parity, and remote proprietary exclusion.
 - `docs/harness-engineering-audit-2026-06-11.md` — harness audit, remediation log, and verification evidence.
 - `docs/round2-sota-benchmark-2026.md` — second-round SOTA benchmark, detailed comparison sources, and milestone evidence.

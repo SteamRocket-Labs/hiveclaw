@@ -1057,6 +1057,35 @@ describe('chatRuntime helpers', () => {
     });
   });
 
+  it('replays file changes transcript events as runtime events instead of artifact cards', () => {
+    const next = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-file-changes',
+      sequence: 43,
+      type: 'file_changes',
+      event_type: 'file_changes',
+      actor_type: 'system',
+      role: 'system',
+      content: 'file_changes',
+      metadata: {
+        file_change_paths: ['workspace/report.md', 'workspace/scratch.md'],
+        attached_artifact_paths: ['workspace/report.md'],
+        rejected_artifact_paths: ['workspace/stale.md'],
+      },
+      created_at: '2026-06-25T12:00:01Z',
+    });
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({
+      role: 'event',
+      content: 'file_changes',
+      id: 'evt-file-changes',
+      eventType: 'file_changes',
+      eventTitle: 'File Changes',
+      timestamp: '2026-06-25T12:00:01Z',
+    });
+    expect(next.messages[0].artifacts).toBeUndefined();
+  });
+
   it('replays task notification transcript events as runtime events even when legacy role is user', () => {
     const next = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
       id: 'evt-task-notification',

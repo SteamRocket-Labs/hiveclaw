@@ -32,6 +32,7 @@ export type RuntimeEventType =
   | 'memory_candidate'
   | 'artifact_update'
   | 'artifact_delivery'
+  | 'file_changes'
   | 'runtime_action_started'
   | 'runtime_action_progress'
   | 'runtime_action_completed'
@@ -1051,12 +1052,17 @@ const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
   'memory_candidate',
   'artifact_update',
   'artifact_delivery',
+  'file_changes',
   'runtime_action_started',
   'runtime_action_progress',
   'runtime_action_completed',
   'runtime_action_blocked',
   'runtime_action_failed',
 ]);
+const RUNTIME_EVENT_TITLES: Partial<Record<RuntimeEventType, string>> = {
+  session_compact: 'Context Compacted',
+  file_changes: 'File Changes',
+};
 const RAW_COMPACTION_SECTION_LABELS = [
   'Task Ledger',
   'Decision Ledger',
@@ -1348,7 +1354,7 @@ export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
       payload?.eventTitle ||
       payload?.title ||
       part?.title ||
-      (eventType === 'session_compact' ? 'Context Compacted' : undefined),
+      RUNTIME_EVENT_TITLES[eventType],
     eventStatus: payload?.eventStatus || payload?.status || part?.status || 'info',
     eventToolName: payload?.eventToolName || payload?.tool_name || part?.tool_name,
     eventApprovalId: payload?.eventApprovalId || payload?.approval_id || part?.approval_id,

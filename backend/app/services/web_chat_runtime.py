@@ -76,6 +76,10 @@ _CHANNEL_DELIVERY_ACTION_HINT_RE = re.compile(
     r"(发给|发送|转发|同步|推送|回传|传回|发回|投递|share|send|forward|deliver|post)",
     re.IGNORECASE,
 )
+_TERMINAL_ARTIFACT_DECLARATION_RE = re.compile(
+    r"(?i)\b(deliverable|deliverables|artifact|artifacts|final file|final files)\b|交付物|最终文件|最终交付"
+)
+_TERMINAL_ARTIFACT_PATH_RE = re.compile(r"(?:workspace|runtime_artifacts)/[^\s`'\"<>)\]，。；;]+")
 
 
 class ActiveWebChatRunExists(Exception):
@@ -289,9 +293,53 @@ def _runtime_prompt_metadata_update(runtime_session_context: Any) -> dict[str, A
     return {key: metadata[key] for key in keys if key in metadata}
 
 
-def _terminal_artifact_paths_for_turn(runtime_session_context: Any) -> list[str]:
-    """Return only files written by the active turn for terminal message cards."""
-    return [str(path) for path in (getattr(runtime_session_context, "current_turn_writes", []) or []) if str(path)]
+def _unique_paths(paths: list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw_path in paths or []:
+        path = str(raw_path or "").strip().strip("`'\"")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+def _terminal_file_change_paths_for_turn(runtime_session_context: Any) -> list[str]:
+    """Return every file written by the active turn for the file-changes side channel."""
+    return _unique_paths([str(path) for path in (getattr(runtime_session_context, "current_turn_writes", []) or [])])
+
+
+def _declared_terminal_artifact_paths(content: str) -> list[str]:
+    """Extract model-declared final deliverables from explicit declaration lines."""
+    declared: list[str] = []
+    for line in str(content or "").splitlines():
+        if not _TERMINAL_ARTIFACT_DECLARATION_RE.search(line):
+            continue
+        declared.extend(match.group(0).rstrip(".,，。；;:：") for match in _TERMINAL_ARTIFACT_PATH_RE.finditer(line))
+    return _unique_paths(declared)
+
+
+def _terminal_artifact_paths_for_turn(runtime_session_context: Any, content: str = "") -> list[str]:
+    """Return model-declared final artifacts that the platform can prove were written this turn."""
+    current_turn_writes = set(_terminal_file_change_paths_for_turn(runtime_session_context))
+    return [path for path in _declared_terminal_artifact_paths(content) if path in current_turn_writes]
+
+
+def _rejected_terminal_artifact_paths_for_turn(runtime_session_context: Any, content: str = "") -> list[str]:
+    """Return declared artifacts rejected because they are not current-turn writes."""
+    current_turn_writes = set(_terminal_file_change_paths_for_turn(runtime_session_context))
+    return [path for path in _declared_terminal_artifact_paths(content) if path not in current_turn_writes]
+
+
+def _terminal_artifact_prompt_suffix_for_turn() -> str:
+    return (
+        "Terminal artifact contract: if your final response should attach workspace files as user-facing "
+        "deliverables, include one explicit line per final deliverable in the form "
+        "`DELIVERABLE: workspace/path.ext`. Do not declare scratch files, logs, plans, or intermediate drafts as "
+        "deliverables. Hive will attach only declared paths that were written during this active turn; every "
+        "workspace write is recorded separately as a File Changes runtime event."
+    )
 
 
 def _terminal_reason_value_for_web_run(
@@ -1601,6 +1649,47 @@ async def _append_artifact_delivery_event(
     )
 
 
+async def _append_file_changes_event(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    session_id: str,
+    run_uuid: uuid.UUID,
+    message_id: uuid.UUID | None,
+    file_change_paths: list[str],
+    attached_artifact_paths: list[str],
+    declared_artifact_paths: list[str],
+    rejected_artifact_paths: list[str],
+    source: str = "web_chat_runtime",
+) -> None:
+    if not file_change_paths and not rejected_artifact_paths:
+        return
+    await append_session_event(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        run_id=run_uuid,
+        actor_type="system",
+        event_type="file_changes",
+        role="system",
+        content="file_changes",
+        message_id=message_id,
+        source=source,
+        materialize_chat_message=False,
+        metadata={
+            "source": source,
+            "file_change_count": len(file_change_paths),
+            "file_change_paths": file_change_paths,
+            "attached_artifact_paths": attached_artifact_paths,
+            "declared_artifact_paths": declared_artifact_paths,
+            "rejected_artifact_paths": rejected_artifact_paths,
+            "artifact_attachment_policy": "model_declared_current_turn_writes_only",
+        },
+    )
+
+
 async def _finalize_web_chat_run_with_assistant(
     *,
     run_uuid: uuid.UUID,
@@ -1614,6 +1703,9 @@ async def _finalize_web_chat_run_with_assistant(
     result_summary: str | None,
     metadata_json: dict[str, Any] | None = None,
     artifact_paths: list[str] | None = None,
+    file_change_paths: list[str] | None = None,
+    declared_artifact_paths: list[str] | None = None,
+    rejected_artifact_paths: list[str] | None = None,
 ) -> bool:
     """Persist the terminal assistant response exactly once for a durable web-chat run."""
     from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -1664,6 +1756,19 @@ async def _finalize_web_chat_run_with_assistant(
             return False
 
         workspace_root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+        artifact_paths = _unique_paths(artifact_paths)
+        file_change_paths = _unique_paths(file_change_paths)
+        rejected_artifact_paths = _unique_paths(rejected_artifact_paths)
+        declared_artifact_paths = _unique_paths(
+            declared_artifact_paths if declared_artifact_paths is not None else [*artifact_paths, *rejected_artifact_paths]
+        )
+        if file_change_paths or rejected_artifact_paths:
+            if metadata_json is None:
+                metadata_json = {}
+            metadata_json["file_change_paths"] = file_change_paths
+            metadata_json["declared_artifact_paths"] = declared_artifact_paths
+            metadata_json["rejected_artifact_paths"] = rejected_artifact_paths
+            metadata_json["artifact_attachment_policy"] = "model_declared_current_turn_writes_only"
 
         terminal_since = getattr(task, "started_at", None) or getattr(task, "created_at", None)
         kernel_message_filters = [
@@ -1754,6 +1859,19 @@ async def _finalize_web_chat_run_with_assistant(
                 message_id=getattr(kernel_persisted_message, "id", None),
                 artifact_parts=artifact_parts,
             )
+            attached_artifact_paths = _unique_paths([str(part.get("path") or "") for part in artifact_parts])
+            await _append_file_changes_event(
+                db=db,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                run_uuid=run_uuid,
+                message_id=getattr(kernel_persisted_message, "id", None),
+                file_change_paths=file_change_paths,
+                attached_artifact_paths=attached_artifact_paths,
+                declared_artifact_paths=declared_artifact_paths,
+                rejected_artifact_paths=rejected_artifact_paths,
+            )
             await _maybe_continue_goal_after_terminal_turn(
                 db=db,
                 task=task,
@@ -1829,6 +1947,19 @@ async def _finalize_web_chat_run_with_assistant(
             run_uuid=run_uuid,
             message_id=assistant_message_id,
             artifact_parts=artifact_parts,
+        )
+        attached_artifact_paths = _unique_paths([str(part.get("path") or "") for part in artifact_parts])
+        await _append_file_changes_event(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            run_uuid=run_uuid,
+            message_id=assistant_message_id,
+            file_change_paths=file_change_paths,
+            attached_artifact_paths=attached_artifact_paths,
+            declared_artifact_paths=declared_artifact_paths,
+            rejected_artifact_paths=rejected_artifact_paths,
         )
         await _maybe_continue_goal_after_terminal_turn(
             db=db,
@@ -2817,6 +2948,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, restart_suffix) if part)
         if channel_delivery_suffix:
             pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, channel_delivery_suffix) if part)
+        pending_reply_suffix = "\n\n".join(
+            part for part in (pending_reply_suffix, _terminal_artifact_prompt_suffix_for_turn()) if part
+        )
 
         trusted_decline = None
         if not internal_runtime_context_turn:
@@ -3148,7 +3282,10 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             )
             await broadcast_web_chat_event(agent.id, session_id, build_done_event(""))
             return
-        artifact_paths = _terminal_artifact_paths_for_turn(runtime_session_context)
+        file_change_paths = _terminal_file_change_paths_for_turn(runtime_session_context)
+        declared_artifact_paths = _declared_terminal_artifact_paths(assistant_response)
+        artifact_paths = _terminal_artifact_paths_for_turn(runtime_session_context, assistant_response)
+        rejected_artifact_paths = _rejected_terminal_artifact_paths_for_turn(runtime_session_context, assistant_response)
         finalized = await _finalize_web_chat_run_with_assistant(
             run_uuid=run_uuid,
             agent_id=agent.id,
@@ -3161,6 +3298,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             result_summary=_simulation_title(assistant_response),
             metadata_json=metadata_update,
             artifact_paths=artifact_paths,
+            file_change_paths=file_change_paths,
+            declared_artifact_paths=declared_artifact_paths,
+            rejected_artifact_paths=rejected_artifact_paths,
         )
         if not finalized:
             return

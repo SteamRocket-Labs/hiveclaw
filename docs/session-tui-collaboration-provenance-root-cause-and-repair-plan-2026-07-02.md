@@ -978,3 +978,52 @@ cd backend && source .venv/bin/activate && pytest \
   -q
 # 8 passed, 4 warnings
 ```
+
+### Part 13 — B1 终态交付物声明与 file-changes 侧通道（2026-07-02）
+
+红测：
+
+- `test_terminal_artifact_paths_require_model_declared_current_turn_writes`：旧实现只有 `_terminal_artifact_paths_for_turn(context)`，并且会把本轮所有写入都当终态 artifact；新口径要求只有模型在 final answer 中显式声明、且平台证明属于 `current_turn_writes` 的路径才能进 assistant terminal artifacts。
+- `test_finalize_web_chat_run_records_file_changes_side_channel`：旧 `_finalize_web_chat_run_with_assistant()` 没有 `file_change_paths` / `rejected_artifact_paths` 参数，也不会写 `file_changes` transcript event。
+
+红测验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_web_chat_runtime.py::test_terminal_artifact_paths_require_model_declared_current_turn_writes \
+  tests/services/test_web_chat_runtime.py::test_finalize_web_chat_run_records_file_changes_side_channel \
+  -q
+# failed: missing _terminal_file_change_paths_for_turn / unexpected file_change_paths keyword
+```
+
+变更：
+
+- `web_chat_runtime.py` 拆分终态交付物与文件改动：
+  - `artifact_paths` 只来自 final answer 中 `DELIVERABLE: workspace/path.ext` / `交付物: workspace/path.ext` 等显式声明；
+  - 平台只挂载属于本轮 `current_turn_writes` 的声明路径；
+  - 不属于本轮写入的声明进入 `rejected_artifact_paths`，不进入 artifact 卡；
+  - 本轮所有写入进入独立 `file_changes` transcript event，不再污染 assistant terminal artifact。
+- web chat prompt suffix 增加终态 artifact 合约，要求模型显式声明 user-facing deliverables。
+- `chat_message_parts.py`、`chatRuntime.ts`、`chatDisclosureReducer.ts` 将 `file_changes` 纳入 session-native runtime event 与 artifact timeline 分组，但不把它渲染成 assistant deliverable card。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py -q
+# 71 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/web_chat_runtime.py \
+  app/services/chat_message_parts.py \
+  tests/services/test_web_chat_runtime.py
+# All checks passed
+
+cd frontend && npm run test -- \
+  src/pages/agent-detail/chatRuntime.test.ts \
+  src/pages/agent-detail/chatDisclosureReducer.test.ts \
+  --run
+# 2 passed files, 62 passed tests
+
+cd frontend && npm run build
+# tsc && vite build passed
+```

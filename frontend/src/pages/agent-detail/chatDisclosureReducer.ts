@@ -83,6 +83,7 @@ const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
   'memory_candidate',
   'artifact_update',
   'artifact_delivery',
+  'file_changes',
   'runtime_action_started',
   'runtime_action_progress',
   'runtime_action_completed',
@@ -291,7 +292,11 @@ function kindForEventMessage(message: AgentChatMessage): RunStepKind {
   if (message.eventType === 'team_member') return 'team_member';
   if (message.eventType === 'subagent' || message.eventType === 'child_session') return 'subagent';
   if (message.eventType === 'schedule' || message.eventType === 'schedule_fire' || message.eventType === 'once') return 'trigger';
-  if (message.eventType === 'artifact_update' || message.eventType === 'artifact_delivery') return 'artifact';
+  if (
+    message.eventType === 'artifact_update'
+    || message.eventType === 'artifact_delivery'
+    || message.eventType === 'file_changes'
+  ) return 'artifact';
   return 'event';
 }
 

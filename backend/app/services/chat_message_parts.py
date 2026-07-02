@@ -34,6 +34,7 @@ SESSION_NATIVE_EVENT_TITLES: dict[str, str] = {
     "memory_candidate": "Memory Candidate",
     "artifact_update": "Artifact Update",
     "artifact_delivery": "Artifact Delivery",
+    "file_changes": "File Changes",
     "runtime_action_started": "Action Started",
     "runtime_action_progress": "Action Progress",
     "runtime_action_completed": "Action Completed",

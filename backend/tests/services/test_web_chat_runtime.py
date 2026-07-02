@@ -294,7 +294,7 @@ def test_conversation_reload_reuses_frozen_tool_result_bytes_and_call_id():
     assert conversation[1]["content"] == "MODEL-SEEN-BYTES"
 
 
-def test_terminal_artifact_paths_use_current_turn_writes_not_recent_writes():
+def test_terminal_artifact_paths_require_model_declared_current_turn_writes():
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import SessionContext
 
@@ -303,12 +303,25 @@ def test_terminal_artifact_paths_use_current_turn_writes_not_recent_writes():
     context.begin_turn()
 
     assert context.recent_writes == ["workspace/old.md"]
-    assert runtime._terminal_artifact_paths_for_turn(context) == []
+    assert runtime._terminal_file_change_paths_for_turn(context) == []
+    assert runtime._terminal_artifact_paths_for_turn(context, "DELIVERABLE: workspace/old.md") == []
 
     context.track_file_write("workspace/new.md")
+    context.track_file_write("workspace/scratch.md")
 
-    assert context.recent_writes == ["workspace/old.md", "workspace/new.md"]
-    assert runtime._terminal_artifact_paths_for_turn(context) == ["workspace/new.md"]
+    assert context.recent_writes == ["workspace/old.md", "workspace/new.md", "workspace/scratch.md"]
+    assert runtime._terminal_file_change_paths_for_turn(context) == ["workspace/new.md", "workspace/scratch.md"]
+    assert runtime._terminal_artifact_paths_for_turn(
+        context,
+        "\n".join(
+            [
+                "完成。",
+                "DELIVERABLE: workspace/new.md",
+                "DELIVERABLE: workspace/old.md",
+                "交付物: `workspace/missing.md`",
+            ]
+        ),
+    ) == ["workspace/new.md"]
 
 
 class _QueuedScalarResult:
@@ -1218,6 +1231,112 @@ async def test_finalize_web_chat_run_binds_recent_workspace_artifacts(monkeypatc
     assert metadata_update["artifacts"][0]["path"] == "workspace/report.md"
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert any(event.event_type == "artifact_delivery" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_finalize_web_chat_run_records_file_changes_side_channel(monkeypatch, tmp_path):
+    from app.memory.t0.ledger import replay_t0_session_events
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    run_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        status="running",
+        metadata_json={},
+        result_summary=None,
+        completed_at=None,
+    )
+    added = []
+    artifact_calls = []
+
+    class _Session:
+        def __init__(self):
+            self.results = [task, None, None]
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(self.results.pop(0))
+
+        def add(self, value):
+            added.append(value)
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            self.commits += 1
+
+    session = _Session()
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    async def fake_create_chat_artifacts_for_message(**kwargs):
+        artifact_calls.append(kwargs)
+        return [
+            {
+                "artifact_id": "artifact-1",
+                "path": "workspace/report.md",
+                "name": "report.md",
+                "preview_kind": "markdown",
+                "source": "workspace_write",
+            }
+        ]
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+    monkeypatch.setattr(runtime, "create_chat_artifacts_for_message", fake_create_chat_artifacts_for_message)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    finalized = await runtime._finalize_web_chat_run_with_assistant(
+        run_uuid=run_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        content="完成。\nDELIVERABLE: workspace/report.md\nDELIVERABLE: workspace/stale.md",
+        thinking=None,
+        status="completed",
+        result_summary="完成。",
+        metadata_json={"cancelled_by_user": False},
+        artifact_paths=["workspace/report.md"],
+        file_change_paths=["workspace/report.md", "workspace/scratch.md"],
+        rejected_artifact_paths=["workspace/stale.md"],
+    )
+
+    assert finalized is True
+    transcript_events = [item for item in added if getattr(item, "event_type", None)]
+    assert [event.event_type for event in transcript_events] == [
+        "assistant_message",
+        "artifact_delivery",
+        "file_changes",
+    ]
+    assert artifact_calls[0]["paths"] == ["workspace/report.md"]
+    file_change_event = transcript_events[-1]
+    assert file_change_event.content == "file_changes"
+    assert file_change_event.metadata_json["file_change_paths"] == ["workspace/report.md", "workspace/scratch.md"]
+    assert file_change_event.metadata_json["attached_artifact_paths"] == ["workspace/report.md"]
+    assert file_change_event.metadata_json["rejected_artifact_paths"] == ["workspace/stale.md"]
+    assert task.metadata_json["file_change_paths"] == ["workspace/report.md", "workspace/scratch.md"]
+    assert task.metadata_json["rejected_artifact_paths"] == ["workspace/stale.md"]
+
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [event.event_type for event in events] == [
+        "assistant_message",
+        "artifact_delivery",
+        "file_changes",
+    ]
 
 
 @pytest.mark.asyncio

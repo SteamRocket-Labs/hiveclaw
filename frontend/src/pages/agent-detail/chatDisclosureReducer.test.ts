@@ -299,6 +299,25 @@ describe('chatDisclosureReducer', () => {
     ]);
   });
 
+  it('keeps file changes as artifact timeline events without turning them into deliverable cards', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'event',
+        content: 'file_changes',
+        eventType: 'file_changes',
+        eventTitle: 'File Changes',
+        eventStatus: 'info',
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps).toHaveLength(1);
+    expect(timeline.steps[0]).toMatchObject({
+      kind: 'artifact',
+      title: 'File Changes',
+      status: 'done',
+    });
+  });
+
   it('keeps agent team, team member, subagent, and background-agent events as distinct step kinds', () => {
     const timeline = buildRunTimelineFromMessages([
       {

@@ -18,6 +18,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.daemon_concurrency import run_bounded
 from app.core.events import get_redis
 from app.database import enter_rls_bypass, tenant_scoped_session
 from app.memory.t2.read_model import load_t2_package_snapshots, render_t2_package_snapshots
@@ -398,7 +399,9 @@ async def resume_persisted_heartbeat_runs(*, limit: int = 50) -> list[str]:
                 "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
             },
         )
-        asyncio.create_task(_execute_heartbeat(agent_id, tenant_id=tenant_id, runtime_task_id=run_id))
+        asyncio.create_task(
+            run_bounded("heartbeat", _execute_heartbeat(agent_id, tenant_id=tenant_id, runtime_task_id=run_id))
+        )
         resumed.append(run_id)
     return resumed
 
@@ -1372,9 +1375,7 @@ async def _run_t2_retention(agent_id: uuid.UUID):
     return await run_t2_retention(
         agent_id=agent_id,
         data_root=Path(settings.AGENT_DATA_DIR),
-        archive_after_days=float(
-            getattr(settings, "MEMORY_RETENTION_ARCHIVE_AFTER_DAYS", DEFAULT_ARCHIVE_AFTER_DAYS)
-        ),
+        archive_after_days=float(getattr(settings, "MEMORY_RETENTION_ARCHIVE_AFTER_DAYS", DEFAULT_ARCHIVE_AFTER_DAYS)),
     )
 
 
@@ -1585,7 +1586,9 @@ async def _execute_heartbeat(
                         artifact_gc_report.get("removed_bytes"),
                     )
             except Exception as _artifact_gc_err:
-                logger.warning("[Heartbeat] Chat artifact snapshot retention failed for {}: {}", agent_id, _artifact_gc_err)
+                logger.warning(
+                    "[Heartbeat] Chat artifact snapshot retention failed for {}: {}", agent_id, _artifact_gc_err
+                )
 
             try:
                 dirtiness_report = await _run_convergence_dirtiness_refresh(agent_id)
@@ -1596,7 +1599,9 @@ async def _execute_heartbeat(
                         [item["target"] for item in dirtiness_report.dirty_files],
                     )
             except Exception as _convergence_err:
-                logger.warning("[Heartbeat] Convergence dirtiness refresh failed for {}: {}", agent_id, _convergence_err)
+                logger.warning(
+                    "[Heartbeat] Convergence dirtiness refresh failed for {}: {}", agent_id, _convergence_err
+                )
 
             if not (agent.primary_model_id or agent.fallback_model_id):
                 logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")
@@ -2139,7 +2144,11 @@ async def _heartbeat_tick():
                     continue
                 logger.info(f"💓 Triggering heartbeat for {agent.name}")
                 await write_audit_log("heartbeat_fire", {"agent_name": agent.name}, agent_id=agent.id)
-                asyncio.create_task(_execute_heartbeat(agent.id, tenant_id=agent.tenant_id, lease_acquired=True))
+                asyncio.create_task(
+                    run_bounded(
+                        "heartbeat", _execute_heartbeat(agent.id, tenant_id=agent.tenant_id, lease_acquired=True)
+                    )
+                )
                 triggered += 1
 
             logger.info(

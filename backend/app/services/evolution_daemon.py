@@ -23,6 +23,7 @@ from sqlalchemy import select
 # Heartbeat tick cadence — read from typed settings so production (60s)
 # and dev (lower) configs are explicit. P1-W2-5: configurable via the
 # HEARTBEAT_TICK_SECONDS env var bound to `Settings`.
+from app.services.daemon_concurrency import run_bounded
 from app.config import get_settings
 
 _HEARTBEAT_INTERVAL_SECONDS = get_settings().HEARTBEAT_TICK_SECONDS
@@ -186,7 +187,7 @@ async def run_heartbeat_evolution_maintenance(
 
         record_dream_activity(agent_id, outcome_type or "")
         if should_dream(agent_id) and tenant_id:
-            asyncio.create_task(run_dream(agent_id, tenant_id), name=f"auto_dream:{agent_id}")
+            asyncio.create_task(run_bounded("dream", run_dream(agent_id, tenant_id)), name=f"auto_dream:{agent_id}")
             report["dream_triggered"] = True
             logger.info("[EvolutionDaemon] Auto-dream triggered for agent {}", agent_id)
     except Exception as exc:
@@ -205,7 +206,9 @@ async def run_heartbeat_evolution_maintenance(
             "reason": sync_result.reason,
         }
         if sync_result.synced:
-            logger.info("[EvolutionDaemon] Memory enhancement sync: {} T3 items (agent={})", sync_result.synced, agent_id)
+            logger.info(
+                "[EvolutionDaemon] Memory enhancement sync: {} T3 items (agent={})", sync_result.synced, agent_id
+            )
     except Exception as exc:
         logger.warning("[EvolutionDaemon] Memory enhancement sync outer guard tripped for {}: {}", agent_id, exc)
 

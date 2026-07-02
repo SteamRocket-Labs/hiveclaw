@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 
 class _FakeConnection:
     def __init__(self) -> None:
@@ -112,3 +114,85 @@ def test_app_tenant_context_setters_restore_tokens():
             offenders.append(str(path.relative_to(app_root.parent)))
 
     assert offenders == []
+
+
+@pytest.mark.asyncio
+async def test_bypass_exit_skips_restore_on_failed_transaction_and_preserves_original_error():
+    """C3: a DB error inside the bypass scope leaves the transaction invalid;
+    the finally-restore must not fire a second error that masks the first."""
+    from types import SimpleNamespace
+
+    from app.database import enter_rls_bypass
+
+    executed: list[str] = []
+
+    class _FailedTxSession:
+        is_active = False  # SQLAlchemy: failed transaction pending rollback
+
+        async def execute(self, stmt):
+            executed.append(str(stmt))
+            return SimpleNamespace()
+
+    session = _FailedTxSession()
+    session.is_active = True  # entering the scope succeeds
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async with enter_rls_bypass(session, reason="unit-test bypass failure"):
+            session.is_active = False  # simulate the tx dying inside the scope
+            raise RuntimeError("boom")
+
+    bypass_statements = [stmt for stmt in executed if "BYPASS" in stmt]
+    restore_statements = [stmt for stmt in executed if "BYPASS" not in stmt]
+    assert len(bypass_statements) == 1
+    assert restore_statements == [], "no GUC restore may run on a failed transaction"
+
+
+@pytest.mark.asyncio
+async def test_bypass_exit_restores_tenant_scope_on_healthy_transaction():
+    from types import SimpleNamespace
+
+    from app.database import enter_rls_bypass, reset_current_tenant, set_current_tenant
+
+    executed: list[str] = []
+
+    class _HealthySession:
+        is_active = True
+
+        async def execute(self, stmt):
+            executed.append(str(stmt))
+            return SimpleNamespace()
+
+    tenant_id = str(uuid4())
+    token = set_current_tenant(tenant_id)
+    try:
+        async with enter_rls_bypass(_HealthySession(), reason="unit-test bypass restore"):
+            pass
+    finally:
+        reset_current_tenant(token)
+
+    assert any("BYPASS" in stmt for stmt in executed)
+    assert any(tenant_id in stmt for stmt in executed), "healthy exit must re-pin the tenant scope"
+
+
+@pytest.mark.asyncio
+async def test_bypass_exit_restore_failure_is_logged_not_raised():
+    """Even if the restore itself dies, the caller must see the body's result,
+    not a masked secondary exception."""
+    from types import SimpleNamespace
+
+    from app.database import enter_rls_bypass
+
+    class _FlakySession:
+        is_active = True
+
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, stmt):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("connection lost during restore")
+            return SimpleNamespace()
+
+    async with enter_rls_bypass(_FlakySession(), reason="unit-test flaky restore"):
+        pass  # must not raise

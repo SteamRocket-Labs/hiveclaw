@@ -24,6 +24,7 @@ from croniter import croniter
 from loguru import logger
 from sqlalchemy import select
 
+from app.services.daemon_concurrency import run_bounded
 from app.core.events import get_redis
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.trigger import AgentTrigger
@@ -298,7 +299,9 @@ async def resume_persisted_trigger_runs(*, limit: int = 50) -> list[str]:
                 "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
             },
         )
-        asyncio.create_task(_invoke_agent_for_triggers(agent_id, triggers, runtime_task_id=run_id))
+        asyncio.create_task(
+            run_bounded("trigger", _invoke_agent_for_triggers(agent_id, triggers, runtime_task_id=run_id))
+        )
         resumed.append(run_id)
     return resumed
 
@@ -1686,7 +1689,7 @@ async def _invoke_agent_for_triggers(
 
             record_session_end(agent_id)
             if should_dream(agent_id) and agent.tenant_id:
-                asyncio.create_task(run_dream(agent_id, agent.tenant_id))
+                asyncio.create_task(run_bounded("dream", run_dream(agent_id, agent.tenant_id)))
                 logger.info("[TriggerDaemon] Auto-dream triggered for agent {}", agent_id)
         except Exception as _dream_err:
             logger.debug("[TriggerDaemon] Auto-dream check failed: {}", _dream_err)
@@ -1886,10 +1889,8 @@ async def _tick():
                 continue
 
             asyncio.create_task(
-                _invoke_agent_for_triggers(
-                    agent_id,
-                    agent_triggers,
-                    runtime_task_id=runtime_task_id,
+                run_bounded(
+                    "trigger", _invoke_agent_for_triggers(agent_id, agent_triggers, runtime_task_id=runtime_task_id)
                 )
             )
         except Exception as _agent_err:

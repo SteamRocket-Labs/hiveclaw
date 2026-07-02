@@ -257,17 +257,27 @@ async def enter_rls_bypass(
         yield session
     finally:
         # Restore tenant scoping. ContextVar fallback covers the case
-        # where the session entered without a tenant set.
-        tenant_id = _current_tenant_id.get()
-        if tenant_id:
-            import uuid as _uuid
-
-            try:
-                _uuid.UUID(str(tenant_id))
-                await session.execute(text(f"SET LOCAL app.current_tenant_id = '{tenant_id}'"))
-            except (ValueError, Exception) as exc:
-                logger.error("[RLS] Failed to restore tenant scope after BYPASS: %s", exc)
-                await session.execute(text("SET LOCAL app.current_tenant_id = ''"))
-        else:
-            await session.execute(text("SET LOCAL app.current_tenant_id = ''"))
+        # where the session entered without a tenant set. Two guards (C3):
+        # a DB error inside the scope leaves the transaction failed — running
+        # the restore there raises a second error that masks the first, and
+        # SET LOCAL dies with the transaction anyway, so skip it and let the
+        # caller's rollback clear the scope. If the restore itself fails,
+        # log it rather than shadowing the body's exception.
+        try:
+            if not getattr(session, "is_active", True):
+                logger.warning(
+                    "[RLS] BYPASS scope exited with a failed transaction; skipping GUC restore — "
+                    "the caller's rollback clears the scope. (reason=%r)",
+                    reason,
+                )
+            else:
+                tenant_value = _current_tenant_id.get()
+                try:
+                    restored = _normalize_rls_tenant_value(tenant_value)
+                except ValueError:
+                    logger.error("[RLS] Invalid tenant id %r after BYPASS; failing closed to ''", tenant_value)
+                    restored = ""
+                await session.execute(text(_rls_tenant_statement(restored)))
+        except Exception as exc:  # noqa: BLE001 - never mask the body's exception from finally
+            logger.error("[RLS] Failed to restore tenant scope after BYPASS: %s", exc)
         logger.info("[RLS] Exited BYPASS scope (reason=%r)", reason)

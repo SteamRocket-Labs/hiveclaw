@@ -434,8 +434,11 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
         return True
 
     def fake_create_task(coro, *args, **kwargs):
-        scheduled.append(coro.cr_code.co_name)
-        coro.close()
+        inner = coro.cr_frame.f_locals.get("awaitable", coro)
+        scheduled.append(inner.cr_code.co_name)
+        inner.close()
+        if inner is not coro:
+            coro.close()
         return SimpleNamespace()
 
     monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)
@@ -507,8 +510,11 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     scheduled_runtime_ids = []
 
     def fake_create_task(coro, *args, **kwargs):
-        scheduled_runtime_ids.append(coro.cr_frame.f_locals.get("runtime_task_id"))
-        coro.close()
+        inner = coro.cr_frame.f_locals.get("awaitable", coro)
+        scheduled_runtime_ids.append(inner.cr_frame.f_locals.get("runtime_task_id"))
+        inner.close()
+        if inner is not coro:
+            coro.close()
         return SimpleNamespace()
 
     monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)
@@ -714,7 +720,8 @@ async def test_resume_persisted_trigger_runs_requeues_unstarted_run(monkeypatch)
         return True
 
     def fake_create_task(coro, *args, **kwargs):
-        frame = coro.cr_frame
+        inner = coro.cr_frame.f_locals.get("awaitable", coro)
+        frame = inner.cr_frame
         scheduled.append(
             (
                 frame.f_locals["agent_id"],
@@ -722,7 +729,9 @@ async def test_resume_persisted_trigger_runs_requeues_unstarted_run(monkeypatch)
                 frame.f_locals["runtime_task_id"],
             )
         )
-        coro.close()
+        inner.close()
+        if inner is not coro:
+            coro.close()
         return SimpleNamespace()
 
     monkeypatch.setattr(trigger_daemon, "list_active_runtime_task_records", fake_list_active_runtime_task_records)

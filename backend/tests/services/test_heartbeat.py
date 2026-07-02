@@ -801,7 +801,8 @@ async def test_resume_persisted_heartbeat_runs_requeues_unstarted_run(monkeypatc
         return True
 
     def fake_create_task(coro, *args, **kwargs):
-        frame = coro.cr_frame
+        inner = coro.cr_frame.f_locals.get("awaitable", coro)
+        frame = inner.cr_frame
         scheduled.append(
             (
                 frame.f_locals["agent_id"],
@@ -809,7 +810,9 @@ async def test_resume_persisted_heartbeat_runs_requeues_unstarted_run(monkeypatc
                 frame.f_locals["runtime_task_id"],
             )
         )
-        coro.close()
+        inner.close()
+        if inner is not coro:
+            coro.close()
         return SimpleNamespace()
 
     monkeypatch.setattr(heartbeat, "list_active_runtime_task_records", fake_list_active_runtime_task_records)

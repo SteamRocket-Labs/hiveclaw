@@ -136,6 +136,12 @@ class Settings(BaseSettings):
     # Tick frequency for the evolution daemon (heartbeat dispatcher).
     # Production: 60s. Dev/staging may set 5-15s to exercise the path.
     HEARTBEAT_TICK_SECONDS: int = 60
+    # Per-family fanout caps for daemon per-agent dispatch (plan C1). A batch
+    # of simultaneously-eligible agents queues behind these instead of
+    # stampeding the shared DB pool.
+    HEARTBEAT_MAX_CONCURRENT: int = 4
+    TRIGGER_MAX_CONCURRENT: int = 8
+    DREAM_MAX_CONCURRENT: int = 2
     # Platform-managed heartbeat cadence (heartbeat_policy overrides per-agent
     # rows). 2026-06-05 owner decision: 2h — T2 accumulation never kept up with
     # the old 45min digestion rhythm (most ticks idled), and in-conversation

@@ -96,6 +96,10 @@ def _channel_stream_startup_enabled() -> bool:
     return bool(settings.CHANNEL_STREAM_STARTUP_ENABLED)
 
 
+def _core_daemon_startup_enabled() -> bool:
+    return bool(settings.CORE_DAEMON_STARTUP_ENABLED)
+
+
 async def _start_ss_local() -> None:
     """Start ss-local SOCKS5 proxy for Discord API calls. Tries nodes in priority order."""
     import asyncio
@@ -495,11 +499,18 @@ async def lifespan(app: FastAPI):
                 mark_daemon_stopped(t.get_name(), "background task exited")
 
         startup_background_tasks = [
-            ("trigger_daemon", start_trigger_daemon()),
-            ("workflow_daemon", start_workflow_daemon()),
-            ("evolution_daemon", start_evolution_daemon()),
             ("code_execution_sandbox_probe_scheduler", start_code_execution_sandbox_probe_scheduler()),
         ]
+        if _core_daemon_startup_enabled():
+            startup_background_tasks.extend(
+                [
+                    ("trigger_daemon", start_trigger_daemon()),
+                    ("workflow_daemon", start_workflow_daemon()),
+                    ("evolution_daemon", start_evolution_daemon()),
+                ]
+            )
+        else:
+            logger.info("[startup] core daemon startup disabled")
         if _channel_stream_startup_enabled():
             startup_background_tasks.extend(
                 [

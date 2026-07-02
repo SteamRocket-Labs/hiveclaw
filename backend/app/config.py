@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     T0_STARTUP_BACKFILL_RECENT_DAYS: int = 3650
     T0_STARTUP_BACKFILL_MAX_SESSIONS: int = 10000
     T0_STARTUP_BACKFILL_BATCH_SIZE: int = 100
+    # Core execution daemons poll and resume persisted trigger/workflow/evolution
+    # work. Keep API containers request-focused by default; enable this only on
+    # a dedicated worker or after DB pool sizing is explicitly provisioned.
+    CORE_DAEMON_STARTUP_ENABLED: bool = False
     # Long-lived channel stream clients fan out across every configured agent.
     # Keep API containers responsive by default; run these in a dedicated worker
     # or opt in explicitly after pool/worker sizing is set for the deployment.

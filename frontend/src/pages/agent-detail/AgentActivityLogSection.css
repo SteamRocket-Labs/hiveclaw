@@ -1,0 +1,209 @@
+/* ═══════════════════════════════════════════════════════
+   AgentActivityLogSection — inline style 迁出（P3）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   JS 假 active/hover → CSS class 三态；散装 hex → 语义 token
+   ═══════════════════════════════════════════════════════ */
+
+.agent-activity-title {
+  margin-bottom: var(--space-3);
+}
+
+/* ── Tool failure summary card（复用 .card 骨架） ───────── */
+.agent-activity-failure-card {
+  margin-bottom: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-activity-failure-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.agent-activity-strong {
+  font-weight: 600;
+}
+
+.agent-activity-note {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+}
+
+.agent-activity-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.agent-activity-stat {
+  padding: 10px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+}
+
+.agent-activity-stat-label {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-1);
+}
+
+.agent-activity-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-activity-recent-title {
+  font-size: var(--text-row);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.agent-activity-recent-item {
+  padding: 10px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  font-size: var(--text-row);
+}
+
+.agent-activity-recent-meta {
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+/* ── Filter buttons — 三态齐全 ─────────────────────────── */
+.agent-activity-filter-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.agent-activity-divider {
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+}
+
+.agent-activity-filter {
+  padding: 6px 14px;
+  font-size: var(--text-row);
+  font-weight: 400;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.agent-activity-filter:hover:not(.is-active) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.agent-activity-filter.is-active {
+  font-weight: 600;
+  color: var(--accent-primary);
+  background: var(--accent-subtle);
+  border-color: var(--accent-primary);
+}
+
+.agent-activity-filter.is-indent {
+  padding: 4px 10px 4px 20px;
+  font-size: var(--text-meta);
+}
+
+/* ── Log list ─────────────────────────────────────────── */
+.agent-activity-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.agent-activity-log-row {
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  background: var(--bg-secondary);
+  font-size: var(--text-body);
+  border: 1px solid transparent;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.agent-activity-log-row:hover:not(.is-expanded) {
+  background: var(--bg-hover);
+}
+
+.agent-activity-log-row.is-expanded {
+  background: var(--bg-elevated);
+  border-color: var(--accent-primary);
+}
+
+.agent-activity-log-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.agent-activity-log-icon {
+  font-size: var(--text-title);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.agent-activity-log-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-activity-log-summary {
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+.agent-activity-log-meta {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+
+.agent-activity-log-details-hint {
+  margin-left: var(--space-2);
+  color: var(--accent-primary);
+}
+
+.agent-activity-log-detail {
+  margin-top: var(--space-2);
+  padding: 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  font-size: var(--text-row);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: var(--leading-body);
+  color: var(--text-secondary);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.agent-activity-detail-row {
+  margin-bottom: 6px;
+}
+
+.agent-activity-detail-key {
+  color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.agent-activity-empty {
+  text-align: center;
+  padding: var(--space-10);
+  color: var(--text-tertiary);
+}

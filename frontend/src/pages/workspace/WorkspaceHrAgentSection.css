@@ -1,0 +1,130 @@
+/* ═══════════════════════════════════════════════════════
+   WorkspaceHrAgentSection — 静态样式迁出（P4 长尾）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .ws-hr-*；卡片 padding 复用 .card 默认（var(--space-4)）
+   ═══════════════════════════════════════════════════════ */
+
+.ws-hr-page {
+  max-width: 960px;
+}
+
+/* ── Loading / error states ────────────────────────── */
+
+.ws-hr-loading {
+  padding: var(--space-8);
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.ws-hr-spinner-top {
+  margin: 0 auto var(--space-3);
+}
+
+.ws-hr-error {
+  padding: var(--space-8);
+  text-align: center;
+}
+
+.ws-hr-error-text {
+  color: var(--error);
+}
+
+.ws-hr-error-retry {
+  margin-top: var(--space-3);
+}
+
+/* ── Cards ─────────────────────────────────────────── */
+
+.ws-hr-card {
+  margin-bottom: var(--space-4);
+}
+
+.ws-hr-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ws-hr-title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  margin: 0;
+}
+
+.ws-hr-desc {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  margin-top: var(--space-1);
+}
+
+.ws-hr-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.ws-hr-inline-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* ── Settings form ─────────────────────────────────── */
+
+.ws-hr-settings-title {
+  font-size: var(--text-emphasis);
+  font-weight: 600;
+  margin: 0 0 var(--space-3);
+}
+
+.ws-hr-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.ws-hr-section-title {
+  font-size: var(--text-emphasis);
+  font-weight: 600;
+  margin: 0;
+}
+
+.ws-hr-field {
+  margin-bottom: var(--space-3);
+}
+
+.ws-hr-label {
+  display: block;
+  font-size: var(--text-body);
+  font-weight: 500;
+  margin-bottom: var(--space-1);
+}
+
+/* ── Soul read model ───────────────────────────────── */
+
+.ws-hr-notice {
+  padding: 10px var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  margin-bottom: var(--space-3);
+}
+
+.ws-hr-soul-loading {
+  padding: var(--space-6);
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.ws-hr-spinner-mid {
+  margin: 0 auto;
+}
+
+.ws-hr-soul-textarea {
+  min-height: 360px;
+  font-family: var(--font-mono);
+  font-size: var(--text-row);
+  line-height: var(--leading-body);
+  resize: vertical;
+}

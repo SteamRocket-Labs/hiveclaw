@@ -10,6 +10,7 @@ import {
   type KnowledgeOverview,
   type KnowledgePageSummary,
 } from '../../api/domains/knowledge';
+import './AgentKnowledgeSection.css';
 
 // 记忆 tab — the two-plane world (memory spec v1.2):
 //   profile plane converges (self 自我认知 / profiles 人际与领域),
@@ -27,23 +28,16 @@ type AgentKnowledgeSectionProps = {
   onNavigateTab?: (tab: string) => void;
 };
 
-const cardStyle: React.CSSProperties = {
-  border: '1px solid var(--border-primary)',
-  borderRadius: '8px',
-  padding: '12px 16px',
-  background: 'var(--bg-secondary)',
-};
-
 const DISTILLER_STATE_FALLBACK: Record<string, string> = {
   active: 'Active',
   stale: 'Stale',
   never_ran: 'Never run',
 };
 
-const FAILURE_STATUS_STYLE: Record<string, { color: string; fallback: string }> = {
-  active: { color: '#ef4444', fallback: 'active' },
-  规避中: { color: '#f59e0b', fallback: 'mitigating' },
-  已根除: { color: '#22c55e', fallback: 'resolved' },
+const FAILURE_STATUS_STYLE: Record<string, { cls: string; fallback: string }> = {
+  active: { cls: 'agent-knowledge-fm-active', fallback: 'active' },
+  规避中: { cls: 'agent-knowledge-fm-mitigating', fallback: 'mitigating' },
+  已根除: { cls: 'agent-knowledge-fm-resolved', fallback: 'resolved' },
 };
 
 function entryHeading(entry: KnowledgeEntry): string {
@@ -69,86 +63,85 @@ function OverviewCards({
   const distillers = Object.values(overview.distillers ?? {});
   const fm = overview.planes.self.failureModes;
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
-      <div style={cardStyle}>
-        <h4 style={{ marginBottom: '8px' }}>🧬 {t('agent.knowledge.identityCard', '身份 Identity')}</h4>
-        <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+    <div className="agent-knowledge-overview-grid">
+      <div className="agent-knowledge-card">
+        <h4 className="agent-knowledge-card-title">🧬 {t('agent.knowledge.identityCard', '身份 Identity')}</h4>
+        <div className="agent-knowledge-card-body">
           <div>{t('agent.knowledge.soulSections', 'Soul sections')}: {overview.identity.sections}</div>
           <div>
             {t('agent.knowledge.pendingSoul', '待审批 soul 候选')}: {overview.identity.pendingSoulCandidates}
             {overview.identity.pendingSoulCandidates > 0 && onNavigateTab && (
-              <button className="btn btn-sm" style={{ marginLeft: '8px' }} onClick={() => onNavigateTab('evolution')}>
+              <button className="btn btn-sm agent-knowledge-inline-btn" onClick={() => onNavigateTab('evolution')}>
                 {t('agent.knowledge.goApprove', '去审批')} →
               </button>
             )}
           </div>
         </div>
       </div>
-      <div style={{ ...cardStyle, cursor: 'pointer' }} onClick={() => onOpenSubView('self')}>
-        <h4 style={{ marginBottom: '8px' }}>🪞 {t('agent.knowledge.selfCard', '自我认知')}</h4>
-        <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+      <div className="agent-knowledge-card agent-knowledge-card--clickable" onClick={() => onOpenSubView('self')}>
+        <h4 className="agent-knowledge-card-title">🪞 {t('agent.knowledge.selfCard', '自我认知')}</h4>
+        <div className="agent-knowledge-card-body">
           <div>{t('agent.knowledge.selfEntries', '条目')}: {overview.planes.self.entries}</div>
-          <div style={{ marginTop: '4px' }}>
+          <div className="agent-knowledge-row-gap">
             {t('agent.knowledge.failureModes', '失败模式')}:{' '}
-            <span style={{ color: FAILURE_STATUS_STYLE.active.color }}>{fm.active} active</span>
+            <span className="agent-knowledge-fm-active">{fm.active} active</span>
             {' · '}
-            <span style={{ color: FAILURE_STATUS_STYLE['规避中'].color }}>{fm.mitigating} {t('agent.knowledge.mitigating', '规避中')}</span>
+            <span className="agent-knowledge-fm-mitigating">{fm.mitigating} {t('agent.knowledge.mitigating', '规避中')}</span>
             {' · '}
-            <span style={{ color: FAILURE_STATUS_STYLE['已根除'].color }}>{fm.resolved} {t('agent.knowledge.resolved', '已根除')}</span>
+            <span className="agent-knowledge-fm-resolved">{fm.resolved} {t('agent.knowledge.resolved', '已根除')}</span>
           </div>
         </div>
       </div>
-      <div style={cardStyle}>
-        <h4 style={{ marginBottom: '8px' }}>🗺 {t('agent.knowledge.planesCard', '记忆版图')}</h4>
-        <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-          <div style={{ cursor: 'pointer' }} onClick={() => onOpenSubView('profiles')}>
+      <div className="agent-knowledge-card">
+        <h4 className="agent-knowledge-card-title">🗺 {t('agent.knowledge.planesCard', '记忆版图')}</h4>
+        <div className="agent-knowledge-card-body">
+          <div className="agent-knowledge-plane-link" onClick={() => onOpenSubView('profiles')}>
             👥 {t('agent.knowledge.profilesPlane', '人际与领域')}: {overview.planes.profiles.entries}
           </div>
-          <div style={{ cursor: 'pointer' }} onClick={() => onOpenSubView('knowledge')}>
+          <div className="agent-knowledge-plane-link" onClick={() => onOpenSubView('knowledge')}>
             📚 {t('agent.knowledge.knowledgePlane', '知识网络')}: {overview.planes.knowledge.pages}
           </div>
-          <div style={{ cursor: 'pointer' }} onClick={() => onOpenSubView('milestones')}>
+          <div className="agent-knowledge-plane-link" onClick={() => onOpenSubView('milestones')}>
             🏁 {t('agent.knowledge.milestonesPlane', '里程碑')}: {overview.planes.milestones.pages}
           </div>
           <div>📌 {t('agent.knowledge.explicitPlane', '主人指令记忆')}: {overview.planes.explicit.active}</div>
         </div>
       </div>
-      <div style={cardStyle}>
-        <h4 style={{ marginBottom: '8px' }}>🩺 {t('agent.knowledge.pipelineCard', '记忆管线')}</h4>
-        <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+      <div className="agent-knowledge-card">
+        <h4 className="agent-knowledge-card-title">🩺 {t('agent.knowledge.pipelineCard', '记忆管线')}</h4>
+        <div className="agent-knowledge-card-body">
           {distillers.map((status) => (
             <div key={status.name}>
               {t(`agent.knowledge.distiller.${status.name}`, status.name)}:{' '}
               <span
-                style={{
-                  color:
-                    status.state === 'active'
-                      ? '#22c55e'
-                      : status.state === 'stale'
-                        ? '#f59e0b'
-                        : 'var(--text-tertiary)',
-                }}
+                className={
+                  status.state === 'active'
+                    ? 'agent-knowledge-distiller-active'
+                    : status.state === 'stale'
+                      ? 'agent-knowledge-distiller-stale'
+                      : 'agent-knowledge-distiller-never'
+                }
               >
                 {t(`agent.knowledge.distillerState.${status.state}`, DISTILLER_STATE_FALLBACK[status.state] ?? status.state)}
               </span>
             </div>
           ))}
           {overview.pipeline?.stalled && (
-            <div style={{ color: '#ef4444', marginTop: '4px' }}>
+            <div className="agent-knowledge-pipeline-stalled">
               ⚠ {t('agent.knowledge.pipelineStalled', '消化停滞')} · {t('agent.knowledge.pendingPackages', '积压')}:{' '}
               {overview.pipeline.pendingPackages ?? 0}
             </div>
           )}
           {overview.growth?.generatedAt && (
-            <div style={{ color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="agent-knowledge-growth-updated">
               {t('agent.knowledge.growthUpdated', '成长报告更新于')} {overview.growth.generatedAt.slice(0, 16)}
             </div>
           )}
         </div>
       </div>
-      <div style={cardStyle}>
-        <h4 style={{ marginBottom: '8px' }}>🔗 {t('agent.knowledge.capabilitiesCard', '关联能力')}</h4>
-        <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+      <div className="agent-knowledge-card">
+        <h4 className="agent-knowledge-card-title">🔗 {t('agent.knowledge.capabilitiesCard', '关联能力')}</h4>
+        <div className="agent-knowledge-card-body">
           <div>{t('agent.knowledge.skillsLinked', 'Skills')}: {overview.linkedCapabilities.skillsReferenced}</div>
           <div>{t('agent.knowledge.skillCandidates', 'Skill candidates')}: {overview.linkedCapabilities.skillCandidates}</div>
           <div>{t('agent.knowledge.workflowCandidates', 'Workflow candidates')}: {overview.linkedCapabilities.workflowsReferenced}</div>
@@ -160,22 +153,19 @@ function OverviewCards({
 
 function ProfileEntryCard({ entry }: { entry: KnowledgeEntry }) {
   const status = entryStatusLine(entry);
-  const style = FAILURE_STATUS_STYLE[status];
+  const statusStyle = FAILURE_STATUS_STYLE[status];
   return (
-    <div style={cardStyle}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '6px' }}>
-        <strong style={{ fontSize: '13px' }}>{entryHeading(entry)}</strong>
+    <div className="agent-knowledge-card">
+      <div className="agent-knowledge-entry-head">
+        <strong className="agent-knowledge-entry-title">{entryHeading(entry)}</strong>
         {status && (
-          <span
-            className="badge"
-            style={{ color: style?.color ?? 'var(--text-tertiary)', whiteSpace: 'nowrap' }}
-          >
+          <span className={`badge agent-knowledge-status-badge${statusStyle ? ` ${statusStyle.cls}` : ''}`}>
             {status}
           </span>
         )}
       </div>
-      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{entry.preview}</div>
-      <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
+      <div className="agent-knowledge-entry-preview">{entry.preview}</div>
+      <div className="agent-knowledge-entry-meta">
         <code>{entry.id}</code> · {entry.file}
       </div>
     </div>
@@ -184,10 +174,10 @@ function ProfileEntryCard({ entry }: { entry: KnowledgeEntry }) {
 
 function PlaneEntriesView({ entries, emptyText }: { entries: KnowledgeEntry[]; emptyText: string }) {
   if (!entries.length) {
-    return <p style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{emptyText}</p>;
+    return <p className="agent-knowledge-empty">{emptyText}</p>;
   }
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '12px' }}>
+    <div className="agent-knowledge-entries-grid">
       {entries.map((entry) => (
         <ProfileEntryCard key={entry.id} entry={entry} />
       ))}
@@ -210,29 +200,28 @@ function PagesView({
 }) {
   const { t } = useTranslation();
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: selectedPageId ? '260px 1fr' : '1fr', gap: '16px' }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+    <div className={`agent-knowledge-pages${selectedPageId ? ' is-split' : ''}`}>
+      <div className="agent-knowledge-pages-list">
         {pages.map((page) => (
           <button
             key={page.id}
-            className={`btn btn-sm ${selectedPageId === page.id ? 'btn-primary' : ''}`}
-            style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+            className={`btn btn-sm agent-knowledge-page-btn ${selectedPageId === page.id ? 'btn-primary' : ''}`}
             onClick={() => onSelect(page.id)}
           >
             {page.kind === 'knowledge' ? '📖' : '🏁'} {page.title}
           </button>
         ))}
-        {pages.length === 0 && <p style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{emptyText}</p>}
+        {pages.length === 0 && <p className="agent-knowledge-empty">{emptyText}</p>}
       </div>
       {selectedPageId && pageDetail && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div style={cardStyle}>
+        <div className="agent-knowledge-page-detail">
+          <div className="agent-knowledge-card">
             <MarkdownRenderer content={pageDetail.markdown} />
           </div>
           {(pageDetail.links?.outgoing?.length > 0 || pageDetail.links?.incoming?.length > 0) && (
-            <div style={cardStyle}>
-              <h4 style={{ marginBottom: '8px' }}>🔗 {t('agent.knowledge.linkedPages', 'Linked pages')}</h4>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+            <div className="agent-knowledge-card">
+              <h4 className="agent-knowledge-card-title">🔗 {t('agent.knowledge.linkedPages', 'Linked pages')}</h4>
+              <div className="agent-knowledge-links">
                 {[...(pageDetail.links?.outgoing ?? []), ...(pageDetail.links?.incoming ?? [])].map(
                   (link: { page_id: string; title: string; rel_type: string; exists: boolean }, index: number) =>
                     link.exists ? (
@@ -246,8 +235,7 @@ function PagesView({
                     ) : (
                       <span
                         key={`${link.page_id}-${index}`}
-                        className="badge"
-                        style={{ color: 'var(--text-tertiary)' }}
+                        className="badge agent-knowledge-link-missing"
                         title={t('agent.knowledge.pageNotCreated', 'Page not created yet')}
                       >
                         {link.rel_type} → {link.title} ✦
@@ -313,8 +301,8 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
   const milestonePages = allPages.filter((page) => page.kind === 'milestone');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+    <div className="agent-knowledge-root">
+      <div className="agent-knowledge-subviews">
         {availableSubViews.map((view) => (
           <button
             key={view}
@@ -330,7 +318,7 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
         (overviewQuery.data ? (
           <OverviewCards overview={overviewQuery.data} onOpenSubView={setSubView} onNavigateTab={onNavigateTab} />
         ) : (
-          <p style={{ color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading…')}</p>
+          <p className="agent-knowledge-loading">{t('common.loading', 'Loading…')}</p>
         ))}
 
       {subView === 'self' && (
@@ -371,17 +359,17 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
       )}
 
       {subView === 'timeline' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div className="agent-knowledge-timeline">
           {(eventsQuery.data?.events ?? []).map((event, index) => (
-            <div key={`${event.at}-${index}`} style={{ ...cardStyle, padding: '8px 12px', fontSize: '13px' }}>
-              <span style={{ color: 'var(--text-tertiary)', marginRight: '8px' }}>{event.at.slice(0, 16)}</span>
-              <span className="badge" style={{ marginRight: '8px' }}>{event.kind}</span>
-              <span style={{ marginRight: '8px' }}>{event.outcome}</span>
-              <span style={{ color: 'var(--text-secondary)' }}>{event.summary}</span>
+            <div key={`${event.at}-${index}`} className="agent-knowledge-card agent-knowledge-timeline-row">
+              <span className="agent-knowledge-timeline-time">{event.at.slice(0, 16)}</span>
+              <span className="badge agent-knowledge-mr-2">{event.kind}</span>
+              <span className="agent-knowledge-mr-2">{event.outcome}</span>
+              <span className="agent-knowledge-timeline-summary">{event.summary}</span>
             </div>
           ))}
           {eventsQuery.data && eventsQuery.data.events.length === 0 && (
-            <p style={{ color: 'var(--text-tertiary)' }}>{t('agent.knowledge.noEvents', 'No memory events recorded yet.')}</p>
+            <p className="agent-knowledge-loading">{t('agent.knowledge.noEvents', 'No memory events recorded yet.')}</p>
           )}
         </div>
       )}

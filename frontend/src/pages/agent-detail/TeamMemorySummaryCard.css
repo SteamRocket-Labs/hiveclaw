@@ -1,0 +1,216 @@
+/* ═══════════════════════════════════════════════════════
+   TeamMemorySummaryCard — inline-style 迁移 (P3)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   复用: .card / .btn 系 / 全局 input·select·textarea base；本文件放 section-scoped 布局
+   ═══════════════════════════════════════════════════════ */
+
+.team-memory-card {
+  margin-bottom: var(--space-4);
+}
+
+.team-memory-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.team-memory-title {
+  margin: 0;
+  font-size: var(--text-emphasis);
+  font-weight: 600;
+}
+
+.team-memory-desc {
+  margin-top: var(--space-1);
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.team-memory-count {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* ── 字段：搜索走 bg-primary，草稿走 bg-secondary（全局 input base 之上覆写） ── */
+
+.team-memory-search,
+.team-memory-field,
+.team-memory-textarea {
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  font-size: var(--text-row);
+}
+
+.team-memory-search {
+  margin-bottom: var(--space-3);
+  background: var(--bg-primary);
+}
+
+.team-memory-field,
+.team-memory-textarea {
+  background: var(--bg-secondary);
+}
+
+.team-memory-textarea {
+  resize: vertical;
+}
+
+/* ── 两栏布局：列表 + 详情（列宽随 section 变体） ── */
+
+.team-memory-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: minmax(220px, 0.85fr) minmax(0, 1.15fr);
+}
+
+.team-memory-grid.is-workspace {
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 1.1fr);
+}
+
+.team-memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.team-memory-empty {
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--border-subtle);
+  background: var(--bg-primary);
+  padding: 14px;
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+/* ── 列表行：无边框 hover 提一档，selected = 灰底 + accent 边（§3.3） ── */
+
+.team-memory-entry {
+  text-align: left;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  padding: var(--space-3);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.team-memory-entry:hover:not(.is-selected) {
+  background: var(--bg-tertiary);
+  border-color: var(--border-default);
+}
+
+.team-memory-entry.is-selected {
+  border-color: var(--accent-primary);
+  background: var(--bg-secondary);
+}
+
+.team-memory-entry-title {
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.team-memory-entry-snippet {
+  margin-top: 6px;
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  line-height: var(--leading-emphasis);
+  white-space: pre-wrap;
+}
+
+/* ── 详情 / 编辑面板 ── */
+
+.team-memory-detail-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.team-memory-panel {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  padding: 14px;
+}
+
+.team-memory-detail {
+  min-height: 180px;
+}
+
+.team-memory-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.team-memory-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.team-memory-detail-label {
+  margin-bottom: 6px;
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.team-memory-detail-title {
+  font-size: var(--text-emphasis);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.team-memory-detail-updated {
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.team-memory-detail-content {
+  margin-top: 10px;
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  line-height: var(--leading-body);
+  white-space: pre-wrap;
+}
+
+.team-memory-detail-rev {
+  margin-top: 10px;
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+
+.team-memory-mode-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.team-memory-select {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  padding: var(--space-2) 10px;
+  font-size: var(--text-row);
+}
+
+.team-memory-error {
+  font-size: var(--text-row);
+  color: var(--error);
+}
+
+.team-memory-sync {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}

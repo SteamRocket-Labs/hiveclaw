@@ -7,6 +7,8 @@ import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import { useAuthStore } from '../../stores';
 import type { Agent } from '../../types';
 
+import './WorkspaceDigitalEmployeesSection.css';
+
 interface WorkspaceDigitalEmployeesSectionProps {
     selectedTenantId: string;
 }
@@ -63,12 +65,12 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
 
     if (!canManageEmployees) {
         return (
-            <div style={{ maxWidth: '960px' }}>
-                <div className="card" style={{ padding: '16px' }}>
-                    <h3 style={{ fontSize: '15px', fontWeight: 600, margin: 0 }}>
+            <div className="ws-employees-page">
+                <div className="card">
+                    <h3 className="ws-employees-title">
                         {t('workspace.digitalEmployees.title', 'Digital Employee Management')}
                     </h3>
-                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '4px', marginBottom: 0 }}>
+                    <p className="ws-employees-desc">
                         {t('workspace.digitalEmployees.adminOnly', 'Only company administrators can manage digital employees here.')}
                     </p>
                 </div>
@@ -77,66 +79,65 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
     }
 
     return (
-        <div style={{ maxWidth: '960px' }}>
-            <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '12px' }}>
+        <div className="ws-employees-page">
+            <div className="card ws-employees-card">
+                <div className="ws-employees-head">
                     <div>
-                        <h3 style={{ fontSize: '15px', fontWeight: 600, margin: 0 }}>
+                        <h3 className="ws-employees-title">
                             {t('workspace.digitalEmployees.title', 'Digital Employee Management')}
                         </h3>
-                        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '4px', marginBottom: 0 }}>
+                        <p className="ws-employees-desc">
                             {t('workspace.digitalEmployees.description', 'Company admins can review and remove tenant digital employees from this governed backend surface.')}
                         </p>
                     </div>
-                    <Link className="btn btn-primary" to="/agents/new" style={{ flexShrink: 0 }}>
+                    <Link className="btn btn-primary ws-employees-create" to="/agents/new">
                         {t('employees.createViaHr', 'Create via HR')}
                     </Link>
                 </div>
 
                 {agentsLoading ? (
-                    <div style={{ padding: '16px 0', color: 'var(--text-secondary)' }}>
+                    <div className="ws-employees-loading">
                         {t('common.loading', 'Loading...')}
                     </div>
                 ) : (
-                    <div style={{ overflowX: 'auto' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <div className="ws-employees-table-wrap">
+                        <table className="ws-employees-table">
                             <thead>
-                                <tr style={{ color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>
-                                    <th style={{ textAlign: 'left', padding: '8px 6px' }}>{t('workspace.digitalEmployees.employeeName', 'Employee')}</th>
-                                    <th style={{ textAlign: 'left', padding: '8px 6px' }}>{t('workspace.digitalEmployees.employeeStatus', 'Status')}</th>
-                                    <th style={{ textAlign: 'left', padding: '8px 6px' }}>{t('workspace.digitalEmployees.employeeType', 'Type')}</th>
-                                    <th style={{ textAlign: 'right', padding: '8px 6px' }}>{t('workspace.digitalEmployees.employeeActions', 'Actions')}</th>
+                                <tr className="ws-employees-thead-row">
+                                    <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeName', 'Employee')}</th>
+                                    <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeStatus', 'Status')}</th>
+                                    <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeType', 'Type')}</th>
+                                    <th className="ws-employees-th-right">{t('workspace.digitalEmployees.employeeActions', 'Actions')}</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {(agents as Agent[]).map((agent) => {
                                     const protectedAgent = isSystemProtectedAgent(agent);
                                     return (
-                                        <tr key={agent.id} style={{ borderBottom: '1px solid var(--border-muted, #f1f5f9)' }}>
-                                            <td style={{ padding: '10px 6px', verticalAlign: 'top' }}>
-                                                <div style={{ fontWeight: 600 }}>{agent.name}</div>
-                                                <div style={{ color: 'var(--text-secondary)', fontSize: '12px', maxWidth: 460, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        <tr key={agent.id} className="ws-employees-row">
+                                            <td className="ws-employees-td">
+                                                <div className="ws-employees-name">{agent.name}</div>
+                                                <div className="ws-employees-role">
                                                     {agent.role_description || t('employees.noRole', 'No role description yet')}
                                                 </div>
                                             </td>
-                                            <td style={{ padding: '10px 6px', verticalAlign: 'top' }}>{agent.status}</td>
-                                            <td style={{ padding: '10px 6px', verticalAlign: 'top' }}>{agent.agent_type || 'native'}</td>
-                                            <td style={{ padding: '10px 6px', textAlign: 'right', verticalAlign: 'top' }}>
-                                                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-                                                    <Link to={`/agents/${agent.id}`} className="btn btn-ghost" style={{ fontSize: '12px' }}>
+                                            <td className="ws-employees-td">{agent.status}</td>
+                                            <td className="ws-employees-td">{agent.agent_type || 'native'}</td>
+                                            <td className="ws-employees-td-right">
+                                                <div className="ws-employees-actions">
+                                                    <Link to={`/agents/${agent.id}`} className="btn btn-ghost">
                                                         {t('employees.actions.detail', 'Detail')}
                                                     </Link>
                                                     {protectedAgent ? (
-                                                        <span style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                                        <span className="ws-employees-protected">
                                                             {t('workspace.digitalEmployees.systemProtected', 'System protected')}
                                                         </span>
                                                     ) : (
                                                         <button
                                                             type="button"
-                                                            className="btn btn-ghost"
+                                                            className="btn btn-ghost ws-employees-del"
                                                             onClick={() => handleDeleteAgent(agent)}
                                                             disabled={deleteAgentMutation.isPending}
-                                                            style={{ color: 'var(--error)', fontSize: '12px' }}
                                                         >
                                                             {t('workspace.digitalEmployees.deleteEmployeeButton', 'Delete employee')}
                                                         </button>
@@ -149,7 +150,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                             </tbody>
                         </table>
                         {(agents as Agent[]).length === 0 && (
-                            <div style={{ padding: '16px 0', color: 'var(--text-secondary)' }}>
+                            <div className="ws-employees-loading">
                                 {t('workspace.digitalEmployees.noEmployees', 'No digital employees found.')}
                             </div>
                         )}

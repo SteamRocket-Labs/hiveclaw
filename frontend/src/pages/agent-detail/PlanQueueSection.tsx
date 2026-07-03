@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 
 import { planApi, type PlanRequest } from '../../api/domains/plans';
 import PlanCard from './PlanCard';
+import './PlanQueueSection.css';
 
 type PlanQueueSectionProps = {
   agentId: string;
@@ -41,25 +42,12 @@ export default function PlanQueueSection({ agentId }: PlanQueueSectionProps) {
   const refresh = () => refetch();
 
   const renderClosedRow = (plan: PlanRequest) => (
-    <div
-      key={plan.id}
-      style={{
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '8px',
-        padding: '10px 12px',
-        background: 'var(--bg-primary)',
-        opacity: 0.7,
-        display: 'flex',
-        justifyContent: 'space-between',
-        gap: '12px',
-        alignItems: 'center',
-      }}
-    >
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>
+    <div key={plan.id} className="plan-queue-row plan-queue-row--muted">
+      <div className="plan-queue-row-body">
+        <div className="plan-queue-row-title">
           {plan.plan_json?.title || plan.original_request}
         </div>
-        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+        <div className="plan-queue-row-meta">
           {t('agent.plan.version', 'v{{version}}', { version: plan.plan_version })}
           {' · '}
           {plan.rejected_at || plan.updated_at
@@ -72,92 +60,51 @@ export default function PlanQueueSection({ agentId }: PlanQueueSectionProps) {
             : ''}
         </div>
       </div>
-      <span
-        style={{
-          fontSize: '11px',
-          color: 'var(--text-tertiary)',
-          background: 'var(--bg-secondary)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: '6px',
-          padding: '2px 7px',
-          whiteSpace: 'nowrap',
-        }}
-      >
+      <span className="plan-queue-status">
         {t(`agent.plan.status.${plan.status}`, String(plan.status).replace(/_/g, ' '))}
       </span>
     </div>
   );
 
   const renderConfirmedRow = (plan: PlanRequest) => (
-    <div
-      key={plan.id}
-      style={{
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '8px',
-        padding: '10px 12px',
-        background: 'var(--bg-primary)',
-        display: 'flex',
-        justifyContent: 'space-between',
-        gap: '12px',
-        alignItems: 'center',
-      }}
-    >
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)' }}>
+    <div key={plan.id} className="plan-queue-row">
+      <div className="plan-queue-row-body">
+        <div className="plan-queue-row-title">
           {plan.plan_json?.title || plan.original_request}
         </div>
-        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+        <div className="plan-queue-row-meta">
           {t('agent.plan.handoffState', 'Handoff: {{state}}', {
             state: String(plan.handoff_status || 'not_started').replace(/_/g, ' '),
           })}
         </div>
       </div>
-      <span
-        style={{
-          fontSize: '11px',
-          color: 'var(--success, #059669)',
-          background: 'var(--bg-secondary)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: '6px',
-          padding: '2px 7px',
-          whiteSpace: 'nowrap',
-        }}
-      >
+      <span className="plan-queue-status plan-queue-status--confirmed">
         {t('agent.plan.status.confirmed', 'confirmed')}
       </span>
     </div>
   );
 
   return (
-    <div className="card" style={{ marginBottom: '16px', padding: '16px' }} data-testid="plan-queue-section">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+    <div className="card plan-queue-card" data-testid="plan-queue-section">
+      <div className="plan-queue-header">
         <div>
-          <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.plan.queueTitle', 'Plan Queue')}</h4>
-          <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+          <h4 className="plan-queue-title">{t('agent.plan.queueTitle', 'Plan Queue')}</h4>
+          <span className="plan-queue-desc">
             {t('agent.plan.queueDesc', 'Plans awaiting your confirmation before autonomous work can begin.')}
           </span>
         </div>
-        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{list.length}</span>
+        <span className="plan-queue-count">{list.length}</span>
       </div>
 
       {list.length === 0 && (
-        <div
-          style={{
-            padding: '24px',
-            textAlign: 'center',
-            color: 'var(--text-tertiary)',
-            border: '1px dashed var(--border-subtle)',
-            borderRadius: '8px',
-            fontSize: '13px',
-          }}
-        >
+        <div className="plan-queue-empty">
           {t('agent.plan.queueEmpty', 'No plans yet. Plans appear here when the agent proposes autonomous work.')}
         </div>
       )}
 
       {awaiting.length > 0 && (
-        <div style={{ display: 'grid', gap: '10px', marginBottom: closed.length || confirmed.length || planning.length ? '16px' : 0 }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--warning, #b45309)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+        <div className="plan-queue-group plan-queue-group--awaiting">
+          <div className="plan-queue-group-label plan-queue-group-label--awaiting">
             {t('agent.plan.groupAwaiting', 'Awaiting confirmation')} · {awaiting.length}
           </div>
           {awaiting.map((plan) => (
@@ -167,8 +114,8 @@ export default function PlanQueueSection({ agentId }: PlanQueueSectionProps) {
       )}
 
       {planning.length > 0 && (
-        <div style={{ display: 'grid', gap: '6px', marginBottom: closed.length || confirmed.length ? '16px' : 0 }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+        <div className="plan-queue-group">
+          <div className="plan-queue-group-label">
             {t('agent.plan.groupPlanning', 'Planning')} · {planning.length}
           </div>
           {planning.map(renderClosedRow)}
@@ -176,8 +123,8 @@ export default function PlanQueueSection({ agentId }: PlanQueueSectionProps) {
       )}
 
       {confirmed.length > 0 && (
-        <div style={{ display: 'grid', gap: '6px', marginBottom: closed.length ? '16px' : 0 }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--success, #059669)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+        <div className="plan-queue-group">
+          <div className="plan-queue-group-label plan-queue-group-label--confirmed">
             {t('agent.plan.groupConfirmed', 'Confirmed / handoff pending')} · {confirmed.length}
           </div>
           {confirmed.map(renderConfirmedRow)}
@@ -185,8 +132,8 @@ export default function PlanQueueSection({ agentId }: PlanQueueSectionProps) {
       )}
 
       {closed.length > 0 && (
-        <div style={{ display: 'grid', gap: '6px' }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+        <div className="plan-queue-group">
+          <div className="plan-queue-group-label">
             {t('agent.plan.groupClosed', 'Rejected / expired')} · {closed.length}
           </div>
           {closed.map(renderClosedRow)}

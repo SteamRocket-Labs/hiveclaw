@@ -1,0 +1,130 @@
+/* ═══════════════════════════════════════════════════════
+   AgentA2ASection — A2A collaborators & groups (P3/P4)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   ═══════════════════════════════════════════════════════ */
+
+.agent-a2a-list {
+  margin-bottom: 18px;
+}
+.agent-a2a-heading {
+  margin-bottom: 4px;
+}
+.agent-a2a-heading-spaced {
+  margin: 18px 0 4px;
+}
+.agent-a2a-desc {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-bottom: 12px;
+}
+.agent-a2a-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-a2a-empty {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  padding: 8px 0;
+}
+
+/* ── Agent row ───────────────────────────────────────── */
+.agent-a2a-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+.agent-a2a-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-full);
+  background: var(--bg-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-row);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.agent-a2a-row-body {
+  flex: 1;
+  min-width: 0;
+}
+.agent-a2a-name {
+  font-size: var(--text-body);
+  font-weight: 500;
+}
+.agent-a2a-meta {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+.agent-a2a-badge {
+  font-size: var(--text-tiny);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+
+/* ── Collaboration groups ────────────────────────────── */
+.agent-a2a-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agent-a2a-group {
+  padding: 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+}
+.agent-a2a-group-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.agent-a2a-group-name {
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+.agent-a2a-group-status {
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+}
+.agent-a2a-members {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agent-a2a-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-a2a-member-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  background: var(--bg-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-tiny);
+  font-weight: 600;
+}
+.agent-a2a-member-body {
+  min-width: 0;
+}
+.agent-a2a-member-name {
+  font-size: var(--text-row);
+  font-weight: 500;
+}
+.agent-a2a-member-role {
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+}

@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { requestAppConfirm } from '../../components/AppDialogs';
 import { subagentApi, type SubagentRow } from '../../api/domains/subagents';
 import { scopeBadgeStyle, toolFaceSummary } from '../agent-detail/AgentSubagentsSection';
+
+import './WorkspaceSubagentsSection.css';
 
 /**
  * Company subagent library (cut C4, §12.3/§12.8): org-admin curation over
@@ -128,64 +130,43 @@ export default function WorkspaceSubagentsSection() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+      <div className="ws-subagents-head">
         <div>
-          <h3 style={{ marginBottom: '4px' }}>{t('enterprise.subagents.title')}</h3>
-          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('enterprise.subagents.description')}</p>
+          <h3 className="ws-subagents-title">{t('enterprise.subagents.title')}</h3>
+          <p className="ws-subagents-desc">{t('enterprise.subagents.description')}</p>
         </div>
-        <button className="btn btn-primary" style={{ fontSize: '13px', flexShrink: 0 }} onClick={startCreate}>
+        <button className="btn btn-primary ws-subagents-new" onClick={startCreate}>
           {t('agent.subagents.newButton')}
         </button>
       </div>
 
-      {isLoading && <p style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('common.loading')}</p>}
+      {isLoading && <p className="ws-subagents-desc">{t('common.loading')}</p>}
 
       {!isLoading && rows.length === 0 && (
-        <p style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('enterprise.subagents.empty')}</p>
+        <p className="ws-subagents-desc">{t('enterprise.subagents.empty')}</p>
       )}
 
       {rows.length > 0 && (
-        <div style={{ border: '1px solid var(--border-primary)', borderRadius: '8px', overflow: 'hidden' }}>
+        <div className="ws-subagents-list">
           {rows.map((row) => (
-            <div
-              key={`${row.scope}:${row.name}`}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                padding: '10px 14px',
-                borderBottom: '1px solid var(--border-primary)',
-              }}
-            >
-              <span style={{ fontWeight: 600, fontSize: '13px', minWidth: '160px' }}>{row.name}</span>
+            <div key={`${row.scope}:${row.name}`} className="ws-subagents-row">
+              <span className="ws-subagents-name">{row.name}</span>
               <span style={scopeBadgeStyle(row.scope)}>{t(`agent.subagents.scope.${row.scope}`)}</span>
-              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{row.type}</span>
-              {row.model && <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{row.model}</span>}
-              <span
-                title={row.description}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  fontSize: '12px',
-                  color: 'var(--text-tertiary)',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
+              <span className="ws-subagents-type">{row.type}</span>
+              {row.model && <span className="ws-subagents-model">{row.model}</span>}
+              <span title={row.description} className="ws-subagents-row-desc">
                 {row.description}
               </span>
-              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: 'auto', flexShrink: 0 }}>
+              <span className="ws-subagents-tools">
                 {toolFaceSummary(row)}
               </span>
-              <span style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => startEdit(row)}>
+              <span className="ws-subagents-row-actions">
+                <button className="btn btn-secondary" onClick={() => startEdit(row)}>
                   {row.scope === 'builtin' ? t('agent.subagents.forkButton') : t('agent.subagents.editButton')}
                 </button>
                 {row.scope === 'tenant' && (
                   <button
-                    className="btn btn-secondary"
-                    style={{ fontSize: '12px', color: 'var(--danger, #dc2626)' }}
+                    className="btn btn-secondary ws-subagents-del"
                     onClick={() => remove(row)}
                   >
                     {t('agent.subagents.deleteButton')}
@@ -198,49 +179,33 @@ export default function WorkspaceSubagentsSection() {
       )}
 
       {editorMode !== 'closed' && (
-        <div
-          style={{
-            marginTop: '16px',
-            border: '1px solid var(--border-primary)',
-            borderRadius: '8px',
-            padding: '16px',
-            background: 'var(--bg-secondary)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
-            <h4 style={{ margin: 0 }}>
+        <div className="ws-subagents-editor">
+          <div className="ws-subagents-editor-head">
+            <h4 className="ws-subagents-editor-title">
               {editorMode === 'create' ? t('enterprise.subagents.createTitle') : t('enterprise.subagents.editTitle')}
             </h4>
-            <span style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
-              <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={save} disabled={saving}>
+            <span className="ws-subagents-editor-actions">
+              <button className="btn btn-primary" onClick={save} disabled={saving}>
                 {t('common.save')}
               </button>
-              <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setEditorMode('closed')}>
+              <button className="btn btn-secondary" onClick={() => setEditorMode('closed')}>
                 {t('common.cancel')}
               </button>
             </span>
           </div>
           {editorMode === 'create' && (
             <>
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+              <div className="ws-subagents-gen-row">
                 <input
                   type="text"
                   value={genPrompt}
                   onChange={(e) => setGenPrompt(e.target.value)}
                   placeholder={t('agent.subagents.generatePlaceholder')}
                   disabled={generating}
-                  style={{
-                    flex: 1,
-                    padding: '8px 10px',
-                    fontSize: '13px',
-                    border: '1px solid var(--border-primary)',
-                    borderRadius: '6px',
-                    background: 'var(--bg-primary)',
-                  }}
+                  className="ws-subagents-gen-input"
                 />
                 <button
-                  className="btn btn-secondary"
-                  style={{ fontSize: '12px', flexShrink: 0 }}
+                  className="btn btn-secondary ws-subagents-gen-btn"
                   onClick={generateWithAI}
                   disabled={generating || !genPrompt.trim()}
                 >
@@ -252,15 +217,7 @@ export default function WorkspaceSubagentsSection() {
                 value={editorName}
                 onChange={(e) => setEditorName(e.target.value)}
                 placeholder={t('agent.subagents.namePlaceholder')}
-                style={{
-                  width: '100%',
-                  marginBottom: '8px',
-                  padding: '8px 10px',
-                  fontSize: '13px',
-                  border: '1px solid var(--border-primary)',
-                  borderRadius: '6px',
-                  background: 'var(--bg-primary)',
-                }}
+                className="ws-subagents-name-input"
               />
             </>
           )}
@@ -268,20 +225,10 @@ export default function WorkspaceSubagentsSection() {
             value={editorText}
             onChange={(e) => setEditorText(e.target.value)}
             spellCheck={false}
-            style={{
-              width: '100%',
-              minHeight: '320px',
-              fontFamily: 'var(--font-mono, monospace)',
-              fontSize: '12px',
-              padding: '12px',
-              border: '1px solid var(--border-primary)',
-              borderRadius: '6px',
-              background: 'var(--bg-primary)',
-              resize: 'vertical',
-            }}
+            className="ws-subagents-editor-textarea"
           />
           {actionError && (
-            <p style={{ marginTop: '8px', fontSize: '12px', color: 'var(--danger, #dc2626)' }}>{actionError}</p>
+            <p className="ws-subagents-error">{actionError}</p>
           )}
         </div>
       )}

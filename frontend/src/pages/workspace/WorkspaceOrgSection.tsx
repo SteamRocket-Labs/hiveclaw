@@ -7,6 +7,8 @@ import { enterpriseApi } from '../../api/domains/enterprise';
 import { toolsApi, type FeishuRuntimeStatus } from '../../api/domains/tools';
 import FeishuRuntimeStatusCard from '../../components/FeishuRuntimeStatusCard';
 
+import './WorkspaceOrgSection.css';
+
 interface WorkspaceOrgSectionProps {
   selectedTenantId: string;
 }
@@ -54,23 +56,16 @@ function DeptTree({
       {children.map((department) => (
         <div key={department.id}>
           <div
-            style={{
-              padding: '5px 8px',
-              paddingLeft: `${8 + level * 16}px`,
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '13px',
-              marginBottom: '1px',
-              background: selectedDept === department.id ? 'rgba(224,238,238,0.12)' : 'transparent',
-            }}
+            className={`ws-org-dept-item ${selectedDept === department.id ? 'is-selected' : ''}`}
+            style={{ paddingLeft: `${8 + level * 16}px` }}
             onClick={() => onSelect(department.id)}
           >
-            <span style={{ color: 'var(--text-tertiary)', marginRight: '4px', fontSize: '11px' }}>
+            <span className="ws-org-dept-caret">
               {departments.some((child) => child.parent_id === department.id) ? '▸' : '·'}
             </span>
             {department.name}
             {department.member_count > 0 ? (
-              <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginLeft: '4px' }}>
+              <span className="ws-org-dept-count">
                 ({department.member_count})
               </span>
             ) : null}
@@ -155,14 +150,14 @@ export default function WorkspaceOrgSection({
 
   return (
     <div>
-      <div className="card" style={{ marginBottom: '16px' }}>
-        <h4 style={{ marginBottom: '12px' }}>{t('enterprise.org.feishuSync', 'Feishu Sync')}</h4>
-        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+      <div className="card ws-org-card">
+        <h4 className="ws-org-card-title">{t('enterprise.org.feishuSync', 'Feishu Sync')}</h4>
+        <p className="ws-org-card-desc">
           {t('enterprise.org.feishuSyncDesc', 'Sync department and member data from Feishu/Lark.')}
         </p>
-        <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
-          <div style={{ flex: 1 }}>
-            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App ID</label>
+        <div className="ws-org-form-row">
+          <div className="ws-org-field">
+            <label className="ws-org-label">App ID</label>
             <input
               className="input"
               value={syncForm.app_id}
@@ -170,8 +165,8 @@ export default function WorkspaceOrgSection({
               placeholder="cli_xxxxxxxx"
             />
           </div>
-          <div style={{ flex: 1 }}>
-            <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>App Secret</label>
+          <div className="ws-org-field">
+            <label className="ws-org-label">App Secret</label>
             <input
               className="input"
               type="password"
@@ -181,26 +176,18 @@ export default function WorkspaceOrgSection({
             />
           </div>
         </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div className="ws-org-actions">
           <button className="btn btn-primary" onClick={triggerSync} disabled={syncing || !syncForm.app_id}>
             {syncing ? t('enterprise.org.syncing', 'Syncing...') : t('enterprise.org.syncNow', 'Sync Now')}
           </button>
           {config?.value?.last_synced_at ? (
-            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <span className="ws-org-meta">
               Last sync: {new Date(config.value.last_synced_at).toLocaleString()}
             </span>
           ) : null}
         </div>
         {syncResult ? (
-          <div
-            style={{
-              marginTop: '12px',
-              padding: '8px 12px',
-              borderRadius: '6px',
-              fontSize: '12px',
-              background: syncResult.error ? 'rgba(255,0,0,0.1)' : 'rgba(0,200,0,0.1)',
-            }}
-          >
+          <div className={`ws-org-sync-result ${syncResult.error ? 'is-error' : 'is-ok'}`}>
             {syncResult.error
               ? syncResult.error
               : t('enterprise.org.syncComplete', {
@@ -216,29 +203,14 @@ export default function WorkspaceOrgSection({
       ) : null}
 
       <div className="card">
-        <h4 style={{ marginBottom: '12px' }}>{t('enterprise.org.orgBrowser', 'Org Browser')}</h4>
-        <div style={{ display: 'flex', gap: '16px' }}>
-          <div
-            style={{
-              width: '260px',
-              borderRight: '1px solid var(--border-subtle)',
-              paddingRight: '16px',
-              maxHeight: '500px',
-              overflowY: 'auto',
-            }}
-          >
-            <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>
+        <h4 className="ws-org-card-title">{t('enterprise.org.orgBrowser', 'Org Browser')}</h4>
+        <div className="ws-org-browser">
+          <div className="ws-org-dept-panel">
+            <div className="ws-org-panel-title">
               {t('enterprise.org.allDepartments', 'All Departments')}
             </div>
             <div
-              style={{
-                padding: '6px 8px',
-                borderRadius: '4px',
-                cursor: 'pointer',
-                fontSize: '13px',
-                marginBottom: '2px',
-                background: !selectedDept ? 'rgba(224,238,238,0.1)' : 'transparent',
-              }}
+              className={`ws-org-dept-item ${!selectedDept ? 'is-selected' : ''}`}
               onClick={() => setSelectedDept(null)}
             >
               {t('common.all', 'All')}
@@ -251,51 +223,28 @@ export default function WorkspaceOrgSection({
               level={0}
             />
             {departments.length === 0 ? (
-              <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px' }}>
+              <div className="ws-org-empty-sm">
                 {t('common.noData', 'No data')}
               </div>
             ) : null}
           </div>
 
-          <div style={{ flex: 1 }}>
+          <div className="ws-org-field">
             <input
-              className="input"
+              className="input ws-org-search"
               placeholder={t('enterprise.org.searchMembers', 'Search members')}
               value={memberSearch}
               onChange={(event) => setMemberSearch(event.target.value)}
-              style={{ marginBottom: '12px', fontSize: '13px' }}
             />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '400px', overflowY: 'auto' }}>
+            <div className="ws-org-member-list">
               {(members as WorkspaceMember[]).map((member) => (
-                <div
-                  key={member.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px',
-                    padding: '8px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--border-subtle)',
-                  }}
-                >
-                  <div
-                    style={{
-                      width: '32px',
-                      height: '32px',
-                      borderRadius: '50%',
-                      background: 'rgba(224,238,238,0.15)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '14px',
-                      fontWeight: 600,
-                    }}
-                  >
+                <div key={member.id} className="ws-org-member">
+                  <div className="ws-org-avatar">
                     {member.name?.[0] || '?'}
                   </div>
                   <div>
-                    <div style={{ fontWeight: 500, fontSize: '13px' }}>{member.name}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                    <div className="ws-org-member-name">{member.name}</div>
+                    <div className="ws-org-member-meta">
                       {member.title || '-'} · {member.department_path || '-'}
                       {member.email ? ` · ${member.email}` : ''}
                     </div>
@@ -303,7 +252,7 @@ export default function WorkspaceOrgSection({
                 </div>
               ))}
               {members.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                <div className="ws-org-empty">
                   {t('enterprise.org.noMembers', 'No members')}
                 </div>
               ) : null}

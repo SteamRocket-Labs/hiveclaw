@@ -1,0 +1,116 @@
+/* ═══════════════════════════════════════════════════════
+   AgentApprovalsSection — 静态样式迁出（P3 高频页面）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .agent-approvals-*；status 条件色走 .is-* modifier
+   ═══════════════════════════════════════════════════════ */
+
+.agent-approvals {
+  padding: var(--space-5) var(--space-6);
+}
+
+/* ── 分组标题 —— history 灰 / pending 警示 ─────────── */
+
+.agent-approvals-heading {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+}
+
+.agent-approvals-heading.is-alert {
+  color: var(--warning);
+}
+
+/* ── 状态胶囊 —— JS 条件色转 CSS modifier ──────────── */
+
+.agent-approvals-status {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-meta);
+  font-weight: 600;
+}
+
+.agent-approvals-status.is-approved {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+
+.agent-approvals-status.is-rejected {
+  background: var(--error-subtle);
+  color: var(--error);
+}
+
+.agent-approvals-status.is-pending {
+  background: var(--warning-subtle);
+  color: var(--warning);
+}
+
+/* ── 条目 —— 复用 .card，本地只补间距/弱化 ─────────── */
+
+.agent-approvals-item {
+  margin-bottom: var(--space-2);
+}
+
+.agent-approvals-item-resolved {
+  margin-bottom: var(--space-2);
+  opacity: 0.7;
+}
+
+.agent-approvals-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.agent-approvals-row-head {
+  margin-bottom: var(--space-2);
+}
+
+.agent-approvals-action {
+  font-size: var(--text-body);
+  font-weight: 500;
+}
+
+.agent-approvals-action-sm {
+  font-size: var(--text-row);
+}
+
+.agent-approvals-spacer {
+  flex: 1;
+}
+
+.agent-approvals-time {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+
+.agent-approvals-time-sm {
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+}
+
+.agent-approvals-details {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-3);
+  line-height: 1.5;
+  max-height: 80px;
+  overflow: hidden;
+}
+
+.agent-approvals-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.agent-approvals-divider {
+  border-top: 1px solid var(--border-subtle);
+  margin: var(--space-4) 0;
+}
+
+.agent-approvals-empty {
+  text-align: center;
+  padding: var(--space-10);
+  color: var(--text-tertiary);
+  font-size: var(--text-body);
+}

@@ -16,6 +16,7 @@ import {
   IconX,
 } from '@tabler/icons-react';
 
+import './LocalAgentChatSection.css';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import type { AgentPermissions } from '../../api/domains/agents';
 import {
@@ -217,53 +218,24 @@ function LocalArtifactCards({
   const { t } = useTranslation();
   if (!artifacts?.length) return null;
   return (
-    <div style={{ display: 'grid', gap: '6px', marginTop: '8px' }}>
+    <div className="local-chat-artifacts">
       {artifacts.map((artifact) => (
         <a
           key={`${artifact.id || ''}:${artifact.path}`}
           href={localAgentArtifactDownloadUrl(artifact.path, downloadContext)}
           download={artifact.name}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '8px',
-            padding: '8px',
-            background: 'var(--bg-elevated)',
-            color: 'inherit',
-            textDecoration: 'none',
-          }}
+          className="local-chat-artifact"
         >
-          <IconFileText size={16} color="var(--text-tertiary)" style={{ flexShrink: 0 }} />
-          <span style={{ minWidth: 0, flex: 1 }}>
-            <span
-              style={{
-                display: 'block',
-                fontSize: '12px',
-                fontWeight: 600,
-                color: 'var(--text-primary)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
+          <IconFileText size={16} color="var(--text-tertiary)" className="local-chat-artifact-icon" />
+          <span className="local-chat-artifact-body">
+            <span className="local-chat-artifact-name">
               {artifact.name}
             </span>
-            <span
-              style={{
-                display: 'block',
-                fontSize: '10px',
-                color: 'var(--text-tertiary)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
+            <span className="local-chat-artifact-meta">
               {[artifact.previewKind, artifact.size ? `${artifact.size} bytes` : null].filter(Boolean).join(' · ') || artifact.path}
             </span>
           </span>
-          <span style={{ fontSize: '11px', color: 'var(--accent-primary)', flexShrink: 0 }}>
+          <span className="local-chat-artifact-action">
             {t('localAgents.download', 'Download')}
           </span>
         </a>
@@ -281,33 +253,16 @@ function LocalChatMessageBubble({
 }) {
   const isAssistant = message.role === 'assistant';
   return (
-    <div
-      style={{
-        display: 'flex',
-        justifyContent: isAssistant ? 'flex-start' : 'flex-end',
-        padding: '8px 0',
-      }}
-    >
-      <div
-        style={{
-          maxWidth: '76%',
-          minWidth: 0,
-          borderRadius: '12px',
-          border: '1px solid var(--border-subtle)',
-          background: isAssistant ? 'var(--bg-secondary)' : 'rgba(16,185,129,0.12)',
-          padding: '10px 12px',
-          color: 'var(--text-primary)',
-          boxShadow: '0 1px 1px rgba(15, 23, 42, 0.03)',
-        }}
-      >
+    <div className={`session-tui-message-row session-tui-message-row-${isAssistant ? 'assistant' : 'user'}`}>
+      <div className="session-tui-message-bubble">
         {message.content && (
-          <div style={{ fontSize: '14px', lineHeight: 1.65, wordBreak: 'break-word' }}>
+          <div>
             <MarkdownRenderer content={message.content} />
           </div>
         )}
         <LocalArtifactCards artifacts={message.artifacts} downloadContext={downloadContext} />
         {message.timestamp && (
-          <div style={{ marginTop: '6px', fontSize: '10px', color: 'var(--text-tertiary)', textAlign: isAssistant ? 'left' : 'right' }}>
+          <div className={`local-chat-msg-time${isAssistant ? '' : ' is-user'}`}>
             {formatTime(message.timestamp)}
           </div>
         )}
@@ -560,29 +515,20 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
   return (
     <div
       data-testid="local-agent-chat-section"
-      className="session-chat-workbench session-only"
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        flex: 1,
-        minHeight: 0,
-        height: '100%',
-        background: 'var(--bg-primary)',
-        borderTop: '1px solid var(--border-subtle)',
-      }}
+      className="session-chat-workbench session-only local-chat-root"
     >
       <SessionWorkbenchHeader model={headerModel} />
-      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+      <div className="local-chat-history">
         {loading ? (
-          <div style={{ padding: '48px 16px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+          <div className="local-chat-loading">
             {t('common.loading', 'Loading')}
           </div>
         ) : messages.length === 0 ? (
-          <div style={{ padding: '60px 20px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-            <div style={{ fontSize: '13px', marginBottom: '4px' }}>
+          <div className="local-chat-empty">
+            <div className="local-chat-empty-title">
               {t('localAgents.noMessagesYet', 'No local conversation yet.')}
             </div>
-            <div style={{ fontSize: '12px' }}>
+            <div className="local-chat-empty-hint">
               {t('localAgents.startChatHint', 'Send a message after the Hive Connect background service is online.')}
             </div>
           </div>
@@ -597,61 +543,38 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
         )}
       </div>
       {error && (
-        <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.25)', background: 'rgba(245,158,11,0.08)', fontSize: '12px', color: 'rgb(180,100,0)' }}>
+        <div className="local-chat-error">
           {error}
         </div>
       )}
       {!wsConnected && !error && (
-        <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-          <span
-            style={{
-              display: 'inline-block',
-              width: '5px',
-              height: '5px',
-              borderRadius: '50%',
-              background: 'var(--accent-primary)',
-              opacity: 0.8,
-              animation: 'pulse 1.2s ease-in-out infinite',
-            }}
-          />
+        <div className="local-chat-connecting">
+          <span className="local-chat-connecting-dot" />
           {t('localAgents.connectingLiveChannel', 'Connecting live local channel...')}
         </div>
       )}
       <div
         data-testid="local-agent-session-composer"
-        style={{
-          background: 'var(--bg-primary)',
-          padding: '14px 16px 16px',
-        }}
+        className="local-chat-composer"
       >
         {attachments.length > 0 && (
           <div
             data-testid="session-composer-attachments"
-            style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', paddingBottom: '7px' }}
+            className="local-chat-attachments"
           >
             {attachments.map((file, index) => (
               <div
                 key={`${file.workspace_path}:${index}`}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontSize: '11px',
-                  background: 'var(--bg-secondary)',
-                  padding: '4px 6px',
-                  borderRadius: '6px',
-                  border: '1px solid var(--border-subtle)',
-                  maxWidth: '260px',
-                }}
+                className="local-chat-attachment"
               >
                 <IconFileText size={14} color="var(--text-tertiary)" />
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.filename}</span>
+                <span className="local-chat-attachment-name">{file.filename}</span>
                 <button
                   type="button"
                   aria-label={t('agent.chat.removeAttachment', 'Remove attachment')}
                   title={t('agent.chat.removeAttachment', 'Remove attachment')}
                   onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-                  style={{ border: 'none', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'inline-flex', padding: 0 }}
+                  className="local-chat-attachment-remove"
                 >
                   <IconX size={13} />
                 </button>
@@ -661,32 +584,12 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
         )}
         <div
           data-testid="session-composer-shell"
-          style={{
-            position: 'relative',
-            border: '1px solid var(--border-default)',
-            borderRadius: '18px',
-            background: 'var(--bg-primary)',
-            boxShadow: '0 16px 36px rgba(15, 23, 42, 0.08)',
-            overflow: 'visible',
-          }}
+          className="local-chat-shell"
         >
           <div
             data-testid="session-composer-plus-menu"
             hidden={!composerMenuOpen}
-            style={{
-              position: 'absolute',
-              left: '12px',
-              bottom: '44px',
-              width: '248px',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: '12px',
-              background: 'var(--bg-primary)',
-              boxShadow: '0 18px 48px rgba(15, 23, 42, 0.18)',
-              padding: '6px',
-              zIndex: 16,
-              display: composerMenuOpen ? 'grid' : 'none',
-              gap: '2px',
-            }}
+            className="local-chat-plus-menu"
           >
             {([
               {
@@ -733,27 +636,14 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
                 type="button"
                 onClick={() => setComposerAction(action.key)}
                 disabled={action.disabled}
-                style={{
-                  width: '100%',
-                  display: 'grid',
-                  gridTemplateColumns: action.checked === undefined ? '22px minmax(0, 1fr)' : '22px minmax(0, 1fr) 34px',
-                  gap: '9px',
-                  alignItems: 'center',
-                  padding: '9px 10px',
-                  border: 0,
-                  borderRadius: '8px',
-                  background: 'transparent',
-                  color: action.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
-                  cursor: action.disabled ? 'not-allowed' : 'pointer',
-                  textAlign: 'left',
-                }}
+                className={`local-chat-menu-item${action.checked === undefined ? '' : ' has-switch'}`}
               >
-                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
+                <span className="local-chat-menu-item-icon">
                   {action.icon}
                 </span>
-                <span style={{ display: 'grid', gap: '2px', minWidth: 0 }}>
-                  <strong style={{ fontSize: '12px', fontWeight: 650 }}>{action.label}</strong>
-                  <span style={{ fontSize: '11px', lineHeight: 1.35, color: 'var(--text-tertiary)' }}>{action.description}</span>
+                <span className="local-chat-menu-item-text">
+                  <strong className="local-chat-menu-item-title">{action.label}</strong>
+                  <span className="local-chat-menu-item-desc">{action.description}</span>
                 </span>
                 {action.checked !== undefined && (
                   <span
@@ -761,39 +651,18 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
                     role="switch"
                     aria-checked={action.checked}
                     aria-label={action.label}
-                    style={{
-                      position: 'relative',
-                      width: '30px',
-                      height: '18px',
-                      borderRadius: '999px',
-                      background: action.checked ? 'var(--text-primary)' : 'var(--bg-tertiary)',
-                      border: '1px solid var(--border-subtle)',
-                      transition: 'background 0.15s ease',
-                      justifySelf: 'end',
-                    }}
+                    className="local-chat-switch"
                   >
-                    <span
-                      style={{
-                        position: 'absolute',
-                        top: '2px',
-                        left: action.checked ? '14px' : '2px',
-                        width: '12px',
-                        height: '12px',
-                        borderRadius: '50%',
-                        background: 'var(--bg-primary)',
-                        boxShadow: '0 1px 2px rgba(15, 23, 42, 0.25)',
-                        transition: 'left 0.15s ease',
-                      }}
-                    />
+                    <span className="local-chat-switch-knob" />
                   </span>
                 )}
               </button>
             ))}
           </div>
-          <input ref={fileInputRef} type="file" multiple onChange={handleFileChange} style={{ display: 'none' }} />
+          <input ref={fileInputRef} type="file" multiple onChange={handleFileChange} className="local-chat-file-input" />
           <textarea
             ref={textAreaRef}
-            className="chat-input"
+            className="local-chat-textarea"
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
@@ -805,29 +674,8 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
             placeholder={composerPlaceholder}
             disabled={disabled}
             rows={1}
-            style={{
-              width: '100%',
-              minHeight: '58px',
-              maxHeight: '180px',
-              resize: 'none',
-              padding: '16px 18px 8px',
-              lineHeight: 1.5,
-              border: 0,
-              borderRadius: '18px 18px 0 0',
-              background: 'transparent',
-              boxShadow: 'none',
-              boxSizing: 'border-box',
-            }}
           />
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '8px 10px 10px 12px',
-              minHeight: '46px',
-            }}
-          >
+          <div className="local-chat-composer-bar">
             <button
               type="button"
               onClick={() => setComposerMenuOpen((open) => !open)}
@@ -835,38 +683,14 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
               aria-expanded={composerMenuOpen}
               title={t('agent.chat.composer.openMenu', 'Open composer actions')}
               disabled={!channelSessionId || sending}
-              style={{
-                width: '32px',
-                height: '32px',
-                padding: 0,
-                border: '1px solid transparent',
-                borderRadius: '8px',
-                background: composerMenuOpen ? 'var(--bg-secondary)' : 'transparent',
-                color: channelSessionId && !sending ? 'var(--text-secondary)' : 'var(--text-tertiary)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: channelSessionId && !sending ? 'pointer' : 'not-allowed',
-                flexShrink: 0,
-              }}
+              className="local-chat-plus-btn"
             >
               <IconPlus size={20} stroke={1.7} />
             </button>
             <span
               data-testid="session-composer-permission-badge"
               title={t('agent.chat.composer.permissionTitle', 'Backend access permission')}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                height: '30px',
-                padding: '0 9px',
-                borderRadius: '8px',
-                color: 'rgb(194, 86, 0)',
-                fontSize: '12px',
-                fontWeight: 650,
-                whiteSpace: 'nowrap',
-              }}
+              className="local-chat-perm-badge"
             >
               <IconShieldCheck size={15} stroke={1.8} />
               {permissionBadgeLabel}
@@ -874,65 +698,34 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
             {composerIntentLabel && (
               <span
                 data-testid="session-composer-intent-badge"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  height: '28px',
-                  padding: '0 8px',
-                  borderRadius: '8px',
-                  background: 'var(--bg-secondary)',
-                  color: 'var(--text-secondary)',
-                  fontSize: '11px',
-                  fontWeight: 650,
-                  whiteSpace: 'nowrap',
-                }}
+                className="local-chat-intent-badge"
               >
                 {composerIntentLabel}
               </span>
             )}
             {uploading && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: 'var(--text-tertiary)', fontSize: '11px', whiteSpace: 'nowrap' }}>
+              <span className="local-chat-uploading">
                 <IconLoader2 size={14} />
                 {t('localAgents.attaching', 'Attaching...')}
               </span>
             )}
-            <span style={{ flex: 1, minWidth: '12px' }} />
+            <span className="local-chat-spacer" />
             <span
               data-testid="session-composer-model-badge"
               title={t('agent.chat.composer.modelTitle', 'Model information')}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '7px',
-                minWidth: 0,
-                maxWidth: '260px',
-                color: 'var(--text-secondary)',
-                fontSize: '12px',
-                whiteSpace: 'nowrap',
-              }}
+              className="local-chat-model-badge"
             >
               <IconCircleDashedCheck size={17} stroke={1.9} color="var(--text-tertiary)" />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{runtimeBadgeLabel}</span>
+              <span className="local-chat-model-name">{runtimeBadgeLabel}</span>
             </span>
             <button
-              className="btn btn-primary"
+              className="btn btn-primary local-chat-send"
               type="button"
               data-testid="local-agent-send-button"
               disabled={disabled || (!input.trim() && attachments.length === 0)}
               onClick={() => void sendMessage()}
               aria-label={t('chat.send', 'Send')}
               title={t('chat.send', 'Send')}
-              style={{
-                width: '38px',
-                height: '38px',
-                padding: 0,
-                borderRadius: '10px',
-                minWidth: 'auto',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-              }}
             >
               {sending ? <IconLoader2 size={18} /> : <IconSend2 size={18} />}
             </button>

@@ -115,8 +115,8 @@ describe('AgentKnowledgeSection', () => {
     expect(html).not.toContain('Superseded');
     expect(html).not.toContain('Archived');
     expect(html).not.toContain('extractor');
-    // A1 (exists ≠ fresh): stale renders in warning color
-    expect(html).toContain('#f59e0b');
+    // A1 (exists ≠ fresh): stale renders in warning color (class-driven → var(--warning))
+    expect(html).toContain('agent-knowledge-distiller-stale');
     // Default view is Overview, not a file browser.
     expect(html).not.toContain('raw markdown browser');
   });

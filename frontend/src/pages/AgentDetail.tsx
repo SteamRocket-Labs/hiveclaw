@@ -86,6 +86,7 @@ import {
 } from './agent-detail/sessionCommandResult';
 import LocalAgents from './LocalAgents';
 import LocalAgentChatSection from './agent-detail/LocalAgentChatSection';
+import './AgentDetail.css';
 
 // P8 IA (docs/agent-memory-md-first-spec.md §10): Knowledge replaces the
 // raw-file "mind" tab as the primary memory view (raw Markdown lives in the
@@ -2469,7 +2470,7 @@ function AgentDetailInner() {
     }, [(agent as any)?.agent_class, navigate]);
 
     if (isLoading) {
-        return <div style={{ padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>;
+        return <div className="agent-detail-placeholder">{t('common.loading')}</div>;
     }
 
     if (!agent) {
@@ -2477,7 +2478,7 @@ function AgentDetailInner() {
         const message = status === 403
             ? t('agent.detail.accessDenied', 'You do not have access to this employee.')
             : t('agent.detail.loadFailed', 'Unable to load this employee right now.');
-        return <div style={{ padding: '40px', color: 'var(--text-tertiary)' }}>{message}</div>;
+        return <div className="agent-detail-placeholder">{message}</div>;
     }
 
     // Compute display status
@@ -2518,22 +2519,22 @@ function AgentDetailInner() {
                 {/* Header */}
                 {!sessionWorkbenchMode && (isSystemHr ? (
                     <div className="page-header">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                            <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }}>&#x1F464;</div>
+                        <div className="agent-detail-hr-header">
+                            <div className="agent-detail-hr-avatar">&#x1F464;</div>
                             <div>
-                                <h1 className="page-title" style={{ marginBottom: 0 }}>{t('nav.newAgent', 'Create Digital Employee')}</h1>
-                                <p className="page-subtitle" style={{ marginTop: '2px' }}>{t('hrChat.subtitle', 'Tell the HR agent what kind of digital employee you need')}</p>
+                                <h1 className="page-title agent-detail-title-flush">{t('nav.newAgent', 'Create Digital Employee')}</h1>
+                                <p className="page-subtitle agent-detail-subtitle-tight">{t('hrChat.subtitle', 'Tell the HR agent what kind of digital employee you need')}</p>
                             </div>
                         </div>
                     </div>
                 ) : (
                 <div className="page-header">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                        <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' }}>{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</div>
-                        <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                    <div className="agent-detail-header-main">
+                        <div className="agent-detail-avatar">{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</div>
+                        <div className="agent-detail-header-text">
                             {canManage && editingName ? (
                                 <input
-                                    className="page-title"
+                                    className="page-title agent-detail-name-input"
                                     autoFocus
                                     value={nameInput}
                                     onChange={e => setNameInput(e.target.value)}
@@ -2550,25 +2551,16 @@ function AgentDetailInner() {
                                         if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                                         if (e.key === 'Escape') { setEditingName(false); setNameInput(agent.name); }
                                     }}
-                                    style={{
-                                        background: 'var(--bg-elevated)', border: '1px solid var(--accent-primary)',
-                                        borderRadius: '6px', color: 'var(--text-primary)',
-                                        padding: '4px 10px', minWidth: '320px', width: 'auto', outline: 'none',
-                                        marginBottom: '0', display: 'block',
-                                    }}
                                 />
                             ) : (
-                                <h1 className="page-title"
+                                <h1 className={`page-title agent-detail-name${canManage ? ' is-editable' : ''}`}
                                     title={canManage ? "Click to edit name" : undefined}
                                     onClick={() => { if (canManage) { setNameInput(agent.name); setEditingName(true); } }}
-                                    style={{ cursor: canManage ? 'text' : 'default', borderBottom: canManage ? '1px dashed transparent' : 'none', display: 'inline-block', marginBottom: '0' }}
-                                    onMouseEnter={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'var(--text-tertiary)'; }}
-                                    onMouseLeave={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'transparent'; }}
                                 >
                                     {agent.name}
                                 </h1>
                             )}
-                            <p className="page-subtitle" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
+                            <p className="page-subtitle agent-detail-status-line">
                                 <span className={`status-dot ${statusKey}`} />
                                 {t(`agent.status.${statusKey}`)}
                                 {canManage && editingRole ? (
@@ -2588,36 +2580,25 @@ function AgentDetailInner() {
                                             if (e.key === 'Escape') { setEditingRole(false); setRoleInput(agent.role_description || ''); }
                                         }}
                                         rows={2}
-                                        style={{
-                                            background: 'var(--bg-elevated)', border: '1px solid var(--accent-primary)',
-                                            borderRadius: '6px', color: 'var(--text-primary)', fontSize: '13px',
-                                            padding: '6px 10px', width: 'min(500px, 50vw)', outline: 'none',
-                                            resize: 'vertical', lineHeight: '1.5', fontFamily: 'inherit',
-                                        }}
+                                        className="agent-detail-role-input"
                                     />
                                 ) : (
                                     <span
                                         title={canManage ? (agent.role_description || 'Click to edit') : (agent.role_description || '')}
                                         onClick={() => { if (canManage) { setRoleInput(agent.role_description || ''); setEditingRole(true); } }}
-                                        style={{ cursor: canManage ? 'text' : 'default', borderBottom: canManage ? '1px dashed transparent' : 'none', maxWidth: '38vw', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', verticalAlign: 'middle' }}
-                                        onMouseEnter={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'var(--text-tertiary)'; }}
-                                        onMouseLeave={e => { if (canManage) e.currentTarget.style.borderBottomColor = 'transparent'; }}
+                                        className={`agent-detail-role${canManage ? ' is-editable' : ''}`}
                                     >
-                                        {agent.role_description ? `· ${agent.role_description}` : (canManage ? <span style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>· {t('agent.fields.role', 'Click to add a description...')}</span> : null)}
+                                        {agent.role_description ? `· ${agent.role_description}` : (canManage ? <span className="agent-detail-role-placeholder">· {t('agent.fields.role', 'Click to add a description...')}</span> : null)}
                                     </span>
                                 )}
                                 {(agent as any).is_expired && (
-                                    <span style={{ background: 'var(--error)', color: '#fff', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>Expired</span>
+                                    <span className="agent-detail-expired-badge">Expired</span>
                                 )}
                                 {(agent as any).agent_type === 'local_agent' && (
-                                    <span style={{
-                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                                        background: 'var(--success-subtle, rgba(34, 197, 94, 0.12))',
-                                        color: 'var(--success)', fontWeight: 600,
-                                    }}>{t('nav.localBadge', 'Local')}</span>
+                                    <span className="agent-detail-local-badge">{t('nav.localBadge', 'Local')}</span>
                                 )}
                                 {!(agent as any).is_expired && (agent as any).expires_at && (
-                                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                    <span className="agent-detail-expires-text">
                                         Expires: {new Date((agent as any).expires_at).toLocaleString()}
                                     </span>
                                 )}
@@ -2625,15 +2606,13 @@ function AgentDetailInner() {
                                     <button
                                         onClick={openExpiryModal}
                                         title="Edit expiry time"
-                                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '11px', color: 'var(--text-tertiary)', padding: '1px 4px', borderRadius: '4px', lineHeight: 1 }}
-                                        onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-secondary)')}
-                                        onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+                                        className="agent-detail-expiry-edit"
                                     >✏️ {t((agent as any).expires_at || (agent as any).is_expired ? 'agent.settings.expiry.renew' : 'agent.settings.expiry.setExpiry')}</button>
                                 )}
                             </p>
                         </div>
                     </div>
-                    <div style={{ display: 'flex', gap: '8px' }}>
+                    <div className="agent-detail-header-actions">
                         <button className="btn btn-primary" onClick={() => selectDetailTab('chat')}>{t('agent.actions.chat')}</button>
                         {!isLocalAgentRuntimeType(agent) && (
                             <>
@@ -2740,9 +2719,9 @@ function AgentDetailInner() {
                 {
                     activeTab === 'tools' && (
                         <div>
-                            <div style={{ marginBottom: '16px' }}>
-                                <h3 style={{ marginBottom: '4px' }}>{t('agent.toolMgmt.title')}</h3>
-                                <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('agent.toolMgmt.description')}</p>
+                            <div className="agent-detail-tools-header">
+                                <h3 className="agent-detail-tools-header-title">{t('agent.toolMgmt.title')}</h3>
+                                <p className="agent-detail-tools-header-desc">{t('agent.toolMgmt.description')}</p>
                             </div>
                             <ToolsManager agentId={id!} canManage={canManage} />
                         </div>
@@ -2884,21 +2863,16 @@ function AgentDetailInner() {
 
                 {/* Agent creation success banner (HR Agent flow) */}
                 {createdAgentId && activeTab === 'chat' && (
-                    <div style={{
-                        position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
-                        zIndex: 1000, padding: '16px 24px', borderRadius: '12px',
-                        background: 'var(--success-subtle, #f0fdf4)', border: '1px solid var(--success, #22c55e)',
-                        boxShadow: '0 4px 24px rgba(0,0,0,0.12)', display: 'flex', alignItems: 'center', gap: '16px',
-                    }}>
-                        <span style={{ fontSize: '22px' }}>&#x2705;</span>
+                    <div className="agent-detail-created-banner">
+                        <span className="agent-detail-created-icon">&#x2705;</span>
                         <div>
-                            <div style={{ fontWeight: 600, fontSize: '14px' }}>{t('hrChat.created', 'Digital employee created successfully!')}</div>
-                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>{t('hrChat.createdDesc', 'You can now visit the detail page to further customize or start chatting.')}</div>
+                            <div className="agent-detail-created-title">{t('hrChat.created', 'Digital employee created successfully!')}</div>
+                            <div className="agent-detail-created-desc">{t('hrChat.createdDesc', 'You can now visit the detail page to further customize or start chatting.')}</div>
                         </div>
-                        <button className="btn btn-primary" style={{ flexShrink: 0 }} onClick={() => navigate(`/agents/${createdAgentId}`)}>
+                        <button className="btn btn-primary agent-detail-created-action" onClick={() => navigate(`/agents/${createdAgentId}`)}>
                             {t('hrChat.goToAgent', 'Go to Detail Page')}
                         </button>
-                        <button style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: 'var(--text-tertiary)', padding: '4px' }} onClick={() => setCreatedAgentId(null)}>&#x2715;</button>
+                        <button className="agent-detail-created-close" onClick={() => setCreatedAgentId(null)}>&#x2715;</button>
                     </div>
                 )}
 
@@ -3018,13 +2992,7 @@ function AgentDetailInner() {
 
             {
                 uploadToast && (
-                    <div style={{
-                        position: 'fixed', top: '20px', right: '20px', zIndex: 20000,
-                        padding: '12px 20px', borderRadius: '8px',
-                        background: uploadToast.type === 'success' ? 'rgba(34, 197, 94, 0.9)' : 'rgba(239, 68, 68, 0.9)',
-                        color: '#fff', fontSize: '14px', fontWeight: 500,
-                        boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-                    }}>
+                    <div className={`agent-detail-upload-toast ${uploadToast.type === 'success' ? 'is-success' : 'is-error'}`}>
                         {''}{uploadToast.message}
                     </div>
                 )
@@ -3033,25 +3001,25 @@ function AgentDetailInner() {
             {/* ── Expiry Editor Modal (admin only) ── */}
             {
                 showExpiryModal && (
-                    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 9000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    <div className="ui-modal-overlay"
                         onClick={() => setShowExpiryModal(false)}>
-                        <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '12px', padding: '24px', width: '360px', maxWidth: '90vw' }}
+                        <div className="agent-detail-modal"
                             onClick={e => e.stopPropagation()}>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                                <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>⏰ {t('agent.settings.expiry.title')}</h3>
-                                <button onClick={() => setShowExpiryModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '18px', lineHeight: 1 }}>×</button>
+                            <div className="agent-detail-modal-header">
+                                <h3 className="agent-detail-modal-title">⏰ {t('agent.settings.expiry.title')}</h3>
+                                <button onClick={() => setShowExpiryModal(false)} className="agent-detail-modal-close">×</button>
                             </div>
-                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+                            <div className="agent-detail-expiry-status">
                                 {(agent as any).is_expired
-                                    ? <span style={{ color: 'var(--error)', fontWeight: 600 }}>⏰ {t('agent.settings.expiry.expired')}</span>
+                                    ? <span className="agent-detail-expiry-status-expired">⏰ {t('agent.settings.expiry.expired')}</span>
                                     : (agent as any).expires_at
                                         ? <>{t('agent.settings.expiry.currentExpiry')} <strong>{new Date((agent as any).expires_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}</strong></>
-                                        : <span style={{ color: 'var(--success)' }}>{t('agent.settings.expiry.neverExpires')}</span>
+                                        : <span className="agent-detail-expiry-status-never">{t('agent.settings.expiry.neverExpires')}</span>
                                 }
                             </div>
-                            <div style={{ marginBottom: '16px' }}>
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>{t('agent.settings.expiry.quickRenew')}</div>
-                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                            <div className="agent-detail-expiry-field">
+                                <div className="agent-detail-expiry-hint">{t('agent.settings.expiry.quickRenew')}</div>
+                                <div className="agent-detail-expiry-quick">
                                     {([
                                         ['+ 24h', 24],
                                         [`+ ${t('agent.settings.expiry.days', { count: 7 })}`, 168],
@@ -3059,25 +3027,25 @@ function AgentDetailInner() {
                                         [`+ ${t('agent.settings.expiry.days', { count: 90 })}`, 2160],
                                     ] as [string, number][]).map(([label, h]) => (
                                         <button key={h} onClick={() => addHours(h)}
-                                            style={{ padding: '4px 10px', borderRadius: '6px', border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)', cursor: 'pointer', fontSize: '12px', color: 'var(--text-primary)' }}>
+                                            className="agent-detail-expiry-quick-btn">
                                             {label}
                                         </button>
                                     ))}
                                 </div>
                             </div>
-                            <div style={{ marginBottom: '20px' }}>
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.settings.expiry.customDeadline')}</div>
+                            <div className="agent-detail-expiry-field-lg">
+                                <div className="agent-detail-expiry-hint">{t('agent.settings.expiry.customDeadline')}</div>
                                 <input type="datetime-local" value={expiryValue} onChange={e => setExpiryValue(e.target.value)}
-                                    style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '13px', boxSizing: 'border-box' }} />
+                                    className="agent-detail-expiry-input" />
                             </div>
-                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="agent-detail-expiry-footer">
                                 <button onClick={() => saveExpiry(true)} disabled={expirySaving}
-                                    style={{ padding: '7px 12px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'none', cursor: 'pointer', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                    className="agent-detail-expiry-btn agent-detail-expiry-btn-reset">
                                     🔓 {t('agent.settings.expiry.neverExpires')}
                                 </button>
-                                <div style={{ display: 'flex', gap: '8px' }}>
+                                <div className="agent-detail-expiry-actions">
                                     <button onClick={() => setShowExpiryModal(false)} disabled={expirySaving}
-                                        style={{ padding: '7px 14px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'none', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                                        className="agent-detail-expiry-btn agent-detail-expiry-btn-cancel">
                                         {t('common.cancel')}
                                     </button>
                                     <button onClick={() => saveExpiry(false)} disabled={expirySaving || !expiryValue}
@@ -3111,15 +3079,14 @@ class AgentDetailErrorBoundary extends Component<{ children: React.ReactNode }, 
     render() {
         if (this.state.hasError) {
             return (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '60vh', gap: '16px' }}>
-                    <div style={{ fontSize: '20px', fontWeight: 600, color: 'var(--text-primary)' }}>Something went wrong</div>
-                    <div style={{ fontSize: '13px', color: 'var(--text-tertiary)', maxWidth: '400px', textAlign: 'center' }}>
+                <div className="agent-detail-error">
+                    <div className="agent-detail-error-title">Something went wrong</div>
+                    <div className="agent-detail-error-message">
                         {this.state.error?.message || 'An unexpected error occurred while loading this page.'}
                     </div>
                     <button
-                        className="btn btn-primary"
+                        className="btn btn-primary agent-detail-error-action"
                         onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }}
-                        style={{ marginTop: '8px' }}
                     >
                         Reload Page
                     </button>

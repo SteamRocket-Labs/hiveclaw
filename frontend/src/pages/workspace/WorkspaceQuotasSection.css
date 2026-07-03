@@ -1,0 +1,54 @@
+/* ═══════════════════════════════════════════════════════
+   WorkspaceQuotasSection — 静态样式迁出（P4 长尾页面）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .ws-quotas-*；卡片复用 .card（自带 16px padding）
+   ═══════════════════════════════════════════════════════ */
+
+.ws-quotas-title {
+  margin-bottom: var(--space-1);
+}
+
+.ws-quotas-subtitle {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-4);
+}
+
+.ws-quotas-card {
+  margin-bottom: var(--space-4);
+}
+
+.ws-quotas-group-title {
+  font-size: var(--text-row);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-3);
+}
+
+.ws-quotas-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.ws-quotas-grid-mb {
+  margin-bottom: var(--space-4);
+}
+
+.ws-quotas-hint {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
+
+.ws-quotas-actions {
+  margin-top: var(--space-4);
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.ws-quotas-saved {
+  color: var(--success);
+  font-size: var(--text-row);
+}

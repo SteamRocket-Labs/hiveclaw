@@ -1,0 +1,102 @@
+/* ═══════════════════════════════════════════════════════
+   AdminRuntimeReconciliationSection — 静态样式迁出（P4 长尾）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .admin-reconcile-*；卡片复用 .card + .card-pad-none
+   ═══════════════════════════════════════════════════════ */
+
+.admin-reconcile-card {
+  overflow: hidden;
+}
+
+.admin-reconcile-header {
+  padding: var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.admin-reconcile-title {
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.admin-reconcile-count {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
+
+.admin-reconcile-search {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 320px;
+}
+
+.admin-reconcile-input {
+  flex: 1;
+  min-width: 180px;
+  font-size: var(--text-row);
+}
+
+.admin-reconcile-error {
+  padding: var(--space-3) var(--space-5);
+  color: var(--status-error);
+  font-size: var(--text-row);
+}
+
+.admin-reconcile-empty {
+  padding: var(--space-5);
+  color: var(--text-tertiary);
+  font-size: var(--text-row);
+  text-align: center;
+}
+
+.admin-reconcile-scroll {
+  overflow-x: auto;
+}
+
+.admin-reconcile-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(180px, 1.4fr) 120px 180px;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-row);
+  transition: background var(--transition-fast);
+}
+
+.admin-reconcile-row:hover {
+  background: var(--bg-hover);
+}
+
+.admin-reconcile-label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.admin-reconcile-sub {
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
+
+.admin-reconcile-sub-mono {
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+}
+
+.admin-reconcile-reason {
+  color: var(--text-primary);
+}
+
+.admin-reconcile-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}

@@ -8,6 +8,8 @@ import { enterpriseApi } from '../../api/domains/enterprise';
 import { fileApi } from '../../api/domains/files';
 import { showAppToast } from '../../components/AppDialogs';
 
+import './WorkspaceHrAgentSection.css';
+
 interface WorkspaceHrAgentSectionProps {
     selectedTenantId: string;
 }
@@ -82,8 +84,8 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
 
     if (isLoading) {
         return (
-            <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                <div className="spinner" style={{ margin: '0 auto 12px' }} />
+            <div className="ws-hr-loading">
+                <div className="spinner ws-hr-spinner-top" />
                 <p>{t('hrChat.loading', 'Loading HR agent...')}</p>
             </div>
         );
@@ -91,9 +93,9 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
 
     if (error) {
         return (
-            <div style={{ padding: '32px', textAlign: 'center' }}>
-                <p style={{ color: 'var(--error)' }}>{t('workspace.hr.noAgent', 'HR Agent not available. Ensure at least one LLM model is configured.')}</p>
-                <button className="btn btn-primary" style={{ marginTop: '12px' }} onClick={() => refetch()}>
+            <div className="ws-hr-error">
+                <p className="ws-hr-error-text">{t('workspace.hr.noAgent', 'HR Agent not available. Ensure at least one LLM model is configured.')}</p>
+                <button className="btn btn-primary ws-hr-error-retry" onClick={() => refetch()}>
                     {t('common.retry', 'Retry')}
                 </button>
             </div>
@@ -101,17 +103,17 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
     }
 
     return (
-        <div style={{ maxWidth: '960px' }}>
+        <div className="ws-hr-page">
             {/* Status */}
-            <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div className="card ws-hr-card">
+                <div className="ws-hr-head">
                     <div>
-                        <h3 style={{ fontSize: '15px', fontWeight: 600, margin: 0 }}>{t('workspace.hr.title', 'HR Onboarding Agent')}</h3>
-                        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                        <h3 className="ws-hr-title">{t('workspace.hr.title', 'HR Onboarding Agent')}</h3>
+                        <p className="ws-hr-desc">
                             {t('workspace.hr.description', 'Guides users through creating digital employees via conversation. Customize its behavior for your company.')}
                         </p>
                     </div>
-                    <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                    <div className="ws-hr-actions">
                         <button className="btn btn-secondary" onClick={() => navigate(`/agents/${hrAgent!.id}?manage=true`)}>
                             {t('workspace.hr.manage', 'Manage')}
                         </button>
@@ -123,18 +125,17 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
             </div>
 
             {/* Model & Welcome Message */}
-            <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-                <h4 style={{ fontSize: '14px', fontWeight: 600, margin: '0 0 12px' }}>{t('workspace.hr.settings', 'Settings')}</h4>
+            <div className="card ws-hr-card">
+                <h4 className="ws-hr-settings-title">{t('workspace.hr.settings', 'Settings')}</h4>
 
-                <div style={{ marginBottom: '12px' }}>
-                    <label style={{ fontSize: '13px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>
+                <div className="ws-hr-field">
+                    <label className="ws-hr-label">
                         {t('wizard.step1.primaryModel', 'Primary Model')}
                     </label>
                     <select
                         className="form-input"
                         value={selectedModelId}
                         onChange={(e) => setSelectedModelId(e.target.value)}
-                        style={{ width: '100%' }}
                     >
                         <option value="">—</option>
                         {(models || []).filter((m: any) => m.enabled).map((m: any) => (
@@ -143,8 +144,8 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
                     </select>
                 </div>
 
-                <div style={{ marginBottom: '12px' }}>
-                    <label style={{ fontSize: '13px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>
+                <div className="ws-hr-field">
+                    <label className="ws-hr-label">
                         {t('workspace.hr.welcomeMessage', 'Welcome Message')}
                     </label>
                     <input
@@ -152,7 +153,6 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
                         value={welcomeMessage}
                         onChange={(e) => setWelcomeMessage(e.target.value)}
                         placeholder={t('workspace.hr.welcomePlaceholder', 'Greeting shown when users start a new conversation')}
-                        style={{ width: '100%' }}
                     />
                 </div>
 
@@ -162,40 +162,27 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
             </div>
 
             {/* Soul.md Read Model */}
-            <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-                    <h4 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>{t('workspace.hr.soulEditor', 'System Prompt (soul.md)')}</h4>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                        <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={refreshSoul} disabled={soulLoading}>
+            <div className="card ws-hr-card">
+                <div className="ws-hr-section-head">
+                    <h4 className="ws-hr-section-title">{t('workspace.hr.soulEditor', 'System Prompt (soul.md)')}</h4>
+                    <div className="ws-hr-inline-actions">
+                        <button className="btn btn-ghost" onClick={refreshSoul} disabled={soulLoading}>
                             {t('common.refresh', 'Refresh')}
                         </button>
                     </div>
                 </div>
-                <div
-                    style={{
-                        padding: '10px 12px',
-                        borderRadius: '8px',
-                        background: 'var(--bg-secondary)',
-                        color: 'var(--text-secondary)',
-                        fontSize: '13px',
-                        marginBottom: '12px',
-                    }}
-                >
+                <div className="ws-hr-notice">
                     {t('workspace.hr.soulGovernedNotice', 'soul.md is governed by Dream/Soul promotion.')}
                 </div>
                 {soulLoading ? (
-                    <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-                        <div className="spinner" style={{ margin: '0 auto' }} />
+                    <div className="ws-hr-soul-loading">
+                        <div className="spinner ws-hr-spinner-mid" />
                     </div>
                 ) : (
                     <textarea
-                        className="form-input"
+                        className="form-input ws-hr-soul-textarea"
                         value={soulContent}
                         readOnly
-                        style={{
-                            width: '100%', minHeight: '360px', fontFamily: 'var(--font-mono)',
-                            fontSize: '12px', lineHeight: 1.6, resize: 'vertical',
-                        }}
                     />
                 )}
             </div>

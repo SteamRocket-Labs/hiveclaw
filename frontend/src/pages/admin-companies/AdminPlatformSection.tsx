@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { adminApi } from '../../api/domains/admin';
 import { enterpriseApi } from '../../api/domains/enterprise';
+import './AdminPlatformSection.css';
 
 export default function AdminPlatformSection() {
   const { t } = useTranslation();
@@ -76,57 +77,19 @@ export default function AdminPlatformSection() {
     setUrlSaving(false);
   };
 
-  const switchStyle = (disabled?: boolean): React.CSSProperties => ({
-    position: 'relative',
-    display: 'inline-block',
-    width: '40px',
-    height: '22px',
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    flexShrink: 0,
-  });
-
-  const switchTrack = (checked: boolean): React.CSSProperties => ({
-    position: 'absolute',
-    inset: 0,
-    background: checked ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-    borderRadius: '11px',
-    transition: 'background 0.2s',
-  });
-
-  const switchThumb = (checked: boolean): React.CSSProperties => ({
-    position: 'absolute',
-    left: checked ? '20px' : '2px',
-    top: '2px',
-    width: '18px',
-    height: '18px',
-    background: '#fff',
-    borderRadius: '50%',
-    transition: 'left 0.2s',
-  });
-
   return (
     <>
       {toast && (
         <div
-          style={{
-            position: 'fixed',
-            top: '20px',
-            right: '20px',
-            padding: '10px 20px',
-            borderRadius: '8px',
-            background: toast.type === 'success' ? 'var(--success)' : 'var(--error)',
-            color: '#fff',
-            fontSize: '13px',
-            zIndex: 9999,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-          }}
+          className="admin-platform-toast"
+          style={{ background: toast.type === 'success' ? 'var(--success)' : 'var(--error)' }}
         >
           {toast.msg}
         </div>
       )}
 
-      <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <div className="card admin-platform-card">
+        <div className="admin-platform-settings-list">
           {[
             {
               key: 'allow_self_create_company',
@@ -134,21 +97,21 @@ export default function AdminPlatformSection() {
               desc: t('admin.allowSelfCreateDesc', 'When disabled, only platform admins can create companies.'),
             },
           ].map((setting) => (
-            <div key={setting.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
+            <div key={setting.key} className="admin-platform-setting-row">
               <div>
-                <div style={{ fontSize: '13px', fontWeight: 500 }}>{setting.label}</div>
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{setting.desc}</div>
+                <div className="admin-platform-setting-label">{setting.label}</div>
+                <div className="admin-platform-setting-desc">{setting.desc}</div>
               </div>
-              <label style={switchStyle(settingsLoading)}>
+              <label className={`admin-platform-switch${settingsLoading ? ' is-disabled' : ''}`}>
                 <input
                   type="checkbox"
+                  className="admin-platform-switch-input"
                   checked={!!settings[setting.key]}
                   onChange={(e) => handleToggleSetting(setting.key, e.target.checked)}
                   disabled={settingsLoading}
-                  style={{ opacity: 0, width: 0, height: 0 }}
                 />
-                <span style={switchTrack(!!settings[setting.key])}>
-                  <span style={switchThumb(!!settings[setting.key])} />
+                <span className="admin-platform-switch-track">
+                  <span className="admin-platform-switch-thumb" />
                 </span>
               </label>
             </div>
@@ -156,71 +119,62 @@ export default function AdminPlatformSection() {
         </div>
       </div>
 
-      <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div className="card admin-platform-card">
+        <div className="admin-platform-row">
           <div>
-            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+            <div className="admin-platform-card-title">
               {t('enterprise.notificationBar.title', 'Notification Bar')}
             </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+            <div className="admin-platform-setting-desc">
               {t('enterprise.notificationBar.description', 'Display a notification bar at the top of the page, visible to all users.')}
             </div>
           </div>
-          <label style={switchStyle()}>
-            <input type="checkbox" checked={nbEnabled} onChange={(e) => setNbEnabled(e.target.checked)} style={{ opacity: 0, width: 0, height: 0 }} />
-            <span style={switchTrack(nbEnabled)}>
-              <span style={switchThumb(nbEnabled)} />
+          <label className="admin-platform-switch">
+            <input type="checkbox" className="admin-platform-switch-input" checked={nbEnabled} onChange={(e) => setNbEnabled(e.target.checked)} />
+            <span className="admin-platform-switch-track">
+              <span className="admin-platform-switch-thumb" />
             </span>
           </label>
         </div>
-        <div
-          style={{
-            maxHeight: nbEnabled ? '200px' : '0',
-            opacity: nbEnabled ? 1 : 0,
-            overflow: 'hidden',
-            transition: 'max-height 0.3s ease, opacity 0.25s ease',
-          }}
-        >
-          <div style={{ marginBottom: '12px', paddingTop: '16px' }}>
+        <div className={`admin-platform-collapse${nbEnabled ? ' is-open' : ''}`}>
+          <div className="admin-platform-collapse-body">
             <label className="form-label">{t('enterprise.notificationBar.text', 'Notification text')}</label>
             <input
               className="form-input"
               value={nbText}
               onChange={(e) => setNbText(e.target.value)}
               placeholder={t('enterprise.notificationBar.textPlaceholder', 'e.g. v2.1 released with new features!')}
-              style={{ fontSize: '13px' }}
             />
           </div>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div className="admin-platform-save-row">
             <button className="btn btn-primary" onClick={saveNotificationBar} disabled={nbSaving}>
               {nbSaving ? t('common.loading') : t('common.save', 'Save')}
             </button>
-            {nbSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('enterprise.config.saved', 'Saved')}</span>}
+            {nbSaved && <span className="admin-platform-saved">{t('enterprise.config.saved', 'Saved')}</span>}
           </div>
         </div>
       </div>
 
-      <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-        <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
+      <div className="card admin-platform-card">
+        <div className="admin-platform-card-title admin-platform-title-mb">
           {t('admin.publicUrl.title', 'Public URL')}
         </div>
-        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+        <div className="admin-platform-url-desc">
           {t('admin.publicUrl.desc', 'The external URL used for webhook callbacks (Slack, Feishu, Discord, etc.) and published page links. Include the protocol (e.g. https://example.com).')}
         </div>
-        <div style={{ marginBottom: '12px' }}>
+        <div className="admin-platform-url-input-wrap">
           <input
             className="form-input"
             value={publicBaseUrl}
             onChange={(e) => setPublicBaseUrl(e.target.value)}
             placeholder="https://your-domain.com"
-            style={{ fontSize: '13px' }}
           />
         </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div className="admin-platform-save-row">
           <button className="btn btn-primary" onClick={savePublicUrl} disabled={urlSaving}>
             {urlSaving ? t('common.loading') : t('common.save', 'Save')}
           </button>
-          {urlSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('enterprise.config.saved', 'Saved')}</span>}
+          {urlSaved && <span className="admin-platform-saved">{t('enterprise.config.saved', 'Saved')}</span>}
         </div>
       </div>
     </>

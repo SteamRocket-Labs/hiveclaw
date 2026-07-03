@@ -10,6 +10,7 @@ import { systemApi } from '../api/domains/system';
 import { adminApi } from '../api/domains/admin';
 import AppSidebar from './layout/AppSidebar';
 import NotificationCenter from './layout/NotificationCenter';
+import './Layout.css';
 
 /* ────── Account Settings Modal ────── */
 function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => void }) {
@@ -59,52 +60,49 @@ function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => voi
         setSaving(false);
     };
 
-    const inputStyle = { width: '100%', fontSize: '13px' };
-    const labelStyle = { display: 'block' as const, fontSize: '12px', fontWeight: 500, marginBottom: '4px', color: 'var(--text-secondary)' };
-
     return (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
-            <div style={{ background: 'var(--bg-primary)', borderRadius: '12px', border: '1px solid var(--border-subtle)', width: '420px', maxHeight: '90vh', overflow: 'auto', padding: '24px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }} onClick={e => e.stopPropagation()}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                    <h3 style={{ margin: 0 }}>{t('account.title')}</h3>
-                    <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', fontSize: '18px', cursor: 'pointer', padding: '4px 8px' }}>×</button>
+        <div className="ui-modal-overlay" onClick={onClose}>
+            <div className="app-layout-account-modal" onClick={e => e.stopPropagation()}>
+                <div className="app-layout-account-header">
+                    <h3 className="app-layout-account-heading">{t('account.title')}</h3>
+                    <button className="app-layout-account-close" onClick={onClose}>×</button>
                 </div>
-                {msg && <div style={{ padding: '8px 12px', borderRadius: '6px', fontSize: '12px', marginBottom: '16px', background: msgType === 'success' ? 'rgba(0,180,120,0.12)' : 'rgba(255,80,80,0.12)', color: msgType === 'success' ? 'var(--success)' : 'var(--error)' }}>{msg}</div>}
+                {msg && <div className={`app-layout-account-msg app-layout-account-msg--${msgType}`}>{msg}</div>}
                 {/* Profile */}
-                <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>{t('account.profile')}</h4>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
-                    <div><label style={labelStyle}>{t('account.username')}</label><input className="form-input" value={username} onChange={e => setUsername(e.target.value)} style={inputStyle} /></div>
-                    <div><label style={labelStyle}>{t('account.email')}</label><input className="form-input" type="email" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} /></div>
-                    <div><label style={labelStyle}>{t('account.displayName')}</label><input className="form-input" value={displayName} onChange={e => setDisplayName(e.target.value)} style={inputStyle} /></div>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}><button className="btn btn-primary" onClick={handleSaveProfile} disabled={saving} style={{ padding: '6px 16px', fontSize: '12px' }}>{saving ? '...' : t('common.save')}</button></div>
+                <h4 className="app-layout-account-subhead">{t('account.profile')}</h4>
+                <div className="app-layout-account-fields app-layout-account-fields--mb">
+                    <div><label className="app-layout-account-label">{t('account.username')}</label><input className="form-input app-layout-account-input" value={username} onChange={e => setUsername(e.target.value)} /></div>
+                    <div><label className="app-layout-account-label">{t('account.email')}</label><input className="form-input app-layout-account-input" type="email" value={email} onChange={e => setEmail(e.target.value)} /></div>
+                    <div><label className="app-layout-account-label">{t('account.displayName')}</label><input className="form-input app-layout-account-input" value={displayName} onChange={e => setDisplayName(e.target.value)} /></div>
+                    <div className="app-layout-account-actions"><button className="btn btn-primary" onClick={handleSaveProfile} disabled={saving}>{saving ? '...' : t('common.save')}</button></div>
                 </div>
-                <div style={{ borderTop: '1px solid var(--border-subtle)', marginBottom: '20px' }} />
+                <div className="app-layout-account-divider" />
                 {/* Password */}
-                <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>{t('account.changePassword')}</h4>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <div><label style={labelStyle}>{t('account.currentPassword')}</label><input className="form-input" type="password" value={oldPassword} onChange={e => setOldPassword(e.target.value)} style={inputStyle} /></div>
-                    <div><label style={labelStyle}>{t('account.newPassword')}</label><input className="form-input" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder={t('account.minPasswordPlaceholder')} style={inputStyle} /></div>
-                    <div><label style={labelStyle}>{t('account.confirmNewPassword')}</label><input className="form-input" type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} style={inputStyle} /></div>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}><button className="btn btn-primary" onClick={handleChangePassword} disabled={saving} style={{ padding: '6px 16px', fontSize: '12px' }}>{saving ? '...' : t('account.changePassword')}</button></div>
+                <h4 className="app-layout-account-subhead">{t('account.changePassword')}</h4>
+                <div className="app-layout-account-fields">
+                    <div><label className="app-layout-account-label">{t('account.currentPassword')}</label><input className="form-input app-layout-account-input" type="password" value={oldPassword} onChange={e => setOldPassword(e.target.value)} /></div>
+                    <div><label className="app-layout-account-label">{t('account.newPassword')}</label><input className="form-input app-layout-account-input" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder={t('account.minPasswordPlaceholder')} /></div>
+                    <div><label className="app-layout-account-label">{t('account.confirmNewPassword')}</label><input className="form-input app-layout-account-input" type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} /></div>
+                    <div className="app-layout-account-actions"><button className="btn btn-primary" onClick={handleChangePassword} disabled={saving}>{saving ? '...' : t('account.changePassword')}</button></div>
                 </div>
-                <div style={{ borderTop: '1px solid var(--border-subtle)', marginTop: '20px', marginBottom: '20px' }} />
+                <div className="app-layout-account-divider app-layout-account-divider--top" />
                 {/* Feishu Bind */}
-                <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>{t('account.feishuBind', 'Feishu Account')}</h4>
+                <h4 className="app-layout-account-subhead">{t('account.feishuBind', 'Feishu Account')}</h4>
                 {user?.feishu_user_id || user?.feishu_open_id ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', background: 'rgba(0,180,120,0.08)', borderRadius: '8px', border: '1px solid rgba(0,180,120,0.2)' }}>
+                    <div className="app-layout-account-feishu-bound">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 4.5L10.5 8.5L14 20.5L21 6L10.5 12.5L3 4.5Z" fill="#3370FF"/><path d="M3 4.5L10.5 12.5L14 20.5L10.5 8.5L3 4.5Z" fill="#1456F0" opacity="0.7"/></svg>
-                        <div style={{ flex: 1 }}>
-                            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--success)' }}>{t('account.feishuBound', 'Feishu account linked')}</div>
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{user.feishu_user_id || user.feishu_open_id}</div>
+                        <div className="app-layout-account-feishu-info">
+                            <div className="app-layout-account-feishu-title">{t('account.feishuBound', 'Feishu account linked')}</div>
+                            <div className="app-layout-account-feishu-id">{user.feishu_user_id || user.feishu_open_id}</div>
                         </div>
                     </div>
                 ) : (
                     <div>
-                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '10px' }}>
+                        <p className="app-layout-account-feishu-desc">
                             {t('account.feishuBindDesc', 'Link your Feishu account to enable Feishu login and seamless identity matching.')}
                         </p>
                         <button
-                            className="btn"
+                            className="btn app-layout-account-feishu-btn"
                             disabled={feishuBinding}
                             onClick={async () => {
                                 setFeishuBinding(true);
@@ -141,9 +139,8 @@ function AccountSettingsModal({ user, onClose }: { user: any; onClose: () => voi
                                     setFeishuBinding(false);
                                 }
                             }}
-                            style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', fontSize: '13px', border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}
                         >
-                            {feishuBinding ? <span className="login-spinner" style={{ width: 14, height: 14 }} /> : (
+                            {feishuBinding ? <span className="login-spinner app-layout-account-spinner" /> : (
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 4.5L10.5 8.5L14 20.5L21 6L10.5 12.5L3 4.5Z" fill="#3370FF"/><path d="M3 4.5L10.5 12.5L14 20.5L10.5 8.5L3 4.5Z" fill="#1456F0" opacity="0.7"/></svg>
                             )}
                             {t('account.feishuBindBtn', 'Link Feishu Account')}
@@ -163,9 +160,9 @@ function VersionDisplay() {
     }, []);
     if (!info.version) return null;
     return (
-        <div style={{ textAlign: 'center', fontSize: '10px', color: 'var(--text-quaternary)', marginTop: '8px', letterSpacing: '0.3px' }}>
+        <div className="app-layout-version">
             v{info.version}
-            {info.commit && <span style={{ opacity: 0.6 }}> ({info.commit})</span>}
+            {info.commit && <span className="app-layout-version-commit"> ({info.commit})</span>}
         </div>
     );
 }

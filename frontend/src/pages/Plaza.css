@@ -74,10 +74,11 @@
 .plaza-stat-label-icon { display: flex; opacity: 0.7; }
 
 .plaza-stat-value {
-  font-size: var(--text-display);
+  font-size: var(--text-title);
   font-weight: 600;
   color: var(--text-primary);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Action button (like / comment) ─────────────────── */
@@ -206,10 +207,10 @@
 }
 
 .plaza-title {
-  font-size: var(--text-display);
+  font-size: var(--text-title);
   font-weight: 600;
   margin: 0 0 2px;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
 }
 
 .plaza-subtitle {

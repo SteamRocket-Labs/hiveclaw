@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import { subagentApi, type SubagentRow, type SubagentScope } from '../../api/domains/subagents';
 import { requestAppConfirm } from '../../components/AppDialogs';
+import './AgentSubagentsSection.css';
 
 type AgentSubagentsSectionProps = {
   agentId: string;
@@ -171,17 +172,14 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+      <div className="agent-subagents-header">
         <div>
-          <h3 style={{ marginBottom: '4px' }}>{t('agent.subagents.title')}</h3>
-          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('agent.subagents.description')}</p>
+          <h3 className="agent-subagents-title">{t('agent.subagents.title')}</h3>
+          <p className="agent-subagents-subtitle">{t('agent.subagents.description')}</p>
         </div>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+        <span className="agent-subagents-head-actions">
           {canManage && (
-            <label
-              title={t('agent.subagents.autoApproveHint')}
-              style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}
-            >
+            <label title={t('agent.subagents.autoApproveHint')} className="agent-subagents-auto-approve">
               <input
                 type="checkbox"
                 checked={listData?.evolution_auto_approve ?? false}
@@ -198,71 +196,42 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
             </label>
           )}
           {canManage && (
-            <button className="btn btn-primary" style={{ fontSize: '13px' }} onClick={() => startCreate()}>
+            <button className="btn btn-primary agent-subagents-new-btn" onClick={() => startCreate()}>
               {t('agent.subagents.newButton')}
             </button>
           )}
         </span>
       </div>
 
-      {isLoading && <p style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('common.loading')}</p>}
+      {isLoading && <p className="agent-subagents-hint">{t('common.loading')}</p>}
 
       {!isLoading && rows.length === 0 && (
-        <p style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.subagents.empty')}</p>
+        <p className="agent-subagents-hint">{t('agent.subagents.empty')}</p>
       )}
 
       {rows.length > 0 && (
-        <div style={{ border: '1px solid var(--border-primary)', borderRadius: '8px', overflow: 'hidden' }}>
+        <div className="agent-subagents-list">
           {rows.map((row) => (
             <div
               key={`${row.scope}:${row.name}`}
               onClick={() => openDetail(row)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                padding: '10px 14px',
-                borderBottom: '1px solid var(--border-primary)',
-                cursor: 'pointer',
-                background: selectedName === row.name ? 'var(--bg-secondary)' : 'transparent',
-              }}
+              className={`agent-subagents-row${selectedName === row.name ? ' is-selected' : ''}`}
             >
-              <span style={{ fontWeight: 600, fontSize: '13px', minWidth: '160px' }}>{row.name}</span>
+              <span className="agent-subagents-row-name">{row.name}</span>
               <span style={scopeBadgeStyle(row.scope)}>{t(`agent.subagents.scope.${row.scope}`)}</span>
               {row.pending_proposal && (
-                <span
-                  style={{
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    padding: '1px 8px',
-                    borderRadius: '10px',
-                    color: 'var(--warning, #d97706)',
-                    border: '1px solid var(--warning, #d97706)',
-                    flexShrink: 0,
-                  }}
-                >
+                <span className="agent-subagents-proposal-badge">
                   {t('agent.subagents.proposalBadge')}
                 </span>
               )}
-              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{row.type}</span>
+              <span className="agent-subagents-row-type">{row.type}</span>
               {row.model && (
-                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{row.model}</span>
+                <span className="agent-subagents-row-model">{row.model}</span>
               )}
-              <span
-                title={row.description}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  fontSize: '12px',
-                  color: 'var(--text-tertiary)',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
+              <span title={row.description} className="agent-subagents-row-desc">
                 {row.description}
               </span>
-              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: 'auto', flexShrink: 0 }}>
+              <span className="agent-subagents-row-tools">
                 {toolFaceSummary(row)}
               </span>
             </div>
@@ -271,28 +240,20 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
       )}
 
       {editorMode !== 'closed' && (
-        <div
-          style={{
-            marginTop: '16px',
-            border: '1px solid var(--border-primary)',
-            borderRadius: '8px',
-            padding: '16px',
-            background: 'var(--bg-secondary)',
-          }}
-        >
+        <div className="agent-subagents-editor">
           {editorMode === 'view' && detail && (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
-                <h4 style={{ margin: 0 }}>{detail.name}</h4>
+              <div className="agent-subagents-panel-head">
+                <h4 className="agent-subagents-panel-title">{detail.name}</h4>
                 <span style={scopeBadgeStyle(detail.scope)}>{t(`agent.subagents.scope.${detail.scope}`)}</span>
                 {detail.memory.exists && (
-                  <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                  <span className="agent-subagents-meta">
                     {t('agent.subagents.memoryEntries', { count: detail.memory.entries })}
                   </span>
                 )}
-                <span style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+                <span className="agent-subagents-panel-actions">
                   {canManage && (
-                    <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={startEdit}>
+                    <button className="btn btn-secondary" onClick={startEdit}>
                       {detail.scope === 'builtin'
                         ? t('agent.subagents.forkButton')
                         : t('agent.subagents.editButton')}
@@ -300,43 +261,34 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
                   )}
                   {canManage && detail.scope === 'agent' && (
                     <button
-                      className="btn btn-secondary"
-                      style={{ fontSize: '12px', color: 'var(--danger, #dc2626)' }}
+                      className="btn btn-secondary agent-subagents-delete-btn"
                       onClick={removeAgentDefinition}
                       disabled={saving}
                     >
                       {t('agent.subagents.deleteButton')}
                     </button>
                   )}
-                  <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={closePanel}>
+                  <button className="btn btn-secondary" onClick={closePanel}>
                     {t('common.close')}
                   </button>
                 </span>
               </div>
               {detail.scope === 'tenant' && (
-                <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                <p className="agent-subagents-tenant-hint">
                   {t('agent.subagents.tenantHint')}
                 </p>
               )}
               {detail.proposal && (
-                <div
-                  style={{
-                    marginBottom: '12px',
-                    border: '1px solid var(--warning, #d97706)',
-                    borderRadius: '6px',
-                    padding: '12px',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-                    <strong style={{ fontSize: '13px' }}>{t('agent.subagents.proposalTitle')}</strong>
-                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                <div className="agent-subagents-proposal">
+                  <div className="agent-subagents-proposal-head">
+                    <strong className="agent-subagents-proposal-title">{t('agent.subagents.proposalTitle')}</strong>
+                    <span className="agent-subagents-meta">
                       {t('agent.subagents.proposalAbsorbs', { count: detail.proposal.absorbed_entry_ids.length })}
                     </span>
                     {canManage && (
-                      <span style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+                      <span className="agent-subagents-panel-actions">
                         <button
                           className="btn btn-primary"
-                          style={{ fontSize: '12px' }}
                           disabled={saving}
                           onClick={async () => {
                             setSaving(true);
@@ -358,7 +310,6 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
                         </button>
                         <button
                           className="btn btn-secondary"
-                          style={{ fontSize: '12px' }}
                           disabled={saving}
                           onClick={async () => {
                             setSaving(true);
@@ -381,37 +332,15 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
                       </span>
                     )}
                   </div>
-                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                  <p className="agent-subagents-proposal-rationale">
                     {detail.proposal.rationale}
                   </p>
-                  <pre
-                    style={{
-                      fontSize: '12px',
-                      whiteSpace: 'pre-wrap',
-                      background: 'var(--bg-primary)',
-                      border: '1px solid var(--border-primary)',
-                      borderRadius: '6px',
-                      padding: '12px',
-                      maxHeight: '260px',
-                      overflow: 'auto',
-                    }}
-                  >
+                  <pre className="agent-subagents-code agent-subagents-code--proposal">
                     {detail.proposal.body}
                   </pre>
                 </div>
               )}
-              <pre
-                style={{
-                  fontSize: '12px',
-                  whiteSpace: 'pre-wrap',
-                  background: 'var(--bg-primary)',
-                  border: '1px solid var(--border-primary)',
-                  borderRadius: '6px',
-                  padding: '12px',
-                  maxHeight: '420px',
-                  overflow: 'auto',
-                }}
-              >
+              <pre className="agent-subagents-code agent-subagents-code--definition">
                 {detail.definition}
               </pre>
             </>
@@ -419,40 +348,32 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
 
           {(editorMode === 'edit' || editorMode === 'create') && (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
-                <h4 style={{ margin: 0 }}>
+              <div className="agent-subagents-panel-head">
+                <h4 className="agent-subagents-panel-title">
                   {editorMode === 'create' ? t('agent.subagents.createTitle') : t('agent.subagents.editTitle')}
                 </h4>
-                <span style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
-                  <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={save} disabled={saving}>
+                <span className="agent-subagents-panel-actions">
+                  <button className="btn btn-primary" onClick={save} disabled={saving}>
                     {t('common.save')}
                   </button>
-                  <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={closePanel}>
+                  <button className="btn btn-secondary" onClick={closePanel}>
                     {t('common.cancel')}
                   </button>
                 </span>
               </div>
               {editorMode === 'create' && (
                 <>
-                  <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                  <div className="agent-subagents-gen-row">
                     <input
                       type="text"
                       value={genPrompt}
                       onChange={(e) => setGenPrompt(e.target.value)}
                       placeholder={t('agent.subagents.generatePlaceholder')}
                       disabled={generating}
-                      style={{
-                        flex: 1,
-                        padding: '8px 10px',
-                        fontSize: '13px',
-                        border: '1px solid var(--border-primary)',
-                        borderRadius: '6px',
-                        background: 'var(--bg-primary)',
-                      }}
+                      className="agent-subagents-gen-input"
                     />
                     <button
-                      className="btn btn-secondary"
-                      style={{ fontSize: '12px', flexShrink: 0 }}
+                      className="btn btn-secondary agent-subagents-gen-btn"
                       onClick={generateWithAI}
                       disabled={generating || !genPrompt.trim()}
                     >
@@ -464,15 +385,7 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
                     value={editorName}
                     onChange={(e) => setEditorName(e.target.value)}
                     placeholder={t('agent.subagents.namePlaceholder')}
-                    style={{
-                      width: '100%',
-                      marginBottom: '8px',
-                      padding: '8px 10px',
-                      fontSize: '13px',
-                      border: '1px solid var(--border-primary)',
-                      borderRadius: '6px',
-                      background: 'var(--bg-primary)',
-                    }}
+                    className="agent-subagents-name-input"
                   />
                 </>
               )}
@@ -480,23 +393,13 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
                 value={editorText}
                 onChange={(e) => setEditorText(e.target.value)}
                 spellCheck={false}
-                style={{
-                  width: '100%',
-                  minHeight: '320px',
-                  fontFamily: 'var(--font-mono, monospace)',
-                  fontSize: '12px',
-                  padding: '12px',
-                  border: '1px solid var(--border-primary)',
-                  borderRadius: '6px',
-                  background: 'var(--bg-primary)',
-                  resize: 'vertical',
-                }}
+                className="agent-subagents-editor-textarea"
               />
             </>
           )}
 
           {actionError && (
-            <p style={{ marginTop: '8px', fontSize: '12px', color: 'var(--danger, #dc2626)' }}>{actionError}</p>
+            <p className="agent-subagents-error">{actionError}</p>
           )}
         </div>
       )}

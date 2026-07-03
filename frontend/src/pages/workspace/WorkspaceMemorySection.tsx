@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { enterpriseApi } from '../../api/domains/enterprise';
 import { showAppToast } from '../../components/AppDialogs';
 import type { MemoryConfig, LLMModel } from '../../api/domains/enterprise';
+import './WorkspaceMemorySection.css';
 
 const DEFAULT_CONFIG: MemoryConfig = {
   summary_model_id: null,
@@ -53,26 +54,26 @@ export default function WorkspaceMemorySection({ selectedTenantId }: Props) {
 
   return (
     <div>
-      <h2 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: 4 }}>
+      <h2 className="ws-memory-title">
         {t('enterprise.memory.title', 'Memory Configuration')}
       </h2>
-      <p style={{ color: '#888', fontSize: '0.85rem', marginBottom: 24 }}>
+      <p className="ws-memory-desc">
         {t('enterprise.memory.desc', 'Configure how agents summarize conversations, extract facts, and rank memory relevance.')}
       </p>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 600 }}>
+      <div className="ws-memory-fields">
         {/* Summary Model */}
         <div>
-          <label style={{ fontWeight: 500, fontSize: '0.9rem', display: 'block', marginBottom: 6 }}>
+          <label className="ws-memory-label">
             {t('enterprise.memory.summaryModel', 'Summary / Extraction Model')}
           </label>
-          <p style={{ color: '#888', fontSize: '0.8rem', marginBottom: 8 }}>
+          <p className="ws-memory-hint">
             {t('enterprise.memory.summaryModelDesc', 'Used for session summaries, memory fact extraction, and conversation compression. Choose a fast, cheap model.')}
           </p>
           <select
+            className="ws-memory-select"
             value={form.summary_model_id || ''}
             onChange={(e) => setForm({ ...form, summary_model_id: e.target.value || null })}
-            style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid #ddd', fontSize: '0.9rem' }}
           >
             <option value="">{t('enterprise.memory.noModel', '-- Not configured (rule-based fallback) --')}</option>
             {enabledModels.map((m: LLMModel) => (
@@ -83,16 +84,16 @@ export default function WorkspaceMemorySection({ selectedTenantId }: Props) {
 
         {/* Rerank Model */}
         <div>
-          <label style={{ fontWeight: 500, fontSize: '0.9rem', display: 'block', marginBottom: 6 }}>
+          <label className="ws-memory-label">
             {t('enterprise.memory.rerankModel', 'Memory Rerank Model')}
           </label>
-          <p style={{ color: '#888', fontSize: '0.8rem', marginBottom: 8 }}>
+          <p className="ws-memory-hint">
             {t('enterprise.memory.rerankModelDesc', 'Optional. Re-scores semantic memories by relevance before injection. Only triggers when candidates > 5.')}
           </p>
           <select
+            className="ws-memory-select"
             value={form.rerank_model_id || ''}
             onChange={(e) => setForm({ ...form, rerank_model_id: e.target.value || null })}
-            style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid #ddd', fontSize: '0.9rem' }}
           >
             <option value="">{t('enterprise.memory.noRerank', '-- Disabled (score-based only) --')}</option>
             {enabledModels.map((m: LLMModel) => (
@@ -103,58 +104,49 @@ export default function WorkspaceMemorySection({ selectedTenantId }: Props) {
 
         {/* Compress Threshold */}
         <div>
-          <label style={{ fontWeight: 500, fontSize: '0.9rem', display: 'block', marginBottom: 6 }}>
+          <label className="ws-memory-label">
             {t('enterprise.memory.compressThreshold', 'Compression Threshold')}
           </label>
-          <p style={{ color: '#888', fontSize: '0.8rem', marginBottom: 8 }}>
+          <p className="ws-memory-hint">
             {t('enterprise.memory.compressThresholdDesc', 'Compress conversation history when context usage exceeds this percentage. Default 82%.')}
           </p>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div className="ws-memory-slider-row">
             <input
+              className="ws-memory-range"
               type="range"
               min={50}
               max={95}
               value={form.compress_threshold}
               onChange={(e) => setForm({ ...form, compress_threshold: Number(e.target.value) })}
-              style={{ flex: 1 }}
             />
-            <span style={{ fontWeight: 600, minWidth: 40, textAlign: 'right' }}>{form.compress_threshold}%</span>
+            <span className="ws-memory-value">{form.compress_threshold}%</span>
           </div>
         </div>
 
         {/* Keep Recent */}
         <div>
-          <label style={{ fontWeight: 500, fontSize: '0.9rem', display: 'block', marginBottom: 6 }}>
+          <label className="ws-memory-label">
             {t('enterprise.memory.keepRecent', 'Keep Recent Messages')}
           </label>
-          <p style={{ color: '#888', fontSize: '0.8rem', marginBottom: 8 }}>
+          <p className="ws-memory-hint">
             {t('enterprise.memory.keepRecentDesc', 'Always preserve this many recent messages during compression.')}
           </p>
           <input
+            className="ws-memory-keep"
             type="number"
             min={3}
             max={50}
             value={form.keep_recent}
             onChange={(e) => setForm({ ...form, keep_recent: Number(e.target.value) })}
-            style={{ width: 100, padding: '8px 12px', borderRadius: 6, border: '1px solid #ddd', fontSize: '0.9rem' }}
           />
         </div>
 
         {/* Save Button */}
-        <div style={{ marginTop: 8 }}>
+        <div className="ws-memory-actions">
           <button
+            className={`btn btn-primary ws-memory-save${saved ? ' is-saved' : ''}`}
             onClick={save}
             disabled={saving}
-            style={{
-              padding: '10px 24px',
-              borderRadius: 8,
-              border: 'none',
-              background: saved ? '#22c55e' : '#2563eb',
-              color: '#fff',
-              fontWeight: 600,
-              cursor: saving ? 'not-allowed' : 'pointer',
-              fontSize: '0.9rem',
-            }}
           >
             {saved ? t('common.saved', 'Saved') : saving ? t('common.saving', 'Saving...') : t('common.save', 'Save')}
           </button>

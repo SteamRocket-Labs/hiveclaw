@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { a2aApi, type A2ACollaboratorAgent, type A2ACollaborationGroup } from '../../api/domains/a2a';
+import './AgentA2ASection.css';
 
 type AgentA2ASectionProps = {
   agentId: string;
@@ -17,17 +18,17 @@ function AgentRow({
   noDescription: string;
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '6px', background: 'var(--bg-secondary)' }}>
-      <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+    <div className="agent-a2a-row">
+      <div className="agent-a2a-avatar">
         {agent.name?.charAt(0) || 'A'}
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: '13px', fontWeight: 500 }}>{agent.name}</div>
-        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+      <div className="agent-a2a-row-body">
+        <div className="agent-a2a-name">{agent.name}</div>
+        <div className="agent-a2a-meta">
           {agent.role_description || noDescription}
         </div>
       </div>
-      <div style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: 'var(--accent-muted)', color: 'var(--accent)', whiteSpace: 'nowrap' }}>
+      <div className="agent-a2a-badge">
         {badge}
       </div>
     </div>
@@ -50,17 +51,17 @@ function AgentList({
   noDescription: string;
 }) {
   return (
-    <section style={{ marginBottom: '18px' }}>
-      <h4 style={{ marginBottom: '4px' }}>{title}</h4>
-      <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>{description}</p>
+    <section className="agent-a2a-list">
+      <h4 className="agent-a2a-heading">{title}</h4>
+      <p className="agent-a2a-desc">{description}</p>
       {agents.length > 0 ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div className="agent-a2a-agents">
           {agents.map((agent) => (
             <AgentRow key={agent.id} agent={agent} badge={badge} noDescription={noDescription} />
           ))}
         </div>
       ) : (
-        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px 0' }}>{empty}</div>
+        <div className="agent-a2a-empty">{empty}</div>
       )}
     </section>
   );
@@ -70,34 +71,34 @@ function GroupList({ groups }: { groups: A2ACollaborationGroup[] }) {
   const { t } = useTranslation();
   if (groups.length === 0) {
     return (
-      <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px 0' }}>
+      <div className="agent-a2a-empty">
         {t('agent.a2a.noCollaborationGroups', 'No approved A2A collaboration groups.')}
       </div>
     );
   }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+    <div className="agent-a2a-groups">
       {groups.map((group) => {
         const groupId = group.group_id;
         const groupName = group.group_name || t('agent.a2a.unnamedGroup', 'Unnamed group');
         return (
-          <div key={groupId} style={{ padding: '10px', borderRadius: '6px', border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', marginBottom: '8px' }}>
+          <div key={groupId} className="agent-a2a-group">
+            <div className="agent-a2a-group-header">
               <div>
-                <div style={{ fontSize: '13px', fontWeight: 600 }}>{groupName}</div>
-                {group.purpose && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{group.purpose}</div>}
+                <div className="agent-a2a-group-name">{groupName}</div>
+                {group.purpose && <div className="agent-a2a-meta">{group.purpose}</div>}
               </div>
-              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>{group.status}</div>
+              <div className="agent-a2a-group-status">{group.status}</div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div className="agent-a2a-members">
               {(group.members || []).map((member) => (
-                <div key={member.agent_id || member.id} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 600 }}>
+                <div key={member.agent_id || member.id} className="agent-a2a-member">
+                  <div className="agent-a2a-member-avatar">
                     {member.name?.charAt(0) || 'A'}
                   </div>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: '12px', fontWeight: 500 }}>{member.name}</div>
-                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                  <div className="agent-a2a-member-body">
+                    <div className="agent-a2a-member-name">{member.name}</div>
+                    <div className="agent-a2a-member-role">
                       {member.role_description || t('agent.a2a.noDescription', 'No description')}
                     </div>
                   </div>
@@ -149,8 +150,8 @@ export default function AgentA2ASection({ agentId }: AgentA2ASectionProps) {
         noDescription={t('agent.a2a.noDescription', 'No description')}
       />
       <section>
-        <h4 style={{ margin: '18px 0 4px' }}>{t('agent.a2a.collaborationGroups', 'A2A Collaboration Groups')}</h4>
-        <p style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+        <h4 className="agent-a2a-heading-spaced">{t('agent.a2a.collaborationGroups', 'A2A Collaboration Groups')}</h4>
+        <p className="agent-a2a-desc">
           {t('agent.a2a.collaborationGroupsDesc', 'Cross-owner private A2A requires an approved collaboration group.')}
         </p>
         <GroupList groups={collaborationGroups} />

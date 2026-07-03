@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { adminApi } from '../api/domains/admin';
 import AdminRuntimeReconciliationSection from './admin-companies/AdminRuntimeReconciliationSection';
+import './PlatformDashboard.css';
 
 function formatTokens(n: number | null | undefined): string {
     if (n == null) return '-';
@@ -17,7 +18,7 @@ export default function PlatformDashboard() {
     const [timeRange, setTimeRange] = useState<30 | 7>(30);
     const [loadingStats, setLoadingStats] = useState(false);
     const [loadingLeaders, setLoadingLeaders] = useState(false);
-    
+
     const [timeSeriesData, setTimeSeriesData] = useState<any[]>([]);
     const [topCompanies, setTopCompanies] = useState<any[]>([]);
     const [topAgents, setTopAgents] = useState<any[]>([]);
@@ -59,20 +60,13 @@ export default function PlatformDashboard() {
     const CustomTooltip = ({ active, payload, label }: any) => {
         if (active && payload && payload.length) {
             return (
-                <div style={{
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border-subtle)',
-                    borderRadius: '8px',
-                    padding: '12px',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                    fontSize: '12px'
-                }}>
-                    <div style={{ fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>{label}</div>
+                <div className="platform-dash-tooltip">
+                    <div className="platform-dash-tooltip-label">{label}</div>
                     {payload.map((p: any, i: number) => (
-                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: p.stroke }} />
-                            <span style={{ color: 'var(--text-tertiary)' }}>{p.name}:</span>
-                            <span style={{ fontWeight: 500 }}>{p.dataKey.includes('tokens') ? formatTokens(p.value) : p.value}</span>
+                        <div key={i} className="platform-dash-tooltip-row">
+                            <div className="platform-dash-tooltip-dot" style={{ background: p.stroke }} />
+                            <span className="platform-dash-tooltip-name">{p.name}:</span>
+                            <span className="platform-dash-tooltip-val">{p.dataKey.includes('tokens') ? formatTokens(p.value) : p.value}</span>
                         </div>
                     ))}
                 </div>
@@ -82,11 +76,11 @@ export default function PlatformDashboard() {
     };
 
     const ChartCard = ({ title, dataKeyTotal, dataKeyNew, color }: { title: string, dataKeyTotal: string, dataKeyNew: string, color: string }) => (
-        <div className="card" style={{ flex: 1, minWidth: '300px', padding: '20px' }}>
-            <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '20px', color: 'var(--text-secondary)' }}>{title}</div>
-            <div style={{ height: '240px', width: '100%' }}>
+        <div className="card platform-dash-chart-card">
+            <div className="platform-dash-card-title">{title}</div>
+            <div className="platform-dash-chart-wrap">
                 {loadingStats ? (
-                    <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '12px' }}>Loading...</div>
+                    <div className="platform-dash-chart-loading">Loading...</div>
                 ) : (
                     <ResponsiveContainer width="100%" height="100%">
                         <LineChart data={timeSeriesData} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
@@ -104,91 +98,79 @@ export default function PlatformDashboard() {
     );
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="platform-dash-root">
             {/* Range Toggle */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <div style={{ display: 'flex', background: 'var(--bg-secondary)', padding: '4px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+            <div className="platform-dash-range-bar">
+                <div className="ui-segmented">
                     <button
                         onClick={() => setTimeRange(7)}
-                        style={{
-                            padding: '6px 16px', fontSize: '12px', fontWeight: 500, borderRadius: '6px',
-                            background: timeRange === 7 ? 'var(--bg-primary)' : 'transparent',
-                            color: timeRange === 7 ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                            boxShadow: timeRange === 7 ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                            border: 'none', cursor: 'pointer', transition: 'all 0.2s'
-                        }}>
+                        className={`ui-segmented-item ${timeRange === 7 ? 'active' : ''}`}>
                         Last 7 Days
                     </button>
                     <button
                         onClick={() => setTimeRange(30)}
-                        style={{
-                            padding: '6px 16px', fontSize: '12px', fontWeight: 500, borderRadius: '6px',
-                            background: timeRange === 30 ? 'var(--bg-primary)' : 'transparent',
-                            color: timeRange === 30 ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                            boxShadow: timeRange === 30 ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                            border: 'none', cursor: 'pointer', transition: 'all 0.2s'
-                        }}>
+                        className={`ui-segmented-item ${timeRange === 30 ? 'active' : ''}`}>
                         Last 30 Days
                     </button>
                 </div>
             </div>
 
             {/* Charts Row */}
-            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+            <div className="platform-dash-charts-row">
                 <ChartCard title="Companies" dataKeyTotal="total_companies" dataKeyNew="new_companies" color="#3b82f6" />
                 <ChartCard title="Users" dataKeyTotal="total_users" dataKeyNew="new_users" color="#10b981" />
                 <ChartCard title="Token Usage" dataKeyTotal="total_tokens" dataKeyNew="new_tokens" color="#8b5cf6" />
             </div>
 
             {/* Leaderboards */}
-            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-                <div className="card" style={{ flex: 1, minWidth: '300px', padding: '0', overflow: 'hidden' }}>
-                    <div style={{ padding: '20px', fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-subtle)' }}>
+            <div className="platform-dash-charts-row">
+                <div className="card platform-dash-board">
+                    <div className="platform-dash-board-title">
                         Top 20 Companies by Tokens
                     </div>
                     {loadingLeaders ? (
-                        <div style={{ padding: '40px', textAlign: 'center', fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading...</div>
+                        <div className="platform-dash-board-loading">Loading...</div>
                     ) : (
                         <div>
                             {topCompanies.map((c, i) => (
-                                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 20px', borderBottom: '1px solid var(--border-subtle)', fontSize: '13px' }}>
-                                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', width: '20px' }}>#{i + 1}</span>
-                                        <span style={{ fontWeight: 500 }}>{c.name}</span>
+                                <div key={i} className="platform-dash-board-row">
+                                    <div className="platform-dash-board-rank-wrap">
+                                        <span className="platform-dash-rank">#{i + 1}</span>
+                                        <span className="platform-dash-board-name">{c.name}</span>
                                     </div>
-                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                    <div className="platform-dash-board-tokens">
                                         {formatTokens(c.tokens)}
                                     </div>
                                 </div>
                             ))}
-                            {topCompanies.length === 0 && <div style={{ padding: '20px', textAlign: 'center', fontSize: '12px', color: 'var(--text-tertiary)' }}>No data</div>}
+                            {topCompanies.length === 0 && <div className="platform-dash-board-empty">No data</div>}
                         </div>
                     )}
                 </div>
 
-                <div className="card" style={{ flex: 1, minWidth: '300px', padding: '0', overflow: 'hidden' }}>
-                    <div style={{ padding: '20px', fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-subtle)' }}>
+                <div className="card platform-dash-board">
+                    <div className="platform-dash-board-title">
                         Top 20 Agents by Tokens
                     </div>
                     {loadingLeaders ? (
-                        <div style={{ padding: '40px', textAlign: 'center', fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading...</div>
+                        <div className="platform-dash-board-loading">Loading...</div>
                     ) : (
                         <div>
                             {topAgents.map((a, i) => (
-                                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 20px', borderBottom: '1px solid var(--border-subtle)', fontSize: '13px' }}>
-                                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', width: '20px' }}>#{i + 1}</span>
+                                <div key={i} className="platform-dash-board-row">
+                                    <div className="platform-dash-board-rank-wrap">
+                                        <span className="platform-dash-rank">#{i + 1}</span>
                                         <div>
-                                            <div style={{ fontWeight: 500 }}>{a.name}</div>
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{a.company}</div>
+                                            <div className="platform-dash-board-name">{a.name}</div>
+                                            <div className="platform-dash-board-sub">{a.company}</div>
                                         </div>
                                     </div>
-                                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                    <div className="platform-dash-board-tokens">
                                         {formatTokens(a.tokens)}
                                     </div>
                                 </div>
                             ))}
-                            {topAgents.length === 0 && <div style={{ padding: '20px', textAlign: 'center', fontSize: '12px', color: 'var(--text-tertiary)' }}>No data</div>}
+                            {topAgents.length === 0 && <div className="platform-dash-board-empty">No data</div>}
                         </div>
                     )}
                 </div>

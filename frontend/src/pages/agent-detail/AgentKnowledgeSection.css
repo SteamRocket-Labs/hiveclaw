@@ -1,0 +1,210 @@
+/* ═══════════════════════════════════════════════════════
+   AgentKnowledgeSection — inline style 迁出（P3）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   状态色（失败模式/蒸馏器新鲜度）→ 语义 token class；散装 hex → 0
+   ═══════════════════════════════════════════════════════ */
+
+.agent-knowledge-root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.agent-knowledge-subviews {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.agent-knowledge-loading {
+  color: var(--text-tertiary);
+}
+
+.agent-knowledge-empty {
+  color: var(--text-tertiary);
+  font-size: var(--text-body);
+}
+
+/* ── Card（间距+hairline，不堆视觉重量） ───────────────── */
+.agent-knowledge-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-secondary);
+}
+
+.agent-knowledge-card--clickable {
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.agent-knowledge-card--clickable:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-default);
+}
+
+.agent-knowledge-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+
+.agent-knowledge-card-title {
+  margin-bottom: var(--space-2);
+}
+
+.agent-knowledge-card-body {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+}
+
+.agent-knowledge-inline-btn {
+  margin-left: var(--space-2);
+}
+
+.agent-knowledge-row-gap {
+  margin-top: var(--space-1);
+}
+
+/* clickable plane links inside a card body */
+.agent-knowledge-plane-link {
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.agent-knowledge-plane-link:hover {
+  color: var(--text-primary);
+}
+
+/* ── Status colors — 只上小字（≤12px 元素） ────────────── */
+.agent-knowledge-fm-active {
+  color: var(--error);
+}
+
+.agent-knowledge-fm-mitigating {
+  color: var(--warning);
+}
+
+.agent-knowledge-fm-resolved {
+  color: var(--success);
+}
+
+.agent-knowledge-distiller-active {
+  color: var(--success);
+}
+
+.agent-knowledge-distiller-stale {
+  color: var(--warning);
+}
+
+.agent-knowledge-distiller-never {
+  color: var(--text-tertiary);
+}
+
+.agent-knowledge-pipeline-stalled {
+  color: var(--error);
+  margin-top: var(--space-1);
+}
+
+.agent-knowledge-growth-updated {
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
+
+/* ── Profile / entry cards ─────────────────────────────── */
+.agent-knowledge-entries-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-3);
+}
+
+.agent-knowledge-entry-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: 6px;
+}
+
+.agent-knowledge-entry-title {
+  font-size: var(--text-body);
+}
+
+.agent-knowledge-status-badge {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.agent-knowledge-entry-preview {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.agent-knowledge-entry-meta {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 6px;
+}
+
+/* ── Pages view（列表 + 详情双栏） ─────────────────────── */
+.agent-knowledge-pages {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-4);
+}
+
+.agent-knowledge-pages.is-split {
+  grid-template-columns: 260px 1fr;
+}
+
+.agent-knowledge-pages-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.agent-knowledge-page-btn {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.agent-knowledge-page-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.agent-knowledge-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-knowledge-link-missing {
+  color: var(--text-tertiary);
+}
+
+/* ── Timeline ──────────────────────────────────────────── */
+.agent-knowledge-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.agent-knowledge-timeline-row {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-body);
+}
+
+.agent-knowledge-timeline-time {
+  color: var(--text-tertiary);
+  margin-right: var(--space-2);
+}
+
+.agent-knowledge-mr-2 {
+  margin-right: var(--space-2);
+}
+
+.agent-knowledge-timeline-summary {
+  color: var(--text-secondary);
+}

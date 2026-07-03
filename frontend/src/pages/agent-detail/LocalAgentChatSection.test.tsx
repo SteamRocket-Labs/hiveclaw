@@ -188,7 +188,10 @@ describe('LocalAgentChatSection local-channel projection', () => {
     );
 
     expect(markup).toContain('data-testid="local-agent-session-composer"');
-    expect(markup).toContain('height:100%');
+    // Full-height flex-column layout now lives in the .local-chat-root class
+    // (height:100% migrated off inline style) — asserts the Codex-style layout
+    // is applied, not the legacy fixed calc height.
+    expect(markup).toContain('local-chat-root');
     expect(markup).not.toContain('height:calc(100vh - 206px)');
     expect(markup).toContain('data-testid="session-composer-shell"');
     expect(markup).toContain('data-testid="session-composer-plus-menu"');

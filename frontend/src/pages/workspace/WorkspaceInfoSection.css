@@ -1,0 +1,75 @@
+/* ═══════════════════════════════════════════════════════
+   WorkspaceInfoSection — 静态样式迁出（P4 长尾页面）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .ws-info-*；卡片复用 .card；删除按钮复用 .btn
+   ═══════════════════════════════════════════════════════ */
+
+.ws-info-heading {
+  margin-bottom: var(--space-2);
+}
+
+.ws-info-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-3);
+}
+
+.ws-info-card {
+  margin-bottom: var(--space-6);
+}
+
+.ws-info-textarea {
+  min-height: 200px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  white-space: pre-wrap;
+}
+
+.ws-info-actions {
+  margin-top: var(--space-3);
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.ws-info-saved {
+  color: var(--success);
+  font-size: var(--text-row);
+}
+
+.ws-info-hint {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-left: auto;
+}
+
+/* ── Danger zone —— error 描边容器 + 描边按钮 ──────── */
+
+.ws-info-danger {
+  margin-top: var(--space-8);
+  padding: var(--space-4);
+  border: 1px solid var(--status-error);
+  border-radius: var(--radius-lg);
+}
+
+.ws-info-danger-title {
+  margin-bottom: var(--space-1);
+  color: var(--status-error);
+}
+
+.btn.ws-info-delete-btn {
+  background: transparent;
+  color: var(--status-error);
+  border-color: var(--status-error);
+}
+
+.btn.ws-info-delete-btn:hover:not(:disabled) {
+  background: var(--error-subtle);
+}
+
+.btn.ws-info-delete-btn:active:not(:disabled) {
+  background: var(--error-subtle);
+  border-color: var(--error);
+}

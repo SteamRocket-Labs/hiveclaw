@@ -1,0 +1,200 @@
+/* ═══════════════════════════════════════════════════════
+   UserManagement — 静态样式（inline → class 迁移）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀: .user-mgmt-*  真动态值（toast 色）保留 inline
+   ═══════════════════════════════════════════════════════ */
+
+.user-mgmt-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  --umg-cols: 1.4fr 1.4fr 0.8fr 0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 100px;
+}
+
+/* ── Toast — 浮层通知 ──────────────────────────────── */
+.user-mgmt-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 10px 20px;
+  border-radius: var(--radius-lg);
+  color: #fff;
+  font-size: var(--text-body);
+  z-index: 9999;
+  box-shadow: var(--shadow-popover);
+}
+
+.user-mgmt-center-msg {
+  text-align: center;
+  padding: var(--space-10);
+  color: var(--text-tertiary);
+}
+
+/* ── Search ────────────────────────────────────────── */
+.user-mgmt-search-wrap {
+  position: relative;
+  margin-bottom: var(--space-1);
+}
+.user-mgmt-search-input {
+  width: 100%;
+  max-width: 360px;
+  font-size: var(--text-body);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.user-mgmt-search-count {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-left: var(--space-3);
+}
+
+/* ── Table header + rows ───────────────────────────── */
+.user-mgmt-thead {
+  display: grid;
+  grid-template-columns: var(--umg-cols);
+  gap: 10px;
+  padding: 10px var(--space-4);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.user-mgmt-th-sort {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  transition: color var(--transition-fast);
+}
+.user-mgmt-th-sort:hover {
+  color: var(--text-secondary);
+}
+.user-mgmt-row {
+  display: grid;
+  grid-template-columns: var(--umg-cols);
+  gap: 10px;
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+}
+.user-mgmt-name {
+  font-weight: 500;
+  font-size: var(--text-emphasis);
+}
+.user-mgmt-handle {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+.user-mgmt-cell-email {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+}
+.user-mgmt-cell-joined {
+  font-size: var(--text-meta);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.user-mgmt-cell-ttl {
+  font-size: var(--text-row);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Role badge / selector / text ──────────────────── */
+.user-mgmt-role-badge {
+  margin-left: var(--space-1);
+  font-size: var(--text-tiny);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  font-weight: 500;
+}
+.user-mgmt-role-badge.is-platform-admin {
+  background: var(--error-subtle);
+  color: var(--error);
+}
+.user-mgmt-role-badge.is-org-admin {
+  background: color-mix(in srgb, var(--info) 12%, transparent);
+  color: var(--info);
+}
+.user-mgmt-role-select {
+  font-size: var(--text-meta);
+  padding: 2px var(--space-1);
+  width: 100%;
+  min-width: 0;
+}
+.user-mgmt-role-text {
+  font-size: var(--text-meta);
+  color: var(--text-secondary);
+}
+
+/* ── Source pill ───────────────────────────────────── */
+.user-mgmt-source {
+  font-size: var(--text-tiny);
+  border-radius: var(--radius-sm);
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+.user-mgmt-source.is-feishu {
+  background: color-mix(in srgb, var(--info) 12%, transparent);
+  color: var(--info);
+}
+.user-mgmt-source.is-registered {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+
+/* ── Quota fractions ───────────────────────────────── */
+.user-mgmt-quota-used {
+  font-size: var(--text-body);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.user-mgmt-quota-total {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.user-mgmt-edit-btn {
+  padding: var(--space-1) 10px;
+  font-size: var(--text-meta);
+}
+
+/* ── Inline edit form ──────────────────────────────── */
+.user-mgmt-edit-form {
+  margin-top: var(--space-1);
+  background: var(--bg-secondary);
+  border-left: 3px solid var(--accent-primary);
+}
+.user-mgmt-edit-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: var(--space-4);
+}
+.user-mgmt-edit-label {
+  font-size: var(--text-meta);
+}
+.user-mgmt-edit-actions {
+  margin-top: var(--space-3);
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+/* ── Pagination ────────────────────────────────────── */
+.user-mgmt-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.user-mgmt-page-btn {
+  padding: var(--space-1) 10px;
+  font-size: var(--text-row);
+}
+.user-mgmt-page-num {
+  min-width: 32px;
+}

@@ -1,0 +1,246 @@
+/* ═══════════════════════════════════════════════════════
+   AgentSubagentsSection — inline style 迁出（P3）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   scope 徽章按 scope 取色（跨 Workspace 复用）→ 保留 inline 动态
+   悬空 token 就近归位：--border-primary→--border-subtle，--danger→--error
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Header ────────────────────────────────────────────── */
+.agent-subagents-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-4);
+}
+
+.agent-subagents-title {
+  margin-bottom: var(--space-1);
+}
+
+.agent-subagents-subtitle {
+  font-size: var(--text-body);
+  color: var(--text-tertiary);
+}
+
+.agent-subagents-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.agent-subagents-auto-approve {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.agent-subagents-auto-approve:hover {
+  color: var(--text-primary);
+}
+
+.agent-subagents-new-btn {
+  font-size: var(--text-body);
+}
+
+.agent-subagents-hint {
+  color: var(--text-tertiary);
+  font-size: var(--text-body);
+}
+
+/* ── List rows — hairline 分隔，hover/selected 两态 ─────── */
+.agent-subagents-list {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.agent-subagents-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+
+.agent-subagents-row:hover:not(.is-selected) {
+  background: var(--bg-hover);
+}
+
+.agent-subagents-row.is-selected {
+  background: var(--bg-secondary);
+}
+
+.agent-subagents-row-name {
+  font-weight: 600;
+  font-size: var(--text-body);
+  min-width: 160px;
+}
+
+.agent-subagents-proposal-badge {
+  font-size: var(--text-meta);
+  font-weight: 600;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-full);
+  color: var(--warning);
+  border: 1px solid var(--warning);
+  flex-shrink: 0;
+}
+
+.agent-subagents-row-type {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+}
+
+.agent-subagents-row-model {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.agent-subagents-row-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-subagents-row-tools {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* ── Editor panel ──────────────────────────────────────── */
+.agent-subagents-editor {
+  margin-top: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  background: var(--bg-secondary);
+}
+
+.agent-subagents-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.agent-subagents-panel-title {
+  margin: 0;
+}
+
+.agent-subagents-panel-actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-2);
+}
+
+.agent-subagents-meta {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.agent-subagents-delete-btn {
+  color: var(--error);
+}
+
+.agent-subagents-tenant-hint {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-2);
+}
+
+/* ── Proposal block ────────────────────────────────────── */
+.agent-subagents-proposal {
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.agent-subagents-proposal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.agent-subagents-proposal-title {
+  font-size: var(--text-body);
+}
+
+.agent-subagents-proposal-rationale {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-2);
+}
+
+/* ── Code blocks（sunken，无边框强调，mono） ───────────── */
+.agent-subagents-code {
+  font-size: var(--text-row);
+  white-space: pre-wrap;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+.agent-subagents-code--proposal {
+  max-height: 260px;
+}
+
+.agent-subagents-code--definition {
+  max-height: 420px;
+}
+
+/* ── Create/edit form inputs（sunken 对比 editor 面板） ── */
+.agent-subagents-gen-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.agent-subagents-gen-input {
+  flex: 1;
+  background: var(--bg-primary);
+}
+
+.agent-subagents-gen-btn {
+  flex-shrink: 0;
+}
+
+.agent-subagents-name-input {
+  width: 100%;
+  margin-bottom: var(--space-2);
+  background: var(--bg-primary);
+}
+
+.agent-subagents-editor-textarea {
+  width: 100%;
+  min-height: 320px;
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-row);
+  line-height: var(--leading-row);
+  background: var(--bg-primary);
+  resize: vertical;
+}
+
+.agent-subagents-error {
+  margin-top: var(--space-2);
+  font-size: var(--text-row);
+  color: var(--error);
+}

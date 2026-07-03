@@ -28,6 +28,7 @@ import { useTranslation } from 'react-i18next';
 import { ApiError } from '../../api/core';
 import { planApi, type PlanRequest, type PlanRiskLevel } from '../../api/domains/plans';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import './PlanCard.css';
 
 interface PlanCardProps {
   agentId: string;
@@ -39,9 +40,9 @@ interface PlanCardProps {
 }
 
 const RISK_COLORS: Record<PlanRiskLevel, string> = {
-  low: 'var(--success, #059669)',
-  medium: 'var(--warning, #b45309)',
-  high: 'var(--error, #dc2626)',
+  low: 'var(--success)',
+  medium: 'var(--warning)',
+  high: 'var(--error)',
 };
 
 function riskColor(level?: string | null): string {
@@ -139,15 +140,6 @@ export async function confirmAndHandoffPlan(
     plan_hash: plan.plan_hash,
   });
 }
-
-const labelStyle: React.CSSProperties = {
-  fontSize: '11px',
-  fontWeight: 700,
-  color: 'var(--text-tertiary)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.4px',
-  marginBottom: '4px',
-};
 
 export default function PlanCard({ agentId, plan, onChanged, dense = false }: PlanCardProps) {
   const { t } = useTranslation();
@@ -252,15 +244,15 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   // Structured governance detail — the canonical execution contract. Primary
   // surface only when there is no agent-authored article; otherwise folded.
   const governanceDetail = (
-    <div style={{ display: 'grid', gap: dense ? '10px' : '12px' }}>
+    <div className={`plan-card-detail${dense ? ' plan-card--dense' : ''}`}>
       {(planJson.objective || planJson.motivation) && (
         <div>
-          <div style={labelStyle}>{t('agent.plan.objective', 'Objective')}</div>
+          <div className="plan-card-label">{t('agent.plan.objective', 'Objective')}</div>
           {planJson.objective && (
-            <div style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.5 }}>{planJson.objective}</div>
+            <div className="plan-card-objective">{planJson.objective}</div>
           )}
           {planJson.motivation && (
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '3px', lineHeight: 1.5 }}>
+            <div className="plan-card-motivation">
               {planJson.motivation}
             </div>
           )}
@@ -269,13 +261,13 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
 
       {steps.length > 0 && (
         <div>
-          <div style={labelStyle}>{t('agent.plan.steps', 'Steps')}</div>
-          <ol style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+          <div className="plan-card-label">{t('agent.plan.steps', 'Steps')}</div>
+          <ol className="plan-card-list">
             {steps.map((step, index) => (
-              <li key={step.order ?? index} style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              <li key={step.order ?? index} className="plan-card-step">
                 {step.description}
                 {step.expected_output && (
-                  <span style={{ color: 'var(--text-tertiary)' }}> — {step.expected_output}</span>
+                  <span className="plan-card-step-output"> — {step.expected_output}</span>
                 )}
               </li>
             ))}
@@ -285,27 +277,27 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
 
       {successCriteria.length > 0 && (
         <div>
-          <div style={labelStyle}>{t('agent.plan.successCriteria', 'Success criteria')}</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+          <div className="plan-card-label">{t('agent.plan.successCriteria', 'Success criteria')}</div>
+          <ul className="plan-card-list">
             {successCriteria.map((item, index) => (
-              <li key={index} style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{item}</li>
+              <li key={index} className="plan-card-item">{item}</li>
             ))}
           </ul>
         </div>
       )}
 
       {(wakeText || costText) && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
+        <div className="plan-card-meta-grid">
           {wakeText && (
             <div>
-              <div style={labelStyle}>{t('agent.plan.wakePolicy', 'Wake policy')}</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono, monospace)' }}>{wakeText}</div>
+              <div className="plan-card-label">{t('agent.plan.wakePolicy', 'Wake policy')}</div>
+              <div className="plan-card-mono-value">{wakeText}</div>
             </div>
           )}
           {costText && (
             <div>
-              <div style={labelStyle}>{t('agent.plan.estimatedCost', 'Estimated cost')}</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{costText}</div>
+              <div className="plan-card-label">{t('agent.plan.estimatedCost', 'Estimated cost')}</div>
+              <div className="plan-card-value">{costText}</div>
             </div>
           )}
         </div>
@@ -313,13 +305,13 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
 
       {sideEffects.length > 0 && (
         <div>
-          <div style={labelStyle}>{t('agent.plan.sideEffects', 'External side effects')}</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+          <div className="plan-card-label">{t('agent.plan.sideEffects', 'External side effects')}</div>
+          <ul className="plan-card-list">
             {sideEffects.map((effect, index) => (
-              <li key={index} style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              <li key={index} className="plan-card-item">
                 {effect.label}
                 {effect.requiresConfirmation && (
-                  <span style={{ color: 'var(--warning, #b45309)' }}> — {t('agent.plan.requiresConfirmation', 'requires confirmation')}</span>
+                  <span className="plan-card-warn-inline"> — {t('agent.plan.requiresConfirmation', 'requires confirmation')}</span>
                 )}
               </li>
             ))}
@@ -329,10 +321,10 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
 
       {stopConditions.length > 0 && (
         <div>
-          <div style={labelStyle}>{t('agent.plan.stopConditions', 'Stop conditions')}</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+          <div className="plan-card-label">{t('agent.plan.stopConditions', 'Stop conditions')}</div>
+          <ul className="plan-card-list">
             {stopConditions.map((item, index) => (
-              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
+              <li key={index} className="plan-card-item-muted">{item}</li>
             ))}
           </ul>
         </div>
@@ -340,10 +332,10 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
 
       {assumptions.length > 0 && (
         <div>
-          <div style={labelStyle}>{t('agent.plan.assumptions', 'Assumptions')}</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+          <div className="plan-card-label">{t('agent.plan.assumptions', 'Assumptions')}</div>
+          <ul className="plan-card-list">
             {assumptions.map((item, index) => (
-              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
+              <li key={index} className="plan-card-item-muted">{item}</li>
             ))}
           </ul>
         </div>
@@ -351,10 +343,10 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
 
       {openQuestions.length > 0 && (
         <div>
-          <div style={labelStyle}>{t('agent.plan.openQuestions', 'Open questions')}</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '4px' }}>
+          <div className="plan-card-label">{t('agent.plan.openQuestions', 'Open questions')}</div>
+          <ul className="plan-card-list">
             {openQuestions.map((item, index) => (
-              <li key={index} style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{item}</li>
+              <li key={index} className="plan-card-item-muted">{item}</li>
             ))}
           </ul>
         </div>
@@ -365,55 +357,32 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   return (
     <div
       data-testid="plan-card"
-      style={{
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '10px',
-        padding: dense ? '12px 14px' : '16px 18px',
-        background: 'var(--bg-primary)',
-        display: 'grid',
-        gap: dense ? '10px' : '12px',
-      }}
+      className={`plan-card${dense ? ' plan-card--dense' : ''}`}
     >
       {/* Header: title + status + risk */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <span
-              style={{
-                fontSize: '10px',
-                fontWeight: 700,
-                padding: '2px 8px',
-                borderRadius: '999px',
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--border-subtle)',
-                color: 'var(--accent-text, var(--accent-primary))',
-                textTransform: 'uppercase',
-                letterSpacing: '0.4px',
-              }}
-            >
+      <div className="plan-card-header">
+        <div className="plan-card-header-main">
+          <div className="plan-card-badge-row">
+            <span className="plan-card-badge">
               {t('agent.plan.badge', 'Plan')}
             </span>
-            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            <span className="plan-card-meta">
               {t('agent.plan.version', 'v{{version}}', { version: plan.plan_version })}
             </span>
-            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            <span className="plan-card-meta">
               {t(`agent.plan.status.${plan.status}`, String(plan.status).replace(/_/g, ' '))}
             </span>
           </div>
-          <div style={{ fontSize: dense ? '14px' : '15px', fontWeight: 600, color: 'var(--text-primary)', marginTop: '6px' }}>
+          <div className="plan-card-title">
             {planJson.title || plan.original_request}
           </div>
         </div>
         {risk?.level && (
           <span
+            className="plan-card-risk"
             style={{
-              fontSize: '11px',
-              fontWeight: 600,
               color: riskColor(risk.level),
               border: `1px solid ${riskColor(risk.level)}`,
-              borderRadius: '6px',
-              padding: '2px 8px',
-              whiteSpace: 'nowrap',
             }}
             title={Array.isArray(risk.reasons) ? risk.reasons.join('; ') : undefined}
           >
@@ -426,14 +395,14 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           structured render for machine-intercepted plans. */}
       {hasAuthoredBody ? (
         <>
-          <div style={{ fontSize: dense ? '13px' : '14px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+          <div className="plan-card-body">
             <MarkdownRenderer content={authoredBody} />
           </div>
           <details>
-            <summary style={{ ...labelStyle, marginBottom: 0, cursor: 'pointer' }}>
+            <summary className="plan-card-label plan-card-details-summary">
               {t('agent.plan.detailsSummary', 'Plan details')}
             </summary>
-            <div style={{ marginTop: '10px' }}>{governanceDetail}</div>
+            <div className="plan-card-details-body">{governanceDetail}</div>
           </details>
         </>
       ) : (
@@ -448,18 +417,9 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
         <div
           data-testid="plan-clarification-required"
           role="status"
-          style={{
-            fontSize: '12px',
-            color: 'var(--warning, #b45309)',
-            background: 'rgba(180, 83, 9, 0.08)',
-            border: '1px solid rgba(180, 83, 9, 0.24)',
-            borderRadius: '6px',
-            padding: '8px 10px',
-            display: 'grid',
-            gap: '3px',
-          }}
+          className="plan-card-notice plan-card-notice--warning"
         >
-          <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+          <div className="plan-card-notice-title">
             {t('agent.plan.clarificationRequired', 'Clarification required')}
           </div>
           <div>
@@ -472,20 +432,8 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
       )}
 
       {isPlanning && (
-        <div
-          role="status"
-          style={{
-            fontSize: '12px',
-            color: 'var(--text-secondary)',
-            background: 'var(--bg-secondary)',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '6px',
-            padding: '8px 10px',
-            display: 'grid',
-            gap: '3px',
-          }}
-        >
-          <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+        <div role="status" className="plan-card-notice">
+          <div className="plan-card-notice-title">
             {t('agent.plan.planningTitle', 'Planning in progress')}
           </div>
           <div>
@@ -498,21 +446,10 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
       )}
 
       {isPlanningFailed && (
-        <div
-          role="alert"
-          style={{
-            fontSize: '12px',
-            color: 'var(--error, #dc2626)',
-            background: 'rgba(220, 100, 100, 0.1)',
-            borderRadius: '6px',
-            padding: '8px 10px',
-            display: 'grid',
-            gap: '4px',
-          }}
-        >
-          <div style={{ fontWeight: 700 }}>{t('agent.plan.failureTitle', 'Planning failed')}</div>
+        <div role="alert" className="plan-card-notice plan-card-notice--error">
+          <div className="plan-card-notice-strong">{t('agent.plan.failureTitle', 'Planning failed')}</div>
           {planningErrors.length > 0 ? (
-            <ul style={{ margin: 0, paddingLeft: '18px', display: 'grid', gap: '2px' }}>
+            <ul className="plan-card-error-list">
               {planningErrors.map((item, index) => (
                 <li key={index}>{item}</li>
               ))}
@@ -524,23 +461,14 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
       )}
 
       {error && (
-        <div
-          role="alert"
-          style={{
-            fontSize: '12px',
-            color: 'var(--error, #dc2626)',
-            background: 'rgba(220, 100, 100, 0.1)',
-            borderRadius: '6px',
-            padding: '6px 10px',
-          }}
-        >
+        <div role="alert" className="plan-card-notice plan-card-notice--error">
           {error}
         </div>
       )}
 
       {/* Actions stay in the session card: no browser prompts, no context switch. */}
       {requiresClarification ? (
-        <div style={{ display: 'grid', gap: '10px' }}>
+        <div className="plan-card-actions">
           <div className="plan-inline-actions">
             <PlanDecisionComposer
               testId="plan-clarification-composer"
@@ -567,8 +495,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           <button
             data-testid="plan-implement-disabled"
             type="button"
-            className="btn btn-primary"
-            style={{ justifySelf: 'flex-end', fontSize: '12px', padding: '6px 14px' }}
+            className="btn btn-primary plan-card-actions-submit"
             disabled
             title={t('agent.plan.answerBeforeImplementing', 'Answer the open questions before implementing.')}
           >
@@ -576,7 +503,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           </button>
         </div>
       ) : isAwaiting ? (
-        <div style={{ display: 'grid', gap: '10px' }}>
+        <div className="plan-card-actions">
           <div className="plan-inline-actions">
             <PlanDecisionComposer
               testId="plan-revision-composer"
@@ -602,8 +529,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           </div>
           <button
             type="button"
-            className="btn btn-primary"
-            style={{ justifySelf: 'flex-end', fontSize: '12px', padding: '6px 14px' }}
+            className="btn btn-primary plan-card-actions-submit"
             disabled={busy !== null}
             onClick={onConfirm}
           >
@@ -611,7 +537,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           </button>
         </div>
       ) : isPlanningFailed ? (
-        <div style={{ display: 'grid', gap: '10px' }}>
+        <div className="plan-card-actions">
           <div className="plan-inline-actions">
             <PlanDecisionComposer
               testId="plan-revision-composer"
@@ -637,8 +563,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           </div>
           <button
             type="button"
-            className="btn btn-primary"
-            style={{ justifySelf: 'flex-end', fontSize: '12px', padding: '6px 14px' }}
+            className="btn btn-primary plan-card-actions-submit"
             disabled={busy !== null}
             onClick={onRegenerate}
           >
@@ -646,7 +571,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           </button>
         </div>
       ) : isPlanning || isConfirmed ? null : (
-        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+        <div className="plan-card-terminal">
           {t(`agent.plan.terminal.${plan.status}`, t('agent.plan.noActions', 'No actions available for this plan.'))}
         </div>
       )}
@@ -709,9 +634,9 @@ function HandoffBanner({ plan, dense }: { plan: PlanRequest; dense: boolean }) {
 
   const isError = status === 'skipped' || status === 'failed';
   const tone = isError
-    ? { color: 'var(--error, #dc2626)', bg: 'rgba(220, 100, 100, 0.1)' }
+    ? { color: 'var(--error)', bg: 'var(--error-subtle)' }
     : status === 'completed'
-      ? { color: 'var(--success, #059669)', bg: 'var(--bg-secondary)' }
+      ? { color: 'var(--success)', bg: 'var(--bg-secondary)' }
       : { color: 'var(--text-secondary)', bg: 'var(--bg-secondary)' };
 
   let headline: string;
@@ -724,24 +649,16 @@ function HandoffBanner({ plan, dense }: { plan: PlanRequest; dense: boolean }) {
   return (
     <div
       role={isError ? 'alert' : 'status'}
-      style={{
-        fontSize: '12px',
-        color: tone.color,
-        background: tone.bg,
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '6px',
-        padding: dense ? '6px 10px' : '8px 10px',
-        display: 'grid',
-        gap: '3px',
-      }}
+      className={`plan-card-notice${dense ? ' plan-card-notice--dense' : ''}`}
+      style={{ color: tone.color, background: tone.bg }}
     >
-      <div style={{ fontWeight: 700 }}>{headline}</div>
+      <div className="plan-card-notice-strong">{headline}</div>
       {runtimeTaskId && (
-        <div style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono, monospace)', fontSize: '11px' }}>
+        <div className="plan-card-runtime-task">
           {t('agent.plan.handoff.runtimeTask', 'Run: {{id}}', { id: runtimeTaskId })}
         </div>
       )}
-      {isError && reason && <div style={{ color: 'var(--text-tertiary)' }}>{reason}</div>}
+      {isError && reason && <div className="plan-card-notice-reason">{reason}</div>}
     </div>
   );
 }

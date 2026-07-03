@@ -1,0 +1,368 @@
+/* ═══════════════════════════════════════════════════════
+   AgentDetail — page shell styles (P3)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   仅样式层：header / 徽章 / created banner / upload toast /
+   expiry modal / error boundary。动态值（save 按钮 opacity）保留 inline。
+   注：会话工作台 .agent-detail-session-only 布局在 index.css，勿重复。
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Loading / access placeholder ────────────────────── */
+.agent-detail-placeholder {
+  padding: var(--space-10);
+  color: var(--text-tertiary);
+}
+
+/* ── Page header ─────────────────────────────────────── */
+.agent-detail-hr-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.agent-detail-hr-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+.agent-detail-title-flush {
+  margin-bottom: 0;
+}
+.agent-detail-subtitle-tight {
+  margin-top: 2px;
+}
+.agent-detail-header-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.agent-detail-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+}
+.agent-detail-header-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Inline-editable name / role — hover reveals a dashed underline */
+.agent-detail-name-input {
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  padding: 4px 10px;
+  min-width: 320px;
+  width: auto;
+  outline: none;
+  margin-bottom: 0;
+  display: block;
+}
+.agent-detail-name {
+  display: inline-block;
+  margin-bottom: 0;
+}
+.agent-detail-role {
+  max-width: 38vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: middle;
+}
+.agent-detail-name.is-editable,
+.agent-detail-role.is-editable {
+  cursor: text;
+  border-bottom: 1px dashed transparent;
+  transition: border-color var(--transition-fast);
+}
+.agent-detail-name.is-editable:hover,
+.agent-detail-role.is-editable:hover {
+  border-bottom-color: var(--text-tertiary);
+}
+.agent-detail-status-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 4px;
+}
+.agent-detail-role-input {
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  padding: 6px 10px;
+  width: min(500px, 50vw);
+  outline: none;
+  resize: vertical;
+  line-height: 1.5;
+  font-family: inherit;
+}
+.agent-detail-role-placeholder {
+  color: var(--text-tertiary);
+  font-size: var(--text-row);
+}
+
+/* Header status pills + expiry inline control */
+.agent-detail-expired-badge {
+  background: var(--error);
+  color: #fff;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-meta);
+  font-weight: 600;
+}
+.agent-detail-local-badge {
+  font-size: var(--text-tiny);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--success-subtle);
+  color: var(--success);
+  font-weight: 600;
+}
+.agent-detail-expires-text {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+.agent-detail-expiry-edit {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  transition: background var(--transition-fast);
+}
+.agent-detail-expiry-edit:hover {
+  background: var(--bg-secondary);
+}
+.agent-detail-header-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* ── Tools tab intro ─────────────────────────────────── */
+.agent-detail-tools-header {
+  margin-bottom: var(--space-4);
+}
+.agent-detail-tools-header-title {
+  margin-bottom: 4px;
+}
+.agent-detail-tools-header-desc {
+  font-size: var(--text-body);
+  color: var(--text-tertiary);
+}
+
+/* ── Agent-created success banner (fixed overlay) ────── */
+.agent-detail-created-banner {
+  position: fixed;
+  bottom: var(--space-6);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  padding: var(--space-4) var(--space-6);
+  border-radius: var(--radius-lg);
+  background: var(--success-subtle);
+  border: 1px solid var(--success);
+  box-shadow: var(--shadow-popover);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.agent-detail-created-icon {
+  font-size: 22px;
+}
+.agent-detail-created-title {
+  font-weight: 600;
+  font-size: var(--text-emphasis);
+}
+.agent-detail-created-desc {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.agent-detail-created-action {
+  flex-shrink: 0;
+}
+.agent-detail-created-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-title);
+  color: var(--text-tertiary);
+  padding: var(--space-1);
+  transition: color var(--transition-fast);
+}
+.agent-detail-created-close:hover {
+  color: var(--text-primary);
+}
+
+/* ── Upload toast (fixed overlay) ────────────────────── */
+.agent-detail-upload-toast {
+  position: fixed;
+  top: var(--space-5);
+  right: var(--space-5);
+  z-index: 20000;
+  padding: var(--space-3) var(--space-5);
+  border-radius: var(--radius-lg);
+  color: #fff;
+  font-size: var(--text-emphasis);
+  font-weight: 500;
+  box-shadow: var(--shadow-popover);
+}
+.agent-detail-upload-toast.is-success {
+  background: var(--success);
+}
+.agent-detail-upload-toast.is-error {
+  background: var(--error);
+}
+
+/* ── Expiry editor modal ─────────────────────────────── */
+.agent-detail-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  width: 360px;
+  max-width: 90vw;
+}
+.agent-detail-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+.agent-detail-modal-title {
+  margin: 0;
+  font-size: var(--text-title);
+  font-weight: 600;
+}
+.agent-detail-modal-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: var(--text-title);
+  line-height: 1;
+  transition: color var(--transition-fast);
+}
+.agent-detail-modal-close:hover {
+  color: var(--text-primary);
+}
+.agent-detail-expiry-status {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-4);
+}
+.agent-detail-expiry-status-expired {
+  color: var(--error);
+  font-weight: 600;
+}
+.agent-detail-expiry-status-never {
+  color: var(--success);
+}
+.agent-detail-expiry-field {
+  margin-bottom: var(--space-4);
+}
+.agent-detail-expiry-field-lg {
+  margin-bottom: var(--space-5);
+}
+.agent-detail-expiry-hint {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-2);
+}
+.agent-detail-expiry-quick {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.agent-detail-expiry-quick-btn {
+  padding: var(--space-1) 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  cursor: pointer;
+  font-size: var(--text-row);
+  color: var(--text-primary);
+  transition: background var(--transition-fast);
+}
+.agent-detail-expiry-quick-btn:hover {
+  background: var(--bg-hover);
+}
+.agent-detail-expiry-input {
+  width: 100%;
+  padding: var(--space-2) 10px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  box-sizing: border-box;
+}
+.agent-detail-expiry-footer {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: space-between;
+  align-items: center;
+}
+.agent-detail-expiry-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.agent-detail-expiry-btn {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: background var(--transition-fast);
+}
+.agent-detail-expiry-btn:hover {
+  background: var(--bg-hover);
+}
+.agent-detail-expiry-btn-reset {
+  padding: 7px 12px;
+  font-size: var(--text-row);
+}
+.agent-detail-expiry-btn-cancel {
+  padding: 7px 14px;
+  font-size: var(--text-body);
+}
+
+/* ── Error boundary fallback ─────────────────────────── */
+.agent-detail-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+  gap: var(--space-4);
+}
+.agent-detail-error-title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.agent-detail-error-message {
+  font-size: var(--text-body);
+  color: var(--text-tertiary);
+  max-width: 400px;
+  text-align: center;
+}
+.agent-detail-error-action {
+  margin-top: var(--space-2);
+}

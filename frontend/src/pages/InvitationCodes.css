@@ -1,0 +1,169 @@
+/* ═══════════════════════════════════════════════════════
+   InvitationCodes — 静态样式（inline → class 迁移）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀: .invitation-codes-*  全静态，无动态 inline
+   ═══════════════════════════════════════════════════════ */
+
+.invitation-codes-page {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-6);
+  --inv-cols: 2fr 1fr 1fr 1fr 100px;
+}
+
+/* ── Toast — 浮层通知 ──────────────────────────────── */
+.invitation-codes-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 10px 20px;
+  border-radius: var(--radius-lg);
+  background: var(--success);
+  color: #fff;
+  font-size: var(--text-body);
+  z-index: 9999;
+  box-shadow: var(--shadow-popover);
+}
+
+/* ── Page head ─────────────────────────────────────── */
+.invitation-codes-title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  margin-bottom: var(--space-1);
+}
+.invitation-codes-subtitle {
+  font-size: var(--text-body);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-6);
+}
+
+/* ── Cards ─────────────────────────────────────────── */
+.invitation-codes-card {
+  margin-bottom: var(--space-4);
+}
+.invitation-codes-create-title {
+  font-size: var(--text-row);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-3);
+}
+.invitation-codes-create-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-end;
+}
+.invitation-codes-field {
+  flex: 1;
+}
+.invitation-codes-label {
+  display: block;
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-1);
+}
+.invitation-codes-gen-btn {
+  height: 34px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── List head + search ────────────────────────────── */
+.invitation-codes-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+.invitation-codes-list-title {
+  font-size: var(--text-row);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.invitation-codes-search-wrap {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.invitation-codes-search {
+  width: 200px;
+  height: 30px;
+  font-size: var(--text-row);
+}
+.invitation-codes-export-btn {
+  height: 30px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-meta);
+  white-space: nowrap;
+}
+
+/* ── Table ─────────────────────────────────────────── */
+.invitation-codes-thead {
+  display: grid;
+  grid-template-columns: var(--inv-cols);
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.invitation-codes-empty {
+  text-align: center;
+  padding: var(--space-6);
+  color: var(--text-tertiary);
+  font-size: var(--text-body);
+}
+.invitation-codes-row {
+  display: grid;
+  grid-template-columns: var(--inv-cols);
+  gap: var(--space-3);
+  padding: 10px var(--space-3);
+  align-items: center;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-body);
+  transition: background var(--transition-fast);
+}
+.invitation-codes-row:hover {
+  background: var(--bg-hover);
+}
+.invitation-codes-code {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.1em;
+}
+.invitation-codes-usage-used {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.invitation-codes-usage-total {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.invitation-codes-date {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.invitation-codes-disable-btn {
+  padding: 2px var(--space-2);
+  font-size: var(--text-tiny);
+}
+
+/* ── Pagination ────────────────────────────────────── */
+.invitation-codes-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4) 0 var(--space-1);
+  font-size: var(--text-body);
+}
+.invitation-codes-page-btn {
+  padding: var(--space-1) 10px;
+  font-size: var(--text-row);
+}
+.invitation-codes-page-info {
+  color: var(--text-secondary);
+}

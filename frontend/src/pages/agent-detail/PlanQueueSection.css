@@ -1,0 +1,102 @@
+/* ═══════════════════════════════════════════════════════
+   PlanQueueSection — Plan Mode queue (§12.2) (P3)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   ═══════════════════════════════════════════════════════ */
+
+.plan-queue-card {
+  margin-bottom: 16px;
+}
+.plan-queue-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.plan-queue-title {
+  margin: 0;
+  font-size: var(--text-emphasis);
+  font-weight: 600;
+}
+.plan-queue-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+.plan-queue-count {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+
+.plan-queue-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-tertiary);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-body);
+}
+
+/* ── Status groups ───────────────────────────────────── */
+.plan-queue-group {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.plan-queue-group:last-child {
+  margin-bottom: 0;
+}
+.plan-queue-group--awaiting {
+  gap: 10px;
+}
+.plan-queue-group-label {
+  font-size: var(--text-meta);
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.plan-queue-group-label--awaiting {
+  color: var(--warning);
+}
+.plan-queue-group-label--confirmed {
+  color: var(--success);
+}
+
+/* ── Non-actionable rows (confirmed / closed) ────────── */
+.plan-queue-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+.plan-queue-row--muted {
+  opacity: 0.7;
+}
+.plan-queue-row-body {
+  min-width: 0;
+}
+.plan-queue-row-title {
+  font-size: var(--text-body);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.plan-queue-row-meta {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.plan-queue-status {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+.plan-queue-status--confirmed {
+  color: var(--success);
+}

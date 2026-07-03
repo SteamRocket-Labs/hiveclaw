@@ -1,0 +1,175 @@
+/* ═══════════════════════════════════════════════════════
+   WorkspaceOrgSection — 静态样式迁出（P4 长尾）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .ws-org-*；选中态走 .is-selected，缩进 paddingLeft 保留 inline
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Cards ─────────────────────────────────────────── */
+
+.ws-org-card {
+  margin-bottom: var(--space-4);
+}
+
+.ws-org-card-title {
+  margin-bottom: var(--space-3);
+}
+
+.ws-org-card-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-3);
+}
+
+/* ── Sync form ─────────────────────────────────────── */
+
+.ws-org-form-row {
+  display: flex;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.ws-org-field {
+  flex: 1;
+}
+
+.ws-org-label {
+  display: block;
+  font-size: var(--text-row);
+  font-weight: 500;
+  margin-bottom: var(--space-1);
+}
+
+.ws-org-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.ws-org-meta {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.ws-org-sync-result {
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-row);
+}
+
+.ws-org-sync-result.is-error {
+  background: var(--error-subtle);
+}
+
+.ws-org-sync-result.is-ok {
+  background: var(--success-subtle);
+}
+
+/* ── Org browser ───────────────────────────────────── */
+
+.ws-org-browser {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.ws-org-dept-panel {
+  width: 260px;
+  padding-right: var(--space-4);
+  border-right: 1px solid var(--border-subtle);
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.ws-org-panel-title {
+  font-size: var(--text-row);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-2);
+}
+
+.ws-org-dept-item {
+  padding: 5px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body);
+  margin-bottom: 2px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.ws-org-dept-item:hover {
+  background: var(--bg-hover);
+}
+
+.ws-org-dept-item.is-selected {
+  background: var(--bg-active);
+}
+
+.ws-org-dept-caret {
+  margin-right: var(--space-1);
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+
+.ws-org-dept-count {
+  margin-left: var(--space-1);
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+}
+
+.ws-org-empty-sm {
+  padding: var(--space-2);
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+/* ── Member list ───────────────────────────────────── */
+
+.ws-org-search {
+  margin-bottom: var(--space-3);
+}
+
+.ws-org-member-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.ws-org-member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.ws-org-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background: var(--accent-subtle);
+  font-size: var(--text-emphasis);
+  font-weight: 600;
+}
+
+.ws-org-member-name {
+  font-size: var(--text-body);
+  font-weight: 500;
+}
+
+.ws-org-member-meta {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+
+.ws-org-empty {
+  text-align: center;
+  padding: var(--space-6);
+  font-size: var(--text-body);
+  color: var(--text-tertiary);
+}

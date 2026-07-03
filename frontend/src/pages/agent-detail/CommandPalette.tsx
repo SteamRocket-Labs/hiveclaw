@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { ccParityApi, type CommandDefinition, type CommandIndexEntry, type ExecuteCommandResult } from '../../api/domains/ccParity';
 import { parseSlashCommandArgs } from './slashCommand';
+import './CommandPalette.css';
 
 export function filterCommandIndex(commands: CommandIndexEntry[] | undefined, query: string): CommandIndexEntry[] {
   const normalized = query.trim().toLowerCase();
@@ -114,34 +115,22 @@ export default function CommandPalette({
   };
 
   return (
-    <div style={{ borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-primary)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}>
+    <div className="command-palette">
+      <div className="command-palette-bar">
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
           disabled={!canLoad}
           title={t('agent.chat.commands.open', 'Commands')}
-          style={{
-            width: '36px',
-            height: '32px',
-            borderRadius: '6px',
-            border: '1px solid var(--border-subtle)',
-            background: open ? 'var(--bg-elevated)' : 'var(--bg-secondary)',
-            color: 'var(--text-secondary)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: canLoad ? 'pointer' : 'not-allowed',
-            flexShrink: 0,
-          }}
+          className={`command-palette-toggle${open ? ' active' : ''}`}
         >
           <IconTerminal2 size={17} stroke={1.8} />
         </button>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-secondary)' }}>
+        <div className="command-palette-label">
+          <div className="command-palette-label-title">
             {t('agent.chat.commands.title', 'Commands')}
           </div>
-          <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div className="command-palette-label-sub">
             {selected ? `${selected.name} · ${selected.category}` : t('agent.chat.commands.empty', 'No commands available')}
           </div>
         </div>
@@ -150,40 +139,21 @@ export default function CommandPalette({
             type="button"
             onClick={() => setOpen(false)}
             title={t('common.close', 'Close')}
-            style={{
-              width: '28px',
-              height: '28px',
-              borderRadius: '6px',
-              border: '1px solid var(--border-subtle)',
-              background: 'transparent',
-              color: 'var(--text-tertiary)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-            }}
+            className="command-palette-close"
           >
             <IconX size={15} stroke={1.8} />
           </button>
         )}
       </div>
       {open && (
-        <div style={{ padding: '0 12px 10px', display: 'grid', gap: '8px' }}>
+        <div className="command-palette-panel">
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t('agent.chat.commands.search', 'Search commands')}
-            style={{
-              height: '32px',
-              borderRadius: '6px',
-              border: '1px solid var(--border-subtle)',
-              background: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-              padding: '0 10px',
-              fontSize: '12px',
-            }}
+            className="command-palette-search"
           />
-          <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px' }}>
+          <div className="command-palette-chips">
             {filteredCommands.map((command) => (
               <button
                 key={command.name}
@@ -194,16 +164,7 @@ export default function CommandPalette({
                   setError(null);
                   setResultText(null);
                 }}
-                style={{
-                  border: command.name === selected?.name ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
-                  background: command.name === selected?.name ? 'rgba(16,185,129,0.10)' : 'var(--bg-secondary)',
-                  color: command.name === selected?.name ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                  borderRadius: '6px',
-                  padding: '5px 8px',
-                  fontSize: '11px',
-                  whiteSpace: 'nowrap',
-                  cursor: 'pointer',
-                }}
+                className={`command-palette-chip${command.name === selected?.name ? ' active' : ''}`}
               >
                 {command.name}
               </button>
@@ -216,68 +177,30 @@ export default function CommandPalette({
             rows={4}
             aria-label={t('agent.chat.commands.arguments', 'Command arguments')}
             placeholder={t('agent.chat.commands.argumentsPlaceholder', 'Type natural arguments, or paste JSON only when needed')}
-            style={{
-              width: '100%',
-              resize: 'vertical',
-              minHeight: '84px',
-              borderRadius: '6px',
-              border: '1px solid var(--border-subtle)',
-              background: 'var(--bg-secondary)',
-              color: 'var(--text-primary)',
-              padding: '8px 10px',
-              fontSize: '12px',
-              fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-              lineHeight: 1.5,
-            }}
+            className="command-palette-textarea"
           />
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="command-palette-exec-row">
             <button
               type="button"
               onClick={execute}
               disabled={!canExecute || busy}
-              style={{
-                height: '32px',
-                borderRadius: '6px',
-                border: '1px solid var(--border-subtle)',
-                background: canExecute && !busy ? 'var(--accent-primary)' : 'var(--bg-secondary)',
-                color: canExecute && !busy ? 'white' : 'var(--text-tertiary)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '6px',
-                padding: '0 10px',
-                fontSize: '12px',
-                cursor: canExecute && !busy ? 'pointer' : 'not-allowed',
-              }}
+              className="command-palette-exec"
             >
               <IconPlayerPlay size={14} stroke={1.8} />
               {busy ? t('agent.chat.commands.running', 'Running') : t('agent.chat.commands.execute', 'Execute')}
             </button>
-            <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+            <span className="command-palette-mode">
               {schemaQuery.data?.execution_mode ?? selected?.execution_mode ?? 'metadata'}
             </span>
           </div>
           {commandsQuery.isLoading && (
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            <div className="command-palette-hint">
               {t('agent.chat.commands.loading', 'Loading commands...')}
             </div>
           )}
-          {error && <pre style={{ margin: 0, color: 'var(--danger-text)', fontSize: '11px', whiteSpace: 'pre-wrap' }}>{error}</pre>}
+          {error && <pre className="command-palette-error">{error}</pre>}
           {resultText && (
-            <pre
-              style={{
-                margin: 0,
-                maxHeight: '160px',
-                overflow: 'auto',
-                borderRadius: '6px',
-                border: '1px solid var(--border-subtle)',
-                background: 'var(--bg-secondary)',
-                color: 'var(--text-secondary)',
-                padding: '8px',
-                fontSize: '11px',
-                whiteSpace: 'pre-wrap',
-              }}
-            >
+            <pre className="command-palette-result">
               {resultText}
             </pre>
           )}

@@ -3,50 +3,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { IconBellRinging, IconDownload, IconGitCommit, IconHierarchy, IconSettings, IconTargetArrow, IconUsersGroup } from '@tabler/icons-react';
 
+import './SessionNativeControls.css';
 import { ccParityApi, type AgentTeam } from '../../api/domains/ccParity';
 import type { SessionIndex } from '../../api/domains/chat';
 import { buildCompletionWakeModel } from './timelineModel';
 
-function panelStyle(): React.CSSProperties {
-  return {
-    border: '1px solid var(--border-subtle)',
-    borderRadius: '8px',
-    background: 'var(--bg-secondary)',
-    padding: '10px',
-    display: 'grid',
-    gap: '8px',
-  };
-}
-
-function inputStyle(): React.CSSProperties {
-  return {
-    width: '100%',
-    border: '1px solid var(--border-subtle)',
-    borderRadius: '6px',
-    background: 'var(--bg-primary)',
-    color: 'var(--text-primary)',
-    fontSize: '11px',
-    padding: '7px 8px',
-    boxSizing: 'border-box',
-  };
-}
-
-function buttonStyle(): React.CSSProperties {
-  return {
-    border: '1px solid var(--border-subtle)',
-    borderRadius: '6px',
-    background: 'var(--bg-elevated)',
-    color: 'var(--text-secondary)',
-    fontSize: '11px',
-    fontWeight: 650,
-    padding: '6px 8px',
-    cursor: 'pointer',
-  };
-}
-
 function PanelTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-primary)', fontSize: '12px', fontWeight: 700 }}>
+    <div className="session-native-panel-title">
       {icon}
       <span>{title}</span>
     </div>
@@ -183,10 +147,10 @@ export default function SessionNativeControls({
   const selectedTeamSummary = asObject(selectedTeamWorkbench?.summary);
 
   return (
-    <section data-testid="session-native-controls" style={{ display: 'grid', gap: '10px' }}>
-      <div style={panelStyle()}>
+    <section data-testid="session-native-controls" className="session-native-root">
+      <div className="session-native-panel">
         <PanelTitle icon={<IconDownload size={14} />} title={t('sessionWorkbench.jsonExport', 'JSON export')} />
-        <div style={{ display: 'grid', gap: '4px', fontSize: '11px', color: 'var(--text-secondary)' }}>
+        <div className="session-native-stats">
           <div>
             {t('sessionWorkbench.truthSource', 'truth source')}: {String(turn?.truth_source ?? '-')}
           </div>
@@ -197,14 +161,14 @@ export default function SessionNativeControls({
             {t('sessionWorkbench.goals', 'goals')}: {goals.length} · {t('sessionWorkbench.agentTeams', 'agent teams')}: {teams.length}
           </div>
         </div>
-        <button type="button" style={buttonStyle()} disabled={!enabled || exportJson.isPending} onClick={() => exportJson.mutate()}>
+        <button type="button" className="session-native-btn" disabled={!enabled || exportJson.isPending} onClick={() => exportJson.mutate()}>
           {t('sessionWorkbench.exportJson', 'Export JSON')}
         </button>
       </div>
 
-      <div style={panelStyle()}>
+      <div className="session-native-panel">
         <PanelTitle icon={<IconBellRinging size={14} />} title={t('sessionWorkbench.completionWakeInbox', 'Completion wakes')} />
-        <div style={{ display: 'grid', gap: '4px', fontSize: '11px', color: 'var(--text-secondary)' }}>
+        <div className="session-native-stats">
           <div>
             {t('sessionWorkbench.pending', 'pending')}: {completionWakeModel.summary.pending} · {t('sessionWorkbench.running', 'running')}:{' '}
             {completionWakeModel.summary.running}
@@ -215,27 +179,27 @@ export default function SessionNativeControls({
           </div>
         </div>
         {completionWakeModel.items.length === 0 ? (
-          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+          <div className="session-native-empty">
             {t('sessionWorkbench.noCompletionWakes', 'No background completions yet')}
           </div>
         ) : (
-          <div style={{ display: 'grid', gap: '6px' }}>
+          <div className="session-native-wake-list">
             {completionWakeModel.items.slice(0, 5).map((wake) => (
-              <div key={wake.id} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '6px', display: 'grid', gap: '3px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', fontSize: '11px' }}>
-                  <strong style={{ minWidth: 0, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div key={wake.id} className="session-native-wake-item">
+                <div className="session-native-wake-head">
+                  <strong className="session-native-wake-label">
                     {wake.label}
                   </strong>
-                  <span style={{ color: wake.state === 'failed' ? 'rgb(220,38,38)' : 'var(--text-tertiary)' }}>
+                  <span className={`session-native-wake-state${wake.state === 'failed' ? ' is-failed' : ''}`}>
                     {t(`sessionWorkbench.${wake.state}`, wake.state)}
                   </span>
                 </div>
-                <div style={{ color: 'var(--text-tertiary)', fontSize: '10px' }}>
+                <div className="session-native-wake-kind">
                   {wake.kind}
                   {wake.source ? ` · ${wake.source}` : ''}
                 </div>
                 {wake.summary && (
-                  <div style={{ color: 'var(--text-secondary)', fontSize: '11px', lineHeight: 1.4 }}>
+                  <div className="session-native-wake-summary">
                     {wake.summary}
                   </div>
                 )}
@@ -245,9 +209,9 @@ export default function SessionNativeControls({
         )}
       </div>
 
-      <div style={panelStyle()}>
+      <div className="session-native-panel">
         <PanelTitle icon={<IconSettings size={14} />} title={t('sessionWorkbench.hookManagement', 'Hook management')} />
-        <div style={{ display: 'grid', gap: '4px', fontSize: '11px', color: 'var(--text-secondary)' }}>
+        <div className="session-native-stats">
           <div>
             {t('sessionWorkbench.hookEvents', 'hook events')}: {hookEvents.length} · {t('sessionWorkbench.blockingHooks', 'blocking')}: {blockingHookCount}
           </div>
@@ -261,13 +225,13 @@ export default function SessionNativeControls({
           const hookEnabled = runtimeConfig?.enabled !== false;
           if (!hookKey) return null;
           return (
-            <div key={hookKey} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}>
-              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>
+            <div key={hookKey} className="session-native-hook-row">
+              <span className="session-native-hook-key">
                 {hookKey}
               </span>
               <button
                 type="button"
-                style={buttonStyle()}
+                className="session-native-btn"
                 disabled={!agentId || updateHook.isPending}
                 onClick={() => updateHook.mutate({ hookKey, enabled: !hookEnabled })}
               >
@@ -278,89 +242,89 @@ export default function SessionNativeControls({
         })}
       </div>
 
-      <div style={panelStyle()}>
+      <div className="session-native-panel">
         <PanelTitle icon={<IconTargetArrow size={14} />} title={t('sessionWorkbench.startGoal', 'Start goal')} />
         <input
           value={goalObjective}
           onChange={(event) => setGoalObjective(event.target.value)}
           placeholder={t('sessionWorkbench.goalPlaceholder', 'Define the session objective')}
-          style={inputStyle()}
+          className="session-native-input"
           disabled={!enabled}
         />
-        <button type="button" style={buttonStyle()} disabled={!enabled || !goalObjective.trim()} onClick={() => startGoal.mutate()}>
+        <button type="button" className="session-native-btn" disabled={!enabled || !goalObjective.trim()} onClick={() => startGoal.mutate()}>
           {t('sessionWorkbench.startGoal', 'Start goal')}
         </button>
       </div>
 
-      <div style={panelStyle()}>
+      <div className="session-native-panel">
         <PanelTitle icon={<IconHierarchy size={14} />} title={t('sessionWorkbench.advancedPlan', 'Advanced plan')} />
         <input
           value={planObjective}
           onChange={(event) => setPlanObjective(event.target.value)}
           placeholder={t('sessionWorkbench.planPlaceholder', 'Plan objective')}
-          style={inputStyle()}
+          className="session-native-input"
           disabled={!enabled}
         />
-        <button type="button" style={buttonStyle()} disabled={!enabled || !planObjective.trim()} onClick={() => startPlan.mutate()}>
+        <button type="button" className="session-native-btn" disabled={!enabled || !planObjective.trim()} onClick={() => startPlan.mutate()}>
           {t('sessionWorkbench.createPlan', 'Create plan')}
         </button>
       </div>
 
-      <div style={panelStyle()}>
+      <div className="session-native-panel">
         <PanelTitle icon={<IconUsersGroup size={14} />} title={t('sessionWorkbench.createTeam', 'Create team')} />
         <input
           value={teamName}
           onChange={(event) => setTeamName(event.target.value)}
           placeholder={t('sessionWorkbench.teamNamePlaceholder', 'Team name')}
-          style={inputStyle()}
+          className="session-native-input"
           disabled={!enabled}
         />
-        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', lineHeight: 1.35 }}>
+        <div className="session-native-hint">
           {t(
             'sessionWorkbench.teamCreateContainerOnly',
             'Creates the Team container only. Add teammates with spawn_subagent using team_name and name.',
           )}
         </div>
-        <button type="button" style={buttonStyle()} disabled={!enabled || !teamName.trim()} onClick={() => createTeam.mutate()}>
+        <button type="button" className="session-native-btn" disabled={!enabled || !teamName.trim()} onClick={() => createTeam.mutate()}>
           {t('sessionWorkbench.createTeam', 'Create team')}
         </button>
         {teams.length > 0 && (
-          <div style={{ display: 'grid', gap: '6px' }}>
+          <div className="session-native-team-list">
             {teams.map((team: AgentTeam) => (
-              <div key={team.id} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '7px', display: 'grid', gap: '5px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px' }}>
-                  <strong style={{ color: 'var(--text-primary)' }}>{team.name}</strong>
-                  <span style={{ color: 'var(--text-tertiary)' }}>{team.status}</span>
+              <div key={team.id} className="session-native-team-item">
+                <div className="session-native-team-head">
+                  <strong className="session-native-team-name">{team.name}</strong>
+                  <span className="session-native-team-status">{team.status}</span>
                 </div>
-                <button type="button" style={buttonStyle()} onClick={() => setSelectedTeamId(team.id)}>
+                <button type="button" className="session-native-btn" onClick={() => setSelectedTeamId(team.id)}>
                   {t('sessionWorkbench.teamWorkbench', 'Workbench')}
                 </button>
                 {effectiveTeamId === team.id && selectedTeamSummary && (
-                  <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                  <div className="session-native-team-meta">
                     {t('sessionWorkbench.events', 'events')}: {Number(selectedTeamSummary.event_count ?? 0)} · {t('sessionWorkbench.activeMembers', 'active members')}: {Number(selectedTeamSummary.active_member_count ?? 0)}
                   </div>
                 )}
-                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', lineHeight: 1.35 }}>
+                <div className="session-native-team-hint">
                   {t('sessionWorkbench.teamSpawnHint', 'Teammate entry')}: {team.teammate_creation_tool || 'spawn_subagent'} · team_name=
                   {team.teammate_creation_args?.team_name || team.name}
                 </div>
                 {team.members.map((member) => (
-                  <div key={member.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}>
-                    <span style={{ flex: 1, minWidth: 0, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div key={member.id} className="session-native-member-row">
+                    <span className="session-native-member-name">
                       {member.member_name}
                     </span>
-                    <button type="button" style={buttonStyle()} onClick={() => enterMember.mutate({ teamId: team.id, memberId: member.id })}>
+                    <button type="button" className="session-native-btn" onClick={() => enterMember.mutate({ teamId: team.id, memberId: member.id })}>
                       {t('sessionWorkbench.enter', 'Enter')}
                     </button>
                   </div>
                 ))}
                 {team.members.length === 0 && (
-                  <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                  <div className="session-native-empty">
                     {t('sessionWorkbench.noTeamMembers', 'No teammates yet')}
                   </div>
                 )}
                 {team.status !== 'closed' && (
-                  <button type="button" style={buttonStyle()} onClick={() => closeTeam.mutate(team.id)}>
+                  <button type="button" className="session-native-btn" onClick={() => closeTeam.mutate(team.id)}>
                     {t('sessionWorkbench.closeTeam', 'Close team')}
                   </button>
                 )}
@@ -370,16 +334,16 @@ export default function SessionNativeControls({
         )}
       </div>
 
-      <div style={panelStyle()}>
+      <div className="session-native-panel">
         <PanelTitle icon={<IconGitCommit size={14} />} title={t('sessionWorkbench.checkpointList', 'Checkpoints')} />
         {checkpoints.length === 0 ? (
-          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+          <div className="session-native-empty">
             {t('sessionWorkbench.noCheckpoints', 'No checkpoints yet')}
           </div>
         ) : (
-          <div style={{ display: 'grid', gap: '5px' }}>
+          <div className="session-native-checkpoint-list">
             {checkpoints.map((checkpoint, index) => (
-              <div key={String(checkpoint.id ?? index)} style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+              <div key={String(checkpoint.id ?? index)} className="session-native-checkpoint-row">
                 {checkpointLabel(checkpoint, index)}
               </div>
             ))}

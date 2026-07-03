@@ -1,0 +1,156 @@
+/* ═══════════════════════════════════════════════════════
+   WorkspaceLlmSection — 静态样式迁出（P4 长尾页面）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .ws-llm-*；动态值（toggle 开合）走 .is-on modifier
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Toolbar + form card ───────────────────────────── */
+
+.ws-llm-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-4);
+}
+
+.ws-llm-card {
+  margin-bottom: var(--space-4);
+}
+
+.card.ws-llm-card-editing {
+  border-color: var(--accent-primary);
+}
+
+.ws-llm-form-title {
+  margin-bottom: var(--space-4);
+}
+
+.ws-llm-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.ws-llm-span2 {
+  grid-column: span 2;
+}
+
+.ws-llm-selfend {
+  align-self: end;
+}
+
+/* ── Field helpers ─────────────────────────────────── */
+
+.ws-llm-check-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  font-size: var(--text-body);
+}
+
+.ws-llm-hint-inline {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+
+.ws-llm-hint {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
+
+.ws-llm-warn {
+  font-size: var(--text-meta);
+  color: var(--warning);
+  margin-top: var(--space-1);
+}
+
+.ws-llm-form-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+  align-items: center;
+}
+
+/* ── Model list rows ───────────────────────────────── */
+
+.ws-llm-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.card.ws-llm-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ws-llm-model-name {
+  font-weight: 500;
+}
+
+.ws-llm-model-meta {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.ws-llm-row-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.ws-llm-set-default {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+
+.ws-llm-del {
+  color: var(--error);
+}
+
+.ws-llm-empty {
+  text-align: center;
+  padding: var(--space-10);
+  color: var(--text-tertiary);
+}
+
+/* ── Enabled toggle — JS 条件转 CSS modifier，面内无阴影 ── */
+
+.ws-llm-toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.ws-llm-toggle:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.ws-llm-toggle.is-on {
+  background: var(--success);
+}
+
+.ws-llm-toggle-knob {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-full);
+  background: #fff;
+  transition: left var(--transition-fast);
+}
+
+.ws-llm-toggle.is-on .ws-llm-toggle-knob {
+  left: 18px;
+}

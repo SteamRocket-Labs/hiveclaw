@@ -1,0 +1,216 @@
+/* ═══════════════════════════════════════════════════════
+   PlanCard — Plan Mode confirmation surface styles (P3)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   动态值（risk color/border、handoff tone color/bg）保留 inline
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Root card + density modifier ────────────────────── */
+.plan-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  background: var(--bg-primary);
+  display: grid;
+  gap: var(--space-3);
+}
+.plan-card--dense {
+  padding: 12px 14px;
+  gap: 10px;
+}
+
+/* ── Section label (was labelStyle const) ────────────── */
+.plan-card-label {
+  font-size: var(--text-meta);
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 4px;
+}
+
+/* ── Header: badge row / title / risk ────────────────── */
+.plan-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+.plan-card-header-main {
+  min-width: 0;
+}
+.plan-card-badge-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.plan-card-badge {
+  font-size: var(--text-tiny);
+  font-weight: 700;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  color: var(--accent-text);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.plan-card-meta {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+.plan-card-title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 6px;
+}
+.plan-card--dense .plan-card-title {
+  font-size: var(--text-emphasis);
+}
+.plan-card-risk {
+  font-size: var(--text-meta);
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  padding: 2px var(--space-2);
+  white-space: nowrap;
+}
+
+/* ── Authored body (markdown) + folded governance ────── */
+.plan-card-body {
+  font-size: var(--text-emphasis);
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+.plan-card--dense .plan-card-body {
+  font-size: var(--text-body);
+}
+.plan-card-details-summary {
+  margin-bottom: 0;
+  cursor: pointer;
+}
+.plan-card-details-body {
+  margin-top: 10px;
+}
+
+/* ── Structured governance detail ────────────────────── */
+.plan-card-detail {
+  display: grid;
+  gap: var(--space-3);
+}
+.plan-card--dense .plan-card-detail {
+  gap: 10px;
+}
+.plan-card-objective {
+  font-size: var(--text-body);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+.plan-card-motivation {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-top: 3px;
+  line-height: 1.5;
+}
+.plan-card-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: var(--space-1);
+}
+.plan-card-step {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.plan-card-step-output {
+  color: var(--text-tertiary);
+}
+.plan-card-item {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.plan-card-item-muted {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+.plan-card-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+.plan-card-value {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+}
+.plan-card-mono-value {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+.plan-card-warn-inline {
+  color: var(--warning);
+}
+
+/* ── Status notices (clarification / planning / error) ─ */
+.plan-card-notice {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  display: grid;
+  gap: 3px;
+}
+.plan-card-notice--warning {
+  color: var(--warning);
+  background: var(--warning-subtle);
+  border-color: color-mix(in srgb, var(--warning) 25%, transparent);
+}
+.plan-card-notice--error {
+  color: var(--error);
+  background: var(--error-subtle);
+  border-color: color-mix(in srgb, var(--error) 25%, transparent);
+}
+.plan-card-notice--dense {
+  padding: 6px 10px;
+}
+.plan-card-notice-title {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.plan-card-notice-strong {
+  font-weight: 700;
+}
+.plan-card-notice-reason {
+  color: var(--text-tertiary);
+}
+.plan-card-runtime-task {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+}
+.plan-card-error-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 2px;
+}
+
+/* ── Action rows ─────────────────────────────────────── */
+.plan-card-actions {
+  display: grid;
+  gap: 10px;
+}
+.plan-card-actions-submit {
+  justify-self: flex-end;
+  font-size: var(--text-row);
+  padding: 6px 14px;
+}
+.plan-card-terminal {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}

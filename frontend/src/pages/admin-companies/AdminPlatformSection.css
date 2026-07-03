@@ -1,0 +1,131 @@
+/* ═══════════════════════════════════════════════════════
+   AdminPlatformSection — 静态样式（inline → class 迁移）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀: .admin-platform-*  真动态值（toast 色）保留 inline
+   JS 假动画（switch/collapse）→ CSS :checked / .is-open
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Toast — 浮层通知 ──────────────────────────────── */
+.admin-platform-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 10px 20px;
+  border-radius: var(--radius-lg);
+  color: #fff;
+  font-size: var(--text-body);
+  z-index: 9999;
+  box-shadow: var(--shadow-popover);
+}
+
+/* ── Cards ─────────────────────────────────────────── */
+.admin-platform-card {
+  margin-bottom: var(--space-4);
+}
+.admin-platform-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.admin-platform-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) 0;
+}
+.admin-platform-setting-label {
+  font-size: var(--text-body);
+  font-weight: 500;
+}
+.admin-platform-setting-desc {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.admin-platform-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.admin-platform-card-title {
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.admin-platform-title-mb {
+  margin-bottom: var(--space-1);
+}
+.admin-platform-url-desc {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-3);
+}
+.admin-platform-url-input-wrap {
+  margin-bottom: var(--space-3);
+}
+.admin-platform-save-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.admin-platform-saved {
+  color: var(--success);
+  font-size: var(--text-row);
+}
+
+/* ── Collapse — nbEnabled 驱动，用 .is-open 切换 ────── */
+.admin-platform-collapse {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height var(--transition-slow), opacity var(--transition-default);
+}
+.admin-platform-collapse.is-open {
+  max-height: 200px;
+  opacity: 1;
+}
+.admin-platform-collapse-body {
+  margin-bottom: var(--space-3);
+  padding-top: var(--space-4);
+}
+
+/* ── Toggle switch — CSS :checked 驱动，无 JS style ── */
+.admin-platform-switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.admin-platform-switch.is-disabled {
+  cursor: not-allowed;
+}
+.admin-platform-switch-input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.admin-platform-switch-track {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-full);
+  transition: background var(--transition-default);
+}
+.admin-platform-switch-thumb {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  border-radius: var(--radius-full);
+  transition: left var(--transition-default);
+}
+.admin-platform-switch-input:checked ~ .admin-platform-switch-track {
+  background: var(--accent-primary);
+}
+.admin-platform-switch-input:checked ~ .admin-platform-switch-track .admin-platform-switch-thumb {
+  left: 20px;
+}

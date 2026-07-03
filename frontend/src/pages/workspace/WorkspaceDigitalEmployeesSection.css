@@ -1,0 +1,116 @@
+/* ═══════════════════════════════════════════════════════
+   WorkspaceDigitalEmployeesSection — 静态样式迁出（P4 长尾）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .ws-employees-*；表行无边框 + hover 一档（§3.3）
+   ═══════════════════════════════════════════════════════ */
+
+.ws-employees-page {
+  max-width: 960px;
+}
+
+.ws-employees-card {
+  margin-bottom: var(--space-4);
+}
+
+.ws-employees-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.ws-employees-title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  margin: 0;
+}
+
+.ws-employees-desc {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  margin: var(--space-1) 0 0;
+}
+
+.ws-employees-create {
+  flex-shrink: 0;
+}
+
+.ws-employees-loading {
+  padding: var(--space-4) 0;
+  color: var(--text-secondary);
+}
+
+/* ── Table — 无边框行，header hairline，hover 一档 ──── */
+
+.ws-employees-table-wrap {
+  overflow-x: auto;
+}
+
+.ws-employees-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-body);
+}
+
+.ws-employees-thead-row {
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ws-employees-th {
+  text-align: left;
+  padding: var(--space-2) 6px;
+}
+
+.ws-employees-th-right {
+  text-align: right;
+  padding: var(--space-2) 6px;
+}
+
+.ws-employees-row {
+  transition: background var(--transition-fast);
+}
+
+.ws-employees-row:hover {
+  background: var(--bg-hover);
+}
+
+.ws-employees-td {
+  padding: 10px 6px;
+  vertical-align: top;
+}
+
+.ws-employees-td-right {
+  padding: 10px 6px;
+  vertical-align: top;
+  text-align: right;
+}
+
+.ws-employees-name {
+  font-weight: 600;
+}
+
+.ws-employees-role {
+  max-width: 460px;
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-employees-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ws-employees-protected {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.ws-employees-del {
+  color: var(--error);
+}

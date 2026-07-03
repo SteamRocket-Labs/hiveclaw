@@ -1,0 +1,73 @@
+/* ═══════════════════════════════════════════════════════
+   WorkspaceMemorySection — 静态样式迁出（P4 长尾页面）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .ws-memory-*；save 的 saved 态走 .is-saved modifier
+   ═══════════════════════════════════════════════════════ */
+
+.ws-memory-title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  margin-bottom: var(--space-1);
+}
+
+.ws-memory-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-6);
+}
+
+.ws-memory-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  max-width: 600px;
+}
+
+.ws-memory-label {
+  display: block;
+  font-size: var(--text-emphasis);
+  font-weight: 500;
+  margin-bottom: var(--space-2);
+}
+
+.ws-memory-hint {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-2);
+}
+
+.ws-memory-select {
+  width: 100%;
+}
+
+.ws-memory-slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.ws-memory-range {
+  flex: 1;
+}
+
+.ws-memory-value {
+  font-weight: 600;
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ws-memory-keep {
+  width: 100px;
+}
+
+.ws-memory-actions {
+  margin-top: var(--space-2);
+}
+
+/* Save 按钮复用 .btn.btn-primary；saved 态转绿走 CSS modifier */
+.ws-memory-save.is-saved,
+.ws-memory-save.is-saved:hover:not(:disabled) {
+  background: var(--success);
+  color: #ffffff;
+}

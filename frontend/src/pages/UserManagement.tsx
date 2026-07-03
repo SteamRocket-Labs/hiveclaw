@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { usersApi } from '../api/domains/users';
 import { requestAppConfirm } from '../components/AppDialogs';
 import { useAuthStore } from '../stores';
+import './UserManagement.css';
 
 interface UserInfo {
     id: string;
@@ -122,14 +123,14 @@ export default function UserManagement() {
 
     // Role label & styling helpers
     const roleBadge = (role: string) => {
-        const styles: Record<string, { bg: string; color: string; key: string }> = {
-            platform_admin: { bg: 'rgba(239,68,68,0.12)', color: '#ef4444', key: 'userManagement.rolePlatformAdmin' },
-            org_admin:      { bg: 'rgba(168,85,247,0.12)', color: '#a855f7', key: 'userManagement.roleAdmin' },
+        const badges: Record<string, { cls: string; key: string }> = {
+            platform_admin: { cls: 'is-platform-admin', key: 'userManagement.rolePlatformAdmin' },
+            org_admin:      { cls: 'is-org-admin', key: 'userManagement.roleAdmin' },
         };
-        const s = styles[role];
+        const s = badges[role];
         if (!s) return null;
         return (
-            <span style={{ marginLeft: '6px', fontSize: '10px', background: s.bg, color: s.color, borderRadius: '4px', padding: '1px 6px', fontWeight: 500 }}>
+            <span className={`user-mgmt-role-badge ${s.cls}`}>
                 {t(s.key)}
             </span>
         );
@@ -171,54 +172,43 @@ export default function UserManagement() {
     return (
         <div>
             {toast && (
-                <div style={{
-                    position: 'fixed', top: '20px', right: '20px', padding: '10px 20px',
-                    borderRadius: '8px', background: toast.startsWith('✅') ? 'var(--success)' : 'var(--error)',
-                    color: '#fff', fontSize: '13px', zIndex: 9999, transition: 'all 0.3s',
-                }}>
+                <div
+                    className="user-mgmt-toast"
+                    style={{ background: toast.startsWith('✅') ? 'var(--success)' : 'var(--error)' }}
+                >
                     {toast}
                 </div>
             )}
 
             {loading ? (
-                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
+                <div className="user-mgmt-center-msg">
                     {t('common.loading')}...
                 </div>
             ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div className="user-mgmt-list">
                     {/* Search bar */}
-                    <div style={{ position: 'relative', marginBottom: '4px' }}>
+                    <div className="user-mgmt-search-wrap">
                         <input
-                            className="form-input"
+                            className="form-input user-mgmt-search-input"
                             type="text"
                             placeholder={t('userManagement.searchPlaceholder')}
                             value={searchQuery}
                             onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
-                            style={{
-                                width: '100%', maxWidth: '360px', fontSize: '13px',
-                                padding: '8px 12px 8px 12px',
-                                background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-                                borderRadius: '8px',
-                            }}
                         />
                         {searchQuery && (
-                            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginLeft: '12px' }}>
+                            <span className="user-mgmt-search-count">
                                 {t('userManagement.userCount', { filtered: filtered.length, total: users.length })}
                             </span>
                         )}
                     </div>
 
                     {/* Header */}
-                    <div style={{
-                        display: 'grid', gridTemplateColumns: '1.4fr 1.4fr 0.8fr 0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 100px',
-                        gap: '10px', padding: '10px 16px', fontSize: '11px', fontWeight: 600,
-                        color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em',
-                    }}>
+                    <div className="user-mgmt-thead">
                         <div>{t('userManagement.headerUser')}</div>
                         <div>{t('userManagement.headerEmail')}</div>
                         {/* Created At with sort toggle */}
                         <div
-                            style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: '3px' }}
+                            className="user-mgmt-th-sort"
                             onClick={toggleSort}
                             title={t('userManagement.sortTooltip')}
                         >
@@ -235,24 +225,21 @@ export default function UserManagement() {
 
                     {paged.map(user => (
                         <div key={user.id}>
-                            <div className="card" style={{
-                                display: 'grid', gridTemplateColumns: '1.4fr 1.4fr 0.8fr 0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 100px',
-                                gap: '10px', alignItems: 'center', padding: '12px 16px',
-                            }}>
+                            <div className="card user-mgmt-row">
                                 <div>
-                                    <div style={{ fontWeight: 500, fontSize: '14px' }}>
+                                    <div className="user-mgmt-name">
                                         {user.display_name || user.username}
                                         {roleBadge(user.role)}
                                     </div>
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>@{user.username}</div>
+                                    <div className="user-mgmt-handle">@{user.username}</div>
                                 </div>
-                                <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{user.email}</div>
-                                <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{formatDate(user.created_at)}</div>
+                                <div className="user-mgmt-cell-email">{user.email}</div>
+                                <div className="user-mgmt-cell-joined">{formatDate(user.created_at)}</div>
                                 {/* Role selector — only for admin users, not for platform_admin targets */}
                                 <div>
                                     {currentUser?.role && ['platform_admin', 'org_admin'].includes(currentUser.role) && user.role !== 'platform_admin' ? (
                                         <select
-                                            className="form-input"
+                                            className="form-input user-mgmt-role-select"
                                             value={user.role}
                                             disabled={changingRoleUserId === user.id}
                                             onChange={e => {
@@ -267,13 +254,12 @@ export default function UserManagement() {
                                                     if (confirmed) handleRoleChange(user.id, newRole);
                                                 });
                                             }}
-                                            style={{ fontSize: '11px', padding: '2px 4px', width: '100%', minWidth: 0 }}
                                         >
                                             <option value="member">{t('userManagement.roleMember')}</option>
                                             <option value="org_admin">{t('userManagement.roleAdmin')}</option>
                                         </select>
                                     ) : (
-                                        <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                                        <span className="user-mgmt-role-text">
                                             {user.role === 'platform_admin' ? t('userManagement.rolePlatformAdmin')
                                                 : user.role === 'org_admin' ? t('userManagement.roleAdmin') : t('userManagement.roleMember')}
                                         </span>
@@ -281,31 +267,30 @@ export default function UserManagement() {
                                 </div>
                                 <div>
                                     {user.source === 'feishu' ? (
-                                        <span style={{ fontSize: '10px', background: 'rgba(58,132,255,0.12)', color: '#3a84ff', borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
+                                        <span className="user-mgmt-source is-feishu">
                                             {t('userManagement.sourceFeishu')}
                                         </span>
                                     ) : (
-                                        <span style={{ fontSize: '10px', background: 'rgba(0,180,120,0.12)', color: 'var(--success)', borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
+                                        <span className="user-mgmt-source is-registered">
                                             {t('userManagement.sourceRegistered')}
                                         </span>
                                     )}
                                 </div>
                                 <div>
-                                    <span style={{ fontSize: '13px', fontWeight: 500 }}>{user.quota_messages_used}</span>
-                                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> / {user.quota_message_limit}</span>
+                                    <span className="user-mgmt-quota-used">{user.quota_messages_used}</span>
+                                    <span className="user-mgmt-quota-total"> / {user.quota_message_limit}</span>
                                 </div>
                                 <div>
-                                    <span className="badge badge-info" style={{ fontSize: '10px' }}>{periodLabel(user.quota_message_period)}</span>
+                                    <span className="badge badge-info">{periodLabel(user.quota_message_period)}</span>
                                 </div>
                                 <div>
-                                    <span style={{ fontSize: '13px', fontWeight: 500 }}>{user.agents_count}</span>
-                                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> / {user.quota_max_agents}</span>
+                                    <span className="user-mgmt-quota-used">{user.agents_count}</span>
+                                    <span className="user-mgmt-quota-total"> / {user.quota_max_agents}</span>
                                 </div>
-                                <div style={{ fontSize: '12px' }}>{user.quota_agent_ttl_hours}h</div>
+                                <div className="user-mgmt-cell-ttl">{user.quota_agent_ttl_hours}h</div>
                                 <div>
                                     <button
-                                        className="btn btn-secondary"
-                                        style={{ padding: '4px 10px', fontSize: '11px' }}
+                                        className="btn btn-secondary user-mgmt-edit-btn"
                                         onClick={() => editingUserId === user.id ? setEditingUserId(null) : startEdit(user)}
                                     >
                                         {editingUserId === user.id ? t('common.cancel') : `✏️ ${t('common.edit')}`}
@@ -315,14 +300,10 @@ export default function UserManagement() {
 
                             {/* Inline edit form */}
                             {editingUserId === user.id && (
-                                <div className="card" style={{
-                                    marginTop: '4px', padding: '16px',
-                                    background: 'var(--bg-secondary)',
-                                    borderLeft: '3px solid var(--accent-color)',
-                                }}>
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '16px' }}>
+                                <div className="card user-mgmt-edit-form">
+                                    <div className="user-mgmt-edit-grid">
                                         <div className="form-group">
-                                            <label className="form-label" style={{ fontSize: '11px' }}>
+                                            <label className="form-label user-mgmt-edit-label">
                                                 {t('userManagement.msgLimit')}
                                             </label>
                                             <input
@@ -333,7 +314,7 @@ export default function UserManagement() {
                                             />
                                         </div>
                                         <div className="form-group">
-                                            <label className="form-label" style={{ fontSize: '11px' }}>
+                                            <label className="form-label user-mgmt-edit-label">
                                                 {t('userManagement.resetPeriod')}
                                             </label>
                                             <select
@@ -347,7 +328,7 @@ export default function UserManagement() {
                                             </select>
                                         </div>
                                         <div className="form-group">
-                                            <label className="form-label" style={{ fontSize: '11px' }}>
+                                            <label className="form-label user-mgmt-edit-label">
                                                 {t('userManagement.maxAgents')}
                                             </label>
                                             <input
@@ -358,7 +339,7 @@ export default function UserManagement() {
                                             />
                                         </div>
                                         <div className="form-group">
-                                            <label className="form-label" style={{ fontSize: '11px' }}>
+                                            <label className="form-label user-mgmt-edit-label">
                                                 {t('userManagement.agentTTL')}
                                             </label>
                                             <input
@@ -369,7 +350,7 @@ export default function UserManagement() {
                                             />
                                         </div>
                                     </div>
-                                    <div style={{ marginTop: '12px', display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                                    <div className="user-mgmt-edit-actions">
                                         <button className="btn btn-secondary" onClick={() => setEditingUserId(null)}>
                                             {t('common.cancel')}
                                         </button>
@@ -383,17 +364,16 @@ export default function UserManagement() {
                     ))}
 
                     {users.length === 0 && (
-                        <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
+                        <div className="user-mgmt-center-msg">
                             {t('common.noData')}
                         </div>
                     )}
 
                     {/* Pagination */}
                     {totalPages > 1 && (
-                        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', marginTop: '16px' }}>
+                        <div className="user-mgmt-pagination">
                             <button
-                                className="btn btn-secondary"
-                                style={{ padding: '4px 10px', fontSize: '12px' }}
+                                className="btn btn-secondary user-mgmt-page-btn"
                                 disabled={page <= 1}
                                 onClick={() => setPage(p => p - 1)}
                             >
@@ -402,16 +382,14 @@ export default function UserManagement() {
                             {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
                                 <button
                                     key={p}
-                                    className={`btn ${p === page ? 'btn-primary' : 'btn-secondary'}`}
-                                    style={{ padding: '4px 10px', fontSize: '12px', minWidth: '32px' }}
+                                    className={`btn ${p === page ? 'btn-primary' : 'btn-secondary'} user-mgmt-page-btn user-mgmt-page-num`}
                                     onClick={() => setPage(p)}
                                 >
                                     {p}
                                 </button>
                             ))}
                             <button
-                                className="btn btn-secondary"
-                                style={{ padding: '4px 10px', fontSize: '12px' }}
+                                className="btn btn-secondary user-mgmt-page-btn"
                                 disabled={page >= totalPages}
                                 onClick={() => setPage(p => p + 1)}
                             >

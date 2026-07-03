@@ -2,6 +2,7 @@ import React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
+import './TeamMemorySummaryCard.css';
 import type { TeamMemoryEntry, TeamMemoryUpsertRequest } from '../../api/domains/memory';
 import { memoryApi } from '../../api/domains/memory';
 import { requestAppConfirm } from '../../components/AppDialogs';
@@ -195,15 +196,15 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
   const detailKey = `agent.${section}.sharedMemoryDetailTitle`;
 
   return (
-    <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', marginBottom: '12px' }}>
+    <div className="card team-memory-card">
+      <div className="team-memory-head">
         <div>
-          <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t(titleKey, 'Shared Team Memory')}</h4>
-          <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+          <h4 className="team-memory-title">{t(titleKey, 'Shared Team Memory')}</h4>
+          <div className="team-memory-desc">
             {t(descKey, 'Recent workspace knowledge reused across sessions.')}
           </div>
         </div>
-        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+        <span className="team-memory-count">
           {t(countKey, { count: entries.length, defaultValue: '{{count}} shared entries' })}
         </span>
       </div>
@@ -212,31 +213,13 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
         value={searchValue}
         onChange={(event) => setSearchValue(event.target.value)}
         placeholder={t(searchPlaceholderKey, 'Search shared memory')}
-        style={{
-          width: '100%',
-          marginBottom: '12px',
-          borderRadius: '8px',
-          border: '1px solid var(--border-subtle)',
-          background: 'var(--bg-primary)',
-          color: 'var(--text-primary)',
-          padding: '10px 12px',
-          fontSize: '12px',
-        }}
+        className="team-memory-search"
       />
 
-      <div style={{ display: 'grid', gap: '12px', gridTemplateColumns: isWorkspaceSection ? 'minmax(220px, 0.9fr) minmax(0, 1.1fr)' : 'minmax(220px, 0.85fr) minmax(0, 1.15fr)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div className={`team-memory-grid${isWorkspaceSection ? ' is-workspace' : ''}`}>
+        <div className="team-memory-list">
           {filteredEntries.length === 0 ? (
-            <div
-              style={{
-                borderRadius: '8px',
-                border: '1px dashed var(--border-subtle)',
-                background: 'var(--bg-primary)',
-                padding: '14px',
-                fontSize: '12px',
-                color: 'var(--text-tertiary)',
-              }}
-            >
+            <div className="team-memory-empty">
               {t(emptyKey, 'No shared memory entries yet.')}
             </div>
           ) : (
@@ -247,18 +230,11 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
                   key={`${entry.workspace_key}:${entry.key}`}
                   type="button"
                   onClick={() => setSelectedKey(entry.key)}
-                  style={{
-                    textAlign: 'left',
-                    borderRadius: '8px',
-                    border: isSelected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
-                    background: isSelected ? 'var(--bg-secondary)' : 'var(--bg-primary)',
-                    padding: '12px',
-                    cursor: 'pointer',
-                  }}
+                  className={`team-memory-entry${isSelected ? ' is-selected' : ''}`}
                 >
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{entry.title}</div>
+                  <div className="team-memory-entry-title">{entry.title}</div>
                   {entry.snippet && (
-                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.5', marginTop: '6px', whiteSpace: 'pre-wrap' }}>
+                    <div className="team-memory-entry-snippet">
                       {entry.snippet}
                     </div>
                   )}
@@ -268,106 +244,57 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
           )}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div
-            style={{
-              borderRadius: '8px',
-              border: '1px solid var(--border-subtle)',
-              background: 'var(--bg-primary)',
-              padding: '14px',
-              minHeight: '180px',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}>
+        <div className="team-memory-detail-col">
+          <div className="team-memory-panel team-memory-detail">
+            <div className="team-memory-detail-head">
               <div>
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '6px' }}>
+                <div className="team-memory-detail-label">
                   {t(detailKey, 'Entry Details')}
                 </div>
-                <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>{selectedEntry?.title ?? filteredEntries[0]?.title ?? t(emptyKey, 'No shared memory entries yet.')}</div>
+                <div className="team-memory-detail-title">{selectedEntry?.title ?? filteredEntries[0]?.title ?? t(emptyKey, 'No shared memory entries yet.')}</div>
               </div>
               {selectedEntry?.updated_at && (
-                <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                <span className="team-memory-detail-updated">
                   {t(updatedKey, { time: formatUpdatedAt(selectedEntry.updated_at), defaultValue: 'Updated {{time}}' })}
                 </span>
               )}
             </div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.6', marginTop: '10px', whiteSpace: 'pre-wrap' }}>
+            <div className="team-memory-detail-content">
               {selectedEntry?.content ?? selectedEntry?.snippet ?? filteredEntries[0]?.snippet ?? t(emptyKey, 'No shared memory entries yet.')}
             </div>
             {selectedEntry && (
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '10px' }}>
+              <div className="team-memory-detail-rev">
                 {`rev ${selectedEntry.revision ?? 0}${selectedEntry.updated_by ? ` · ${selectedEntry.updated_by}` : ''}`}
               </div>
             )}
           </div>
 
           {isWorkspaceSection && (
-            <div
-              style={{
-                borderRadius: '8px',
-                border: '1px solid var(--border-subtle)',
-                background: 'var(--bg-primary)',
-                padding: '14px',
-                display: 'grid',
-                gap: '10px',
-              }}
-            >
+            <div className="team-memory-panel team-memory-editor">
               <input
                 value={draftKey}
                 onChange={(event) => setDraftKey(event.target.value)}
                 placeholder={t('agent.workspace.sharedMemoryKeyPlaceholder', 'Entry key')}
-                style={{
-                  width: '100%',
-                  borderRadius: '8px',
-                  border: '1px solid var(--border-subtle)',
-                  background: 'var(--bg-secondary)',
-                  color: 'var(--text-primary)',
-                  padding: '10px 12px',
-                  fontSize: '12px',
-                }}
+                className="team-memory-field"
               />
               <input
                 value={draftTitle}
                 onChange={(event) => setDraftTitle(event.target.value)}
                 placeholder={t('agent.workspace.sharedMemoryTitlePlaceholder', 'Entry title')}
-                style={{
-                  width: '100%',
-                  borderRadius: '8px',
-                  border: '1px solid var(--border-subtle)',
-                  background: 'var(--bg-secondary)',
-                  color: 'var(--text-primary)',
-                  padding: '10px 12px',
-                  fontSize: '12px',
-                }}
+                className="team-memory-field"
               />
               <textarea
                 value={draftContent}
                 onChange={(event) => setDraftContent(event.target.value)}
                 placeholder={t('agent.workspace.sharedMemoryContentPlaceholder', 'Write the shared note or playbook here')}
                 rows={6}
-                style={{
-                  width: '100%',
-                  borderRadius: '8px',
-                  border: '1px solid var(--border-subtle)',
-                  background: 'var(--bg-secondary)',
-                  color: 'var(--text-primary)',
-                  padding: '10px 12px',
-                  fontSize: '12px',
-                  resize: 'vertical',
-                }}
+                className="team-memory-textarea"
               />
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <div className="team-memory-mode-row">
                 <select
                   value={saveMode}
                   onChange={(event) => setSaveMode(event.target.value as 'replace' | 'append')}
-                  style={{
-                    borderRadius: '8px',
-                    border: '1px solid var(--border-subtle)',
-                    background: 'var(--bg-secondary)',
-                    color: 'var(--text-primary)',
-                    padding: '8px 10px',
-                    fontSize: '12px',
-                  }}
+                  className="team-memory-select"
                 >
                   <option value="replace">{t('agent.workspace.sharedMemoryModeReplace', 'Replace')}</option>
                   <option value="append">{t('agent.workspace.sharedMemoryModeAppend', 'Append')}</option>
@@ -380,11 +307,11 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
                 </button>
               </div>
               {errorMessage && (
-                <div style={{ fontSize: '12px', color: 'var(--danger-primary, #dc2626)' }}>
+                <div className="team-memory-error">
                   {errorMessage}
                 </div>
               )}
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+              <div className="team-memory-sync">
                 {syncStatus === 'synced'
                   ? t('agent.workspace.sharedMemorySyncSynced', 'Shared memory synced')
                   : syncStatus === 'conflict'

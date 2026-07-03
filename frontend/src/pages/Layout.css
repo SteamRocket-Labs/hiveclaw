@@ -1,0 +1,143 @@
+/* ═══════════════════════════════════════════════════════
+   Layout — account settings modal + version display (P4)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   Shell layout (.app-layout / .main-content) lives in index.css
+   ═══════════════════════════════════════════════════════ */
+
+.app-layout-account-modal {
+  background: var(--bg-primary);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  width: 420px;
+  max-height: 90vh;
+  overflow: auto;
+  padding: 24px;
+  box-shadow: var(--shadow-modal);
+}
+.app-layout-account-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+.app-layout-account-heading {
+  margin: 0;
+}
+.app-layout-account-close {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  transition: color var(--transition-fast);
+}
+.app-layout-account-close:hover {
+  color: var(--text-primary);
+}
+.app-layout-account-msg {
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-row);
+  margin-bottom: 16px;
+}
+.app-layout-account-msg--success {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+.app-layout-account-msg--error {
+  background: var(--error-subtle);
+  color: var(--error);
+}
+.app-layout-account-subhead {
+  margin: 0 0 12px;
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+}
+.app-layout-account-label {
+  display: block;
+  font-size: var(--text-row);
+  font-weight: 500;
+  margin-bottom: 4px;
+  color: var(--text-secondary);
+}
+.app-layout-account-input {
+  width: 100%;
+  font-size: var(--text-body);
+}
+.app-layout-account-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.app-layout-account-fields--mb {
+  margin-bottom: 20px;
+}
+.app-layout-account-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.app-layout-account-divider {
+  border-top: 1px solid var(--border-subtle);
+  margin-bottom: 20px;
+}
+.app-layout-account-divider--top {
+  margin-top: 20px;
+}
+
+/* ── Feishu binding ──────────────────────────────────── */
+.app-layout-account-feishu-bound {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--success-subtle);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--success) 25%, transparent);
+}
+.app-layout-account-feishu-info {
+  flex: 1;
+}
+.app-layout-account-feishu-title {
+  font-size: var(--text-body);
+  font-weight: 500;
+  color: var(--success);
+}
+.app-layout-account-feishu-id {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.app-layout-account-feishu-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: 10px;
+}
+.app-layout-account-feishu-btn {
+  gap: 8px;
+  font-size: var(--text-body);
+  border-color: var(--border-subtle);
+  background: var(--bg-secondary);
+}
+.app-layout-account-feishu-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+.app-layout-account-spinner {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── Version display ─────────────────────────────────── */
+.app-layout-version {
+  text-align: center;
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+  margin-top: 8px;
+  letter-spacing: 0.3px;
+}
+.app-layout-version-commit {
+  opacity: 0.6;
+}

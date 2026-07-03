@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import './DesignGallery.css';
 import {
     Badge,
     Button,
@@ -34,7 +35,7 @@ const COLOR_TOKENS = [
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
     return (
-        <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+        <section className="dg-section">
             <div className="u-label">{title}</div>
             {children}
         </section>
@@ -54,8 +55,8 @@ export default function DesignGallery() {
     }, [theme]);
 
     return (
-        <div style={{ maxWidth: '860px', margin: '0 auto', padding: 'var(--space-8) var(--space-5)', display: 'flex', flexDirection: 'column', gap: 'var(--space-8)' }}>
-            <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div className="dg-page">
+            <header className="dg-header">
                 <div>
                     <div className="u-title">Design Gallery</div>
                     <div className="u-meta u-tertiary">tokens + primitives · docs/frontend-design-refinement-2026-07-03.md</div>
@@ -72,10 +73,10 @@ export default function DesignGallery() {
             </header>
 
             <Section title="Type scale — 7 档">
-                <Card padding="md" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                <Card padding="md" className="dg-col-sm">
                     {TYPE_SCALE.map((row) => (
-                        <div key={row.cls} style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--space-4)' }}>
-                            <span className="u-meta u-tertiary u-mono" style={{ width: '110px', flexShrink: 0 }}>{row.name}</span>
+                        <div key={row.cls} className="dg-type-row">
+                            <span className="u-meta u-tertiary u-mono dg-type-name">{row.name}</span>
                             <span className={row.cls}>{row.sample}</span>
                         </div>
                     ))}
@@ -83,10 +84,10 @@ export default function DesignGallery() {
             </Section>
 
             <Section title="Colors">
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 'var(--space-2)' }}>
+                <div className="dg-color-grid">
                     {COLOR_TOKENS.map((name) => (
-                        <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                            <span style={{ width: '20px', height: '20px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-default)', background: `var(--${name})`, flexShrink: 0 }} />
+                        <div key={name} className="dg-color-item">
+                            <span className="dg-swatch" style={{ background: `var(--${name})` }} />
                             <span className="u-meta u-mono u-secondary">--{name}</span>
                         </div>
                     ))}
@@ -94,7 +95,7 @@ export default function DesignGallery() {
             </Section>
 
             <Section title="Button — variants × sizes × states">
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)', alignItems: 'center' }}>
+                <div className="dg-row">
                     <Button variant="primary">Primary</Button>
                     <Button variant="secondary">Secondary</Button>
                     <Button variant="ghost">Ghost</Button>
@@ -108,7 +109,7 @@ export default function DesignGallery() {
             </Section>
 
             <Section title="Chip / Badge — 彩色只上小字与小点">
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)', alignItems: 'center' }}>
+                <div className="dg-row">
                     <Chip tone="neutral" dot>idle</Chip>
                     <Chip tone="success" dot>running</Chip>
                     <Chip tone="warning" dot>waiting</Chip>
@@ -123,7 +124,7 @@ export default function DesignGallery() {
             </Section>
 
             <Section title="Input / Select / Textarea">
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)', alignItems: 'center' }}>
+                <div className="dg-row">
                     <Input placeholder="搜索 agents…" />
                     <Input size="md" placeholder="32px 输入" />
                     <Input invalid defaultValue="非法输入" />
@@ -132,13 +133,13 @@ export default function DesignGallery() {
                         <option>运行中</option>
                     </Select>
                 </div>
-                <Textarea placeholder="多行输入…" rows={3} style={{ maxWidth: '420px' }} />
+                <Textarea placeholder="多行输入…" rows={3} className="dg-textarea" />
             </Section>
 
             <Section title="Card / EmptyState / Spinner / Tooltip">
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
+                <div className="dg-two-col">
                     <Card interactive>
-                        <div className="u-body" style={{ fontWeight: 500 }}>可点卡片</div>
+                        <div className="u-body dg-medium">可点卡片</div>
                         <div className="u-row u-tertiary">hover 只提升背景与边框一档，无阴影无位移。</div>
                     </Card>
                     <Card padding="none">
@@ -150,7 +151,7 @@ export default function DesignGallery() {
                         />
                     </Card>
                 </div>
-                <div style={{ display: 'flex', gap: 'var(--space-4)', alignItems: 'center' }}>
+                <div className="dg-row-wide">
                     <Spinner label="加载中" />
                     <Spinner size="sm" label="加载中" />
                     <Tooltip label="这是一个 CSS-only tooltip">

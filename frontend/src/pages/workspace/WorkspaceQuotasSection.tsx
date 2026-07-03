@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { enterpriseApi } from '../../api/domains/enterprise';
 import { showAppToast } from '../../components/AppDialogs';
+import './WorkspaceQuotasSection.css';
 
 interface QuotaForm {
   default_tokens_per_day: number | null;
@@ -53,19 +54,19 @@ export default function WorkspaceQuotasSection() {
 
   return (
     <div>
-      <h3 style={{ marginBottom: '4px' }}>
+      <h3 className="ws-quotas-title">
         {t('enterprise.quotas.title', 'Employee Token Quotas')}
       </h3>
-      <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+      <p className="ws-quotas-subtitle">
         {t('enterprise.quotas.subtitle', 'Default token limits for new employees. Admins can override per-user in User Management.')}
       </p>
 
       {/* Token Quotas */}
-      <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-        <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '12px' }}>
+      <div className="card ws-quotas-card">
+        <div className="ws-quotas-group-title">
           {t('workspace.quotas.tokenQuotas')}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+        <div className="ws-quotas-grid">
           <div className="form-group">
             <label className="form-label">{t('workspace.quotas.dailyTokenLimit')}</label>
             <input
@@ -76,7 +77,7 @@ export default function WorkspaceQuotasSection() {
               value={form.default_tokens_per_day ?? ''}
               onChange={(e) => setForm({ ...form, default_tokens_per_day: e.target.value ? Number(e.target.value) : null })}
             />
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="ws-quotas-hint">
               {form.default_tokens_per_day
                 ? t('workspace.quotas.dailyTokenDesc', { amount: formatTokens(form.default_tokens_per_day) })
                 : t('workspace.quotas.dailyTokenDescUnlimited')}
@@ -92,7 +93,7 @@ export default function WorkspaceQuotasSection() {
               value={form.default_tokens_per_month ?? ''}
               onChange={(e) => setForm({ ...form, default_tokens_per_month: e.target.value ? Number(e.target.value) : null })}
             />
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="ws-quotas-hint">
               {form.default_tokens_per_month
                 ? t('workspace.quotas.monthlyTokenDesc', { amount: formatTokens(form.default_tokens_per_month) })
                 : t('workspace.quotas.monthlyTokenDescUnlimited')}
@@ -102,11 +103,11 @@ export default function WorkspaceQuotasSection() {
       </div>
 
       {/* System Settings */}
-      <div className="card" style={{ padding: '16px' }}>
-        <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '12px' }}>
+      <div className="card">
+        <div className="ws-quotas-group-title">
           {t('workspace.quotas.systemSettings')}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+        <div className="ws-quotas-grid ws-quotas-grid-mb">
           <div className="form-group">
             <label className="form-label">{t('workspace.quotas.defaultMaxTriggers')}</label>
             <input
@@ -117,12 +118,12 @@ export default function WorkspaceQuotasSection() {
               value={form.default_max_triggers}
               onChange={(e) => setForm({ ...form, default_max_triggers: Number(e.target.value) })}
             />
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="ws-quotas-hint">
               {t('workspace.quotas.defaultMaxTriggersDesc')}
             </div>
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+        <div className="ws-quotas-grid">
           <div className="form-group">
             <label className="form-label">{t('workspace.quotas.minPollInterval')}</label>
             <input
@@ -133,7 +134,7 @@ export default function WorkspaceQuotasSection() {
               value={form.min_poll_interval_floor}
               onChange={(e) => setForm({ ...form, min_poll_interval_floor: Number(e.target.value) })}
             />
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="ws-quotas-hint">
               {t('workspace.quotas.minPollDesc')}
             </div>
           </div>
@@ -147,18 +148,18 @@ export default function WorkspaceQuotasSection() {
               value={form.max_webhook_rate_ceiling}
               onChange={(e) => setForm({ ...form, max_webhook_rate_ceiling: Number(e.target.value) })}
             />
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="ws-quotas-hint">
               {t('workspace.quotas.maxWebhookDesc')}
             </div>
           </div>
         </div>
       </div>
 
-      <div style={{ marginTop: '16px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+      <div className="ws-quotas-actions">
         <button className="btn btn-primary" onClick={save} disabled={saving}>
           {saving ? t('common.saving') : t('common.save')}
         </button>
-        {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('workspace.quotas.saved')}</span>}
+        {saved && <span className="ws-quotas-saved">{t('workspace.quotas.saved')}</span>}
       </div>
     </div>
   );

@@ -1,0 +1,156 @@
+/* ═══════════════════════════════════════════════════════
+   WorkspaceSubagentsSection — 静态样式迁出（P4 长尾）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .ws-subagents-*；悬空 --border-primary/--danger 就近归位
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Header ────────────────────────────────────────── */
+
+.ws-subagents-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-4);
+}
+
+.ws-subagents-title {
+  margin-bottom: var(--space-1);
+}
+
+.ws-subagents-desc {
+  font-size: var(--text-body);
+  color: var(--text-tertiary);
+}
+
+.ws-subagents-new {
+  flex-shrink: 0;
+}
+
+/* ── List — hairline 分隔行 + hover 一档 ───────────── */
+
+.ws-subagents-list {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.ws-subagents-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background var(--transition-fast);
+}
+
+.ws-subagents-row:hover {
+  background: var(--bg-hover);
+}
+
+.ws-subagents-name {
+  min-width: 160px;
+  font-weight: 600;
+  font-size: var(--text-body);
+}
+
+.ws-subagents-type {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+}
+
+.ws-subagents-model {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.ws-subagents-row-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-subagents-tools {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.ws-subagents-row-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.ws-subagents-del {
+  color: var(--error);
+}
+
+/* ── Editor panel ──────────────────────────────────── */
+
+.ws-subagents-editor {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+}
+
+.ws-subagents-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ws-subagents-editor-title {
+  margin: 0;
+}
+
+.ws-subagents-editor-actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-2);
+}
+
+.ws-subagents-gen-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.ws-subagents-gen-input {
+  flex: 1;
+  padding: var(--space-2) 10px;
+  background: var(--bg-primary);
+}
+
+.ws-subagents-gen-btn {
+  flex-shrink: 0;
+}
+
+.ws-subagents-name-input {
+  width: 100%;
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) 10px;
+  background: var(--bg-primary);
+}
+
+.ws-subagents-editor-textarea {
+  width: 100%;
+  min-height: 320px;
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-row);
+  background: var(--bg-primary);
+  resize: vertical;
+}
+
+.ws-subagents-error {
+  margin-top: var(--space-2);
+  font-size: var(--text-row);
+  color: var(--error);
+}

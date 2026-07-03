@@ -17,6 +17,7 @@ import React from 'react';
 import { IconChevronLeft, IconChevronRight } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 
+import './AskUserQuestionCard.css';
 import type { ClarificationQuestion } from './toolResultEnvelope';
 
 interface AskUserQuestionCardProps {
@@ -199,14 +200,6 @@ export default function AskUserQuestionCard({
     }
   };
 
-  const labelStyle: React.CSSProperties = {
-    fontSize: '11px',
-    fontWeight: 700,
-    color: 'var(--text-tertiary)',
-    textTransform: 'uppercase',
-    letterSpacing: '0.4px',
-  };
-
   if (questionCount === 0 || !activeQuestion) {
     return null;
   }
@@ -220,60 +213,31 @@ export default function AskUserQuestionCard({
   return (
     <div
       data-testid="ask-user-question-card"
-      style={{
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '10px',
-        padding: dense ? '12px 14px' : '16px 18px',
-        background: 'var(--bg-primary)',
-        display: 'grid',
-        gap: dense ? '12px' : '14px',
-      }}
+      className={`ask-question-card${dense ? ' is-dense' : ''}`}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', justifyContent: 'space-between' }}>
-        <span
-          style={{
-            fontSize: '10px',
-            fontWeight: 700,
-            padding: '2px 8px',
-            borderRadius: '999px',
-            background: 'var(--bg-secondary)',
-            border: '1px solid var(--border-subtle)',
-            color: 'var(--accent-text, var(--accent-primary))',
-            textTransform: 'uppercase',
-            letterSpacing: '0.4px',
-          }}
-        >
+      <div className="ask-question-topbar">
+        <span className="ask-question-badge">
           {t('agent.clarification.badge', 'Needs your input')}
         </span>
-        <span style={{ ...labelStyle, textTransform: 'none', letterSpacing: 0 }}>{progressText}</span>
+        <span className="ask-question-progress">{progressText}</span>
       </div>
 
-      <div style={{ display: 'grid', gap: '8px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+      <div className="ask-question-body">
+        <div className="ask-question-header-row">
           {activeQuestion.header && (
-            <span
-              style={{
-                fontSize: '10px',
-                fontWeight: 700,
-                padding: '2px 8px',
-                borderRadius: '6px',
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--border-subtle)',
-                color: 'var(--text-secondary)',
-              }}
-            >
+            <span className="ask-question-header-chip">
               {activeQuestion.header}
             </span>
           )}
           {activeQuestion.multiSelect && (
-            <span style={{ ...labelStyle }}>{t('agent.clarification.multiSelect', 'Select all that apply')}</span>
+            <span className="ask-question-label">{t('agent.clarification.multiSelect', 'Select all that apply')}</span>
           )}
         </div>
-        <div style={{ fontSize: dense ? '13px' : '14px', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+        <div className="ask-question-question">
           {activeQuestion.question}
         </div>
 
-        <div style={{ display: 'grid', gap: '6px' }}>
+        <div className="ask-question-options">
           {activeQuestion.options.map((option, optionIndex) => {
             const checked = activeState.selected.includes(optionIndex);
             const inputName = activeQuestion.multiSelect
@@ -282,16 +246,7 @@ export default function AskUserQuestionCard({
             return (
               <label
                 key={optionIndex}
-                style={{
-                  display: 'flex',
-                  gap: '8px',
-                  alignItems: 'flex-start',
-                  padding: '8px 10px',
-                  borderRadius: '8px',
-                  border: `1px solid ${checked ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
-                  background: checked ? 'rgba(16,185,129,0.08)' : 'var(--bg-secondary)',
-                  cursor: done ? 'default' : 'pointer',
-                }}
+                className={`ask-question-option${checked ? ' is-checked' : ''}${done ? ' is-locked' : ''}`}
               >
                 <input
                   type={activeQuestion.multiSelect ? 'checkbox' : 'radio'}
@@ -299,12 +254,12 @@ export default function AskUserQuestionCard({
                   checked={checked}
                   disabled={done || busy}
                   onChange={() => toggleOption(safeActiveQuestionIndex, optionIndex, activeQuestion.multiSelect)}
-                  style={{ marginTop: '2px', flexShrink: 0 }}
+                  className="ask-question-option-input"
                 />
-                <span style={{ display: 'grid', gap: '2px', minWidth: 0 }}>
-                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{option.label}</span>
+                <span className="ask-question-option-text">
+                  <span className="ask-question-option-label">{option.label}</span>
                   {option.description && (
-                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    <span className="ask-question-option-desc">
                       {option.description}
                     </span>
                   )}
@@ -314,8 +269,8 @@ export default function AskUserQuestionCard({
           })}
 
           {/* "Other" free-text is ALWAYS offered (CC behaviour). */}
-          <div style={{ display: 'grid', gap: '4px' }}>
-            <label htmlFor={otherFieldId} style={{ ...labelStyle }}>
+          <div className="ask-question-other">
+            <label htmlFor={otherFieldId} className="ask-question-label">
               {t('agent.clarification.other', 'Other')}
             </label>
             <input
@@ -325,48 +280,20 @@ export default function AskUserQuestionCard({
               disabled={done || busy}
               placeholder={t('agent.clarification.otherPlaceholder', 'Type your own answer…')}
               onChange={(event) => setOther(safeActiveQuestionIndex, event.target.value, activeQuestion.multiSelect)}
-              style={{
-                width: '100%',
-                padding: '8px 10px',
-                fontSize: '13px',
-                borderRadius: '8px',
-                border: '1px solid var(--border-subtle)',
-                background: 'var(--bg-secondary)',
-                color: 'var(--text-primary)',
-              }}
+              className="ask-question-input"
             />
           </div>
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', justifyContent: 'center' }} aria-hidden="true">
+      <div className="ask-question-dots" aria-hidden="true">
         {questions.map((question, index) => {
           const isActive = index === safeActiveQuestionIndex;
           const isAnswered = isQuestionAnswered(question, answers[index] ?? { selected: [], other: '' });
           return (
-            <span
-              key={index}
-              style={{
-                width: '18px',
-                height: '7px',
-                display: 'inline-flex',
-                justifyContent: 'center',
-              }}
-            >
+            <span key={index} className="ask-question-dot-slot">
               <span
-                style={{
-                  width: '18px',
-                  height: '7px',
-                  display: 'inline-block',
-                  borderRadius: '999px',
-                  background: isActive
-                    ? 'var(--accent-primary)'
-                    : isAnswered
-                      ? 'var(--success-primary, #10b981)'
-                      : 'var(--border-subtle)',
-                  transform: `scaleX(${isActive ? 1 : 7 / 18})`,
-                  transition: 'transform 120ms ease, background 120ms ease',
-                }}
+                className={`ask-question-dot${isAnswered ? ' is-answered' : ''}${isActive ? ' is-active' : ''}`}
               />
             </span>
           );
@@ -374,41 +301,19 @@ export default function AskUserQuestionCard({
       </div>
 
       {done ? (
-        <div
-          role="status"
-          style={{
-            fontSize: '12px',
-            color: 'var(--text-secondary)',
-            background: 'var(--bg-secondary)',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '6px',
-            padding: '8px 10px',
-          }}
-        >
+        <div role="status" className="ask-question-sent">
           {t('agent.clarification.sent', 'Your answer was sent.')}
         </div>
       ) : (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <div className="ask-question-footer">
+          <div className="ask-question-nav">
             <button
               type="button"
               aria-label={t('agent.clarification.previousQuestion', 'Previous question')}
               title={t('agent.clarification.previousQuestion', 'Previous question')}
               disabled={busy || isFirstQuestion}
               onClick={() => setActiveQuestionIndex((index) => Math.max(0, index - 1))}
-              style={{
-                width: '30px',
-                height: '30px',
-                borderRadius: '8px',
-                border: '1px solid var(--border-subtle)',
-                background: 'var(--bg-secondary)',
-                color: 'var(--text-primary)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: busy || isFirstQuestion ? 'not-allowed' : 'pointer',
-                opacity: busy || isFirstQuestion ? 0.5 : 1,
-              }}
+              className="ask-question-nav-btn"
             >
               <IconChevronLeft size={16} stroke={2.3} />
             </button>
@@ -418,24 +323,12 @@ export default function AskUserQuestionCard({
               title={t('agent.clarification.nextQuestion', 'Next question')}
               disabled={busy || isLastQuestion}
               onClick={() => setActiveQuestionIndex((index) => Math.min(questionCount - 1, index + 1))}
-              style={{
-                width: '30px',
-                height: '30px',
-                borderRadius: '8px',
-                border: '1px solid var(--border-subtle)',
-                background: 'var(--bg-secondary)',
-                color: 'var(--text-primary)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: busy || isLastQuestion ? 'not-allowed' : 'pointer',
-                opacity: busy || isLastQuestion ? 0.5 : 1,
-              }}
+              className="ask-question-nav-btn"
             >
               <IconChevronRight size={16} stroke={2.3} />
             </button>
           </div>
-          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+          <span className="ask-question-count">
             {t('agent.clarification.answeredProgress', '{{answered}}/{{total}} answered', {
               answered: answeredCount,
               total: questionCount,
@@ -444,7 +337,6 @@ export default function AskUserQuestionCard({
           <button
             type="button"
             className="btn btn-primary"
-            style={{ fontSize: '12px', padding: '6px 14px' }}
             disabled={!canSubmit}
             onClick={handleSubmit}
           >

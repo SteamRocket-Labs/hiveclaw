@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarkdownRenderer from './MarkdownRenderer';
+import './FileBrowser.css';
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -277,9 +278,9 @@ export default function FileBrowser({
     const renderBreadcrumbs = () => {
         if (!directoryNavigation || singleFile) return null;
         return (
-            <div style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px', flexWrap: 'wrap' }}>
+            <div className="file-browser-breadcrumbs">
                 <span
-                    style={{ cursor: 'pointer', color: 'var(--accent-primary)', fontWeight: 500 }}
+                    className="file-browser-crumb file-browser-crumb-root"
                     onClick={() => { setCurrentPath(rootPath); setViewing(null); setEditing(false); }}
                 >
                     📁 {rootPath || 'root'}
@@ -288,9 +289,9 @@ export default function FileBrowser({
                     const upTo = pathParts.slice(0, (rootPath ? rootPath.split('/').filter(Boolean).length : 0) + i + 1).join('/');
                     return (
                         <span key={upTo}>
-                            <span style={{ color: 'var(--text-tertiary)' }}> / </span>
+                            <span className="u-tertiary"> / </span>
                             <span
-                                style={{ cursor: 'pointer', color: 'var(--accent-primary)' }}
+                                className="file-browser-crumb"
                                 onClick={() => { setCurrentPath(upTo); setViewing(null); setEditing(false); }}
                             >
                                 {part}
@@ -307,11 +308,7 @@ export default function FileBrowser({
     const renderToast = () => {
         if (!toast) return null;
         return (
-            <div style={{
-                position: 'fixed', top: '20px', right: '20px', zIndex: 20000, padding: '12px 20px', borderRadius: '8px',
-                background: toast.type === 'success' ? 'rgba(34, 197, 94, 0.9)' : 'rgba(239, 68, 68, 0.9)',
-                color: '#fff', fontSize: '14px', fontWeight: 500, boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-            }}>
+            <div className={`file-browser-toast ${toast.type === 'success' ? 'is-success' : 'is-error'}`}>
                 {toast.message}
             </div>
         );
@@ -322,12 +319,12 @@ export default function FileBrowser({
     const renderDeleteModal = () => {
         if (!deleteTarget) return null;
         return (
-            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000 }}
+            <div className="ui-modal-overlay"
                 onClick={(e) => { if (e.target === e.currentTarget) setDeleteTarget(null); }}>
-                <div style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '380px', border: '1px solid var(--border-subtle)', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
-                    <h4 style={{ marginBottom: '12px', fontSize: '15px' }}>{t('common.delete')}</h4>
-                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '20px' }}>Delete "{deleteTarget.name}"?</p>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <div className="file-browser-modal file-browser-modal-sm">
+                    <h4 className="file-browser-modal-title">{t('common.delete')}</h4>
+                    <p className="file-browser-modal-text">Delete "{deleteTarget.name}"?</p>
+                    <div className="file-browser-modal-actions">
                         <button className="btn btn-secondary" onClick={() => setDeleteTarget(null)}>{t('common.cancel')}</button>
                         <button className="btn btn-danger" onClick={handleDelete}>{t('common.delete')}</button>
                     </div>
@@ -341,20 +338,19 @@ export default function FileBrowser({
     const renderPromptModal = () => {
         if (!promptModal) return null;
         return (
-            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000 }}
+            <div className="ui-modal-overlay"
                 onClick={(e) => { if (e.target === e.currentTarget) { setPromptModal(null); setPromptValue(''); } }}>
-                <div style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '400px', border: '1px solid var(--border-subtle)', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
-                    <h4 style={{ marginBottom: '16px', fontSize: '15px' }}>{promptModal.title}</h4>
+                <div className="file-browser-modal">
+                    <h4 className="file-browser-prompt-title">{promptModal.title}</h4>
                     <input
-                        className="form-input"
+                        className="form-input file-browser-mb-4"
                         autoFocus
                         placeholder={promptModal.placeholder}
                         value={promptValue}
                         onChange={e => setPromptValue(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter') handlePromptConfirm(); }}
-                        style={{ marginBottom: '16px' }}
                     />
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                    <div className="file-browser-modal-actions">
                         <button className="btn btn-secondary" onClick={() => { setPromptModal(null); setPromptValue(''); }}>{t('common.cancel')}</button>
                         <button className="btn btn-primary" onClick={handlePromptConfirm} disabled={!promptValue.trim()}>OK</button>
                     </div>
@@ -369,13 +365,13 @@ export default function FileBrowser({
     if (singleFile) {
         return (
             <div className="card">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <div className="file-browser-toolbar">
                     {title ? <h3>{title}</h3> : <div />}
                     {edit && (
                         !editing ? (
                             <button className="btn btn-secondary" onClick={() => { setEditContent(content); setEditing(true); }}>{t('agent.soul.editButton')}</button>
                         ) : (
-                            <div style={{ display: 'flex', gap: '8px' }}>
+                            <div className="file-browser-btn-row">
                                 <button className="btn btn-secondary" onClick={() => setEditing(false)}>{t('common.cancel')}</button>
                                 <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
                                     {saving ? t('agent.soul.saving') : t('agent.soul.saveButton')}
@@ -385,20 +381,19 @@ export default function FileBrowser({
                     )}
                 </div>
                 {editing ? (
-                    <textarea ref={textareaRef} className="form-textarea" value={editContent} onChange={e => setEditContent(e.target.value)}
-                        style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '1.6', minHeight: '200px', resize: 'vertical', overflow: 'hidden' }} />
+                    <textarea ref={textareaRef} className="form-textarea file-browser-editor" value={editContent} onChange={e => setEditContent(e.target.value)} />
                 ) : !contentLoaded ? (
-                    <div style={{ padding: '20px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('common.loading')}</div>
+                    <div className="file-browser-loading">{t('common.loading')}</div>
                 ) : content ? (
                     singleFile?.endsWith('.md') ? (
-                        <MarkdownRenderer content={content} style={{ padding: '4px 0' }} />
+                        <MarkdownRenderer content={content} className="file-browser-md" />
                     ) : (
-                        <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '1.6', margin: 0 }}>
+                        <pre className="file-browser-pre">
                             {content}
                         </pre>
                     )
                 ) : (
-                    <div style={{ padding: '20px', color: 'var(--text-tertiary)', textAlign: 'center', fontSize: '13px' }}>
+                    <div className="file-browser-empty-text">
                         {t('common.noData', 'No content yet. Click Edit to add.')}
                     </div>
                 )}
@@ -414,65 +409,64 @@ export default function FileBrowser({
         const isText = isTextFile(viewing);
         return (
             <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-                    <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '12px' }}
+                <div className="file-browser-viewer-header">
+                    <button className="btn btn-secondary"
                         onClick={() => { setViewing(null); setEditing(false); }}>← {t('common.back')}</button>
-                    <span style={{ fontSize: '12px', fontFamily: 'monospace', color: 'var(--text-secondary)', flex: 1 }}>{viewing}</span>
+                    <span className="file-browser-viewer-path">{viewing}</span>
                     {isText && edit && (
                         !editing ? (
-                            <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}
+                            <button className="btn btn-secondary"
                                 onClick={() => { setEditContent(content); setEditing(true); }}>✏️ {t('agent.soul.editButton')}</button>
                         ) : (
-                            <div style={{ display: 'flex', gap: '6px' }}>
-                                <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}
+                            <div className="file-browser-btn-row-sm">
+                                <button className="btn btn-secondary"
                                     onClick={() => setEditing(false)}>{t('common.cancel')}</button>
-                                <button className="btn btn-primary" style={{ padding: '4px 12px', fontSize: '12px' }}
+                                <button className="btn btn-primary"
                                     disabled={saving} onClick={handleSave}>{saving ? 'Saving...' : t('common.save')}</button>
                             </div>
                         )
                     )}
                     {api.downloadUrl && (
-                        <a href={api.downloadUrl(viewing)} download style={{ textDecoration: 'none' }}>
-                            <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: '12px' }}>⬇ {t('common.download', 'Download')}</button>
+                        <a href={api.downloadUrl(viewing)} download className="file-browser-link-plain">
+                            <button className="btn btn-secondary">⬇ {t('common.download', 'Download')}</button>
                         </a>
                     )}
                     {canDelete && (
-                        <button className="btn btn-danger" style={{ padding: '4px 10px', fontSize: '12px' }}
+                        <button className="btn btn-danger"
                             onClick={() => setDeleteTarget({ path: viewing, name: viewing.split('/').pop() || viewing })}>×</button>
                     )}
                 </div>
                 <div className="card">
                     {isText ? (
                         editing ? (
-                            <textarea ref={textareaRef} className="form-textarea" value={editContent} onChange={e => setEditContent(e.target.value)}
-                                style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '1.6', minHeight: '200px', resize: 'vertical', overflow: 'hidden' }} />
+                            <textarea ref={textareaRef} className="form-textarea file-browser-editor file-browser-editor-sm" value={editContent} onChange={e => setEditContent(e.target.value)} />
                         ) : viewing?.endsWith('.md') ? (
-                            <MarkdownRenderer content={content || ''} style={{ padding: '4px' }} />
+                            <MarkdownRenderer content={content || ''} className="file-browser-md-sm" />
                         ) : (
-                            <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '1.5', margin: 0 }}>
+                            <pre className="file-browser-pre file-browser-pre-sm">
                                 {content || t('common.noData', 'No content yet')}
                             </pre>
                         )
                     ) : isImage(viewing) ? (
-                        <div style={{ textAlign: 'center', padding: '20px', background: 'var(--bg-tertiary)', borderRadius: '8px' }}>
+                        <div className="file-browser-image-wrap">
                             {api.downloadUrl ? (
-                                <img 
-                                    src={api.downloadUrl(viewing)} 
-                                    alt={viewing.split('/').pop()} 
-                                    style={{ maxWidth: '100%', maxHeight: '600px', objectFit: 'contain', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} 
+                                <img
+                                    src={api.downloadUrl(viewing)}
+                                    alt={viewing.split('/').pop()}
+                                    className="file-browser-image"
                                 />
                             ) : (
-                                <div style={{ padding: '20px', color: 'var(--text-tertiary)' }}>Cannot preview image without download URL</div>
+                                <div className="file-browser-image-fallback">Cannot preview image without download URL</div>
                             )}
                         </div>
                     ) : (
-                        <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
-                            <div style={{ fontSize: '48px', marginBottom: '12px' }}>⌇</div>
-                            <div style={{ fontSize: '14px', fontWeight: 500, marginBottom: '4px' }}>{viewing.split('/').pop()}</div>
-                            <div style={{ fontSize: '12px', marginBottom: '16px' }}>Binary file — cannot preview</div>
+                        <div className="file-browser-binary">
+                            <div className="file-browser-binary-glyph">⌇</div>
+                            <div className="file-browser-binary-name">{viewing.split('/').pop()}</div>
+                            <div className="file-browser-binary-hint">Binary file — cannot preview</div>
                             {api.downloadUrl && (
-                                <a href={api.downloadUrl(viewing)} download style={{ textDecoration: 'none' }}>
-                                    <button className="btn btn-primary" style={{ fontSize: '13px', padding: '8px 20px' }}>⬇ {t('common.download', 'Download')}</button>
+                                <a href={api.downloadUrl(viewing)} download className="file-browser-link-plain">
+                                    <button className="btn btn-primary">⬇ {t('common.download', 'Download')}</button>
                                 </a>
                             )}
                         </div>
@@ -490,27 +484,27 @@ export default function FileBrowser({
     return (
         <div>
             {/* Toolbar */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
-                {title && <h3 style={{ margin: 0 }}>{title}</h3>}
+            <div className="file-browser-list-toolbar">
+                {title && <h3 className="file-browser-title">{title}</h3>}
                 {renderBreadcrumbs()}
-                <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto' }}>
+                <div className="file-browser-toolbar-actions">
                     {upload && api.upload && (
-                        <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={handleUpload}>⬆ Upload</button>
+                        <button className="btn btn-secondary" onClick={handleUpload}>⬆ Upload</button>
                     )}
                     {newFolder && (
-                        <button className="btn btn-secondary" style={{ fontSize: '12px' }}
+                        <button className="btn btn-secondary"
                             onClick={() => setPromptModal({ title: t('agent.workspace.newFolder'), placeholder: t('agent.workspace.newFolderName'), action: 'newFolder' })}>
                             📁 {t('agent.workspace.newFolder')}
                         </button>
                     )}
                     {newFile && !newSkill && !fileFilter && (
-                        <button className="btn btn-primary" style={{ fontSize: '12px' }}
+                        <button className="btn btn-primary"
                             onClick={() => setPromptModal({ title: t('agent.workspace.newFile', 'New File'), placeholder: 'filename.md', action: 'newFile' })}>
                             + {t('agent.workspace.newFile', 'New File')}
                         </button>
                     )}
                     {newSkill && (
-                        <button className="btn btn-primary" style={{ fontSize: '12px' }}
+                        <button className="btn btn-primary"
                             onClick={() => setPromptModal({ title: t('agent.skills.newSkill', 'New Skill'), placeholder: 'skill-name', action: 'newSkill' })}>
                             + {t('agent.skills.newSkill', 'New Skill')}
                         </button>
@@ -520,33 +514,33 @@ export default function FileBrowser({
 
             {/* File list */}
             {loading ? (
-                <div style={{ padding: '20px', color: 'var(--text-tertiary)', textAlign: 'center' }}>{t('common.loading')}</div>
+                <div className="file-browser-loading">{t('common.loading')}</div>
             ) : uploadProgress ? (
-                <div className="card" style={{ padding: '16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-                        <span style={{ fontSize: '13px' }}>⬆</span>
-                        <span style={{ fontSize: '13px', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{uploadProgress.fileName}</span>
-                        <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>{uploadProgress.percent}%</span>
+                <div className="card">
+                    <div className="file-browser-upload-row">
+                        <span className="u-body">⬆</span>
+                        <span className="file-browser-upload-name">{uploadProgress.fileName}</span>
+                        <span className="file-browser-upload-pct">{uploadProgress.percent}%</span>
                     </div>
-                    <div style={{ height: '4px', borderRadius: '2px', background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
-                        <div style={{ height: '100%', borderRadius: '2px', background: 'var(--accent-primary)', width: `${uploadProgress.percent}%`, transition: 'width 0.15s ease' }} />
+                    <div className="file-browser-progress-track">
+                        <div className="file-browser-progress-fill" style={{ width: `${uploadProgress.percent}%` }} />
                     </div>
                 </div>
             ) : files.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '40px 20px' }}>
-                    <div style={{ fontSize: '24px', marginBottom: '8px', opacity: 0.5 }}>📁</div>
-                    <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                <div className="file-browser-empty">
+                    <div className="file-browser-empty-glyph">📁</div>
+                    <div className="file-browser-empty-title">
                         {t('agent.workspace.noFiles', 'No files yet')}
                     </div>
-                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+                    <div className="u-meta u-tertiary">
                         {t('agent.workspace.dragOrClick')}
                     </div>
                 </div>
             ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div className="file-browser-list">
                     {/* Back button for subdirectories */}
                     {directoryNavigation && currentPath !== rootPath && (
-                        <div className="card" style={{ display: 'flex', alignItems: 'center', padding: '8px 12px', cursor: 'pointer', opacity: 0.7 }}
+                        <div className="file-browser-row file-browser-row-back"
                             onClick={() => {
                                 const parts = currentPath.split('/').filter(Boolean);
                                 parts.pop();
@@ -554,12 +548,11 @@ export default function FileBrowser({
                                 setViewing(null);
                                 setEditing(false);
                             }}>
-                            <span style={{ fontSize: '13px' }}>↩ ..</span>
+                            <span className="u-body">↩ ..</span>
                         </div>
                     )}
                     {files.map((f) => (
-                        <div key={f.name} className="card"
-                            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', cursor: 'pointer' }}
+                        <div key={f.name} className="file-browser-row"
                             onClick={() => {
                                 if (f.is_dir && directoryNavigation) {
                                     setCurrentPath(f.path || `${currentPath}/${f.name}`);
@@ -570,22 +563,22 @@ export default function FileBrowser({
                                     setEditing(false);
                                 }
                             }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <span style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{f.is_dir ? '/' : '·'}</span>
-                                <span style={{ fontWeight: 500, fontSize: '13px' }}>{fileFilter?.includes('.md') ? f.name.replace('.md', '') : f.name}</span>
+                            <div className="file-browser-row-main">
+                                <span className="u-body u-tertiary">{f.is_dir ? '/' : '·'}</span>
+                                <span className="file-browser-row-name">{fileFilter?.includes('.md') ? f.name.replace('.md', '') : f.name}</span>
                             </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                {f.size != null && <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{(f.size / 1024).toFixed(1)} KB</span>}
+                            <div className="file-browser-row-main">
+                                {f.size != null && <span className="u-meta u-tertiary">{(f.size / 1024).toFixed(1)} KB</span>}
                                 {!f.is_dir && api.downloadUrl && (
                                     <a href={api.downloadUrl(f.path || `${currentPath}/${f.name}`)} download
                                         onClick={(e) => e.stopPropagation()}
                                         title={t('common.download', 'Download')}
-                                        style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--accent-primary)', textDecoration: 'none', borderRadius: '4px' }}>
+                                        className="file-browser-row-download">
                                         ⬇
                                     </a>
                                 )}
                                 {canDelete && (
-                                    <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
+                                    <button className="file-browser-row-delete"
                                         onClick={(e) => { e.stopPropagation(); setDeleteTarget({ path: f.path || `${currentPath}/${f.name}`, name: f.name }); }}>
                                         ×
                                     </button>

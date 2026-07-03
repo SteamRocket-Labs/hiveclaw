@@ -1,0 +1,275 @@
+/* ═══════════════════════════════════════════════════════
+   FileBrowser — 静态样式（inline → class 迁移）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀: .file-browser-*  真动态值（进度宽度）保留 inline
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Breadcrumbs ───────────────────────────────────── */
+.file-browser-breadcrumbs {
+  font-size: var(--text-row);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.file-browser-crumb {
+  cursor: pointer;
+  color: var(--accent-primary);
+  transition: color var(--transition-fast);
+}
+.file-browser-crumb:hover { color: var(--accent-hover); }
+.file-browser-crumb-root { font-weight: 500; }
+
+/* ── Toast（浮层，允许阴影） ───────────────────────── */
+.file-browser-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 20000;
+  padding: 12px 20px;
+  border-radius: var(--radius-lg);
+  color: #fff;
+  font-size: var(--text-emphasis);
+  font-weight: 500;
+  box-shadow: var(--shadow-popover);
+}
+.file-browser-toast.is-success { background: var(--success); }
+.file-browser-toast.is-error { background: var(--error); }
+
+/* ── Modals ────────────────────────────────────────── */
+.file-browser-modal {
+  background: var(--bg-primary);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  width: 400px;
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-modal);
+}
+.file-browser-modal-sm { width: 380px; }
+.file-browser-modal-title {
+  margin-bottom: 12px;
+  font-size: var(--text-title);
+}
+.file-browser-prompt-title {
+  margin-bottom: 16px;
+  font-size: var(--text-title);
+}
+.file-browser-modal-text {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+}
+.file-browser-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.file-browser-mb-4 { margin-bottom: 16px; }
+
+/* ── Single-file / viewer toolbars ─────────────────── */
+.file-browser-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.file-browser-btn-row { display: flex; gap: 8px; }
+.file-browser-btn-row-sm { display: flex; gap: 6px; }
+.file-browser-editor {
+  font-family: var(--font-mono);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  min-height: 200px;
+  resize: vertical;
+  overflow: hidden;
+}
+.file-browser-editor-sm { font-size: var(--text-row); }
+.file-browser-loading {
+  padding: 20px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+.file-browser-md { padding: 4px 0; }
+.file-browser-md-sm { padding: 4px; }
+.file-browser-pre {
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  margin: 0;
+}
+.file-browser-pre-sm {
+  font-size: var(--text-row);
+  line-height: var(--leading-row);
+}
+.file-browser-empty-text {
+  padding: 20px;
+  color: var(--text-tertiary);
+  text-align: center;
+  font-size: var(--text-body);
+}
+
+/* ── File viewer ───────────────────────────────────── */
+.file-browser-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.file-browser-viewer-path {
+  font-size: var(--text-row);
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  flex: 1;
+}
+.file-browser-link-plain { text-decoration: none; }
+.file-browser-image-wrap {
+  text-align: center;
+  padding: 20px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-lg);
+}
+.file-browser-image {
+  max-width: 100%;
+  max-height: 600px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+}
+.file-browser-image-fallback {
+  padding: 20px;
+  color: var(--text-tertiary);
+}
+.file-browser-binary {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-tertiary);
+}
+.file-browser-binary-glyph {
+  font-size: var(--text-display);
+  margin-bottom: 12px;
+}
+.file-browser-binary-name {
+  font-size: var(--text-emphasis);
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+.file-browser-binary-hint {
+  font-size: var(--text-row);
+  margin-bottom: 16px;
+}
+
+/* ── List / browser toolbar ────────────────────────── */
+.file-browser-list-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.file-browser-title { margin: 0; }
+.file-browser-toolbar-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* ── Upload progress ───────────────────────────────── */
+.file-browser-upload-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.file-browser-upload-name {
+  font-size: var(--text-body);
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-browser-upload-pct {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.file-browser-progress-track {
+  height: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  overflow: hidden;
+}
+.file-browser-progress-fill {
+  height: 100%;
+  border-radius: var(--radius-sm);
+  background: var(--accent-primary);
+  transition: width var(--transition-fast);
+}
+
+/* ── Empty state ───────────────────────────────────── */
+.file-browser-empty {
+  text-align: center;
+  padding: 40px 20px;
+}
+.file-browser-empty-glyph {
+  font-size: var(--text-display);
+  margin-bottom: 8px;
+  opacity: 0.5;
+}
+.file-browser-empty-title {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+/* ── File list rows（去卡片化：hairline + hover 行） ── */
+.file-browser-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.file-browser-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition: background var(--transition-fast);
+}
+.file-browser-row:hover { background: var(--bg-hover); }
+.file-browser-row-back {
+  padding: 8px 12px;
+  opacity: 0.7;
+}
+.file-browser-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.file-browser-row-name {
+  font-weight: 500;
+  font-size: var(--text-body);
+}
+.file-browser-row-download {
+  padding: 2px 6px;
+  font-size: var(--text-meta);
+  color: var(--accent-primary);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+.file-browser-row-download:hover { background: var(--bg-hover); }
+.file-browser-row-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  font-size: var(--text-meta);
+  color: var(--error);
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+.file-browser-row-delete:hover { background: var(--error-subtle); }

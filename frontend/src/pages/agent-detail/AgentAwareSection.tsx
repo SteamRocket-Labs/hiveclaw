@@ -2,6 +2,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
+import './AgentAwareSection.css';
 import { chatApi } from '../../api/domains/chat';
 import { triggerApi } from '../../api/domains/triggers';
 import { autonomyApi } from '../../api/domains/autonomy';
@@ -176,27 +177,15 @@ export default function AgentAwareSection({
     return key || t('agent.aware.kindWake', 'Wake policy');
   };
 
-  const stateColor = (state?: string | null) => {
-    if (['active', 'has_wake_policy', 'completed'].includes(String(state))) return 'var(--success, #059669)';
-    if (['waiting_approval', 'missing_model', 'no_wake_policy', 'backoff_active'].includes(String(state))) return 'var(--warning, #b45309)';
-    if (['blocked', 'stale', 'failed_recently', 'expired'].includes(String(state))) return 'var(--error, #dc2626)';
-    return 'var(--text-tertiary)';
+  const stateToneClass = (state?: string | null): string => {
+    if (['active', 'has_wake_policy', 'completed'].includes(String(state))) return 'agent-aware-tone-success';
+    if (['waiting_approval', 'missing_model', 'no_wake_policy', 'backoff_active'].includes(String(state))) return 'agent-aware-tone-warning';
+    if (['blocked', 'stale', 'failed_recently', 'expired'].includes(String(state))) return 'agent-aware-tone-error';
+    return 'agent-aware-tone-muted';
   };
 
   const statusBadge = (state?: string | null) => (
-    <span
-      style={{
-        fontSize: '11px',
-        color: stateColor(state),
-        background: 'var(--bg-secondary)',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '6px',
-        padding: '2px 7px',
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {statusLabel(state)}
-    </span>
+    <span className={`agent-aware-status-badge ${stateToneClass(state)}`}>{statusLabel(state)}</span>
   );
 
   const pauseOrResumeTrigger = async (trigger: any, enabled: boolean) => {
@@ -258,55 +247,30 @@ export default function AgentAwareSection({
     ];
     const schedulePreset = wakeForm.schedulePreset || 'daily';
     return (
-      <div
-        role="presentation"
-        style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 60,
-          background: 'rgba(15, 23, 42, 0.24)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '24px',
-        }}
-      >
+      <div role="presentation" className="ui-modal-overlay">
         <div
           role="dialog"
           aria-modal="true"
           aria-label={t('agent.aware.manualCreate', 'Manual create')}
-          style={{
-            width: 'min(720px, calc(100vw - 48px))',
-            minHeight: '330px',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '14px',
-            background: 'var(--bg-primary)',
-            boxShadow: '0 22px 70px rgba(15, 23, 42, 0.18)',
-            padding: '22px 24px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '14px',
-          }}
+          className="agent-aware-wake-modal"
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div className="agent-aware-wake-head">
             <input
-              className="form-input"
+              className="form-input agent-aware-wake-title-input"
               value={wakeForm.name}
               onChange={(event) => setWakeForm({ ...wakeForm, name: event.target.value })}
               placeholder={t('agent.aware.automationTitle', 'Automation title')}
-              style={{ border: 'none', boxShadow: 'none', fontSize: '15px', fontWeight: 600, paddingLeft: 0 }}
             />
             <button className="btn btn-ghost" onClick={() => setShowCreateWake(false)} aria-label={t('common.close', 'Close')}>
               x
             </button>
           </div>
           <textarea
-            className="form-input"
+            className="form-input agent-aware-wake-prompt-input"
             value={wakeForm.reason}
             onChange={(event) => setWakeForm({ ...wakeForm, reason: event.target.value })}
             placeholder={t('agent.aware.promptPlaceholder', 'Add prompt, for example: check production logs and summarize anomalies')}
             rows={8}
-            style={{ resize: 'vertical', minHeight: '150px', border: 'none', boxShadow: 'none', paddingLeft: 0 }}
           />
           {wakeForm.workflowDefinitionKey && (
             <textarea
@@ -318,14 +282,13 @@ export default function AgentAwareSection({
               placeholder={t('agent.aware.workflowArgs', 'Workflow args JSON')}
             />
           )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: 'auto' }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+          <div className="agent-aware-wake-controls">
+            <label className="agent-aware-wake-label">
               <span>{t('agent.aware.selectAgent', 'Select agent')}</span>
               <select
-                className="form-input"
+                className="form-input agent-aware-wake-agent-select"
                 value={selectedWakeAgentId}
                 onChange={(event) => setSelectedWakeAgentId(event.target.value)}
-                style={{ width: '170px' }}
               >
                 {agents.map((agent: any) => (
                   <option key={agent.id} value={agent.id}>
@@ -335,11 +298,10 @@ export default function AgentAwareSection({
               </select>
             </label>
             <select
-              className="form-input"
+              className="form-input agent-aware-wake-ref-select"
               data-testid="wake-workflow-ref-select"
               value={wakeForm.workflowDefinitionKey}
               onChange={(event) => setWakeForm({ ...wakeForm, workflowDefinitionKey: event.target.value })}
-              style={{ width: '160px' }}
             >
               <option value="">{t('agent.aware.noWorkflowRef', 'No workflow')}</option>
               {activeWorkflowDefinitions.map((record) => (
@@ -349,7 +311,7 @@ export default function AgentAwareSection({
               ))}
             </select>
             <select
-              className="form-input"
+              className="form-input agent-aware-wake-preset-select"
               value={schedulePreset}
               onChange={(event) =>
                 setWakeForm({
@@ -358,7 +320,6 @@ export default function AgentAwareSection({
                   schedulePreset: event.target.value as WakeSchedulePreset,
                 })
               }
-              style={{ width: '135px' }}
             >
               <option value="hourly">{t('agent.aware.everyHour', 'Every hour')}</option>
               <option value="daily">{t('agent.aware.everyDay', 'Every day')}</option>
@@ -367,10 +328,9 @@ export default function AgentAwareSection({
             </select>
             {schedulePreset === 'daily' && (
               <select
-                className="form-input"
+                className="form-input agent-aware-wake-time-select"
                 value={wakeForm.dailyTime || '09:00'}
                 onChange={(event) => setWakeForm({ ...wakeForm, dailyTime: event.target.value })}
-                style={{ width: '100px' }}
               >
                 {timeOptions.map((time) => (
                   <option key={time} value={time}>
@@ -382,10 +342,9 @@ export default function AgentAwareSection({
             {schedulePreset === 'weekly' && (
               <>
                 <select
-                  className="form-input"
+                  className="form-input agent-aware-wake-day-select"
                   value={wakeForm.weeklyDay || '1'}
                   onChange={(event) => setWakeForm({ ...wakeForm, weeklyDay: event.target.value })}
-                  style={{ width: '120px' }}
                 >
                   {weekdayOptions.map(([value, label]) => (
                     <option key={value} value={value}>
@@ -394,10 +353,9 @@ export default function AgentAwareSection({
                   ))}
                 </select>
                 <select
-                  className="form-input"
+                  className="form-input agent-aware-wake-time-select"
                   value={wakeForm.weeklyTime || '09:00'}
                   onChange={(event) => setWakeForm({ ...wakeForm, weeklyTime: event.target.value })}
-                  style={{ width: '100px' }}
                 >
                   {timeOptions.map((time) => (
                     <option key={time} value={time}>
@@ -409,15 +367,14 @@ export default function AgentAwareSection({
             )}
             {schedulePreset === 'custom' && (
               <input
-                className="form-input"
+                className="form-input agent-aware-wake-cron-input"
                 value={wakeForm.cronExpr}
                 onChange={(event) => setWakeForm({ ...wakeForm, cronExpr: event.target.value })}
                 placeholder="0 9 * * *"
-                style={{ width: '140px' }}
               />
             )}
-            <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
-              {wakeError && <span style={{ color: 'var(--error)', fontSize: '12px', alignSelf: 'center' }}>{wakeError}</span>}
+            <div className="agent-aware-wake-submit">
+              {wakeError && <span className="agent-aware-wake-error">{wakeError}</span>}
               <button className="btn btn-ghost" onClick={() => setShowCreateWake(false)}>
                 {t('common.cancel', 'Cancel')}
               </button>
@@ -438,19 +395,19 @@ export default function AgentAwareSection({
     const findings = autonomyOverview.findings || [];
     return (
       <>
-        <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', marginBottom: '12px' }}>
+        <div className="card agent-aware-block">
+          <div className="agent-aware-overview-head">
             <div>
-              <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.autonomyTitle', 'Autonomy Control')}</h4>
-              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.autonomyDesc', 'Wake policies, attempts, and results.')}</span>
+              <h4 className="agent-aware-h4">{t('agent.aware.autonomyTitle', 'Autonomy Control')}</h4>
+              <span className="u-row u-tertiary">{t('agent.aware.autonomyDesc', 'Wake policies, attempts, and results.')}</span>
             </div>
             <button className="btn btn-primary" onClick={() => setShowCreateWake(true)}>{t('agent.aware.manualCreate', 'Manual create')}</button>
           </div>
           {findings.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+            <div className="agent-aware-findings">
               {findings.slice(0, 3).map((finding: any, index: number) => (
-                <div key={`${finding.category || 'finding'}-${index}`} style={{ border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '8px 10px', background: 'var(--bg-secondary)', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  <strong style={{ color: stateColor(finding.severity === 'error' ? 'blocked' : 'waiting_approval') }}>{statusLabel(finding.severity)}</strong>
+                <div key={`${finding.category || 'finding'}-${index}`} className="agent-aware-finding">
+                  <strong className={stateToneClass(finding.severity === 'error' ? 'blocked' : 'waiting_approval')}>{statusLabel(finding.severity)}</strong>
                   {' · '}
                   {finding.message}
                 </div>
@@ -460,34 +417,34 @@ export default function AgentAwareSection({
           {renderCreateWakeForm()}
         </div>
 
-        <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.wakePolicies', 'Wake Policies')}</h4>
-            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{triggers.length}</span>
+        <div className="card agent-aware-block">
+          <div className="agent-aware-overview-head">
+            <h4 className="agent-aware-h4">{t('agent.aware.wakePolicies', 'Wake Policies')}</h4>
+            <span className="u-meta u-tertiary">{triggers.length}</span>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {triggers.length === 0 && <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.noTriggers')}</div>}
+          <div className="agent-aware-list">
+            {triggers.length === 0 && <div className="u-row u-tertiary">{t('agent.aware.noTriggers')}</div>}
             {triggers.map((trigger: any) => (
-              <div key={trigger.id} style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '10px 12px', background: 'var(--bg-primary)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{kindLabel(trigger.display_kind)}</span>
+              <div key={trigger.id} className="agent-aware-trigger-row">
+                <div className="agent-aware-trigger-main">
+                  <div className="agent-aware-min0">
+                    <div className="agent-aware-trigger-tags">
+                      <span className="u-meta u-tertiary">{kindLabel(trigger.display_kind)}</span>
                       {statusBadge(trigger.attention_state)}
                     </div>
-                    <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '4px', color: 'var(--text-primary)' }}>{trigger.display_title}</div>
-                    {trigger.display_schedule && <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{trigger.display_schedule}</div>}
-                    {trigger.attention_reason && <div style={{ fontSize: '12px', color: stateColor(trigger.attention_state), marginTop: '4px' }}>{trigger.attention_reason}</div>}
-                    {trigger.last_attempt?.display_summary && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{trigger.last_attempt.display_summary}</div>}
+                    <div className="agent-aware-trigger-title">{trigger.display_title}</div>
+                    {trigger.display_schedule && <div className="u-row u-tertiary agent-aware-mt2">{trigger.display_schedule}</div>}
+                    {trigger.attention_reason && <div className={`agent-aware-trigger-reason ${stateToneClass(trigger.attention_state)}`}>{trigger.attention_reason}</div>}
+                    {trigger.last_attempt?.display_summary && <div className="agent-aware-trigger-summary">{trigger.last_attempt.display_summary}</div>}
                   </div>
-                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <div className="agent-aware-trigger-actions">
                     {trigger.attention_state === 'paused' ? (
-                      <button className="btn btn-ghost" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => pauseOrResumeTrigger(trigger, true)}>{t('agent.aware.enable')}</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => pauseOrResumeTrigger(trigger, true)}>{t('agent.aware.enable')}</button>
                     ) : (
-                      <button className="btn btn-ghost" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => pauseOrResumeTrigger(trigger, false)}>{t('agent.aware.disable')}</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => pauseOrResumeTrigger(trigger, false)}>{t('agent.aware.disable')}</button>
                     )}
                     {trigger.last_attempt?.artifact && (
-                      <button className="btn btn-ghost" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => viewArtifact(trigger.last_attempt)}>{artifactLoading ? t('common.loading', 'Loading') : t('agent.aware.viewArtifact', 'View artifact')}</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => viewArtifact(trigger.last_attempt)}>{artifactLoading ? t('common.loading', 'Loading') : t('agent.aware.viewArtifact', 'View artifact')}</button>
                     )}
                   </div>
                 </div>
@@ -496,15 +453,15 @@ export default function AgentAwareSection({
           </div>
         </div>
 
-        <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-          <h4 style={{ margin: '0 0 12px', fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.attempts', 'Attempts')}</h4>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {attempts.length === 0 && <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.noAttempts', 'No attempts yet')}</div>}
+        <div className="card agent-aware-block">
+          <h4 className="agent-aware-h4 agent-aware-h4-mb">{t('agent.aware.attempts', 'Attempts')}</h4>
+          <div className="agent-aware-attempts">
+            {attempts.length === 0 && <div className="u-row u-tertiary">{t('agent.aware.noAttempts', 'No attempts yet')}</div>}
             {attempts.slice(0, 8).map((attempt: any, index: number) => (
-              <div key={`${attempt.status || 'attempt'}-${index}`} style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', borderBottom: '1px solid var(--border-subtle)', padding: '6px 0' }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: '12px', fontWeight: 500 }}>{attempt.display_summary || attempt.attention_reason || attempt.status}</div>
-                  {attempt.attention_reason && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{attempt.attention_reason}</div>}
+              <div key={`${attempt.status || 'attempt'}-${index}`} className="agent-aware-attempt">
+                <div className="agent-aware-min0">
+                  <div className="agent-aware-attempt-title">{attempt.display_summary || attempt.attention_reason || attempt.status}</div>
+                  {attempt.attention_reason && <div className="u-meta u-tertiary agent-aware-mt2">{attempt.attention_reason}</div>}
                 </div>
                 {statusBadge(attempt.status)}
               </div>
@@ -513,13 +470,13 @@ export default function AgentAwareSection({
         </div>
 
         {artifactView && (
-          <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{artifactView.title || t('agent.aware.artifact', 'Artifact')}</h4>
-              <button className="btn btn-ghost" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => setArtifactView(null)}>{t('common.close', 'Close')}</button>
+          <div className="card agent-aware-block">
+            <div className="agent-aware-artifact-head">
+              <h4 className="agent-aware-h4">{artifactView.title || t('agent.aware.artifact', 'Artifact')}</h4>
+              <button className="btn btn-ghost btn-sm" onClick={() => setArtifactView(null)}>{t('common.close', 'Close')}</button>
             </div>
-            {artifactView.summary && <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>{artifactView.summary}</div>}
-            <pre style={{ fontSize: '11px', whiteSpace: 'pre-wrap', background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', maxHeight: '280px', overflow: 'auto' }}>{artifactView.final_reply}</pre>
+            {artifactView.summary && <div className="agent-aware-artifact-summary">{artifactView.summary}</div>}
+            <pre className="agent-aware-artifact-pre">{artifactView.final_reply}</pre>
           </div>
         )}
       </>
@@ -528,7 +485,7 @@ export default function AgentAwareSection({
 
   if (autonomyOverview) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+      <div className="agent-aware-root">
         <TeamMemorySummaryCard agentId={agentId} section="aware" />
         <PlanQueueSection agentId={agentId} />
         {renderAutonomyOverview()}
@@ -541,52 +498,42 @@ export default function AgentAwareSection({
   const visibleSessions = reflectionSessions.slice(pageStart, pageStart + REFLECTIONS_PAGE_SIZE);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+    <div className="agent-aware-root">
       <TeamMemorySummaryCard agentId={agentId} section="aware" />
       <PlanQueueSection agentId={agentId} />
 
       {hasStandalone && (
-        <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <div className="card agent-aware-block">
+          <div className="agent-aware-overview-head">
             <div>
-              <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.standaloneTriggers')}</h4>
+              <h4 className="agent-aware-h4">{t('agent.aware.standaloneTriggers')}</h4>
             </div>
-            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            <span className="u-meta u-tertiary">
               {standaloneTriggers.length} trigger{standaloneTriggers.length > 1 ? 's' : ''}
             </span>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div className="agent-aware-compact-list">
             {[...standaloneTriggers]
               .sort((a: any, b: any) => (b.is_enabled ? 1 : 0) - (a.is_enabled ? 1 : 0))
               .slice(0, showAllTriggers ? undefined : SECTION_PAGE_SIZE)
               .map((trigger: any) => (
                 <div
                   key={trigger.id}
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border-subtle)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px',
-                    opacity: trigger.is_enabled ? 1 : 0.5,
-                    background: 'var(--bg-primary)',
-                  }}
+                  className={trigger.is_enabled ? 'agent-aware-standalone-row' : 'agent-aware-standalone-row is-disabled'}
                 >
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: '13px', fontWeight: 500 }}>{triggerToHuman(trigger)}</div>
-                    {trigger.reason && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{trigger.reason}</div>}
-                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', fontFamily: 'monospace', marginTop: '2px' }}>
+                  <div className="agent-aware-flex1">
+                    <div className="agent-aware-standalone-title">{triggerToHuman(trigger)}</div>
+                    {trigger.reason && <div className="u-meta u-tertiary agent-aware-mt2">{trigger.reason}</div>}
+                    <div className="u-tiny u-tertiary u-mono agent-aware-mt2">
                       {trigger.name}
                       {trigger.type === 'cron' ? ` · ${trigger.config?.expr}` : ''}
                     </div>
                   </div>
-                  <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>{t('agent.aware.fired', { count: trigger.fire_count })}</span>
-                  {!trigger.is_enabled && <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>{t('agent.aware.disabled')}</span>}
-                  <div style={{ display: 'flex', gap: '4px' }}>
+                  <span className="u-meta u-tertiary agent-aware-nowrap">{t('agent.aware.fired', { count: trigger.fire_count })}</span>
+                  {!trigger.is_enabled && <span className="u-tiny u-tertiary">{t('agent.aware.disabled')}</span>}
+                  <div className="agent-aware-row-actions">
                     <button
-                      className="btn btn-ghost"
-                      style={{ padding: '2px 6px', fontSize: '11px' }}
+                      className="btn btn-ghost btn-sm"
                       onClick={async () => {
                         await triggerApi.update(agentId, trigger.id, { is_enabled: !trigger.is_enabled });
                         await onRefetchTriggers();
@@ -595,8 +542,7 @@ export default function AgentAwareSection({
                       {trigger.is_enabled ? t('agent.aware.disable') : t('agent.aware.enable')}
                     </button>
                     <button
-                      className="btn btn-ghost"
-                      style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
+                      className="btn btn-ghost btn-sm agent-aware-danger"
                       onClick={async () => {
                         const confirmed = await requestAppConfirm({
                           title: t('common.delete', 'Delete'),
@@ -617,8 +563,7 @@ export default function AgentAwareSection({
           </div>
           {standaloneTriggers.length > SECTION_PAGE_SIZE && (
             <button
-              className="btn btn-ghost"
-              style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
+              className="btn btn-ghost agent-aware-showmore"
               onClick={(event) => {
                 const collapse = showAllTriggers;
                 onSetShowAllTriggers(!showAllTriggers);
@@ -638,22 +583,22 @@ export default function AgentAwareSection({
       )}
 
       {reflectionSessions.length > 0 && (
-        <div className="card" style={{ padding: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <div className="card">
+          <div className="agent-aware-overview-head">
             <div>
-              <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.reflections')}</h4>
-              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.reflectionsDesc')}</span>
+              <h4 className="agent-aware-h4">{t('agent.aware.reflections')}</h4>
+              <span className="u-row u-tertiary">{t('agent.aware.reflectionsDesc')}</span>
             </div>
-            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            <span className="u-meta u-tertiary">
               {reflectionSessions.length} session{reflectionSessions.length > 1 ? 's' : ''}
             </span>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div className="agent-aware-compact-list">
             {visibleSessions.map((session: any) => {
               const isExpanded = expandedReflection === session.id;
               const messages = reflectionMessages[session.id] || [];
               return (
-                <div key={session.id} style={{ borderRadius: '8px', border: '1px solid var(--border-subtle)', overflow: 'hidden', background: 'var(--bg-primary)' }}>
+                <div key={session.id} className="agent-aware-reflection-row">
                   <div
                     onClick={async () => {
                       if (isExpanded) {
@@ -663,37 +608,28 @@ export default function AgentAwareSection({
                       onSetExpandedReflection(session.id);
                       await loadReflectionMessages(session.id);
                     }}
-                    style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', transition: 'background 0.15s' }}
-                    onMouseEnter={(event) => (event.currentTarget.style.background = 'var(--bg-secondary)')}
-                    onMouseLeave={(event) => (event.currentTarget.style.background = 'transparent')}
+                    className="agent-aware-reflection-head"
                   >
-                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent-primary)', flexShrink: 0 }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: '12px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div className="agent-aware-reflection-dot" />
+                    <div className="agent-aware-reflection-body">
+                      <div className="agent-aware-reflection-title">
                         {(session.title || 'Trigger execution').replace(/^🤖\s*/, '')}
                       </div>
-                      <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '1px' }}>
+                      <div className="agent-aware-reflection-time">
                         {new Date(session.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                         {session.message_count > 0 && ` · ${session.message_count} msg`}
                       </div>
                     </div>
-                    <span
-                      style={{
-                        fontSize: '11px',
-                        color: 'var(--text-tertiary)',
-                        transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-                        transition: 'transform 0.15s',
-                      }}
-                    >
+                    <span className={isExpanded ? 'agent-aware-chevron is-expanded' : 'agent-aware-chevron'}>
                       &#9654;
                     </span>
                   </div>
                   {isExpanded && (
-                    <div style={{ padding: '0 16px 12px', borderTop: '1px solid var(--border-subtle)' }}>
+                    <div className="agent-aware-reflection-detail">
                       {messages.length === 0 ? (
-                        <div style={{ padding: '12px 0', fontSize: '12px', color: 'var(--text-tertiary)' }}>Loading...</div>
+                        <div className="agent-aware-reflection-loading">Loading...</div>
                       ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+                        <div className="agent-aware-messages">
                           {messages.map((message: any, messageIndex: number) => {
                             if (message.role === 'tool_call') {
                               const toolName = message.toolName || (() => { try { return JSON.parse(message.content || '{}').name; } catch { return ''; } })() || 'tool';
@@ -706,66 +642,23 @@ export default function AgentAwareSection({
                               const ContainerTag = hasDetail ? 'details' : 'div';
                               const HeaderTag = hasDetail ? 'summary' : 'div';
                               return (
-                                <ContainerTag key={messageIndex} style={{ borderRadius: '6px', background: 'var(--bg-secondary)', overflow: 'hidden' }}>
-                                  <HeaderTag
-                                    style={{
-                                      padding: '5px 10px',
-                                      fontSize: '11px',
-                                      cursor: hasDetail ? 'pointer' : 'default',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: '8px',
-                                      listStyle: 'none',
-                                      WebkitAppearance: 'none',
-                                    } as any}
-                                  >
-                                    {hasDetail && <span style={{ fontSize: '8px', color: 'var(--text-tertiary)', flexShrink: 0 }}>&#9654;</span>}
-                                    <span
-                                      style={{
-                                        fontWeight: 600,
-                                        fontSize: '10px',
-                                        color: 'var(--text-primary)',
-                                        padding: '1px 6px',
-                                        borderRadius: '3px',
-                                        background: 'var(--bg-tertiary, rgba(0,0,0,0.06))',
-                                        flexShrink: 0,
-                                        fontFamily: 'monospace',
-                                      }}
-                                    >
+                                <ContainerTag key={messageIndex} className="agent-aware-tool">
+                                  <HeaderTag className={hasDetail ? 'agent-aware-tool-head is-clickable' : 'agent-aware-tool-head'}>
+                                    {hasDetail && <span className="agent-aware-caret">&#9654;</span>}
+                                    <span className="agent-aware-tool-name">
                                       {toolName}
                                     </span>
-                                    <span
-                                      style={{
-                                        color: 'var(--text-tertiary)',
-                                        fontFamily: 'monospace',
-                                        fontSize: '10px',
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis',
-                                        whiteSpace: 'nowrap',
-                                      }}
-                                    >
+                                    <span className="agent-aware-tool-args">
                                       {argsText.replace(/\n/g, ' ').substring(0, 60)}
                                       {argsText.length > 60 ? '...' : ''}
                                     </span>
                                   </HeaderTag>
                                   {hasDetail && (
-                                    <div
-                                      style={{
-                                        padding: '8px 10px',
-                                        borderTop: '1px solid var(--border-subtle)',
-                                        fontFamily: 'monospace',
-                                        fontSize: '10px',
-                                        lineHeight: 1.5,
-                                        whiteSpace: 'pre-wrap',
-                                        maxHeight: '200px',
-                                        overflow: 'auto',
-                                        color: 'var(--text-secondary)',
-                                      }}
-                                    >
+                                    <div className="agent-aware-tool-detail">
                                       {argsText}
                                       {resultText && (
                                         <>
-                                          <div style={{ borderTop: '1px dashed var(--border-subtle)', margin: '6px 0', opacity: 0.5 }} />
+                                          <div className="agent-aware-tool-sep" />
                                           {normalizedResult.toolMeta ? (
                                             <StructuredToolResultBody
                                               toolName={toolName}
@@ -775,7 +668,7 @@ export default function AgentAwareSection({
                                             />
                                           ) : (
                                             <>
-                                              <span style={{ color: 'var(--text-tertiary)' }}>→ </span>
+                                              <span className="u-tertiary">→ </span>
                                               {resultText.substring(0, 500)}
                                             </>
                                           )}
@@ -794,60 +687,17 @@ export default function AgentAwareSection({
                               const resultText = normalizedResult.raw;
                               if (!resultText) return null;
                               return (
-                                <details key={messageIndex} style={{ borderRadius: '6px', background: 'var(--bg-secondary)', overflow: 'hidden' }}>
-                                  <summary
-                                    style={{
-                                      padding: '5px 10px',
-                                      fontSize: '11px',
-                                      cursor: 'pointer',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: '8px',
-                                      listStyle: 'none',
-                                      WebkitAppearance: 'none',
-                                    } as any}
-                                  >
-                                    <span style={{ fontSize: '8px', color: 'var(--text-tertiary)', flexShrink: 0 }}>&#9654;</span>
-                                    <span
-                                      style={{
-                                        fontWeight: 600,
-                                        fontSize: '10px',
-                                        color: 'var(--text-primary)',
-                                        padding: '1px 6px',
-                                        borderRadius: '3px',
-                                        background: 'var(--bg-tertiary, rgba(0,0,0,0.06))',
-                                        flexShrink: 0,
-                                        fontFamily: 'monospace',
-                                      }}
-                                    >
+                                <details key={messageIndex} className="agent-aware-tool">
+                                  <summary className="agent-aware-tool-head is-clickable">
+                                    <span className="agent-aware-caret">&#9654;</span>
+                                    <span className="agent-aware-tool-name">
                                       {toolName}
                                     </span>
-                                    <span
-                                      style={{
-                                        color: 'var(--text-tertiary)',
-                                        fontFamily: 'monospace',
-                                        fontSize: '10px',
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis',
-                                        whiteSpace: 'nowrap',
-                                      }}
-                                    >
+                                    <span className="agent-aware-tool-args">
                                       → {resultText.replace(/\n/g, ' ').substring(0, 80)}
                                     </span>
                                   </summary>
-                                  <div
-                                    style={{
-                                      padding: '8px 10px',
-                                      borderTop: '1px solid var(--border-subtle)',
-                                      fontFamily: 'monospace',
-                                      fontSize: '10px',
-                                      lineHeight: 1.5,
-                                      whiteSpace: 'pre-wrap',
-                                      maxHeight: '200px',
-                                      overflow: 'auto',
-                                      color: 'var(--text-secondary)',
-                                    }}
-                                  >
+                                  <div className="agent-aware-tool-detail">
                                     {normalizedResult.toolMeta ? (
                                       <StructuredToolResultBody
                                         toolName={toolName}
@@ -865,20 +715,7 @@ export default function AgentAwareSection({
 
                             if (message.role === 'assistant') {
                               return (
-                                <div
-                                  key={messageIndex}
-                                  style={{
-                                    padding: '8px 10px',
-                                    borderRadius: '6px',
-                                    background: 'var(--bg-secondary)',
-                                    fontSize: '12px',
-                                    color: 'var(--text-primary)',
-                                    whiteSpace: 'pre-wrap',
-                                    lineHeight: '1.5',
-                                    maxHeight: '200px',
-                                    overflow: 'auto',
-                                  }}
-                                >
+                                <div key={messageIndex} className="agent-aware-msg-assistant">
                                   {message.content}
                                 </div>
                               );
@@ -886,20 +723,7 @@ export default function AgentAwareSection({
 
                             if (message.role === 'user') {
                               return (
-                                <div
-                                  key={messageIndex}
-                                  style={{
-                                    padding: '6px 10px',
-                                    borderRadius: '6px',
-                                    background: 'var(--bg-secondary)',
-                                    borderLeft: '2px solid var(--border-subtle)',
-                                    fontSize: '11px',
-                                    color: 'var(--text-secondary)',
-                                    whiteSpace: 'pre-wrap',
-                                    maxHeight: '100px',
-                                    overflow: 'auto',
-                                  }}
-                                >
+                                <div key={messageIndex} className="agent-aware-msg-user">
                                   {(message.content || '').substring(0, 300)}
                                 </div>
                               );
@@ -916,10 +740,9 @@ export default function AgentAwareSection({
             })}
           </div>
           {totalPages > 1 && (
-            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', marginTop: '12px', paddingTop: '8px', borderTop: '1px solid var(--border-subtle)' }}>
+            <div className="agent-aware-pagination">
               <button
                 className="btn btn-ghost"
-                style={{ fontSize: '12px', padding: '4px 10px', opacity: reflectionPage === 0 ? 0.3 : 1 }}
                 disabled={reflectionPage === 0}
                 onClick={() => {
                   onSetReflectionPage((previous) => Math.max(0, previous - 1));
@@ -928,12 +751,11 @@ export default function AgentAwareSection({
               >
                 {i18n.language?.startsWith('zh') ? '上一页' : 'Prev'}
               </button>
-              <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>
+              <span className="agent-aware-page-count">
                 {reflectionPage + 1} / {totalPages}
               </span>
               <button
                 className="btn btn-ghost"
-                style={{ fontSize: '12px', padding: '4px 10px', opacity: reflectionPage >= totalPages - 1 ? 0.3 : 1 }}
                 disabled={reflectionPage >= totalPages - 1}
                 onClick={() => {
                   onSetReflectionPage((previous) => Math.min(totalPages - 1, previous + 1));

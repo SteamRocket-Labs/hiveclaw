@@ -1,0 +1,347 @@
+/* ═══════════════════════════════════════════════════════
+   AgentSkillsSection — inline style 迁出（P3）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   卡中卡收敛为 hairline panel；浮层才配阴影；JS hover → CSS hover
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Header ─────────────────────────────────────────────── */
+
+.agent-skills-header {
+  margin-bottom: var(--space-4);
+}
+
+.agent-skills-head-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.agent-skills-title {
+  margin-bottom: var(--space-1);
+}
+
+.agent-skills-subtitle {
+  font-size: var(--text-body);
+  color: var(--text-tertiary);
+}
+
+.agent-skills-head-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.agent-skills-toolbar-btn {
+  font-size: var(--text-body);
+}
+
+.agent-skills-primary-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.agent-skills-format-note {
+  margin-top: var(--space-2);
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  line-height: var(--leading-body);
+}
+
+.agent-skills-governed-note {
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  line-height: var(--leading-emphasis);
+  margin-bottom: var(--space-4);
+}
+
+/* ── Capability panels（hairline，不套厚卡） ────────────── */
+
+.agent-skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.agent-skills-panel {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+  padding: var(--space-3);
+  min-height: 116px;
+}
+
+.agent-skills-panel-title {
+  margin: 0 0 10px;
+  font-size: var(--text-body);
+  color: var(--text-primary);
+}
+
+.agent-skills-panel-title-tight {
+  margin-bottom: var(--space-1);
+}
+
+.agent-skills-panel-desc {
+  margin: 0 0 10px;
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  line-height: var(--leading-row);
+}
+
+.agent-skills-panel-note {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.agent-skills-list {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-skills-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  font-size: var(--text-row);
+}
+
+.agent-skills-row-name {
+  color: var(--text-primary);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-skills-row-meta {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.agent-skills-row-meta.is-active {
+  color: var(--accent-text);
+}
+
+/* ── Modals（浮层，配 modal 阴影） ─────────────────────── */
+
+.agent-skills-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.agent-skills-modal {
+  background: var(--bg-primary);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  width: 90%;
+  box-shadow: var(--shadow-modal);
+}
+
+.agent-skills-modal-lg {
+  max-width: 600px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-skills-modal-sm {
+  max-width: 500px;
+}
+
+.agent-skills-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+
+.agent-skills-modal-close {
+  font-size: var(--text-title);
+  color: var(--text-secondary);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.agent-skills-modal-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.agent-skills-modal-desc {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-3);
+}
+
+.agent-skills-modal-desc-wide {
+  margin-bottom: var(--space-4);
+}
+
+.agent-skills-search-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.agent-skills-search-input {
+  flex: 1;
+  font-size: var(--text-body);
+}
+
+.agent-skills-action-btn {
+  font-size: var(--text-body);
+}
+
+.agent-skills-scroll {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.agent-skills-empty-hint {
+  text-align: center;
+  padding: var(--space-6);
+  color: var(--text-tertiary);
+  font-size: var(--text-body);
+}
+
+.agent-skills-result-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  margin-bottom: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  transition: border-color var(--transition-fast);
+}
+
+.agent-skills-result-row:hover {
+  border-color: var(--border-default);
+}
+
+.agent-skills-result-main {
+  flex: 1;
+}
+
+.agent-skills-result-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-skills-result-name {
+  font-weight: 600;
+  font-size: var(--text-body);
+}
+
+.agent-skills-version-tag {
+  font-size: var(--text-tiny);
+  color: var(--accent-text);
+  background: var(--accent-subtle);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+}
+
+.agent-skills-result-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.agent-skills-result-updated {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+  opacity: 0.7;
+}
+
+.agent-skills-install-btn {
+  font-size: var(--text-row);
+  padding: 5px 12px;
+  margin-left: var(--space-3);
+}
+
+.agent-skills-url-input {
+  width: 100%;
+  font-size: var(--text-body);
+  margin-bottom: var(--space-3);
+}
+
+.agent-skills-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.agent-skills-preset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  transition: border-color var(--transition-fast);
+}
+
+.agent-skills-preset-row:hover {
+  border-color: var(--accent-primary);
+}
+
+.agent-skills-preset-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+
+.agent-skills-preset-icon {
+  font-size: var(--text-title);
+}
+
+.agent-skills-preset-name {
+  font-weight: 600;
+  font-size: var(--text-emphasis);
+}
+
+.agent-skills-preset-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.agent-skills-preset-folder {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.agent-skills-preset-default {
+  margin-left: var(--space-2);
+  color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.agent-skills-import-btn {
+  white-space: nowrap;
+  font-size: var(--text-row);
+  padding: 6px 14px;
+}

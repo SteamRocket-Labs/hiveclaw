@@ -12,6 +12,7 @@ import {
   type LocalBridgeConnection,
   type LocalBridgeInstallGuide,
 } from '../api/domains/localBridge';
+import './LocalAgents.css';
 
 const parseSeenAt = (value?: string | null) => {
   if (!value) return null;
@@ -528,28 +529,19 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
   };
 
   return (
-    <div style={{ padding: embedded ? 0 : '24px 36px', maxWidth: embedded ? 'none' : '1120px', margin: embedded ? 0 : '0 auto' }}>
-      <div style={{ marginBottom: '18px' }}>
+    <div className={embedded ? 'local-agents-root-embedded' : 'local-agents-root'}>
+      <div className="local-agents-head">
         {embedded ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>{displayTitle}</h3>
-            <span
-              style={{
-                fontSize: '11px',
-                padding: '2px 6px',
-                borderRadius: '999px',
-                color: 'var(--success)',
-                background: 'var(--success-subtle, rgba(34, 197, 94, 0.12))',
-                border: '1px solid rgba(34, 197, 94, 0.24)',
-              }}
-            >
+          <div className="local-agents-title-row">
+            <h3 className="local-agents-title">{displayTitle}</h3>
+            <span className="badge badge-success">
               {t('nav.localBadge', 'Local')}
             </span>
           </div>
         ) : (
-          <h2 style={{ margin: '0 0 6px' }}>{displayTitle}</h2>
+          <h2 className="local-agents-title-h2">{displayTitle}</h2>
         )}
-        <p style={{ margin: 0, color: 'var(--text-tertiary)', fontSize: '13px', lineHeight: 1.5 }}>
+        <p className="local-agents-desc">
           {t(
             'localAgents.description',
             'Local agents behave like regular Hive agents with a local runtime. Keep them private or share them with your workspace through normal Agent permissions.',
@@ -557,21 +549,12 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
         </p>
       </div>
 
-      <div className="card" style={{ marginBottom: '12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-            <span
-              className={localAgentOnline ? 'status-dot running' : undefined}
-              style={{
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                background: localAgentOnline ? 'var(--success)' : 'var(--text-quaternary)',
-                flexShrink: 0,
-              }}
-            />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: '13px', fontWeight: 600 }}>
+      <div className="card local-agents-stack-card">
+        <div className="local-agents-status-row">
+          <div className="local-agents-status-main">
+            <span className={`status-dot ${localAgentOnline ? 'running' : 'stopped'}`} />
+            <div className="local-agents-min0">
+              <div className="local-agents-status-title">
                 {connectionsLoading
                   ? t('localAgents.statusLoading', 'Checking local agent...')
                   : localAgentOnline
@@ -580,15 +563,7 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
                       ? t('localAgents.unknown', 'Local agent status unknown')
                       : t('localAgents.offline', 'Local agent offline')}
               </div>
-              <div
-                style={{
-                  fontSize: '12px',
-                  color: 'var(--text-tertiary)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
+              <div className="local-agents-status-detail u-truncate">
                 {primaryConnection
                   ? `${primaryConnection.device_name} · ${
                       primaryConnection.runtime_kind || primaryConnection.client_kind
@@ -600,36 +575,19 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
               </div>
             </div>
           </div>
-          <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+          <span className="local-agents-conn-count">
             {t('localAgents.connectionCount', '{{count}} linked', { count: activeConnections.length })}
           </span>
         </div>
       </div>
 
-      <div
-        style={{
-          display: 'flex',
-          gap: '18px',
-          borderBottom: '1px solid var(--border-subtle)',
-          margin: '6px 0 16px',
-        }}
-      >
+      <div className="local-agents-tabs">
         {(['chat', 'workspace'] as const).map((tab) => (
           <button
             key={tab}
             type="button"
             onClick={() => setActiveTab(tab)}
-            style={{
-              appearance: 'none',
-              border: 0,
-              background: 'transparent',
-              padding: '10px 0',
-              borderBottom: activeTab === tab ? '2px solid var(--text-primary)' : '2px solid transparent',
-              color: activeTab === tab ? 'var(--text-primary)' : 'var(--text-tertiary)',
-              fontSize: '14px',
-              fontWeight: activeTab === tab ? 600 : 500,
-              cursor: 'pointer',
-            }}
+            className={`local-agents-tab${activeTab === tab ? ' active' : ''}`}
           >
             {tab === 'chat' ? t('localAgents.chatTab', 'Chat') : t('localAgents.workspaceTab', 'Workspace')}
           </button>
@@ -638,33 +596,23 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
 
       {activeTab === 'chat' ? (
         <>
-          <div className="card" style={{ marginBottom: '12px' }}>
-            <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
+          <div className="card local-agents-stack-card">
+            <div className="local-agents-section-label">
               {t('localAgents.setupInstruction', 'Setup instruction')}
             </div>
-            <pre
-              style={{
-                margin: 0,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                fontSize: '12px',
-                lineHeight: 1.55,
-                color: 'var(--text-secondary)',
-                fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-              }}
-            >
+            <pre className="local-agents-pre">
               {setupInstruction}
             </pre>
-            <button className="btn btn-secondary" onClick={copyInstruction} style={{ marginTop: '12px' }}>
+            <button className="btn btn-secondary local-agents-copy-btn" onClick={copyInstruction}>
               {copied ? t('localAgents.copied', 'Copied') : t('localAgents.copyInstruction', 'Copy instruction')}
             </button>
           </div>
 
-          <div className="card" style={{ marginBottom: '12px' }}>
-            <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
+          <div className="card local-agents-stack-card">
+            <div className="local-agents-section-label">
               {t('localAgents.autoAuthTitle', 'Automatic authentication')}
             </div>
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.55 }}>
+            <div className="local-agents-hint">
               {activationCode
                 ? t(
                     'localAgents.autoAuthDetected',
@@ -676,51 +624,41 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
                   )}
             </div>
             {activationBusy && (
-              <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              <div className="local-agents-busy-line">
                 {t('localAgents.autoAuthCompleting', 'Completing Hive Connect login...')}
               </div>
             )}
             {activationStatus && (
-              <div style={{ marginTop: '8px', fontSize: '12px', color: activationStatus.kind === 'success' ? 'var(--success)' : 'var(--error)' }}>
+              <div className={`local-agents-status-msg ${activationStatus.kind === 'success' ? 'local-agents-fb-success' : 'local-agents-fb-error'}`}>
                 {activationStatus.message}
               </div>
             )}
             {activationCode && activationStatus?.kind === 'error' && (
-              <button className="btn btn-secondary" disabled={activationBusy} onClick={() => approveActivationCode(activationCode)} style={{ marginTop: '10px' }}>
+              <button className="btn btn-secondary local-agents-retry-btn" disabled={activationBusy} onClick={() => approveActivationCode(activationCode)}>
                 {t('localAgents.autoAuthRetry', 'Retry authentication')}
               </button>
             )}
           </div>
 
           <div className="card">
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
+            <label className="local-agents-section-label">
               {t('localAgents.directChat', 'Direct local chat')}
             </label>
             <textarea
-              className="input"
+              className="input local-agents-message-input"
               disabled={messageBusy}
               value={messageContent}
               onChange={(event) => setMessageContent(event.target.value)}
               rows={4}
-              style={{ width: '100%', resize: 'vertical', fontSize: '12px', lineHeight: 1.5 }}
             />
             {pendingAttachments.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '10px' }}>
+              <div className="local-agents-attachments">
                 {pendingAttachments.map((attachment) => (
                   <div
                     key={attachment.workspace_path}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      gap: '10px',
-                      alignItems: 'center',
-                      padding: '8px 10px',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: '8px',
-                      fontSize: '12px',
-                    }}
+                    className="local-agents-attachment"
                   >
-                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span className="local-agents-attachment-name">
                       {attachment.saved_filename || attachment.filename} · {formatBytes(attachment.size)}
                     </span>
                     <button
@@ -733,14 +671,14 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
                 ))}
               </div>
             )}
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '10px' }}>
+            <div className="local-agents-actions">
               <button className="btn btn-secondary" disabled={attachmentBusy || messageBusy} onClick={attachChannelFiles}>
                 {attachmentBusy ? t('localAgents.attaching', 'Attaching...') : t('localAgents.attachFile', 'Attach file')}
               </button>
               <button className="btn btn-primary" disabled={!canSendMessage} onClick={sendMessage}>
                 {messageBusy ? t('localAgents.sending', 'Sending...') : t('localAgents.send', 'Send to local agent')}
               </button>
-              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              <span className="local-agents-note">
                 {localAgentOnline
                   ? t(
                       'localAgents.sendHint',
@@ -753,35 +691,29 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
               </span>
             </div>
             {messageStatus && (
-              <div style={{ marginTop: '8px', fontSize: '12px', color: messageStatus.kind === 'success' ? 'var(--success)' : 'var(--error)' }}>
+              <div className={`local-agents-status-msg ${messageStatus.kind === 'success' ? 'local-agents-fb-success' : 'local-agents-fb-error'}`}>
                 {messageStatus.message}
               </div>
             )}
             {activeChannelSessionId && (
-              <div style={{ marginTop: '14px', borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
+              <div className="local-agents-transcript">
+                <div className="local-agents-section-label">
                   {t('localAgents.transcript', 'Local channel transcript')}
                 </div>
                 {channelEventsLoading ? (
-                  <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                  <div className="local-agents-note">
                     {t('localAgents.eventsLoading', 'Loading channel events...')}
                   </div>
                 ) : channelEvents.length === 0 ? (
-                  <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                  <div className="local-agents-note">
                     {t('localAgents.eventsEmpty', 'No channel events yet.')}
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div className="local-agents-events">
                     {channelEvents.slice(-10).map((event) => (
                       <div
                         key={event.id}
-                        style={{
-                          fontSize: '12px',
-                          color: 'var(--text-secondary)',
-                          lineHeight: 1.5,
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                        }}
+                        className="local-agents-event"
                       >
                         <strong>
                           {event.direction === 'local_to_hive' ? 'Local' : 'Hive'} · {event.type}:
@@ -797,16 +729,16 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
         </>
       ) : (
         <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', marginBottom: '12px' }}>
+          <div className="local-agents-ws-header">
             <div>
-              <div style={{ fontSize: '13px', fontWeight: 600 }}>
+              <div className="local-agents-status-title">
                 {viewingWorkspaceFile || workspacePath}
               </div>
-              <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+              <div className="local-agents-ws-path">
                 {t('localAgents.workspaceDescription', 'Workspace files for this local runtime. Shared callers can send files into the host runner through governed Agent permissions.')}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <div className="local-agents-ws-actions">
               {viewingWorkspaceFile ? (
                 <button
                   className="btn btn-secondary"
@@ -832,79 +764,49 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
           </div>
           {workspaceStatus && (
             <div
-              style={{
-                fontSize: '12px',
-                color: workspaceStatus.kind === 'success' ? 'var(--success)' : 'var(--error)',
-                marginBottom: '10px',
-              }}
+              className={`local-agents-workspace-msg ${workspaceStatus.kind === 'success' ? 'local-agents-fb-success' : 'local-agents-fb-error'}`}
             >
               {workspaceStatus.message}
             </div>
           )}
           {viewingWorkspaceFile ? (
             <div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '10px' }}>
+              <div className="local-agents-ws-download-row">
                 <button className="btn btn-secondary" disabled={workspaceBusy} onClick={() => downloadWorkspaceFile(viewingWorkspaceFile)}>
                   {t('common.download', 'Download')}
                 </button>
               </div>
-              <pre
-                style={{
-                  margin: 0,
-                  minHeight: '260px',
-                  maxHeight: '560px',
-                  overflow: 'auto',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  fontSize: '12px',
-                  lineHeight: 1.55,
-                  color: 'var(--text-secondary)',
-                  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: '8px',
-                  padding: '12px',
-                  background: 'var(--bg-secondary)',
-                }}
-              >
+              <pre className="local-agents-file-view">
                 {workspaceContent?.content || (workspaceBusy ? t('common.loading', 'Loading...') : '')}
               </pre>
             </div>
           ) : workspaceLoading ? (
-            <div style={{ padding: '24px 0', color: 'var(--text-tertiary)', textAlign: 'center', fontSize: '13px' }}>
+            <div className="local-agents-ws-loading">
               {t('common.loading', 'Loading...')}
             </div>
           ) : workspaceFiles.length === 0 ? (
-            <div style={{ padding: '36px 0', color: 'var(--text-tertiary)', textAlign: 'center', fontSize: '13px' }}>
+            <div className="local-agents-ws-empty">
               {t('localAgents.workspaceEmpty', 'No files in this local agent workspace yet.')}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div className="local-agents-file-list">
               {workspaceFiles.map((item) => (
                 <div
                   key={item.path}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    gap: '12px',
-                    padding: '10px 12px',
-                    border: '1px solid var(--border-subtle)',
-                    borderRadius: '8px',
-                    cursor: 'pointer',
-                  }}
+                  className="local-agents-file-row"
                   onClick={() => openWorkspaceItem(item)}
                 >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: '13px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div className="local-agents-min0">
+                    <div className="local-agents-file-name">
                       {item.is_dir ? '/ ' : ''}{item.name}
                     </div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div className="local-agents-file-path">
                       {item.path}
                     </div>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+                  <div className="local-agents-file-meta">
                     {!item.is_dir && (
-                      <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                      <span className="local-agents-note">
                         {formatBytes(item.size)}
                       </span>
                     )}

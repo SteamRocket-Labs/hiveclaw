@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import type { CSSProperties } from 'react';
 
 import { useTranslation } from 'react-i18next';
 
 import { skillApi } from '../../api/domains/skills';
 import FileBrowser from '../../components/FileBrowser';
 import type { FileBrowserApi } from '../../components/FileBrowser';
+
+import './WorkspaceSkillsSection.css';
 
 interface TokenStatus {
   configured: boolean;
@@ -112,41 +113,27 @@ export default function WorkspaceSkillsSection() {
   };
 
   const tierBadge = (tier: number) => {
-    const styles: Record<number, { bg: string; color: string; label: string }> = {
-      1: { bg: 'rgba(52,199,89,0.12)', color: 'var(--success, #34c759)', label: 'Tier 1 · Pure Prompt' },
-      2: { bg: 'rgba(255,159,10,0.12)', color: 'var(--warning, #ff9f0a)', label: 'Tier 2 · CLI/API' },
-      3: { bg: 'rgba(255,59,48,0.12)', color: 'var(--error, #ff3b30)', label: 'Tier 3 · Local Runtime Native' },
+    const styles: Record<number, { cls: string; label: string }> = {
+      1: { cls: 'ws-skills-tier-1', label: 'Tier 1 · Pure Prompt' },
+      2: { cls: 'ws-skills-tier-2', label: 'Tier 2 · CLI/API' },
+      3: { cls: 'ws-skills-tier-3', label: 'Tier 3 · Local Runtime Native' },
     };
     const style = styles[tier] || styles[1];
-    return (
-      <span
-        style={{
-          padding: '2px 8px',
-          borderRadius: '4px',
-          fontSize: '11px',
-          fontWeight: 500,
-          background: style.bg,
-          color: style.color,
-        }}
-      >
-        {style.label}
-      </span>
-    );
+    return <span className={`ws-skills-tier ${style.cls}`}>{style.label}</span>;
   };
 
   return (
     <div>
-      <div style={{ marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <div className="ws-skills-header">
         <div>
           <h3>{t('enterprise.tabs.skills', 'Skill Registry')}</h3>
-          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+          <p className="ws-skills-subtitle">
             {t('enterprise.tools.manageGlobalSkills', 'Manage shared skills available across the workspace.')}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+        <div className="ws-skills-actions">
           <button
             className="btn btn-secondary"
-            style={{ fontSize: '13px', padding: '6px 10px', minWidth: 'auto' }}
             onClick={async () => {
               setShowSettings((value) => !value);
               if (!tokenStatus) {
@@ -167,7 +154,6 @@ export default function WorkspaceSkillsSection() {
           </button>
           <button
             className="btn btn-secondary"
-            style={{ fontSize: '13px' }}
             onClick={() => {
               setShowUrlModal(true);
               setUrlInput('');
@@ -178,7 +164,6 @@ export default function WorkspaceSkillsSection() {
           </button>
           <button
             className="btn btn-primary"
-            style={{ fontSize: '13px' }}
             onClick={() => {
               setShowClawhubModal(true);
               setSearchQuery('');
@@ -192,43 +177,33 @@ export default function WorkspaceSkillsSection() {
       </div>
 
       {showSettings ? (
-        <div
-          style={{
-            marginBottom: '16px',
-            padding: '16px',
-            borderRadius: '8px',
-            border: '1px solid var(--border-primary)',
-            background: 'var(--bg-secondary, rgba(255,255,255,0.02))',
-          }}
-        >
-          <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <div className="ws-skills-settings-panel">
+          <div className="ws-skills-settings-title">
             {t('enterprise.tools.githubToken', 'GitHub Token')}
           </div>
-          <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+          <p className="ws-skills-settings-desc">
             {t('enterprise.tools.githubTokenDesc', 'Configure a token for importing skills from GitHub and ClawHub.')}
           </p>
           {tokenStatus?.configured ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-              {t('enterprise.tools.currentToken', 'Current Token')} <code style={{ padding: '2px 6px', borderRadius: '4px', background: 'var(--bg-tertiary)', fontSize: '11px' }}>{tokenStatus.masked}</code>
-              <span style={{ marginLeft: '8px', color: 'var(--text-tertiary)' }}>({tokenStatus.source})</span>
+            <div className="ws-skills-current">
+              {t('enterprise.tools.currentToken', 'Current Token')} <code className="ws-skills-code">{tokenStatus.masked}</code>
+              <span className="ws-skills-source">({tokenStatus.source})</span>
             </div>
           ) : null}
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <input type="text" name="prevent_autofill_user" style={{ display: 'none' }} tabIndex={-1} />
-            <input type="password" name="prevent_autofill_pass" style={{ display: 'none' }} tabIndex={-1} />
+          <div className="ws-skills-input-row">
+            <input type="text" name="prevent_autofill_user" className="ws-skills-hidden" tabIndex={-1} />
+            <input type="password" name="prevent_autofill_pass" className="ws-skills-hidden" tabIndex={-1} />
             <input
               type="text"
-              className="input"
+              className="input ws-skills-token-input"
               autoComplete="off"
               data-form-type="other"
               placeholder="ghp_xxxxxxxxxxxx"
               value={tokenInput}
               onChange={(event) => setTokenInput(event.target.value)}
-              style={{ flex: 1, fontSize: '13px', fontFamily: 'monospace', WebkitTextSecurity: 'disc' } as CSSProperties}
             />
             <button
               className="btn btn-primary"
-              style={{ fontSize: '13px' }}
               disabled={!tokenInput.trim() || savingToken}
               onClick={async () => {
                 setSavingToken(true);
@@ -249,7 +224,6 @@ export default function WorkspaceSkillsSection() {
             {tokenStatus?.configured && tokenStatus.source === 'tenant' ? (
               <button
                 className="btn btn-secondary"
-                style={{ fontSize: '13px' }}
                 onClick={async () => {
                   try {
                     await skillApi.settings.setToken('');
@@ -266,34 +240,32 @@ export default function WorkspaceSkillsSection() {
             ) : null}
           </div>
 
-          <div style={{ marginTop: '16px' }}>
-            <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div className="ws-skills-settings-block">
+            <div className="ws-skills-settings-title">
               {t('enterprise.tools.clawhubApiKey', 'ClawHub API Key')}
             </div>
-            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+            <p className="ws-skills-settings-desc">
               {t('enterprise.tools.authenticatedRequestsGetHigherRateLimits', 'Authenticated requests receive higher rate limits.')}
             </p>
             {tokenStatus?.clawhub_configured ? (
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                {t('enterprise.tools.currentKey', 'Current Key')} <code style={{ padding: '2px 6px', borderRadius: '4px', background: 'var(--bg-tertiary)', fontSize: '11px' }}>{tokenStatus.clawhub_masked}</code>
+              <div className="ws-skills-current">
+                {t('enterprise.tools.currentKey', 'Current Key')} <code className="ws-skills-code">{tokenStatus.clawhub_masked}</code>
               </div>
             ) : null}
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <input type="text" name="prevent_autofill_ch_user" style={{ display: 'none' }} tabIndex={-1} />
-              <input type="password" name="prevent_autofill_ch_pass" style={{ display: 'none' }} tabIndex={-1} />
+            <div className="ws-skills-input-row">
+              <input type="text" name="prevent_autofill_ch_user" className="ws-skills-hidden" tabIndex={-1} />
+              <input type="password" name="prevent_autofill_ch_pass" className="ws-skills-hidden" tabIndex={-1} />
               <input
                 type="text"
-                className="input"
+                className="input ws-skills-token-input"
                 autoComplete="off"
                 data-form-type="other"
                 placeholder="sk-ant-xxxxxxxxxxxx"
                 value={clawhubKeyInput}
                 onChange={(event) => setClawhubKeyInput(event.target.value)}
-                style={{ flex: 1, fontSize: '13px', fontFamily: 'monospace', WebkitTextSecurity: 'disc' } as CSSProperties}
               />
               <button
                 className="btn btn-primary"
-                style={{ fontSize: '13px' }}
                 disabled={!clawhubKeyInput.trim() || savingClawhubKey}
                 onClick={async () => {
                   setSavingClawhubKey(true);
@@ -314,7 +286,6 @@ export default function WorkspaceSkillsSection() {
               {tokenStatus?.clawhub_configured ? (
                 <button
                   className="btn btn-secondary"
-                  style={{ fontSize: '13px' }}
                   onClick={async () => {
                     try {
                       await skillApi.settings.setClawhubKey('');
@@ -343,119 +314,77 @@ export default function WorkspaceSkillsSection() {
       />
 
       {toast ? (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: '24px',
-            right: '24px',
-            zIndex: 10000,
-            padding: '12px 20px',
-            borderRadius: '8px',
-            fontSize: '13px',
-            fontWeight: 500,
-            background: toast.type === 'error' ? 'rgba(255,59,48,0.95)' : 'rgba(52,199,89,0.95)',
-            color: '#fff',
-            boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
-            maxWidth: '400px',
-            animation: 'fadeIn 200ms ease',
-          }}
-        >
+        <div className={`ws-skills-toast ${toast.type}`}>
           {toast.message}
         </div>
       ) : null}
 
       {showClawhubModal ? (
         <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 9999,
-            background: 'rgba(0,0,0,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
+          className="ui-modal-overlay"
           onClick={() => setShowClawhubModal(false)}
         >
           <div
-            style={{
-              background: 'var(--bg-primary)',
-              borderRadius: '12px',
-              width: '640px',
-              maxHeight: '80vh',
-              display: 'flex',
-              flexDirection: 'column',
-              border: '1px solid var(--border-default)',
-              boxShadow: '0 16px 48px rgba(0,0,0,0.2)',
-            }}
+            className="ui-modal ws-skills-modal-wide"
             onClick={(event) => event.stopPropagation()}
           >
-            <div style={{ padding: '20px 24px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                <h3 style={{ margin: 0, fontSize: '16px' }}>{t('enterprise.tools.browseClawhub', 'Browse ClawHub')}</h3>
-                <button className="btn btn-ghost" onClick={() => setShowClawhubModal(false)} style={{ padding: '4px 8px', fontSize: '16px', lineHeight: 1 }}>x</button>
+            <div className="ws-skills-modal-head">
+              <div className="ws-skills-modal-head-row">
+                <h3 className="ws-skills-modal-title">{t('enterprise.tools.browseClawhub', 'Browse ClawHub')}</h3>
+                <button className="btn btn-ghost ws-skills-modal-close" onClick={() => setShowClawhubModal(false)}>x</button>
               </div>
-              <div style={{ display: 'flex', gap: '8px' }}>
+              <div className="ws-skills-search-row">
                 <input
-                  className="input"
+                  className="input ws-skills-search-input"
                   placeholder={t('enterprise.tools.searchSkills', 'Search skills')}
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
                   onKeyDown={(event) => event.key === 'Enter' && handleSearch()}
                   autoFocus
-                  style={{ flex: 1, fontSize: '13px' }}
                 />
-                <button className="btn btn-primary" onClick={handleSearch} disabled={searching} style={{ fontSize: '13px' }}>
+                <button className="btn btn-primary" onClick={handleSearch} disabled={searching}>
                   {searching ? t('enterprise.tools.searching', 'Searching...') : t('enterprise.tools.search', 'Search')}
                 </button>
               </div>
             </div>
-            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 24px' }}>
+            <div className="ws-skills-modal-body">
               {searchResults.length === 0 && !searching ? (
-                <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                <div className="ws-skills-modal-empty">
                   {hasSearched ? t('enterprise.tools.noResultsFound', 'No results found') : t('enterprise.tools.searchForSkills', 'Search for skills')}
                 </div>
               ) : null}
               {searching ? (
-                <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                <div className="ws-skills-modal-empty">
                   {t('enterprise.tools.searchingClawhub', 'Searching ClawHub...')}
                 </div>
               ) : null}
               {searchResults.map((result) => (
                 <div
                   key={result.slug}
-                  style={{
-                    padding: '12px 0',
-                    borderBottom: '1px solid var(--border-subtle)',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                    gap: '12px',
-                  }}
+                  className="ws-skills-result-row"
                 >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                      <span style={{ fontWeight: 600, fontSize: '14px' }}>{result.displayName}</span>
-                      <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>{result.slug}</span>
+                  <div className="ws-skills-result-main">
+                    <div className="ws-skills-result-head">
+                      <span className="ws-skills-result-name">{result.displayName}</span>
+                      <span className="ws-skills-result-slug">{result.slug}</span>
                       {result.version ? (
-                        <span style={{ fontSize: '10px', color: 'var(--accent-text)', background: 'var(--accent-subtle)', padding: '1px 6px', borderRadius: '4px' }}>
+                        <span className="ws-skills-ver-tag">
                           v{result.version}
                         </span>
                       ) : null}
                     </div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                    <div className="ws-skills-result-summary">
                       {result.summary?.slice(0, 160)}
                       {result.summary?.length > 160 ? '...' : ''}
                     </div>
                     {result.updatedAt ? (
-                      <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                      <div className="ws-skills-result-updated">
                         Updated {new Date(result.updatedAt).toLocaleDateString()}
                       </div>
                     ) : null}
                   </div>
                   <button
-                    className="btn btn-secondary"
-                    style={{ fontSize: '12px', flexShrink: 0 }}
+                    className="btn btn-secondary ws-skills-btn-shrink"
                     disabled={installing === result.slug}
                     onClick={() => handleInstall(result.slug)}
                   >
@@ -470,38 +399,24 @@ export default function WorkspaceSkillsSection() {
 
       {showUrlModal ? (
         <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 9999,
-            background: 'rgba(0,0,0,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
+          className="ui-modal-overlay"
           onClick={() => setShowUrlModal(false)}
         >
           <div
-            style={{
-              background: 'var(--bg-primary)',
-              borderRadius: '12px',
-              width: '560px',
-              border: '1px solid var(--border-default)',
-              boxShadow: '0 16px 48px rgba(0,0,0,0.2)',
-            }}
+            className="ui-modal ws-skills-modal-mid"
             onClick={(event) => event.stopPropagation()}
           >
-            <div style={{ padding: '20px 24px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                <h3 style={{ margin: 0, fontSize: '16px' }}>{t('enterprise.tools.importFromUrl', 'Import from URL')}</h3>
-                <button className="btn btn-ghost" onClick={() => setShowUrlModal(false)} style={{ padding: '4px 8px', fontSize: '16px', lineHeight: 1 }}>x</button>
+            <div className="ws-skills-modal-head">
+              <div className="ws-skills-modal-head-row">
+                <h3 className="ws-skills-modal-title">{t('enterprise.tools.importFromUrl', 'Import from URL')}</h3>
+                <button className="btn btn-ghost ws-skills-modal-close" onClick={() => setShowUrlModal(false)}>x</button>
               </div>
-              <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', margin: '0 0 12px' }}>
+              <p className="ws-skills-modal-desc">
                 {t('enterprise.tools.pasteGithubUrl', 'Paste a GitHub URL to preview and import a skill.')}
               </p>
-              <div style={{ display: 'flex', gap: '8px' }}>
+              <div className="ws-skills-search-row">
                 <input
-                  className="input"
+                  className="input ws-skills-url-input"
                   placeholder={t('enterprise.tools.githubUrlPlaceholder', 'https://github.com/...')}
                   value={urlInput}
                   onChange={(event) => {
@@ -509,37 +424,36 @@ export default function WorkspaceSkillsSection() {
                     setUrlPreview(null);
                   }}
                   autoFocus
-                  style={{ flex: 1, fontSize: '13px', fontFamily: 'var(--font-mono)' }}
                   onKeyDown={(event) => event.key === 'Enter' && handleUrlPreview()}
                 />
-                <button className="btn btn-secondary" onClick={handleUrlPreview} disabled={urlPreviewing || !urlInput.trim()} style={{ fontSize: '12px' }}>
+                <button className="btn btn-secondary" onClick={handleUrlPreview} disabled={urlPreviewing || !urlInput.trim()}>
                   {urlPreviewing ? t('enterprise.tools.loading', 'Loading...') : t('enterprise.tools.preview', 'Preview')}
                 </button>
               </div>
             </div>
 
             {urlPreview ? (
-              <div style={{ padding: '16px 24px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <span style={{ fontWeight: 600, fontSize: '14px' }}>{urlPreview.name}</span>
+              <div className="ws-skills-preview">
+                <div className="ws-skills-preview-head">
+                  <span className="ws-skills-result-name">{urlPreview.name}</span>
                   {tierBadge(urlPreview.tier)}
                   {urlPreview.has_scripts ? (
-                    <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '11px', background: 'rgba(255,59,48,0.1)', color: 'var(--error, #ff3b30)' }}>
+                    <span className="ws-skills-scripts-tag">
                       Contains scripts
                     </span>
                   ) : null}
                 </div>
                 {urlPreview.description ? (
-                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 8px' }}>{urlPreview.description}</p>
+                  <p className="ws-skills-preview-desc">{urlPreview.description}</p>
                 ) : null}
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                <div className="ws-skills-preview-meta">
                   {urlPreview.files?.length} files, {(urlPreview.total_size / 1024).toFixed(1)} KB
                 </div>
-                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                  <button className="btn btn-secondary" onClick={() => setShowUrlModal(false)} style={{ fontSize: '13px' }}>
+                <div className="ws-skills-preview-actions">
+                  <button className="btn btn-secondary" onClick={() => setShowUrlModal(false)}>
                     {t('common.cancel', 'Cancel')}
                   </button>
-                  <button className="btn btn-primary" onClick={handleUrlImport} disabled={urlImporting} style={{ fontSize: '13px' }}>
+                  <button className="btn btn-primary" onClick={handleUrlImport} disabled={urlImporting}>
                     {urlImporting ? t('enterprise.tools.importing', 'Importing...') : t('enterprise.tools.import', 'Import')}
                   </button>
                 </div>

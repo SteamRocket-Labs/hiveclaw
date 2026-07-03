@@ -1,0 +1,263 @@
+/* ═══════════════════════════════════════════════════════
+   AgentEvolutionSection — 进化 tab surface styles (P3)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   动态值（失败模式复发/规避色、技能状态徽章色）保留 inline
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Root + intro ────────────────────────────────────── */
+.agent-evolution-root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.agent-evolution-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-1);
+}
+
+.agent-evolution-muted-p {
+  font-size: var(--text-body);
+  color: var(--text-tertiary);
+  margin: 0;
+}
+
+/* ── Card container（原 inline cardStyle；hairline 边框收敛） ── */
+.agent-evolution-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-secondary);
+}
+
+/* 待审批/试用卡：强调色只上 hairline 边框（色彩 = 状态） */
+.agent-evolution-card-accent {
+  border-color: var(--info);
+}
+
+/* 卡中卡：背景差分隔，落到 bg-primary */
+.agent-evolution-card-inset {
+  background: var(--bg-primary);
+}
+
+/* ── Headings ────────────────────────────────────────── */
+.agent-evolution-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 var(--space-2);
+}
+
+.agent-evolution-heading-flush {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.agent-evolution-heading-plain {
+  margin: 0 0 var(--space-2);
+}
+
+.agent-evolution-subheading {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-2);
+}
+
+.agent-evolution-subheading-flex {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-2);
+}
+
+/* ── Growth report ───────────────────────────────────── */
+.agent-evolution-report-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.agent-evolution-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-row);
+  margin-bottom: 10px;
+}
+
+.agent-evolution-thead-row {
+  text-align: left;
+  color: var(--text-tertiary);
+}
+
+.agent-evolution-th {
+  padding: var(--space-1);
+}
+
+.agent-evolution-tr {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-evolution-td {
+  padding: var(--space-1);
+}
+
+.agent-evolution-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-2);
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+}
+
+/* ── Owner approval ──────────────────────────────────── */
+.agent-evolution-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.agent-evolution-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-evolution-row-between {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.agent-evolution-min0 {
+  min-width: 0;
+}
+
+.agent-evolution-sub {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.agent-evolution-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.agent-evolution-pitch {
+  font-size: var(--text-row);
+  white-space: pre-wrap;
+  margin-top: var(--space-2);
+  color: var(--text-secondary);
+}
+
+/* ── Provisional / list rows ─────────────────────────── */
+.agent-evolution-list-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-body);
+}
+
+.agent-evolution-state-badge {
+  font-size: var(--text-meta);
+  font-weight: 600;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+}
+
+.agent-evolution-state-info {
+  color: var(--info);
+  background: color-mix(in srgb, var(--info) 12%, transparent);
+}
+
+/* ── Summary cards ───────────────────────────────────── */
+.agent-evolution-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+/* 复合选择器压过 .card 的默认 padding，与源文件顺序无关 */
+.card.agent-evolution-summary-card {
+  padding: var(--space-3) 14px;
+}
+
+.agent-evolution-summary-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.agent-evolution-icon {
+  display: inline-flex;
+}
+
+/* KPI 数字：对齐 Dashboard 的 stat-value（title 档，禁 hero 化） */
+.agent-evolution-metric-value {
+  font-size: var(--text-title);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Skill / timeline / candidate list items ─────────── */
+.agent-evolution-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+}
+
+.agent-evolution-item-title {
+  font-size: var(--text-body);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-evolution-item-meta {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.agent-evolution-item-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.agent-evolution-evolvable {
+  font-size: var(--text-meta);
+  color: var(--success);
+}
+
+/* ── Legacy audit chips ──────────────────────────────── */
+.agent-evolution-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-evolution-legacy-chip {
+  font-size: var(--text-meta);
+  padding: var(--space-1) 7px;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+}

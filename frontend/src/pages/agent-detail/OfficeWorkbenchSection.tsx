@@ -4,6 +4,7 @@ import { IconDeviceFloppy, IconFilePlus, IconPlayerPlay, IconRefresh } from '@ta
 import { useTranslation } from 'react-i18next';
 
 import { officeApi, type OfficeEditorConfig, type OfficeKind } from '../../api/domains/office';
+import './OfficeWorkbenchSection.css';
 
 declare global {
   interface Window {
@@ -95,22 +96,11 @@ function OnlyOfficeHost({ config }: { config: Extract<OfficeEditorConfig, { enab
   }, [config.documentServerUrl, containerId, editorConfig]);
 
   return (
-    <div
-      className="office-workbench__editorShell"
-      style={{
-        width: '100%',
-        height: EDITOR_HEIGHT,
-        minHeight: 560,
-        border: '1px solid var(--border-primary)',
-        borderRadius: 8,
-        overflow: 'hidden',
-        background: 'var(--bg-elevated)',
-      }}
-    >
+    <div className="office-workbench__editorShell" style={{ height: EDITOR_HEIGHT }}>
       {loadError ? (
-        <div style={{ padding: 16, color: 'var(--danger)' }}>{loadError}</div>
+        <div className="office-workbench-load-error">{loadError}</div>
       ) : (
-        <div id={containerId} style={{ width: '100%', height: '100%', minHeight: 0 }} />
+        <div id={containerId} className="office-workbench-host" />
       )}
     </div>
   );
@@ -150,42 +140,27 @@ export default function OfficeWorkbenchSection({ agentId }: OfficeWorkbenchSecti
   const editorError = editorQuery.isError ? getErrorMessage(editorQuery.error) : '';
 
   return (
-    <div className="office-workbench" style={{ padding: '20px 24px', minWidth: 0 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
-        <section
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 14,
-            alignItems: 'end',
-          }}
-        >
-          <div style={{ flex: '1 1 220px', minWidth: 220 }}>
-            <h3 style={{ margin: '0 0 6px', fontSize: 18 }}>{t('agent.office.title', 'Office')}</h3>
-            <p style={{ margin: 0, color: 'var(--text-tertiary)', fontSize: 13 }}>
+    <div className="office-workbench">
+      <div className="office-workbench-body">
+        <section className="office-workbench-toolbar">
+          <div className="office-workbench-heading">
+            <h3 className="office-workbench-title">{t('agent.office.title', 'Office')}</h3>
+            <p className="office-workbench-subtitle">
               {t('agent.office.subtitle', 'DOCX, XLSX, and PPTX editing for this workspace')}
             </p>
           </div>
 
-          <label style={{ display: 'grid', gap: 6, flex: '1 1 320px', maxWidth: 520, fontSize: 13, color: 'var(--text-secondary)' }}>
+          <label className="office-workbench-field">
             {t('agent.office.pathLabel', 'Document path')}
             <input
               value={pathInput}
               onChange={(event) => setPathInput(event.target.value)}
               placeholder={DEFAULT_PATH}
-              style={{
-                width: '100%',
-                boxSizing: 'border-box',
-                border: '1px solid var(--border-primary)',
-                borderRadius: 6,
-                padding: '8px 10px',
-                background: 'var(--bg-elevated)',
-                color: 'var(--text-primary)',
-              }}
+              className="office-workbench-input"
             />
           </label>
 
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div className="office-workbench-actions">
             <button className="btn btn-primary" onClick={() => setSelectedPath(pathInput.trim())} disabled={!pathInput.trim()}>
               <IconPlayerPlay size={15} stroke={1.7} />
               {t('agent.office.open', 'Open')}
@@ -214,52 +189,26 @@ export default function OfficeWorkbenchSection({ agentId }: OfficeWorkbenchSecti
         </section>
 
         {disabledConfig && (
-          <div style={{ border: '1px solid var(--border-primary)', borderRadius: 8, padding: 12, color: 'var(--text-secondary)' }}>
-            <strong style={{ display: 'block', marginBottom: 6 }}>{t('agent.office.disabledTitle', 'ONLYOFFICE is not configured')}</strong>
-            <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          <div className="office-workbench-notice">
+            <strong className="office-workbench-notice-title">{t('agent.office.disabledTitle', 'ONLYOFFICE is not configured')}</strong>
+            <div className="u-row u-tertiary">
               {(disabledConfig.required_env || []).join(', ') || disabledConfig.reason}
             </div>
           </div>
         )}
 
-        <main style={{ minWidth: 0 }}>
+        <main className="office-workbench-main">
           {config?.enabled && !editorError ? (
             <OnlyOfficeHost config={config} />
           ) : editorError ? (
-            <div
-              style={{
-                minHeight: 420,
-                border: '1px dashed var(--border-primary)',
-                borderRadius: 8,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 8,
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--text-tertiary)',
-                padding: 24,
-                textAlign: 'center',
-              }}
-            >
-              <strong style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+            <div className="office-workbench-placeholder office-workbench-placeholder--stack">
+              <strong className="office-workbench-placeholder-title">
                 {t('agent.office.documentMissingTitle', 'Office document not found')}
               </strong>
               <span>{t('agent.office.documentMissingMessage', 'Create it first, then open it again.')}</span>
             </div>
           ) : (
-            <div
-              style={{
-                minHeight: 420,
-                border: '1px dashed var(--border-primary)',
-                borderRadius: 8,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--text-tertiary)',
-                padding: 24,
-                textAlign: 'center',
-              }}
-            >
+            <div className="office-workbench-placeholder">
               {editorQuery.isFetching
                 ? t('common.loading', 'Loading...')
                 : t('agent.office.emptyState', 'Open or create an Office document to start editing.')}

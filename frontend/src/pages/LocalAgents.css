@@ -1,0 +1,289 @@
+/* ═══════════════════════════════════════════════════════
+   LocalAgents (Local Agent Channel) — surface styles
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   inline style 全量迁出；embedded 布局与 online/offline 状态
+   通过 class 变体表达，不再用 inline 条件值。
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Root layout (embedded vs standalone) ───────────── */
+
+.local-agents-root {
+  padding: var(--space-6) 36px;
+  max-width: 1120px;
+  margin: 0 auto;
+}
+.local-agents-root-embedded {
+  padding: 0;
+  max-width: none;
+  margin: 0;
+}
+
+/* ── Header ─────────────────────────────────────────── */
+
+.local-agents-head { margin-bottom: 18px; }
+
+.local-agents-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: 6px;
+}
+.local-agents-title { margin: 0; font-size: var(--text-title); font-weight: 700; }
+.local-agents-title-h2 { margin: 0 0 6px; }
+
+.local-agents-desc {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-body);
+  line-height: 1.5;
+}
+
+/* ── Stacked cards / shared bits ────────────────────── */
+
+.local-agents-stack-card { margin-bottom: var(--space-3); }
+
+.local-agents-min0 { min-width: 0; }
+
+.local-agents-note { font-size: var(--text-row); color: var(--text-tertiary); }
+.local-agents-hint { font-size: var(--text-row); color: var(--text-tertiary); line-height: 1.55; }
+.local-agents-busy-line {
+  margin-top: var(--space-2);
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+
+.local-agents-section-label {
+  display: block;
+  font-size: var(--text-body);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+/* Feedback line coloring (success / error), no inline color */
+.local-agents-status-msg { margin-top: var(--space-2); font-size: var(--text-row); }
+.local-agents-workspace-msg { margin-bottom: 10px; font-size: var(--text-row); }
+.local-agents-fb-success { color: var(--success); }
+.local-agents-fb-error { color: var(--error); }
+
+/* ── Status card ────────────────────────────────────── */
+
+.local-agents-status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: center;
+}
+.local-agents-status-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.local-agents-status-title { font-size: var(--text-body); font-weight: 600; }
+.local-agents-status-detail {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+}
+.local-agents-conn-count {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* ── Tabs ───────────────────────────────────────────── */
+
+.local-agents-tabs {
+  display: flex;
+  gap: 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  margin: 6px 0 var(--space-4);
+}
+.local-agents-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 10px 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-emphasis);
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.local-agents-tab:hover { color: var(--text-secondary); }
+.local-agents-tab.active {
+  border-bottom-color: var(--text-primary);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* ── Setup instruction / preformatted ───────────────── */
+
+.local-agents-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--text-row);
+  line-height: 1.55;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+.local-agents-copy-btn { margin-top: var(--space-3); }
+.local-agents-retry-btn { margin-top: 10px; }
+
+/* ── Direct chat ────────────────────────────────────── */
+
+.local-agents-message-input {
+  width: 100%;
+  resize: vertical;
+  font-size: var(--text-row);
+  line-height: 1.5;
+}
+
+.local-agents-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.local-agents-attachment {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: var(--space-2) 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-row);
+}
+.local-agents-attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-agents-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+/* ── Transcript ─────────────────────────────────────── */
+
+.local-agents-transcript {
+  margin-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
+}
+.local-agents-events {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.local-agents-event {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Workspace ──────────────────────────────────────── */
+
+.local-agents-ws-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.local-agents-ws-path {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.local-agents-ws-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.local-agents-ws-download-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.local-agents-file-view {
+  margin: 0;
+  min-height: 260px;
+  max-height: 560px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--text-row);
+  line-height: 1.55;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  background: var(--bg-secondary);
+}
+
+.local-agents-ws-loading {
+  padding: var(--space-6) 0;
+  color: var(--text-tertiary);
+  text-align: center;
+  font-size: var(--text-body);
+}
+.local-agents-ws-empty {
+  padding: 36px 0;
+  color: var(--text-tertiary);
+  text-align: center;
+  font-size: var(--text-body);
+}
+
+.local-agents-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.local-agents-file-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.local-agents-file-row:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-default);
+}
+.local-agents-file-name {
+  font-size: var(--text-body);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.local-agents-file-path {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.local-agents-file-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}

@@ -1,0 +1,305 @@
+/* ═══════════════════════════════════════════════════════
+   WorkspaceSkillsSection — 静态样式迁出（P4 长尾页面）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀 .ws-skills-* 避免全局冲突；动态值走 modifier class
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Header ────────────────────────────────────────── */
+
+.ws-skills-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: var(--space-3);
+}
+
+.ws-skills-subtitle {
+  font-size: var(--text-body);
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
+
+.ws-skills-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* ── Settings panel ────────────────────────────────── */
+
+.ws-skills-settings-panel {
+  margin-bottom: var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+}
+
+.ws-skills-settings-block {
+  margin-top: var(--space-4);
+}
+
+.ws-skills-settings-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-body);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+.ws-skills-settings-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-3);
+}
+
+.ws-skills-current {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-2);
+}
+
+.ws-skills-code {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  font-size: var(--text-meta);
+}
+
+.ws-skills-source {
+  margin-left: var(--space-2);
+  color: var(--text-tertiary);
+}
+
+.ws-skills-input-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.ws-skills-hidden {
+  display: none;
+}
+
+.ws-skills-token-input {
+  flex: 1;
+  font-size: var(--text-body);
+  font-family: var(--font-mono);
+  -webkit-text-security: disc;
+}
+
+/* ── Toast — 浮层通知，可配阴影 ────────────────────── */
+
+.ws-skills-toast {
+  position: fixed;
+  bottom: var(--space-6);
+  right: var(--space-6);
+  z-index: 10000;
+  padding: var(--space-3) var(--space-5);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-body);
+  font-weight: 500;
+  color: #fff;
+  box-shadow: var(--shadow-popover);
+  max-width: 400px;
+  animation: fadeIn 200ms ease;
+}
+
+.ws-skills-toast.success {
+  background: var(--success);
+}
+
+.ws-skills-toast.error {
+  background: var(--error);
+}
+
+/* ── Modal — 复用 .ui-modal / .ui-modal-overlay，仅覆宽度 ── */
+
+.ws-skills-modal-wide {
+  width: 640px;
+  max-height: 80vh;
+}
+
+.ws-skills-modal-mid {
+  width: 560px;
+}
+
+.ws-skills-modal-head {
+  padding: var(--space-5) var(--space-6) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ws-skills-modal-head-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+
+.ws-skills-modal-title {
+  margin: 0;
+  font-size: var(--text-title);
+}
+
+.ws-skills-modal-close {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-title);
+  line-height: 1;
+}
+
+.ws-skills-modal-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin: 0 0 var(--space-3);
+}
+
+.ws-skills-search-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.ws-skills-search-input {
+  flex: 1;
+  font-size: var(--text-body);
+}
+
+.ws-skills-url-input {
+  flex: 1;
+  font-size: var(--text-body);
+  font-family: var(--font-mono);
+}
+
+.ws-skills-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-6);
+}
+
+.ws-skills-modal-empty {
+  text-align: center;
+  padding: var(--space-10) 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-body);
+}
+
+/* ── Search results ────────────────────────────────── */
+
+.ws-skills-result-row {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.ws-skills-result-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.ws-skills-result-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.ws-skills-result-name {
+  font-weight: 600;
+  font-size: var(--text-emphasis);
+}
+
+.ws-skills-result-slug {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+.ws-skills-result-summary {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  line-height: var(--leading-row);
+}
+
+.ws-skills-result-updated {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
+
+.ws-skills-btn-shrink {
+  flex-shrink: 0;
+}
+
+/* ── Tags ──────────────────────────────────────────── */
+
+.ws-skills-ver-tag {
+  font-size: var(--text-tiny);
+  color: var(--accent-text);
+  background: var(--accent-subtle);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+.ws-skills-tier {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-meta);
+  font-weight: 500;
+}
+
+.ws-skills-tier-1 {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+
+.ws-skills-tier-2 {
+  background: var(--warning-subtle);
+  color: var(--warning);
+}
+
+.ws-skills-tier-3 {
+  background: var(--error-subtle);
+  color: var(--error);
+}
+
+.ws-skills-scripts-tag {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-meta);
+  background: var(--error-subtle);
+  color: var(--error);
+}
+
+/* ── URL preview ───────────────────────────────────── */
+
+.ws-skills-preview {
+  padding: var(--space-4) var(--space-6);
+}
+
+.ws-skills-preview-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.ws-skills-preview-desc {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-2);
+}
+
+.ws-skills-preview-meta {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-3);
+}
+
+.ws-skills-preview-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}

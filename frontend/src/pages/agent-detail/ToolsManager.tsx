@@ -12,6 +12,7 @@ import { toolsApi, type AgentTool } from '../../api/domains/tools';
 import { showAppToast } from '../../components/AppDialogs';
 import ToolIcon from '../../components/ToolIcon';
 import { useAuthStore } from '../../stores';
+import './ToolsManager.css';
 
 type ToolsManagerProps = {
   agentId: string;
@@ -19,12 +20,12 @@ type ToolsManagerProps = {
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  connected: '#22c55e',
-  available: '#22c55e',
-  needs_auth: '#f59e0b',
-  expired: '#f59e0b',
-  failed: '#ef4444',
-  error: '#ef4444',
+  connected: 'var(--success)',
+  available: 'var(--success)',
+  needs_auth: 'var(--warning)',
+  expired: 'var(--warning)',
+  failed: 'var(--error)',
+  error: 'var(--error)',
   disabled: 'var(--text-tertiary)',
 };
 
@@ -200,7 +201,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   };
 
   if (loading) {
-    return <div style={{ color: 'var(--text-tertiary)', padding: '20px' }}>{t('common.loading')}</div>;
+    return <div className="tools-manager-loading">{t('common.loading')}</div>;
   }
 
   const mcpServers = extensions?.mcp_servers ?? [];
@@ -230,43 +231,43 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   };
 
   const Toggle = ({ checked, onChange, disabled }: { checked: boolean; onChange: (next: boolean) => void; disabled?: boolean }) => (
-    <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: disabled ? 'default' : 'pointer', flexShrink: 0, opacity: disabled ? 0.6 : 1 }}>
+    <label className={`tools-manager-toggle${disabled ? ' disabled' : ''}`}>
       <input
         type="checkbox"
         checked={checked}
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
-        style={{ opacity: 0, width: 0, height: 0 }}
+        className="tools-manager-toggle-input"
       />
-      <span style={{ position: 'absolute', inset: 0, background: checked ? '#22c55e' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
-        <span style={{ position: 'absolute', left: checked ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+      <span className={`tools-manager-toggle-track${checked ? ' checked' : ''}`}>
+        <span className="tools-manager-toggle-knob" />
       </span>
     </label>
   );
 
   const moduleTitle = (title: string, count: number) => (
-    <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px' }}>
+    <div className="tools-manager-module-title">
       {title} ({count})
     </div>
   );
 
   return (
     <>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      <div className="tools-manager-sections">
         <section>
           {moduleTitle(t('agent.extensions.plugins', 'Plugins'), plugins.length)}
           {plugins.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div className="tools-manager-list">
               {plugins.map((plugin) => (
-                <div key={plugin.plugin_key} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px' }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontWeight: 600, fontSize: '13px' }}>{plugin.plugin_key}</span>
-                      <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>
+                <div key={plugin.plugin_key} className="card tools-manager-row">
+                  <div className="tools-manager-min0">
+                    <div className="tools-manager-row-head">
+                      <span className="tools-manager-name">{plugin.plugin_key}</span>
+                      <span className="tools-manager-tag">
                         {plugin.source_kind}
                       </span>
                     </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                    <div className="tools-manager-sub">
                       {plugin.version} · {plugin.status}
                     </div>
                   </div>
@@ -277,7 +278,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                       onChange={(next) => void togglePlugin(plugin.plugin_key, next)}
                     />
                   ) : (
-                    <span style={{ fontSize: '11px', color: plugin.enabled ? '#22c55e' : 'var(--text-tertiary)', fontWeight: 500 }}>
+                    <span className={`tools-manager-onoff${plugin.enabled ? ' on' : ''}`}>
                       {plugin.enabled ? t('common.enabled', 'On') : t('common.disabled', 'Off')}
                     </span>
                   )}
@@ -285,7 +286,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
               ))}
             </div>
           ) : (
-            <div className="card" style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+            <div className="card tools-manager-empty">
               {t('agent.extensions.noPlugins', 'No plugins assigned')}
             </div>
           )}
@@ -295,24 +296,24 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
         <section>
           {moduleTitle(t('agent.extensions.mcpServers', 'MCP Servers'), mcpServers.length)}
           {mcpServers.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div className="tools-manager-list">
               {mcpServers.map((server) => {
                 const advancedOpen = openAdvanced.has(server.id);
                 const serverTools = serverToolsById[server.id] ?? [];
                 const isLoadingServerTools = loadingServerTools.has(server.id);
                 return (
-                  <div key={server.id} className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                        <span style={{ fontSize: '18px' }}>🔌</span>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span style={{ fontWeight: 600, fontSize: '13px' }}>{server.name}</span>
-                            <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>
+                  <div key={server.id} className="card card-pad-none tools-manager-server-card">
+                    <div className="tools-manager-server-head">
+                      <div className="tools-manager-server-head-main">
+                        <span className="tools-manager-plug-icon">🔌</span>
+                        <div className="tools-manager-min0">
+                          <div className="tools-manager-server-title-row">
+                            <span className="tools-manager-name">{server.name}</span>
+                            <span className="tools-manager-tag">MCP</span>
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                              <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: statusColor(server.status) }} />
+                          <div className="tools-manager-server-meta">
+                            <span className="tools-manager-status-inline">
+                              <span className="tools-manager-status-dot" style={{ background: statusColor(server.status) }} />
                               {t(`agent.extensions.status.${server.status}`, server.status)}
                             </span>
                             <span>·</span>
@@ -323,19 +324,19 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                       {canManage ? (
                         <Toggle checked={server.enabled} disabled={savingServerId === server.id} onChange={(next) => void toggleServer(server, next)} />
                       ) : (
-                        <span style={{ fontSize: '11px', color: server.enabled ? '#22c55e' : 'var(--text-tertiary)', fontWeight: 500 }}>
+                        <span className={`tools-manager-onoff${server.enabled ? ' on' : ''}`}>
                           {server.enabled ? t('common.enabled', 'On') : t('common.disabled', 'Off')}
                         </span>
                       )}
                     </div>
 
                     {canManage && (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', borderTop: '1px solid var(--border-subtle)', padding: '10px 14px' }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                      <div className="tools-manager-always-row">
+                        <div className="tools-manager-min0">
+                          <div className="tools-manager-always-title">
                             {t('agent.extensions.alwaysLoad', 'Load at start')}
                           </div>
-                          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                          <div className="tools-manager-sub">
                             {t('agent.extensions.alwaysLoadHint', 'Keep this server’s approved tools in the first tool surface.')}
                           </div>
                         </div>
@@ -348,18 +349,18 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                     )}
 
                     {server.tool_count > 0 && (
-                      <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                      <div className="tools-manager-advanced">
                         <button
                           onClick={() => toggleAdvanced(server.id)}
-                          style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '100%', background: 'none', border: 'none', padding: '8px 14px', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '11px', textAlign: 'left' }}
+                          className="tools-manager-advanced-btn"
                         >
-                          <span style={{ transition: 'transform 0.15s', transform: advancedOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                          <span className={`tools-manager-chevron${advancedOpen ? ' open' : ''}`}>▶</span>
                           {t('agent.extensions.advancedToolControls', 'Advanced tool controls')} ({server.tool_count})
                         </button>
                         {advancedOpen && (
-                          <div style={{ padding: '0 14px 12px 14px', display: 'flex', flexDirection: 'column', gap: '4px', background: 'var(--bg-secondary)' }}>
+                          <div className="tools-manager-advanced-body">
                             {isLoadingServerTools ? (
-                              <div style={{ padding: '10px 12px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                              <div className="tools-manager-advanced-note">
                                 {t('common.loading', 'Loading...')}
                               </div>
                             ) : serverTools.length > 0 ? (
@@ -368,21 +369,21 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                                 const hasConfig = Boolean(configTool?.config_schema?.fields?.length) || Boolean(configTool);
                                 const savingKey = `${server.id}:${serverTool.tool_name}`;
                                 return (
-                                  <div key={serverTool.tool_name} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                                  <div key={serverTool.tool_name} className="card tools-manager-tool-row">
+                                    <div className="tools-manager-tool-main">
                                       <ToolIcon tool={configTool || { name: serverTool.tool_name, category: 'mcp' }} />
-                                      <div style={{ minWidth: 0 }}>
-                                        <div style={{ fontWeight: 500, fontSize: '12px' }}>{serverTool.display_name}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      <div className="tools-manager-min0">
+                                        <div className="tools-manager-tool-name">{serverTool.display_name}</div>
+                                        <div className="tools-manager-tool-desc">
                                           {configTool?.description || serverTool.tool_name}
                                         </div>
                                       </div>
                                     </div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                    <div className="tools-manager-tool-actions">
                                       {canManage && configTool && hasConfig && (
                                         <button
                                           onClick={() => openConfig(configTool)}
-                                          style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                          className="tools-manager-config-btn"
                                           title={t('agent.extensions.configureTool', 'Configure tool')}
                                         >
                                           {t('enterprise.tools.configure', 'Configure')}
@@ -390,11 +391,10 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                                       )}
                                       {canManage ? (
                                         <select
-                                          className="form-input"
+                                          className="form-input tools-manager-mode-select"
                                           value={serverTool.mode}
                                           disabled={!server.enabled || savingToolKey === savingKey}
                                           onChange={(event) => void setToolMode(server, serverTool, event.target.value as McpToolMode)}
-                                          style={{ width: '128px', minHeight: '28px', padding: '3px 8px', fontSize: '11px' }}
                                           title={t('agent.extensions.toolPolicyTitle', 'Tool policy')}
                                         >
                                           <option value="auto">{t('agent.extensions.toolPolicy.auto', 'Auto')}</option>
@@ -402,7 +402,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                                           <option value="deny">{t('agent.extensions.toolPolicy.deny', 'Deny')}</option>
                                         </select>
                                       ) : (
-                                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 500 }}>
+                                        <span className="tools-manager-mode-text">
                                           {t(`agent.extensions.toolPolicy.${serverTool.effective_mode}`, serverTool.effective_mode)}
                                         </span>
                                       )}
@@ -411,7 +411,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                                 );
                               })
                             ) : (
-                              <div style={{ padding: '10px 12px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                              <div className="tools-manager-advanced-note">
                                 {t('agent.extensions.noMcpServerTools', 'No server tools found')}
                               </div>
                             )}
@@ -424,7 +424,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
               })}
             </div>
           ) : (
-            <div className="card" style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+            <div className="card tools-manager-empty">
               {t('agent.extensions.noMcpServers', 'No MCP servers connected')}
             </div>
           )}
@@ -433,25 +433,25 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
 
       {configTool && (
         <div
-          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          className="ui-modal-overlay"
           onClick={() => setConfigTool(null)}
         >
           <div
             onClick={(event) => event.stopPropagation()}
-            style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}
+            className="tools-manager-modal"
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <div className="tools-manager-modal-head">
               <div>
-                <h3 style={{ margin: 0 }}>{configTool.display_name}</h3>
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                <h3 className="tools-manager-modal-title">{configTool.display_name}</h3>
+                <div className="tools-manager-sub">
                   {t('agent.extensions.perAgentConfig', 'Per-agent configuration (overrides global defaults)')}
                 </div>
               </div>
-              <button onClick={() => setConfigTool(null)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>✕</button>
+              <button onClick={() => setConfigTool(null)} className="tools-manager-modal-close">✕</button>
             </div>
 
             {configTool.config_schema?.fields?.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div className="tools-manager-fields">
                 {(configTool.config_schema.fields as any[])
                   .filter((field: any) => {
                     if (!field.depends_on) return true;
@@ -465,9 +465,9 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                     const isReadOnly = field.read_only_for_roles?.includes(currentUserRole);
                     return (
                       <div key={field.key}>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>
+                        <label className="tools-manager-field-label">
                           {field.label}
-                          {isReadOnly && <span style={{ fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '4px' }}>(Admin only)</span>}
+                          {isReadOnly && <span className="tools-manager-field-note">(Admin only)</span>}
                         </label>
                         {field.type === 'password' ? (
                           <input
@@ -511,18 +511,17 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
               </div>
             ) : (
               <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>Config JSON (Agent Override)</label>
+                <label className="tools-manager-field-label">Config JSON (Agent Override)</label>
                 <textarea
-                  className="form-input"
+                  className="form-input tools-manager-json-input"
                   value={configJson}
                   onChange={(event) => setConfigJson(event.target.value)}
-                  style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', minHeight: '120px', resize: 'vertical' }}
                   placeholder="{}"
                 />
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: '8px', marginTop: '16px', justifyContent: 'flex-end' }}>
+            <div className="tools-manager-modal-footer">
               <button className="btn btn-secondary" onClick={() => setConfigTool(null)}>{t('common.cancel', 'Cancel')}</button>
               <button className="btn btn-primary" onClick={() => void saveConfig()} disabled={configSaving}>
                 {configSaving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}

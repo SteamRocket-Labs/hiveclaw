@@ -15,6 +15,7 @@ import {
 
 import { evolutionApi, type EvolutionManifest, type EvolutionTimelineItem } from '../../api/domains/evolution';
 import { knowledgeApi, type GrowthMetrics } from '../../api/domains/knowledge';
+import './AgentEvolutionSection.css';
 
 // 进化 tab — first screen answers "这个员工最近有没有变强、有什么等我批".
 //   1. 成长报告 (J2): zero-LLM production metrics the owner opens to judge growth.
@@ -28,17 +29,10 @@ type AgentEvolutionSectionProps = {
 };
 
 const STATE_COLORS: Record<string, { fg: string; bg: string }> = {
-  active: { fg: 'var(--success, #16a34a)', bg: 'rgba(22,163,74,0.12)' },
-  stale: { fg: 'var(--warning, #d97706)', bg: 'rgba(217,119,6,0.12)' },
+  active: { fg: 'var(--success)', bg: 'var(--success-subtle)' },
+  stale: { fg: 'var(--warning)', bg: 'var(--warning-subtle)' },
   archived: { fg: 'var(--text-tertiary)', bg: 'var(--bg-secondary)' },
-  provisional: { fg: '#2563eb', bg: 'rgba(37,99,235,0.12)' },
-};
-
-const cardStyle: React.CSSProperties = {
-  border: '1px solid var(--border-primary)',
-  borderRadius: '8px',
-  padding: '12px 16px',
-  background: 'var(--bg-secondary)',
+  provisional: { fg: 'var(--info)', bg: 'color-mix(in srgb, var(--info) 12%, transparent)' },
 };
 
 function manifestTitle(item: EvolutionManifest): string {
@@ -53,11 +47,11 @@ function GrowthReportCard({ metrics }: { metrics: GrowthMetrics | undefined }) {
   const { t } = useTranslation();
   if (!metrics) {
     return (
-      <div style={cardStyle}>
-        <h4 style={{ marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <div className="agent-evolution-card">
+        <h4 className="agent-evolution-heading">
           <IconChartLine size={16} /> {t('agent.evolution.growthHeading', '成长报告')}
         </h4>
-        <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', margin: 0 }}>
+        <p className="agent-evolution-muted-p">
           {t('agent.evolution.growthEmpty', '还没有成长报告 — 随心跳自动生成,数字来自真实工作证据。')}
         </p>
       </div>
@@ -70,48 +64,48 @@ function GrowthReportCard({ metrics }: { metrics: GrowthMetrics | undefined }) {
   const volume = metrics.task_volume ?? {};
   const evolution = metrics.evolution ?? {};
   return (
-    <div style={cardStyle}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '10px' }}>
-        <h4 style={{ display: 'flex', alignItems: 'center', gap: '6px', margin: 0 }}>
+    <div className="agent-evolution-card">
+      <div className="agent-evolution-report-head">
+        <h4 className="agent-evolution-heading-flush">
           <IconChartLine size={16} /> {t('agent.evolution.growthHeading', '成长报告')}
         </h4>
-        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+        <span className="u-meta u-tertiary">
           {(metrics.generated_at ?? '').slice(0, 16)}
         </span>
       </div>
 
       {failureModes.length > 0 ? (
-        <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse', marginBottom: '10px' }}>
+        <table className="agent-evolution-table">
           <thead>
-            <tr style={{ textAlign: 'left', color: 'var(--text-tertiary)' }}>
-              <th style={{ padding: '4px' }}>{t('agent.evolution.failureMode', '失败模式')}</th>
-              <th style={{ padding: '4px' }}>{t('agent.evolution.fmStatus', '状态')}</th>
-              <th style={{ padding: '4px' }}>{t('agent.evolution.recurred', '复发')}</th>
-              <th style={{ padding: '4px' }}>{t('agent.evolution.avoided', '规避')}</th>
-              <th style={{ padding: '4px' }}>{t('agent.evolution.avoidanceRate', '规避率')}</th>
+            <tr className="agent-evolution-thead-row">
+              <th className="agent-evolution-th">{t('agent.evolution.failureMode', '失败模式')}</th>
+              <th className="agent-evolution-th">{t('agent.evolution.fmStatus', '状态')}</th>
+              <th className="agent-evolution-th">{t('agent.evolution.recurred', '复发')}</th>
+              <th className="agent-evolution-th">{t('agent.evolution.avoided', '规避')}</th>
+              <th className="agent-evolution-th">{t('agent.evolution.avoidanceRate', '规避率')}</th>
             </tr>
           </thead>
           <tbody>
             {failureModes.map((mode) => (
-              <tr key={mode.id} style={{ borderTop: '1px solid var(--border-primary)' }}>
-                <td style={{ padding: '4px' }}>{mode.title}</td>
-                <td style={{ padding: '4px' }}>
+              <tr key={mode.id} className="agent-evolution-tr">
+                <td className="agent-evolution-td">{mode.title}</td>
+                <td className="agent-evolution-td">
                   <span className="badge">{mode.status || 'active'}</span>
                 </td>
-                <td style={{ padding: '4px', color: mode.recurred > 0 ? '#ef4444' : undefined }}>{mode.recurred}</td>
-                <td style={{ padding: '4px', color: mode.avoided > 0 ? '#22c55e' : undefined }}>{mode.avoided}</td>
-                <td style={{ padding: '4px' }}>{mode.avoidance_rate != null ? `${Math.round(mode.avoidance_rate * 100)}%` : '—'}</td>
+                <td className="agent-evolution-td" style={{ color: mode.recurred > 0 ? 'var(--error)' : undefined }}>{mode.recurred}</td>
+                <td className="agent-evolution-td" style={{ color: mode.avoided > 0 ? 'var(--success)' : undefined }}>{mode.avoided}</td>
+                <td className="agent-evolution-td">{mode.avoidance_rate != null ? `${Math.round(mode.avoidance_rate * 100)}%` : '—'}</td>
               </tr>
             ))}
           </tbody>
         </table>
       ) : (
-        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+        <p className="u-row u-tertiary">
           {t('agent.evolution.noFailureSignals', '暂无失败模式信号。')}
         </p>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+      <div className="agent-evolution-metrics-grid">
         <div>
           📚 {t('agent.evolution.reuse', '知识复用')}: {reuse.total_citations ?? 0} {t('agent.evolution.citations', '次引用')} / {reuse.knowledge_pages ?? 0} {t('agent.evolution.pages', '页')}
         </div>
@@ -176,31 +170,31 @@ function OwnerApprovalCard({
   if (!pending.length) return null;
 
   return (
-    <div style={{ ...cardStyle, borderColor: '#2563eb' }}>
-      <h4 style={{ marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+    <div className="agent-evolution-card agent-evolution-card-accent">
+      <h4 className="agent-evolution-heading">
         <IconShieldCheck size={16} /> {t('agent.evolution.approvalHeading', '待你审批 — soul 变更提名')}
       </h4>
-      <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: 0 }}>
+      <p className="u-row u-tertiary">
         {t(
           'agent.evolution.approvalHint',
           '这些提名触碰敏感面,agent 不能自行写入。批准会经过硬门禁并保留回滚快照。',
         )}
       </p>
-      {feedback && <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{feedback}</p>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      {feedback && <p className="u-row u-secondary">{feedback}</p>}
+      <div className="agent-evolution-stack">
         {pending.map((item) => {
           const candidateId = String(item.candidate_id ?? '');
           const isOpen = expanded === candidateId;
           return (
-            <div key={candidateId} style={{ ...cardStyle, background: 'var(--bg-primary)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
-                <div style={{ minWidth: 0 }}>
-                  <code style={{ fontSize: '11px' }}>{candidateId}</code>
-                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+            <div key={candidateId} className="agent-evolution-card agent-evolution-card-inset">
+              <div className="agent-evolution-row-between">
+                <div className="agent-evolution-min0">
+                  <code className="u-meta">{candidateId}</code>
+                  <div className="agent-evolution-sub">
                     {String(item.reason ?? '')}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                <div className="agent-evolution-actions">
                   <button className="btn btn-sm" onClick={() => setExpanded(isOpen ? null : candidateId)}>
                     {isOpen ? t('agent.evolution.collapse', '收起') : t('agent.evolution.viewPitch', '看提名理由')}
                   </button>
@@ -225,14 +219,7 @@ function OwnerApprovalCard({
                 </div>
               </div>
               {isOpen && (
-                <pre
-                  style={{
-                    fontSize: '12px',
-                    whiteSpace: 'pre-wrap',
-                    marginTop: '8px',
-                    color: 'var(--text-secondary)',
-                  }}
-                >
+                <pre className="agent-evolution-pitch">
                   {String(item.pitch ?? item.soul_pitch_md ?? item.reason ?? '')}
                 </pre>
               )}
@@ -284,22 +271,22 @@ export default function AgentEvolutionSection({ agentId, active, canManage = fal
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div className="agent-evolution-root">
       <div>
-        <h3 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <h3 className="agent-evolution-title">
           <IconBulb size={18} /> {t('agent.evolution.title')}
         </h3>
-        <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', margin: 0 }}>
+        <p className="agent-evolution-muted-p">
           {t('agent.evolution.description')}
         </p>
       </div>
 
       {isLoading && (
-        <div style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading...')}</div>
+        <div className="u-body u-tertiary">{t('common.loading', 'Loading...')}</div>
       )}
 
       {isError && (
-        <div style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('agent.evolution.empty')}</div>
+        <div className="u-body u-tertiary">{t('agent.evolution.empty')}</div>
       )}
 
       {!isLoading && !isError && (
@@ -309,31 +296,19 @@ export default function AgentEvolutionSection({ agentId, active, canManage = fal
           <OwnerApprovalCard agentId={agentId} candidates={pendingSoulCandidates} canManage={canManage} />
 
           {provisionalSkills.length > 0 && (
-            <div style={{ ...cardStyle, borderColor: STATE_COLORS.provisional.fg }}>
-              <h4 style={{ marginBottom: '8px' }}>🧪 {t('agent.evolution.provisionalHeading', '技能试用中')}</h4>
-              <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: 0 }}>
+            <div className="agent-evolution-card agent-evolution-card-accent">
+              <h4 className="agent-evolution-heading-plain">🧪 {t('agent.evolution.provisionalHeading', '技能试用中')}</h4>
+              <p className="u-row u-tertiary">
                 {t(
                   'agent.evolution.provisionalHint',
                   '已生效并受监控:真实使用积累后自动转正,负信号超阈自动回滚。',
                 )}
               </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div className="agent-evolution-list">
                 {provisionalSkills.map((item, idx) => (
-                  <div
-                    key={`${manifestTitle(item)}-${idx}`}
-                    style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', fontSize: '13px' }}
-                  >
+                  <div key={`${manifestTitle(item)}-${idx}`} className="agent-evolution-list-row">
                     <span>{manifestTitle(item)}</span>
-                    <span
-                      style={{
-                        fontSize: '11px',
-                        fontWeight: 600,
-                        padding: '2px 8px',
-                        borderRadius: '999px',
-                        color: STATE_COLORS.provisional.fg,
-                        background: STATE_COLORS.provisional.bg,
-                      }}
-                    >
+                    <span className="agent-evolution-state-badge agent-evolution-state-info">
                       provisional
                     </span>
                   </div>
@@ -343,25 +318,16 @@ export default function AgentEvolutionSection({ agentId, active, canManage = fal
           )}
 
           {summary && summary.total > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '12px' }}>
+            <div className="agent-evolution-summary-grid">
               {summaryCards.map(({ key, icon, colorKey }) => {
                 const colors = STATE_COLORS[colorKey];
                 return (
-                  <div className="card" key={key} style={{ padding: '12px 14px' }}>
-                    <div
-                      style={{
-                        fontSize: '12px',
-                        color: 'var(--text-tertiary)',
-                        marginBottom: '6px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                      }}
-                    >
-                      <span style={{ color: colors.fg, display: 'inline-flex' }}>{icon}</span>
+                  <div className="card agent-evolution-summary-card" key={key}>
+                    <div className="agent-evolution-summary-label">
+                      <span className="agent-evolution-icon" style={{ color: colors.fg }}>{icon}</span>
                       {t(`agent.evolution.summary.${key}`)}
                     </div>
-                    <div style={{ fontSize: '22px', fontWeight: 600 }}>{summary?.[key] ?? 0}</div>
+                    <div className="agent-evolution-metric-value">{summary?.[key] ?? 0}</div>
                   </div>
                 );
               })}
@@ -372,59 +338,38 @@ export default function AgentEvolutionSection({ agentId, active, canManage = fal
 
           {skills.length > 0 && (
             <div>
-              <h4 style={{ fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
+              <h4 className="agent-evolution-subheading">
                 {t('agent.evolution.skillsHeading')}
               </h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div className="agent-evolution-list">
                 {skills.map((skill) => {
                   const colors = STATE_COLORS[skill.state] ?? STATE_COLORS.archived;
                   return (
                     <div
                       key={`${skill.skill_name}-${skill.target_path ?? ''}`}
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'minmax(0, 1fr) auto',
-                        gap: '12px',
-                        padding: '10px 12px',
-                        borderRadius: '8px',
-                        background: 'var(--bg-secondary)',
-                      }}
+                      className="agent-evolution-item"
                     >
-                      <div style={{ minWidth: 0 }}>
-                        <div
-                          style={{
-                            fontSize: '13px',
-                            fontWeight: 500,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
+                      <div className="agent-evolution-min0">
+                        <div className="agent-evolution-item-title">
                           {skill.skill_name}
                         </div>
-                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                        <div className="agent-evolution-item-meta">
                           {originLabel(skill.skill_origin)}
                           {skill.target_path ? ` · ${skill.target_path}` : ''}
                         </div>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                      <div className="agent-evolution-item-right">
+                        <span className="u-meta u-tertiary">
                           {t('agent.evolution.useCount', { count: skill.use_count })}
                         </span>
                         {skill.evolvable && (
-                          <span style={{ fontSize: '11px', color: 'var(--success, #16a34a)' }}>
+                          <span className="agent-evolution-evolvable">
                             {t('agent.evolution.evolvable')}
                           </span>
                         )}
                         <span
-                          style={{
-                            fontSize: '11px',
-                            fontWeight: 600,
-                            padding: '2px 8px',
-                            borderRadius: '999px',
-                            color: colors.fg,
-                            background: colors.bg,
-                          }}
+                          className="agent-evolution-state-badge"
+                          style={{ color: colors.fg, background: colors.bg }}
                         >
                           {stateLabel(skill.state)}
                         </span>
@@ -449,21 +394,12 @@ export default function AgentEvolutionSection({ agentId, active, canManage = fal
 
           {legacyFiles.length > 0 && (
             <div>
-              <h4 style={{ fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
+              <h4 className="agent-evolution-subheading">
                 {t('agent.evolution.legacyHeading')}
               </h4>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+              <div className="agent-evolution-chips">
                 {legacyFiles.map((file) => (
-                  <code
-                    key={file}
-                    style={{
-                      fontSize: '11px',
-                      padding: '4px 7px',
-                      borderRadius: '6px',
-                      background: 'var(--bg-secondary)',
-                      color: 'var(--text-tertiary)',
-                    }}
-                  >
+                  <code key={file} className="agent-evolution-legacy-chip">
                     {file}
                   </code>
                 ))}
@@ -480,30 +416,20 @@ function TimelineList({ title, items }: { title: string; items: EvolutionTimelin
   if (!items.length) return null;
   return (
     <div>
-      <h4 style={{ fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>{title}</h4>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <h4 className="agent-evolution-subheading">{title}</h4>
+      <div className="agent-evolution-list">
         {items.slice(0, 24).map((item) => (
-          <div
-            key={item.id}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(0, 1fr) auto',
-              gap: '12px',
-              padding: '10px 12px',
-              borderRadius: '8px',
-              background: 'var(--bg-secondary)',
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: '13px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div key={item.id} className="agent-evolution-item">
+            <div className="agent-evolution-min0">
+              <div className="agent-evolution-item-title">
                 {item.title}
               </div>
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+              <div className="agent-evolution-item-meta">
                 {item.lane} · {item.stage}
                 {item.path ? ` · ${item.path}` : ''}
               </div>
             </div>
-            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{item.status}</span>
+            <span className="u-meta u-tertiary">{item.status}</span>
           </div>
         ))}
       </div>
@@ -515,50 +441,23 @@ function CandidateList({ title, icon, items }: { title: string; icon: ReactNode;
   if (!items.length) return null;
   return (
     <div>
-      <h4
-        style={{
-          fontSize: '13px',
-          marginBottom: '8px',
-          color: 'var(--text-secondary)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-        }}
-      >
+      <h4 className="agent-evolution-subheading-flex">
         {icon} {title}
       </h4>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <div className="agent-evolution-list">
         {items.map((item, idx) => (
-          <div
-            key={`${manifestTitle(item)}-${idx}`}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(0, 1fr) auto',
-              gap: '12px',
-              padding: '10px 12px',
-              borderRadius: '8px',
-              background: 'var(--bg-secondary)',
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div
-                style={{
-                  fontSize: '13px',
-                  fontWeight: 500,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
+          <div key={`${manifestTitle(item)}-${idx}`} className="agent-evolution-item">
+            <div className="agent-evolution-min0">
+              <div className="agent-evolution-item-title">
                 {manifestTitle(item)}
               </div>
               {item.manifest_path && (
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                <div className="agent-evolution-item-meta">
                   {item.manifest_path}
                 </div>
               )}
             </div>
-            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{manifestStatus(item)}</span>
+            <span className="u-meta u-tertiary">{manifestStatus(item)}</span>
           </div>
         ))}
       </div>

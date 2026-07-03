@@ -1,0 +1,454 @@
+/* ═══════════════════════════════════════════════════════
+   ChannelConfig — 静态样式（inline → class 迁移）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀: .channel-config-*  真动态值保留 inline
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Layout helpers ────────────────────────────────── */
+.channel-config-hstack { display: flex; align-items: center; gap: 8px; }
+.channel-config-hstack-sm { display: flex; align-items: center; gap: 6px; }
+.channel-config-vstack { display: flex; flex-direction: column; gap: 8px; }
+.channel-config-flex-1 { flex: 1; }
+.channel-config-mb-1 { margin-bottom: 4px; }
+.channel-config-mb-2 { margin-bottom: 8px; }
+.channel-config-mb-3 { margin-bottom: 12px; }
+.channel-config-mb-4 { margin-bottom: 16px; }
+
+/* ── Icons ─────────────────────────────────────────── */
+.channel-config-icon { border-radius: var(--radius-sm); }
+.channel-config-emoji { font-size: var(--text-display); }
+.channel-config-emoji-sm { font-size: var(--text-title); }
+
+/* ── Copy button ───────────────────────────────────── */
+.channel-config-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  padding: 1px 4px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  vertical-align: middle;
+  line-height: 1;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.channel-config-copy-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ── Setup guide ───────────────────────────────────── */
+.channel-config-guide {
+  margin-bottom: 8px;
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+}
+.channel-config-guide-summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--text-primary);
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: color var(--transition-fast);
+}
+.channel-config-guide-summary:hover { color: var(--accent-hover); }
+.channel-config-guide-marker { font-size: var(--text-tiny); }
+.channel-config-guide-steps {
+  padding-left: 16px;
+  margin: 8px 0;
+  line-height: 1.9;
+}
+.channel-config-guide-note {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  background: var(--bg-secondary);
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+}
+
+/* ── Feishu permission JSON block ──────────────────── */
+.channel-config-perm {
+  margin: 8px 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+}
+.channel-config-perm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+.channel-config-perm-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.channel-config-perm-label {
+  font-size: var(--text-tiny);
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.channel-config-perm-preset {
+  font-size: var(--text-tiny);
+  padding: 1px 7px;
+  cursor: pointer;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.channel-config-perm-preset:hover { color: var(--text-primary); }
+.channel-config-perm-preset.is-active {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+.channel-config-perm-copy {
+  font-size: var(--text-tiny);
+  padding: 1px 7px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.channel-config-perm-copy:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.channel-config-perm-pre {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: var(--text-tiny);
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  overflow-x: auto;
+  user-select: all;
+}
+
+/* ── Config field ──────────────────────────────────── */
+.channel-config-field-label {
+  font-size: var(--text-row);
+  font-weight: 500;
+  display: block;
+  margin-bottom: 4px;
+}
+.channel-config-field-optional {
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+.channel-config-field-input-wrap { position: relative; }
+.channel-config-field-input {
+  font-size: var(--text-row);
+  width: 100%;
+}
+.channel-config-field-input-secret { padding-right: 36px; }
+.channel-config-pwd-toggle {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  transition: color var(--transition-fast);
+}
+.channel-config-pwd-toggle:hover { color: var(--text-secondary); }
+.channel-config-field-hint {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+
+/* ── Platform / connection-mode selector ───────────── */
+.channel-config-selector-row {
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.channel-config-selector-label {
+  font-size: var(--text-row);
+  font-weight: 500;
+  width: 120px;
+}
+.channel-config-selector-select {
+  font-size: var(--text-body);
+  max-width: 220px;
+  transition: border-color var(--transition-fast);
+}
+.channel-config-selector-select:hover { border-color: var(--border-strong); }
+
+/* ── Create-mode channel card ──────────────────────── */
+.channel-config-create-card {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.channel-config-create-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  cursor: pointer;
+  background: var(--bg-elevated);
+  transition: background var(--transition-fast);
+}
+.channel-config-create-header:hover { background: var(--bg-hover); }
+.channel-config-create-header.is-open {
+  background: var(--accent-subtle);
+  border-bottom: 1px solid var(--border-default);
+}
+.channel-config-create-name {
+  font-weight: 500;
+  font-size: var(--text-body);
+}
+.channel-config-create-desc {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+.channel-config-configured-pill {
+  font-size: var(--text-tiny);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--success-subtle);
+  color: var(--success);
+  font-weight: 500;
+}
+.channel-config-chevron {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  transform: rotate(0deg);
+  transition: transform var(--transition-default);
+}
+.channel-config-chevron.is-open { transform: rotate(180deg); }
+.channel-config-create-body { padding: 16px; }
+.channel-config-radio {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-body);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+.channel-config-radio:hover { color: var(--text-primary); }
+.channel-config-radio-spaced { margin-left: 12px; }
+
+/* ── Edit-mode channel card ────────────────────────── */
+.channel-config-edit-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.channel-config-edit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.channel-config-edit-header:hover { background: var(--bg-hover); }
+.channel-config-edit-name {
+  font-weight: 600;
+  font-size: var(--text-emphasis);
+}
+.channel-config-edit-body {
+  padding: 0 16px 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+.channel-config-note {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  font-style: italic;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+/* ── Status / info blocks ──────────────────────────── */
+.channel-config-status-box {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  font-size: var(--text-row);
+  margin-bottom: 12px;
+}
+.channel-config-status-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.channel-config-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--success);
+  display: inline-block;
+  flex-shrink: 0;
+}
+.channel-config-meta-line {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.channel-config-info-block {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+}
+.channel-config-webhook-box {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  font-size: var(--text-row);
+  font-family: var(--font-mono);
+  margin-bottom: 12px;
+}
+.channel-config-webhook-label {
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.channel-config-webhook-url {
+  line-height: var(--leading-body);
+  word-break: break-all;
+}
+.channel-config-webhook-link { color: var(--accent-primary); }
+.channel-config-hint {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+.channel-config-hint-tight {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: -4px;
+}
+.channel-config-hint-box {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+.channel-config-status-value {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.channel-config-status-sub {
+  color: var(--text-tertiary);
+  margin-top: 4px;
+  font-size: var(--text-meta);
+}
+.channel-config-test-result {
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-row);
+  margin-bottom: 10px;
+  border: 1px solid transparent;
+}
+.channel-config-test-result.is-ok {
+  background: var(--success-subtle);
+  border-color: color-mix(in srgb, var(--success) 25%, transparent);
+  color: var(--success);
+}
+.channel-config-test-result.is-error {
+  background: var(--error-subtle);
+  border-color: color-mix(in srgb, var(--error) 25%, transparent);
+  color: var(--error);
+}
+
+/* ── Action button rows ────────────────────────────── */
+.channel-config-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.channel-config-actions-mt {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.channel-config-btn-start { align-self: flex-start; }
+
+/* ── Form-view radio group ─────────────────────────── */
+.channel-config-form-label {
+  font-size: var(--text-row);
+  font-weight: 500;
+  display: block;
+  margin-bottom: 8px;
+}
+.channel-config-radio-group {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+.channel-config-radio-inline {
+  font-size: var(--text-row);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+.channel-config-radio-inline:hover { color: var(--text-primary); }
+.channel-config-link {
+  color: var(--primary-color);
+  transition: color var(--transition-fast);
+}
+.channel-config-link:hover { color: var(--accent-hover); }
+
+/* ── Disabled (create-mode) channel row + main ─────── */
+.channel-config-disabled-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  opacity: 0.7;
+}
+.channel-config-settings-pill {
+  font-size: var(--text-tiny);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+.channel-config-subtitle {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+}
+.channel-config-sync-hint {
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  margin-bottom: 16px;
+  background: color-mix(in srgb, var(--info) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--info) 22%, transparent);
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  line-height: var(--leading-body);
+}

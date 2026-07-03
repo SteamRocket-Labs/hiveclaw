@@ -1,6 +1,6 @@
-import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AgentCapabilityInstall, AgentChannelCapability } from '../../api/domains/agents';
+import './AgentStatusSection.css';
 
 type AgentStatusSectionProps = {
   agent: any;
@@ -53,60 +53,63 @@ export default function AgentStatusSection({
 
   return (
     <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '24px' }}>
+      <div className="agent-status-metrics-grid">
         <div className="card">
-          <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>📋 {t('agent.tabs.status')}</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="agent-status-metric-label">📋 {t('agent.tabs.status')}</div>
+          <div className="agent-status-status-row">
             <span className={`status-dot ${statusKey}`} />
-            <span style={{ fontSize: '16px', fontWeight: 500 }}>{t(`agent.status.${statusKey}`)}</span>
+            <span className="agent-status-status-value">{t(`agent.status.${statusKey}`)}</span>
           </div>
         </div>
         <div className="card">
-          <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>🗓️ {t('agent.settings.today')} Token</div>
-          <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_today)}</div>
+          <div className="agent-status-metric-label">🗓️ {t('agent.settings.today')} Token</div>
+          <div className="agent-status-metric-value">{formatTokens(agent.tokens_used_today)}</div>
           {agent.max_tokens_per_day && (
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+            <div className="agent-status-metric-sub">
               {t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_day)}
             </div>
           )}
         </div>
         <div className="card">
-          <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>📅 {t('agent.settings.month')} Token</div>
-          <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_month)}</div>
+          <div className="agent-status-metric-label">📅 {t('agent.settings.month')} Token</div>
+          <div className="agent-status-metric-value">{formatTokens(agent.tokens_used_month)}</div>
           {agent.max_tokens_per_month && (
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+            <div className="agent-status-metric-sub">
               {t('agent.settings.noLimit')} {formatTokens(agent.max_tokens_per_month)}
             </div>
           )}
         </div>
         <div className="card">
-          <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.llmCallsToday')}</div>
-          <div style={{ fontSize: '22px', fontWeight: 600 }}>{(agent.llm_calls_today || 0).toLocaleString()}</div>
-          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+          <div className="agent-status-metric-label">{t('agent.status.llmCallsToday')}</div>
+          <div className="agent-status-metric-value">{(agent.llm_calls_today || 0).toLocaleString()}</div>
+          <div className="agent-status-metric-sub">
             {t('agent.status.max')}: {(agent.max_llm_calls_per_day || 100).toLocaleString()}
           </div>
         </div>
         <div className="card">
-          <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.totalToken')}</div>
-          <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_total || 0)}</div>
+          <div className="agent-status-metric-label">{t('agent.status.totalToken')}</div>
+          <div className="agent-status-metric-value">{formatTokens(agent.tokens_used_total || 0)}</div>
         </div>
         {metrics && (
           <>
             <div className="card">
-              <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>✅ {t('agent.tasks.done')}</div>
-              <div style={{ fontSize: '22px', fontWeight: 600 }}>
+              <div className="agent-status-metric-label">✅ {t('agent.tasks.done')}</div>
+              <div className="agent-status-metric-value">
                 {metrics.tasks?.done || 0}/{metrics.tasks?.total || 0}
               </div>
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{metrics.tasks?.completion_rate || 0}%</div>
+              <div className="u-meta u-tertiary">{metrics.tasks?.completion_rate || 0}%</div>
             </div>
             <div className="card">
-              <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.pending')}</div>
-              <div style={{ fontSize: '22px', fontWeight: 600, color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}>
+              <div className="agent-status-metric-label">{t('agent.status.pending')}</div>
+              <div
+                className="agent-status-metric-value"
+                style={{ color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}
+              >
                 {metrics.approvals?.pending || 0}
               </div>
             </div>
-            <div className="card" style={{ position: 'relative' }}>
-              <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+            <div className="card agent-status-card-tooltip">
+              <div className="metric-tooltip-trigger agent-status-tooltip-trigger">
                 {t('agent.status.24hActions')}
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <circle cx="8" cy="8" r="6.5" />
@@ -114,110 +117,110 @@ export default function AgentStatusSection({
                 </svg>
                 <span className="metric-tooltip">{t('agent.status.24hActionsTooltip')}</span>
               </div>
-              <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
+              <div className="agent-status-metric-value">{metrics.activity?.actions_last_24h || 0}</div>
             </div>
           </>
         )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+      <div className="agent-status-two-col">
         <div className="card">
-          <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.profile.title')}</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', gap: '12px' }}>
-              <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>{t('agent.fields.role')}</span>
-              <span title={agent.role_description || ''} style={{ textAlign: 'right', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as any }}>
+          <h3 className="agent-status-card-title">{t('agent.profile.title')}</h3>
+          <div className="agent-status-field-list">
+            <div className="agent-status-field">
+              <span className="agent-status-field-label">{t('agent.fields.role')}</span>
+              <span title={agent.role_description || ''} className="agent-status-field-clamp">
                 {agent.role_description || '—'}
               </span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-              <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.profile.created')}</span>
+            <div className="agent-status-field">
+              <span className="agent-status-field-label">{t('agent.profile.created')}</span>
               <span>{agent.created_at ? formatDate(agent.created_at) : '—'}</span>
             </div>
             {agent.creator_username && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.fields.createdBy', 'Created by')}</span>
-                <span style={{ color: 'var(--text-secondary)' }}>@{agent.creator_username}</span>
+              <div className="agent-status-field">
+                <span className="agent-status-field-label">{t('agent.fields.createdBy', 'Created by')}</span>
+                <span className="u-secondary">@{agent.creator_username}</span>
               </div>
             )}
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-              <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.profile.lastActive')}</span>
+            <div className="agent-status-field">
+              <span className="agent-status-field-label">{t('agent.profile.lastActive')}</span>
               <span>{agent.last_active_at ? formatDate(agent.last_active_at) : '—'}</span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-              <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.profile.timezone')}</span>
+            <div className="agent-status-field">
+              <span className="agent-status-field-label">{t('agent.profile.timezone')}</span>
               <span>{agent.effective_timezone || agent.timezone || 'UTC'}</span>
             </div>
           </div>
         </div>
         <div className="card">
-          <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.modelConfig.title')}</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-              <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.model')}</span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{modelLabel}</span>
+          <h3 className="agent-status-card-title">{t('agent.modelConfig.title')}</h3>
+          <div className="agent-status-field-list">
+            <div className="agent-status-field">
+              <span className="agent-status-field-label">{t('agent.modelConfig.model')}</span>
+              <span className="u-mono u-row">{modelLabel}</span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-              <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.provider')}</span>
-              <span style={{ textTransform: 'capitalize' }}>{modelProvider}</span>
+            <div className="agent-status-field">
+              <span className="agent-status-field-label">{t('agent.modelConfig.provider')}</span>
+              <span className="agent-status-capitalize">{modelProvider}</span>
             </div>
           </div>
         </div>
       </div>
 
       {capabilityInstalls.length > 0 && (
-        <div className="card" style={{ marginBottom: '24px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
-            <h3 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>
+        <div className="card agent-status-section">
+          <div className="agent-status-section-header">
+            <h3 className="agent-status-panel-title">
               {t('agent.status.capabilityInstallTitle', 'Capability Install Status')}
             </h3>
-            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <span className="u-row u-tertiary">
               {capabilityInstalls.length} {t('agent.status.capabilityItems', 'items')}
             </span>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px', marginBottom: '14px' }}>
-            <div style={{ padding: '10px', borderRadius: '8px', background: 'var(--bg-secondary)' }}>
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '4px' }}>
+          <div className="agent-status-stat-grid">
+            <div className="agent-status-stat">
+              <div className="agent-status-stat-label">
                 {t('agent.status.installedCount', 'Installed')}
               </div>
-              <div style={{ fontWeight: 600, fontSize: '18px' }}>{installedCount}</div>
+              <div className="agent-status-stat-value">{installedCount}</div>
             </div>
-            <div style={{ padding: '10px', borderRadius: '8px', background: 'var(--bg-secondary)' }}>
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '4px' }}>
+            <div className="agent-status-stat">
+              <div className="agent-status-stat-label">
                 {t('agent.status.pendingCount', 'Pending')}
               </div>
-              <div style={{ fontWeight: 600, fontSize: '18px' }}>{pendingCount}</div>
+              <div className="agent-status-stat-value">{pendingCount}</div>
             </div>
-            <div style={{ padding: '10px', borderRadius: '8px', background: 'var(--bg-secondary)' }}>
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '4px' }}>
+            <div className="agent-status-stat">
+              <div className="agent-status-stat-label">
                 {t('agent.status.failedCount', 'Failed')}
               </div>
-              <div style={{ fontWeight: 600, fontSize: '18px', color: failedItems.length > 0 ? 'var(--danger)' : 'inherit' }}>
+              <div
+                className="agent-status-stat-value"
+                style={{ color: failedItems.length > 0 ? 'var(--error)' : 'inherit' }}
+              >
                 {failedItems.length}
               </div>
             </div>
           </div>
 
           {failedItems.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+            <div className="agent-status-stack">
+              <div className="agent-status-issues-title">
                 {t('agent.status.installIssues', 'Install Issues')}
               </div>
               {failedItems.slice(0, 3).map((item) => (
-                <div
-                  key={item.id}
-                  style={{ padding: '10px', borderRadius: '8px', background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)' }}
-                >
-                  <div style={{ fontSize: '13px', fontWeight: 600 }}>{item.display_name || item.source_key || item.kind}</div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                <div key={item.id} className="agent-status-issue">
+                  <div className="agent-status-issue-name">{item.display_name || item.source_key || item.kind}</div>
+                  <div className="agent-status-issue-msg">
                     {item.error_message || t('agent.status.installFailed', 'Installation failed')}
                   </div>
                 </div>
               ))}
             </div>
           ) : (
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+            <div className="u-row u-secondary">
               {t('agent.status.installHealthy', 'All requested capabilities are currently installed or pending.')}
             </div>
           )}
@@ -225,52 +228,52 @@ export default function AgentStatusSection({
       )}
 
       {channelCapabilities.length > 0 && (
-        <div className="card" style={{ marginBottom: '24px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
-            <h3 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>
+        <div className="card agent-status-section">
+          <div className="agent-status-section-header">
+            <h3 className="agent-status-panel-title">
               {t('agent.status.channelCapabilityTitle', 'Channel Capabilities')}
             </h3>
-            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <span className="u-row u-tertiary">
               {channelCapabilities.length} {t('agent.status.channelCapabilityItems', 'channels')}
             </span>
           </div>
 
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+          <div className="agent-status-table-scroll">
+            <table className="agent-status-table">
               <thead>
-                <tr style={{ textAlign: 'left', color: 'var(--text-tertiary)' }}>
-                  <th style={{ padding: '8px 10px' }}>{t('agent.status.channelColumn', 'Channel')}</th>
-                  <th style={{ padding: '8px 10px' }}>{t('agent.status.connectionColumn', 'Connection')}</th>
-                  <th style={{ padding: '8px 10px' }}>{t('agent.status.apiColumn', 'API')}</th>
-                  <th style={{ padding: '8px 10px' }}>{t('agent.status.textColumn', 'Text')}</th>
-                  <th style={{ padding: '8px 10px' }}>{t('agent.status.fileColumn', 'Files')}</th>
-                  <th style={{ padding: '8px 10px' }}>{t('agent.status.deferredColumn', 'Deferred')}</th>
-                  <th style={{ padding: '8px 10px' }}>{t('agent.status.waitColumn', 'Wait Reply')}</th>
+                <tr className="agent-status-table-head">
+                  <th className="agent-status-th">{t('agent.status.channelColumn', 'Channel')}</th>
+                  <th className="agent-status-th">{t('agent.status.connectionColumn', 'Connection')}</th>
+                  <th className="agent-status-th">{t('agent.status.apiColumn', 'API')}</th>
+                  <th className="agent-status-th">{t('agent.status.textColumn', 'Text')}</th>
+                  <th className="agent-status-th">{t('agent.status.fileColumn', 'Files')}</th>
+                  <th className="agent-status-th">{t('agent.status.deferredColumn', 'Deferred')}</th>
+                  <th className="agent-status-th">{t('agent.status.waitColumn', 'Wait Reply')}</th>
                 </tr>
               </thead>
               <tbody>
                 {channelCapabilities.map((item) => (
-                  <tr key={item.channel} style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                    <td style={{ padding: '10px' }}>
-                      <div style={{ fontWeight: 600 }}>{item.channel}</div>
+                  <tr key={item.channel} className="agent-status-tr">
+                    <td className="agent-status-td">
+                      <div className="agent-status-td-strong">{item.channel}</div>
                       {item.limitations?.length > 0 && (
-                        <div style={{ color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                        <div className="agent-status-td-note">
                           {item.limitations.join(' ')}
                         </div>
                       )}
                     </td>
-                    <td style={{ padding: '10px' }}>{item.connected ? t('agent.status.connected', 'Connected') : t('agent.status.disconnected', 'Disconnected')}</td>
-                    <td style={{ padding: '10px' }}>
+                    <td className="agent-status-td">{item.connected ? t('agent.status.connected', 'Connected') : t('agent.status.disconnected', 'Disconnected')}</td>
+                    <td className="agent-status-td">
                       {item.official_api ? t('agent.status.officialApi', 'Official') : item.third_party_transport || t('agent.status.thirdParty', 'Third-party')}
                     </td>
-                    <td style={{ padding: '10px' }}>{renderCapabilityValue(item.capabilities.live_text)}</td>
-                    <td style={{ padding: '10px' }}>
+                    <td className="agent-status-td">{renderCapabilityValue(item.capabilities.live_text)}</td>
+                    <td className="agent-status-td">
                       {`${renderCapabilityValue(item.capabilities.inbound_file)} / ${renderCapabilityValue(item.capabilities.outbound_file)}`}
                     </td>
-                    <td style={{ padding: '10px' }}>
+                    <td className="agent-status-td">
                       {`${renderCapabilityValue(item.capabilities.deferred_text)} / ${renderCapabilityValue(item.capabilities.deferred_file)}`}
                     </td>
-                    <td style={{ padding: '10px' }}>
+                    <td className="agent-status-td">
                       {`${renderCapabilityValue(item.capabilities.on_message_current_sender)} / ${renderCapabilityValue(item.capabilities.on_message_by_name)}`}
                     </td>
                   </tr>
@@ -283,26 +286,29 @@ export default function AgentStatusSection({
 
       {activityLogs.length > 0 && (
         <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <h3 style={{ fontSize: '14px', fontWeight: 600 }}>📊 Recent Activity</h3>
-            <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={() => onSelectTab('activityLog')}>
+          <div className="agent-status-activity-header">
+            <h3 className="agent-status-panel-title">📊 Recent Activity</h3>
+            <button className="btn btn-ghost" onClick={() => onSelectTab('activityLog')}>
               View All →
             </button>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div className="agent-status-stack">
             {activityLogs.slice(0, 5).map((log: any, index: number) => (
-              <div key={log.id || index} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start', padding: '6px 0', borderBottom: index < 4 ? '1px solid var(--border-subtle)' : 'none' }}>
-                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', minWidth: '60px', flexShrink: 0 }}>
+              <div
+                key={log.id || index}
+                className={`agent-status-activity-row${index < 4 ? ' u-hairline-bottom' : ''}`}
+              >
+                <span className="agent-status-activity-time">
                   {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
-                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{log.summary || log.action_type}</span>
+                <span className="u-body u-secondary">{log.summary || log.action_type}</span>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+      <div className="agent-status-actions">
         <button className="btn btn-secondary" onClick={() => onSelectTab('chat')}>
           {t('agent.actions.chat')}
         </button>

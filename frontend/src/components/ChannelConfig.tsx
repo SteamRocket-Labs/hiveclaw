@@ -5,6 +5,7 @@ import { channelApi } from '../api/domains/channels';
 import { toolsApi, type FeishuRuntimeStatus } from '../api/domains/tools';
 import FeishuRuntimeStatusCard from './FeishuRuntimeStatusCard';
 import WeChatPersonalSetup from './WeChatPersonalSetup';
+import './ChannelConfig.css';
 
 // ─── Types ──────────────────────────────────────────────
 interface ChannelConfigProps {
@@ -78,20 +79,20 @@ function getFeishuPlatformOption(region: FeishuPlatformRegion) {
 }
 
 // ─── SVG Icons ──────────────────────────────────────────
-const SlackIcon = <img src="/slack.png" alt="Slack" width="20" height="20" style={{ borderRadius: '4px' }} />;
+const SlackIcon = <img src="/slack.png" alt="Slack" width="20" height="20" className="channel-config-icon" />;
 
-const DiscordIcon = <img src="/discord.png" alt="Discord" width="20" height="20" style={{ borderRadius: '4px' }} />;
+const DiscordIcon = <img src="/discord.png" alt="Discord" width="20" height="20" className="channel-config-icon" />;
 
-const FeishuIcon = <img src="/feishu.png" alt="Feishu" width="20" height="20" style={{ borderRadius: '4px' }} />;
+const FeishuIcon = <img src="/feishu.png" alt="Feishu" width="20" height="20" className="channel-config-icon" />;
 
-const TeamsIcon = <img src="/teams.png" alt="Teams" width="20" height="20" style={{ borderRadius: '4px' }} />;
+const TeamsIcon = <img src="/teams.png" alt="Teams" width="20" height="20" className="channel-config-icon" />;
 
-const WeComIcon = <img src="/wecom.png" alt="WeCom" width="20" height="20" style={{ borderRadius: '4px' }} />;
+const WeComIcon = <img src="/wecom.png" alt="WeCom" width="20" height="20" className="channel-config-icon" />;
 
-const DingTalkIcon = <img src="/dingtalk.png" alt="DingTalk" width="20" height="20" style={{ borderRadius: '4px' }} />;
+const DingTalkIcon = <img src="/dingtalk.png" alt="DingTalk" width="20" height="20" className="channel-config-icon" />;
 
 const WeChatIcon = <svg width="20" height="20" viewBox="0 0 24 24" fill="#07C160"><path d="M9.5 4C5.36 4 2 6.69 2 10c0 1.89 1.08 3.56 2.78 4.66l-.7 2.1 2.45-1.23c.78.22 1.6.35 2.47.37-.17-.53-.25-1.1-.25-1.68 0-3.45 3.36-6.24 7.5-6.24.26 0 .51.01.76.04C16.13 5.64 13.1 4 9.5 4zm-3 4.5a1 1 0 110-2 1 1 0 010 2zm5 0a1 1 0 110-2 1 1 0 010 2zM22 14.22c0-2.8-2.9-5.06-6.5-5.06S9 11.42 9 14.22c0 2.8 2.9 5.06 6.5 5.06.7 0 1.38-.1 2.02-.27l2 1-.57-1.7C20.98 17.33 22 15.88 22 14.22zm-8.5-1a.88.88 0 110-1.75.88.88 0 010 1.75zm4 0a.88.88 0 110-1.75.88.88 0 010 1.75z"/></svg>;
-const AgentBayIcon = <span style={{ fontSize: '16px' }}>🌩️</span>;
+const AgentBayIcon = <span className="channel-config-emoji-sm">🌩️</span>;
 
 // Eye icons for password toggle
 const EyeOpen = <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
@@ -219,7 +220,7 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
     },
     {
         id: 'email',
-        icon: <span style={{ fontSize: '20px' }}>📧</span>,
+        icon: <span className="channel-config-emoji">📧</span>,
         nameKey: 'common.channels.email',
         nameFallback: 'Email',
         desc: 'SMTP / IMAP',
@@ -234,7 +235,7 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
     },
     {
         id: 'telegram',
-        icon: <span style={{ fontSize: '20px' }}>✈️</span>,
+        icon: <span className="channel-config-emoji">✈️</span>,
         nameKey: 'common.channels.telegram',
         nameFallback: 'Telegram',
         desc: 'Telegram Bot',
@@ -316,7 +317,7 @@ const FEISHU_FULL_PERM_DISPLAY = `{
 // ─── Copy Button helper ─────────────────────────────────
 function CopyBtn({ url }: { url: string }) {
     return (
-        <button title="Copy" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginLeft: '6px', padding: '1px 4px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', verticalAlign: 'middle', lineHeight: 1 }}
+        <button title="Copy" className="channel-config-copy-btn"
             onClick={() => navigator.clipboard.writeText(url)}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="4" y="4" width="9" height="11" rx="1.5" /><path d="M3 11H2a1 1 0 01-1-1V2a1 1 0 011-1h8a1 1 0 011 1v1" />
@@ -565,52 +566,36 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         const permDisplay = feishuPermissionPreset === 'basic' ? FEISHU_BASIC_PERM_DISPLAY : FEISHU_FULL_PERM_DISPLAY;
 
         return (
-            <details style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                <summary style={{ cursor: 'pointer', fontWeight: 500, color: 'var(--text-primary)', userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ fontSize: '10px' }}>&#9654;</span> {t('channelGuide.setupGuide')}
+            <details className="channel-config-guide">
+                <summary className="channel-config-guide-summary">
+                    <span className="channel-config-guide-marker">&#9654;</span> {t('channelGuide.setupGuide')}
                 </summary>
-                <ol style={{ paddingLeft: '16px', margin: '8px 0', lineHeight: 1.9 }}>
+                <ol className="channel-config-guide-steps">
                     {Array.from({ length: stepCount }, (_, i) => (
                         <li key={i}>{t(`${prefix}${i + 1}`)}</li>
                     ))}
                 </ol>
                 {ch.showPermJson && (
-                    <div style={{ margin: '8px 0', borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 10px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                                <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontWeight: 500 }}>{t('channelGuide.feishuPermJson')}</span>
+                    <div className="channel-config-perm">
+                        <div className="channel-config-perm-header">
+                            <div className="channel-config-perm-header-left">
+                                <span className="channel-config-perm-label">{t('channelGuide.feishuPermJson')}</span>
                                 <button
                                     type="button"
-                                    style={{
-                                        fontSize: '10px',
-                                        padding: '1px 7px',
-                                        cursor: 'pointer',
-                                        borderRadius: '999px',
-                                        border: '1px solid var(--border-color)',
-                                        background: feishuPermissionPreset === 'basic' ? 'var(--bg-primary)' : 'transparent',
-                                        color: 'var(--text-secondary)',
-                                    }}
+                                    className={`channel-config-perm-preset${feishuPermissionPreset === 'basic' ? ' is-active' : ''}`}
                                     onClick={() => setFeishuPermissionPreset('basic')}
                                 >
                                     {t('channelGuide.feishuPermBasic', 'Basic Permissions')}
                                 </button>
                                 <button
                                     type="button"
-                                    style={{
-                                        fontSize: '10px',
-                                        padding: '1px 7px',
-                                        cursor: 'pointer',
-                                        borderRadius: '999px',
-                                        border: '1px solid var(--border-color)',
-                                        background: feishuPermissionPreset === 'full' ? 'var(--bg-primary)' : 'transparent',
-                                        color: 'var(--text-secondary)',
-                                    }}
+                                    className={`channel-config-perm-preset${feishuPermissionPreset === 'full' ? ' is-active' : ''}`}
                                     onClick={() => setFeishuPermissionPreset('full')}
                                 >
                                     {t('channelGuide.feishuPermFull', 'Full Permissions')}
                                 </button>
                             </div>
-                            <button type="button" style={{ fontSize: '10px', padding: '1px 7px', cursor: 'pointer', borderRadius: '3px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
+                            <button type="button" className="channel-config-perm-copy"
                                 onClick={(e) => {
                                     const btn = e.currentTarget;
                                     navigator.clipboard.writeText(permJson).then(() => {
@@ -621,10 +606,10 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     });
                                 }}>{t('channelGuide.feishuPermCopy')}</button>
                         </div>
-                        <pre style={{ margin: 0, padding: '6px 10px', fontSize: '10px', fontFamily: 'var(--font-mono)', lineHeight: 1.5, background: 'var(--bg-primary)', color: 'var(--text-secondary)', overflowX: 'auto', userSelect: 'all' }}>{permDisplay}</pre>
+                        <pre className="channel-config-perm-pre">{permDisplay}</pre>
                     </div>
                 )}
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: '6px' }}>
+                <div className="channel-config-guide-note">
                     {t(noteKey)}
                 </div>
             </details>
@@ -640,29 +625,30 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
 
         return (
             <div key={field.key}>
-                <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '4px' }}>
+                <label className="channel-config-field-label">
                     {labelText} {field.required && '*'}
-                    {!field.required && <span style={{ fontWeight: 400, color: 'var(--text-tertiary)' }}> (Optional)</span>}
+                    {!field.required && <span className="channel-config-field-optional"> (Optional)</span>}
                 </label>
-                <div style={{ position: 'relative' }}>
+                <div className="channel-config-field-input-wrap">
                     <input
-                        className={mode === 'edit' ? 'input' : 'form-input'}
+                        className={mode === 'edit'
+                            ? `input channel-config-field-input${isSecret ? ' channel-config-field-input-secret' : ''}`
+                            : 'form-input'}
                         type={isSecret && !showPwds[fieldId] ? 'password' : 'text'}
                         value={fieldValue}
                         onChange={e => onFieldChange(e.target.value)}
                         placeholder={placeholderText || ''}
-                        style={mode === 'edit' ? { fontSize: '12px', paddingRight: isSecret ? '36px' : undefined, width: '100%' } : undefined}
                     />
                     {isSecret && (
                         <button type="button" onClick={() => togglePwd(fieldId)}
-                            style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '2px', display: 'flex', alignItems: 'center' }}>
+                            className="channel-config-pwd-toggle">
                             {showPwds[fieldId] ? EyeClosed : EyeOpen}
                         </button>
                     )}
                 </div>
                 {/* Tenant ID hint for Teams */}
                 {channelId === 'teams' && field.key === 'tenant_id' && (
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('channelGuide.teams.tenantIdHint')}</div>
+                    <div className="channel-config-field-hint">{t('channelGuide.teams.tenantIdHint')}</div>
                 )}
             </div>
         );
@@ -674,15 +660,14 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         onRegionChange: (region: FeishuPlatformRegion) => void,
     ) => {
         return (
-            <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <label style={{ fontSize: '12px', fontWeight: 500, width: '120px' }}>
+            <div className="channel-config-selector-row">
+                <label className="channel-config-selector-label">
                     {t('agent.settings.channel.platform', 'Platform')}
                 </label>
                 <select
-                    className={mode === 'edit' ? 'input' : 'form-input'}
+                    className={`${mode === 'edit' ? 'input' : 'form-input'} channel-config-selector-select`}
                     value={selectedRegion}
                     onChange={event => onRegionChange(normalizeFeishuPlatformRegion(event.target.value))}
-                    style={{ fontSize: '13px', maxWidth: '220px' }}
                     aria-label={t('agent.settings.channel.platform', 'Platform')}
                 >
                     {FEISHU_PLATFORM_OPTIONS.map(option => (
@@ -723,25 +708,21 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         }
 
         return (
-            <div key={ch.id} style={{ border: '1px solid var(--border-default)', borderRadius: '8px', overflow: 'hidden', marginBottom: '8px' }}>
+            <div key={ch.id} className="channel-config-create-card">
                 <div
                     onClick={() => toggleChannel(ch.id)}
-                    style={{
-                        display: 'flex', alignItems: 'center', gap: '12px', padding: '14px',
-                        cursor: 'pointer', background: isOpen ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
-                        borderBottom: isOpen ? '1px solid var(--border-default)' : 'none',
-                    }}
+                    className={`channel-config-create-header${isOpen ? ' is-open' : ''}`}
                 >
                     {ch.icon}
-                    <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 500, fontSize: '13px' }}>{t(ch.nameKey, ch.nameFallback)}</div>
-                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{subtitle}</div>
+                    <div className="channel-config-flex-1">
+                        <div className="channel-config-create-name">{t(ch.nameKey, ch.nameFallback)}</div>
+                        <div className="channel-config-create-desc">{subtitle}</div>
                     </div>
-                    {hasValues && <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '10px', background: 'rgba(16,185,129,0.15)', color: 'rgb(16,185,129)', fontWeight: 500 }}>{t('agent.settings.channel.configured', 'Configured')}</span>}
-                    <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>&#9660;</span>
+                    {hasValues && <span className="channel-config-configured-pill">{t('agent.settings.channel.configured', 'Configured')}</span>}
+                    <span className={`channel-config-chevron${isOpen ? ' is-open' : ''}`}>&#9660;</span>
                 </div>
                 {isOpen && (
-                    <div style={{ padding: '16px' }}>
+                    <div className="channel-config-create-body">
                         {ch.id === 'feishu' && renderFeishuPlatformSelector(ch.id, selectedFeishuPlatformRegion, region => {
                             setFeishuPlatformRegions(prev => ({ ...prev, [ch.id]: region }));
                             onChange?.({
@@ -753,13 +734,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
 
                         {/* Connection Mode Toggle */}
                         {ch.connectionMode && (
-                            <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <label style={{ fontSize: '12px', fontWeight: 500, width: '120px' }}>{t('agent.settings.channel.mode', 'Connection Mode')}</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px', cursor: 'pointer' }}>
+                            <div className="channel-config-selector-row">
+                                <label className="channel-config-selector-label">{t('agent.settings.channel.mode', 'Connection Mode')}</label>
+                                <label className="channel-config-radio">
                                     <input type="radio" checked={isWs} onChange={() => setConnectionModes(p => ({ ...p, [ch.id]: 'websocket' }))} />
                                     {t('agent.settings.channel.modeWs', 'WebSocket (Recommended)')}
                                 </label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px', cursor: 'pointer', marginLeft: '12px' }}>
+                                <label className="channel-config-radio channel-config-radio-spaced">
                                     <input type="radio" checked={!isWs} onChange={() => setConnectionModes(p => ({ ...p, [ch.id]: 'webhook' }))} />
                                     {t('agent.settings.channel.modeWebhook', 'Webhook')}
                                 </label>
@@ -830,30 +811,28 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         const allRequired = formFields.filter(f => f.required).every(f => form[f.key]);
 
         return (
-            <div key={ch.id} style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
+            <div key={ch.id} className="channel-config-edit-card">
                 {/* Header */}
                 <div onClick={() => toggleChannel(ch.id)}
-                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', cursor: 'pointer', transition: 'background 0.15s' }}
-                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')}
-                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    className="channel-config-edit-header">
+                    <div className="channel-config-hstack">
                         {ch.icon}
                         <div>
-                            <div style={{ fontWeight: 600, fontSize: '14px' }}>{t(ch.nameKey, ch.nameFallback)}</div>
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{subtitle}</div>
+                            <div className="channel-config-edit-name">{t(ch.nameKey, ch.nameFallback)}</div>
+                            <div className="channel-config-create-desc">{subtitle}</div>
                         </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div className="channel-config-hstack">
                         {config && <span className={`badge ${isConfigured ? 'badge-success' : 'badge-warning'}`}>{isConfigured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
-                        <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.2s', transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>&#9660;</span>
+                        <span className={`channel-config-chevron${isOpen ? ' is-open' : ''}`}>&#9660;</span>
                     </div>
                 </div>
 
                 {/* Body */}
                 {isOpen && (
-                    <div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-subtle)' }}>
+                    <div className="channel-config-edit-body">
                         {!canManage ? (
-                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontStyle: 'italic', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+                            <div className="channel-config-note">
                                 Only the creator or admin can configure communication channels.
                             </div>
                         ) : ch.qrScanMode ? (
@@ -869,43 +848,43 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                             <div>
                                 {/* Feishu websocket status */}
                                 {ch.id === 'feishu' && configConnMode === 'websocket' && (
-                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#00D6B9', display: 'inline-block' }}></span>
-                                            <span style={{ color: 'var(--text-secondary)' }}>Connected via WebSocket (No callback URL needed)</span>
+                                    <div className="channel-config-status-box">
+                                        <div className="channel-config-status-line">
+                                            <span className="channel-config-dot"></span>
+                                            <span className="u-secondary">Connected via WebSocket (No callback URL needed)</span>
                                         </div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '4px' }}>
+                                        <div className="channel-config-meta-line">
                                             {t('agent.settings.channel.platform', 'Platform')}: <strong>{t(currentConfigFeishuPlatformOption.labelKey, currentConfigFeishuPlatformOption.fallback)}</strong>
                                         </div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>App ID: <code>{config.app_id}</code></div>
+                                        <div className="channel-config-hint">App ID: <code>{config.app_id}</code></div>
                                     </div>
                                 )}
                                 {ch.id === 'feishu' && configConnMode !== 'websocket' && (
-                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
-                                        <div style={{ marginBottom: '4px' }}>
+                                    <div className="channel-config-info-block">
+                                        <div className="channel-config-mb-1">
                                             {t('agent.settings.channel.platform', 'Platform')}: <strong>{t(currentConfigFeishuPlatformOption.labelKey, currentConfigFeishuPlatformOption.fallback)}</strong>
                                         </div>
-                                        <div style={{ marginBottom: '4px' }}>Mode: <strong>Webhook</strong></div>
+                                        <div className="channel-config-mb-1">Mode: <strong>Webhook</strong></div>
                                         <div>App ID: <code>{config.app_id}</code></div>
                                     </div>
                                 )}
 
                                 {/* WeCom websocket status */}
                                 {ch.id === 'wecom' && configConnMode === 'websocket' && (
-                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#07C160', display: 'inline-block' }}></span>
-                                            <span style={{ color: 'var(--text-secondary)' }}>Connected via WebSocket (No callback URL needed)</span>
+                                    <div className="channel-config-status-box">
+                                        <div className="channel-config-hstack-sm">
+                                            <span className="channel-config-dot"></span>
+                                            <span className="u-secondary">Connected via WebSocket (No callback URL needed)</span>
                                         </div>
                                     </div>
                                 )}
 
                                 {/* Webhook URL (non-websocket channels) */}
                                 {ch.webhookLabel && !(ch.connectionMode && configConnMode === 'websocket') && ch.id !== 'dingtalk' && (
-                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}>
-                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '6px' }}>{ch.webhookLabel}</div>
-                                        <div style={{ lineHeight: 1.6, wordBreak: 'break-all' }}>
-                                            <span style={{ color: 'var(--accent-primary)' }}>{webhookUrl}</span>
+                                    <div className="channel-config-webhook-box">
+                                        <div className="channel-config-webhook-label">{ch.webhookLabel}</div>
+                                        <div className="channel-config-webhook-url">
+                                            <span className="channel-config-webhook-link">{webhookUrl}</span>
                                             <CopyBtn url={webhookUrl} />
                                         </div>
                                     </div>
@@ -913,35 +892,35 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
 
                                 {/* Discord extra hint */}
                                 {ch.id === 'discord' && configConnMode !== 'gateway' && (
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>Use <code>/ask message:&lt;your question&gt;</code> to talk to this agent</div>
+                                    <div className="channel-config-hint channel-config-mb-2">Use <code>/ask message:&lt;your question&gt;</code> to talk to this agent</div>
                                 )}
                                 {ch.id === 'discord' && configConnMode === 'gateway' && (
-                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#5865F2', display: 'inline-block' }}></span>
-                                            <span style={{ color: 'var(--text-secondary)' }}>Connected via Gateway (No public URL needed)</span>
+                                    <div className="channel-config-status-box">
+                                        <div className="channel-config-status-line">
+                                            <span className="channel-config-dot"></span>
+                                            <span className="u-secondary">Connected via Gateway (No public URL needed)</span>
                                         </div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>@mention the bot or send a DM to interact</div>
+                                        <div className="channel-config-hint">@mention the bot or send a DM to interact</div>
                                     </div>
                                 )}
 
                                 {/* DingTalk stream mode hint */}
                                 {ch.id === 'dingtalk' && (
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '8px', padding: '8px 10px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+                                    <div className="channel-config-hint-box">
                                         Stream mode active. No webhook URL needed.
                                     </div>
                                 )}
 
                                 {/* AgentBay status */}
                                 {ch.id === 'agentbay' && (
-                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
-                                        <div style={{ color: 'var(--text-tertiary)', marginBottom: '4px' }}>Status</div>
-                                        <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>API Key configured — Browser & Code tools available</div>
-                                        {config.base_url && <div style={{ color: 'var(--text-tertiary)', marginTop: '4px', fontSize: '11px' }}>Base URL: <code>{config.base_url}</code></div>}
+                                    <div className="channel-config-status-box">
+                                        <div className="channel-config-webhook-label">Status</div>
+                                        <div className="channel-config-status-value">API Key configured — Browser & Code tools available</div>
+                                        {config.base_url && <div className="channel-config-status-sub">Base URL: <code>{config.base_url}</code></div>}
                                     </div>
                                 )}
                                 {ch.id === 'agentbay' && agentbayTestResult && (
-                                    <div style={{ padding: '8px 12px', borderRadius: '6px', fontSize: '12px', marginBottom: '10px', background: agentbayTestResult.ok ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)', border: `1px solid ${agentbayTestResult.ok ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'}`, color: agentbayTestResult.ok ? 'rgb(5,150,105)' : 'rgb(220,38,38)' }}>
+                                    <div className={`channel-config-test-result ${agentbayTestResult.ok ? 'is-ok' : 'is-error'}`}>
                                         {agentbayTestResult.ok
                                             ? `${agentbayTestResult.message || 'Connected to AgentBay'}`
                                             : `${agentbayTestResult.error}`}
@@ -952,13 +931,13 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 {renderGuide(ch.guide, !!(ch.connectionMode && configConnMode === 'websocket'), ch)}
 
                                 {/* Action buttons */}
-                                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                <div className="channel-config-actions">
                                     {ch.hasTestConnection && ch.id === 'agentbay' && (
-                                        <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }} onClick={testAgentBay} disabled={agentbayTesting}>
+                                        <button className="btn btn-secondary" onClick={testAgentBay} disabled={agentbayTesting}>
                                             {agentbayTesting ? 'Testing...' : 'Test Connection'}
                                         </button>
                                     )}
-                                    <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '4px 12px' }}
+                                    <button className="btn btn-secondary"
                                         onClick={() => {
                                             // Populate form with existing config data
                                             const prefill: Record<string, string> = {};
@@ -1011,28 +990,28 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             setForms(prev => ({ ...prev, [ch.id]: prefill }));
                                             setEditing(ch.id, true);
                                         }}>Edit</button>
-                                    <button className="btn btn-danger" style={{ fontSize: '12px', padding: '4px 12px' }}
+                                    <button className="btn btn-danger"
                                         onClick={() => deleteMutation.mutate({ ch })}>Disconnect</button>
                                 </div>
                             </div>
                         ) : (
                             /* ── Form view (new or editing) ── */
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <div className="channel-config-vstack">
                                 {ch.id === 'feishu' && renderFeishuPlatformSelector(ch.id, selectedFeishuPlatformRegion, region => {
                                     setFeishuPlatformRegions(prev => ({ ...prev, [ch.id]: region }));
                                 })}
 
                                 {/* Connection mode toggle (feishu, wecom) */}
                                 {ch.connectionMode && (
-                                    <div style={{ marginBottom: '8px' }}>
-                                        <label style={{ fontSize: '12px', fontWeight: 500, display: 'block', marginBottom: '8px' }}>{t('wizard.step5.connectionMode')}</label>
-                                        <div style={{ display: 'flex', gap: '16px', marginBottom: '8px' }}>
-                                            <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                                    <div className="channel-config-mb-2">
+                                        <label className="channel-config-form-label">{t('wizard.step5.connectionMode')}</label>
+                                        <div className="channel-config-radio-group">
+                                            <label className="channel-config-radio-inline">
                                                 <input type="radio" name={`${ch.id}_connection_mode`} value="websocket" checked={connMode === 'websocket'}
                                                     onChange={() => setConnectionModes(prev => ({ ...prev, [ch.id]: 'websocket' }))} />
                                                 {t('wizard.step5.modeWebsocket')}
                                             </label>
-                                            <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                                            <label className="channel-config-radio-inline">
                                                 <input type="radio" name={`${ch.id}_connection_mode`} value="webhook" checked={connMode === 'webhook'}
                                                     onChange={() => setConnectionModes(prev => ({ ...prev, [ch.id]: 'webhook' }))} />
                                                 {t('wizard.step5.modeWebhook')}
@@ -1051,16 +1030,16 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 {/* AgentBay extra hints */}
                                 {ch.id === 'agentbay' && (
                                     <>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '-4px' }}>
-                                            Get your API key from <a href="https://www.aliyun.com/product/agentbay" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary-color)' }}>Aliyun AgentBay Console</a>
+                                        <div className="channel-config-hint-tight">
+                                            Get your API key from <a href="https://www.aliyun.com/product/agentbay" target="_blank" rel="noopener noreferrer" className="channel-config-link">Aliyun AgentBay Console</a>
                                         </div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Leave Base URL empty to use the default endpoint</div>
+                                        <div className="channel-config-hint">Leave Base URL empty to use the default endpoint</div>
                                     </>
                                 )}
 
                                 {/* Save / Cancel buttons */}
-                                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                                    <button className="btn btn-primary" style={{ fontSize: '12px', alignSelf: 'flex-start' }}
+                                <div className="channel-config-actions-mt">
+                                    <button className="btn btn-primary channel-config-btn-start"
                                         onClick={() => {
                                             const payload = buildPayload(ch, form);
                                             saveMutation.mutate({ ch, data: payload });
@@ -1068,7 +1047,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                         disabled={!allRequired || saveMutation.isPending}>
                                         {saveMutation.isPending ? t('common.loading') : (isEditing ? 'Save Changes' : t('agent.settings.channel.saveChannel'))}
                                     </button>
-                                    {isEditing && <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setEditing(ch.id, false)}>Cancel</button>}
+                                    {isEditing && <button className="btn btn-secondary" onClick={() => setEditing(ch.id, false)}>Cancel</button>}
                                 </div>
                             </div>
                         )}
@@ -1081,23 +1060,19 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     // ─── Render ─────────────────────────────────────────
     if (mode === 'create') {
         return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div className="channel-config-vstack">
                 {/* Configurable channels */}
                 {CHANNEL_REGISTRY.filter(ch => !ch.editOnly).map(renderCreateChannel)}
 
                 {/* Disabled channels: configure in settings after creation */}
                 {CHANNEL_REGISTRY.filter(ch => ch.editOnly).map(ch => (
-                    <div key={ch.id} style={{
-                        display: 'flex', alignItems: 'center', gap: '12px', padding: '14px',
-                        background: 'var(--bg-elevated)', border: '1px solid var(--border-default)',
-                        borderRadius: '8px', opacity: 0.7,
-                    }}>
+                    <div key={ch.id} className="channel-config-disabled-card">
                         {ch.icon}
-                        <div style={{ flex: 1 }}>
-                            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t(ch.nameKey, ch.nameFallback)}</div>
-                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{ch.desc}</div>
+                        <div className="channel-config-flex-1">
+                            <div className="channel-config-create-name">{t(ch.nameKey, ch.nameFallback)}</div>
+                            <div className="channel-config-create-desc">{ch.desc}</div>
                         </div>
-                        <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '10px', background: 'var(--bg-secondary)', color: 'var(--text-tertiary)', fontWeight: 500 }}>Configure in Settings</span>
+                        <span className="channel-config-settings-pill">Configure in Settings</span>
                     </div>
                 ))}
             </div>
@@ -1106,18 +1081,14 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
 
     // Edit mode
     return (
-        <div className="card" style={{ marginBottom: '12px' }}>
-            <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.channel.title')}</h4>
-            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>{t('agent.settings.channel.title')}</p>
-            <div style={{
-                padding: '10px 14px', borderRadius: '8px', marginBottom: '16px',
-                background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)',
-                fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.6',
-            }}>
+        <div className="card channel-config-mb-3">
+            <h4 className="channel-config-mb-3">{t('agent.settings.channel.title')}</h4>
+            <p className="channel-config-subtitle">{t('agent.settings.channel.title')}</p>
+            <div className="channel-config-sync-hint">
                 {t('agent.settings.channel.syncHint', 'Before configuring the Feishu bot, please sync your organization structure in Enterprise Settings → Org Structure first. This ensures the bot can identify message senders.')}
             </div>
             {feishuRuntimeStatus ? (
-                <div style={{ marginBottom: '16px' }}>
+                <div className="channel-config-mb-4">
                     <FeishuRuntimeStatusCard status={feishuRuntimeStatus} />
                 </div>
             ) : null}

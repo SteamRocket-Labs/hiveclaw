@@ -1,0 +1,310 @@
+/* ═══════════════════════════════════════════════════════
+   ToolsManager (Agent 工具 tab) — surface styles
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   inline style 迁出；toggle / chevron / on-off / status 通过
+   class 变体表达；status dot 颜色是 data 驱动的动态值保留 inline。
+   ═══════════════════════════════════════════════════════ */
+
+.tools-manager-loading { color: var(--text-tertiary); padding: var(--space-5); }
+
+.tools-manager-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.tools-manager-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.tools-manager-min0 { min-width: 0; }
+
+/* ── Module title ───────────────────────────────────── */
+
+.tools-manager-module-title {
+  font-size: var(--text-row);
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+
+/* ── Rows (plugin / server header) ──────────────────── */
+
+.tools-manager-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) 14px;
+}
+.tools-manager-row-head { display: flex; align-items: center; gap: var(--space-2); }
+.tools-manager-name { font-weight: 600; font-size: var(--text-body); }
+.tools-manager-sub {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+/* Type tag (source_kind / MCP) — quiet, token-based (was dangling --primary) */
+.tools-manager-tag {
+  font-size: var(--text-tiny);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  font-weight: 500;
+}
+
+/* On/Off read-only status */
+.tools-manager-onoff {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+.tools-manager-onoff.on { color: var(--success); }
+
+/* ── Empty state ────────────────────────────────────── */
+
+.tools-manager-empty {
+  text-align: center;
+  padding: var(--space-6);
+  color: var(--text-tertiary);
+  font-size: var(--text-body);
+}
+
+/* ── Toggle switch ──────────────────────────────────── */
+
+.tools-manager-toggle {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tools-manager-toggle.disabled { cursor: default; opacity: 0.6; }
+
+.tools-manager-toggle-input { opacity: 0; width: 0; height: 0; }
+
+.tools-manager-toggle-track {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-full);
+  transition: background var(--transition-fast);
+}
+.tools-manager-toggle-track.checked { background: var(--success); }
+
+.tools-manager-toggle-knob {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  border-radius: var(--radius-full);
+  transition: left var(--transition-fast);
+}
+.tools-manager-toggle-track.checked .tools-manager-toggle-knob { left: 20px; }
+
+/* ── MCP server card ────────────────────────────────── */
+
+.tools-manager-server-card { overflow: hidden; }
+
+.tools-manager-server-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) 14px;
+}
+.tools-manager-server-head-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.tools-manager-plug-icon { font-size: 18px; }
+.tools-manager-server-title-row { display: flex; align-items: center; gap: 6px; }
+.tools-manager-server-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.tools-manager-status-inline { display: inline-flex; align-items: center; gap: var(--space-1); }
+.tools-manager-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+}
+
+/* ── Always-load row ────────────────────────────────── */
+
+.tools-manager-always-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: center;
+  border-top: 1px solid var(--border-subtle);
+  padding: 10px 14px;
+}
+.tools-manager-always-title {
+  font-size: var(--text-row);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* ── Advanced tool controls ─────────────────────────── */
+
+.tools-manager-advanced { border-top: 1px solid var(--border-subtle); }
+.tools-manager-advanced-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: var(--space-2) 14px;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+  text-align: left;
+  transition: color var(--transition-fast);
+}
+.tools-manager-advanced-btn:hover { color: var(--text-secondary); }
+.tools-manager-chevron {
+  display: inline-block;
+  transition: transform var(--transition-fast);
+}
+.tools-manager-chevron.open { transform: rotate(90deg); }
+
+.tools-manager-advanced-body {
+  padding: 0 14px var(--space-3) 14px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  background: var(--bg-secondary);
+}
+.tools-manager-advanced-note {
+  padding: 10px var(--space-3);
+  color: var(--text-tertiary);
+  font-size: var(--text-row);
+}
+
+.tools-manager-tool-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+}
+.tools-manager-tool-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.tools-manager-tool-name { font-weight: 500; font-size: var(--text-row); }
+.tools-manager-tool-desc {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tools-manager-tool-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.tools-manager-config-btn {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 3px var(--space-2);
+  font-size: var(--text-meta);
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+.tools-manager-config-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.tools-manager-mode-select {
+  width: 128px;
+  min-height: 28px;
+  padding: 3px var(--space-2);
+  font-size: var(--text-meta);
+}
+.tools-manager-mode-text {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+/* ── Config modal ───────────────────────────────────── */
+
+.tools-manager-modal {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  padding: var(--space-6);
+  width: 480px;
+  max-width: 95vw;
+  max-height: 80vh;
+  overflow: auto;
+}
+.tools-manager-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-4);
+}
+.tools-manager-modal-title { margin: 0; }
+.tools-manager-modal-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: color var(--transition-fast);
+}
+.tools-manager-modal-close:hover { color: var(--text-primary); }
+
+.tools-manager-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.tools-manager-field-label {
+  display: block;
+  font-size: var(--text-row);
+  font-weight: 500;
+  margin-bottom: var(--space-1);
+}
+.tools-manager-field-note {
+  font-weight: 400;
+  color: var(--text-tertiary);
+  margin-left: var(--space-1);
+}
+.tools-manager-json-input {
+  font-family: var(--font-mono);
+  font-size: var(--text-row);
+  min-height: 120px;
+  resize: vertical;
+}
+.tools-manager-modal-footer {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  justify-content: flex-end;
+}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
@@ -6,6 +6,7 @@ import { extensionsApi, type AgentExtensions } from '../../api/domains/extension
 import { fileApi } from '../../api/domains/files';
 import { skillApi } from '../../api/domains/skills';
 import { showAppToast } from '../../components/AppDialogs';
+import './AgentSkillsSection.css';
 
 type AgentSkillsSectionProps = {
   agentId: string;
@@ -71,16 +72,15 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
 
   return (
     <div>
-      <div style={{ marginBottom: '16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="agent-skills-header">
+        <div className="agent-skills-head-row">
           <div>
-            <h3 style={{ marginBottom: '4px' }}>{t('agent.skills.title')}</h3>
-            <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('agent.skills.description')}</p>
+            <h3 className="agent-skills-title">{t('agent.skills.title')}</h3>
+            <p className="agent-skills-subtitle">{t('agent.skills.description')}</p>
           </div>
-          <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+          <div className="agent-skills-head-actions">
             <button
-              className="btn btn-secondary"
-              style={{ fontSize: '13px' }}
+              className="btn btn-secondary agent-skills-toolbar-btn"
               onClick={() => {
                 setShowAgentUrlImport(true);
                 setAgentUrlInput('');
@@ -89,8 +89,7 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
               Import from URL
             </button>
             <button
-              className="btn btn-secondary"
-              style={{ fontSize: '13px' }}
+              className="btn btn-secondary agent-skills-toolbar-btn"
               onClick={() => {
                 setShowAgentClawhub(true);
                 setAgentClawhubQuery('');
@@ -100,90 +99,54 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
               Browse ClawHub
             </button>
             <button
-              className="btn btn-primary"
-              style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
+              className="btn btn-primary agent-skills-primary-btn"
               onClick={() => setShowImportSkillModal(true)}
             >
               Import from Presets
             </button>
           </div>
         </div>
-        <div style={{ marginTop: '8px', padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+        <div className="agent-skills-format-note">
           <strong>Skill Format:</strong>
           <br />
           • <code>skills/my-skill/SKILL.md</code> — {t('agent.skills.folderFormat', 'Each skill is a folder with a SKILL.md file and optional auxiliary files (scripts/, examples/)')}
         </div>
       </div>
 
-      <div
-        style={{
-          padding: '12px 14px',
-          borderRadius: '8px',
-          background: 'var(--bg-secondary)',
-          color: 'var(--text-secondary)',
-          fontSize: '13px',
-          lineHeight: 1.5,
-          marginBottom: '16px',
-        }}
-      >
+      <div className="agent-skills-governed-note">
         {t(
           'agent.skills.governedNotice',
           'Active skill packages are governed by Skill promotion. Use imports and Evolution candidates instead of editing active skill files directly.',
         )}
       </div>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-          gap: '12px',
-          marginBottom: '16px',
-        }}
-      >
-        <section
-          style={{
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '8px',
-            background: 'var(--bg-primary)',
-            padding: '12px',
-            minHeight: '116px',
-          }}
-        >
-          <h4 style={{ margin: '0 0 4px', fontSize: '13px', color: 'var(--text-primary)' }}>
+      <div className="agent-skills-grid">
+        <section className="agent-skills-panel">
+          <h4 className="agent-skills-panel-title agent-skills-panel-title-tight">
             {t('agent.skills.installedTitle', 'Installed skills')}
           </h4>
-          <p style={{ margin: '0 0 10px', fontSize: '11px', color: 'var(--text-tertiary)', lineHeight: 1.45 }}>
+          <p className="agent-skills-panel-desc">
             {t(
               'agent.skills.installedDescription',
               'Internal, imported, URL/ClawHub and agent skills currently visible to this agent.',
             )}
           </p>
           {agentExtensionsLoading ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <div className="agent-skills-panel-note">
               {t('common.loading', 'Loading...')}
             </div>
           ) : installedSkills.length === 0 ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <div className="agent-skills-panel-note">
               {t('agent.skills.noInstalledSkills', 'No installed skills.')}
             </div>
           ) : (
-            <div style={{ display: 'grid', gap: '6px' }}>
+            <div className="agent-skills-list">
               {installedSkills.map((skill) => (
-                <div
-                  key={skill.id || skill.name}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '10px',
-                    minWidth: 0,
-                    fontSize: '12px',
-                  }}
-                >
-                  <span style={{ color: 'var(--text-primary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div key={skill.id || skill.name} className="agent-skills-row">
+                  <span className="agent-skills-row-name">
                     {skill.name}
                   </span>
-                  <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>
+                  <span className="agent-skills-row-meta">
                     {skillSourceLabel(t, skill.source)}
                   </span>
                 </div>
@@ -192,44 +155,26 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
           )}
         </section>
 
-        <section
-          style={{
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '8px',
-            background: 'var(--bg-primary)',
-            padding: '12px',
-            minHeight: '116px',
-          }}
-        >
-          <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: 'var(--text-primary)' }}>
+        <section className="agent-skills-panel">
+          <h4 className="agent-skills-panel-title">
             {t('agent.skills.mcpBackedCapabilities', 'MCP-backed capabilities')}
           </h4>
           {agentExtensionsLoading ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <div className="agent-skills-panel-note">
               {t('common.loading', 'Loading...')}
             </div>
           ) : mcpServers.length === 0 ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <div className="agent-skills-panel-note">
               {t('agent.skills.noMcpCapabilities', 'No MCP-backed capabilities.')}
             </div>
           ) : (
-            <div style={{ display: 'grid', gap: '6px' }}>
+            <div className="agent-skills-list">
               {mcpServers.map((server) => (
-                <div
-                  key={server.id || server.name}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '10px',
-                    minWidth: 0,
-                    fontSize: '12px',
-                  }}
-                >
-                  <span style={{ color: 'var(--text-primary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div key={server.id || server.name} className="agent-skills-row">
+                  <span className="agent-skills-row-name">
                     {server.name}
                   </span>
-                  <span style={{ color: server.enabled ? 'var(--accent-text)' : 'var(--text-tertiary)', flexShrink: 0 }}>
+                  <span className={`agent-skills-row-meta${server.enabled ? ' is-active' : ''}`}>
                     {server.status} · {server.tool_count} {t('agent.skills.toolsUnit', 'tools')}
                   </span>
                 </div>
@@ -238,44 +183,26 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
           )}
         </section>
 
-        <section
-          style={{
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '8px',
-            background: 'var(--bg-primary)',
-            padding: '12px',
-            minHeight: '116px',
-          }}
-        >
-          <h4 style={{ margin: '0 0 10px', fontSize: '13px', color: 'var(--text-primary)' }}>
+        <section className="agent-skills-panel">
+          <h4 className="agent-skills-panel-title">
             {t('agent.skills.plugins', 'Plugins')}
           </h4>
           {agentExtensionsLoading ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <div className="agent-skills-panel-note">
               {t('common.loading', 'Loading...')}
             </div>
           ) : plugins.length === 0 ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <div className="agent-skills-panel-note">
               {t('agent.skills.noPlugins', 'No plugins assigned.')}
             </div>
           ) : (
-            <div style={{ display: 'grid', gap: '6px' }}>
+            <div className="agent-skills-list">
               {plugins.map((plugin) => (
-                <div
-                  key={plugin.id || plugin.plugin_key}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '10px',
-                    minWidth: 0,
-                    fontSize: '12px',
-                  }}
-                >
-                  <span style={{ color: 'var(--text-primary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div key={plugin.id || plugin.plugin_key} className="agent-skills-row">
+                  <span className="agent-skills-row-name">
                     {pluginName(plugin)}
                   </span>
-                  <span style={{ color: plugin.enabled ? 'var(--accent-text)' : 'var(--text-tertiary)', flexShrink: 0 }}>
+                  <span className={`agent-skills-row-meta${plugin.enabled ? ' is-active' : ''}`}>
                     {plugin.enabled ? t('agent.skills.enabled', 'Enabled') : t('agent.skills.disabled', 'Disabled')}
                   </span>
                 </div>
@@ -286,18 +213,18 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
       </div>
 
       {showAgentClawhub && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowAgentClawhub(false)}>
-          <div onClick={(event) => event.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <div className="agent-skills-modal-overlay" onClick={() => setShowAgentClawhub(false)}>
+          <div onClick={(event) => event.stopPropagation()} className="agent-skills-modal agent-skills-modal-lg">
+            <div className="agent-skills-modal-head">
               <h3>Browse ClawHub</h3>
-              <button onClick={() => setShowAgentClawhub(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>x</button>
+              <button onClick={() => setShowAgentClawhub(false)} className="agent-skills-modal-close">x</button>
             </div>
-            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 12px' }}>
+            <p className="agent-skills-modal-desc">
               Search and install skills from ClawHub directly into this agent&apos;s workspace.
             </p>
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+            <div className="agent-skills-search-row">
               <input
-                className="input"
+                className="input agent-skills-search-input"
                 placeholder="Search skills..."
                 value={agentClawhubQuery}
                 onChange={(event) => setAgentClawhubQuery(event.target.value)}
@@ -310,11 +237,9 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
                     }).catch(() => setAgentClawhubSearching(false));
                   }
                 }}
-                style={{ flex: 1, fontSize: '13px' }}
               />
               <button
-                className="btn btn-primary"
-                style={{ fontSize: '13px' }}
+                className="btn btn-primary agent-skills-action-btn"
                 disabled={!agentClawhubQuery.trim() || agentClawhubSearching}
                 onClick={() => {
                   setAgentClawhubSearching(true);
@@ -327,26 +252,25 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
                 {agentClawhubSearching ? 'Searching...' : 'Search'}
               </button>
             </div>
-            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <div className="agent-skills-scroll">
               {agentClawhubResults.length === 0 && !agentClawhubSearching && (
-                <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>Search ClawHub to find skills</div>
+                <div className="agent-skills-empty-hint">Search ClawHub to find skills</div>
               )}
               {agentClawhubResults.map((result: any) => (
-                <div key={result.slug} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: '8px', marginBottom: '6px', border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)' }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span style={{ fontWeight: 600, fontSize: '13px' }}>{result.displayName || result.slug}</span>
-                      {result.version && <span style={{ fontSize: '10px', color: 'var(--accent-text)', background: 'var(--accent-subtle)', padding: '1px 5px', borderRadius: '4px' }}>v{result.version}</span>}
+                <div key={result.slug} className="agent-skills-result-row">
+                  <div className="agent-skills-result-main">
+                    <div className="agent-skills-result-title-row">
+                      <span className="agent-skills-result-name">{result.displayName || result.slug}</span>
+                      {result.version && <span className="agent-skills-version-tag">v{result.version}</span>}
                     </div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                    <div className="agent-skills-result-desc">
                       {result.summary?.substring(0, 100)}
                       {result.summary?.length > 100 ? '...' : ''}
                     </div>
-                    {result.updatedAt && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px', opacity: 0.7 }}>Updated {new Date(result.updatedAt).toLocaleDateString()}</div>}
+                    {result.updatedAt && <div className="agent-skills-result-updated">Updated {new Date(result.updatedAt).toLocaleDateString()}</div>}
                   </div>
                   <button
-                    className="btn btn-secondary"
-                    style={{ fontSize: '12px', padding: '5px 12px', marginLeft: '12px' }}
+                    className="btn btn-secondary agent-skills-install-btn"
                     disabled={agentClawhubInstalling === result.slug}
                     onClick={async () => {
                       setAgentClawhubInstalling(result.slug);
@@ -371,23 +295,22 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
       )}
 
       {showAgentUrlImport && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowAgentUrlImport(false)}>
-          <div onClick={(event) => event.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '500px', width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <div className="agent-skills-modal-overlay" onClick={() => setShowAgentUrlImport(false)}>
+          <div onClick={(event) => event.stopPropagation()} className="agent-skills-modal agent-skills-modal-sm">
+            <div className="agent-skills-modal-head">
               <h3>Import from GitHub URL</h3>
-              <button onClick={() => setShowAgentUrlImport(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>x</button>
+              <button onClick={() => setShowAgentUrlImport(false)} className="agent-skills-modal-close">x</button>
             </div>
-            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 12px' }}>
+            <p className="agent-skills-modal-desc">
               Paste a GitHub URL pointing to a skill directory (must contain SKILL.md).
             </p>
             <input
-              className="input"
+              className="input agent-skills-url-input"
               placeholder="https://github.com/owner/repo/tree/main/path/to/skill"
               value={agentUrlInput}
               onChange={(event) => setAgentUrlInput(event.target.value)}
-              style={{ width: '100%', fontSize: '13px', marginBottom: '12px', boxSizing: 'border-box' }}
             />
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+            <div className="agent-skills-modal-actions">
               <button className="btn btn-secondary" onClick={() => setShowAgentUrlImport(false)}>Cancel</button>
               <button
                 className="btn btn-primary"
@@ -414,55 +337,39 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
       )}
 
       {showImportSkillModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowImportSkillModal(false)}>
-          <div onClick={(event) => event.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <div className="agent-skills-modal-overlay" onClick={() => setShowImportSkillModal(false)}>
+          <div onClick={(event) => event.stopPropagation()} className="agent-skills-modal agent-skills-modal-lg">
+            <div className="agent-skills-modal-head">
               <h3>📦 {t('agent.skills.importPreset', 'Import from Presets')}</h3>
-              <button onClick={() => setShowImportSkillModal(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
+              <button onClick={() => setShowImportSkillModal(false)} className="agent-skills-modal-close">✕</button>
             </div>
-            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 16px' }}>
+            <p className="agent-skills-modal-desc agent-skills-modal-desc-wide">
               {t('agent.skills.importDesc', "Select a preset skill to import into this agent. All skill files will be copied to the agent's skills folder.")}
             </p>
-            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <div className="agent-skills-scroll">
               {!globalSkillsForImport ? (
-                <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)' }}>Loading...</div>
+                <div className="agent-skills-empty-hint">Loading...</div>
               ) : globalSkillsForImport.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)' }}>No preset skills available</div>
+                <div className="agent-skills-empty-hint">No preset skills available</div>
               ) : (
                 globalSkillsForImport.map((skill: any) => (
-                  <div
-                    key={skill.id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      padding: '12px 14px',
-                      borderRadius: '8px',
-                      marginBottom: '8px',
-                      border: '1px solid var(--border-subtle)',
-                      background: 'var(--bg-secondary)',
-                      transition: 'border-color 0.15s',
-                    }}
-                    onMouseEnter={(event) => (event.currentTarget.style.borderColor = 'var(--accent-primary)')}
-                    onMouseLeave={(event) => (event.currentTarget.style.borderColor = 'var(--border-subtle)')}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1 }}>
-                      <span style={{ fontSize: '20px' }}>{skill.icon || '📋'}</span>
+                  <div key={skill.id} className="agent-skills-preset-row">
+                    <div className="agent-skills-preset-main">
+                      <span className="agent-skills-preset-icon">{skill.icon || '📋'}</span>
                       <div>
-                        <div style={{ fontWeight: 600, fontSize: '14px' }}>{skill.name}</div>
-                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                        <div className="agent-skills-preset-name">{skill.name}</div>
+                        <div className="agent-skills-preset-desc">
                           {skill.description?.substring(0, 100)}
                           {skill.description?.length > 100 ? '...' : ''}
                         </div>
-                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                        <div className="agent-skills-preset-folder">
                           📁 {skill.folder_name}
-                          {skill.is_default && <span style={{ marginLeft: '8px', color: 'var(--accent-primary)', fontWeight: 600 }}>✓ Default</span>}
+                          {skill.is_default && <span className="agent-skills-preset-default">✓ Default</span>}
                         </div>
                       </div>
                     </div>
                     <button
-                      className="btn btn-secondary"
-                      style={{ whiteSpace: 'nowrap', fontSize: '12px', padding: '6px 14px' }}
+                      className="btn btn-secondary agent-skills-import-btn"
                       disabled={importingSkillId === skill.id}
                       onClick={async () => {
                         setImportingSkillId(skill.id);

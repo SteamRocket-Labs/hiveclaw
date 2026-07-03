@@ -1,0 +1,135 @@
+/* ═══════════════════════════════════════════════════════
+   Enterprise settings page — inline style migration (P4)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀: .enterprise-settings-*
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Theme color picker ─────────────────────────────── */
+
+.enterprise-settings-theme-card {
+  margin-top: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.enterprise-settings-card-title {
+  margin-bottom: var(--space-3);
+}
+
+.enterprise-settings-swatches {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+/* 色块可点 → hover 放大反馈；选中态 border/outline 保留 inline（动态） */
+.enterprise-settings-swatch {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.enterprise-settings-swatch:hover {
+  transform: scale(1.08);
+}
+
+.enterprise-settings-swatch-preview {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+}
+
+.enterprise-settings-hex-input {
+  width: 120px;
+  font-size: var(--text-body);
+  font-family: var(--font-mono);
+}
+
+/* ghost 按钮的静音色；hover 由 .btn-ghost 提供（→ text-primary） */
+.enterprise-settings-btn-muted {
+  color: var(--text-tertiary);
+}
+
+/* ── Shared rows ────────────────────────────────────── */
+
+.enterprise-settings-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.enterprise-settings-form-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.enterprise-settings-grow {
+  flex: 1;
+}
+
+.enterprise-settings-saved {
+  color: var(--success);
+  font-size: var(--text-row);
+}
+
+/* ── Company name / timezone editors ────────────────── */
+
+.enterprise-settings-form-card {
+  margin-bottom: var(--space-6);
+}
+
+.enterprise-settings-name-input {
+  flex: 1;
+  font-size: var(--text-emphasis);
+}
+
+.enterprise-settings-field-label {
+  font-weight: 500;
+  font-size: var(--text-body);
+  margin-bottom: var(--space-1);
+}
+
+.enterprise-settings-tz-select {
+  width: 220px;
+  font-size: var(--text-body);
+}
+
+/* ── Broadcast section ──────────────────────────────── */
+
+.enterprise-settings-broadcast {
+  margin-top: var(--space-6);
+  margin-bottom: var(--space-6);
+}
+
+.enterprise-settings-broadcast-title {
+  margin-bottom: var(--space-1);
+}
+
+.enterprise-settings-broadcast-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-3);
+}
+
+.enterprise-settings-broadcast-input {
+  margin-bottom: var(--space-2);
+  font-size: var(--text-body);
+}
+
+.enterprise-settings-broadcast-textarea {
+  resize: vertical;
+  font-size: var(--text-body);
+  margin-bottom: var(--space-3);
+}
+
+/* ── Page header stats ──────────────────────────────── */
+
+.enterprise-settings-stats {
+  display: flex;
+  gap: var(--space-6);
+  margin-top: var(--space-2);
+}

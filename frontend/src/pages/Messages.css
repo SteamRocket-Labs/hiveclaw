@@ -1,0 +1,114 @@
+/* ═══════════════════════════════════════════════════════
+   Messages page — inline style migration (P4)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀: .messages-page-*
+   ═══════════════════════════════════════════════════════ */
+
+.messages-page {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: var(--space-6);
+}
+
+.messages-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-5);
+}
+
+.messages-page-title {
+  font-size: var(--text-display);
+  line-height: var(--leading-display);
+  font-weight: 600;
+  margin: 0;
+}
+
+/* accent 文字级链接；hover 由 .btn-ghost 提供（→ text-primary） */
+.messages-page-mark-all {
+  font-size: var(--text-body);
+  color: var(--accent-text);
+}
+
+.messages-page-loading {
+  text-align: center;
+  padding: var(--space-10);
+  color: var(--text-tertiary);
+}
+
+.messages-page-empty {
+  text-align: center;
+  padding: 60px var(--space-5);
+  color: var(--text-tertiary);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+}
+
+.messages-page-empty-hint {
+  font-size: var(--text-body);
+  margin-bottom: var(--space-3);
+  color: var(--text-tertiary);
+}
+
+.messages-page-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 列表行 — 无边框；未读=灰底+左侧 hairline（§3.3） */
+.messages-page-row {
+  padding: 14px var(--space-4);
+  border-radius: var(--radius-lg);
+  border-left: 3px solid transparent;
+  background: transparent;
+  cursor: default;
+  transition: background var(--transition-fast);
+}
+
+.messages-page-row--unread {
+  background: var(--bg-secondary);
+  border-left-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.messages-page-row--unread:hover {
+  background: var(--bg-tertiary);
+}
+
+.messages-page-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: 6px;
+}
+
+.messages-page-icon {
+  font-size: var(--text-emphasis);
+}
+
+.messages-page-sender {
+  font-weight: 600;
+  font-size: var(--text-emphasis);
+}
+
+.messages-page-time {
+  margin-left: auto;
+}
+
+.messages-page-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.messages-page-body {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  max-height: 60px;
+  overflow: hidden;
+}

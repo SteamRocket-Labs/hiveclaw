@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -8,6 +8,7 @@ import { taskApi } from '../api/domains/tasks';
 import { activityApi } from '../api/domains/activity';
 import type { ToolFailureSummary } from '../api/domains/activity';
 import type { Agent, Task } from '../types';
+import './Dashboard.css';
 
 /* ────── Inline SVG Icons (monochrome) ────── */
 
@@ -190,37 +191,24 @@ export function ToolFailureOverview({
     const { t } = useTranslation();
     const overview = summarizeCrossAgentToolFailures(summaries);
 
-    const pillStyle: CSSProperties = {
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: '6px',
-        padding: '4px 8px',
-        borderRadius: 'var(--radius-sm)',
-        background: 'var(--bg-tertiary)',
-        color: 'var(--text-secondary)',
-        fontSize: '12px',
-        fontWeight: 500,
-        border: '1px solid var(--border-subtle)',
-    };
-
     const renderCountList = <T extends CountRow>(
         title: string,
         rows: T[],
         emptyLabel: string,
         rowRenderer?: (row: T, index: number) => React.ReactNode,
     ) => (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        <div className="dashboard-count-group">
+            <div className="dashboard-count-title">
                 {title}
             </div>
             {rows.length === 0 ? (
-                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{emptyLabel}</div>
+                <div className="dashboard-count-empty">{emptyLabel}</div>
             ) : (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                <div className="dashboard-pill-row">
                     {rows.slice(0, 5).map((row, index) => rowRenderer ? rowRenderer(row, index) : (
-                        <span key={`${row.label}-${index}`} style={pillStyle}>
+                        <span key={`${row.label}-${index}`} className="dashboard-pill">
                             <span>{row.label}</span>
-                            <span style={{ color: 'var(--text-tertiary)' }}>{row.count}</span>
+                            <span className="dashboard-pill-count">{row.count}</span>
                         </span>
                     ))}
                 </div>
@@ -229,36 +217,17 @@ export function ToolFailureOverview({
     );
 
     return (
-        <div style={{
-            border: '1px solid var(--border-subtle)',
-            borderRadius: 'var(--radius-lg)',
-            overflow: 'hidden',
-            marginBottom: '32px',
-        }}>
-            <div style={{
-                padding: '12px 16px',
-                borderBottom: '1px solid var(--border-subtle)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-            }}>
-                <h3 style={{
-                    margin: 0,
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    color: 'var(--text-secondary)',
-                }}>
-                    <span style={{ display: 'flex', opacity: 0.6 }}>{Icons.activity}</span>
+        <div className="dashboard-failures-card">
+            <div className="dashboard-failures-head">
+                <h3 className="dashboard-failures-title">
+                    <span className="dashboard-failures-title-icon">{Icons.activity}</span>
                     {t('dashboard.toolFailuresTitle')}
                 </h3>
-                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                <span className="dashboard-failures-window">
                     {t('dashboard.toolFailuresWindow', { count: 24 })}: {overview.totalErrors}
                 </span>
             </div>
-            <div style={{ padding: '16px', display: 'grid', gap: '16px' }}>
+            <div className="dashboard-failures-body">
                 {renderCountList(
                     t('dashboard.topFailingAgents'),
                     overview.byAgent,
@@ -267,14 +236,11 @@ export function ToolFailureOverview({
                         <button
                             key={`${row.label}-${index}`}
                             type="button"
-                            style={{
-                                ...pillStyle,
-                                cursor: onSelectAgent ? 'pointer' : 'default',
-                            }}
+                            className={`dashboard-pill dashboard-pill-btn${onSelectAgent ? ' dashboard-pill-btn--active' : ''}`}
                             onClick={() => onSelectAgent?.(row.agentId)}
                         >
                             <span>{row.label}</span>
-                            <span style={{ color: 'var(--text-tertiary)' }}>{row.count}</span>
+                            <span className="dashboard-pill-count">{row.count}</span>
                         </button>
                     ),
                 )}
@@ -314,28 +280,16 @@ function StatsBar({ agents, allTasks }: { agents: Agent[]; allTasks: Task[] }) {
     ];
 
     return (
-        <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1px',
-            background: 'var(--border-subtle)', borderRadius: 'var(--radius-lg)',
-            overflow: 'hidden', marginBottom: '24px',
-            border: '1px solid var(--border-subtle)',
-        }}>
+        <div className="dashboard-stats-bar">
             {stats.map((s, i) => (
-                <div key={i} style={{
-                    background: 'var(--bg-secondary)', padding: '16px 20px',
-                    display: 'flex', flexDirection: 'column', gap: '2px',
-                }}>
-                    <div style={{
-                        fontSize: '12px', color: 'var(--text-tertiary)',
-                        display: 'flex', alignItems: 'center', gap: '6px',
-                        marginBottom: '4px',
-                    }}>
-                        <span style={{ display: 'flex', opacity: 0.7 }}>{s.icon}</span> {s.label}
+                <div key={i} className="dashboard-stat-cell">
+                    <div className="dashboard-stat-label">
+                        <span className="dashboard-stat-icon">{s.icon}</span> {s.label}
                     </div>
-                    <div style={{ fontSize: '24px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+                    <div className="dashboard-stat-value">
                         {s.value}
                     </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{s.sub}</div>
+                    <div className="dashboard-stat-sub">{s.sub}</div>
                 </div>
             ))}
         </div>
@@ -362,86 +316,49 @@ function AgentRow({ agent, tasks, recentActivity }: {
     return (
         <div
             onClick={() => navigate(`/agents/${agent.id}`)}
-            style={{
-                display: 'grid',
-                gridTemplateColumns: '220px 1fr 150px 100px',
-                alignItems: 'center', gap: '16px',
-                padding: '12px 16px',
-                borderRadius: 'var(--radius-md)',
-                cursor: 'pointer', transition: 'background 120ms ease',
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+            className="dashboard-agent-row"
         >
             {/* Agent Info */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                <div style={{
-                    width: '32px', height: '32px', borderRadius: 'var(--radius-md)',
-                    background: 'var(--bg-tertiary)', border: '1px solid var(--border-subtle)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: 'var(--text-tertiary)', flexShrink: 0,
-                }}>
+            <div className="dashboard-agent-info">
+                <div className="dashboard-agent-avatar">
                     {Icons.bot}
                 </div>
-                <div style={{ minWidth: 0 }}>
-                    <div style={{
-                        fontWeight: 500, fontSize: '13px', display: 'flex',
-                        alignItems: 'center', gap: '8px', color: 'var(--text-primary)',
-                    }}>
+                <div className="dashboard-min0">
+                    <div className="dashboard-agent-name">
                         {agent.name}
-                        <span style={{
-                            display: 'inline-flex', alignItems: 'center', gap: '4px',
-                            fontSize: '11px', fontWeight: 400,
-                            color: statusColor(agent.status),
-                        }}>
-                            <span style={{
-                                width: '6px', height: '6px', borderRadius: '50%',
-                                background: statusColor(agent.status),
-                                display: 'inline-block',
-                            }} />
+                        <span className="dashboard-agent-status" style={{ color: statusColor(agent.status) }}>
+                            <span className="dashboard-status-dot" style={{ background: statusColor(agent.status) }} />
                             {statusLabel(agent.status, t)}
                         </span>
                     </div>
-                    <div style={{
-                        fontSize: '12px', color: 'var(--text-tertiary)',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
+                    <div className="dashboard-agent-role">
                         {agent.role_description || '-'}
                     </div>
                 </div>
             </div>
 
             {/* Latest Activity / Tasks */}
-            <div style={{ minWidth: 0 }}>
+            <div className="dashboard-min0">
                 {latestActivity ? (
-                    <div style={{
-                        fontSize: '12px', color: 'var(--text-secondary)',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
-                        <span style={{ color: 'var(--text-tertiary)', marginRight: '6px' }}>
+                    <div className="dashboard-activity-line">
+                        <span className="dashboard-activity-time">
                             {timeAgo(latestActivity.created_at, t)}
                         </span>
                         {latestActivity.summary}
                     </div>
                 ) : (
-                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('dashboard.noActivity')}</div>
+                    <div className="dashboard-muted-row">{t('dashboard.noActivity')}</div>
                 )}
                 {pendingTasks.length > 0 && (
-                    <div style={{ display: 'flex', gap: '4px', marginTop: '4px', flexWrap: 'wrap' }}>
+                    <div className="dashboard-task-chips">
                         {pendingTasks.slice(0, 3).map(t => (
-                            <span key={t.id} style={{
-                                fontSize: '11px', padding: '1px 6px',
-                                borderRadius: 'var(--radius-sm)', background: 'var(--bg-tertiary)',
-                                color: 'var(--text-secondary)', maxWidth: '140px',
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                display: 'inline-flex', alignItems: 'center', gap: '3px',
-                            }}>
-                                <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: priorityColor(t.priority), flexShrink: 0 }} />
+                            <span key={t.id} className="dashboard-task-chip">
+                                <span className="dashboard-priority-dot" style={{ background: priorityColor(t.priority) }} />
                                 {t.title}
                             </span>
                         ))}
                         {pendingTasks.length > 3 && (
-                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', padding: '1px 4px' }}>
+                            <span className="dashboard-task-more">
                                 +{pendingTasks.length - 3}
                             </span>
                         )}
@@ -451,29 +368,27 @@ function AgentRow({ agent, tasks, recentActivity }: {
 
             {/* Token Usage */}
             <div>
-                <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '3px' }}>
+                <div className="dashboard-token-line">
                     {formatTokens(usedTokens)}
-                    {maxTokens > 0 && <span style={{ opacity: 0.6 }}> / {formatTokens(maxTokens)}</span>}
+                    {maxTokens > 0 && <span className="dashboard-token-max"> / {formatTokens(maxTokens)}</span>}
                 </div>
                 {maxTokens > 0 ? (
-                    <div style={{
-                        height: '3px', background: 'var(--bg-tertiary)',
-                        borderRadius: '2px', overflow: 'hidden',
-                    }}>
-                        <div style={{
-                            height: '100%', borderRadius: '2px',
-                            width: `${tokenPct}%`,
-                            background: tokenPct > 80 ? 'var(--error)' : tokenPct > 50 ? 'var(--warning)' : 'var(--text-tertiary)',
-                            transition: 'width 0.3s',
-                        }} />
+                    <div className="dashboard-token-track">
+                        <div
+                            className="dashboard-token-fill"
+                            style={{
+                                width: `${tokenPct}%`,
+                                background: tokenPct > 80 ? 'var(--error)' : tokenPct > 50 ? 'var(--warning)' : 'var(--text-tertiary)',
+                            }}
+                        />
                     </div>
                 ) : (
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', opacity: 0.5 }}>{t('dashboard.noLimit')}</div>
+                    <div className="dashboard-token-nolimit">{t('dashboard.noLimit')}</div>
                 )}
             </div>
 
             {/* Last Active */}
-            <div style={{ textAlign: 'right', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <div className="dashboard-agent-lastactive">
                 {timeAgo(agent.last_active_at, t)}
             </div>
         </div>
@@ -488,40 +403,25 @@ function ActivityFeed({ activities, agents }: { activities: any[]; agents: Agent
 
     if (activities.length === 0) {
         return (
-            <div style={{ textAlign: 'center', padding: '32px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+            <div className="dashboard-activity-empty">
                 {t('dashboard.noActivity')}
             </div>
         );
     }
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
+        <div className="dashboard-activity-feed">
             {activities.map((act, i) => {
                 const agent = agentMap.get(act.agent_id);
                 return (
-                    <div key={act.id || i} style={{
-                        display: 'flex', gap: '12px', padding: '7px 12px',
-                        fontSize: '13px', alignItems: 'flex-start',
-                    }}>
-                        <span style={{
-                            color: 'var(--text-tertiary)', whiteSpace: 'nowrap',
-                            fontFamily: 'var(--font-mono)', fontSize: '11px',
-                            minWidth: '52px', paddingTop: '2px',
-                        }}>
+                    <div key={act.id || i} className="dashboard-activity-row">
+                        <span className="dashboard-activity-ts">
                             {timeAgo(act.created_at, t)}
                         </span>
-                        <span style={{
-                            fontSize: '11px', padding: '1px 6px',
-                            borderRadius: 'var(--radius-sm)', background: 'var(--bg-tertiary)',
-                            color: 'var(--text-secondary)', whiteSpace: 'nowrap', flexShrink: 0,
-                            fontWeight: 500,
-                        }}>
+                        <span className="dashboard-tag">
                             {agent?.name || act.agent_id?.slice(0, 6)}
                         </span>
-                        <span style={{
-                            color: 'var(--text-secondary)', flex: 1,
-                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        }}>
+                        <span className="dashboard-activity-summary">
                             {act.summary}
                         </span>
                     </div>

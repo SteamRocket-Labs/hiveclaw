@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { messageApi } from '../api/domains/messages';
+import './Messages.css';
 
 const ACTION_ICONS: Record<string, string> = {
     text: '💬',
@@ -48,14 +49,13 @@ export default function Messages() {
     };
 
     return (
-        <div style={{ maxWidth: '800px', margin: '0 auto', padding: '24px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
-                <h1 style={{ fontSize: '20px', fontWeight: 600, margin: 0 }}>{t('messages.title')}</h1>
+        <div className="messages-page">
+            <div className="messages-page-header">
+                <h1 className="messages-page-title">{t('messages.title')}</h1>
                 {unreadCount > 0 && (
                     <button
-                        className="btn btn-ghost"
+                        className="btn btn-ghost messages-page-mark-all"
                         onClick={() => markAllReadMutation.mutate()}
-                        style={{ fontSize: '13px', color: 'var(--accent)' }}
                     >
                         {t('messages.markAllRead', { count: unreadCount })}
                     </button>
@@ -63,56 +63,39 @@ export default function Messages() {
             </div>
 
             {isLoading && (
-                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>
+                <div className="messages-page-loading">{t('common.loading')}</div>
             )}
 
             {!isLoading && messages.length === 0 && (
-                <div style={{
-                    textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)',
-                    background: 'var(--bg-secondary)', borderRadius: '12px',
-                }}>
-                    <div style={{ fontSize: '13px', marginBottom: '12px', color: 'var(--text-tertiary)' }}>{t('messages.empty')}</div>
+                <div className="messages-page-empty">
+                    <div className="messages-page-empty-hint">{t('messages.empty')}</div>
                     <div>{t('messages.empty')}</div>
                 </div>
             )}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            <div className="messages-page-list">
                 {messages.map((msg: any) => (
                     <div
                         key={msg.id}
                         onClick={() => !msg.read_at && markReadMutation.mutate(msg.id)}
-                        style={{
-                            padding: '14px 16px',
-                            borderRadius: '8px',
-                            background: msg.read_at ? 'transparent' : 'rgba(224,238,238,0.06)',
-                            cursor: msg.read_at ? 'default' : 'pointer',
-                            borderLeft: msg.read_at ? '3px solid transparent' : '3px solid var(--accent)',
-                            transition: 'background 0.15s',
-                        }}
+                        className={`messages-page-row${msg.read_at ? '' : ' messages-page-row--unread'}`}
                     >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                            <span style={{ fontSize: '14px' }}>{ACTION_ICONS[msg.msg_type] || '·'}</span>
-                            <span style={{ fontWeight: 600, fontSize: '14px' }}>
+                        <div className="messages-page-row-head">
+                            <span className="messages-page-icon">{ACTION_ICONS[msg.msg_type] || '·'}</span>
+                            <span className="messages-page-sender">
                                 {msg.sender_name}
                             </span>
-                            <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>
+                            <span className="u-meta u-tertiary">
                                 → {msg.receiver_name}
                             </span>
-                            <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                            <span className="u-meta u-tertiary messages-page-time">
                                 {formatTime(msg.created_at)}
                             </span>
                             {!msg.read_at && (
-                                <span style={{
-                                    width: '8px', height: '8px', borderRadius: '50%',
-                                    background: 'var(--accent)', flexShrink: 0,
-                                }} />
+                                <span className="messages-page-dot" />
                             )}
                         </div>
-                        <div style={{
-                            fontSize: '13px', color: 'var(--text-secondary)',
-                            lineHeight: '1.5', whiteSpace: 'pre-wrap',
-                            maxHeight: '60px', overflow: 'hidden',
-                        }}>
+                        <div className="messages-page-body">
                             {msg.content}
                         </div>
                     </div>

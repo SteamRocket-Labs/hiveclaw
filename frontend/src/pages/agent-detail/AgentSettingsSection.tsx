@@ -6,6 +6,7 @@ import ChannelConfig from '../../components/ChannelConfig';
 import { agentApi } from '../../api/domains/agents';
 import { planApi, type PlanRecommendationCreateInput } from '../../api/domains/plans';
 import { triggerApi } from '../../api/domains/triggers';
+import './AgentSettingsSection.css';
 
 type AgentSettingsForm = {
   primary_model_id: string;
@@ -292,56 +293,31 @@ export default function AgentSettingsSection({
 
   return (
     <div>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: '16px',
-          position: 'sticky',
-          top: 0,
-          zIndex: 10,
-          background: 'var(--bg-primary)',
-          paddingTop: '4px',
-          paddingBottom: '12px',
-          borderBottom: '1px solid var(--border-subtle)',
-        }}
-      >
-        <h3 style={{ margin: 0 }}>{t('agent.settings.title')}</h3>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          {settingsSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>{t('agent.settings.saved', 'Saved')}</span>}
+      <div className="agent-settings-header">
+        <h3 className="agent-settings-title">{t('agent.settings.title')}</h3>
+        <div className="agent-settings-header-actions">
+          {settingsSaved && <span className="agent-settings-status is-success">{t('agent.settings.saved', 'Saved')}</span>}
           {settingsError && (
-            <span
-              style={{
-                fontSize: '12px',
-                color: settingsError.includes('adjusted') ? 'var(--warning)' : 'var(--error)',
-                whiteSpace: 'pre-line',
-              }}
-            >
+            <span className={`agent-settings-msg ${settingsError.includes('adjusted') ? 'is-warning' : 'is-error'}`}>
               {settingsError}
             </span>
           )}
           <button
-            className="btn btn-primary"
+            className="btn btn-primary agent-settings-save-btn"
             disabled={!hasChanges || settingsSaving}
             onClick={handleSaveSettings}
-            style={{
-              opacity: hasChanges ? 1 : 0.5,
-              cursor: hasChanges ? 'pointer' : 'default',
-              padding: '6px 20px',
-              fontSize: '13px',
-            }}
+            style={{ opacity: hasChanges ? 1 : 0.5, cursor: hasChanges ? 'pointer' : 'default' }}
           >
             {settingsSaving ? t('agent.settings.saving', 'Saving...') : t('agent.settings.save', 'Save')}
           </button>
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: '12px' }}>
-        <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.modelConfig')}</h4>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <div className="card agent-settings-card">
+        <h4 className="agent-settings-card-title">{t('agent.settings.modelConfig')}</h4>
+        <div className="agent-settings-field-col">
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.primaryModel')}</label>
+            <label className="agent-settings-label">{t('agent.settings.primaryModel')}</label>
             <select
               className="input"
               value={settingsForm.primary_model_id}
@@ -355,27 +331,27 @@ export default function AgentSettingsSection({
               ))}
             </select>
             {settingsForm.primary_model_id && llmModels.some((m: any) => m.id === settingsForm.primary_model_id && !m.enabled) && (
-              <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+              <div className="agent-settings-hint agent-settings-hint-error">
                 {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
               </div>
             )}
             {!settingsForm.primary_model_id && settingsForm.fallback_model_id && (() => {
               const fb = llmModels.find((m: any) => m.id === settingsForm.fallback_model_id);
               return fb ? (
-                <div style={{ fontSize: '11px', color: 'var(--accent)', marginTop: '4px' }}>
+                <div className="agent-settings-hint agent-settings-hint-accent">
                   {t('agent.settings.usingFallback', { model: fb.label })}
                 </div>
               ) : null;
             })()}
             {!settingsForm.primary_model_id && !settingsForm.fallback_model_id && llmModels.length > 0 && (
-              <div style={{ fontSize: '11px', color: 'var(--warning)', marginTop: '4px' }}>
+              <div className="agent-settings-hint agent-settings-hint-warning">
                 {t('agent.settings.noModelWarning')}
               </div>
             )}
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.primaryModel')}</div>
+            <div className="agent-settings-hint">{t('agent.settings.primaryModel')}</div>
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>{t('agent.settings.fallbackModel')}</label>
+            <label className="agent-settings-label">{t('agent.settings.fallbackModel')}</label>
             <select
               className="input"
               value={settingsForm.fallback_model_id}
@@ -389,59 +365,29 @@ export default function AgentSettingsSection({
               ))}
             </select>
             {settingsForm.fallback_model_id && llmModels.some((m: any) => m.id === settingsForm.fallback_model_id && !m.enabled) && (
-              <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+              <div className="agent-settings-hint agent-settings-hint-error">
                 {t('agent.settings.modelDisabledWarning', 'This model has been disabled by admin. The agent will automatically use the fallback model.')}
               </div>
             )}
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('agent.settings.fallbackModel')}</div>
+            <div className="agent-settings-hint">{t('agent.settings.fallbackModel')}</div>
           </div>
           {settingsForm.fallback_model_id && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '10px 14px',
-                background: 'var(--bg-elevated)',
-                borderRadius: '8px',
-                border: '1px solid var(--border-subtle)',
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.smartRouting', 'Smart Model Routing')}</div>
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+            <div className="agent-settings-inset-row">
+              <div className="agent-settings-inset-grow">
+                <div className="agent-settings-inset-name">{t('agent.settings.smartRouting', 'Smart Model Routing')}</div>
+                <div className="agent-settings-inset-desc agent-settings-inset-desc-spaced">
                   {t('agent.settings.smartRoutingDesc', 'Automatically use the fallback model for simple conversational turns to save costs. Complex tasks always use the primary model.')}
                 </div>
               </div>
-              <label style={{ position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: 0, marginLeft: '12px' }}>
+              <label className="agent-settings-toggle agent-settings-toggle-sm">
                 <input
                   type="checkbox"
                   checked={settingsForm.smart_model_routing_enabled}
                   onChange={(e) => onSettingsFormChange((f) => ({ ...f, smart_model_routing_enabled: e.target.checked }))}
-                  style={{ opacity: 0, width: 0, height: 0 }}
+                  className="agent-settings-toggle-input"
                 />
-                <span
-                  style={{
-                    position: 'absolute',
-                    cursor: 'pointer',
-                    inset: 0,
-                    background: settingsForm.smart_model_routing_enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                    borderRadius: '10px',
-                    transition: 'background 0.2s',
-                  }}
-                >
-                  <span
-                    style={{
-                      position: 'absolute',
-                      height: '14px',
-                      width: '14px',
-                      left: settingsForm.smart_model_routing_enabled ? '19px' : '3px',
-                      bottom: '3px',
-                      background: 'white',
-                      borderRadius: '50%',
-                      transition: 'left 0.2s',
-                    }}
-                  />
+                <span className={`agent-settings-toggle-track${settingsForm.smart_model_routing_enabled ? ' is-on' : ''}`}>
+                  <span className="agent-settings-toggle-knob" />
                 </span>
               </label>
             </div>
@@ -450,39 +396,39 @@ export default function AgentSettingsSection({
       </div>
 
 
-      <div className="card" style={{ marginBottom: '12px' }}>
-        <h4 style={{ marginBottom: '12px' }}>{t('agent.settings.tokenStats')}</h4>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+      <div className="card agent-settings-card">
+        <h4 className="agent-settings-card-title">{t('agent.settings.tokenStats')}</h4>
+        <div className="agent-settings-stats-grid">
           <div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '4px' }}>{t('agent.settings.tokenToday')}</div>
-            <div style={{ fontSize: '18px', fontWeight: 600 }}>{formatTokens(agent?.tokens_used_today || 0)}</div>
+            <div className="agent-settings-stat-label">{t('agent.settings.tokenToday')}</div>
+            <div className="agent-settings-stat-value">{formatTokens(agent?.tokens_used_today || 0)}</div>
           </div>
           <div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '4px' }}>{t('agent.settings.tokenMonth')}</div>
-            <div style={{ fontSize: '18px', fontWeight: 600 }}>{formatTokens(agent?.tokens_used_month || 0)}</div>
+            <div className="agent-settings-stat-label">{t('agent.settings.tokenMonth')}</div>
+            <div className="agent-settings-stat-value">{formatTokens(agent?.tokens_used_month || 0)}</div>
           </div>
           <div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '4px' }}>{t('agent.settings.tokenTotal')}</div>
-            <div style={{ fontSize: '18px', fontWeight: 600 }}>{formatTokens(agent?.tokens_used_total || 0)}</div>
+            <div className="agent-settings-stat-label">{t('agent.settings.tokenTotal')}</div>
+            <div className="agent-settings-stat-value">{formatTokens(agent?.tokens_used_total || 0)}</div>
           </div>
         </div>
-        <div style={{ fontSize: '11px', color: 'var(--text-quaternary)', marginTop: '8px' }}>
+        <div className="agent-settings-quota-hint">
           {t('agent.settings.tokenQuotaHint')}
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: '12px' }}>
-        <h4 style={{ marginBottom: '4px' }}>{t('agent.settings.triggerLimits')}</h4>
-        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+      <div className="card agent-settings-card">
+        <h4 className="agent-settings-card-title-tight">{t('agent.settings.triggerLimits')}</h4>
+        <p className="agent-settings-card-desc">
           {t('agent.settings.triggerLimitsDesc')}
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+        <div className="agent-settings-stats-grid">
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
+            <label className="agent-settings-label">
               {t('agent.settings.maxTriggers')}
             </label>
             <input
-              className="input"
+              className="input agent-settings-input-full"
               type="number"
               min={1}
               max={100}
@@ -490,18 +436,17 @@ export default function AgentSettingsSection({
               onChange={(e) =>
                 onSettingsFormChange((f) => ({ ...f, max_triggers: Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 20)) }))
               }
-              style={{ width: '100%' }}
             />
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="agent-settings-hint">
               {t('agent.settings.maxTriggersDesc')}
             </div>
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
+            <label className="agent-settings-label">
               {t('agent.settings.minPollInterval')}
             </label>
             <input
-              className="input"
+              className="input agent-settings-input-full"
               type="number"
               min={1}
               max={60}
@@ -509,18 +454,17 @@ export default function AgentSettingsSection({
               onChange={(e) =>
                 onSettingsFormChange((f) => ({ ...f, min_poll_interval_min: Math.max(1, Math.min(60, parseInt(e.target.value, 10) || 5)) }))
               }
-              style={{ width: '100%' }}
             />
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="agent-settings-hint">
               {t('agent.settings.minPollIntervalDesc')}
             </div>
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
+            <label className="agent-settings-label">
               {t('agent.settings.webhookRateLimit')}
             </label>
             <input
-              className="input"
+              className="input agent-settings-input-full"
               type="number"
               min={1}
               max={60}
@@ -528,66 +472,48 @@ export default function AgentSettingsSection({
               onChange={(e) =>
                 onSettingsFormChange((f) => ({ ...f, webhook_rate_limit: Math.max(1, Math.min(60, parseInt(e.target.value, 10) || 5)) }))
               }
-              style={{ width: '100%' }}
             />
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="agent-settings-hint">
               {t('agent.settings.webhookRateLimitDesc')}
             </div>
           </div>
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: '12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-          <h4 style={{ margin: 0 }}>{t('agent.settings.welcomeMessage')}</h4>
-          {wmSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>✓ {t('agent.settings.saved')}</span>}
+      <div className="card agent-settings-card">
+        <div className="agent-settings-card-head">
+          <h4 className="agent-settings-card-title-flush">{t('agent.settings.welcomeMessage')}</h4>
+          {wmSaved && <span className="agent-settings-status is-success">✓ {t('agent.settings.saved')}</span>}
         </div>
-        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+        <p className="agent-settings-card-desc">
           {t('agent.settings.welcomeMessageDesc')}
         </p>
         <textarea
-          className="input"
+          className="input agent-settings-textarea"
           rows={4}
           value={wmDraft}
           onChange={(e) => onSetWmDraft(e.target.value)}
           onBlur={saveWelcomeMessage}
           placeholder={t('agent.settings.welcomeMessagePlaceholder')}
-          style={{
-            width: '100%',
-            minHeight: '80px',
-            resize: 'vertical',
-            fontFamily: 'inherit',
-            fontSize: '13px',
-          }}
         />
       </div>
 
-      <div className="card" style={{ marginBottom: '12px' }}>
-        <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>{t('agent.settings.timezone.title', '🌐 Timezone')}</h4>
-        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+      <div className="card agent-settings-card">
+        <h4 className="agent-settings-card-title-row">{t('agent.settings.timezone.title', '🌐 Timezone')}</h4>
+        <p className="agent-settings-card-desc agent-settings-card-desc-lg">
           {t('agent.settings.timezone.description', "The timezone used for this agent's scheduling, active hours, and time awareness. Defaults to the company timezone if not set.")}
         </p>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '10px 14px',
-            background: 'var(--bg-elevated)',
-            borderRadius: '8px',
-            border: '1px solid var(--border-subtle)',
-          }}
-        >
+        <div className="agent-settings-inset-row">
           <div>
-            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.timezone.current', 'Agent Timezone')}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            <div className="agent-settings-inset-name">{t('agent.settings.timezone.current', 'Agent Timezone')}</div>
+            <div className="agent-settings-inset-desc">
               {agent?.timezone
                 ? t('agent.settings.timezone.override', 'Custom timezone for this agent')
                 : t('agent.settings.timezone.inherited', 'Using company default timezone')}
             </div>
           </div>
           <select
-            className="input"
+            className={`input agent-settings-tz-select${canManage ? '' : ' is-dimmed'}`}
             disabled={!canManage}
             value={agent?.timezone || ''}
             onChange={async (e) => {
@@ -596,7 +522,6 @@ export default function AgentSettingsSection({
               await agentApi.update(agentId, { timezone: val } as any);
               queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
             }}
-            style={{ width: '200px', fontSize: '12px', opacity: canManage ? 1 : 0.6 }}
           >
             <option value="">{t('agent.settings.timezone.default', '↩ Company default')}</option>
             {[
@@ -627,71 +552,43 @@ export default function AgentSettingsSection({
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: '12px' }}>
-        <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>{t('agent.settings.patrol.title', 'Patrol & Agent Circle')}</h4>
-        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+      <div className="card agent-settings-card">
+        <h4 className="agent-settings-card-title-row">{t('agent.settings.patrol.title', 'Patrol & Agent Circle')}</h4>
+        <p className="agent-settings-card-desc agent-settings-card-desc-lg">
           {t('agent.settings.patrol.description', 'Configure the user-facing patrol trigger and Agent Circle permissions. Internal maintenance stays platform-managed.')}
         </p>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '10px 14px',
-            background: 'var(--bg-elevated)',
-            borderRadius: '8px',
-            border: '1px solid var(--border-subtle)',
-            marginBottom: '12px',
-          }}
-        >
+        <div className="agent-settings-inset-row agent-settings-inset-row-mb">
           <div>
-            <div style={{ fontWeight: 500, fontSize: '13px' }}>{t('agent.settings.patrol.enabled', 'Enable patrol')}</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            <div className="agent-settings-inset-name">{t('agent.settings.patrol.enabled', 'Enable patrol')}</div>
+            <div className="agent-settings-inset-desc">
               {t('agent.settings.patrol.enabledDesc', 'Creates or pauses the user-facing interval trigger. Internal maintenance is always managed by the platform.')}
             </div>
           </div>
-          <label style={{ position: 'relative', display: 'inline-block', width: '42px', height: '24px', flexShrink: 0, marginLeft: '12px' }}>
+          <label className="agent-settings-toggle agent-settings-toggle-md">
             <input
               type="checkbox"
               checked={patrolForm.enabled}
               disabled={!canManage || patrolLoading}
               onChange={(e) => setPatrolForm((prev) => ({ ...prev, enabled: e.target.checked }))}
-              style={{ opacity: 0, width: 0, height: 0 }}
+              className="agent-settings-toggle-input"
             />
             <span
-              style={{
-                position: 'absolute',
-                cursor: canManage ? 'pointer' : 'default',
-                inset: 0,
-                background: patrolForm.enabled ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                borderRadius: '12px',
-                transition: 'background 0.2s',
-                opacity: !canManage || patrolLoading ? 0.6 : 1,
-              }}
+              className={`agent-settings-toggle-track${patrolForm.enabled ? ' is-on' : ''}${
+                !canManage || patrolLoading ? ' is-disabled' : ''
+              }`}
             >
-              <span
-                style={{
-                  position: 'absolute',
-                  height: '18px',
-                  width: '18px',
-                  left: patrolForm.enabled ? '21px' : '3px',
-                  bottom: '3px',
-                  background: 'white',
-                  borderRadius: '50%',
-                  transition: 'left 0.2s',
-                }}
-              />
+              <span className="agent-settings-toggle-knob" />
             </span>
           </label>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '12px' }}>
+        <div className="agent-settings-patrol-grid">
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
+            <label className="agent-settings-label">
               {t('agent.settings.patrol.interval', 'Patrol interval')}
             </label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div className="agent-settings-inline">
               <input
-                className="input"
+                className="input agent-settings-input-narrow"
                 type="number"
                 min={15}
                 max={1440}
@@ -703,72 +600,70 @@ export default function AgentSettingsSection({
                     intervalMinutes: clampPatrolInterval(parseInt(e.target.value, 10)),
                   }))
                 }
-                style={{ width: '120px' }}
               />
-              <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.minutes', 'min')}</span>
+              <span className="agent-settings-unit">{t('common.minutes', 'min')}</span>
             </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="agent-settings-hint">
               {t('agent.settings.patrol.intervalDesc', 'How often this employee wakes up for patrol work.')}
             </div>
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '6px' }}>
+            <label className="agent-settings-label">
               {t('agent.settings.patrol.activeHours', 'Active hours')}
             </label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            <div className="agent-settings-inline-wrap">
+              <label className="agent-settings-time-label">
                 <span>{t('agent.settings.patrol.activeStart', 'Start')}</span>
                 <input
-                  className="input"
+                  className="input agent-settings-input-time"
                   type="time"
                   value={patrolForm.activeStart}
                   disabled={!canManage || patrolLoading}
                   onChange={(e) => setPatrolForm((prev) => ({ ...prev, activeStart: e.target.value }))}
-                  style={{ width: '118px' }}
                 />
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+              <label className="agent-settings-time-label">
                 <span>{t('agent.settings.patrol.activeEnd', 'End')}</span>
                 <input
-                  className="input"
+                  className="input agent-settings-input-time"
                   type="time"
                   value={patrolForm.activeEnd}
                   disabled={!canManage || patrolLoading}
                   onChange={(e) => setPatrolForm((prev) => ({ ...prev, activeEnd: e.target.value }))}
-                  style={{ width: '118px' }}
                 />
               </label>
             </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <div className="agent-settings-hint">
               {t('agent.settings.patrol.activeHoursDesc', 'Only run patrol triggers inside this local time window.')}
             </div>
           </div>
           <div>
-            <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '6px' }}>
+            <div className="agent-settings-lastrun-label">
               {t('agent.settings.patrol.lastRun', 'Last patrol')}
             </div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', minHeight: '36px', display: 'flex', alignItems: 'center' }}>
+            <div className="agent-settings-lastrun-value">
               {patrolTrigger?.last_fired_at
                 ? new Date(patrolTrigger.last_fired_at).toLocaleString(i18n.language || undefined)
                 : t('agent.settings.patrol.neverRun', 'Not run yet')}
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+        <div className="agent-settings-patrol-actions">
           <button
-            className="btn btn-secondary"
+            className={`btn btn-secondary agent-settings-patrol-save-btn${
+              !canManage || !patrolHasChanges ? ' is-dimmed' : ''
+            }`}
             disabled={!canManage || patrolLoading || patrolSaving || (!patrolTrigger && !patrolForm.enabled) || !patrolHasChanges}
             onClick={handleSavePatrolSettings}
-            style={{ fontSize: '12px', padding: '6px 12px', opacity: !canManage || !patrolHasChanges ? 0.6 : 1 }}
           >
             {patrolSaving ? t('agent.settings.patrol.saving', 'Saving patrol...') : t('agent.settings.patrol.save', 'Save patrol settings')}
           </button>
-          {patrolSaved && <span style={{ fontSize: '12px', color: 'var(--success)' }}>{t('agent.settings.patrol.saved', 'Patrol settings saved')}</span>}
-          {patrolError && <span style={{ fontSize: '12px', color: 'var(--error)' }}>{patrolError}</span>}
+          {patrolSaved && <span className="agent-settings-status is-success">{t('agent.settings.patrol.saved', 'Patrol settings saved')}</span>}
+          {patrolError && <span className="agent-settings-status is-error">{patrolError}</span>}
         </div>
       </div>
 
-      <div style={{ marginBottom: '12px' }}>
+      <div className="agent-settings-channel">
         <ChannelConfig mode="edit" agentId={agentId} />
       </div>
     </div>

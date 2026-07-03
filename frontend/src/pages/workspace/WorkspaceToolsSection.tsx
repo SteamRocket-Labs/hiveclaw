@@ -9,12 +9,14 @@ import { toolsApi } from '../../api/domains/tools';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import ToolIcon from '../../components/ToolIcon';
 
+import './WorkspaceToolsSection.css';
+
 const MCP_STATUS_COLORS: Record<string, string> = {
-  connected: '#22c55e',
-  needs_auth: '#f59e0b',
-  expired: '#f59e0b',
-  failed: '#ef4444',
-  error: '#ef4444',
+  connected: 'var(--success)',
+  needs_auth: 'var(--warning)',
+  expired: 'var(--warning)',
+  failed: 'var(--error)',
+  error: 'var(--error)',
   disabled: 'var(--text-tertiary)',
 };
 
@@ -163,15 +165,15 @@ export function ToolConfigSecretListField({
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '6px' }}>
-        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500 }}>{label}</label>
-        <span style={{ fontSize: '11px', color: 'var(--text-secondary)', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '999px', padding: '2px 8px', whiteSpace: 'nowrap' }}>
+      <div className="ws-tools-field-head">
+        <label className="ws-tools-secret-label">{label}</label>
+        <span className="ws-tools-count-pill">
           {count} {count === 1 ? 'key' : 'keys'} configured
         </span>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div className="ws-tools-col-8">
         {visibleRows.map((row, index) => (
-          <div key={`${field.key}-${index}`} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div key={`${field.key}-${index}`} className="ws-tools-row-8">
             <input
               type="password"
               autoComplete="new-password"
@@ -188,7 +190,6 @@ export function ToolConfigSecretListField({
             <button
               type="button"
               className="btn btn-secondary"
-              style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}
               onClick={() => {
                 const nextRows = visibleRows.filter((_, rowIndex) => rowIndex !== index);
                 updateRows(nextRows.length > 0 ? nextRows : ['']);
@@ -199,15 +200,14 @@ export function ToolConfigSecretListField({
           </div>
         ))}
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginTop: '8px' }}>
-        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+      <div className="ws-tools-field-foot">
+        <div className="ws-tools-note">
           Enter one API key per row. Calls rotate across saved keys in order.
           {field.description ? ` ${field.description}` : ''}
         </div>
         <button
           type="button"
           className="btn btn-secondary"
-          style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}
           onClick={() => updateRows([...visibleRows, ''])}
         >
           Add key
@@ -401,7 +401,7 @@ export default function WorkspaceToolsSection({
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px' }}>
+      <div className="ws-tools-tabs">
         {([
           ['global', t('enterprise.tools.extensionsAddons', 'Extensions & Add-ons')],
           ['mcp-servers', t('agent.extensions.mcpServers', 'MCP Servers')],
@@ -423,17 +423,7 @@ export default function WorkspaceToolsSection({
                 loadCustomApis();
               }
             }}
-            style={{
-              padding: '4px 14px',
-              borderRadius: '12px',
-              fontSize: '12px',
-              fontWeight: 500,
-              cursor: 'pointer',
-              border: 'none',
-              background: toolsView === key ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-              color: toolsView === key ? '#fff' : 'var(--text-secondary)',
-              transition: 'all 0.15s',
-            }}
+            className={`ws-tools-tab ${toolsView === key ? 'active' : ''}`}
           >
             {label}
           </button>
@@ -442,32 +432,31 @@ export default function WorkspaceToolsSection({
 
       {toolsView === 'agent-installed' ? (
         <div>
-          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+          <p className="ws-tools-hint">
             {t('enterprise.tools.agentInstalledHint', 'These tools are installed directly by agents.')}
           </p>
           {agentInstalledTools.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
+            <div className="ws-tools-empty">
               {t('enterprise.tools.noAgentInstalledTools', 'No agent-installed tools')}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div className="ws-tools-list-sm">
               {agentInstalledTools.map((row) => (
-                <div key={row.agent_tool_id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px' }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontWeight: 500, fontSize: '13px' }}>🔌 {row.tool_display_name}</span>
+                <div key={row.agent_tool_id} className="card ws-tools-installed-card">
+                  <div className="ws-tools-cell-grow">
+                    <div className="ws-tools-row-8">
+                      <span className="ws-tools-name">🔌 {row.tool_display_name}</span>
                       {row.mcp_server_name ? (
-                        <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>
+                        <span className="ws-tools-tag ws-tools-tag-mcp">MCP</span>
                       ) : null}
                     </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                    <div className="ws-tools-sub">
                       🤖 {row.installed_by_agent_name || 'Unknown Agent'}
                       {row.installed_at ? <span> · {new Date(row.installed_at).toLocaleString()}</span> : null}
                     </div>
                   </div>
                   <button
-                    className="btn btn-ghost"
-                    style={{ color: 'var(--error)', fontSize: '12px' }}
+                    className="btn btn-ghost ws-tools-danger-text"
                     onClick={async () => {
                       const confirmed = await requestAppConfirm({
                         title: t('common.delete', 'Delete'),
@@ -495,31 +484,31 @@ export default function WorkspaceToolsSection({
 
       {toolsView === 'mcp-servers' ? (
         <div>
-          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+          <p className="ws-tools-hint">
             {t('enterprise.tools.mcpServersHint', 'External MCP integrations managed as server-level connectors. Each server may expose many tools internally.')}
           </p>
           {!mcpServersLoaded ? (
-            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading...')}</div>
+            <div className="ws-tools-empty">{t('common.loading', 'Loading...')}</div>
           ) : mcpServers.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
+            <div className="ws-tools-empty">
               {t('enterprise.tools.noMcpServers', 'No MCP servers yet. Add one from Extensions & Add-ons.')}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div className="ws-tools-list">
               {mcpServers.map((server) => (
-                <div key={server.id} className="card" style={{ padding: '12px 16px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                      <span style={{ fontSize: '18px' }}>🔌</span>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <span style={{ fontWeight: 600, fontSize: '13px' }}>{server.name}</span>
-                          <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>
-                          <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>{server.transport}</span>
+                <div key={server.id} className="card ws-tools-card-pad">
+                  <div className="ws-tools-row-between">
+                    <div className="ws-tools-row-10-min">
+                      <span className="ws-tools-emoji">🔌</span>
+                      <div className="ws-tools-min0">
+                        <div className="ws-tools-row-6">
+                          <span className="ws-tools-title-13">{server.name}</span>
+                          <span className="ws-tools-tag ws-tools-tag-mcp">MCP</span>
+                          <span className="ws-tools-tiny-muted">{server.transport}</span>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                            <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: MCP_STATUS_COLORS[server.status] || 'var(--text-tertiary)' }} />
+                        <div className="ws-tools-meta-row">
+                          <span className="ws-tools-inline-4">
+                            <span className="ws-tools-status-dot" style={{ background: MCP_STATUS_COLORS[server.status] || 'var(--text-tertiary)' }} />
                             {t(`agent.extensions.status.${server.status}`, server.status)}
                           </span>
                           <span>·</span>
@@ -529,22 +518,16 @@ export default function WorkspaceToolsSection({
                         </div>
                       </div>
                     </div>
-                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', flexShrink: 0 }}>
+                    <span className="ws-tools-meta-shrink">
                       {t('enterprise.tools.usedByAgents', { count: server.agent_count, defaultValue: '{{count}} agents' })}
                     </span>
                   </div>
                   {server.agents.length > 0 ? (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border-subtle)' }}>
+                    <div className="ws-tools-agent-wrap">
                       {server.agents.map((agent) => (
                         <span
                           key={agent.id}
-                          style={{
-                            fontSize: '11px',
-                            padding: '2px 8px',
-                            borderRadius: '10px',
-                            background: agent.enabled ? 'rgba(34,197,94,0.12)' : 'var(--bg-tertiary)',
-                            color: agent.enabled ? 'var(--success)' : 'var(--text-tertiary)',
-                          }}
+                          className={`ws-tools-agent-chip ${agent.enabled ? 'enabled' : 'disabled'}`}
                         >
                           {agent.name}
                         </span>
@@ -560,16 +543,15 @@ export default function WorkspaceToolsSection({
 
       {toolsView === 'plugins' ? (
         <div>
-          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+          <p className="ws-tools-hint">
             {t('enterprise.tools.pluginsHint', 'Tenant-installed plugins compose tools, skills, MCP servers, agents, hooks, and dependencies. Agent visibility is controlled per agent.')}
           </p>
-          <div className="card" style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '12px 16px', marginBottom: '12px' }}>
+          <div className="card ws-tools-plugin-form">
             <input
-              className="form-input"
+              className="form-input ws-tools-input-grow"
               value={pluginKeyInput}
               onChange={(event) => setPluginKeyInput(event.target.value)}
               placeholder={t('enterprise.tools.pluginKeyPlaceholder', 'plugin key, e.g. web_pack')}
-              style={{ flex: 1, minWidth: 0 }}
             />
             <button
               className="btn btn-primary"
@@ -606,30 +588,29 @@ export default function WorkspaceToolsSection({
             </button>
           </div>
           {!pluginsLoaded ? (
-            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading...')}</div>
+            <div className="ws-tools-empty">{t('common.loading', 'Loading...')}</div>
           ) : plugins.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
+            <div className="ws-tools-empty">
               {t('enterprise.tools.noPlugins', 'No plugins installed')}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div className="ws-tools-list">
               {plugins.map((plugin) => (
-                <div key={plugin.id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontWeight: 600, fontSize: '13px' }}>{plugin.plugin_key}</span>
-                      <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>
+                <div key={plugin.id} className="card ws-tools-plugin-card">
+                  <div className="ws-tools-min0">
+                    <div className="ws-tools-row-8">
+                      <span className="ws-tools-title-13">{plugin.plugin_key}</span>
+                      <span className="ws-tools-tag ws-tools-tag-mcp">
                         {plugin.source_kind}
                       </span>
-                      <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>{plugin.status}</span>
+                      <span className="ws-tools-tiny-muted">{plugin.status}</span>
                     </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                    <div className="ws-tools-sub">
                       {plugin.version}
                     </div>
                   </div>
                   <button
-                    className="btn btn-ghost"
-                    style={{ color: 'var(--error)', fontSize: '12px' }}
+                    className="btn btn-ghost ws-tools-danger-text"
                     disabled={pluginBusy === plugin.plugin_key}
                     onClick={async () => {
                       const confirmed = await requestAppConfirm({
@@ -659,15 +640,15 @@ export default function WorkspaceToolsSection({
 
       {toolsView === 'custom-api' ? (
         <div>
-          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+          <p className="ws-tools-hint">
             {t('enterprise.tools.customApiHint', 'Tenant-governed HTTP API actions. Credentials are stored server-side and are never exposed to agents.')}
           </p>
-          <div className="card" style={{ padding: '14px 16px', marginBottom: '12px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
+          <div className="card ws-tools-connector-form">
+            <div className="ws-tools-grid-2">
               <input className="form-input" value={customApiForm.connector_name} onChange={(event) => setCustomApiForm({ ...customApiForm, connector_name: event.target.value })} placeholder={t('enterprise.tools.connectorName', 'Connector name')} />
               <input className="form-input" value={customApiForm.action_name} onChange={(event) => setCustomApiForm({ ...customApiForm, action_name: event.target.value })} placeholder={t('enterprise.tools.actionName', 'Action name')} />
               <input className="form-input" value={customApiForm.base_url} onChange={(event) => setCustomApiForm({ ...customApiForm, base_url: event.target.value })} placeholder="https://api.example.com" />
-              <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '8px' }}>
+              <div className="ws-tools-grid-100">
                 <select className="form-input" value={customApiForm.method} onChange={(event) => setCustomApiForm({ ...customApiForm, method: event.target.value })}>
                   {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((method) => <option key={method} value={method}>{method}</option>)}
                 </select>
@@ -679,7 +660,7 @@ export default function WorkspaceToolsSection({
                 <option value="bearer">{t('enterprise.tools.authBearer', 'Bearer token')}</option>
                 <option value="basic">{t('enterprise.tools.authBasic', 'Basic auth')}</option>
               </select>
-              <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '8px' }}>
+              <div className="ws-tools-grid-100">
                 <select className="form-input" value={customApiForm.auth_location} onChange={(event) => setCustomApiForm({ ...customApiForm, auth_location: event.target.value })}>
                   <option value="header">{t('enterprise.tools.header', 'Header')}</option>
                   <option value="query">{t('enterprise.tools.query', 'Query')}</option>
@@ -689,14 +670,14 @@ export default function WorkspaceToolsSection({
               <input className="form-input" type="password" value={customApiForm.secret_value} onChange={(event) => setCustomApiForm({ ...customApiForm, secret_value: event.target.value })} placeholder={t('enterprise.tools.secretValue', 'Credential value')} />
               <input className="form-input" value={customApiForm.description} onChange={(event) => setCustomApiForm({ ...customApiForm, description: event.target.value })} placeholder={t('enterprise.tools.description', 'Description')} />
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px', marginTop: '10px' }}>
+            <div className="ws-tools-grid-2 ws-tools-mt-10">
               <textarea className="form-input" value={customApiForm.parameters_schema} onChange={(event) => setCustomApiForm({ ...customApiForm, parameters_schema: event.target.value })} rows={5} placeholder="parameters_schema JSON" />
               <textarea className="form-input" value={customApiForm.body_template} onChange={(event) => setCustomApiForm({ ...customApiForm, body_template: event.target.value })} rows={5} placeholder={t('enterprise.tools.bodyTemplateJson', 'Body template JSON, optional')} />
               <textarea className="form-input" value={customApiForm.headers} onChange={(event) => setCustomApiForm({ ...customApiForm, headers: event.target.value })} rows={3} placeholder={t('enterprise.tools.headersJson', 'Headers JSON')} />
               <textarea className="form-input" value={customApiForm.query} onChange={(event) => setCustomApiForm({ ...customApiForm, query: event.target.value })} rows={3} placeholder={t('enterprise.tools.queryJson', 'Query JSON')} />
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            <div className="ws-tools-row-between ws-tools-mt-10">
+              <label className="ws-tools-check-label">
                 <input type="checkbox" checked={customApiForm.is_default} onChange={(event) => setCustomApiForm({ ...customApiForm, is_default: event.target.checked })} />
                 {t('enterprise.tools.enableForAllAgents', 'Enable for all agents')}
               </label>
@@ -737,24 +718,23 @@ export default function WorkspaceToolsSection({
             </div>
           </div>
           {!customApisLoaded ? (
-            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading...')}</div>
+            <div className="ws-tools-empty">{t('common.loading', 'Loading...')}</div>
           ) : customApis.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('enterprise.tools.noCustomApis', 'No custom API connectors')}</div>
+            <div className="ws-tools-empty">{t('enterprise.tools.noCustomApis', 'No custom API connectors')}</div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div className="ws-tools-list">
               {customApis.map((connector) => (
-                <div key={connector.id} className="card" style={{ padding: '12px 16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: '13px' }}>{connector.display_name}</div>
-                      <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{connector.name}</div>
-                      {connector.description ? <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '6px' }}>{connector.description}</div> : null}
+                <div key={connector.id} className="card ws-tools-card-pad">
+                  <div className="ws-tools-split">
+                    <div className="ws-tools-min0">
+                      <div className="ws-tools-title-13">{connector.display_name}</div>
+                      <div className="ws-tools-sub">{connector.name}</div>
+                      {connector.description ? <div className="ws-tools-desc">{connector.description}</div> : null}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                      <span style={{ fontSize: '11px', color: connector.enabled ? 'var(--success)' : 'var(--text-tertiary)' }}>{connector.enabled ? t('enterprise.tools.enabled', 'Enabled') : t('enterprise.tools.disabled', 'Disabled')}</span>
+                    <div className="ws-tools-cell-shrink">
+                      <span className={connector.enabled ? 'ws-tools-state-on' : 'ws-tools-state-off'}>{connector.enabled ? t('enterprise.tools.enabled', 'Enabled') : t('enterprise.tools.disabled', 'Disabled')}</span>
                       <button
-                        className="btn btn-ghost"
-                        style={{ color: 'var(--error)', fontSize: '12px' }}
+                        className="btn btn-ghost ws-tools-danger-text"
                         disabled={customApiBusy === connector.id}
                         onClick={async () => {
                           const confirmed = await requestAppConfirm({
@@ -778,7 +758,7 @@ export default function WorkspaceToolsSection({
                       </button>
                     </div>
                   </div>
-                  <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                  <div className="ws-tools-row-8 ws-tools-mt-10">
                     <input className="form-input" value={customApiForm.test_arguments} onChange={(event) => setCustomApiForm({ ...customApiForm, test_arguments: event.target.value })} placeholder={t('enterprise.tools.testArgumentsJson', 'Test arguments JSON')} />
                     <button
                       className="btn btn-ghost"
@@ -797,7 +777,7 @@ export default function WorkspaceToolsSection({
                     </button>
                   </div>
                   {customApiTestResult[connector.id] ? (
-                    <pre style={{ marginTop: '8px', padding: '10px', maxHeight: '220px', overflow: 'auto', fontSize: '11px', background: 'var(--bg-tertiary)', borderRadius: '6px' }}>{customApiTestResult[connector.id]}</pre>
+                    <pre className="ws-tools-pre">{customApiTestResult[connector.id]}</pre>
                   ) : null}
                 </div>
               ))}
@@ -808,7 +788,7 @@ export default function WorkspaceToolsSection({
 
       {toolsView === 'global' ? (
         <>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <div className="ws-tools-section-head">
             <h3>{t('enterprise.tools.extensionsAddons', 'Extensions & Add-ons')}</h3>
             <button className="btn btn-primary" onClick={() => setShowAddMCP(true)}>
               + {t('enterprise.tools.addMcpServer', 'Add MCP Server')}
@@ -816,15 +796,15 @@ export default function WorkspaceToolsSection({
           </div>
 
           {showAddMCP ? (
-            <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
-              <h4 style={{ marginBottom: '12px' }}>{t('enterprise.tools.mcpServer', 'MCP Server')}</h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div className="card ws-tools-addmcp-card">
+              <h4 className="ws-tools-mb-12">{t('enterprise.tools.mcpServer', 'MCP Server')}</h4>
+              <div className="ws-tools-col-10">
                 <div>
-                  <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>
+                  <label className="ws-tools-form-label">
                     {t('enterprise.tools.jsonConfig', 'JSON Config')}
                   </label>
                   <textarea
-                    className="form-input"
+                    className="form-input ws-tools-json-area"
                     value={mcpRawInput}
                     onChange={(event) => {
                       const value = event.target.value;
@@ -844,18 +824,17 @@ export default function WorkspaceToolsSection({
                       }
                     }}
                     placeholder={"{\n  \"mcpServers\": {\n    \"server-name\": {\n      \"type\": \"sse\",\n      \"url\": \"https://mcp.example.com/sse\"\n    }\n  }\n}\n\nor paste a URL directly"}
-                    style={{ minHeight: '120px', fontFamily: 'var(--font-mono)', fontSize: '12px', resize: 'vertical' }}
                   />
                 </div>
                 {mcpForm.server_name ? (
-                  <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: 'var(--text-secondary)', padding: '8px 12px', background: 'var(--bg-tertiary)', borderRadius: '6px' }}>
+                  <div className="ws-tools-parsed">
                     <span>Name: <strong>{mcpForm.server_name}</strong></span>
                     <span>URL: <strong>{mcpForm.server_url}</strong></span>
                   </div>
                 ) : null}
                 {!mcpForm.server_name ? (
                   <div>
-                    <label style={{ display: 'block', fontSize: '12px', marginBottom: '4px' }}>
+                    <label className="ws-tools-form-label">
                       {t('enterprise.tools.mcpServerName', 'MCP Server Name')}
                     </label>
                     <input
@@ -866,7 +845,7 @@ export default function WorkspaceToolsSection({
                     />
                   </div>
                 ) : null}
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div className="ws-tools-row-8">
                   <button
                     className="btn btn-secondary"
                     disabled={mcpTesting || !mcpForm.server_url}
@@ -897,21 +876,20 @@ export default function WorkspaceToolsSection({
                   </button>
                 </div>
                 {mcpTestResult ? (
-                  <div className="card" style={{ padding: '12px', background: mcpTestResult.ok ? 'rgba(0,200,100,0.1)' : 'rgba(255,0,0,0.1)' }}>
+                  <div className={`card ws-tools-test-card ${mcpTestResult.ok ? 'ok' : 'fail'}`}>
                     {mcpTestResult.ok ? (
                       <div>
-                        <div style={{ color: 'var(--success)', fontWeight: 600, marginBottom: '8px' }}>
+                        <div className="ws-tools-test-ok-title">
                           {t('enterprise.tools.connectionSuccess', { count: mcpTestResult.tools?.length || 0 })}
                         </div>
                         {(mcpTestResult.tools || []).map((tool: any, index: number) => (
-                          <div key={index} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border-color)' }}>
+                          <div key={index} className="ws-tools-test-row">
                             <div>
-                              <span style={{ fontWeight: 500, fontSize: '13px' }}>{tool.name}</span>
-                              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{tool.description?.slice(0, 80)}</div>
+                              <span className="ws-tools-name">{tool.name}</span>
+                              <div className="ws-tools-note">{tool.description?.slice(0, 80)}</div>
                             </div>
                             <button
                               className="btn btn-secondary"
-                              style={{ padding: '4px 10px', fontSize: '11px' }}
                               onClick={async () => {
                                 try {
                                   await toolsApi.createTool({
@@ -937,10 +915,9 @@ export default function WorkspaceToolsSection({
                             </button>
                           </div>
                         ))}
-                        <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'flex-end' }}>
+                        <div className="ws-tools-actions-end">
                           <button
                             className="btn btn-primary"
-                            style={{ padding: '6px 14px', fontSize: '12px' }}
                             onClick={async () => {
                               const tools = mcpTestResult.tools || [];
                               let successCount = 0;
@@ -982,7 +959,7 @@ export default function WorkspaceToolsSection({
                         </div>
                       </div>
                     ) : (
-                      <div style={{ color: 'var(--danger)' }}>
+                      <div className="ws-tools-danger-text">
                         {t('enterprise.tools.connectionFailed', 'Connection failed')}: {mcpTestResult.error}
                       </div>
                     )}
@@ -1002,25 +979,26 @@ export default function WorkspaceToolsSection({
 
             if (extensionTools.length === 0) {
               return (
-                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
+                <div className="ws-tools-empty">
                   {t('enterprise.tools.emptyExtensionsState', 'No extensions or add-ons configured')}
                 </div>
               );
             }
 
             return (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div className="ws-tools-groups">
                 {Object.entries(grouped).map(([category, categoryTools]) => {
                   const hasCategoryConfig = !!GLOBAL_CATEGORY_CONFIG_SCHEMAS[category];
 
                   return (
                     <div key={category}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                        <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      <div className="ws-tools-group-head">
+                        <div className="ws-tools-group-label">
                           {categoryLabels[category] || category}
                         </div>
                         {hasCategoryConfig ? (
                           <button
+                            className="btn btn-secondary"
                             onClick={() => {
                               setConfigCategory(category);
                               setEditingConfig({});
@@ -1029,7 +1007,6 @@ export default function WorkspaceToolsSection({
                                 setEditingConfig({ ...firstToolWithConfig.config });
                               }
                             }}
-                            style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
                             title={`Configure ${category}`}
                           >
                             Configure
@@ -1037,7 +1014,7 @@ export default function WorkspaceToolsSection({
                         ) : null}
                       </div>
 
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <div className="ws-tools-list-sm">
                         {(() => {
                           // Split MCP tools into server groups; non-MCP tools render flat
                           const nonMcpTools = categoryTools.filter((tool) => tool.type !== 'mcp');
@@ -1065,65 +1042,58 @@ export default function WorkspaceToolsSection({
                               : displayName;
 
                             return (
-                              <div key={tool.id} className="card" style={{ padding: '0', overflow: 'hidden' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
+                              <div key={tool.id} className="card ws-tools-tool-card">
+                                <div className="ws-tools-tool-row">
+                                  <div className="ws-tools-tool-main">
                                     <ToolIcon tool={tool} />
-                                    <div style={{ minWidth: 0 }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                        <span style={{ fontWeight: 500, fontSize: '13px' }}>{shortName}</span>
+                                    <div className="ws-tools-min0">
+                                      <div className="ws-tools-row-6">
+                                        <span className="ws-tools-name">{shortName}</span>
                                         {tool.type !== 'mcp' ? (
-                                          <span style={{ fontSize: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px' }}>
+                                          <span className="ws-tools-tag ws-tools-tag-addon">
                                             {t('enterprise.tools.addOn', 'Add-on')}
                                           </span>
                                         ) : null}
                                         {tool.is_default ? (
-                                          <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.15)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px' }}>Default</span>
+                                          <span className="ws-tools-tag ws-tools-tag-default">Default</span>
                                         ) : null}
                                       </div>
-                                      <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      <div className="ws-tools-desc-clip">
                                         {tool.description?.slice(0, 80)}
                                       </div>
                                     </div>
                                   </div>
 
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                  <div className="ws-tools-cell-shrink">
                                     {capability ? (
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                      <div className="ws-tools-row-6">
                                         <select
-                                          className="form-input"
+                                          className="form-input ws-tools-mode-select"
                                           value={governanceState.executionMode}
                                           disabled={tool.enabled === false || capabilityPolicyBusy === capability}
                                           onChange={async (event) => {
                                             await updateToolExecutionMode(capability, event.target.value as WorkspaceToolExecutionMode);
                                           }}
                                           title={t('enterprise.tools.executionMode', 'Execution mode')}
-                                          style={{ width: '120px', height: '28px', padding: '2px 8px', fontSize: '11px' }}
                                         >
                                           <option value="auto">{t('enterprise.tools.executionAuto', 'Auto allow')}</option>
                                           <option value="approval">{t('enterprise.tools.executionApproval', 'Require approval')}</option>
                                         </select>
                                         <span
                                           title={capability}
-                                          style={{
-                                            fontSize: '10px',
-                                            color: governanceState.effectiveStatus === 'legacy_denied'
-                                              ? '#ef4444'
+                                          className={`ws-tools-gov-status ${
+                                            governanceState.effectiveStatus === 'legacy_denied'
+                                              ? 'is-denied'
                                               : governanceState.effectiveStatus === 'approval_required'
-                                                ? '#f59e0b'
-                                                : 'var(--text-tertiary)',
-                                            background: 'var(--bg-tertiary)',
-                                            borderRadius: '4px',
-                                            padding: '2px 6px',
-                                            whiteSpace: 'nowrap',
-                                          }}
+                                                ? 'is-approval'
+                                                : ''
+                                          }`}
                                         >
                                           {effectiveStatusLabel(governanceState.effectiveStatus)}
                                         </span>
                                         {governanceState.effectiveStatus === 'legacy_denied' ? (
                                           <button
                                             className="btn btn-secondary"
-                                            style={{ padding: '4px 8px', fontSize: '11px' }}
                                             disabled={capabilityPolicyBusy === capability}
                                             onClick={async () => {
                                               await updateToolExecutionMode(capability, 'auto');
@@ -1134,9 +1104,7 @@ export default function WorkspaceToolsSection({
                                         ) : null}
                                       </div>
                                     ) : (
-                                      <span
-                                        style={{ fontSize: '10px', color: 'var(--text-tertiary)', background: 'var(--bg-tertiary)', borderRadius: '4px', padding: '2px 6px', whiteSpace: 'nowrap' }}
-                                      >
+                                      <span className="ws-tools-gov-status">
                                         {effectiveStatusLabel('unmanaged')}
                                       </span>
                                     )}
@@ -1144,7 +1112,6 @@ export default function WorkspaceToolsSection({
                                     {hasOwnConfig ? (
                                       <button
                                         className="btn btn-secondary"
-                                        style={{ padding: '4px 8px', fontSize: '11px' }}
                                         onClick={() => {
                                           if (isEditing) {
                                             setEditingToolId(null);
@@ -1161,7 +1128,6 @@ export default function WorkspaceToolsSection({
                                     {tool.type !== 'builtin' ? (
                                       <button
                                         className="btn btn-danger"
-                                        style={{ padding: '4px 8px', fontSize: '11px' }}
                                         onClick={async () => {
                                           const confirmed = await requestAppConfirm({
                                             title: t('common.delete', 'Delete'),
@@ -1179,7 +1145,7 @@ export default function WorkspaceToolsSection({
                                       </button>
                                     ) : null}
 
-                                    <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
+                                    <label className="ws-tools-toggle">
                                       <input
                                         type="checkbox"
                                         checked={tool.enabled !== false}
@@ -1191,18 +1157,18 @@ export default function WorkspaceToolsSection({
                                             showAppToast(error?.message || t('enterprise.tools.updateFailed', 'Update failed'), 'error');
                                           }
                                         }}
-                                        style={{ opacity: 0, width: 0, height: 0 }}
+                                        className="ws-tools-toggle-input"
                                       />
-                                      <span style={{ position: 'absolute', inset: 0, background: tool.enabled !== false ? '#22c55e' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
-                                        <span style={{ position: 'absolute', left: tool.enabled !== false ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                      <span className={`ws-tools-toggle-track ${tool.enabled !== false ? 'on' : ''}`}>
+                                        <span className="ws-tools-toggle-knob" />
                                       </span>
                                     </label>
                                   </div>
                                 </div>
 
                                 {isEditing && hasOwnConfig ? (
-                                  <div style={{ borderTop: '1px solid var(--border-color)', padding: '16px', background: 'var(--bg-secondary)' }}>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                  <div className="ws-tools-config-panel">
+                                    <div className="ws-tools-col-12">
                                       {(tool.config_schema?.fields || []).map((field: any) => {
                                         if (field.depends_on) {
                                           const visible = Object.entries(field.depends_on).every(([key, values]: [string, any]) =>
@@ -1224,7 +1190,7 @@ export default function WorkspaceToolsSection({
                                         }
                                         return (
                                           <div key={field.key}>
-                                            <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>{field.label}</label>
+                                            <label className="ws-tools-field-label">{field.label}</label>
                                             {field.type === 'select' ? (
                                               <select className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} onChange={(event) => setEditingConfig((current) => ({ ...current, [field.key]: event.target.value }))}>
                                                 {(field.options || []).map((option: any) => (
@@ -1241,7 +1207,7 @@ export default function WorkspaceToolsSection({
                                           </div>
                                         );
                                       })}
-                                      <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                                      <div className="ws-tools-row-8 ws-tools-mt-4">
                                         <button
                                           className="btn btn-primary"
                                           onClick={async () => {
@@ -1273,9 +1239,9 @@ export default function WorkspaceToolsSection({
                                 const isCollapsed = !collapsedServers.has(serverName);
                                 const enabledCount = serverTools.filter((t) => t.enabled).length;
                                 return (
-                                  <div key={`mcp-server-${serverName}`} className="card" style={{ padding: '0', overflow: 'hidden' }}>
+                                  <div key={`mcp-server-${serverName}`} className="card ws-tools-tool-card">
                                     <div
-                                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', cursor: 'pointer', userSelect: 'none' }}
+                                      className="ws-tools-server-header"
                                       onClick={() => setCollapsedServers((prev) => {
                                         const next = new Set(prev);
                                         if (next.has(serverName)) next.delete(serverName);
@@ -1283,21 +1249,21 @@ export default function WorkspaceToolsSection({
                                         return next;
                                       })}
                                     >
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                        <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', transition: 'transform 0.15s', transform: isCollapsed ? 'rotate(0deg)' : 'rotate(90deg)' }}>
+                                      <div className="ws-tools-row-10">
+                                        <span className={`ws-tools-chevron ${isCollapsed ? '' : 'open'}`}>
                                           ▶
                                         </span>
-                                        <span style={{ fontSize: '18px' }}>🔌</span>
+                                        <span className="ws-tools-emoji">🔌</span>
                                         <div>
-                                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <span style={{ fontWeight: 600, fontSize: '13px' }}>{serverName}</span>
-                                            <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>MCP</span>
-                                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                          <div className="ws-tools-row-6">
+                                            <span className="ws-tools-title-13">{serverName}</span>
+                                            <span className="ws-tools-tag ws-tools-tag-mcp">MCP</span>
+                                            <span className="ws-tools-note">
                                               {enabledCount}/{serverTools.length} {t('enterprise.tools.toolsEnabled', 'enabled')}
                                             </span>
                                           </div>
                                           {serverTools[0]?.mcp_server_url ? (
-                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '1px' }}>
+                                            <div className="ws-tools-server-url">
                                               {serverTools[0].mcp_server_url.length > 60 ? serverTools[0].mcp_server_url.slice(0, 60) + '...' : serverTools[0].mcp_server_url}
                                             </div>
                                           ) : null}
@@ -1305,7 +1271,6 @@ export default function WorkspaceToolsSection({
                                       </div>
                                       <button
                                         className="btn btn-danger"
-                                        style={{ padding: '4px 8px', fontSize: '11px' }}
                                         onClick={async (event) => {
                                           event.stopPropagation();
                                           const confirmed = await requestAppConfirm({
@@ -1326,7 +1291,7 @@ export default function WorkspaceToolsSection({
                                       </button>
                                     </div>
                                     {!isCollapsed ? (
-                                      <div style={{ borderTop: '1px solid var(--border-color)', padding: '4px 8px 8px 42px', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                      <div className="ws-tools-server-tools">
                                         {serverTools.map(renderToolRow)}
                                       </div>
                                     ) : null}
@@ -1345,16 +1310,16 @@ export default function WorkspaceToolsSection({
           })()}
 
           {configCategory && GLOBAL_CATEGORY_CONFIG_SCHEMAS[configCategory] ? (
-            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setConfigCategory(null)}>
-              <div onClick={(event) => event.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <div className="ui-modal-overlay" onClick={() => setConfigCategory(null)}>
+              <div onClick={(event) => event.stopPropagation()} className="ui-modal ws-tools-config-modal">
+                <div className="ws-tools-section-head">
                   <div>
-                    <h3 style={{ margin: 0 }}>{GLOBAL_CATEGORY_CONFIG_SCHEMAS[configCategory].title}</h3>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>Global configuration shared by all tools in this category</div>
+                    <h3 className="ws-tools-m0">{GLOBAL_CATEGORY_CONFIG_SCHEMAS[configCategory].title}</h3>
+                    <div className="ws-tools-sub">Global configuration shared by all tools in this category</div>
                   </div>
-                  <button onClick={() => setConfigCategory(null)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)' }}>x</button>
+                  <button onClick={() => setConfigCategory(null)} className="btn btn-ghost ws-tools-x">x</button>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div className="ws-tools-col-12">
                   {GLOBAL_CATEGORY_CONFIG_SCHEMAS[configCategory].fields.map((field: any) => (
                     field.type === 'password' && field.multiline ? (
                       <ToolConfigSecretListField
@@ -1365,7 +1330,7 @@ export default function WorkspaceToolsSection({
                       />
                     ) : (
                       <div key={field.key}>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>{field.label}</label>
+                        <label className="ws-tools-field-label">{field.label}</label>
                         {field.type === 'password' ? (
                           <input type="password" autoComplete="new-password" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''} onChange={(event) => setEditingConfig((current) => ({ ...current, [field.key]: event.target.value }))} />
                         ) : (
@@ -1374,7 +1339,7 @@ export default function WorkspaceToolsSection({
                       </div>
                     )
                   ))}
-                  <div style={{ display: 'flex', gap: '8px', marginTop: '8px', justifyContent: 'flex-end' }}>
+                  <div className="ws-tools-footer">
                     <button className="btn btn-secondary" onClick={() => setConfigCategory(null)}>
                       {t('common.cancel', 'Cancel')}
                     </button>

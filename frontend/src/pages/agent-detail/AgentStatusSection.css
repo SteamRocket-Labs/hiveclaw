@@ -1,0 +1,244 @@
+/* ═══════════════════════════════════════════════════════
+   AgentStatusSection — overview surface styles (P3)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   动态值（approvals/failed 状态色）保留 inline
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Metric grid + cards ─────────────────────────────── */
+.agent-status-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.agent-status-metric-label {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+
+.agent-status-status-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.agent-status-status-value {
+  font-size: var(--text-title);
+  font-weight: 500;
+}
+
+/* KPI 数字：对齐 Dashboard 的 stat-value（title 档，禁 hero 化） */
+.agent-status-metric-value {
+  font-size: var(--text-title);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-status-metric-sub {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+/* tooltip metric card（配合 index.css 的 .metric-tooltip-trigger 悬浮） */
+.agent-status-card-tooltip {
+  position: relative;
+}
+
+.agent-status-tooltip-trigger {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* ── Two-column profile / model ──────────────────────── */
+.agent-status-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+
+.agent-status-card-title {
+  font-size: var(--text-emphasis);
+  font-weight: 600;
+  margin-bottom: var(--space-3);
+}
+
+.agent-status-panel-title {
+  font-size: var(--text-emphasis);
+  font-weight: 600;
+  margin: 0;
+}
+
+.agent-status-field-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-status-field {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-body);
+}
+
+.agent-status-field-label {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.agent-status-field-clamp {
+  text-align: right;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.agent-status-capitalize {
+  text-transform: capitalize;
+}
+
+/* ── Section wrappers (capability / channel / activity) ─ */
+.agent-status-section {
+  margin-bottom: var(--space-6);
+}
+
+.agent-status-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* ── Capability install stats ────────────────────────── */
+.agent-status-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin-bottom: var(--space-4);
+}
+
+.agent-status-stat {
+  padding: 10px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+}
+
+.agent-status-stat-label {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-1);
+}
+
+.agent-status-stat-value {
+  font-size: var(--text-title);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-status-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.agent-status-issues-title {
+  font-size: var(--text-row);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.agent-status-issue {
+  padding: 10px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.agent-status-issue-name {
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.agent-status-issue-msg {
+  font-size: var(--text-row);
+  color: var(--text-secondary);
+  margin-top: var(--space-1);
+}
+
+/* ── Channel capability table — hairline 行分隔，无边框 ── */
+.agent-status-table-scroll {
+  overflow-x: auto;
+}
+
+.agent-status-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-row);
+}
+
+.agent-status-table-head {
+  text-align: left;
+  color: var(--text-tertiary);
+}
+
+.agent-status-th {
+  padding: var(--space-2) 10px;
+}
+
+.agent-status-tr {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-status-td {
+  padding: 10px;
+}
+
+.agent-status-td-strong {
+  font-weight: 600;
+}
+
+.agent-status-td-note {
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
+
+/* ── Recent activity ─────────────────────────────────── */
+.agent-status-activity-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+
+.agent-status-activity-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: 6px 0;
+}
+
+.agent-status-activity-time {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  min-width: 60px;
+  flex-shrink: 0;
+}
+
+/* ── Footer actions ──────────────────────────────────── */
+.agent-status-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: var(--space-5);
+}

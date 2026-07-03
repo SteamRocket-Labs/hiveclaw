@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
+import './AgentWorkflowsSection.css';
 import {
   activateWorkflowDefinition,
   approveWorkflowPromotion,
@@ -34,29 +35,14 @@ type AgentWorkflowsSectionProps = {
 
 type Tone = 'ok' | 'warn' | 'error' | 'muted';
 
-const badgeStyle = (tone: Tone): React.CSSProperties => ({
-  padding: '2px 8px',
-  borderRadius: 'var(--radius-full, 999px)',
-  fontSize: '11px',
-  fontWeight: 600,
-  whiteSpace: 'nowrap',
-  background:
-    tone === 'ok'
-      ? 'var(--success-subtle, rgba(0,180,120,0.12))'
-      : tone === 'warn'
-        ? 'var(--warning-subtle, rgba(255,180,0,0.12))'
-        : tone === 'error'
-          ? 'var(--error-subtle, rgba(255,80,80,0.12))'
-          : 'rgba(128,128,128,0.12)',
-  color:
-    tone === 'ok'
-      ? 'var(--success)'
-      : tone === 'warn'
-        ? 'var(--warning)'
-        : tone === 'error'
-          ? 'var(--error)'
-          : 'var(--text-secondary)',
-});
+const BADGE_TONE_CLASS: Record<Tone, string> = {
+  ok: 'badge-success',
+  warn: 'badge-warning',
+  error: 'badge-error',
+  muted: 'badge-neutral',
+};
+
+const badgeClass = (tone: Tone): string => `badge ${BADGE_TONE_CLASS[tone]}`;
 
 export function definitionTone(status: WorkflowDefinitionRecord['status']): Tone {
   if (status === 'active') return 'ok';
@@ -131,15 +117,6 @@ export function buildWorkflowStartOptions(
     planHash: handoff.planHash.trim(),
   };
 }
-
-const sectionTitleStyle: React.CSSProperties = { margin: '0 0 4px', fontSize: 15 };
-const sectionHintStyle: React.CSSProperties = { margin: '0 0 12px', color: 'var(--text-secondary)', fontSize: 13 };
-const cardStyle: React.CSSProperties = {
-  border: '1px solid var(--border-subtle, rgba(128,128,128,0.2))',
-  borderRadius: 'var(--radius-md, 8px)',
-  padding: '12px 16px',
-  background: 'var(--bg-secondary, transparent)',
-};
 
 export default function AgentWorkflowsSection({ agentId, canManage = false }: AgentWorkflowsSectionProps) {
   const { t } = useTranslation();
@@ -307,39 +284,27 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
   const startOptions = buildWorkflowStartOptions(preview, planHandoff);
 
   return (
-    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 28, maxWidth: 920 }}>
-      <p style={{ ...sectionHintStyle, margin: 0 }}>{t('workflows.intro')}</p>
+    <div className="agent-workflows-root">
+      <p className="agent-workflows-intro">{t('workflows.intro')}</p>
 
       {actionError && (
-        <div data-testid="workflow-action-error" style={{ color: 'var(--error)', fontSize: 13 }}>
+        <div data-testid="workflow-action-error" className="agent-workflows-error">
           {actionError}
         </div>
       )}
 
       {/* ── promote suggestions: repeated-run evidence (§4 / §6.6) ── */}
       {suggestions.length > 0 && (
-        <div
-          data-testid="workflow-suggestions-banner"
-          style={{
-            ...cardStyle,
-            borderColor: 'var(--accent-primary, #6366f1)',
-            background: 'var(--accent-subtle, rgba(99,102,241,0.08))',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-          }}
-        >
+        <div data-testid="workflow-suggestions-banner" className="agent-workflows-suggestions">
           {suggestions.map((suggestion) => (
-            <div
-              key={suggestion.definition_hash}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}
-            >
-              <span style={{ fontSize: 13 }}>
+            <div key={suggestion.definition_hash} className="agent-workflows-suggestion-row">
+              <span className="u-body">
                 {t('workflows.suggestionBody', { name: suggestion.name, count: suggestion.run_count })}
               </span>
               {canManage && suggestion.sample_run_ids.length > 0 && (
                 <button
                   type="button"
+                  className="btn btn-secondary"
                   onClick={() => promoteMutation.mutate(suggestion.sample_run_ids[0])}
                   disabled={promoteMutation.isPending}
                 >
@@ -353,47 +318,40 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
 
       {/* ── ① templates: 固化资产 ── */}
       <section data-testid="workflow-templates-section">
-        <h3 style={sectionTitleStyle}>{t('workflows.registeredTitle')}</h3>
-        <p style={sectionHintStyle}>{t('workflows.registeredHint')}</p>
+        <h3 className="agent-workflows-section-title">{t('workflows.registeredTitle')}</h3>
+        <p className="agent-workflows-hint">{t('workflows.registeredHint')}</p>
         {definitions.length === 0 ? (
-          <p style={{ color: 'var(--text-tertiary, var(--text-secondary))', fontSize: 13 }}>
-            {t('workflows.noDefinitions')}
-          </p>
+          <p className="u-body u-tertiary">{t('workflows.noDefinitions')}</p>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div className="agent-workflows-list">
             {definitions.map((record) => (
               <div
                 key={record.id}
                 data-testid={`workflow-definition-${record.name}-v${record.definition_version}`}
-                style={cardStyle}
+                className="agent-workflows-card"
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <strong style={{ fontSize: 14 }}>{record.name}</strong>
-                  <span style={{ color: 'var(--text-tertiary, var(--text-secondary))', fontSize: 12 }}>
-                    v{record.definition_version}
-                  </span>
-                  <span style={badgeStyle(definitionTone(record.status))}>
+                <div className="agent-workflows-card-head">
+                  <strong className="u-emphasis">{record.name}</strong>
+                  <span className="u-row u-tertiary">v{record.definition_version}</span>
+                  <span className={badgeClass(definitionTone(record.status))}>
                     {t(DEFINITION_STATUS_KEYS[record.status] ?? record.status)}
                   </span>
-                  <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                  <span className="u-row u-secondary">
                     {t(VISIBILITY_KEYS[record.visibility_scope] ?? record.visibility_scope)}
                   </span>
                   {record.promoted_from_run_id && (
-                    <span style={{ color: 'var(--text-tertiary, var(--text-secondary))', fontSize: 12 }}>
+                    <span className="u-row u-tertiary">
                       {t('workflows.promotedFrom')} {record.promoted_from_run_id.slice(0, 8)}…
                     </span>
                   )}
                 </div>
-                {record.description && (
-                  <p style={{ margin: '6px 0 0', color: 'var(--text-secondary)', fontSize: 13 }}>
-                    {record.description}
-                  </p>
-                )}
+                {record.description && <p className="agent-workflows-card-desc">{record.description}</p>}
                 {canManage && (
-                  <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                  <div className="agent-workflows-actions">
                     {record.status === 'draft' && (
                       <button
                         type="button"
+                        className="btn btn-ghost"
                         onClick={() => lifecycleMutation.mutate({ id: record.id, action: 'promote' })}
                       >
                         {t('workflows.approvePromotion')}
@@ -401,11 +359,12 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                     )}
                     {record.status === 'active' && (
                       <>
-                        <button type="button" onClick={() => forkMutation.mutate(record)}>
+                        <button type="button" className="btn btn-ghost" onClick={() => forkMutation.mutate(record)}>
                           {t('workflows.fork')}
                         </button>
                         <button
                           type="button"
+                          className="btn btn-ghost"
                           onClick={() => lifecycleMutation.mutate({ id: record.id, action: 'deprecate' })}
                         >
                           {t('workflows.deprecate')}
@@ -415,6 +374,7 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                     {record.status !== 'revoked' && (
                       <button
                         type="button"
+                        className="btn btn-ghost"
                         onClick={() => lifecycleMutation.mutate({ id: record.id, action: 'revoke' })}
                       >
                         {t('workflows.revoke')}
@@ -430,21 +390,19 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
 
       {/* ── ② run history: archived ephemeral flows ── */}
       <section data-testid="workflow-runs-section">
-        <h3 style={sectionTitleStyle}>{t('workflows.runsTitle')}</h3>
-        <p style={sectionHintStyle}>{t('workflows.runsHint')}</p>
+        <h3 className="agent-workflows-section-title">{t('workflows.runsTitle')}</h3>
+        <p className="agent-workflows-hint">{t('workflows.runsHint')}</p>
         {runs.length === 0 ? (
-          <p style={{ color: 'var(--text-tertiary, var(--text-secondary))', fontSize: 13 }}>
-            {t('workflows.runsEmpty')}
-          </p>
+          <p className="u-body u-tertiary">{t('workflows.runsEmpty')}</p>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div className="agent-workflows-list">
             {runs.map((run) => {
               const expanded = expandedRunId === run.run_id;
               const dynamicWorkflow = run.dynamic_workflow ?? null;
               const outcomeEvidence = run.outcome_evidence ?? dynamicWorkflow?.outcome_evidence ?? null;
               const repairPlan = run.repair_plan ?? dynamicWorkflow?.repair_plan ?? null;
               return (
-                <div key={run.run_id} data-testid={`workflow-run-row-${run.run_id}`} style={cardStyle}>
+                <div key={run.run_id} data-testid={`workflow-run-row-${run.run_id}`} className="agent-workflows-card">
                   <div
                     role="button"
                     tabIndex={0}
@@ -455,35 +413,25 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                         setExpandedRunId(expanded ? null : run.run_id);
                       }
                     }}
-                    style={{ cursor: 'pointer' }}
+                    className="agent-workflows-run-head"
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <strong style={{ fontSize: 14 }}>{run.name}</strong>
-                      <span style={badgeStyle(runStatusTone(run.status))}>
+                    <div className="agent-workflows-card-head">
+                      <strong className="u-emphasis">{run.name}</strong>
+                      <span className={badgeClass(runStatusTone(run.status))}>
                         {t(RUN_STATUS_KEYS[run.status] ?? run.status)}
                       </span>
-                      {dynamicWorkflow && (
-                        <span style={badgeStyle('muted')}>
-                          {t('workflows.dynamicWorkflow')}
-                        </span>
-                      )}
+                      {dynamicWorkflow && <span className={badgeClass('muted')}>{t('workflows.dynamicWorkflow')}</span>}
                       {run.steps_total > 0 && (
-                        <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                        <span className="u-row u-secondary">
                           {t('workflows.stepsProgress', { done: run.steps_done, total: run.steps_total })}
                           {run.steps_failed > 0 ? ` · ${t('workflows.stepsFailed', { count: run.steps_failed })}` : ''}
                         </span>
                       )}
-                      <span style={{ marginLeft: 'auto', color: 'var(--text-tertiary, var(--text-secondary))', fontSize: 12 }}>
-                        {formatTimestamp(run.created_at)}
-                      </span>
+                      <span className="agent-workflows-run-time">{formatTimestamp(run.created_at)}</span>
                     </div>
-                    {run.description && (
-                      <p style={{ margin: '6px 0 0', color: 'var(--text-secondary)', fontSize: 13 }}>
-                        {run.description}
-                      </p>
-                    )}
+                    {run.description && <p className="agent-workflows-card-desc">{run.description}</p>}
                     {dynamicWorkflow && (
-                      <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 12, color: 'var(--text-secondary)' }}>
+                      <div className="agent-workflows-dynamic-meta">
                         {dynamicWorkflow.proposal_id && (
                           <span>
                             {t('workflows.proposal')} {dynamicWorkflow.proposal_id}
@@ -506,15 +454,16 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                     )}
                   </div>
 
-                  <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div className="agent-workflows-actions">
                     {run.promoted_definition_id ? (
-                      <span style={badgeStyle('ok')}>{t('workflows.promoted')}</span>
+                      <span className={badgeClass('ok')}>{t('workflows.promoted')}</span>
                     ) : (
                       canManage &&
                       run.status === 'completed' &&
                       run.definition_source === 'ephemeral' && (
                         <button
                           type="button"
+                          className="btn btn-ghost"
                           data-testid={`workflow-promote-${run.run_id}`}
                           onClick={() => promoteMutation.mutate(run.run_id)}
                           disabled={promoteMutation.isPending}
@@ -524,13 +473,14 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                       )
                     )}
                     {run.status === 'running' && (
-                      <button type="button" onClick={() => cancelMutation.mutate(run.run_id)}>
+                      <button type="button" className="btn btn-ghost" onClick={() => cancelMutation.mutate(run.run_id)}>
                         {t('workflows.cancel')}
                       </button>
                     )}
                     {canManage && repairPlan?.repairable && (
                       <button
                         type="button"
+                        className="btn btn-ghost"
                         data-testid={`workflow-repair-${run.run_id}`}
                         onClick={() => repairMutation.mutate(run.run_id)}
                         disabled={repairMutation.isPending}
@@ -541,50 +491,37 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                   </div>
 
                   {expanded && (
-                    <div style={{ marginTop: 12, borderTop: '1px solid var(--border-subtle, rgba(128,128,128,0.2))', paddingTop: 10 }}>
+                    <div className="agent-workflows-expanded">
                       {!expandedRun ? (
-                        <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                          {t('workflows.loadingDetail')}
-                        </span>
+                        <span className="u-body u-secondary">{t('workflows.loadingDetail')}</span>
                       ) : expandedRun.steps.length === 0 ? (
-                        <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                          {t('workflows.emptySteps')}
-                        </span>
+                        <span className="u-body u-secondary">{t('workflows.emptySteps')}</span>
                       ) : (
-                        <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <ul className="agent-workflows-step-list">
                           {expandedRun.steps.map((step) => (
-                            <li key={step.step_id} style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'baseline' }}>
-                              <span style={badgeStyle(step.status === 'done' ? 'ok' : step.status === 'failed' ? 'error' : 'muted')}>
+                            <li key={step.step_id} className="agent-workflows-step">
+                              <span className={badgeClass(step.status === 'done' ? 'ok' : step.status === 'failed' ? 'error' : 'muted')}>
                                 {step.status}
                               </span>
                               <span>{step.step_id}</span>
-                              <span style={{ color: 'var(--text-tertiary, var(--text-secondary))', fontSize: 12 }}>
-                                {step.step_type}
-                              </span>
-                              {step.error ? <span style={{ color: 'var(--error)' }}>— {step.error}</span> : null}
+                              <span className="u-row u-tertiary">{step.step_type}</span>
+                              {step.error ? <span className="agent-workflows-error-text">— {step.error}</span> : null}
                             </li>
                           ))}
                         </ul>
                       )}
                       {expandedRun && expandedRun.leaf_calls.length > 0 && (
-                        <div style={{ marginTop: 10 }}>
-                          <div style={{ marginBottom: 6, color: 'var(--text-secondary)', fontSize: 12 }}>
-                            {t('workflows.leafCalls')}
-                          </div>
-                          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <div className="agent-workflows-leaf-block">
+                          <div className="agent-workflows-leaf-label">{t('workflows.leafCalls')}</div>
+                          <ul className="agent-workflows-step-list">
                             {expandedRun.leaf_calls.map((leaf) => (
-                              <li
-                                key={`${leaf.step_id}:${leaf.leaf_id}`}
-                                style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'baseline' }}
-                              >
-                                <span style={badgeStyle(leaf.status === 'done' ? 'ok' : leaf.status === 'failed' ? 'error' : 'muted')}>
+                              <li key={`${leaf.step_id}:${leaf.leaf_id}`} className="agent-workflows-step">
+                                <span className={badgeClass(leaf.status === 'done' ? 'ok' : leaf.status === 'failed' ? 'error' : 'muted')}>
                                   {leaf.status}
                                 </span>
                                 <span>{leaf.step_id}</span>
-                                <span style={{ color: 'var(--text-tertiary, var(--text-secondary))', fontSize: 12 }}>
-                                  {leaf.leaf_id}
-                                </span>
-                                {leaf.error ? <span style={{ color: 'var(--error)' }}>— {leaf.error}</span> : null}
+                                <span className="u-row u-tertiary">{leaf.leaf_id}</span>
+                                {leaf.error ? <span className="agent-workflows-error-text">— {leaf.error}</span> : null}
                               </li>
                             ))}
                           </ul>
@@ -606,28 +543,21 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
           data-testid="workflow-advanced-toggle"
           aria-expanded={advancedOpen}
           onClick={() => setAdvancedOpen((open) => !open)}
-          style={{
-            background: 'none',
-            border: 'none',
-            padding: 0,
-            color: 'var(--text-secondary)',
-            fontSize: 13,
-            cursor: 'pointer',
-          }}
+          className="agent-workflows-advanced-toggle"
         >
           {advancedOpen ? '▾' : '▸'} {t('workflows.advancedTitle')}
         </button>
 
         {advancedOpen && (
-          <div style={{ marginTop: 12 }}>
-            <p style={sectionHintStyle}>{t('workflows.ephemeralHint')}</p>
+          <div className="agent-workflows-advanced-body">
+            <p className="agent-workflows-hint">{t('workflows.ephemeralHint')}</p>
             <textarea
               data-testid="workflow-definition-input"
               value={definitionText}
               onChange={(event) => setDefinitionText(event.target.value)}
               placeholder='{"name": "...", "steps": [...]}'
               rows={8}
-              style={{ width: '100%', fontFamily: 'var(--font-mono, monospace)', fontSize: 12 }}
+              className="agent-workflows-code-input"
             />
             <textarea
               data-testid="workflow-args-input"
@@ -635,11 +565,12 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
               onChange={(event) => setArgsText(event.target.value)}
               placeholder="{}"
               rows={2}
-              style={{ width: '100%', fontFamily: 'var(--font-mono, monospace)', fontSize: 12, marginTop: 8 }}
+              className="agent-workflows-code-input agent-workflows-code-input--args"
             />
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <div className="agent-workflows-advanced-actions">
               <button
                 type="button"
+                className="btn btn-secondary"
                 data-testid="workflow-preview-button"
                 onClick={() => previewMutation.mutate()}
                 disabled={previewMutation.isPending || !definitionText.trim()}
@@ -648,6 +579,7 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
               </button>
               <button
                 type="button"
+                className="btn btn-primary"
                 data-testid="workflow-start-button"
                 onClick={() => startMutation.mutate()}
                 disabled={startMutation.isPending || !preview || (preview.confirmation_required && !startOptions)}
@@ -657,30 +589,30 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
               </button>
             </div>
             {previewError && (
-              <div data-testid="workflow-preview-error" style={{ color: 'var(--error)', marginTop: 8, fontSize: 13 }}>
+              <div data-testid="workflow-preview-error" className="agent-workflows-error agent-workflows-error--spaced">
                 {previewError}
               </div>
             )}
             {preview && (
-              <div data-testid="workflow-preview-card" style={{ marginTop: 12, fontSize: 13 }}>
-                <span style={badgeStyle(preview.confirmation_required ? 'warn' : 'ok')}>
+              <div data-testid="workflow-preview-card" className="agent-workflows-preview">
+                <span className={badgeClass(preview.confirmation_required ? 'warn' : 'ok')}>
                   {t(preview.confirmation_required ? 'workflows.confirmationRequired' : 'workflows.confirmationNotRequired')}
                 </span>
-                <span style={{ marginLeft: 12 }}>
+                <span className="agent-workflows-ml">
                   {t('workflows.plannedLeaves', { count: preview.planned_leaf_calls })}
                 </span>
-                <span style={{ marginLeft: 12, color: 'var(--text-secondary)' }}>
+                <span className="agent-workflows-ml u-secondary">
                   hash: {preview.definition_hash.slice(0, 12)}…
                 </span>
                 {preview.confirmation_required && (
-                  <div data-testid="workflow-plan-required" style={{ marginTop: 8, color: 'var(--warning)' }}>
+                  <div data-testid="workflow-plan-required" className="agent-workflows-plan-required">
                     {t('workflows.highRiskNeedsPlan')}
-                    <ul style={{ margin: '4px 0 0 16px' }}>
+                    <ul className="agent-workflows-reason-list">
                       {preview.confirmation_reasons.map((reason) => (
                         <li key={reason}>{reason}</li>
                       ))}
                     </ul>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginTop: 8 }}>
+                    <div className="agent-workflows-handoff-grid">
                       <input
                         data-testid="workflow-confirmed-plan-id"
                         value={planHandoff.confirmedPlanId}
@@ -706,27 +638,27 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
             )}
 
             {lastRun && (
-              <div data-testid="workflow-run-panel" style={{ marginTop: 16 }}>
-                <h4 style={{ margin: '0 0 8px', fontSize: 14 }}>{t('workflows.runTitle')}</h4>
-                <div style={{ fontSize: 13 }}>
-                  <span style={badgeStyle(runStatusTone((lastRunDetail?.status ?? lastRun.status) as WorkflowRunStatus))}>
+              <div data-testid="workflow-run-panel" className="agent-workflows-run-panel">
+                <h4 className="agent-workflows-run-panel-title">{t('workflows.runTitle')}</h4>
+                <div className="u-body">
+                  <span className={badgeClass(runStatusTone((lastRunDetail?.status ?? lastRun.status) as WorkflowRunStatus))}>
                     {lastRunDetail?.status ?? lastRun.status}
                   </span>
-                  <span style={{ marginLeft: 12, color: 'var(--text-secondary)' }}>run: {lastRun.run_id.slice(0, 8)}…</span>
+                  <span className="agent-workflows-ml u-secondary">run: {lastRun.run_id.slice(0, 8)}…</span>
                   {lastRunDetail?.status === 'running' && (
-                    <button type="button" style={{ marginLeft: 12 }} onClick={() => cancelMutation.mutate(lastRun.run_id)}>
+                    <button type="button" className="btn btn-ghost agent-workflows-ml" onClick={() => cancelMutation.mutate(lastRun.run_id)}>
                       {t('workflows.cancel')}
                     </button>
                   )}
                 </div>
-                <ul style={{ marginTop: 8, fontSize: 13 }}>
+                <ul className="agent-workflows-run-panel-steps">
                   {(lastRunDetail?.steps ?? []).map((step) => (
                     <li key={step.step_id} data-testid={`workflow-step-${step.step_id}`}>
-                      <span style={badgeStyle(step.status === 'done' ? 'ok' : step.status === 'failed' ? 'error' : 'muted')}>
+                      <span className={badgeClass(step.status === 'done' ? 'ok' : step.status === 'failed' ? 'error' : 'muted')}>
                         {step.status}
                       </span>{' '}
                       {step.step_id}
-                      {step.error ? <span style={{ color: 'var(--error)' }}> — {step.error}</span> : null}
+                      {step.error ? <span className="agent-workflows-error-text"> — {step.error}</span> : null}
                     </li>
                   ))}
                 </ul>

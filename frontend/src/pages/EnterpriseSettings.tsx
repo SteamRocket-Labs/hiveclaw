@@ -26,6 +26,7 @@ import WorkspaceMemorySection from './workspace/WorkspaceMemorySection';
 import WorkspaceToolsSection from './workspace/WorkspaceToolsSection';
 import WorkspaceUsersSection from './workspace/WorkspaceUsersSection';
 import type { WorkspaceSettingsSectionTab } from '../surfaces/workspace/sections';
+import './EnterpriseSettings.css';
 
 interface LLMModel {
     id: string; provider: string; model: string; label: string;
@@ -107,39 +108,37 @@ function ThemeColorPicker() {
     };
 
     return (
-        <div className="card" style={{ marginTop: '16px', marginBottom: '16px' }}>
-            <h4 style={{ marginBottom: '12px' }}>{t('enterprise.config.themeColor')}</h4>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+        <div className="card enterprise-settings-theme-card">
+            <h4 className="enterprise-settings-card-title">{t('enterprise.config.themeColor')}</h4>
+            <div className="enterprise-settings-swatches">
                 {PRESET_COLORS.map(c => (
                     <div
                         key={c.hex}
                         onClick={() => apply(c.hex)}
                         title={c.name}
+                        className="enterprise-settings-swatch"
                         style={{
-                            width: '32px', height: '32px', borderRadius: '8px',
-                            background: c.hex, cursor: 'pointer',
+                            background: c.hex,
                             border: currentColor === c.hex ? '2px solid var(--text-primary)' : '2px solid transparent',
                             outline: currentColor === c.hex ? '2px solid var(--bg-primary)' : 'none',
-                            transition: 'all 120ms ease',
                         }}
                     />
                 ))}
             </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <div className="enterprise-settings-row">
                 <input
-                    className="input"
+                    className="input enterprise-settings-hex-input"
                     value={customHex}
                     onChange={e => setCustomHex(e.target.value)}
                     placeholder="#hex"
-                    style={{ width: '120px', fontSize: '13px', fontFamily: 'var(--font-mono)' }}
                     onKeyDown={e => e.key === 'Enter' && handleCustom()}
                 />
-                <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={handleCustom}>Apply</button>
+                <button className="btn btn-secondary" onClick={handleCustom}>Apply</button>
                 {currentColor && (
-                    <button className="btn btn-ghost" style={{ fontSize: '12px', color: 'var(--text-tertiary)' }} onClick={handleReset}>Reset</button>
+                    <button className="btn btn-ghost enterprise-settings-btn-muted" onClick={handleReset}>Reset</button>
                 )}
                 {currentColor && (
-                    <div style={{ width: '20px', height: '20px', borderRadius: '4px', background: currentColor, border: '1px solid var(--border-default)' }} />
+                    <div className="enterprise-settings-swatch-preview" style={{ background: currentColor }} />
                 )}
             </div>
         </div>
@@ -190,20 +189,19 @@ function CompanyNameEditor() {
     };
 
     return (
-        <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
-            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+        <div className="card enterprise-settings-form-card">
+            <div className="enterprise-settings-form-row">
                 <input
-                    className="form-input"
+                    className="form-input enterprise-settings-name-input"
                     value={name}
                     onChange={e => setName(e.target.value)}
                     placeholder={t('enterprise.companyName.placeholder', 'Enter company name')}
-                    style={{ flex: 1, fontSize: '14px' }}
                     onKeyDown={e => e.key === 'Enter' && handleSave()}
                 />
                 <button className="btn btn-primary" onClick={handleSave} disabled={saving || !name.trim()}>
                     {saving ? t('common.loading') : t('common.save', 'Save')}
                 </button>
-                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅</span>}
+                {saved && <span className="enterprise-settings-saved">✅</span>}
             </div>
         </div>
     );
@@ -259,26 +257,25 @@ function CompanyTimezoneEditor() {
     };
 
     return (
-        <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
-            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 500, fontSize: '13px', marginBottom: '4px' }}>🌐 {t('enterprise.timezone.title', 'Company Timezone')}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+        <div className="card enterprise-settings-form-card">
+            <div className="enterprise-settings-form-row">
+                <div className="enterprise-settings-grow">
+                    <div className="enterprise-settings-field-label">🌐 {t('enterprise.timezone.title', 'Company Timezone')}</div>
+                    <div className="u-meta u-tertiary">
                         {t('enterprise.timezone.description', 'Default timezone for all agents. Agents can override individually.')}
                     </div>
                 </div>
                 <select
-                    className="form-input"
+                    className="form-input enterprise-settings-tz-select"
                     value={timezone}
                     onChange={e => handleSave(e.target.value)}
-                    style={{ width: '220px', fontSize: '13px' }}
                     disabled={saving}
                 >
                     {COMMON_TIMEZONES.map(tz => (
                         <option key={tz} value={tz}>{tz}</option>
                     ))}
                 </select>
-                {saved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅</span>}
+                {saved && <span className="enterprise-settings-saved">✅</span>}
             </div>
         </div>
     );
@@ -309,35 +306,33 @@ function BroadcastSection() {
     };
 
     return (
-        <div style={{ marginTop: '24px', marginBottom: '24px' }}>
-            <h3 style={{ marginBottom: '4px' }}>{t('enterprise.broadcast.title', 'Broadcast Notification')}</h3>
-            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+        <div className="enterprise-settings-broadcast">
+            <h3 className="enterprise-settings-broadcast-title">{t('enterprise.broadcast.title', 'Broadcast Notification')}</h3>
+            <p className="enterprise-settings-broadcast-desc">
                 {t('enterprise.broadcast.description', 'Send a notification to all users and agents in this company.')}
             </p>
-            <div className="card" style={{ padding: '16px' }}>
+            <div className="card">
                 <input
-                    className="form-input"
+                    className="form-input enterprise-settings-broadcast-input"
                     placeholder={t('enterprise.broadcast.titlePlaceholder', 'Notification title')}
                     value={title}
                     onChange={e => setTitle(e.target.value)}
                     maxLength={200}
-                    style={{ marginBottom: '8px', fontSize: '13px' }}
                 />
                 <textarea
-                    className="form-input"
+                    className="form-input enterprise-settings-broadcast-textarea"
                     placeholder={t('enterprise.broadcast.bodyPlaceholder', 'Optional details...')}
                     value={body}
                     onChange={e => setBody(e.target.value)}
                     maxLength={1000}
                     rows={3}
-                    style={{ resize: 'vertical', fontSize: '13px', marginBottom: '12px' }}
                 />
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <div className="enterprise-settings-row">
                     <button className="btn btn-primary" onClick={handleSend} disabled={sending || !title.trim()}>
                         {sending ? t('common.loading') : t('enterprise.broadcast.send', 'Send Broadcast')}
                     </button>
                     {result && (
-                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        <span className="u-row u-secondary">
                             {t('enterprise.broadcast.sent', `Sent to ${result.users} users and ${result.agents} agents`, { users: result.users, agents: result.agents })}
                         </span>
                     )}
@@ -659,7 +654,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                     <div>
                         <h1 className="page-title">{t('nav.enterprise')}</h1>
                         {stats && (
-                            <div style={{ display: 'flex', gap: '24px', marginTop: '8px' }}>
+                            <div className="enterprise-settings-stats">
                                 <span className="badge badge-info">{t('enterprise.stats.users', { count: stats.total_users })}</span>
                                 <span className="badge badge-success">{t('enterprise.stats.runningAgents', { running: stats.running_agents, total: stats.total_agents })}</span>
                                 {stats.pending_approvals > 0 && <span className="badge badge-warning">{stats.pending_approvals} {t('enterprise.tabs.approvals')}</span>}

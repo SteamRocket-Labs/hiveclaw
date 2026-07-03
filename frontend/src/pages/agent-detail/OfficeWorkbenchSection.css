@@ -1,0 +1,131 @@
+/* ═══════════════════════════════════════════════════════
+   Office workbench section — inline style migration (P3)
+   规范: docs/frontend-design-refinement-2026-07-03.md §3
+   前缀: .office-workbench-*（沿用既有 .office-workbench 根类）
+   ═══════════════════════════════════════════════════════ */
+
+.office-workbench {
+  padding: var(--space-5) var(--space-6);
+  min-width: 0;
+}
+
+.office-workbench-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.office-workbench-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: end;
+}
+
+.office-workbench-heading {
+  flex: 1 1 220px;
+  min-width: 220px;
+}
+
+.office-workbench-title {
+  margin: 0 0 6px;
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+}
+
+.office-workbench-subtitle {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-body);
+}
+
+.office-workbench-field {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 320px;
+  max-width: 520px;
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+}
+
+.office-workbench-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) 10px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.office-workbench-input:hover {
+  border-color: var(--border-strong);
+}
+
+.office-workbench-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.office-workbench-notice {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  color: var(--text-secondary);
+}
+
+.office-workbench-notice-title {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.office-workbench-main {
+  min-width: 0;
+}
+
+/* 空态/占位 — 图标+一句话居中（§3.3） */
+.office-workbench-placeholder {
+  min-height: 420px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  padding: var(--space-6);
+  text-align: center;
+}
+
+.office-workbench-placeholder--stack {
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.office-workbench-placeholder-title {
+  color: var(--text-secondary);
+  font-size: var(--text-emphasis);
+}
+
+/* 编辑器外壳 — 沿用既有类名（被测试断言引用）；height 保留 inline（响应式 clamp） */
+.office-workbench__editorShell {
+  width: 100%;
+  min-height: 560px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.office-workbench-load-error {
+  padding: var(--space-4);
+  color: var(--error);
+}
+
+.office-workbench-host {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}

@@ -110,6 +110,38 @@ def test_session_feedback_events_is_forced_rls_on_fresh_bootstrap_path() -> None
     assert "session_feedback_events" in RLS_FORCED_TENANT_TABLES
 
 
+def test_remaining_global_and_derived_tables_are_forced_on_fresh_bootstrap_path() -> None:
+    from app.db_bootstrap import REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES, RLS_FORCED_TENANT_TABLES
+
+    assert set(REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES) <= set(RLS_FORCED_TENANT_TABLES)
+
+
+def test_bootstrap_policy_sql_covers_remaining_global_and_derived_tables() -> None:
+    from app.db_bootstrap import _policy_predicates_for_table
+
+    plaza_using, plaza_check = _policy_predicates_for_table("plaza_comments")
+    assert plaza_using == plaza_check
+    assert "plaza_posts.id = plaza_comments.post_id" in plaza_using
+
+    skill_using, skill_check = _policy_predicates_for_table("skill_files")
+    assert skill_using == skill_check
+    assert "skills.id = skill_files.skill_id" in skill_using
+
+    participant_using, participant_check = _policy_predicates_for_table("participants")
+    assert participant_using == participant_check
+    assert "participants.type = 'agent'" in participant_using
+    assert "participants.type = 'user'" in participant_using
+
+    settings_using, settings_check = _policy_predicates_for_table("system_settings")
+    assert settings_using == settings_check
+    assert "key <> ALL" in settings_using
+    assert "jina_api_key" in settings_using
+
+    identities_using, identities_check = _policy_predicates_for_table("identities")
+    assert identities_using == identities_check
+    assert identities_using.strip() == "current_setting('app.current_tenant_id', true) = 'BYPASS'"
+
+
 def test_normal_migration_path_prepares_wide_alembic_version_table() -> None:
     from app.db_bootstrap import run_migrations_with_bootstrap
 

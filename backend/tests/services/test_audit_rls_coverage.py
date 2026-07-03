@@ -67,12 +67,18 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
 
     from app.db_bootstrap import RLS_FORCED_TENANT_TABLES
 
-    path = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "force_all_tenant_rls_0615.py"
-    spec = importlib.util.spec_from_file_location("force_all_tenant_rls_0615", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    def _load_migration_module(filename: str):
+        path = Path(__file__).resolve().parents[2] / "alembic" / "versions" / filename
+        spec = importlib.util.spec_from_file_location(filename.removesuffix(".py"), path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
-    missing = sorted(set(RLS_FORCED_TENANT_TABLES) - set(module._FORCE_TABLES))
+    force_all_module = _load_migration_module("force_all_tenant_rls_0615.py")
+    remaining_module = _load_migration_module("rls_remaining_global_and_derived_tables_0703.py")
+    migration_tables = set(force_all_module._FORCE_TABLES) | set(remaining_module._ALL_TABLES)
+
+    missing = sorted(set(RLS_FORCED_TENANT_TABLES) - migration_tables)
 
     assert missing == []

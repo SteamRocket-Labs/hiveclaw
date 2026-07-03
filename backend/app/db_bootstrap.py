@@ -114,9 +114,186 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "plugin_dependency_edges",
 )
 
-RLS_FORCED_TENANT_TABLES: tuple[str, ...] = tuple(
-    dict.fromkeys((*RLS_TENANT_TABLES, *_ADDITIONAL_FORCED_TENANT_TABLES))
+REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (
+    "tenants",
+    "notifications",
+    "refresh_tokens",
+    "plaza_comments",
+    "plaza_likes",
+    "skill_files",
+    "external_identities",
+    "participants",
+    "feature_flags",
+    "system_settings",
+    "identities",
 )
+
+_SECRET_SYSTEM_SETTING_KEYS: tuple[str, ...] = (
+    "jina_api_key",
+    "tavily_api_key",
+    "exa_api_key",
+    "firecrawl_api_key",
+)
+
+RLS_FORCED_TENANT_TABLES: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        (
+            *RLS_TENANT_TABLES,
+            *_ADDITIONAL_FORCED_TENANT_TABLES,
+            *REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES,
+        )
+    )
+)
+
+
+def _bypass_predicate() -> str:
+    return "current_setting('app.current_tenant_id', true) = 'BYPASS'"
+
+
+def _standard_tenant_predicate(table: str) -> str:
+    return f"""
+        {_bypass_predicate()}
+        OR {table}.tenant_id::text = current_setting('app.current_tenant_id', true)
+        OR {table}.tenant_id IS NULL
+    """
+
+
+def _tenant_catalog_predicate() -> str:
+    return f"""
+        {_bypass_predicate()}
+        OR tenants.id::text = current_setting('app.current_tenant_id', true)
+    """
+
+
+def _user_owned_predicate(table: str) -> str:
+    return f"""
+        {_bypass_predicate()}
+        OR EXISTS (
+            SELECT 1
+            FROM users
+            WHERE users.id = {table}.user_id
+              AND (
+                  users.tenant_id::text = current_setting('app.current_tenant_id', true)
+                  OR users.tenant_id IS NULL
+              )
+        )
+    """
+
+
+def _plaza_child_predicate(table: str) -> str:
+    return f"""
+        {_bypass_predicate()}
+        OR EXISTS (
+            SELECT 1
+            FROM plaza_posts
+            WHERE plaza_posts.id = {table}.post_id
+              AND (
+                  plaza_posts.tenant_id::text = current_setting('app.current_tenant_id', true)
+                  OR plaza_posts.tenant_id IS NULL
+              )
+        )
+    """
+
+
+def _skill_file_predicate() -> str:
+    return f"""
+        {_bypass_predicate()}
+        OR EXISTS (
+            SELECT 1
+            FROM skills
+            WHERE skills.id = skill_files.skill_id
+              AND (
+                  skills.tenant_id::text = current_setting('app.current_tenant_id', true)
+                  OR skills.tenant_id IS NULL
+              )
+        )
+    """
+
+
+def _external_identity_predicate() -> str:
+    return f"""
+        {_bypass_predicate()}
+        OR EXISTS (
+            SELECT 1
+            FROM identity_providers
+            WHERE identity_providers.id = external_identities.provider_id
+              AND (
+                  identity_providers.tenant_id::text = current_setting('app.current_tenant_id', true)
+                  OR identity_providers.tenant_id IS NULL
+              )
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM users
+            WHERE users.id = external_identities.user_id
+              AND (
+                  users.tenant_id::text = current_setting('app.current_tenant_id', true)
+                  OR users.tenant_id IS NULL
+              )
+        )
+    """
+
+
+def _participant_predicate() -> str:
+    return f"""
+        {_bypass_predicate()}
+        OR (
+            participants.type = 'user'
+            AND EXISTS (
+                SELECT 1
+                FROM users
+                WHERE users.id = participants.ref_id
+                  AND (
+                      users.tenant_id::text = current_setting('app.current_tenant_id', true)
+                      OR users.tenant_id IS NULL
+                  )
+            )
+        )
+        OR (
+            participants.type = 'agent'
+            AND EXISTS (
+                SELECT 1
+                FROM agents
+                WHERE agents.id = participants.ref_id
+                  AND (
+                      agents.tenant_id::text = current_setting('app.current_tenant_id', true)
+                      OR agents.tenant_id IS NULL
+                  )
+            )
+        )
+    """
+
+
+def _system_settings_predicate() -> str:
+    quoted_keys = ", ".join(f"'{key}'" for key in _SECRET_SYSTEM_SETTING_KEYS)
+    return f"""
+        {_bypass_predicate()}
+        OR system_settings.key <> ALL (ARRAY[{quoted_keys}]::text[])
+    """
+
+
+def _policy_predicates_for_table(table: str) -> tuple[str, str]:
+    if table == "tenants":
+        predicate = _tenant_catalog_predicate()
+    elif table in {"notifications", "refresh_tokens"}:
+        predicate = _user_owned_predicate(table)
+    elif table in {"plaza_comments", "plaza_likes"}:
+        predicate = _plaza_child_predicate(table)
+    elif table == "skill_files":
+        predicate = _skill_file_predicate()
+    elif table == "external_identities":
+        predicate = _external_identity_predicate()
+    elif table == "participants":
+        predicate = _participant_predicate()
+    elif table == "feature_flags":
+        predicate = "true"
+    elif table == "system_settings":
+        predicate = _system_settings_predicate()
+    elif table == "identities":
+        predicate = _bypass_predicate()
+    else:
+        predicate = _standard_tenant_predicate(table)
+    return predicate, predicate
 
 
 def apply_rls_policies(
@@ -146,16 +323,14 @@ def apply_rls_policies(
         connection.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
         if forced:
             connection.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
+        using_predicate, check_predicate = _policy_predicates_for_table(table)
         connection.execute(
             text(
                 f"""
                 DO $$ BEGIN
                     CREATE POLICY tenant_isolation_{table} ON {table}
-                        USING (
-                            current_setting('app.current_tenant_id', true) = 'BYPASS'
-                            OR tenant_id::text = current_setting('app.current_tenant_id', true)
-                            OR tenant_id IS NULL
-                        );
+                        USING ({using_predicate})
+                        WITH CHECK ({check_predicate});
                 EXCEPTION WHEN duplicate_object THEN NULL;
                 END $$
                 """

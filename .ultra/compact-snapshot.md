@@ -1,26 +1,34 @@
 # Compact Snapshot
-*Generated: 2026-07-03 05:50:33 UTC*
+*Generated: 2026-07-03 17:20:16 UTC*
 *Working dir: /Users/rocky243/vc-saas/hiveclaw-main*
 
 ## Git State
 Branch: `main`
 
 Recent commits:
-  afa31cd4 Close remaining RLS enforcement gaps
-  b3258383 Close post-0615 RLS table gaps
-  13d53a5d Harden RLS bypass across commits
-  5439642b Fix web chat model resolution under RLS
-  8839da3f Allow empty migration sections as no-claim scaffolds
+  84acd21c Normalize residual entropy and rebind dangling tokens (P5 close-out)
+  251f545b Migrate remaining 30 surfaces off inline styles (P3/P4 wave 3-4)
+  48e8c70d Migrate 17 surfaces off inline styles to component CSS (P3/P4 wave 1-2)
+  5f4b2292 Normalize residual shadows and radii to tokens (P3)
+  6be442ec Restore session runtime interaction semantics
 
 Modified files:
-  M .ultra/sessions/orphan-trail.md
-   M frontend/src/i18n/en.json
-   M frontend/src/i18n/zh.json
-   M frontend/src/index.css
-   M frontend/src/pages/agent-detail/AgentChatSection.tsx
-   M frontend/src/pages/agent-detail/AgentDetailSections.test.tsx
-   M frontend/src/pages/session-workbench/timelineModel.test.ts
-   M frontend/src/pages/session-workbench/timelineModel.ts
+  M .serena/project.yml
+   M .ultra/debug/subagent-log.jsonl
+   M .ultra/sessions/orphan-trail.md
+   M backend/app/agents/subagent.py
+   M backend/app/agents/subagent_definition.py
+   M backend/app/api/workflows.py
+   M backend/app/config.py
+   M backend/app/kernel/engine.py
+   M backend/app/runtime/context_budget.py
+   M backend/app/runtime/dynamic_workflow.py
+   M backend/app/runtime/workflow_admission.py
+   M backend/app/runtime/workflow_compiler.py
+   M backend/app/runtime/workflow_definition.py
+   M backend/app/runtime/workflow_preview.py
+   M backend/app/services/agent_team_context.py
+  ... and 46 more
 
 ## Active Subagents
 These subagents were running at compact time:

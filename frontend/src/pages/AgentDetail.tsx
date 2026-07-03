@@ -35,6 +35,7 @@ import {
     applyStreamingChunkEvent,
     buildChatSocketKeepaliveMessage,
     buildRuntimeSummary,
+    buildSessionTranscriptLoadFailureMessage,
     createEmptyTranscriptReplayState,
     extractArtifactParts,
     getRuntimeEventMessage,
@@ -52,10 +53,12 @@ import {
     shouldUseWritableSessionSurface,
     shouldIgnoreObservedActiveRun,
     shouldClearStaleRuntimeState,
+    shouldReuseSessionTranscriptLoad,
     type AgentChatMessage,
     type ChatTranscriptEventPayload,
     type ChatRuntimeSummary,
     type PendingUserMessage,
+    type SessionTranscriptLoadDescriptor,
     type SessionPermissionRequest,
     type SessionRunState,
     type SessionUiState,
@@ -514,6 +517,7 @@ function AgentDetailInner() {
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
+    const sessionTranscriptLoadRef = useRef<SessionTranscriptLoadDescriptor | null>(null);
     const locallyTerminalRunIdsRef = useRef<Set<string>>(new Set());
     const locallyTerminalSessionKeysRef = useRef<Set<string>>(new Set());
     const [activeRunStateBySession, setActiveRunStateBySession] = useState<Record<SessionRuntimeKey, SessionRunState>>({});
@@ -737,6 +741,11 @@ function AgentDetailInner() {
         const activeRunState = activeRunStateRef.current[runtimeKey];
         const writableSession = isWritableSession(sess);
         const draftSession = isDraftHumanChatSession(sess);
+        const transcriptSurface = writableSession ? 'chat' : 'history';
+        const nextTranscriptLoad: SessionTranscriptLoadDescriptor = {
+            key: runtimeKey,
+            surface: transcriptSurface,
+        };
         activeSessionIdRef.current = sessionId;
         setCreatedAgentId(null);
         if (writableSession) {
@@ -768,10 +777,17 @@ function AgentDetailInner() {
         }
 
         // Abort any pending message load and increment sequence
+        if (shouldReuseSessionTranscriptLoad(sessionTranscriptLoadRef.current, nextTranscriptLoad)) {
+            return;
+        }
         sessionMsgAbortRef.current?.abort();
         const controller = new AbortController();
         sessionMsgAbortRef.current = controller;
         const loadSeq = ++sessionLoadSeqRef.current;
+        sessionTranscriptLoadRef.current = {
+            ...nextTranscriptLoad,
+            loadSeq,
+        };
         try {
             // First screen loads the newest window; older history pages in on demand (plan B4).
             const transcriptEvents = await chatApi.getSessionTranscript(targetAgentId, sessionId, {
@@ -829,7 +845,33 @@ function AgentDetailInner() {
             }
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
+            if (loadSeq !== sessionLoadSeqRef.current) return;
+            if (currentAgentIdRef.current !== targetAgentId) return;
+            if (activeSessionIdRef.current !== sessionId) return;
             console.error('Failed to load session messages:', err);
+            const failureMessage = buildSessionTranscriptLoadFailureMessage(
+                t(
+                    'agent.chat.sessionLoadFailed',
+                    'Conversation failed to load. Please retry this session or refresh the page.',
+                ),
+            );
+            setTranscriptHasOlder((prev) => ({ ...prev, [runtimeKey]: false }));
+            if (writableSession) {
+                setChatMessagesSessionId(sessionId);
+                setChatMessages(mergePendingForSession(runtimeKey, [failureMessage]));
+            } else {
+                setHistoryMessagesSessionId(sessionId);
+                setHistoryMsgs([failureMessage]);
+            }
+        } finally {
+            const currentLoad = sessionTranscriptLoadRef.current;
+            if (
+                currentLoad?.key === runtimeKey
+                && currentLoad.surface === transcriptSurface
+                && currentLoad.loadSeq === loadSeq
+            ) {
+                sessionTranscriptLoadRef.current = null;
+            }
         }
     };
 
@@ -1490,6 +1532,7 @@ function AgentDetailInner() {
     // Existing background sockets keep running and will be cleaned up on unmount.
     useEffect(() => {
         sessionMsgAbortRef.current?.abort();
+        sessionTranscriptLoadRef.current = null;
         activeSessionIdRef.current = null;
         setActiveSession(null);
         setChatMessages([]);

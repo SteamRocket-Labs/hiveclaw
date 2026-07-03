@@ -1183,13 +1183,13 @@ select:focus {
 .session-runtime-panel {
   position: relative;
   display: flex;
-  flex: 0 0 clamp(300px, 24vw, 420px);
+  flex: 0 0 clamp(360px, 28vw, 480px);
   flex-direction: column;
-  min-width: 280px;
-  max-width: 520px;
+  min-width: 360px;
+  max-width: 560px;
   min-height: 0;
   resize: horizontal;
-  overflow: auto;
+  overflow: hidden;
   border-left: 1px solid var(--border-subtle);
   background: var(--bg-secondary);
   color: var(--text-primary);
@@ -1242,7 +1242,7 @@ select:focus {
 }
 
 .session-runtime-documents {
-  flex: 0 0 42%;
+  flex: 0 0 40%;
   min-height: 180px;
   overflow: auto;
 }
@@ -1261,7 +1261,7 @@ select:focus {
 }
 
 .session-runtime-lower {
-  flex: 1 1 58%;
+  flex: 1 1 60%;
   min-height: 0;
   overflow: auto;
 }
@@ -1418,6 +1418,201 @@ select:focus {
   text-transform: uppercase;
 }
 
+.session-runtime-console {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
+
+.session-runtime-summary-strip {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-panel);
+  background: var(--bg-primary);
+}
+
+.session-runtime-summary-main {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  min-width: 0;
+}
+
+.session-runtime-summary-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+}
+
+.session-runtime-summary-strip[data-runtime-state="running"] .session-runtime-summary-dot {
+  background: var(--accent-primary);
+}
+
+.session-runtime-summary-strip[data-runtime-state="waiting"] .session-runtime-summary-dot {
+  background: var(--warning-color, #a16000);
+}
+
+.session-runtime-summary-strip[data-runtime-state="blocked"] .session-runtime-summary-dot {
+  background: var(--error-color, #b42318);
+}
+
+.session-runtime-summary-main strong,
+.session-runtime-summary-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-runtime-summary-main strong {
+  color: var(--text-primary);
+  font-size: var(--session-tui-font-row);
+  font-weight: 700;
+  line-height: var(--session-tui-line-row);
+}
+
+.session-runtime-summary-main small {
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-meta);
+  line-height: var(--session-tui-line-meta);
+}
+
+.session-runtime-summary-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.session-runtime-summary-metrics span {
+  min-width: 0;
+  overflow: hidden;
+  padding: 3px 4px;
+  border-radius: 5px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-meta);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  line-height: 1.2;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-runtime-segmented {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-panel);
+  background: var(--bg-primary);
+}
+
+.session-runtime-segment {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  text-align: center;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.session-runtime-segment:hover,
+.session-runtime-segment.is-active {
+  border-color: var(--session-tui-selected-border);
+  background: var(--session-tui-hover-bg);
+  color: var(--text-primary);
+}
+
+.session-runtime-segment span,
+.session-runtime-segment strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-runtime-segment span {
+  font-size: var(--session-tui-font-meta);
+  font-weight: 700;
+}
+
+.session-runtime-segment strong {
+  font-size: var(--session-tui-font-tiny);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.session-runtime-segment-body {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
+
+.session-runtime-activity-bucket {
+  display: grid;
+  gap: 5px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.session-runtime-activity-bucket:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.session-runtime-activity-bucket summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-tiny);
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.session-runtime-activity-bucket summary::-webkit-details-marker {
+  display: none;
+}
+
+.session-runtime-activity-bucket summary strong {
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.session-runtime-view-all {
+  width: 100%;
+  min-height: 26px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--session-tui-radius-row);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--session-tui-font-meta);
+  font-weight: 650;
+}
+
+.session-runtime-view-all:hover {
+  border-color: var(--session-tui-selected-border);
+  background: var(--session-tui-hover-bg);
+  color: var(--text-primary);
+}
+
 .session-runtime-row,
 .session-runtime-metric-row {
   display: flex;
@@ -1450,6 +1645,7 @@ select:focus {
 
 .session-runtime-row-main {
   display: grid;
+  flex: 1 1 auto;
   min-width: 0;
   gap: 2px;
 }
@@ -1470,6 +1666,38 @@ select:focus {
   font-size: var(--session-tui-font-meta);
   font-weight: 700;
   white-space: nowrap;
+}
+
+.session-runtime-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.session-runtime-action-button {
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.session-runtime-action-button:hover:not(:disabled) {
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.session-runtime-action-button:disabled {
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
 }
 
 .session-runtime-team {

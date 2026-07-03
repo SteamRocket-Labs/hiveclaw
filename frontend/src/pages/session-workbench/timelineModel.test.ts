@@ -445,6 +445,95 @@ describe('session workbench timeline model', () => {
     ]);
   });
 
+  it('projects runtime sections into Team, Workers, Workflow, and Activity console segments', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [],
+      sessionWorkbench: {
+        runtime_sections: {
+          agent_teams: [
+            {
+              id: 'team-1',
+              runtime_kind: 'agent_team',
+              label: 'ABS research team',
+              status: 'running',
+              elapsed_seconds: 125,
+              token_count: 4200,
+              tool_use_count: 3,
+              members: [
+                {
+                  id: 'member-1',
+                  runtime_kind: 'team_member',
+                  label: 'CLO analyst',
+                  status: 'completed',
+                  child_session_id: 'member-session',
+                  enterable: true,
+                },
+              ],
+            },
+          ],
+          subagents: [
+            {
+              id: 'subagent-1',
+              runtime_kind: 'subagent',
+              label: 'One-shot reviewer',
+              status: 'completed',
+              child_session_id: 'subagent-session',
+              enterable: true,
+            },
+          ],
+          workflows: [
+            {
+              id: 'workflow-1',
+              runtime_kind: 'workflow',
+              label: 'Dynamic Workflow',
+              status: 'waiting',
+              steps: [{ id: 'step-1', label: 'Gate review', status: 'waiting' }],
+            },
+          ],
+          background: [{ id: 'background-1', runtime_kind: 'background_agent', label: 'Completion observer', status: 'running' }],
+          notifications: [{ id: 'notification-1', runtime_kind: 'notification', label: 'Notify user', status: 'completed' }],
+          runs: [{ id: 'run-1', runtime_kind: 'runtime_task', label: 'web chat turn', status: 'completed' }],
+          raw: [{ id: 'raw-1', runtime_kind: 'raw_event', label: 'runtime_action_completed', status: 'completed' }],
+        },
+      } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeConsole.segments.map((segment) => [segment.key, segment.count])).toEqual([
+      ['team', 1],
+      ['workers', 1],
+      ['workflow', 1],
+      ['activity', 4],
+    ]);
+    expect(rightPanel.runtimeConsole.defaultSegment).toBe('workflow');
+    expect(rightPanel.runtimeConsole.summary).toMatchObject({
+      state: 'waiting',
+      totalCount: 7,
+      runningCount: 2,
+      waitingCount: 1,
+      blockedCount: 0,
+      elapsedLabel: '2m 5s',
+      tokenLabel: '4.2K',
+      toolUseLabel: '3',
+    });
+    expect(rightPanel.runtimeConsole.team.items[0].members[0]).toMatchObject({
+      id: 'member-1',
+      enterable: true,
+    });
+    expect(rightPanel.runtimeConsole.workers.items[0]).toMatchObject({
+      id: 'subagent-1',
+      childSessionId: 'subagent-session',
+      enterable: false,
+    });
+    expect(rightPanel.runtimeConsole.workflow.items[0]).toMatchObject({
+      id: 'workflow-1',
+      status: 'waiting',
+    });
+    expect(rightPanel.runtimeConsole.activity.background.map((item) => item.id)).toEqual(['background-1']);
+    expect(rightPanel.runtimeConsole.activity.notifications.map((item) => item.id)).toEqual(['notification-1']);
+    expect(rightPanel.runtimeConsole.activity.runs.map((item) => item.id)).toEqual(['run-1']);
+    expect(rightPanel.runtimeConsole.activity.raw.map((item) => item.id)).toEqual(['raw-1']);
+  });
+
   it('builds named session workbench models for windows, checkpoints, right panel, runtime sections, and workflow run windows', () => {
     const messages: AgentChatMessage[] = [
       {
@@ -559,6 +648,20 @@ describe('session workbench timeline model', () => {
       tokenLabel: '9.2K',
       toolUseLabel: '6',
     });
+    expect(rightPanel.runtimeConsole.defaultSegment).toBe('workflow');
+    expect(rightPanel.runtimeConsole.summary).toMatchObject({
+      state: 'waiting',
+      totalCount: 2,
+      runningCount: 1,
+      waitingCount: 1,
+    });
+    expect(rightPanel.runtimeConsole.workflow.items.map((item) => item.id)).toEqual(['workflow-1']);
+    expect(rightPanel.runtimeConsole.workers.items).toEqual([
+      expect.objectContaining({
+        id: 'subagent-1',
+        enterable: false,
+      }),
+    ]);
     expect(workflowWindow).toMatchObject({
       id: 'workflow-1',
       label: 'Dynamic Workflow',

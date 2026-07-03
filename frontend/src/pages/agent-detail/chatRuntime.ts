@@ -222,6 +222,14 @@ export interface SessionUiState {
   isStreaming: boolean;
 }
 
+export type SessionTranscriptLoadSurface = 'chat' | 'history';
+
+export interface SessionTranscriptLoadDescriptor {
+  key: string;
+  surface: SessionTranscriptLoadSurface;
+  loadSeq?: number;
+}
+
 export type AgentOwnedSession = {
   id?: unknown;
   agent_id?: unknown;
@@ -259,6 +267,23 @@ export interface PendingUserMessage {
 }
 
 export const ACTIVE_RUN_ABSENCE_GRACE_MS = 8_000;
+
+export function shouldReuseSessionTranscriptLoad(
+  current: SessionTranscriptLoadDescriptor | null | undefined,
+  next: SessionTranscriptLoadDescriptor,
+): boolean {
+  return Boolean(current && current.key === next.key && current.surface === next.surface);
+}
+
+export function buildSessionTranscriptLoadFailureMessage(content: string): AgentChatMessage {
+  return {
+    role: 'event',
+    content,
+    eventType: 'runtime_action_failed',
+    eventStatus: 'session_load_failed',
+    timestamp: new Date().toISOString(),
+  };
+}
 
 export function isA2ASession(session: AgentOwnedSession | null | undefined): boolean {
   if (!session) return false;

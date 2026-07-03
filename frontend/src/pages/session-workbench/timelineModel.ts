@@ -237,6 +237,54 @@ export interface RuntimeSectionModel {
   runningCount: number;
 }
 
+export type RuntimeConsoleSegmentKey = 'team' | 'workers' | 'workflow' | 'activity';
+export type RuntimeConsoleState = 'idle' | 'running' | 'waiting' | 'blocked';
+
+export interface RuntimeConsoleGroupModel {
+  items: RuntimeSectionItemModel[];
+  count: number;
+  runningCount: number;
+  waitingCount: number;
+  blockedCount: number;
+}
+
+export interface RuntimeConsoleActivityModel extends RuntimeConsoleGroupModel {
+  background: RuntimeSectionItemModel[];
+  notifications: RuntimeSectionItemModel[];
+  runs: RuntimeSectionItemModel[];
+  raw: RuntimeSectionItemModel[];
+}
+
+export interface RuntimeConsoleSegmentModel {
+  key: RuntimeConsoleSegmentKey;
+  label: string;
+  count: number;
+  runningCount: number;
+  waitingCount: number;
+  blockedCount: number;
+}
+
+export interface RuntimeConsoleSummaryModel {
+  state: RuntimeConsoleState;
+  totalCount: number;
+  runningCount: number;
+  waitingCount: number;
+  blockedCount: number;
+  elapsedLabel: string | null;
+  tokenLabel: string | null;
+  toolUseLabel: string | null;
+}
+
+export interface RuntimeConsoleModel {
+  defaultSegment: RuntimeConsoleSegmentKey;
+  summary: RuntimeConsoleSummaryModel;
+  segments: RuntimeConsoleSegmentModel[];
+  team: RuntimeConsoleGroupModel;
+  workers: RuntimeConsoleGroupModel;
+  workflow: RuntimeConsoleGroupModel;
+  activity: RuntimeConsoleActivityModel;
+}
+
 export type WorkspaceDocumentGroupKey = 'currentSession' | 'historical' | 'unattributed';
 
 export interface WorkspaceDocumentModel {
@@ -271,6 +319,7 @@ export interface SessionRightPanelModel {
   workspaceDocuments: WorkspaceDocumentsModel;
   runtimeSections: RuntimeSectionsModel;
   runtimeTables: RuntimeSectionModel[];
+  runtimeConsole: RuntimeConsoleModel;
   runtimeMetrics: RuntimeMetricModel & {
     runningCount: number;
     totalCount: number;
@@ -567,6 +616,37 @@ function isRunningRuntimeItem(item: RuntimeSectionItemModel): boolean {
   return String(item.status || item.state || '').toLowerCase() === 'running';
 }
 
+function runtimeStatusText(item: RuntimeSectionItemModel): string {
+  return String(item.status || item.state || '').trim().toLowerCase();
+}
+
+function isWaitingRuntimeItem(item: RuntimeSectionItemModel): boolean {
+  const status = runtimeStatusText(item);
+  return status === 'waiting' || status === 'queued' || status === 'scheduled' || status === 'gate_waiting';
+}
+
+function isBlockedRuntimeItem(item: RuntimeSectionItemModel): boolean {
+  const status = runtimeStatusText(item);
+  return status === 'blocked' || status === 'stalled' || status === 'needs_reconciliation' || status === 'suspended';
+}
+
+function hasActiveRuntimeItem(items: RuntimeSectionItemModel[]): boolean {
+  return flattenRuntimeItems(items).some((item) => (
+    isRunningRuntimeItem(item) || isWaitingRuntimeItem(item) || isBlockedRuntimeItem(item)
+  ));
+}
+
+function runtimeConsoleGroup(items: RuntimeSectionItemModel[]): RuntimeConsoleGroupModel {
+  const flattenedItems = flattenRuntimeItems(items);
+  return {
+    items,
+    count: items.length,
+    runningCount: flattenedItems.filter(isRunningRuntimeItem).length,
+    waitingCount: flattenedItems.filter(isWaitingRuntimeItem).length,
+    blockedCount: flattenedItems.filter(isBlockedRuntimeItem).length,
+  };
+}
+
 function normalizeRuntimeSectionItems(
   values: unknown[],
   fallbackKind: string,
@@ -775,6 +855,108 @@ function aggregateRuntimeMetrics(runtimeSections: RuntimeSectionsModel): Runtime
   };
 }
 
+function runtimeConsoleState({
+  runningCount,
+  waitingCount,
+  blockedCount,
+}: {
+  runningCount: number;
+  waitingCount: number;
+  blockedCount: number;
+}): RuntimeConsoleState {
+  if (blockedCount > 0) return 'blocked';
+  if (waitingCount > 0) return 'waiting';
+  if (runningCount > 0) return 'running';
+  return 'idle';
+}
+
+function buildRuntimeConsoleModel(
+  runtimeSections: RuntimeSectionsModel,
+  metrics: RuntimeMetricModel & { runningCount: number; totalCount: number },
+): RuntimeConsoleModel {
+  const team = runtimeConsoleGroup(runtimeSections.agentTeams);
+  const workers = runtimeConsoleGroup(runtimeSections.subagents);
+  const workflow = runtimeConsoleGroup(runtimeSections.workflows);
+  const activityItems = [
+    ...runtimeSections.background,
+    ...runtimeSections.notifications,
+    ...runtimeSections.runs,
+    ...runtimeSections.raw,
+  ];
+  const activityBase = runtimeConsoleGroup(activityItems);
+  const activity: RuntimeConsoleActivityModel = {
+    ...activityBase,
+    background: runtimeSections.background,
+    notifications: runtimeSections.notifications,
+    runs: runtimeSections.runs,
+    raw: runtimeSections.raw,
+  };
+
+  const operationalItems = [
+    ...runtimeSections.agentTeams.flatMap((item) => [item, ...item.members]),
+    ...runtimeSections.subagents,
+    ...runtimeSections.workflows,
+    ...runtimeSections.background,
+    ...runtimeSections.runs,
+  ];
+  const runningCount = operationalItems.filter(isRunningRuntimeItem).length;
+  const waitingCount = operationalItems.filter(isWaitingRuntimeItem).length;
+  const blockedCount = operationalItems.filter(isBlockedRuntimeItem).length;
+  const defaultSegment: RuntimeConsoleSegmentKey = hasActiveRuntimeItem(runtimeSections.workflows)
+    ? 'workflow'
+    : hasActiveRuntimeItem(runtimeSections.agentTeams)
+      ? 'team'
+      : hasActiveRuntimeItem(runtimeSections.subagents)
+        ? 'workers'
+        : hasActiveRuntimeItem([...runtimeSections.background, ...runtimeSections.runs])
+          ? 'activity'
+          : team.count > 0
+            ? 'team'
+            : workers.count > 0
+              ? 'workers'
+              : workflow.count > 0
+                ? 'workflow'
+                : 'activity';
+
+  const segmentModel = (
+    key: RuntimeConsoleSegmentKey,
+    label: string,
+    group: RuntimeConsoleGroupModel,
+  ): RuntimeConsoleSegmentModel => ({
+    key,
+    label,
+    count: group.count,
+    runningCount: group.runningCount,
+    waitingCount: group.waitingCount,
+    blockedCount: group.blockedCount,
+  });
+  const segments: RuntimeConsoleSegmentModel[] = [
+    segmentModel('team', 'Team', team),
+    segmentModel('workers', 'Workers', workers),
+    segmentModel('workflow', 'Workflow', workflow),
+    segmentModel('activity', 'Activity', activityBase),
+  ];
+
+  return {
+    defaultSegment,
+    summary: {
+      state: runtimeConsoleState({ runningCount, waitingCount, blockedCount }),
+      totalCount: team.count + workers.count + workflow.count + activity.count,
+      runningCount,
+      waitingCount,
+      blockedCount,
+      elapsedLabel: metrics.elapsedLabel,
+      tokenLabel: metrics.tokenLabel,
+      toolUseLabel: metrics.toolUseLabel,
+    },
+    segments,
+    team,
+    workers,
+    workflow,
+    activity,
+  };
+}
+
 function normalizeSessionWindowStatus(status: unknown): SessionWindowStatus {
   const value = String(status || '').toLowerCase();
   if (value === 'running' || value === 'waiting' || value === 'blocked' || value === 'completed' || value === 'failed' || value === 'cancelled') {
@@ -905,11 +1087,13 @@ export function buildSessionRightPanelModel({
       .filter((value): value is string => Boolean(value)),
   );
   const workspaceDocuments = buildWorkspaceDocumentsModel(messages, sessionRunTaskIds);
+  const runtimeMetrics = aggregateRuntimeMetrics(runtimeSections);
   return {
     workspaceDocuments,
     runtimeSections,
     runtimeTables,
-    runtimeMetrics: aggregateRuntimeMetrics(runtimeSections),
+    runtimeConsole: buildRuntimeConsoleModel(runtimeSections, runtimeMetrics),
+    runtimeMetrics,
     context: asRecord(workbenchRecord?.context_policy),
     governance: asRecord(workbenchRecord?.permission_profile),
     commands: asRecord(workbenchRecord?.controls),

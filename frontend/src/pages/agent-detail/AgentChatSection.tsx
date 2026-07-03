@@ -40,6 +40,7 @@ import {
   buildSessionRightPanelModel,
   buildThreadTimeline,
   buildWorkflowRunWindowModel,
+  type RuntimeConsoleSegmentKey,
   type RuntimeSectionItemModel,
   type WorkflowRunActionModel,
   type WorkspaceDocumentGroupModel,
@@ -1544,7 +1545,7 @@ function SessionRuntimePanel({
     try {
       const stored = window.localStorage.getItem(RUNTIME_PANEL_WIDTH_KEY);
       const parsed = stored ? Number.parseInt(stored, 10) : NaN;
-      return Number.isFinite(parsed) ? Math.min(520, Math.max(280, parsed)) : null;
+      return Number.isFinite(parsed) ? Math.min(560, Math.max(360, parsed)) : null;
     } catch {
       return null;
     }
@@ -1556,11 +1557,11 @@ function SessionRuntimePanel({
     const startWidth = (event.currentTarget.parentElement as HTMLElement | null)?.getBoundingClientRect().width ?? 360;
     setResizeDragging(true);
     const onMove = (move: MouseEvent) => {
-      const next = Math.min(520, Math.max(280, Math.round(startWidth + (startX - move.clientX))));
+      const next = Math.min(560, Math.max(360, Math.round(startWidth + (startX - move.clientX))));
       setPanelWidth(next);
     };
     const onUp = (up: MouseEvent) => {
-      const finalWidth = Math.min(520, Math.max(280, Math.round(startWidth + (startX - up.clientX))));
+      const finalWidth = Math.min(560, Math.max(360, Math.round(startWidth + (startX - up.clientX))));
       setPanelWidth(finalWidth);
       try {
         window.localStorage.setItem(RUNTIME_PANEL_WIDTH_KEY, String(finalWidth));
@@ -1583,10 +1584,15 @@ function SessionRuntimePanel({
     activeRunStatus,
   });
   const docs = rightPanel.workspaceDocuments;
-  const runtimeSections = rightPanel.runtimeSections;
-  const collaborationCount = rightPanel.runtimeMetrics.runningCount > 0
-    ? `Running ${rightPanel.runtimeMetrics.runningCount}`
-    : `${rightPanel.runtimeMetrics.totalCount} total`;
+  const runtimeConsole = rightPanel.runtimeConsole;
+  const [showAllCurrentDocuments, setShowAllCurrentDocuments] = React.useState(false);
+  const [runtimeSegmentOverride, setRuntimeSegmentOverride] = React.useState<RuntimeConsoleSegmentKey | null>(null);
+  const selectedRuntimeSegment: RuntimeConsoleSegmentKey = runtimeSegmentOverride && runtimeConsole.segments.some((segment) => segment.key === runtimeSegmentOverride)
+    ? runtimeSegmentOverride
+    : runtimeConsole.defaultSegment;
+  const collaborationCount = runtimeConsole.summary.runningCount > 0
+    ? t('sessionWorkbench.rightPanel.runningCount', '{{count}} running', { count: runtimeConsole.summary.runningCount })
+    : t('sessionWorkbench.rightPanel.totalCount', '{{count}} total', { count: runtimeConsole.summary.totalCount });
   const metricSummary = (item: RuntimeSectionItemModel): string => [
     item.metrics.elapsedLabel,
     item.metrics.tokenLabel ? `${item.metrics.tokenLabel} tokens` : null,
@@ -1669,16 +1675,6 @@ function SessionRuntimePanel({
         disabled={disabled}
         title={title}
         onClick={onClick}
-        style={{
-          minHeight: '24px',
-          padding: '2px 7px',
-          borderRadius: '6px',
-          border: '1px solid var(--border-subtle)',
-          background: disabled ? 'var(--bg-secondary)' : 'var(--bg-primary)',
-          color: disabled ? 'var(--text-tertiary)' : 'var(--text-secondary)',
-          fontSize: '11px',
-          cursor: disabled ? 'not-allowed' : 'pointer',
-        }}
       >
         {label}
       </button>
@@ -1693,7 +1689,7 @@ function SessionRuntimePanel({
         <span className="session-runtime-status">{member.status || 'unknown'}</span>
         <span
           data-testid="session-agent-team-member-actions"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap', justifyContent: 'flex-end' }}
+          className="session-runtime-actions"
         >
           {actionButton(
             'enter',
@@ -1727,22 +1723,180 @@ function SessionRuntimePanel({
     );
   };
 
-  const renderRuntimeSection = (
+  const renderSubagentWorkerItem = (worker: RuntimeSectionItemModel, fallback: string) => {
+    const sessionId = worker.childSessionId;
+    const canInspect = Boolean(sessionId && onSelectSession);
+    const meta = [worker.id, worker.runtimeKind, worker.summary, sessionId ? `session:${sessionId}` : '', metricSummary(worker)].filter(Boolean).join(' · ');
+    const workerAction = (
+      action: 'inspect' | 'continue',
+      label: string,
+      disabled: boolean,
+      title: string,
+      onClick?: () => void,
+    ) => (
+      <button
+        key={action}
+        type="button"
+        data-runtime-action={`subagent-worker-${action}`}
+        className="session-runtime-action-button"
+        disabled={disabled}
+        title={title}
+        onClick={onClick}
+      >
+        {label}
+      </button>
+    );
+    return (
+      <div key={worker.id || fallback} className="session-runtime-row" data-testid="session-subagent-worker-row">
+        <span className="session-runtime-row-main">
+          <span className="session-runtime-row-title">{worker.label || fallback}</span>
+          <span className="session-runtime-row-meta">{meta || worker.id}</span>
+        </span>
+        <span className="session-runtime-status">{worker.status || 'unknown'}</span>
+        <span className="session-runtime-actions" data-testid="session-subagent-worker-actions">
+          {workerAction(
+            'inspect',
+            t('sessionWorkbench.rightPanel.workerInspect', 'Inspect'),
+            !canInspect,
+            canInspect
+              ? t('sessionWorkbench.rightPanel.workerInspectTitle', 'Inspect worker session')
+              : t('sessionWorkbench.rightPanel.workerInspectDisabled', 'No worker session is available'),
+            canInspect && sessionId ? () => onSelectSession?.(sessionId) : undefined,
+          )}
+          {workerAction(
+            'continue',
+            t('sessionWorkbench.rightPanel.workerContinue', 'Continue'),
+            !canInspect,
+            canInspect
+              ? t('sessionWorkbench.rightPanel.workerContinueTitle', 'Open worker session to send a follow-up')
+              : t('sessionWorkbench.rightPanel.workerContinueDisabled', 'No worker session is available'),
+            canInspect && sessionId ? () => onSelectSession?.(sessionId) : undefined,
+          )}
+        </span>
+      </div>
+    );
+  };
+
+  const renderWorkflowSegment = () => (
+    <div data-testid="session-runtime-segment-body-workflow" className="session-runtime-segment-body" role="tabpanel">
+      {runtimeConsole.workflow.items.length === 0 ? (
+        <div className="session-runtime-empty">{t('sessionWorkbench.rightPanel.noWorkflows', 'No active workflows.')}</div>
+      ) : (
+        runtimeConsole.workflow.items.map((workflow, index) => (
+          <div key={workflow.id} className="session-runtime-team">
+            {renderWorkflowRoot(workflow, `workflow-${index + 1}`)}
+            {workflow.steps.map((step, stepIndex) => renderRuntimeItem(step, `workflow-step-${stepIndex + 1}`))}
+            {workflow.leafCalls.map((leafCall, leafIndex) => renderRuntimeItem(leafCall, `workflow-leaf-${leafIndex + 1}`))}
+          </div>
+        ))
+      )}
+    </div>
+  );
+
+  const renderTeamSegment = () => (
+    <div data-testid="session-runtime-segment-body-team" className="session-runtime-segment-body" role="tabpanel">
+      {runtimeConsole.team.items.length === 0 ? (
+        <div className="session-runtime-empty">{t('sessionWorkbench.rightPanel.noAgentTeams', 'No Agent Team containers in this session.')}</div>
+      ) : (
+        runtimeConsole.team.items.map((team) => (
+          <div key={team.id} className="session-runtime-team">
+            <div className="session-runtime-team-header">
+              <span>{team.label || team.id}</span>
+              <small>{team.status || 'unknown'}</small>
+            </div>
+            {team.members.length === 0 ? (
+              <div className="session-runtime-empty">
+                {t('sessionWorkbench.rightPanel.noTeamMembers', 'No team members have started yet.')}
+              </div>
+            ) : (
+              team.members.map((member, index) => renderTeamMemberItem(member, `team-member-${index + 1}`))
+            )}
+          </div>
+        ))
+      )}
+    </div>
+  );
+
+  const renderWorkersSegment = () => (
+    <div data-testid="session-runtime-segment-body-workers" className="session-runtime-segment-body" role="tabpanel">
+      {runtimeConsole.workers.items.length === 0 ? (
+        <div className="session-runtime-empty">{t('sessionWorkbench.rightPanel.noSubagents', 'No one-shot Sub-agent workers in this session.')}</div>
+      ) : (
+        runtimeConsole.workers.items.map((worker, index) => renderSubagentWorkerItem(worker, `subagent-worker-${index + 1}`))
+      )}
+    </div>
+  );
+
+  const renderActivityBucket = (
     testId: string,
     title: string,
     items: RuntimeSectionItemModel[],
     empty: string,
-    renderItem?: (item: RuntimeSectionItemModel, index: number) => React.ReactNode,
-  ) => (
-    <div className="session-runtime-card" data-testid={testId}>
-      <div className="session-runtime-card-title">{title}</div>
-      {items.length === 0 ? (
-        <div className="session-runtime-empty">{empty}</div>
-      ) : (
-        items.map((item, index) => renderItem?.(item, index) ?? renderRuntimeItem(item, `${title}-${index + 1}`))
+    rawDisclosure = false,
+  ) => {
+    if (rawDisclosure) {
+      return (
+        <details data-testid={testId} className="session-runtime-activity-bucket">
+          <summary>
+            <span>{title}</span>
+            <strong>{items.length}</strong>
+          </summary>
+          {items.length === 0 ? (
+            <div className="session-runtime-empty">{empty}</div>
+          ) : (
+            items.map((item, index) => renderRuntimeItem(item, `${title}-${index + 1}`))
+          )}
+        </details>
+      );
+    }
+    return (
+      <div data-testid={testId} className="session-runtime-activity-bucket">
+        <div className="session-runtime-card-title">{title}</div>
+        {items.length === 0 ? (
+          <div className="session-runtime-empty">{empty}</div>
+        ) : (
+          items.map((item, index) => renderRuntimeItem(item, `${title}-${index + 1}`))
+        )}
+      </div>
+    );
+  };
+
+  const renderActivitySegment = () => (
+    <div data-testid="session-runtime-segment-body-activity" className="session-runtime-segment-body" role="tabpanel">
+      {renderActivityBucket(
+        'session-runtime-activity-background',
+        t('sessionWorkbench.rightPanel.backgroundAgents', 'Background agents'),
+        runtimeConsole.activity.background,
+        t('sessionWorkbench.rightPanel.noBackgroundAgents', 'No background agents running.'),
+      )}
+      {renderActivityBucket(
+        'session-runtime-activity-notifications',
+        t('sessionWorkbench.rightPanel.notifications', 'Notifications'),
+        runtimeConsole.activity.notifications,
+        t('sessionWorkbench.rightPanel.noCompletionWakes', 'No completion notifications.'),
+      )}
+      {renderActivityBucket(
+        'session-runtime-activity-runs',
+        t('sessionWorkbench.rightPanel.runs', 'Runs'),
+        runtimeConsole.activity.runs,
+        t('sessionWorkbench.rightPanel.noRuns', 'No runtime runs recorded.'),
+      )}
+      {renderActivityBucket(
+        'session-runtime-activity-raw',
+        t('sessionWorkbench.rightPanel.rawEvents', 'Raw'),
+        runtimeConsole.activity.raw,
+        t('sessionWorkbench.rightPanel.noRawEvents', 'No raw runtime events.'),
+        true,
       )}
     </div>
   );
+
+  const renderRuntimeConsoleBody = () => {
+    if (selectedRuntimeSegment === 'team') return renderTeamSegment();
+    if (selectedRuntimeSegment === 'workers') return renderWorkersSegment();
+    if (selectedRuntimeSegment === 'workflow') return renderWorkflowSegment();
+    return renderActivitySegment();
+  };
 
   const renderDocumentRow = (doc: WorkspaceDocumentModel) => {
     const contributorLabel = artifactContributorLabel(doc.artifact, agent);
@@ -1770,7 +1924,24 @@ function SessionRuntimePanel({
   const renderDocumentGroup = (group: WorkspaceDocumentGroupModel, testId: string) => {
     if (group.items.length === 0) return null;
     const title = t(`sessionWorkbench.rightPanel.documentGroups.${group.key}`, group.title);
-    const body = <div className="session-runtime-list">{group.items.map(renderDocumentRow)}</div>;
+    const currentDocumentVisibleLimit = 5;
+    const shouldLimitCurrentGroup = group.key === 'currentSession' && !showAllCurrentDocuments;
+    const visibleItems = shouldLimitCurrentGroup ? group.items.slice(0, currentDocumentVisibleLimit) : group.items;
+    const hiddenCount = group.items.length - visibleItems.length;
+    const body = (
+      <div className="session-runtime-list">
+        {visibleItems.map(renderDocumentRow)}
+        {hiddenCount > 0 ? (
+          <button
+            type="button"
+            className="session-runtime-view-all"
+            onClick={() => setShowAllCurrentDocuments(true)}
+          >
+            {t('sessionWorkbench.rightPanel.viewAllCurrentArtifacts', 'View all {{count}} current artifacts', { count: group.items.length })}
+          </button>
+        ) : null}
+      </div>
+    );
     if (group.collapsedByDefault) {
       return (
         <details key={group.key} data-testid={testId} className="session-runtime-doc-group">
@@ -1878,113 +2049,56 @@ function SessionRuntimePanel({
           <span>{collaborationCount}</span>
         </div>
 
-        {sessionWindow && (
-          <div data-testid="session-runtime-main-row" className="session-runtime-card">
-            <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.mainSession', 'Main session')}</div>
-            <div className="session-runtime-row">
-              <span className="session-runtime-row-main">
-                <span className="session-runtime-row-title">{sessionWindow.label}</span>
-                <span className="session-runtime-row-meta">
-                  {[sessionWindow.kind, sessionWindow.sessionId ? `session:${sessionWindow.sessionId}` : '', sessionWindow.metrics.lastActivityLabel]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </span>
+        <div data-testid="session-runtime-console" className="session-runtime-console">
+          <div
+            data-testid="session-runtime-summary-strip"
+            className="session-runtime-summary-strip"
+            data-runtime-state={runtimeConsole.summary.state}
+          >
+            <div className="session-runtime-summary-main">
+              <span className="session-runtime-summary-dot" aria-hidden="true" />
+              <span>
+                <strong>
+                  {t(`sessionWorkbench.rightPanel.runtimeStates.${runtimeConsole.summary.state}`, runtimeConsole.summary.state)}
+                </strong>
+                <small>
+                  {sessionWindow
+                    ? [sessionWindow.label, sessionWindow.kind, sessionWindow.status].filter(Boolean).join(' · ')
+                    : t('sessionWorkbench.rightPanel.noMainSession', 'No selected session')}
+                </small>
               </span>
-              <span className="session-runtime-status">{sessionWindow.status}</span>
+            </div>
+            <div className="session-runtime-summary-metrics">
+              <span>{t('sessionWorkbench.rightPanel.runningCount', '{{count}} running', { count: runtimeConsole.summary.runningCount })}</span>
+              <span>{t('sessionWorkbench.rightPanel.waitingCount', '{{count}} waiting', { count: runtimeConsole.summary.waitingCount })}</span>
+              <span>{runtimeConsole.summary.elapsedLabel || '-'}</span>
+              <span>{runtimeConsole.summary.tokenLabel || '-'}</span>
+              <span>{runtimeConsole.summary.toolUseLabel || '-'}</span>
             </div>
           </div>
-        )}
 
-        <div data-testid="session-runtime-metrics" className="session-runtime-card">
-          <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.runtimeMetrics', 'Runtime metrics')}</div>
-          <div className="session-runtime-metric-row">
-            <span>{t('sessionWorkbench.rightPanel.runningSummary', 'Running')}</span>
-            <strong>{rightPanel.runtimeMetrics.runningCount}</strong>
+          <div className="session-runtime-segmented" role="tablist" aria-label={t('sessionWorkbench.rightPanel.runtimeConsole', 'Runtime Console')}>
+            {runtimeConsole.segments.map((segment) => {
+              const selected = selectedRuntimeSegment === segment.key;
+              return (
+                <button
+                  key={segment.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  data-testid={`session-runtime-segment-${segment.key}`}
+                  className={`session-runtime-segment${selected ? ' is-active' : ''}`}
+                  onClick={() => setRuntimeSegmentOverride(segment.key)}
+                >
+                  <span>{t(`sessionWorkbench.rightPanel.runtimeSegments.${segment.key}`, segment.label)}</span>
+                  <strong>{segment.count}</strong>
+                </button>
+              );
+            })}
           </div>
-          <div className="session-runtime-metric-row">
-            <span>{t('sessionWorkbench.rightPanel.elapsed', 'Elapsed')}</span>
-            <strong>{rightPanel.runtimeMetrics.elapsedLabel || '-'}</strong>
-          </div>
-          <div className="session-runtime-metric-row">
-            <span>{t('sessionWorkbench.rightPanel.tokens', 'Tokens')}</span>
-            <strong>{rightPanel.runtimeMetrics.tokenLabel || '-'}</strong>
-          </div>
-          <div className="session-runtime-metric-row">
-            <span>{t('sessionWorkbench.rightPanel.tools', 'Tools')}</span>
-            <strong>{rightPanel.runtimeMetrics.toolUseLabel || '-'}</strong>
-          </div>
+
+          {renderRuntimeConsoleBody()}
         </div>
-
-        {renderRuntimeSection(
-          'session-runtime-agent-teams',
-          t('sessionWorkbench.rightPanel.agentTeams', 'Agent Teams'),
-          runtimeSections.agentTeams,
-          t('sessionWorkbench.rightPanel.noAgentTeams', 'No Agent Team containers in this session.'),
-          (team) => (
-            <div key={team.id} className="session-runtime-team">
-              <div className="session-runtime-team-header">
-                <span>{team.label || team.id}</span>
-                <small>{team.status || 'unknown'}</small>
-              </div>
-              {team.members.length === 0 ? (
-                <div className="session-runtime-empty">
-                  {t('sessionWorkbench.rightPanel.noTeamMembers', 'No team members have started yet.')}
-                </div>
-              ) : (
-                team.members.map((member, index) => renderTeamMemberItem(member, `team-member-${index + 1}`))
-              )}
-            </div>
-          ),
-        )}
-
-        {renderRuntimeSection(
-          'session-runtime-subagents',
-          t('sessionWorkbench.rightPanel.subagents', 'Sub-agents'),
-          runtimeSections.subagents,
-          t('sessionWorkbench.rightPanel.noSubagents', 'No one-shot Sub-agent workers in this session.'),
-        )}
-
-        {renderRuntimeSection(
-          'session-runtime-workflows',
-          t('sessionWorkbench.rightPanel.dynamicWorkflows', 'Dynamic Workflow'),
-          runtimeSections.workflows,
-          t('sessionWorkbench.rightPanel.noWorkflows', 'No active workflows.'),
-          (workflow, index) => (
-            <div key={workflow.id} className="session-runtime-team">
-              {renderWorkflowRoot(workflow, `workflow-${index + 1}`)}
-              {workflow.steps.map((step, stepIndex) => renderRuntimeItem(step, `workflow-step-${stepIndex + 1}`))}
-              {workflow.leafCalls.map((leafCall, leafIndex) => renderRuntimeItem(leafCall, `workflow-leaf-${leafIndex + 1}`))}
-            </div>
-          ),
-        )}
-
-        {renderRuntimeSection(
-          'session-runtime-background',
-          t('sessionWorkbench.rightPanel.backgroundAgents', 'Background agents'),
-          runtimeSections.background,
-          t('sessionWorkbench.rightPanel.noBackgroundAgents', 'No background agents running.'),
-        )}
-
-        {renderRuntimeSection(
-          'session-runtime-notifications',
-          t('sessionWorkbench.rightPanel.notifications', 'Notifications'),
-          runtimeSections.notifications,
-          t('sessionWorkbench.rightPanel.noCompletionWakes', 'No completion notifications.'),
-        )}
-
-        {renderRuntimeSection(
-          'session-runtime-runs',
-          t('sessionWorkbench.rightPanel.runs', 'Runs'),
-          runtimeSections.runs,
-          t('sessionWorkbench.rightPanel.noRuns', 'No runtime runs recorded.'),
-        )}
-
-        {renderRuntimeSection(
-          'session-runtime-raw',
-          t('sessionWorkbench.rightPanel.rawEvents', 'Raw'),
-          runtimeSections.raw,
-          t('sessionWorkbench.rightPanel.noRawEvents', 'No raw runtime events.'),
-        )}
       </section>
     </aside>
   );

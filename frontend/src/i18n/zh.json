@@ -87,6 +87,24 @@
         "historical": "历史",
         "unattributed": "未归属"
       },
+      "runtimeConsole": "运行控制台",
+      "runtimeSegments": {
+        "team": "Team",
+        "workers": "Workers",
+        "workflow": "Workflow",
+        "activity": "Activity"
+      },
+      "runtimeStates": {
+        "idle": "idle",
+        "running": "running",
+        "waiting": "waiting",
+        "blocked": "blocked"
+      },
+      "runningCount": "{{count}} running",
+      "waitingCount": "{{count}} waiting",
+      "totalCount": "{{count}} total",
+      "noMainSession": "没有选中的会话",
+      "viewAllCurrentArtifacts": "查看全部 {{count}} 个当前交付物",
       "mainSession": "主会话",
       "runtimeMetrics": "运行指标",
       "runningSummary": "运行中",
@@ -102,6 +120,12 @@
       "memberResumeDisabled": "恢复入口在成员会话的运行控制区",
       "memberClose": "关闭",
       "memberCloseDisabled": "关闭 Team 的入口在 Agent Team 控制面",
+      "workerInspect": "检查",
+      "workerInspectTitle": "检查 worker 会话",
+      "workerInspectDisabled": "没有可检查的 worker 会话",
+      "workerContinue": "继续",
+      "workerContinueTitle": "打开 worker 会话发送后续消息",
+      "workerContinueDisabled": "没有可继续的 worker 会话",
       "resize": "拖拽调整右栏宽度"
     },
     "workflowRunWindow": {
@@ -1207,6 +1231,7 @@
       "connected": "已连接",
       "disconnected": "正在重连...",
       "startConversation": "开始与 {{name}} 对话",
+      "sessionLoadFailed": "对话加载失败。请重试当前会话或刷新页面。",
       "fileSupport": "可上传 PDF、Word、Excel、TXT 等文件",
       "attachment": "附件",
       "attachFile": "添加文件",

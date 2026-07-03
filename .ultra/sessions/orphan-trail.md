@@ -4,6 +4,11 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-07-03T04:25Z [sid:ddbc4a4f]; branch:main; 8 files (orphan-trail.md, en.json, zh.json, +5); last commit: 13d53a5d Harden RLS bypass across commits
+- 2026-07-03T03:29Z [sid:7390d1c5]; branch:main; 8 files (orphan-trail.md, en.json, zh.json, +5); last commit: 5439642b Fix web chat model resolution under RLS
+- 2026-07-03T03:08Z [sid:ddbc4a4f]; branch:main; 8 files (orphan-trail.md, en.json, zh.json, +5); last commit: 8839da3f Allow empty migration sections as no-claim scaffold
+- 2026-07-03T00:06Z [sid:b3537fe6]; branch:main; 17 files (orphan-trail.md, chat_sessions.py, agent_session_continuation.py, +14); last commit: b719e84d Promote command wrappers to core tool surface
+- 2026-07-02T22:57Z [sid:ddbc4a4f]; branch:main; 1 files (test_dream_phase6.py); last commit: e115ec35 Harden runtime control bus and T0 transcript bridgi
 - 2026-07-02T22:11Z [sid:d10bf6fb]; branch:main; 1 files (timelineModel.test.ts); last commit: b5d19fe7 Record subagent activity in debug log
 - 2026-07-02T21:51Z [sid:c5740092]; branch:main; 19 files (orphan-trail.md, orchestrator.py, files.py, +16); last commit: 820e312a Route notifications through API plane
 - 2026-07-02T17:19Z [sid:d10bf6fb]; branch:main; 11 files (orphan-trail.md, orchestrator.py, files.py, +8); last commit: 820e312a Route notifications through API plane
@@ -99,8 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-15T04:33Z [sid:6fd6f665]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, executing_actions.py, +5); last commit: bebe8ddd refactor(workflow): Step 10 清理 — 退役 phase 死列 + 修 5 
 - 2026-06-15T03:28Z [sid:8a6e0d98]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, executing_actions.py, +5); last commit: 955d365c feat(skill): Step 9 catalog 移出 frozen 修 cache 击穿 + 
 - 2026-06-15T02:44Z [sid:74a4190f]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, executing_actions.py, +5); last commit: da38c304 feat(subagent): Step 8 run_in_background 进 schema +
-- 2026-06-14T08:51Z [sid:5247cf90]; branch:main; 7 files (orphan-trail.md, executing_actions.py, system.py, +4); last commit: a1fc2606 fix(chat): hide compaction details and collapse tod
-- 2026-06-14T05:37Z [sid:f55640fa]; branch:main; 7 files (orphan-trail.md, executing_actions.py, system.py, +4); last commit: a1fc2606 fix(chat): hide compaction details and collapse tod
-- 2026-06-14T05:32Z [sid:5247cf90]; branch:main; 4 files (executing_actions.py, system.py, tasks.py, +1); last commit: a1fc2606 fix(chat): hide compaction details and collapse tod
-- 2026-06-14T04:22Z [sid:ffc0ad0e]; branch:main; 1 files (orphan-trail.md); last commit: e0c95b2d feat(llm): refresh ProviderSpec to latest model spe
-- 2026-06-13T10:01Z [sid:5d6cd3f6]; branch:feat/external-behavior-eval-ci; 117 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +114); last commit: 07f92521 feat(eval-ci): E10 per-scenario cost/latency budget

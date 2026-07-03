@@ -1,34 +1,31 @@
 # Compact Snapshot
-*Generated: 2026-07-02 03:16:25 UTC*
-*Working dir: /Users/rocky243/vc-saas/hiveclaw-main/backend (pyproject.toml)*
+*Generated: 2026-07-03 05:50:33 UTC*
+*Working dir: /Users/rocky243/vc-saas/hiveclaw-main*
 
 ## Git State
 Branch: `main`
 
 Recent commits:
-  48378fb2 fix session regression test fallout
-  6ecd1738 cut memory read side over to two planes with migration tool
-  8361f063 clean session runtime leftovers
-  c16a5166 separate advanced plan from default command index
-  cdc8651c add session workflow interaction coverage
+  afa31cd4 Close remaining RLS enforcement gaps
+  b3258383 Close post-0615 RLS table gaps
+  13d53a5d Harden RLS bypass across commits
+  5439642b Fix web chat model resolution under RLS
+  8839da3f Allow empty migration sections as no-claim scaffolds
 
 Modified files:
-  M ../.github/workflows/harness-ci.yml
-   M ../.ultra/compact-snapshot.md
-   M ../.ultra/debug/subagent-log.jsonl
-   M ../.ultra/sessions/orphan-trail.md
-   M ../AGENTS.md
-   M app/api/admin.py
-   M app/api/enterprise.py
-   D app/api/eval_ci.py
-   M app/config.py
-   M app/evals/adversarial_suite.py
-   D app/evals/baseline.py
-   D app/evals/baselines/core_behavior_v1.json
-   D app/evals/behavior_eval_evidence.py
-   D app/evals/ci_gate.py
-   D app/evals/cost_budget.py
-  ... and 125 more
+  M .ultra/sessions/orphan-trail.md
+   M frontend/src/i18n/en.json
+   M frontend/src/i18n/zh.json
+   M frontend/src/index.css
+   M frontend/src/pages/agent-detail/AgentChatSection.tsx
+   M frontend/src/pages/agent-detail/AgentDetailSections.test.tsx
+   M frontend/src/pages/session-workbench/timelineModel.test.ts
+   M frontend/src/pages/session-workbench/timelineModel.ts
+
+## Active Subagents
+These subagents were running at compact time:
+- Explore (id: aabc6914ab1e...)
+- Explore (id: a3642f2ca8c1...)
 
 ## Recovery Instructions
 After compact, read this file to restore context:

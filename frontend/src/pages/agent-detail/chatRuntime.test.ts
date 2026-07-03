@@ -14,6 +14,7 @@ import {
   applySessionActiveRunObservedState,
   appendToolCallMessage,
   applyRuntimeDoneEvent,
+  buildSessionTranscriptLoadFailureMessage,
   extractArtifactParts,
   isA2ASession,
   isDraftHumanChatSession,
@@ -30,6 +31,7 @@ import {
   isTerminalRealtimeChatEvent,
   shouldClearStaleRuntimeState,
   shouldIgnoreObservedActiveRun,
+  shouldReuseSessionTranscriptLoad,
 } from './chatRuntime';
 
 describe('chatRuntime helpers', () => {
@@ -680,6 +682,31 @@ describe('chatRuntime helpers', () => {
       id: 'other-session',
       source_channel: 'web',
     }, 'new-session')).toBe(false);
+  });
+
+  it('reuses an in-flight transcript load only for the same session surface', () => {
+    expect(shouldReuseSessionTranscriptLoad(
+      { key: 'agent-1:session-1', surface: 'chat' },
+      { key: 'agent-1:session-1', surface: 'chat' },
+    )).toBe(true);
+
+    expect(shouldReuseSessionTranscriptLoad(
+      { key: 'agent-1:session-1', surface: 'history' },
+      { key: 'agent-1:session-1', surface: 'chat' },
+    )).toBe(false);
+
+    expect(shouldReuseSessionTranscriptLoad(
+      { key: 'agent-1:session-1', surface: 'chat' },
+      { key: 'agent-1:session-2', surface: 'chat' },
+    )).toBe(false);
+  });
+
+  it('builds a visible transcript-load failure event so the timeline exits hydrating', () => {
+    const message = buildSessionTranscriptLoadFailureMessage('Conversation failed to load.');
+
+    expect(message.role).toBe('event');
+    expect(message.eventStatus).toBe('session_load_failed');
+    expect(message.content).toContain('Conversation failed to load.');
   });
 
   it('resets the streaming assistant when a chunk tombstone arrives', () => {

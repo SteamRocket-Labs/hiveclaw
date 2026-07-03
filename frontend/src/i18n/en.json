@@ -87,6 +87,24 @@
         "historical": "Historical",
         "unattributed": "Unattributed"
       },
+      "runtimeConsole": "Runtime Console",
+      "runtimeSegments": {
+        "team": "Team",
+        "workers": "Workers",
+        "workflow": "Workflow",
+        "activity": "Activity"
+      },
+      "runtimeStates": {
+        "idle": "idle",
+        "running": "running",
+        "waiting": "waiting",
+        "blocked": "blocked"
+      },
+      "runningCount": "{{count}} running",
+      "waitingCount": "{{count}} waiting",
+      "totalCount": "{{count}} total",
+      "noMainSession": "No selected session",
+      "viewAllCurrentArtifacts": "View all {{count}} current artifacts",
       "mainSession": "Main session",
       "runtimeMetrics": "Runtime metrics",
       "runningSummary": "Running",
@@ -102,6 +120,12 @@
       "memberResumeDisabled": "Resume is available from the member session active-run controls",
       "memberClose": "Close",
       "memberCloseDisabled": "Team close is available from the Agent Team control surface",
+      "workerInspect": "Inspect",
+      "workerInspectTitle": "Inspect worker session",
+      "workerInspectDisabled": "No worker session is available",
+      "workerContinue": "Continue",
+      "workerContinueTitle": "Open worker session to send a follow-up",
+      "workerContinueDisabled": "No worker session is available",
       "resize": "Resize runtime panel"
     },
     "workflowRunWindow": {
@@ -1207,6 +1231,7 @@
       "connected": "Connected",
       "disconnected": "Reconnecting...",
       "startConversation": "Start a conversation with {{name}}",
+      "sessionLoadFailed": "Conversation failed to load. Please retry this session or refresh the page.",
       "fileSupport": "You can attach PDF, Word, Excel, and text files",
       "attachment": "Attachment",
       "attachFile": "Attach file",

@@ -84,14 +84,27 @@ function getHeaderGovernanceLabel(workbench: unknown): string | null {
   return parts.join(' · ') || null;
 }
 
-function getHeaderActiveProjection(runtimeSummary: ChatRuntimeSummary | null | undefined): string | null {
+function projectionLabel(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') return value.trim() || null;
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const reason = record.projection_reason ?? record.command ?? record.status ?? record.kind ?? record.type;
+  return typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+}
+
+function getHeaderActiveProjection(
+  runtimeSummary: ChatRuntimeSummary | null | undefined,
+  sessionIndex?: SessionIndex | null,
+): string | null {
   const summary = runtimeSummary as unknown as Record<string, unknown> | null | undefined;
   const compaction = summary?.compaction as Record<string, unknown> | null | undefined;
   const projection =
-    (compaction && typeof compaction.active_projection === 'string' && compaction.active_projection) ||
-    (summary && typeof summary.active_projection === 'string' && summary.active_projection) ||
+    projectionLabel(sessionIndex?.active_projection) ||
+    projectionLabel(compaction?.active_projection) ||
+    projectionLabel(summary?.active_projection) ||
     null;
-  return projection ? String(projection) : null;
+  return projection;
 }
 
 export interface SessionWorkbenchInspectorModel {
@@ -499,6 +512,7 @@ function normalizeRuntimeSectionItem(
   const state = readString(item, ['state', 'status'], status);
   const childSessionId = readString(item, ['child_session_id', 'child_session', 'childSessionId', 'chat_session_id', 'chatSessionId'], '') || null;
   const explicitEnterable = readBoolean(item, 'enterable');
+  const isSubagent = runtimeKind.toLowerCase() === 'subagent';
   const members = Array.isArray(item.members)
     ? item.members
       .map((member, memberIndex) => normalizeRuntimeSectionItem(member, memberIndex, 'team_member'))
@@ -524,7 +538,7 @@ function normalizeRuntimeSectionItem(
     runtimeKind,
     summary: readString(item, ['summary', 'description', 'content'], ''),
     childSessionId,
-    enterable: explicitEnterable ?? Boolean(childSessionId),
+    enterable: isSubagent ? false : (explicitEnterable ?? Boolean(childSessionId)),
     metrics: readRuntimeMetrics(item),
     members,
     steps,
@@ -927,7 +941,16 @@ function getResumeHealth(sessionIndex?: SessionIndex | null): string {
   const health = sessionIndex?.resume_health;
   if (!health || typeof health !== 'object') return 'unknown';
   const status = health.status ?? health.state ?? health.kind;
-  return typeof status === 'string' && status.trim() ? status : 'unknown';
+  if (typeof status === 'string' && status.trim()) return status.trim();
+  const truthSurface = typeof health.truth_surface === 'string' && health.truth_surface.trim()
+    ? health.truth_surface.trim()
+    : null;
+  const hasT0Truth = health.has_t0_truth === true;
+  const hasCheckpoints = health.has_checkpoints === true;
+  if (hasT0Truth && hasCheckpoints) return `${truthSurface || 'T0 truth'} + checkpoints`;
+  if (hasT0Truth) return truthSurface || 'T0 truth';
+  if (hasCheckpoints) return 'checkpoints only';
+  return truthSurface ? `${truthSurface} unavailable` : 'unknown';
 }
 
 function getLatestCheckpointLabel(sessionIndex?: SessionIndex | null): string | null {
@@ -1187,7 +1210,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       resumeHealth: getResumeHealth(sessionIndex),
       permissionMode: getHeaderPermissionMode(input.activeSession, input.sessionWorkbench),
       governanceLabel: getHeaderGovernanceLabel(input.sessionWorkbench),
-      activeProjection: getHeaderActiveProjection(input.runtimeSummary),
+      activeProjection: getHeaderActiveProjection(input.runtimeSummary, sessionIndex),
       checkpointCount: sessionIndex?.checkpoints?.length ?? 0,
       branchDepth: getBranchDepth(input.activeSession, input.branchLineage),
       compactionCount: runtimeSummary?.compaction_count ?? 0,

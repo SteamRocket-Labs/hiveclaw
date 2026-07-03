@@ -206,17 +206,22 @@ _DISABLED_NOOP_HOOK_EVENTS: set[HookEvent] = {
     HookEvent.FILE_CHANGED,
 }
 
+_PLANNED_OBSERVE_HOOK_EVENTS: set[HookEvent] = {
+    HookEvent.NOTIFICATION,
+    HookEvent.ELICITATION,
+    HookEvent.CONFIG_CHANGE,
+    HookEvent.INSTRUCTIONS_LOADED,
+    HookEvent.WORKSPACE_CONTEXT_CHANGED,
+    HookEvent.ARTIFACT_CHANGED,
+}
+
 _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS: set[HookEvent] = {
     HookEvent.POST_TOOL_USE,
     HookEvent.POST_TOOL_FAILURE,
-    HookEvent.NOTIFICATION,
     HookEvent.PERMISSION_REQUEST,
     HookEvent.PERMISSION_DENIED,
     HookEvent.TASK_CREATED,
     HookEvent.TASK_COMPLETED,
-    HookEvent.ELICITATION,
-    HookEvent.CONFIG_CHANGE,
-    HookEvent.INSTRUCTIONS_LOADED,
     HookEvent.TEAM_CREATED,
     HookEvent.TEAM_CLOSED,
     HookEvent.TEAMMATE_IDLE,
@@ -294,6 +299,8 @@ _HOOK_TRIGGER_POINTS: dict[HookEvent, str] = {
 def _hook_lifecycle_state(event: HookEvent) -> str:
     if event in _DISABLED_NOOP_HOOK_EVENTS:
         return "disabled_noop"
+    if event in _PLANNED_OBSERVE_HOOK_EVENTS:
+        return "planned_observe"
     if event in _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS:
         return "active_observe"
     return "active"
@@ -302,18 +309,24 @@ def _hook_lifecycle_state(event: HookEvent) -> str:
 def _hook_runtime_consumer(event: HookEvent) -> str:
     if event in _DISABLED_NOOP_HOOK_EVENTS:
         return "disabled_noop_audit"
+    if event in _PLANNED_OBSERVE_HOOK_EVENTS:
+        return "planned_runtime_emitter"
     return _HOOK_RUNTIME_CONSUMERS.get(event, "hook_registry_observer")
 
 
 def _hook_catalog_trust_level(event: HookEvent) -> str:
     if event in _DISABLED_NOOP_HOOK_EVENTS:
         return "disabled_noop"
+    if event in _PLANNED_OBSERVE_HOOK_EVENTS:
+        return "planned"
     return "platform_trusted"
 
 
 def _hook_catalog_failure_policy(event: HookEvent) -> str:
     if event in _DISABLED_NOOP_HOOK_EVENTS:
         return "disabled_noop"
+    if event in _PLANNED_OBSERVE_HOOK_EVENTS:
+        return "planned_observe"
     if event in _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS:
         return "observe_continue"
     return "fail_closed_if_blocking"

@@ -61,6 +61,7 @@ _SESSION_PERMISSION_RESOLUTION_EVENT_TYPES = {
     "session_permission_decision",
     "session_permission_expired",
 }
+_ARTIFACT_AGENT_FIELD_PREFIXES = ("owner", "source", "download", "delivery")
 
 
 def _is_admin_or_creator(user: User, agent: Agent) -> bool:
@@ -69,6 +70,39 @@ def _is_admin_or_creator(user: User, agent: Agent) -> bool:
 
 def _can_manage_sessions(user: User, agent: Agent, access_level: str) -> bool:
     return _is_admin_or_creator(user, agent) or access_level == "manage"
+
+
+def _artifact_agent_ids(artifacts: list[dict]) -> set[uuid.UUID]:
+    agent_ids: set[uuid.UUID] = set()
+    for artifact in artifacts:
+        for prefix in _ARTIFACT_AGENT_FIELD_PREFIXES:
+            value = artifact.get(f"{prefix}_agent_id")
+            if not value:
+                continue
+            try:
+                agent_ids.add(uuid.UUID(str(value)))
+            except (TypeError, ValueError, AttributeError):
+                continue
+    return agent_ids
+
+
+async def _enrich_artifact_agent_names(db: AsyncSession, artifacts: list[dict]) -> None:
+    agent_ids = _artifact_agent_ids(artifacts)
+    if not agent_ids:
+        return
+    result = await db.execute(select(Agent.id, Agent.name).where(Agent.id.in_(agent_ids)))
+    name_by_id = {str(agent_id): name for agent_id, name in result.all() if name}
+    if not name_by_id:
+        return
+    for artifact in artifacts:
+        for prefix in _ARTIFACT_AGENT_FIELD_PREFIXES:
+            name_key = f"{prefix}_agent_name"
+            if artifact.get(name_key):
+                continue
+            agent_id = artifact.get(f"{prefix}_agent_id")
+            name = name_by_id.get(str(agent_id)) if agent_id else None
+            if name:
+                artifact[name_key] = name
 
 
 class SessionOut(BaseModel):
@@ -2222,6 +2256,8 @@ async def get_session_messages(
         )
         for artifact in artifacts_result.scalars().all():
             artifacts_by_message.setdefault(artifact.message_id, []).append(artifact_part_from_model(artifact))
+        artifact_parts = [part for parts in artifacts_by_message.values() for part in parts]
+        await _enrich_artifact_agent_names(db, artifact_parts)
 
     # Resolve sender names for agent sessions
     sender_cache: dict = {}

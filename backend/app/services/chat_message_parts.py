@@ -165,6 +165,10 @@ def _normalize_artifact_part(artifact: dict[str, Any]) -> dict[str, Any]:
         "source_agent_id": artifact.get("source_agent_id") or artifact.get("sourceAgentId"),
         "download_agent_id": artifact.get("download_agent_id") or artifact.get("downloadAgentId"),
         "delivery_agent_id": artifact.get("delivery_agent_id") or artifact.get("deliveryAgentId"),
+        "owner_agent_name": artifact.get("owner_agent_name") or artifact.get("ownerAgentName"),
+        "source_agent_name": artifact.get("source_agent_name") or artifact.get("sourceAgentName"),
+        "download_agent_name": artifact.get("download_agent_name") or artifact.get("downloadAgentName"),
+        "delivery_agent_name": artifact.get("delivery_agent_name") or artifact.get("deliveryAgentName"),
     }
     return {key: value for key, value in part.items() if value is not None}
 

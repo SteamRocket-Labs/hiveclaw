@@ -59,20 +59,49 @@ def test_ccplus_broader_hook_catalog_declares_contracts_and_noop_capability() ->
     for event_name in required:
         entry = catalog[event_name]
         assert entry["standard"] is True
-        assert entry["lifecycle_state"] in {"active", "active_observe", "disabled_noop"}
+        assert entry["lifecycle_state"] in {"active", "active_observe", "planned_observe", "disabled_noop"}
         assert entry["trigger_point"]
         assert isinstance(entry["matcher_fields"], list)
         assert entry["input_schema"]["type"] == "object"
         assert entry["output_schema"]["type"] == "object"
         assert entry["runtime_consumer"]
-        assert entry["trust_level"] in {"platform_trusted", "tenant_approved", "agent_scoped", "disabled_noop"}
-        assert entry["failure_policy"] in {"fail_closed_if_blocking", "observe_continue", "disabled_noop"}
+        assert entry["trust_level"] in {"platform_trusted", "tenant_approved", "agent_scoped", "planned", "disabled_noop"}
+        assert entry["failure_policy"] in {"fail_closed_if_blocking", "observe_continue", "planned_observe", "disabled_noop"}
 
     assert catalog["worktree_create"]["lifecycle_state"] == "disabled_noop"
     assert catalog["worktree_create"]["runtime_consumer"] == "disabled_noop_audit"
     assert "worktree_path" in catalog["worktree_create"]["output_schema"]["properties"]
     assert "permission_decision" in catalog["permission_request"]["output_schema"]["properties"]
     assert catalog["pre_tool_use"]["runtime_consumer"] == "kernel_pre_tool_use"
+
+
+def test_declared_but_unemitted_hook_contracts_report_planned_not_active() -> None:
+    """Catalog entries must not imply active runtime wiring when the current app has
+    only a declared CC-compatible surface and no live emitter."""
+    registry = HookRegistry()
+    catalog = {item["event"]: item for item in registry.describe_event_catalog()}
+
+    planned_events = {
+        "notification",
+        "elicitation",
+        "config_change",
+        "instructions_loaded",
+        "workspace_context_changed",
+        "artifact_changed",
+    }
+    for event_name in planned_events:
+        entry = catalog[event_name]
+        assert entry["lifecycle_state"] == "planned_observe"
+        assert entry["runtime_consumer"] == "planned_runtime_emitter"
+        assert entry["trust_level"] == "planned"
+        assert entry["failure_policy"] == "planned_observe"
+
+    # Subagent lifecycle hooks are live-emitted by app/agents/subagent.py and must
+    # remain active despite having no default memory handler in hooks_setup.py.
+    assert catalog["subagent_start"]["lifecycle_state"] == "active"
+    assert catalog["subagent_start"]["runtime_consumer"] == "subagent_lifecycle_start"
+    assert catalog["subagent_stop"]["lifecycle_state"] == "active"
+    assert catalog["subagent_stop"]["runtime_consumer"] == "subagent_lifecycle_stop"
 
 
 def test_permission_denied_reports_live_not_disabled_noop() -> None:

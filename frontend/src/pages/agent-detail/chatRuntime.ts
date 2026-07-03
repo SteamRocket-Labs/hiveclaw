@@ -145,6 +145,10 @@ export interface ChatArtifactPart {
   sourceAgentId?: string;
   downloadAgentId?: string;
   deliveryAgentId?: string;
+  ownerAgentName?: string;
+  sourceAgentName?: string;
+  downloadAgentName?: string;
+  deliveryAgentName?: string;
 }
 
 function mergeClarificationAnswerMetadata(
@@ -1119,6 +1123,10 @@ function normalizeArtifactPart(part: any): ChatArtifactPart | null {
     sourceAgentId: typeof part.sourceAgentId === 'string' ? part.sourceAgentId : (typeof part.source_agent_id === 'string' ? part.source_agent_id : undefined),
     downloadAgentId: typeof part.downloadAgentId === 'string' ? part.downloadAgentId : (typeof part.download_agent_id === 'string' ? part.download_agent_id : undefined),
     deliveryAgentId: typeof part.deliveryAgentId === 'string' ? part.deliveryAgentId : (typeof part.delivery_agent_id === 'string' ? part.delivery_agent_id : undefined),
+    ownerAgentName: typeof part.ownerAgentName === 'string' ? part.ownerAgentName : (typeof part.owner_agent_name === 'string' ? part.owner_agent_name : undefined),
+    sourceAgentName: typeof part.sourceAgentName === 'string' ? part.sourceAgentName : (typeof part.source_agent_name === 'string' ? part.source_agent_name : undefined),
+    downloadAgentName: typeof part.downloadAgentName === 'string' ? part.downloadAgentName : (typeof part.download_agent_name === 'string' ? part.download_agent_name : undefined),
+    deliveryAgentName: typeof part.deliveryAgentName === 'string' ? part.deliveryAgentName : (typeof part.delivery_agent_name === 'string' ? part.delivery_agent_name : undefined),
     revisionId: typeof part.revisionId === 'string' ? part.revisionId : (typeof part.revision_id === 'string' ? part.revision_id : undefined),
     action: typeof part.action === 'string' ? part.action : undefined,
     toolCallId: typeof part.toolCallId === 'string' ? part.toolCallId : (typeof part.tool_call_id === 'string' ? part.tool_call_id : undefined),

@@ -527,6 +527,79 @@ async def test_get_session_messages_allows_manage_access_for_non_owner(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_get_session_messages_enriches_artifact_agent_names(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    producer_agent_id = uuid4()
+    owner_id = uuid4()
+    session_id = uuid4()
+    message_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        peer_agent_id=None,
+        user_id=owner_id,
+        source_channel="web",
+    )
+    message = SimpleNamespace(
+        id=message_id,
+        role="assistant",
+        content="done",
+        participant_id=None,
+        thinking=None,
+        created_at=None,
+    )
+    artifact = SimpleNamespace(
+        id=uuid4(),
+        message_id=message_id,
+        agent_id=producer_agent_id,
+        path="workspace/report.md",
+        name="report.md",
+        mime_type="text/markdown",
+        size=128,
+        modified_at=None,
+        preview_kind="markdown",
+        source="a2a_workspace_write",
+        runtime_task_id=None,
+        snapshot_hash="sha256:report",
+        snapshot_json={
+            "owner_agent_id": str(producer_agent_id),
+            "source_agent_id": str(producer_agent_id),
+            "download_agent_id": str(producer_agent_id),
+        },
+        created_at=None,
+    )
+    current_user = SimpleNamespace(id=owner_id, role="member")
+    db = _QueryAwareDB(
+        agent=agent,
+        sessions=[session],
+        messages=[message],
+        artifacts=[artifact],
+        agent_names={producer_agent_id: "Reviewer Bot"},
+    )
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+
+    result = await chat_sessions_api.get_session_messages(
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    artifact_part = result[0]["artifacts"][0]
+    assert artifact_part["source_agent_id"] == str(producer_agent_id)
+    assert artifact_part["source_agent_name"] == "Reviewer Bot"
+    assert artifact_part["owner_agent_name"] == "Reviewer Bot"
+    assert artifact_part["download_agent_name"] == "Reviewer Bot"
+
+
+@pytest.mark.asyncio
 async def test_delete_session_removes_transcript_before_messages(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 

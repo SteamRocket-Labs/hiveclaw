@@ -1111,6 +1111,10 @@ def test_runtime_task_runtime_row_bounds_oversize_metadata_values():
 
     row = service._runtime_task_runtime_row(task, runtime_kind="subagent")
 
+    assert row["child_session_id"] == "child"
+    assert row["enterable"] is False
+    assert row["continuable"] is True
+    assert row["inspectable"] is True
     assert row["metadata"]["subagent_type"] == "research"
     assert row["metadata"]["turn_id"] == "turn-1"
     assert row["metadata"]["restart_replay_journal"] == {

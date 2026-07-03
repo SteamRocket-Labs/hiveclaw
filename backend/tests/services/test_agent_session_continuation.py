@@ -14,7 +14,7 @@ class _DB:
         self.commits += 1
 
 
-def _agent_session(*, state: str = "open"):
+def _agent_session(*, state: str = "open", session_kind: str = "subagent", runtime_source: str = "subagent"):
     parent_session_id = uuid4()
     return SimpleNamespace(
         id=uuid4(),
@@ -25,8 +25,8 @@ def _agent_session(*, state: str = "open"):
         root_session_id=parent_session_id,
         visibility_scope="team",
         listed_surface="parent",
-        session_kind="subagent",
-        runtime_source="subagent",
+        session_kind=session_kind,
+        runtime_source=runtime_source,
         transcript_metadata_json={"session_state": state},
     )
 
@@ -362,11 +362,11 @@ async def test_task_notification_active_parent_run_queues_to_midrun_consumer(mon
 
 
 @pytest.mark.asyncio
-async def test_agent_session_continuation_terminal_session_rejects_and_writes_transcript(monkeypatch):
+async def test_agent_session_continuation_non_subagent_terminal_session_rejects_and_writes_transcript(monkeypatch):
     import app.services.agent_session_continuation as svc
 
     db = _DB()
-    session = _agent_session(state="completed")
+    session = _agent_session(state="completed", session_kind="agent_chat", runtime_source="agent")
     agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id, name="Lead")
     user = SimpleNamespace(id=session.user_id)
     captured: dict = {}

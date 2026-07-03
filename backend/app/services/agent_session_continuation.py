@@ -76,6 +76,22 @@ def _runtime_task_type_for_session(session: ChatSession, explicit: str | None = 
     return WEB_CHAT_TURN_TASK_TYPE
 
 
+def _is_subagent_session(session: ChatSession) -> bool:
+    return (
+        _text(getattr(session, "session_kind", None)) == "subagent"
+        or _text(getattr(session, "runtime_source", None)) == "subagent"
+        or _text(getattr(session, "source_channel", None)) == "subagent"
+    )
+
+
+def _mark_terminal_subagent_resumed(session: ChatSession, terminal_state: str) -> None:
+    metadata = _session_metadata(session)
+    metadata["session_state"] = "open"
+    metadata["terminal_session_resume"] = True
+    metadata["resumed_from_terminal_state"] = terminal_state
+    session.transcript_metadata_json = metadata
+
+
 def _task_notification_runtime_action_kind(task_type: str, source: str) -> str:
     text = f"{task_type} {source}".lower()
     if "workflow" in text:
@@ -344,40 +360,42 @@ async def continue_agent_session_from_mailbox(
         "session_state": state,
     }
     if state in _TERMINAL_SESSION_STATES:
-        await _append_mailbox_event(
-            db=db,
-            agent=agent,
-            user=user,
-            session=session,
-            event_type="agent_session_message_rejected",
-            message=clean_event_content,
-            parent_session_id=parent_session_id,
-            role="system",
-            metadata={
+        if _is_subagent_session(session):
+            metadata_base = {
                 **metadata_base,
+                "terminal_session_resume": True,
+                "resumed_from_terminal_state": state,
+            }
+            _mark_terminal_subagent_resumed(session, state)
+        else:
+            await _append_mailbox_event(
+                db=db,
+                agent=agent,
+                user=user,
+                session=session,
+                event_type="agent_session_message_rejected",
+                message=clean_event_content,
+                parent_session_id=parent_session_id,
+                role="system",
+                metadata={
+                    **metadata_base,
+                    "reason": "terminal_agent_session",
+                    "resumable": False,
+                    "redirect": "spawn_new_session",
+                },
+                materialize_chat_message=False,
+                source=source_channel,
+            )
+            await db.commit()
+            return {
+                "ok": False,
+                "status": "rejected",
                 "reason": "terminal_agent_session",
-                # CCPlus V1 D-16 ruling (Hive-native non-parity, see
-                # docs/ccplus-v1-subagent-resume-ruling-2026-06-24.md): a completed/terminal
-                # subagent session is SEALED audit truth and is not reopened in place
-                # (unlike CC resumeAgentBackground). Continuation is a NEW durable child
-                # session linked by parent/root refs. Surface the redirect explicitly so the
-                # caller spawns a fresh session instead of dead-ending.
+                "child_session_id": str(session.id),
+                "session_state": state,
                 "resumable": False,
                 "redirect": "spawn_new_session",
-            },
-            materialize_chat_message=False,
-            source=source_channel,
-        )
-        await db.commit()
-        return {
-            "ok": False,
-            "status": "rejected",
-            "reason": "terminal_agent_session",
-            "child_session_id": str(session.id),
-            "session_state": state,
-            "resumable": False,
-            "redirect": "spawn_new_session",
-        }
+            }
 
     active_run = await _find_active_run(db=db, agent_id=agent.id, session_id=session.id)
     await _append_mailbox_event(
@@ -435,6 +453,11 @@ async def continue_agent_session_from_mailbox(
             "parent_session_id": _text(parent_session_id or getattr(session, "parent_session_id", None)) or None,
             "runtime_mailbox_role": model_role,
             "latest_user_prompt_overrides_history": model_role == "user",
+            **{
+                key: metadata_base[key]
+                for key in ("terminal_session_resume", "resumed_from_terminal_state")
+                if key in metadata_base
+            },
             **(extra_metadata or {}),
         },
     )

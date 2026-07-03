@@ -3586,6 +3586,7 @@ describe('AgentDetail extracted sections', () => {
                 size: 2048,
                 runtimeTaskId: 'run-1',
                 snapshotHash: 'sha256-runtime',
+                sourceAgentName: 'Reviewer Bot',
               },
               {
                 name: 'historical-report.md',
@@ -3661,6 +3662,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-workspace-documents-current"');
     expect(markup).toContain('Current session');
     expect(markup).toContain('runtime-report.md');
+    expect(markup).toContain('By Reviewer Bot');
     expect(markup).toContain('data-testid="session-workspace-documents-historical"');
     expect(markup).toContain('Historical');
     expect(markup).toContain('historical-report.md');

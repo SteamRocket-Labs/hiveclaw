@@ -1387,6 +1387,19 @@ select:focus {
   line-height: var(--session-tui-line-meta);
 }
 
+.session-runtime-doc-author {
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-meta);
+  font-style: normal;
+  font-weight: 650;
+  line-height: var(--session-tui-line-meta);
+}
+
 .session-runtime-card {
   display: grid;
   gap: 6px;

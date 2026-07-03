@@ -148,9 +148,17 @@ describe('session workbench timeline model', () => {
       agent_id: 'agent-1',
       dynamic_tools: [],
       checkpoints: [{ id: 'cp-1', checkpoint_kind: 'user_turn_stop' }],
+      active_projection: {
+        projection_reason: 'rewind',
+        checkpoint_event_id: 'cp-1',
+      },
       event_count: 42,
       t0_segments: [{ id: 'seg-1' }, { id: 'seg-2' }],
-      resume_health: { status: 'recovered', reason: 'interrupted tool repaired' },
+      resume_health: {
+        has_t0_truth: true,
+        has_checkpoints: true,
+        truth_surface: 'events.jsonl',
+      },
     };
     const sessionWorkbench = {
       schema: 'hive.ccplus.session_workbench.v1',
@@ -203,7 +211,8 @@ describe('session workbench timeline model', () => {
     expect(model.header).toMatchObject({
       title: 'Recovered session',
       modelLabel: 'GPT-5.5',
-      resumeHealth: 'recovered',
+      resumeHealth: 'events.jsonl + checkpoints',
+      activeProjection: 'rewind',
       checkpointCount: 1,
       branchDepth: 1,
       compactionCount: 2,
@@ -389,7 +398,14 @@ describe('session workbench timeline model', () => {
         }),
       }),
     ]);
-    expect(model.subagents.map((item) => item.runtimeKind)).toEqual(['subagent']);
+    expect(model.subagents).toEqual([
+      expect.objectContaining({
+        id: 'subagent-1',
+        runtimeKind: 'subagent',
+        childSessionId: 'subagent-session',
+        enterable: false,
+      }),
+    ]);
     expect(model.workflows[0].leafCalls).toEqual([
       expect.objectContaining({
         id: 'leaf-1',
@@ -405,7 +421,7 @@ describe('session workbench timeline model', () => {
     expect(model.summary.running).toBe(3);
   });
 
-  it('normalizes bare child_session references into enterable child session ids', () => {
+  it('normalizes bare subagent child_session references as continuable but not enterable', () => {
     const model = buildRuntimeSectionsModel({
       runtime_sections: {
         subagents: [
@@ -424,7 +440,7 @@ describe('session workbench timeline model', () => {
       expect.objectContaining({
         id: 'subagent-legacy',
         childSessionId: 'child-session-legacy',
-        enterable: true,
+        enterable: false,
       }),
     ]);
   });

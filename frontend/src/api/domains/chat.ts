@@ -208,6 +208,7 @@ export interface SessionIndex {
   event_count: number;
   last_event_sequence?: number | null;
   t0_segments: Array<Record<string, unknown>>;
+  active_projection?: Record<string, unknown> | null;
   resume_health: Record<string, unknown>;
 }
 

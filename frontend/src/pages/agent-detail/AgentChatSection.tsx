@@ -1166,6 +1166,34 @@ function artifactWorkspaceAgentId(
   return artifact.downloadAgentId || artifact.ownerAgentId || artifact.sourceAgentId || fallbackAgentId || null;
 }
 
+function shortArtifactAgentId(value: unknown): string {
+  const text = stringValue(value).trim();
+  if (!text) return '';
+  return text.length > 12 ? text.slice(0, 8) : text;
+}
+
+function artifactContributorLabel(artifact: ChatArtifactPart, fallbackAgent?: Record<string, unknown> | null): string {
+  const explicitName = stringValue(
+    artifact.sourceAgentName
+    || artifact.ownerAgentName
+    || artifact.downloadAgentName
+    || artifact.deliveryAgentName,
+  ).trim();
+  if (explicitName) return explicitName;
+
+  const contributorId = stringValue(
+    artifact.sourceAgentId
+    || artifact.ownerAgentId
+    || artifact.downloadAgentId
+    || artifact.deliveryAgentId,
+  ).trim();
+  if (!contributorId) return stringValue(fallbackAgent?.name).trim();
+  if (contributorId === stringValue(fallbackAgent?.id).trim()) {
+    return stringValue(fallbackAgent?.name).trim() || shortArtifactAgentId(contributorId);
+  }
+  return shortArtifactAgentId(contributorId);
+}
+
 function ArtifactPreviewPanel({
   preview,
   onClose,
@@ -1492,6 +1520,7 @@ function SessionRuntimePanel({
   messages,
   sessionWorkbench,
   activeSession,
+  agent,
   activeRunStatus,
   collapsed = false,
   onToggleCollapsed,
@@ -1502,6 +1531,7 @@ function SessionRuntimePanel({
   messages: AgentChatMessage[];
   sessionWorkbench: SessionWorkbench | null;
   activeSession?: Record<string, unknown> | null;
+  agent?: Record<string, unknown> | null;
   activeRunStatus?: string | null;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
@@ -1714,20 +1744,28 @@ function SessionRuntimePanel({
     </div>
   );
 
-  const renderDocumentRow = (doc: WorkspaceDocumentModel) => (
-    <button
-      key={doc.key}
-      type="button"
-      className="session-runtime-doc-row"
-      onClick={() => onOpenDocument?.(doc.artifact)}
-    >
-      <IconFileText size={15} />
-      <span>
-        <strong>{doc.name}</strong>
-        <small>{[doc.previewKind, doc.status, formatArtifactSize(doc.size), doc.path].filter(Boolean).join(' · ')}</small>
-      </span>
-    </button>
-  );
+  const renderDocumentRow = (doc: WorkspaceDocumentModel) => {
+    const contributorLabel = artifactContributorLabel(doc.artifact, agent);
+    return (
+      <button
+        key={doc.key}
+        type="button"
+        className="session-runtime-doc-row"
+        onClick={() => onOpenDocument?.(doc.artifact)}
+      >
+        <IconFileText size={15} />
+        <span>
+          <strong>{doc.name}</strong>
+          <small>{[doc.previewKind, doc.status, formatArtifactSize(doc.size), doc.path].filter(Boolean).join(' · ')}</small>
+          {contributorLabel ? (
+            <em className="session-runtime-doc-author">
+              {t('sessionWorkbench.rightPanel.documentAuthor', 'By {{name}}', { name: contributorLabel })}
+            </em>
+          ) : null}
+        </span>
+      </button>
+    );
+  };
 
   const renderDocumentGroup = (group: WorkspaceDocumentGroupModel, testId: string) => {
     if (group.items.length === 0) return null;
@@ -4364,6 +4402,7 @@ export default function AgentChatSection({
           messages={visibleTimeline}
           sessionWorkbench={sessionWorkbench}
           activeSession={activeSession as Record<string, unknown> | null}
+          agent={agent as Record<string, unknown> | null}
           activeRunStatus={activeRunStatus}
           collapsed={runtimePanelCollapsed}
           onToggleCollapsed={() => setRuntimePanelCollapsed((value) => !value)}

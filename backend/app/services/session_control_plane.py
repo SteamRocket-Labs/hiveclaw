@@ -274,16 +274,20 @@ def _runtime_task_label(task: RuntimeTask, metadata: dict[str, Any]) -> str:
 def _runtime_task_runtime_row(task: RuntimeTask, *, runtime_kind: str | None = None) -> dict[str, Any]:
     metadata = _mapping(getattr(task, "metadata_json", None))
     child_session_id = getattr(task, "child_session_id", None)
+    row_runtime_kind = runtime_kind or getattr(task, "task_type", None)
+    is_subagent_row = str(row_runtime_kind or "").strip().lower() == "subagent" or str(
+        getattr(task, "task_type", None) or ""
+    ).strip().lower() == "subagent"
     row = {
         "runtime_task_id": str(getattr(task, "id", "")),
         "task_type": getattr(task, "task_type", None),
-        "runtime_kind": runtime_kind or getattr(task, "task_type", None),
+        "runtime_kind": row_runtime_kind,
         "label": _runtime_task_label(task, metadata),
         "status": getattr(task, "status", None),
         "state": _completion_state(getattr(task, "status", None)),
         "parent_session_id": getattr(task, "parent_session_id", None),
         "child_session_id": child_session_id,
-        "enterable": bool(child_session_id),
+        "enterable": bool(child_session_id) and not is_subagent_row,
         "trace_id": getattr(task, "trace_id", None),
         "summary": getattr(task, "result_summary", None) or "",
         "token_usage": getattr(task, "token_usage", None) or {},
@@ -295,6 +299,9 @@ def _runtime_task_runtime_row(task: RuntimeTask, *, runtime_kind: str | None = N
     }
     if metadata.get("subagent_type"):
         row["subagent_type"] = metadata.get("subagent_type")
+    if is_subagent_row:
+        row["inspectable"] = bool(child_session_id)
+        row["continuable"] = bool(child_session_id)
     return row
 
 

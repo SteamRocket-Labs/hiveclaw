@@ -1,10 +1,10 @@
-"""CCPlus V1 D-16 ruling test: completed-subagent-resume is Hive-native non-parity.
+"""CC parity test: completed sub-agent sessions remain resumable.
 
 Makes ``pytest -k subagent_resume`` collect a REAL, revert-sensitive test proving
-the deliberate new-spawn-only ruling (see
-docs/ccplus-v1-subagent-resume-ruling-2026-06-24.md). A terminal subagent session
-is sealed audit truth: continuation is rejected in place and explicitly redirected
-to a fresh spawn, rather than reopening the sealed session.
+that ordinary sub-agents can be continued after completion. This follows CC
+``SendMessage`` / ``resumeAgentBackground`` semantics: the transcript remains the
+truth surface, and a follow-up starts a new continuation turn for the same child
+session instead of forcing a fresh spawn.
 """
 
 from __future__ import annotations
@@ -38,13 +38,23 @@ def _session(state: str) -> SimpleNamespace:
     )
 
 
-async def test_subagent_resume_terminal_session_rejected_with_new_spawn_redirect(monkeypatch):
+async def test_subagent_resume_terminal_session_starts_continuation_turn(monkeypatch):
     recorded: list[dict] = []
+    captured: dict[str, dict] = {}
 
     async def _fake_append(**kwargs):
         recorded.append(kwargs)
 
+    async def _fake_find_active(**_kwargs):
+        return None
+
+    async def _fake_start(**kwargs):
+        captured["start"] = kwargs
+        return {"run_id": "resume-run-1", "status": "running"}
+
     monkeypatch.setattr(asc, "append_session_event", _fake_append)
+    monkeypatch.setattr(asc, "_find_active_run", _fake_find_active)
+    monkeypatch.setattr(asc, "start_web_chat_run", _fake_start)
     db = _FakeDB()
     agent = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4())
     user = SimpleNamespace(id=uuid.uuid4())
@@ -58,20 +68,23 @@ async def test_subagent_resume_terminal_session_rejected_with_new_spawn_redirect
         message="please continue the analysis",
     )
 
-    # The ruling: terminal session is rejected AND explicitly redirected to new spawn
-    # (revert-sensitive: removing the D-16 ruling fields makes these assertions fail).
-    assert result["ok"] is False
-    assert result["status"] == "rejected"
-    assert result["reason"] == "terminal_agent_session"
-    assert result["resumable"] is False
-    assert result["redirect"] == "spawn_new_session"
-    assert db.committed is True
+    assert result["ok"] is True
+    assert result["status"] == "started"
+    assert result["run_id"] == "resume-run-1"
+    assert result["consumer"] == "continuation_turn"
+    assert result["child_session_id"] == str(session.id)
+    assert db.committed is False
 
-    # The rejection is durably recorded as a mailbox event carrying the redirect ruling.
-    assert recorded, "a rejection mailbox event must be appended"
-    assert recorded[0]["event_type"] == "agent_session_message_rejected"
-    assert recorded[0]["metadata"]["redirect"] == "spawn_new_session"
-    assert recorded[0]["metadata"]["resumable"] is False
+    assert recorded, "a follow-up mailbox event must be appended before the continuation turn starts"
+    assert recorded[0]["event_type"] == "agent_session_message"
+    assert recorded[0]["metadata"]["session_state"] == "completed"
+    assert recorded[0]["metadata"]["terminal_session_resume"] is True
+    assert recorded[0]["metadata"]["resumed_from_terminal_state"] == "completed"
+    assert captured["start"]["append_user_message"] is False
+    assert captured["start"]["runtime_task_type"] == asc.WEB_CHAT_TURN_TASK_TYPE
+    assert captured["start"]["extra_metadata"]["terminal_session_resume"] is True
+    assert captured["start"]["extra_metadata"]["resumed_from_terminal_state"] == "completed"
+    assert session.transcript_metadata_json["session_state"] == "open"
 
 
 async def test_subagent_resume_empty_message_rejected_before_terminal_check():
@@ -90,9 +103,9 @@ async def test_subagent_resume_empty_message_rejected_before_terminal_check():
     assert result == {"ok": False, "status": "rejected", "reason": "empty_message"}
 
 
-def test_subagent_resume_ruling_boundary_only_terminal_states_sealed():
-    # The new-spawn-only ruling applies ONLY to terminal states; open sessions still
-    # resume in place (proves the ruling is scoped, not a blanket block).
+def test_subagent_resume_boundary_terminal_state_set_is_explicit():
+    # Terminal state detection still matters: sub-agent terminal states enter the
+    # CC-compatible continuation branch, while unrelated terminal sessions remain sealed.
     assert "completed" in asc._TERMINAL_SESSION_STATES
     assert "failed" in asc._TERMINAL_SESSION_STATES
     assert "cancelled" in asc._TERMINAL_SESSION_STATES

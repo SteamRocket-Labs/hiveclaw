@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 MIGRATION_MARKER_RELATIVE = Path("control") / "two_plane_migration.json"
 LEGACY_T3_FILES = ("episodes.md", "user.md", "worker.md", "capabilities.md")
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,78}$")
+_EMPTY_SELF_MD = "# Self\n\n_No accepted self observations migrated._"
+_EMPTY_SOUL_MD = "# Soul\n\n_No soul content available before migration._"
 
 PlanBuilder = Callable[..., Awaitable[dict]]
 
@@ -127,7 +129,7 @@ async def migrate_agent_memory(
             issues=("no plan builder / model config available — migration is an LLM judgment, no mechanical fallback",),
         )
 
-    plan = await plan_builder(corpus)
+    plan = _fill_no_claim_scaffolds(await plan_builder(corpus), corpus)
     issues = _validate_plan(plan)
     staging_dir = mem_dir / ".staging" / "migration" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     staging_dir.mkdir(parents=True, exist_ok=True)
@@ -266,6 +268,18 @@ def _validate_plan(plan: Any) -> list[str]:
             if not str((page or {}).get("content") or "").strip():
                 issues.append(f"{key} page content empty: {slug}")
     return issues
+
+
+def _fill_no_claim_scaffolds(plan: Any, corpus: dict) -> Any:
+    """Fill required files only when doing so adds no semantic claim."""
+    if not isinstance(plan, dict):
+        return plan
+    normalized = dict(plan)
+    if not str(normalized.get("self_md") or "").strip():
+        normalized["self_md"] = _EMPTY_SELF_MD
+    if not str(normalized.get("soul_md") or "").strip() and not str(corpus.get("soul_md") or "").strip():
+        normalized["soul_md"] = _EMPTY_SOUL_MD
+    return normalized
 
 
 def _write_file(path: Path, content: str) -> None:

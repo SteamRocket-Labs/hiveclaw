@@ -187,6 +187,66 @@ async def test_invalid_plan_holds(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_self_plan_applies_with_no_claim_scaffold(tmp_path: Path) -> None:
+    from app.scripts.migrate_memory_two_planes import migrate_agent_memory
+
+    agent_id = uuid4()
+    _seed_legacy_agent(tmp_path, agent_id)
+
+    async def empty_self_plan(*_a, **_k) -> dict:
+        plan = dict(FAKE_PLAN)
+        plan["self_md"] = ""
+        return plan
+
+    report = await migrate_agent_memory(agent_id=agent_id, data_root=tmp_path, apply=True, plan_builder=empty_self_plan)
+
+    assert report.status == "applied"
+    mem = _mem_dir(tmp_path, agent_id)
+    assert "No accepted self observations migrated" in (mem / "self" / "self.md").read_text(encoding="utf-8")
+    assert not (mem / "t3" / "user.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_empty_soul_plan_holds_when_original_soul_has_content(tmp_path: Path) -> None:
+    from app.scripts.migrate_memory_two_planes import migrate_agent_memory
+
+    agent_id = uuid4()
+    _seed_legacy_agent(tmp_path, agent_id)
+
+    async def empty_soul_plan(*_a, **_k) -> dict:
+        plan = dict(FAKE_PLAN)
+        plan["soul_md"] = ""
+        return plan
+
+    report = await migrate_agent_memory(agent_id=agent_id, data_root=tmp_path, apply=True, plan_builder=empty_soul_plan)
+
+    assert report.status == "held"
+    assert "plan missing soul_md" in report.issues
+    assert (_mem_dir(tmp_path, agent_id) / "t3" / "user.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_empty_soul_plan_applies_with_no_claim_scaffold_when_original_soul_empty(tmp_path: Path) -> None:
+    from app.scripts.migrate_memory_two_planes import migrate_agent_memory
+
+    agent_id = uuid4()
+    _seed_legacy_agent(tmp_path, agent_id)
+    (tmp_path / str(agent_id) / "soul.md").write_text("", encoding="utf-8")
+
+    async def empty_soul_plan(*_a, **_k) -> dict:
+        plan = dict(FAKE_PLAN)
+        plan["soul_md"] = ""
+        return plan
+
+    report = await migrate_agent_memory(agent_id=agent_id, data_root=tmp_path, apply=True, plan_builder=empty_soul_plan)
+
+    assert report.status == "applied"
+    soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
+    assert "No soul content available before migration" in soul
+    assert not (_mem_dir(tmp_path, agent_id) / "t3" / "user.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_agent_without_legacy_data_is_noop(tmp_path: Path) -> None:
     from app.scripts.migrate_memory_two_planes import migrate_agent_memory
 

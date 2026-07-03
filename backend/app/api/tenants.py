@@ -4,6 +4,7 @@ Public endpoints for self-service company creation and joining.
 Admin endpoints for platform-level company management.
 """
 
+import contextlib
 import re
 import secrets
 import uuid
@@ -78,6 +79,21 @@ async def _scope_session_to_tenant(db: AsyncSession, tenant_id: uuid.UUID | str)
     return pinned
 
 
+@contextlib.asynccontextmanager
+async def _platform_admin_bypass_scope(
+    db: AsyncSession,
+    current_user: User,
+    *,
+    reason: str,
+):
+    """Use audited RLS bypass only for platform-wide tenant administration."""
+    if current_user.role == "platform_admin":
+        async with enter_rls_bypass(db, reason=reason, actor_id=str(current_user.id)) as bypass_db:
+            yield bypass_db
+        return
+    yield db
+
+
 # ─── Self-Service: Create Company ───────────────────────
 
 @router.post("/self-create", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
@@ -102,9 +118,14 @@ async def self_create_company(
         raise HTTPException(status_code=403, detail="Company self-creation is currently disabled")
 
     slug = _slugify(data.name)
-    tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
-    db.add(tenant)
-    await db.flush()
+    async with enter_rls_bypass(
+        db,
+        reason="self-service company creation",
+        actor_id=str(current_user.id),
+    ) as bypass_db:
+        tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
+        bypass_db.add(tenant)
+        await bypass_db.flush()
     await _scope_session_to_tenant(db, tenant.id)
 
     # Assign creator as org_admin
@@ -230,7 +251,12 @@ async def list_tenants(
     db: AsyncSession = Depends(get_db),
 ):
     """List all tenants (platform_admin only)."""
-    result = await db.execute(select(Tenant).order_by(Tenant.created_at.desc()))
+    async with enter_rls_bypass(
+        db,
+        reason="platform-admin list tenants",
+        actor_id=str(current_user.id),
+    ) as bypass_db:
+        result = await bypass_db.execute(select(Tenant).order_by(Tenant.created_at.desc()))
     return [TenantOut.model_validate(t) for t in result.scalars().all()]
 
 
@@ -245,8 +271,13 @@ async def get_tenant(
         raise HTTPException(status_code=403, detail="Admin access required")
     if current_user.role == "org_admin" and str(current_user.tenant_id) != str(tenant_id):
         raise HTTPException(status_code=403, detail="Access denied")
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
+    async with _platform_admin_bypass_scope(
+        db,
+        current_user,
+        reason="platform-admin get tenant",
+    ) as scoped_db:
+        result = await scoped_db.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     return TenantOut.model_validate(tenant)
@@ -279,14 +310,19 @@ async def update_tenant(
                 detail="Org admins can only update company name and timezone",
             )
 
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
+    async with _platform_admin_bypass_scope(
+        db,
+        current_user,
+        reason="platform-admin update tenant",
+    ) as scoped_db:
+        result = await scoped_db.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant = result.scalar_one_or_none()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
 
-    for field, value in updates.items():
-        setattr(tenant, field, value)
-    await db.flush()
+        for field, value in updates.items():
+            setattr(tenant, field, value)
+        await scoped_db.flush()
     return TenantOut.model_validate(tenant)
 
 
@@ -311,54 +347,59 @@ async def delete_tenant(
     if current_user.role == "org_admin" and str(current_user.tenant_id) != str(tenant_id):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
+    async with _platform_admin_bypass_scope(
+        db,
+        current_user,
+        reason="platform-admin delete tenant",
+    ) as scoped_db:
+        result = await scoped_db.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant = result.scalar_one_or_none()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
 
-    fallback_tenant_id: uuid.UUID | None = None
-    if current_user.role == "platform_admin":
-        fallback_result = await db.execute(
-            select(Tenant).where(
-                Tenant.id != tenant_id,
-                Tenant.is_active,
-            ).order_by(Tenant.created_at.asc())
+        fallback_tenant_id: uuid.UUID | None = None
+        if current_user.role == "platform_admin":
+            fallback_result = await scoped_db.execute(
+                select(Tenant).where(
+                    Tenant.id != tenant_id,
+                    Tenant.is_active,
+                ).order_by(Tenant.created_at.asc())
+            )
+            fallback_tenant = fallback_result.scalar_one_or_none()
+            fallback_tenant_id = fallback_tenant.id if fallback_tenant else None
+
+        running_agents = await scoped_db.execute(
+            select(Agent).where(
+                Agent.tenant_id == tenant_id,
+                Agent.status == "running",
+            )
         )
-        fallback_tenant = fallback_result.scalar_one_or_none()
-        fallback_tenant_id = fallback_tenant.id if fallback_tenant else None
+        for agent in running_agents.scalars().all():
+            agent.status = "paused"
 
-    running_agents = await db.execute(
-        select(Agent).where(
-            Agent.tenant_id == tenant_id,
-            Agent.status == "running",
+        tenant_users = await scoped_db.execute(select(User).where(User.tenant_id == tenant_id))
+        for user in tenant_users.scalars().all():
+            user.department_id = None
+            if user.role == "platform_admin" and fallback_tenant_id is not None:
+                user.tenant_id = fallback_tenant_id
+                continue
+
+            user.tenant_id = None
+            if user.role != "platform_admin":
+                user.role = "member"
+
+        # Offboarding scrub: never leave a deactivated tenant's API keys in the DB.
+        from app.services.tool_config_service import scrub_tenant_tool_secrets
+
+        await scrub_tenant_tool_secrets(scoped_db, tenant_id)
+
+        tenant.is_active = False
+        await scoped_db.flush()
+
+        return TenantDeleteOut(
+            fallback_tenant_id=fallback_tenant_id,
+            needs_company_setup=fallback_tenant_id is None,
         )
-    )
-    for agent in running_agents.scalars().all():
-        agent.status = "paused"
-
-    tenant_users = await db.execute(select(User).where(User.tenant_id == tenant_id))
-    for user in tenant_users.scalars().all():
-        user.department_id = None
-        if user.role == "platform_admin" and fallback_tenant_id is not None:
-            user.tenant_id = fallback_tenant_id
-            continue
-
-        user.tenant_id = None
-        if user.role != "platform_admin":
-            user.role = "member"
-
-    # Offboarding scrub: never leave a deactivated tenant's API keys in the DB.
-    from app.services.tool_config_service import scrub_tenant_tool_secrets
-
-    await scrub_tenant_tool_secrets(db, tenant_id)
-
-    tenant.is_active = False
-    await db.flush()
-
-    return TenantDeleteOut(
-        fallback_tenant_id=fallback_tenant_id,
-        needs_company_setup=fallback_tenant_id is None,
-    )
 
 
 @router.put("/{tenant_id}/assign-user/{user_id}")
@@ -370,21 +411,26 @@ async def assign_user_to_tenant(
     db: AsyncSession = Depends(get_db),
 ):
     """Assign a user to a tenant with a specific role."""
-    # Verify tenant
-    t_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    if not t_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Tenant not found")
+    async with enter_rls_bypass(
+        db,
+        reason="platform-admin assign user to tenant",
+        actor_id=str(current_user.id),
+    ) as bypass_db:
+        # Verify tenant
+        t_result = await bypass_db.execute(select(Tenant).where(Tenant.id == tenant_id))
+        if not t_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Tenant not found")
 
-    # Verify user
-    u_result = await db.execute(select(User).where(User.id == user_id))
-    user = u_result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        # Verify user
+        u_result = await bypass_db.execute(select(User).where(User.id == user_id))
+        user = u_result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
 
-    if role not in ("org_admin", "member"):
-        raise HTTPException(status_code=400, detail="Invalid role")
+        if role not in ("org_admin", "member"):
+            raise HTTPException(status_code=400, detail="Invalid role")
 
-    user.tenant_id = tenant_id
-    user.role = role
-    await db.flush()
+        user.tenant_id = tenant_id
+        user.role = role
+        await bypass_db.flush()
     return {"status": "ok", "user_id": str(user_id), "tenant_id": str(tenant_id), "role": role}

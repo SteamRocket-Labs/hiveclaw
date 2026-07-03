@@ -85,8 +85,15 @@ async def test_self_create_company_pins_new_tenant_before_assigning_creator(monk
         quota_tokens_per_month=None,
     )
     db = _FakeDB([_ScalarResult(None)])
+    bypass_calls: list[dict] = []
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        bypass_calls.append({"session": session, "reason": reason, "actor_id": actor_id})
+        yield session
 
     monkeypatch.setattr(tenants_api, "_slugify", lambda _name: "acme")
+    monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
 
     result = await tenants_api.self_create_company(
         data=tenants_api.TenantCreate(name="Acme"),
@@ -99,6 +106,13 @@ async def test_self_create_company_pins_new_tenant_before_assigning_creator(monk
     assert current_user.role == "org_admin"
     assert any(f"SET LOCAL app.current_tenant_id = '{current_user.tenant_id}'" in stmt for stmt in db.statements)
     assert db.flushed is True
+    assert bypass_calls == [
+        {
+            "session": db,
+            "reason": "self-service company creation",
+            "actor_id": str(current_user.id),
+        }
+    ]
 
 
 @pytest.mark.asyncio

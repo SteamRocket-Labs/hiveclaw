@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -49,6 +50,7 @@ class _FakeDB:
     def __init__(self, results, *, flush_side_effect: Exception | None = None):
         self._results = list(results)
         self._flush_side_effect = flush_side_effect
+        self.sync_session = SimpleNamespace(info={})
         self.executed_statements: list[str] = []
         self.added = []
 
@@ -65,6 +67,20 @@ class _FakeDB:
     async def flush(self):
         if self._flush_side_effect:
             raise self._flush_side_effect
+        for obj in self.added:
+            if getattr(obj, "id", None) is None:
+                obj.id = uuid4()
+            if obj.__class__.__name__ == "User":
+                if getattr(obj, "is_active", None) is None:
+                    obj.is_active = True
+                if getattr(obj, "tokens_used_today", None) is None:
+                    obj.tokens_used_today = 0
+                if getattr(obj, "tokens_used_month", None) is None:
+                    obj.tokens_used_month = 0
+                if getattr(obj, "tokens_used_total", None) is None:
+                    obj.tokens_used_total = 0
+                if getattr(obj, "created_at", None) is None:
+                    obj.created_at = datetime.now(timezone.utc)
         return None
 
     async def rollback(self):
@@ -109,6 +125,29 @@ def test_register_uniqueness_preflight_uses_rls_bypass():
 
     assert resp.status_code == 409
     assert any("app.current_tenant_id = 'BYPASS'" in statement for statement in db.executed_statements)
+
+
+def test_register_first_user_pins_bootstrap_tenant_before_user_insert(monkeypatch):
+    import app.api.auth as auth_api
+
+    async def noop_seed_default_agents():
+        return None
+
+    monkeypatch.setattr("app.services.agent_seeder.seed_default_agents", noop_seed_default_agents)
+    monkeypatch.setattr(auth_api, "hash_password", lambda _password: "hash")
+    monkeypatch.setattr(auth_api, "create_access_token", lambda *_args, **_kwargs: "jwt-stub")
+    db = _FakeDB([None, None, 0, None])
+    client = _make_client(db)
+
+    resp = client.post("/api/auth/register", json=_PAYLOAD)
+
+    assert resp.status_code == 201
+    user = next(obj for obj in db.added if obj.__class__.__name__ == "User")
+    assert user.tenant_id is not None
+    assert any(
+        f"SET LOCAL app.current_tenant_id = '{user.tenant_id}'" in statement
+        for statement in db.executed_statements
+    )
 
 
 def test_register_409_on_username_clash_does_not_suggest_login():

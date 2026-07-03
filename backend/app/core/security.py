@@ -236,17 +236,25 @@ async def verify_refresh_token(db: AsyncSession, raw_token: str, device_id: str 
     bound to a different device.
     """
     from app.models.refresh_token import RefreshToken
+    from app.models.user import User
 
     token_hash = _hash_refresh_token(raw_token)
-    result = await db.execute(
-        select(RefreshToken).where(
-            RefreshToken.token_hash == token_hash,
-            RefreshToken.revoked.is_(False),
+    async with enter_rls_bypass(db, reason="refresh token lookup") as bypass_db:
+        result = await bypass_db.execute(
+            select(RefreshToken).where(
+                RefreshToken.token_hash == token_hash,
+                RefreshToken.revoked.is_(False),
+            )
         )
-    )
-    row = result.scalar_one_or_none()
+        row = result.scalar_one_or_none()
+        tenant_id = None
+        if row:
+            tenant_result = await bypass_db.execute(select(User.tenant_id).where(User.id == row.user_id))
+            tenant_id = tenant_result.scalar_one_or_none()
+
     if not row:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    await pin_rls_tenant_context(db, tenant_id)
     if row.expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired")
     if device_id is not None and row.device_id != device_id:
@@ -257,12 +265,18 @@ async def verify_refresh_token(db: AsyncSession, raw_token: str, device_id: str 
 async def revoke_refresh_token(db: AsyncSession, raw_token: str) -> None:
     """Revoke a refresh token (e.g. on logout)."""
     from app.models.refresh_token import RefreshToken
+    from app.models.user import User
 
     token_hash = _hash_refresh_token(raw_token)
-    result = await db.execute(
-        select(RefreshToken).where(RefreshToken.token_hash == token_hash)
-    )
-    row = result.scalar_one_or_none()
+    async with enter_rls_bypass(db, reason="refresh token revoke lookup") as bypass_db:
+        result = await bypass_db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+        row = result.scalar_one_or_none()
+        tenant_id = None
+        if row:
+            tenant_result = await bypass_db.execute(select(User.tenant_id).where(User.id == row.user_id))
+            tenant_id = tenant_result.scalar_one_or_none()
+
     if row:
+        await pin_rls_tenant_context(db, tenant_id)
         row.revoked = True
         await db.flush()

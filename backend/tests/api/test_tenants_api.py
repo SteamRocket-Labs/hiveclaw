@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -16,6 +17,10 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalars(self):
+        values = self._value if isinstance(self._value, list) else [self._value]
+        return SimpleNamespace(all=lambda: values)
+
 
 class _FakeDB:
     def __init__(self, tenant):
@@ -24,6 +29,20 @@ class _FakeDB:
 
     async def execute(self, _stmt):
         return _ScalarResult(self.tenant)
+
+    async def flush(self):
+        self.flushed = True
+
+
+class _SequenceDB:
+    def __init__(self, results):
+        self._results = list(results)
+        self.flushed = False
+
+    async def execute(self, _stmt):
+        if not self._results:
+            raise AssertionError("Unexpected execute() call")
+        return self._results.pop(0)
 
     async def flush(self):
         self.flushed = True
@@ -104,3 +123,101 @@ def test_org_admin_cannot_update_restricted_tenant_fields():
     )
 
     assert response.status_code == 403
+
+
+def test_platform_admin_list_tenants_uses_audited_bypass(monkeypatch):
+    tenant_id = uuid4()
+    fake_db = _FakeDB([_tenant(tenant_id)])
+    bypass_calls: list[dict] = []
+    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        bypass_calls.append({"session": session, "reason": reason, "actor_id": actor_id})
+        yield session
+
+    monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
+
+    result = tenants_api.list_tenants(
+        current_user=current_user,
+        db=fake_db,
+    )
+    tenants = __import__("asyncio").run(result)
+
+    assert [tenant.id for tenant in tenants] == [tenant_id]
+    assert bypass_calls == [
+        {
+            "session": fake_db,
+            "reason": "platform-admin list tenants",
+            "actor_id": str(current_user.id),
+        }
+    ]
+
+
+def test_platform_admin_update_other_tenant_uses_audited_bypass(monkeypatch):
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
+    fake_db = _FakeDB(_tenant(tenant_id))
+    bypass_calls: list[dict] = []
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        bypass_calls.append({"session": session, "reason": reason, "actor_id": actor_id})
+        yield session
+
+    monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
+
+    result = tenants_api.update_tenant(
+        tenant_id=tenant_id,
+        data=tenants_api.TenantUpdate(name="Renamed"),
+        current_user=current_user,
+        db=fake_db,
+    )
+    tenant = __import__("asyncio").run(result)
+
+    assert tenant.name == "Renamed"
+    assert fake_db.flushed is True
+    assert bypass_calls == [
+        {
+            "session": fake_db,
+            "reason": "platform-admin update tenant",
+            "actor_id": str(current_user.id),
+        }
+    ]
+
+
+def test_platform_admin_assign_user_to_tenant_uses_audited_bypass(monkeypatch):
+    tenant_id = uuid4()
+    user_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4())
+    target_user = SimpleNamespace(id=user_id, tenant_id=None, role="member")
+    fake_db = _SequenceDB([_ScalarResult(_tenant(tenant_id)), _ScalarResult(target_user)])
+    bypass_calls: list[dict] = []
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        bypass_calls.append({"session": session, "reason": reason, "actor_id": actor_id})
+        yield session
+
+    monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
+
+    result = tenants_api.assign_user_to_tenant(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        role="org_admin",
+        current_user=current_user,
+        db=fake_db,
+    )
+    payload = __import__("asyncio").run(result)
+
+    assert payload["status"] == "ok"
+    assert target_user.tenant_id == tenant_id
+    assert target_user.role == "org_admin"
+    assert fake_db.flushed is True
+    assert bypass_calls == [
+        {
+            "session": fake_db,
+            "reason": "platform-admin assign user to tenant",
+            "actor_id": str(current_user.id),
+        }
+    ]

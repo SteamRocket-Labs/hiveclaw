@@ -1,6 +1,7 @@
 """Tests for security.py — tenant-disabled enforcement in get_current_user."""
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 from unittest.mock import patch
@@ -8,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 
-from app.core.security import get_current_user
+from app.core.security import get_current_user, verify_refresh_token
 
 
 def _read_security_source() -> str:
@@ -147,3 +148,56 @@ async def test_platform_admin_selected_tenant_override_rejects_missing_target_te
         await get_current_user(request=request, credentials=credentials, db=db)
 
     assert exc_info.value.status_code == 404
+
+
+class _RefreshResult:
+    def __init__(self, value=None):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _RefreshTokenDB:
+    def __init__(self, token_row, tenant_id):
+        self.token_row = token_row
+        self.tenant_id = tenant_id
+        self.sync_session = SimpleNamespace(info={})
+        self.statements: list[str] = []
+        self.business_selects = 0
+
+    async def execute(self, stmt):
+        statement = str(stmt)
+        self.statements.append(statement)
+        if "SET LOCAL app.current_tenant_id" in statement:
+            return _RefreshResult()
+        self.business_selects += 1
+        if self.business_selects == 1:
+            return _RefreshResult(self.token_row)
+        if self.business_selects == 2:
+            return _RefreshResult(self.tenant_id)
+        raise AssertionError(f"Unexpected execute call: {statement}")
+
+
+@pytest.mark.asyncio
+async def test_verify_refresh_token_uses_bypass_then_pins_token_owner_tenant():
+    import app.core.security as security
+    from app import database
+
+    tenant_id = uuid4()
+    token_row = SimpleNamespace(
+        user_id=uuid4(),
+        token_hash="hash",
+        revoked=False,
+        device_id="desktop",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    db = _RefreshTokenDB(token_row, tenant_id)
+
+    with patch.object(security, "_hash_refresh_token", return_value="hash"):
+        row = await verify_refresh_token(db, "raw-refresh-token", device_id="desktop")
+
+    assert row is token_row
+    assert any("SET LOCAL app.current_tenant_id = 'BYPASS'" in statement for statement in db.statements)
+    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in statement for statement in db.statements)
+    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)

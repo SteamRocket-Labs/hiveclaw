@@ -27,7 +27,7 @@ from app.core.security import (
     revoke_refresh_token,
     verify_refresh_token,
 )
-from app.database import get_db
+from app.database import get_db, pin_rls_tenant_context
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.services.auth_provider import feishu_auth_provider
@@ -143,6 +143,8 @@ async def feishu_callback_desktop(
         logger.error(f"[desktop-auth] Feishu code exchange failed: {exc}")
         error_url = f"{settings.DESKTOP_DEEP_LINK_SCHEME}://auth/error?reason=auth_failed"
         return RedirectResponse(url=error_url, status_code=status.HTTP_302_FOUND)
+
+    await pin_rls_tenant_context(db, user.tenant_id)
 
     # P1 fix #8: revoke prior refresh tokens for same (user, device) before issuing new one
     await db.execute(

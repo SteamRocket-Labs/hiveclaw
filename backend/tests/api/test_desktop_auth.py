@@ -43,6 +43,7 @@ class _FakeDB:
     def __init__(self):
         self.added = []
         self.flushed = False
+        self.statements: list[str] = []
 
     def add(self, obj):
         self.added.append(obj)
@@ -51,6 +52,7 @@ class _FakeDB:
         self.flushed = True
 
     async def execute(self, stmt):
+        self.statements.append(str(stmt))
         return SimpleNamespace(scalar_one_or_none=lambda: self.added[0] if self.added else None)
 
     async def get(self, model, pk):
@@ -175,6 +177,30 @@ def test_callback_desktop_redirects_to_deep_link():
     assert str(_USER_ID) in location
     # Nonce must be consumed (one-time use)
     assert test_nonce not in _oauth_state_fallback
+
+
+def test_callback_desktop_pins_user_tenant_before_refresh_token_writes():
+    """RefreshToken RLS is user-derived, so the public OAuth callback must pin
+    the session to the authenticated user's tenant before revoke/issue writes."""
+    app, fake_db = _build_app()
+    test_nonce = "test_csrf_nonce_pin_tenant"
+    _oauth_state_fallback[test_nonce] = "dev1"
+
+    with (
+        patch.object(
+            desktop_auth_mod.feishu_auth_provider,
+            "authenticate_with_code",
+            new_callable=AsyncMock,
+            return_value=(_FAKE_USER, "jwt_access_token_here"),
+        ),
+        patch.object(desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh"),
+        patch.object(desktop_auth_mod, "settings", SimpleNamespace(DESKTOP_DEEP_LINK_SCHEME="copaw")),
+    ):
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get(f"/auth/feishu/callback-desktop?code=auth_code_123&state={test_nonce}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert any(f"SET LOCAL app.current_tenant_id = '{_TENANT_ID}'" in stmt for stmt in fake_db.statements)
 
 
 def test_callback_desktop_rejects_invalid_state():

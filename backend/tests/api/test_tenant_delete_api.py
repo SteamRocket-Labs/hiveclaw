@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -130,12 +131,24 @@ async def test_platform_admin_delete_tenant_returns_fallback_and_rehomes_platfor
         _ListResult([current_user, another_platform_admin, member]),
         _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
     ])
+    bypass_calls: list[dict] = []
 
-    result = await tenants_api.delete_tenant(
-        tenant_id=tenant_id,
-        current_user=current_user,
-        db=db,
-    )
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        bypass_calls.append({"session": session, "reason": reason, "actor_id": actor_id})
+        yield session
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
+
+    try:
+        result = await tenants_api.delete_tenant(
+            tenant_id=tenant_id,
+            current_user=current_user,
+            db=db,
+        )
+    finally:
+        monkeypatch.undo()
 
     assert result.fallback_tenant_id == fallback_tenant_id
     assert result.needs_company_setup is False
@@ -151,3 +164,10 @@ async def test_platform_admin_delete_tenant_returns_fallback_and_rehomes_platfor
     assert member.department_id is None
     assert member.role == "member"
     assert db.flushed is True
+    assert bypass_calls == [
+        {
+            "session": db,
+            "reason": "platform-admin delete tenant",
+            "actor_id": str(current_user.id),
+        }
+    ]

@@ -134,6 +134,8 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
 
     # Note: invitation code validation has been moved to the company-join flow
     # (POST /tenants/join). Registration itself is now open.
+    if tenant_uuid is not None:
+        await pin_rls_tenant_context(db, tenant_uuid)
 
     user = User(
         username=data.username,

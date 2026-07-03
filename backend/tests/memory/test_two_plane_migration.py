@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -195,3 +196,31 @@ async def test_agent_without_legacy_data_is_noop(tmp_path: Path) -> None:
     report = await migrate_agent_memory(agent_id=agent_id, data_root=tmp_path, apply=True, plan_builder=_fake_llm_plan)
 
     assert report.status == "no_legacy_data"
+
+
+def test_iter_agent_ids_ignores_control_directories(tmp_path: Path) -> None:
+    from app.scripts.migrate_memory_two_planes import _iter_agent_ids
+
+    first = uuid4()
+    second = uuid4()
+    (tmp_path / ".hive").mkdir()
+    (tmp_path / ".failed_extractions").mkdir()
+    (tmp_path / "not-an-agent").mkdir()
+    (tmp_path / str(second)).mkdir()
+    (tmp_path / str(first)).mkdir()
+
+    assert list(_iter_agent_ids(tmp_path)) == sorted([str(first), str(second)])
+
+
+def test_script_secrets_provider_initializes_for_standalone_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.scripts.migrate_memory_two_planes import _init_script_secrets_provider
+    from app.services import secrets_provider
+
+    monkeypatch.setattr(secrets_provider, "_provider", None)
+
+    _init_script_secrets_provider(SimpleNamespace(SECRETS_MASTER_KEY="x" * 32, DEBUG=False))
+
+    provider = secrets_provider.get_secrets_provider()
+    encrypted = provider.encrypt("secret-value")
+    assert encrypted != "secret-value"
+    assert provider.decrypt(encrypted) == "secret-value"

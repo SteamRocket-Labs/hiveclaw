@@ -283,6 +283,30 @@ def _archive_file(source: Path, target: Path, *, keep_original: bool) -> None:
         os.replace(source, target)
 
 
+def _iter_agent_ids(data_root: Path | str) -> list[str]:
+    """Return only UUID-named agent directories from the data root."""
+    root = Path(data_root)
+    agent_ids: list[str] = []
+    for path in sorted(root.iterdir()):
+        if not path.is_dir():
+            continue
+        try:
+            uuid.UUID(path.name)
+        except ValueError:
+            logger.warning("Skipping non-agent data directory during two-plane migration: %s", path.name)
+            continue
+        agent_ids.append(path.name)
+    return agent_ids
+
+
+def _init_script_secrets_provider(settings: Any) -> None:
+    """Mirror app startup secrets initialization for standalone script runs."""
+    from app.services.secrets_provider import init_secrets_provider, validate_secrets_provider_config
+
+    validate_secrets_provider_config(settings.SECRETS_MASTER_KEY or None, debug=settings.DEBUG)
+    init_secrets_provider(settings.SECRETS_MASTER_KEY or None)
+
+
 async def _amain() -> int:
     parser = argparse.ArgumentParser(description="Migrate agent memory to the two-plane layout (C7).")
     parser.add_argument("--agent-id", help="Migrate one agent (default: every agent under AGENT_DATA_DIR)")
@@ -296,8 +320,10 @@ async def _amain() -> int:
 
     from app.config import get_settings
 
-    data_root = Path(get_settings().AGENT_DATA_DIR)
-    agent_ids = [args.agent_id] if args.agent_id else [p.name for p in sorted(data_root.iterdir()) if p.is_dir()]
+    settings = get_settings()
+    _init_script_secrets_provider(settings)
+    data_root = Path(settings.AGENT_DATA_DIR)
+    agent_ids = [args.agent_id] if args.agent_id else _iter_agent_ids(data_root)
 
     async def plan_builder_for(agent_id: str) -> PlanBuilder | None:
         try:

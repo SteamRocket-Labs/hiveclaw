@@ -117,6 +117,7 @@ interface AppSidebarProps {
 }
 
 const ACTIVE_AGENT_RE = /^\/agents\/([^/?#]+)/;
+const ACTIVE_SESSION_PATH_RE = /^\/agents\/[^/?#]+\/sessions\/([^/?#]+)/;
 
 function getActiveAgentId(pathname: string): string | null {
   const match = pathname.match(ACTIVE_AGENT_RE);
@@ -129,9 +130,18 @@ function getActiveAgentId(pathname: string): string | null {
   }
 }
 
-function getActiveSessionId(search: string): string | null {
+function getActiveSessionId(pathname: string, search: string): string | null {
   const params = new URLSearchParams(search);
-  return params.get('session_id') || params.get('session') || null;
+  const queryValue = params.get('session_id') || params.get('session');
+  if (queryValue) return queryValue;
+  const match = pathname.match(ACTIVE_SESSION_PATH_RE);
+  const value = match?.[1];
+  if (!value) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 export function getSessionTag(session: ChatSession | any, t: any): string | null {
@@ -291,7 +301,7 @@ export default function AppSidebar({
   const location = useLocation();
   const navigate = useNavigate();
   const activeAgentId = getActiveAgentId(location.pathname);
-  const activeSessionId = getActiveSessionId(location.search);
+  const activeSessionId = getActiveSessionId(location.pathname, location.search);
   const isCreateAgentRoute = location.pathname === '/agents/new';
   const [resolvedHrAgent, setResolvedHrAgent] = useState<HrAgentInfo | null>(providedHrAgent ?? null);
   const createAgentId = resolvedHrAgent?.id ? String(resolvedHrAgent.id) : null;
@@ -463,11 +473,13 @@ export default function AppSidebar({
   const createAgentSessionsLoading = createAgentId ? sessionLoadingByAgentId[createAgentId] : false;
   const [expandedSessionFamilyIds, setExpandedSessionFamilyIds] = useState<Set<string>>(() => new Set());
 
-  const isActiveSidebarSession = (agentId: string, session: ChatSession | any): boolean => String(activeAgentId || '') === String(agentId)
-    && (
-      String(activeSessionId || '') === String(session.id)
-      || String(activeSessionId || '') === String(session.chat_session_id || '')
-    );
+  const isActiveSidebarSession = (agentId: string, session: ChatSession | any): boolean => {
+    if (String(activeAgentId || '') !== String(agentId) || !activeSessionId) return false;
+    const activeId = String(activeSessionId);
+    return [session.id, session.chat_session_id]
+      .filter((candidate) => candidate != null && String(candidate).length > 0)
+      .some((candidate) => String(candidate) === activeId);
+  };
 
   const toggleSessionFamily = (sessionId: string) => {
     setExpandedSessionFamilyIds((prev) => {

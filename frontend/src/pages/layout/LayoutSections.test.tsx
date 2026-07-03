@@ -476,6 +476,60 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('class="sidebar-session-row active branch-child"');
   });
 
+  it('marks only the path-selected session active on session-only routes', () => {
+    routeState.location = { pathname: '/agents/agent-1/sessions/session-2', search: '', hash: '' };
+    const markup = renderToStaticMarkup(
+      <AppSidebar
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        theme="light"
+        isSidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
+        tenants={[{ id: 'tenant-1', name: 'Company A' }]}
+        currentTenant="tenant-1"
+        onSwitchTenant={vi.fn()}
+        agents={[{ id: 'agent-1', name: 'AI 产品经理', created_at: '2026-03-27T00:00:00Z', status: 'running', agent_type: 'native' }]}
+        agentSessionsByAgentId={{
+          'agent-1': [
+            {
+              id: 'session-1',
+              agent_id: 'agent-1',
+              title: 'First session',
+              created_at: '2026-06-29T08:00:00Z',
+              updated_at: '2026-06-29T08:00:00Z',
+            },
+            {
+              id: 'session-2',
+              agent_id: 'agent-1',
+              title: 'Second session',
+              created_at: '2026-06-29T08:01:00Z',
+              updated_at: '2026-06-29T08:01:00Z',
+            },
+          ],
+        }}
+        pinnedAgents={new Set()}
+        onTogglePin={vi.fn()}
+        isChinese={false}
+        sidebarSearch=""
+        onSetSidebarSearch={vi.fn()}
+        onToggleTheme={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        unreadCount={0}
+        accountMenuRef={React.createRef<HTMLDivElement>()}
+        showAccountMenu={false}
+        onToggleAccountMenu={vi.fn()}
+        onToggleLang={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onLogout={vi.fn()}
+        versionDisplay={null}
+      />,
+    );
+
+    expect(markup.match(/class="sidebar-session-row active"/g) || []).toHaveLength(1);
+    expect(markup.match(/class="sidebar-session-item active"/g) || []).toHaveLength(1);
+    expect(markup).toMatch(/class="sidebar-session-row active"[\s\S]*Second session/);
+    expect(markup).not.toMatch(/class="sidebar-session-row active"[\s\S]*First session[\s\S]*class="sidebar-session-row active"/);
+  });
+
   it('renders local agents as normal agent rows with local session dropdowns', () => {
     routeState.location = { pathname: '/agents/local-agent-1', search: '?session_id=chat-session-1', hash: '#chat' };
     const markup = renderToStaticMarkup(

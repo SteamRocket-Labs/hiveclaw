@@ -459,17 +459,18 @@ Frontend dev: 3008, Backend dev: 8008, PostgreSQL: 5432, Redis: 6379.
 
 ## Design Context
 
-See `.impeccable.md` for full details. Key points for all frontend work:
+**Design authority: `docs/frontend-design-refinement-2026-07-03.md`** — the single source of truth for all frontend work. Benchmark: Codex Desktop. Core requirement: 克制但是精致 (restrained but refined).
 
 **Users:** Enterprise managers and business teams (non-technical). Interface must be approachable.
 
-**Brand:** Intelligent · Cutting-edge · Refined — Vercel/Raycast sophistication with Notion/Slack warmth.
+**Six principles (§3.1):**
+1. **Document feel, not card feel** — separation via spacing → subtle background → hairline → border (last resort)
+2. **Narrow type scale** — 11/12/13px carry 90% of the UI; 15px page titles only; 7-step scale cap
+3. **Grayscale first, color = state** — status colors only on dots/small text, never large fills
+4. **Every clickable element has three states** — hover/focus-visible/active, 120–160ms transitions
+5. **High density, relaxed line-height** — tight in-row gaps (4–6px), clear block gaps (12–16px), body line-height 1.6
+6. **Shadows belong to overlays only** — menus/popovers/modals; zero shadows on in-surface elements
 
-**Design Principles:**
-1. **Clarity over cleverness** — obvious affordances, predictable patterns
-2. **Warm intelligence** — tech-forward but approachable, purposeful color, friendly micro-copy
-3. **Progressive disclosure** — simple path first, power on demand
-4. **Information density when it matters** — scannable dashboards, spacious chat/onboarding
-5. **Consistent motion, minimal animation** — fast (120-200ms), purposeful, never decorative
+**Structure:** `src/styles/tokens.css` (token authority: type/spacing/radius/shadow/colors, dark+light) + `src/styles/base.css` (reset/focus-visible/scrollbars/utilities) + `src/styles/primitives.css` (atomic component classes) + `src/components/ui/` (12 atomic components: Button/IconButton/Card/Chip/Badge/Input/Select/Modal/EmptyState/Spinner/Tooltip/SegmentedControl). Gallery at `/design-gallery`.
 
-**Technical:** Vanilla CSS custom properties (no framework), Inter font, Tabler Icons, 4px spacing base, dark/light mode via `data-theme`. Refer to `.impeccable.md` for full token reference.
+**Rules:** Static styles go through classes/tokens — inline `style={{}}` only for genuinely dynamic values. New UI uses `components/ui` atoms. System font stack (CJK-harmonized, no webfonts). Vanilla CSS custom properties (no framework), Tabler Icons, 4px spacing base, dark/light via `data-theme`.

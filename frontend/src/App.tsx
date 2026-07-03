@@ -16,6 +16,7 @@ import { WORKSPACE_SETTINGS_SECTIONS } from './surfaces/workspace/sections';
 import AppDialogs from './components/AppDialogs';
 
 const Login = lazy(() => import('./pages/Login'));
+const DesignGallery = lazy(() => import('./pages/DesignGallery'));
 const SsoEntry = lazy(() => import('./pages/SsoEntry'));
 const CompanySetup = lazy(() => import('./pages/CompanySetup'));
 const DigitalEmployees = lazy(() => import('./pages/DigitalEmployees'));
@@ -119,6 +120,8 @@ export default function App() {
                     <Route path="/login" element={<Login />} />
                     <Route path="/sso/entry" element={<SsoEntry />} />
                     <Route path="/setup-company" element={<CompanySetup />} />
+                    {/* 设计基线验收面（无业务数据） */}
+                    <Route path="/design-gallery" element={<DesignGallery />} />
 
                     {/* ─── App surface ─── */}
                     <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>

@@ -1,0 +1,458 @@
+/* ═══════════════════════════════════════════════════════
+   HiveClaw — Primitives（原子组件样式）
+   规范: docs/frontend-design-refinement-2026-07-03.md §3.3
+   对应组件: src/components/ui/
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Button（收编既有 .btn 体系；34px→28px，无面内阴影） ── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-size: var(--text-row);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+    color var(--transition-fast), opacity var(--transition-fast);
+}
+
+.btn-sm {
+  height: 24px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-meta);
+  gap: 4px;
+}
+
+.btn-primary {
+  background: var(--accent-primary);
+  color: var(--text-inverse);
+}
+
+[data-theme="light"] .btn-primary {
+  color: #ffffff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-primary:active:not(:disabled) {
+  background: var(--accent-primary);
+}
+
+.btn-secondary {
+  background: var(--bg-elevated);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.btn-secondary:active:not(:disabled) {
+  background: var(--bg-active);
+}
+
+[data-theme="light"] .btn-secondary {
+  background: var(--bg-elevated);
+  border-color: var(--border-default);
+  color: var(--text-secondary);
+}
+
+[data-theme="light"] .btn-secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.btn-ghost {
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.btn-ghost:active:not(:disabled) {
+  background: var(--bg-active);
+}
+
+.btn-danger {
+  background: var(--error);
+  color: #ffffff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 88%, #000000);
+}
+
+.btn[disabled],
+.btn.loading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ── IconButton — 方形 ghost，图标级操作 ───────────── */
+
+.ui-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.ui-icon-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.ui-icon-btn:active:not(:disabled) {
+  background: var(--bg-active);
+}
+
+.ui-icon-btn:disabled {
+  opacity: 0.5;
+}
+
+.ui-icon-btn-sm {
+  width: 24px;
+  height: 24px;
+}
+
+/* ── Card（收编既有 .card；间距和 hairline 优先于边框） ── */
+
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+.card-pad-sm {
+  padding: var(--space-3);
+}
+
+.card-pad-none {
+  padding: 0;
+}
+
+.card-interactive,
+.card-clickable {
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.card-interactive:hover,
+.card-clickable:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-default);
+}
+
+/* ── Chip — 11px 元信息胶囊；彩色只上小字，不上大面积 ── */
+
+.ui-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: var(--text-meta);
+  line-height: 1;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.ui-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.ui-chip-neutral .ui-chip-dot { background: var(--text-tertiary); }
+.ui-chip-success { color: var(--success); border-color: color-mix(in srgb, var(--success) 25%, transparent); }
+.ui-chip-success .ui-chip-dot { background: var(--success); }
+.ui-chip-warning { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 25%, transparent); }
+.ui-chip-warning .ui-chip-dot { background: var(--warning); }
+.ui-chip-error { color: var(--error); border-color: color-mix(in srgb, var(--error) 25%, transparent); }
+.ui-chip-error .ui-chip-dot { background: var(--error); }
+.ui-chip-info { color: var(--info); border-color: color-mix(in srgb, var(--info) 25%, transparent); }
+.ui-chip-info .ui-chip-dot { background: var(--info); }
+
+/* ── Badge（收编既有 .badge 体系；tiny 计数/状态徽章） ── */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-tiny);
+  line-height: var(--leading-tiny);
+  font-weight: 500;
+}
+
+.badge-success {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+
+.badge-warning {
+  background: var(--warning-subtle);
+  color: var(--warning);
+}
+
+.badge-error {
+  background: var(--error-subtle);
+  color: var(--error);
+}
+
+.badge-info {
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+}
+
+.badge-neutral {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+/* ── Input / Textarea / Select — 28px 紧凑输入 ─────── */
+
+.ui-input,
+.ui-select {
+  height: 28px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-body);
+}
+
+.ui-textarea {
+  padding: 5px var(--space-2);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  resize: vertical;
+  min-height: 56px;
+}
+
+.ui-input-md,
+.ui-select-md {
+  height: 32px;
+  padding: 0 var(--space-3);
+}
+
+.ui-input-invalid,
+.ui-textarea.ui-input-invalid {
+  border-color: var(--error);
+}
+
+.ui-input-invalid:focus {
+  border-color: var(--error);
+  box-shadow: 0 0 0 2px var(--error-subtle);
+}
+
+.ui-select {
+  appearance: none;
+  padding-right: var(--space-6);
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-tertiary) 50%),
+    linear-gradient(135deg, var(--text-tertiary) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 55%, calc(100% - 10px) 55%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+
+/* ── Modal — 浮层才配阴影 ──────────────────────────── */
+
+.ui-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  padding: var(--space-6);
+}
+
+[data-theme="light"] .ui-modal-overlay {
+  background: rgba(28, 28, 26, 0.35);
+}
+
+.ui-modal {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  width: 400px;
+  max-width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.ui-modal-header {
+  padding: var(--space-4) var(--space-5) 0;
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+  font-weight: 600;
+}
+
+.ui-modal-body {
+  padding: var(--space-3) var(--space-5);
+  overflow-y: auto;
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+  line-height: var(--leading-body);
+}
+
+.ui-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5) var(--space-5);
+}
+
+/* ── EmptyState — 图标 + 一句话 + 一个动作 ─────────── */
+
+.ui-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-10) var(--space-6);
+  text-align: center;
+}
+
+.ui-empty-icon {
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-1);
+}
+
+.ui-empty-title {
+  font-size: var(--text-body);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.ui-empty-desc {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  max-width: 360px;
+  line-height: var(--leading-row);
+}
+
+.ui-empty-action {
+  margin-top: var(--space-2);
+}
+
+/* ── Spinner ───────────────────────────────────────── */
+
+.ui-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--text-secondary);
+  border-radius: var(--radius-full);
+  animation: ui-spin 0.7s linear infinite;
+}
+
+.ui-spinner-sm {
+  width: 12px;
+  height: 12px;
+}
+
+@keyframes ui-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Tooltip — CSS-only，浮层阴影 ──────────────────── */
+
+.ui-tooltip-host {
+  position: relative;
+}
+
+.ui-tooltip-host::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(2px);
+  z-index: 10010;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-popover);
+  color: var(--text-primary);
+  font-size: var(--text-meta);
+  line-height: var(--leading-meta);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.ui-tooltip-host:hover::after,
+.ui-tooltip-host:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ── SegmentedControl — 安静的分段切换 ─────────────── */
+
+.ui-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+}
+
+.ui-segmented-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-row);
+  font-weight: 500;
+  line-height: 1;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.ui-segmented-item:hover {
+  color: var(--text-primary);
+}
+
+.ui-segmented-item.active {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}

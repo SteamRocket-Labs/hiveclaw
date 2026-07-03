@@ -109,6 +109,7 @@ def _start_request(
     arguments: dict,
     *,
     session_id: str = "session-workflow",
+    budget_run_id: str | None = None,
 ) -> ToolExecutionRequest:
     return ToolExecutionRequest(
         tool_name="start_workflow",
@@ -119,6 +120,7 @@ def _start_request(
             tenant_id=str(uuid.uuid4()),
             workspace=Path("/tmp/hive-workflow-test"),
             session_id=session_id,
+            budget_run_id=budget_run_id,
         ),
     )
 
@@ -553,3 +555,36 @@ async def test_start_workflow_passes_ledger_todo_id(monkeypatch):
     )
     assert captured["ledger_todo_id"] == "todo-9"
     assert captured["parent_session_id"] == "session-workflow"
+
+
+async def test_start_workflow_threads_runtime_budget_to_workflow_launch(monkeypatch):
+    from app.tools.handlers import workflow as workflow_handlers
+
+    captured: dict = {}
+
+    async def fake_launch(**kwargs):
+        captured.update(kwargs)
+        from app.runtime.workflow_engine import WorkflowRunOutcome
+        from app.services.workflow_runtime_service import WorkflowRunHandle
+
+        return WorkflowRunHandle(run_id=uuid.uuid4(), outcome=WorkflowRunOutcome(status="completed"))
+
+    monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
+    agent_id = uuid.uuid4()
+    budget_run_id = uuid.uuid4()
+    preview = json.loads(
+        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+    )
+    await workflow_handlers.start_workflow(
+        _start_request(
+            agent_id,
+            {
+                "definition": _low_risk_definition(),
+                "args": {},
+                "preview_id": preview["preview_id"],
+            },
+            budget_run_id=str(budget_run_id),
+        )
+    )
+
+    assert captured["budget_run_id"] == str(budget_run_id)

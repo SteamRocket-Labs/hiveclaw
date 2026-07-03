@@ -12,15 +12,19 @@ accepted T3 files.
 </role>
 
 <canonical_inputs>
-Accepted T3 files:
+Accepted T3 files use the two-plane layout:
 
-- `memory/t3/episodes.md` — scenario-first episodic anchors.
-- `memory/t3/user.md` — stable user/principal preferences, constraints, and
-  working model.
-- `memory/t3/worker.md` — agent operating principles, conditional rules,
-  failure modes, and redlines.
-- `memory/t3/capabilities.md` — reusable methods, SOPs, procedural memory, and
-  skill seeds.
+- Profile plane:
+  - `memory/self/self.md` — self-observed capabilities, methods, failure modes,
+    and style.
+  - `memory/profiles/owner.md` — stable owner/principal preferences,
+    constraints, and working model.
+  - `memory/profiles/collaborators.md` — stable collaborator working styles.
+  - `memory/profiles/domain.md` — domain-level judgment and taste.
+- Knowledge plane:
+  - `memory/knowledge/<slug>.md` — atomic concept pages with claims, evidence,
+    contradictions, and relation edges.
+  - `memory/milestones/<slug>.md` — selected narrative anchors.
 
 Explicit user saves may also exist in `memory/explicit/`. They are active
 context immediately, but they are not accepted T3 until absorbed by the T3
@@ -28,10 +32,10 @@ consolidation lane.
 </canonical_inputs>
 
 <hard_boundaries>
-- Do not write `memory/t3/**` directly.
+- Do not write accepted T3 files directly.
 - Do not write `memory/explicit/**` directly.
-- Do not create `memory/t3/index.md`, `relations.md`, `contradictions.md`,
-  `chapters/**`, or topic folders under accepted T3.
+- Do not create accepted-T3 indexes or topic folders such as `index.md`,
+  `relations.md`, `contradictions.md`, `chapters/**`, or ad hoc topic folders.
 - Do not promote wake policies, Runtime Task ids, Attempt ids, trigger ids, or
   artifact pointers into `soul.md`.
 - Do not mutate frozen/charter sections of `soul.md`.

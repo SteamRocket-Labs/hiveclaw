@@ -36,6 +36,7 @@ from app.services.runtime_task_service import (
     merge_restart_replay_journal,
     update_runtime_task_record,
 )
+from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 # Single source of truth: app/templates/HEARTBEAT.md
@@ -226,6 +227,48 @@ async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid
         task_id = uuid.uuid4().hex
         trace_id = f"heartbeat:{task_id}"
         side_effect_risk = "internal_governed"
+        budget_run_id = None
+        try:
+            service = RuntimeBudgetService()
+            policy = await service.resolve_policy(
+                RuntimeBudgetPolicyLookup(
+                    tenant_id=tenant_id,
+                    source="heartbeat",
+                    profile="heartbeat",
+                    agent_id=agent_id,
+                )
+            )
+            budget_run = await service.create_run(
+                RuntimeBudgetRunCreate(
+                    tenant_id=tenant_id,
+                    root_run_kind="heartbeat_tick",
+                    root_run_key=task_id,
+                    source="heartbeat",
+                    profile="heartbeat",
+                    policy_id=getattr(policy, "id", None),
+                    root_runtime_task_id=uuid.UUID(task_id),
+                    root_agent_id=agent_id,
+                    enforcement_mode=str(getattr(policy, "enforcement_mode", None) or "enforce"),
+                    fail_mode=str(getattr(policy, "fail_mode", None) or "fail_closed"),
+                    max_tokens=getattr(policy, "max_tokens", None),
+                    max_cache_miss_tokens=getattr(policy, "max_cache_miss_tokens", None),
+                    max_subagents=getattr(policy, "max_subagents", None),
+                    max_delegations=getattr(policy, "max_delegations", None),
+                    max_background_tasks=getattr(policy, "max_background_tasks", None),
+                    max_continuation_wakes=getattr(policy, "max_continuation_wakes", None),
+                    max_provider_calls=getattr(policy, "max_provider_calls", None),
+                    policy_snapshot={
+                        "policy_id": str(getattr(policy, "id", "")),
+                        "scope_type": getattr(policy, "scope_type", None),
+                        "default_child_token_reservation": getattr(policy, "default_child_token_reservation", None),
+                        "default_llm_call_token_reservation": getattr(policy, "default_llm_call_token_reservation", None),
+                        "policy_json": getattr(policy, "policy_json", None),
+                    },
+                )
+            )
+            budget_run_id = budget_run.id
+        except Exception as budget_exc:
+            logger.warning("[Heartbeat] Runtime budget root creation failed for {}: {}", agent_id, budget_exc)
         metadata = {
             "source": "heartbeat",
             "agent_id": str(agent_id),
@@ -233,6 +276,7 @@ async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid
             "runtime_task_id": task_id,
             "request_id": str(uuid.UUID(task_id)),
             "trace_id": trace_id,
+            "budget_run_id": str(budget_run_id) if budget_run_id else None,
             "resumable_heartbeat": True,
             "resume_after_restart": True,
             "side_effect_risk": side_effect_risk,
@@ -261,6 +305,8 @@ async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid
             prompt="Heartbeat self-evolution tick",
             trace_id=trace_id,
             metadata_json=metadata,
+            budget_run_id=budget_run_id,
+            budget_admission_status="root" if budget_run_id else None,
         )
     except Exception as exc:
         logger.warning("[Heartbeat] Failed to create RuntimeTask for {}: {}", agent_id, exc)

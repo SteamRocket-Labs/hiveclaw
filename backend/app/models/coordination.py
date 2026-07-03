@@ -47,6 +47,7 @@ class CoordinationSignal(Base):
     content: Mapped[str] = mapped_column(String, nullable=False)
     signal_type: Mapped[str] = mapped_column(String(128), nullable=False)
     thread_id: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

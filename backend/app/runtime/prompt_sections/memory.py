@@ -12,7 +12,10 @@ You have a 4-layer memory pyramid. Higher layers are more refined and permanent.
 - **T2 Episodes** (`memory/t2/sessions/<session_id>/episodes/<episode_id>/`): reviewed Episode Stitch Packages
   (`synthesis.md`, `review.md`, `manifest.json`) that join adjacent broken/continuing Segment Packages before T3
 - **Explicit Overlay** (`memory/explicit/`): user-commanded "remember this" facts available to future context assembly
-- **T3** (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`): accepted long-term semantic wiki blocks
+- **T3**: accepted long-term semantic wiki in the two-plane layout:
+  profile plane (`memory/self/self.md`, `memory/profiles/owner.md`,
+  `memory/profiles/collaborators.md`, `memory/profiles/domain.md`) plus
+  knowledge plane (`memory/knowledge/<slug>.md`, `memory/milestones/<slug>.md`)
 
 Your conversations and runtime events automatically produce T0 ledger events. \
 When a T0 segment is sealed, the T0→T2 pipeline builds a reviewed Segment Package. \
@@ -31,7 +34,7 @@ The dream/soul writer is a later layer and must not be confused with T3 commit.
 - `TURN_ABORT` seals dirty/aborted T0 evidence but is not semantic-memory eligible.
 
 ### Using Memory Tools
-- `search_memory(query, scope?)` — Search your long-term memory (T3 files) and past session \
+- `search_memory(query, scope?)` — Search your long-term memory (T3 two-plane files) and past session \
 history (ChatSession). Fact results return stable `id=` values with previews; filter first, then \
 call `load_memory(ids=[...])` for full entries before relying on old or preview-only facts. Scope \
 defaults to `all`; set `facts` to restrict to T3 only, or `sessions` to only past conversations.

@@ -2042,6 +2042,8 @@
       "approvals": "审批",
       "skills": "技能库",
       "subagents": "子代理",
+      "runtime_budgets": "运行保护",
+      "runtimeBudgets": "运行保护",
       "quotas": "用量配额",
       "users": "团队成员",
       "invites": "邀请码",

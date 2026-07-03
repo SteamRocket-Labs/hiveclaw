@@ -45,6 +45,7 @@ from app.services.llm_error_policy import is_llm_error_message
 from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
 from app.services import plan_mode_core
 from app.services.long_task_runtime import build_long_task_resume_context
+from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
 from app.services.web_chat_broker import web_chat_broker
 
 
@@ -77,6 +78,67 @@ _SESSION_CONTEXT_RUNTIME_EVENT_TYPES = {
     "compaction_completed",
     "tool_result_budget_pass",
 }
+
+
+async def _create_runtime_budget_root_run_for_chat(
+    *,
+    db: AsyncSession,
+    agent: Agent,
+    user: User,
+    session: ChatSession,
+    run_uuid: uuid.UUID,
+    source: str,
+    profile: str,
+) -> uuid.UUID | None:
+    if not isinstance(db, AsyncSession):
+        return None
+    try:
+        tenant_id = getattr(agent, "tenant_id", None)
+        service = RuntimeBudgetService()
+        policy = await service.resolve_policy(
+            RuntimeBudgetPolicyLookup(
+                tenant_id=tenant_id,
+                source=source,
+                profile=profile,
+                agent_id=getattr(agent, "id", None),
+            )
+        )
+        run = await service.create_run(
+            RuntimeBudgetRunCreate(
+                tenant_id=tenant_id,
+                root_run_kind="web_chat_turn" if profile == WEB_CHAT_TURN_TASK_TYPE else profile,
+                root_run_key=run_uuid.hex,
+                source=source,
+                profile=profile,
+                policy_id=getattr(policy, "id", None),
+                root_runtime_task_id=run_uuid,
+                root_session_id=str(getattr(session, "id", "")),
+                root_agent_id=getattr(agent, "id", None),
+                root_user_id=getattr(user, "id", None),
+                enforcement_mode=str(getattr(policy, "enforcement_mode", None) or "enforce"),
+                fail_mode=str(getattr(policy, "fail_mode", None) or "fail_closed"),
+                max_tokens=getattr(policy, "max_tokens", None),
+                max_cache_miss_tokens=getattr(policy, "max_cache_miss_tokens", None),
+                max_subagents=getattr(policy, "max_subagents", None),
+                max_delegations=getattr(policy, "max_delegations", None),
+                max_background_tasks=getattr(policy, "max_background_tasks", None),
+                max_continuation_wakes=getattr(policy, "max_continuation_wakes", None),
+                max_provider_calls=getattr(policy, "max_provider_calls", None),
+                policy_snapshot={
+                    "policy_id": str(getattr(policy, "id", "")),
+                    "scope_type": getattr(policy, "scope_type", None),
+                    "source": getattr(policy, "source", None),
+                    "profile": getattr(policy, "profile", None),
+                    "default_child_token_reservation": getattr(policy, "default_child_token_reservation", None),
+                    "default_llm_call_token_reservation": getattr(policy, "default_llm_call_token_reservation", None),
+                    "policy_json": getattr(policy, "policy_json", None),
+                },
+            )
+        )
+        return run.id
+    except Exception as exc:
+        logger.warning("[WebChatRuntime] Runtime budget root creation failed for run {}: {}", run_uuid, exc)
+        return None
 _CHANNEL_DELIVERY_ACTION_HINT_RE = re.compile(
     r"(发给|发送|转发|同步|推送|回传|传回|发回|投递|share|send|forward|deliver|post)",
     re.IGNORECASE,
@@ -194,6 +256,20 @@ class _TerminalToolCardSignal(Exception):
 
 def _run_id(value: str | uuid.UUID) -> uuid.UUID:
     return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def _string_list(value: Any) -> list[str]:
@@ -1334,6 +1410,22 @@ async def start_web_chat_run(
     supplied_metadata = dict(extra_metadata or {})
     turn_id = str(supplied_metadata.get("turn_id") or f"turn-{run_uuid.hex}")
     intent_id = str(supplied_metadata.get("intent_id") or f"intent-{message_id.hex}")
+    source = str(supplied_metadata.get("source") or ("web" if runtime_task_type == WEB_CHAT_TURN_TASK_TYPE else runtime_task_type))
+    inherited_budget_run_id = _uuid_or_none(supplied_metadata.get("budget_run_id"))
+    if inherited_budget_run_id is not None:
+        budget_run_id = inherited_budget_run_id
+        budget_admission_status = "inherited"
+    else:
+        budget_run_id = await _create_runtime_budget_root_run_for_chat(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            run_uuid=run_uuid,
+            source=source,
+            profile=runtime_task_type,
+        )
+        budget_admission_status = "root" if budget_run_id else None
 
     session.last_message_at = now
     if not getattr(session, "title", "") or str(session.title).startswith("Session "):
@@ -1356,6 +1448,8 @@ async def start_web_chat_run(
         child_session_id=str(session.id),
         depth=1,
         tenant_id=getattr(agent, "tenant_id", None),
+        budget_run_id=budget_run_id,
+        budget_admission_status=budget_admission_status,
         metadata_json={
             "user_id": str(user.id),
             "session_id": str(session.id),
@@ -1366,10 +1460,8 @@ async def start_web_chat_run(
             "file_name": file_name,
             "attachments": attachments or [],
             "parts": parts or [],
-            "source": str(
-                (extra_metadata or {}).get("source")
-                or ("web" if runtime_task_type == WEB_CHAT_TURN_TASK_TYPE else runtime_task_type)
-            ),
+            "source": source,
+            "budget_run_id": str(budget_run_id) if budget_run_id else None,
             "cancelled_by_user": False,
             "plan_mode_requested": bool(plan_mode_requested),
             "append_user_message": bool(append_user_message),
@@ -1380,6 +1472,8 @@ async def start_web_chat_run(
             **supplied_metadata,
         },
     )
+    if budget_run_id:
+        runtime_task.metadata_json["budget_run_id"] = str(budget_run_id)
     if append_user_message:
         runtime_task.metadata_json["initial_user_message"] = _initial_user_message_payload(
             message_id=message_id,
@@ -1583,6 +1677,23 @@ async def start_channel_chat_run_from_saved_turn(
         "permission_profile": {"mode": permission_mode, "allowed_tools": allowed_tools, "writable_roots": writable_roots},
         **(extra_metadata or {}),
     }
+    inherited_budget_run_id = _uuid_or_none(metadata.get("budget_run_id"))
+    if inherited_budget_run_id is not None:
+        budget_run_id = inherited_budget_run_id
+        budget_admission_status = "inherited"
+    else:
+        budget_run_id = await _create_runtime_budget_root_run_for_chat(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            run_uuid=run_uuid,
+            source=source_channel,
+            profile=WEB_CHAT_TURN_TASK_TYPE,
+        )
+        budget_admission_status = "root" if budget_run_id else None
+    if budget_run_id:
+        metadata["budget_run_id"] = str(budget_run_id)
     metadata["initial_user_message"] = _initial_user_message_payload(
         message_id=(extra_metadata or {}).get("message_id"),
         content=saved_content,
@@ -1614,6 +1725,8 @@ async def start_channel_chat_run_from_saved_turn(
         child_session_id=str(session.id),
         depth=1,
         tenant_id=getattr(agent, "tenant_id", None),
+        budget_run_id=budget_run_id,
+        budget_admission_status=budget_admission_status,
         metadata_json=metadata,
     )
     db.add(runtime_task)
@@ -3099,6 +3212,10 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         runtime_session_context.channel = str(metadata.get("channel") or runtime_session_context.channel or "web")
         runtime_session_context.metadata["tenant_id"] = str(agent.tenant_id) if agent.tenant_id else None
         runtime_session_context.metadata["runtime_task_id"] = run_uuid.hex
+        if getattr(runtime_task, "budget_run_id", None) or metadata.get("budget_run_id"):
+            runtime_session_context.metadata["budget_run_id"] = str(
+                getattr(runtime_task, "budget_run_id", None) or metadata.get("budget_run_id")
+            )
         runtime_session_context.metadata["request_id"] = str(run_uuid)
         runtime_session_context.metadata["turn_id"] = str(metadata.get("turn_id") or f"turn-{run_uuid.hex}")
         runtime_session_context.metadata["intent_id"] = str(

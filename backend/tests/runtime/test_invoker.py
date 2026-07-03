@@ -539,6 +539,7 @@ async def test_execute_tool_receives_session_frame_metadata(monkeypatch):
         user_id,
         turn_id=None,
         runtime_task_id=None,
+        budget_run_id=None,
         round_state=None,
         t0_refs=(),
         **_kwargs,
@@ -551,6 +552,7 @@ async def test_execute_tool_receives_session_frame_metadata(monkeypatch):
                 "user_id": user_id,
                 "turn_id": turn_id,
                 "runtime_task_id": runtime_task_id,
+                "budget_run_id": budget_run_id,
                 "round_state": round_state,
                 "t0_refs": t0_refs,
             }
@@ -568,6 +570,7 @@ async def test_execute_tool_receives_session_frame_metadata(monkeypatch):
         metadata={
             "turn_id": "turn-1",
             "runtime_task_id": "runtime-1",
+            "budget_run_id": str(uuid4()),
             "round_state": {"round": 2},
             "t0_refs": ["t0://sessions/session-1/segments/seg-1/events.jsonl#9"],
         },
@@ -587,6 +590,7 @@ async def test_execute_tool_receives_session_frame_metadata(monkeypatch):
     assert result == "tool-ok"
     assert seen["turn_id"] == "turn-1"
     assert seen["runtime_task_id"] == "runtime-1"
+    assert seen["budget_run_id"] == session.metadata["budget_run_id"]
     assert seen["round_state"] == {"round": 2}
     assert seen["t0_refs"] == ("t0://sessions/session-1/segments/seg-1/events.jsonl#9",)
 

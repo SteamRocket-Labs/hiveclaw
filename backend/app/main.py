@@ -62,6 +62,7 @@ from app.api.plaza import router as plaza_router
 from app.api.agent_teams import router as agent_teams_router
 from app.api.advanced_plan import router as advanced_plan_router
 from app.api.role_templates import router as role_templates_router
+from app.api.runtime_budgets import router as runtime_budgets_router
 from app.api.schedules import router as schedules_router
 from app.api.session_goals import router as session_goals_router
 from app.api.skills import router as skills_router
@@ -306,6 +307,7 @@ async def lifespan(app: FastAPI):
     import asyncio
     import os
     from app.services.evolution_daemon import start_evolution_daemon
+    from app.services.runtime_budget_daemon import start_runtime_budget_daemon
     from app.services.trigger_daemon import start_trigger_daemon
     from app.services.tool_seeder import seed_builtin_tools
     from app.services.feishu_ws import feishu_ws_manager
@@ -660,6 +662,8 @@ async def lifespan(app: FastAPI):
                 logger.info("[startup] runtime task worker disabled for process role {}", _process_role())
         except Exception as exc:
             logger.warning("[startup] runtime task worker setup failed: {}", exc)
+        if _runtime_execution_startup_enabled():
+            startup_background_tasks.append(("runtime_budget_daemon", start_runtime_budget_daemon()))
         if _process_role() == "api":
             from app.services.web_chat_stream_bus import start_web_chat_stream_forwarder
 
@@ -842,6 +846,7 @@ _api_routers = [
     local_agent_channel_router,
     desktop_audit_router,
     role_templates_router,
+    runtime_budgets_router,
     tenant_channels_router,
     tools_router,
     workflows_router,

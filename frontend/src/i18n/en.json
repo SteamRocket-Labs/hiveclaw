@@ -1988,6 +1988,8 @@
       "approvals": "Approvals",
       "skills": "Skills Library",
       "subagents": "Sub-agents",
+      "runtime_budgets": "Runtime Budgets",
+      "runtimeBudgets": "Runtime Budgets",
       "quotas": "Usage Quotas",
       "users": "Team Members",
       "invites": "Invitation Codes",

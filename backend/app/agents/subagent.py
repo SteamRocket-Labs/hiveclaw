@@ -443,6 +443,7 @@ class SubagentSpawnContext:
     parent_session_id: str | None = None
     subagent_run_id: str | None = None
     child_session_id: str | None = None
+    budget_run_id: str | None = None
     recovery_metadata: dict[str, Any] = field(default_factory=dict)
     parent_messages: list[dict] = field(default_factory=list)  # source for fork=all
     cancel_event: asyncio.Event | None = None
@@ -1076,6 +1077,8 @@ async def _spawn_one(
                 "trace_id": ctx.trace_id or "",
                 "depth": child_depth,
                 "subagent_run_id": ctx.subagent_run_id,
+                "runtime_task_id": ctx.subagent_run_id,
+                "budget_run_id": ctx.budget_run_id,
                 "child_session_id": ctx.child_session_id,
                 "parent_session_id": ctx.parent_session_id,
                 "worktree_path": str(worktree_path) if worktree_path is not None else None,
@@ -1307,6 +1310,7 @@ async def _emit_completion_signal(ctx: SubagentSpawnContext, result: SubagentRes
                 content=(result.content or result.error or "")[:500],
                 signal_type=SUBAGENT_COMPLETION_SIGNAL,
                 thread_id=ctx.trace_id or None,
+                metadata={"budget_run_id": str(ctx.budget_run_id)} if ctx.budget_run_id else None,
             )
     except Exception as exc:  # best-effort notification — never crash the finished worker
         logger.warning("[Subagent] completion signal emit failed (non-fatal): %s", exc)

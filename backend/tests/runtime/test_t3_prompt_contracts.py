@@ -5,6 +5,12 @@ from pathlib import Path
 
 _TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "app" / "templates"
 _APP_DIR = Path(__file__).resolve().parents[2] / "app"
+_LEGACY_FLAT_T3_TARGETS = (
+    "memory/t3/episodes.md",
+    "memory/t3/user.md",
+    "memory/t3/worker.md",
+    "memory/t3/capabilities.md",
+)
 
 
 def test_heartbeat_template_is_t3_consolidator_not_save_memory_loop() -> None:
@@ -34,8 +40,14 @@ def test_t3_consolidator_and_memory_gate_templates_exist_with_rubrics() -> None:
         "XML blocks",
         "submit_t3_consolidation_pitch",
         "submit_t3_revised_patch",
+        "memory/self/self.md",
+        "memory/profiles/owner.md",
+        "memory/knowledge/<slug>.md",
+        "memory/milestones/<slug>.md",
     ):
         assert required in consolidator
+    for legacy_target in _LEGACY_FLAT_T3_TARGETS:
+        assert legacy_target not in consolidator
 
     for required in (
         "Memory Gate Agent",

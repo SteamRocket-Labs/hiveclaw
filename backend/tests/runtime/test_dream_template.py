@@ -12,6 +12,12 @@ from pathlib import Path
 import pytest
 
 _TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "app" / "templates" / "DREAM.md"
+_LEGACY_FLAT_T3_TARGETS = (
+    "memory/t3/episodes.md",
+    "memory/t3/user.md",
+    "memory/t3/worker.md",
+    "memory/t3/capabilities.md",
+)
 
 
 @pytest.fixture(scope="module")
@@ -31,22 +37,30 @@ def test_dream_names_new_role_and_boundaries(template_text: str) -> None:
 
 def test_dream_uses_canonical_inputs_only(template_text: str) -> None:
     for path in (
-        "memory/t3/episodes.md",
-        "memory/t3/user.md",
-        "memory/t3/worker.md",
-        "memory/t3/capabilities.md",
+        "memory/self/self.md",
+        "memory/profiles/owner.md",
+        "memory/profiles/collaborators.md",
+        "memory/profiles/domain.md",
+        "memory/knowledge/<slug>.md",
+        "memory/milestones/<slug>.md",
         "memory/explicit/",
     ):
         assert path in template_text
-    for legacy in ("memory/feedback.md", "memory/knowledge.md", "memory/strategies.md", "memory/blocked.md"):
+    for legacy in (
+        *_LEGACY_FLAT_T3_TARGETS,
+        "memory/feedback.md",
+        "memory/knowledge.md",
+        "memory/strategies.md",
+        "memory/blocked.md",
+    ):
         assert legacy not in template_text
 
 
 def test_dream_forbids_direct_t3_and_overlay_mutation(template_text: str) -> None:
-    assert "Do not write `memory/t3/**` directly" in template_text
+    assert "Do not write accepted T3 files directly" in template_text
     assert "Do not write `memory/explicit/**` directly" in template_text
     assert "Do not directly write, edit, deduplicate, cap, or reorder" in template_text
-    assert "Do not create `memory/t3/index.md`" in template_text
+    assert "Do not create accepted-T3 indexes or topic folders" in template_text
     assert "chapters/**" in template_text
 
 

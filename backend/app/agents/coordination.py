@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +32,7 @@ class Signal:
     signal_type: str
     thread_id: str
     created_at: datetime
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -105,6 +106,7 @@ class CoordinationRuntime:
         content: str,
         signal_type: str,
         thread_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Signal:
         signal = Signal(
             id=str(uuid.uuid4()),
@@ -114,6 +116,7 @@ class CoordinationRuntime:
             signal_type=signal_type,
             thread_id=thread_id or str(uuid.uuid4()),
             created_at=self._now(),
+            metadata=dict(metadata or {}),
         )
         self._signals.append(signal)
         return signal

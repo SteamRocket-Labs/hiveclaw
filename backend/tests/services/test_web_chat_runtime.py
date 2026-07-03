@@ -2612,6 +2612,54 @@ async def test_start_web_chat_run_accepts_goal_continuation_task_type(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_start_web_chat_run_inherits_existing_budget_run_without_creating_root(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.models.runtime_task import RuntimeTask
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    inherited_budget_run_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        title="Session 05-21",
+        last_message_at=None,
+    )
+    db = _FakeDB(active_run=None)
+
+    async def fail_create_budget_root(**_kwargs):
+        raise AssertionError("continuation with an inherited budget must not create a new budget root")
+
+    async def fake_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_create_runtime_budget_root_run_for_chat", fail_create_budget_root)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+
+    await runtime.start_web_chat_run(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content="Subagent finished. Continue the parent chain.",
+        append_user_message=False,
+        extra_metadata={
+            "source": "subagent_wake",
+            "budget_run_id": str(inherited_budget_run_id),
+        },
+    )
+
+    task = next(item for item in db.added if isinstance(item, RuntimeTask))
+    assert task.budget_run_id == inherited_budget_run_id
+    assert task.budget_admission_status == "inherited"
+    assert task.metadata_json["budget_run_id"] == str(inherited_budget_run_id)
+
+
+@pytest.mark.asyncio
 async def test_start_web_chat_run_does_not_append_t0_or_dispatch_from_api(monkeypatch):
     import app.services.web_chat_runtime as runtime
     from app.models.runtime_task import RuntimeTask

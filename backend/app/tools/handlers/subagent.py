@@ -42,6 +42,12 @@ from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.agent_session_continuation import continue_agent_session_from_mailbox
+from app.services.runtime_budget_service import (
+    RuntimeBudgetDenied,
+    RuntimeBudgetReservation,
+    RuntimeBudgetService,
+    RuntimeBudgetSettlement,
+)
 from app.services.agent_team_runtime_service import (
     active_agent_team_contract_from_tool_request,
     send_agent_team_message_from_tool_request,
@@ -74,6 +80,54 @@ def _uuid_or_none(value: Any) -> uuid.UUID | None:
         return uuid.UUID(text)
     except ValueError:
         return None
+
+
+async def _reserve_agent_session_message_budget(
+    *,
+    budget_run_id: str | None,
+    child_session_id: uuid.UUID | None,
+    parent_session_id: str | None,
+) -> tuple[RuntimeBudgetService, RuntimeBudgetReservation] | None:
+    budget_uuid = _uuid_or_none(budget_run_id)
+    if budget_uuid is None:
+        return None
+    reservation = RuntimeBudgetReservation(
+        budget_run_id=budget_uuid,
+        reservation_key=f"agent_session_message:{child_session_id or 'team'}:{uuid.uuid4().hex}",
+        continuation_wakes=1,
+        background_tasks=1,
+        reason="agent_session_message",
+        metadata={
+            "child_session_id": str(child_session_id) if child_session_id else None,
+            "parent_session_id": parent_session_id,
+        },
+    )
+    service = RuntimeBudgetService()
+    await service.reserve(reservation)
+    return service, reservation
+
+
+async def _settle_agent_session_message_budget(
+    reservation_pair: tuple[RuntimeBudgetService, RuntimeBudgetReservation] | None,
+    *,
+    status: str,
+    consumer: str | None,
+    reason: str,
+) -> None:
+    if reservation_pair is None:
+        return
+    service, reservation = reservation_pair
+    actual_background_tasks = 1 if status in {"started", "queued"} and consumer != "mid_run_message_drain" else 0
+    await service.settle(
+        RuntimeBudgetSettlement(
+            budget_run_id=reservation.budget_run_id,
+            reservation_key=reservation.reservation_key,
+            actual_continuation_wakes=1 if status in {"started", "queued"} else 0,
+            actual_background_tasks=actual_background_tasks,
+            reason=reason,
+            metadata=reservation.metadata,
+        )
+    )
 
 
 async def _resolve_parent_runtime(
@@ -610,6 +664,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         memory_store=memory_store,
         memory_distiller=memory_distiller,
         parent_session_id=request.context.session_id,
+        budget_run_id=request.context.budget_run_id,
         parent_messages=await _load_parent_messages_for_fork(
             agent_id=agent_id,
             tenant_id=tenant_id,
@@ -640,6 +695,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             definition_scope=definition_scope,
             ledger_todo_id=ledger_todo_id,
             context_window_tokens=getattr(model, "max_input_tokens", None),
+            budget_run_id=request.context.budget_run_id,
         )
         run_id = started.run_id
         ctx.subagent_run_id = run_id
@@ -878,9 +934,31 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
     message = str(request.arguments.get("message") or "").strip()
     if child_session_uuid is None:
         if request.arguments.get("team_id") or request.arguments.get("team_name") or request.arguments.get("to"):
+            reservation_pair = None
             try:
-                return _json(await send_agent_team_message_from_tool_request(request))
+                reservation_pair = await _reserve_agent_session_message_budget(
+                    budget_run_id=request.context.budget_run_id,
+                    child_session_id=None,
+                    parent_session_id=request.context.session_id,
+                )
+            except RuntimeBudgetDenied as exc:
+                return _json({"ok": False, "error": str(exc), "error_code": "runtime_budget_denied"})
+            try:
+                payload = await send_agent_team_message_from_tool_request(request)
+                await _settle_agent_session_message_budget(
+                    reservation_pair,
+                    status=str(payload.get("status") or "queued") if isinstance(payload, dict) else "queued",
+                    consumer=str(payload.get("consumer") or "") if isinstance(payload, dict) else None,
+                    reason="agent_team_message_queued",
+                )
+                return _json(payload)
             except Exception as exc:
+                await _settle_agent_session_message_budget(
+                    reservation_pair,
+                    status="failed",
+                    consumer=None,
+                    reason="agent_team_message_failed",
+                )
                 return _json({"ok": False, "error": f"Agent Team message failed: {exc}"})
         return _json({"ok": False, "error": "child_session_id or team_id/member_name is required"})
     if not message:
@@ -911,15 +989,43 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
             return _json({"ok": False, "error": "child agent session continuation principal could not be loaded"})
 
         interrupt = bool(request.arguments.get("interrupt"))
-        result = await continue_agent_session_from_mailbox(
-            db=db,
-            agent=agent,
-            user=user,
-            session=session,
-            message=message,
-            parent_session_id=request.context.session_id,
-            interrupt_requested=interrupt,
+        reservation_pair = None
+        inherited_budget_run_id = request.context.budget_run_id or str(
+            (getattr(session, "transcript_metadata_json", None) or {}).get("budget_run_id") or ""
         )
+        try:
+            reservation_pair = await _reserve_agent_session_message_budget(
+                budget_run_id=inherited_budget_run_id,
+                child_session_id=child_session_uuid,
+                parent_session_id=request.context.session_id,
+            )
+        except RuntimeBudgetDenied as exc:
+            return _json({"ok": False, "error": str(exc), "error_code": "runtime_budget_denied"})
+        try:
+            result = await continue_agent_session_from_mailbox(
+                db=db,
+                agent=agent,
+                user=user,
+                session=session,
+                message=message,
+                parent_session_id=request.context.session_id,
+                interrupt_requested=interrupt,
+                extra_metadata={"budget_run_id": inherited_budget_run_id} if inherited_budget_run_id else None,
+            )
+            await _settle_agent_session_message_budget(
+                reservation_pair,
+                status=str(result.get("status") or "queued"),
+                consumer=result.get("consumer"),
+                reason="agent_session_message_queued",
+            )
+        except Exception:
+            await _settle_agent_session_message_budget(
+                reservation_pair,
+                status="failed",
+                consumer=None,
+                reason="agent_session_message_failed",
+            )
+            raise
 
     return _json(
         {

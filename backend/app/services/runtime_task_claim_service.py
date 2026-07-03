@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.runtime_budget import RuntimeBudgetRun
 from app.models.runtime_task import RuntimeTask
 
 
@@ -29,6 +30,15 @@ def build_runtime_task_claim_statement(
         .where(
             RuntimeTask.status.in_(CLAIMABLE_RUNTIME_TASK_STATUSES),
             or_(RuntimeTask.scheduled_at.is_(None), RuntimeTask.scheduled_at <= claim_now),
+            or_(
+                RuntimeTask.budget_run_id.is_(None),
+                exists(
+                    select(RuntimeBudgetRun.id).where(
+                        RuntimeBudgetRun.id == RuntimeTask.budget_run_id,
+                        RuntimeBudgetRun.status == "active",
+                    )
+                ),
+            ),
         )
         .order_by(desc(RuntimeTask.priority), RuntimeTask.created_at.asc())
         .limit(batch_size)

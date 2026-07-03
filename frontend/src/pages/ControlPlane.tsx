@@ -13,6 +13,7 @@ import {
   IconRefresh,
   IconRoute,
   IconShieldCheck,
+  IconShieldHalfFilled,
   IconUsers,
 } from '@tabler/icons-react';
 
@@ -138,6 +139,14 @@ const CONTROL_PLANE_CARDS: ControlPlaneCard[] = [
     title: 'Quotas',
     description: 'Default employee token quotas, trigger caps, and company-level usage boundaries.',
     icon: <IconShieldCheck size={18} stroke={1.6} />,
+    group: 'runtime',
+  },
+  {
+    tab: 'runtime_budgets',
+    to: '/enterprise/runtime-budgets',
+    title: 'Runtime Budgets',
+    description: 'Hard guardrails for autonomous triggers, subagents, delegation, wakes, and provider calls.',
+    icon: <IconShieldHalfFilled size={18} stroke={1.6} />,
     group: 'runtime',
   },
   {

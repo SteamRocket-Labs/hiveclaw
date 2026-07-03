@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { adminApi } from '../../api/domains/admin';
 import { enterpriseApi } from '../../api/domains/enterprise';
+import WorkspaceRuntimeBudgetsSection from '../workspace/WorkspaceRuntimeBudgetsSection';
 import './AdminPlatformSection.css';
 
 export default function AdminPlatformSection() {
@@ -176,6 +177,10 @@ export default function AdminPlatformSection() {
           </button>
           {urlSaved && <span className="admin-platform-saved">{t('enterprise.config.saved', 'Saved')}</span>}
         </div>
+      </div>
+
+      <div className="admin-platform-runtime">
+        <WorkspaceRuntimeBudgetsSection />
       </div>
     </>
   );

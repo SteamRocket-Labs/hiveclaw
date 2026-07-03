@@ -1261,6 +1261,12 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             return error
         assert source_agent is not None
         assert target is not None
+        budget_run_id = None
+        if args.get("_budget_run_id"):
+            try:
+                budget_run_id = uuid.UUID(str(args.get("_budget_run_id")))
+            except (TypeError, ValueError, AttributeError):
+                return "❌ runtime budget id is invalid"
 
         if str(args.get("execution_target") or "cloud_agent").strip() == "local_agent":
             queued = await _delegate_to_local_agent_channel(
@@ -1268,6 +1274,7 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
                 target_agent=target,
                 message_text=message_text,
                 args=args,
+                budget_run_id=budget_run_id,
             )
             return json.dumps(queued, ensure_ascii=False, default=str)
 
@@ -1306,6 +1313,7 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             target_artifact_path=str(args.get("target_artifact_path") or "").strip() or None,
             target_artifacts=target_artifacts_arg,
             edit_mode=str(args.get("edit_mode") or "").strip() or None,
+            budget_run_id=budget_run_id,
         )
         return json.dumps(
             {
@@ -1339,6 +1347,7 @@ async def _delegate_to_local_agent_channel(
     target_agent,
     message_text: str,
     args: dict,
+    budget_run_id: uuid.UUID | None = None,
 ) -> dict:
     """Queue delegated work onto the target agent's Local Agent Channel."""
 
@@ -1351,55 +1360,109 @@ async def _delegate_to_local_agent_channel(
     if owner_id is None:
         raise ValueError("source agent has no creator_id for local-agent delegation")
     target_artifacts_arg = args.get("target_artifacts") if isinstance(args.get("target_artifacts"), list) else []
-
-    async with tenant_scoped_session(tenant_id) as db:
-        session = await local_agent_channel_service.create_channel_session(
-            db,
-            tenant_id=tenant_id,
-            owner_user_id=owner_id,
-            source_agent_id=source_agent.id,
-            source="a2a",
-            title=f"A2A from {getattr(source_agent, 'name', 'agent')}",
+    budget_reservation_key = None
+    budget_service = None
+    if budget_run_id is not None:
+        from app.services.runtime_budget_service import (
+            RuntimeBudgetReservation,
+            RuntimeBudgetService,
+            estimate_reservation_tokens,
         )
-        message = await local_agent_channel_service.enqueue_channel_message(
-            db,
-            session_id=session["id"],
-            owner_user_id=owner_id,
-            sender_user_id=owner_id,
-            sender_agent_id=source_agent.id,
-            content=message_text,
-            attachments=list(args.get("attachments") or []),
-            metadata={
-                "source": "a2a",
+
+        budget_service = RuntimeBudgetService()
+        budget_reservation_key = f"delegation:local:{uuid.uuid4().hex}:start"
+        estimated_tokens = estimate_reservation_tokens(
+            default_tokens=50_000,
+            prompt_tokens=max(1, (len(message_text) + 3) // 4) if message_text else 0,
+        )
+        await budget_service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=budget_run_id,
+                reservation_key=budget_reservation_key,
+                tokens=estimated_tokens,
+                cache_miss_tokens=estimated_tokens,
+                delegations=1,
+                background_tasks=1,
+                reason="local_agent_delegation_start",
+                metadata={
+                    "work_type": "local_agent_delegation",
+                    "source_agent_id": str(source_agent.id),
+                    "target_agent_id": str(target_agent.id),
+                },
+            )
+        )
+
+    try:
+        async with tenant_scoped_session(tenant_id) as db:
+            session = await local_agent_channel_service.create_channel_session(
+                db,
+                tenant_id=tenant_id,
+                owner_user_id=owner_id,
+                source_agent_id=source_agent.id,
+                source="a2a",
+                title=f"A2A from {getattr(source_agent, 'name', 'agent')}",
+            )
+            message = await local_agent_channel_service.enqueue_channel_message(
+                db,
+                session_id=session["id"],
+                owner_user_id=owner_id,
+                sender_user_id=owner_id,
+                sender_agent_id=source_agent.id,
+                content=message_text,
+                attachments=list(args.get("attachments") or []),
+                metadata={
+                    "source": "a2a",
+                    "execution_target": "local_agent",
+                    "sender_agent_id": str(source_agent.id),
+                    "sender_agent_name": getattr(source_agent, "name", None),
+                    "expected_output": str(args.get("expected_output") or "").strip() or None,
+                    "parent_session_id": args.get("parent_session_id"),
+                    "ledger_todo_id": str(args.get("ledger_todo_id") or "").strip() or None,
+                    "target_artifact_path": str(args.get("target_artifact_path") or "").strip() or None,
+                    "target_artifacts": target_artifacts_arg,
+                    "edit_mode": str(args.get("edit_mode") or "").strip() or None,
+                    "budget_run_id": str(budget_run_id) if budget_run_id else None,
+                    "budget_reservation_key": budget_reservation_key,
+                },
+            )
+            try:
+                from app.api.local_agent_channel import channel_ws_manager
+
+                await channel_ws_manager.send_to_user(owner_id, {"type": "message", "message": message})
+            except Exception as exc:
+                logger.debug("Suppressed local-agent channel WS fanout failure: %s", exc)
+            return {
+                "status": "queued",
                 "execution_target": "local_agent",
-                "sender_agent_id": str(source_agent.id),
-                "sender_agent_name": getattr(source_agent, "name", None),
-                "expected_output": str(args.get("expected_output") or "").strip() or None,
-                "parent_session_id": args.get("parent_session_id"),
-                "ledger_todo_id": str(args.get("ledger_todo_id") or "").strip() or None,
-                "target_artifact_path": str(args.get("target_artifact_path") or "").strip() or None,
-                "target_artifacts": target_artifacts_arg,
-                "edit_mode": str(args.get("edit_mode") or "").strip() or None,
-            },
-        )
-        try:
-            from app.api.local_agent_channel import channel_ws_manager
+                "target_agent": getattr(target_agent, "name", str(target_agent.id)),
+                "channel_session_id": str(session["id"]),
+                "chat_session_id": str(session["chat_session_id"]),
+                "message_id": str(message["id"]),
+                "next_action": (
+                    "The bound Hive Connect background service receives this when it is online; "
+                    "if the computer is offline, the message remains queued until the service reconnects."
+                ),
+            }
+    except Exception:
+        if budget_run_id is not None and budget_reservation_key:
+            try:
+                from app.services.runtime_budget_service import RuntimeBudgetSettlement, RuntimeBudgetService
 
-            await channel_ws_manager.send_to_user(owner_id, {"type": "message", "message": message})
-        except Exception as exc:
-            logger.debug("Suppressed local-agent channel WS fanout failure: %s", exc)
-        return {
-            "status": "queued",
-            "execution_target": "local_agent",
-            "target_agent": getattr(target_agent, "name", str(target_agent.id)),
-            "channel_session_id": str(session["id"]),
-            "chat_session_id": str(session["chat_session_id"]),
-            "message_id": str(message["id"]),
-            "next_action": (
-                "The bound Hive Connect background service receives this when it is online; "
-                "if the computer is offline, the message remains queued until the service reconnects."
-            ),
-        }
+                release_service = budget_service or RuntimeBudgetService()
+                await release_service.settle(
+                    RuntimeBudgetSettlement(
+                        budget_run_id=budget_run_id,
+                        reservation_key=budget_reservation_key,
+                        actual_tokens=0,
+                        actual_cache_miss_tokens=0,
+                        actual_delegations=0,
+                        actual_background_tasks=0,
+                        reason="local_agent_delegation_enqueue_failed",
+                    )
+                )
+            except Exception as settle_exc:
+                logger.warning("Failed to release local-agent delegation budget reservation: %s", settle_exc)
+        raise
 
 
 async def _check_async_task(from_agent_id: uuid.UUID, args: dict) -> str:

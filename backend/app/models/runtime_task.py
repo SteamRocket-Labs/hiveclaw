@@ -90,5 +90,13 @@ class RuntimeTask(Base):
     claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
 
+    # Runtime budget admission metadata
+    budget_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("runtime_budget_runs.id"), nullable=True, index=True
+    )
+    budget_reservation_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    budget_admission_status: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    budget_terminal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Metadata
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

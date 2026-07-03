@@ -36,6 +36,7 @@ from app.runtime.dynamic_workflow import build_dynamic_workflow_repair_plan, sum
 from app.services.channel_delivery_service import ChannelDeliveryService
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
+from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow, normalize_workflow_args
 from app.runtime.workflow_compiler import CompiledWorkflow, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
@@ -60,6 +61,20 @@ _WORKFLOW_RUNTIME_ACTION_BY_RUN_STATUS = {
     "killed": "runtime_action_failed",
     "suspended": "runtime_action_blocked",
 }
+
+
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def _workflow_runtime_action_payload(
@@ -746,6 +761,8 @@ class WorkflowRuntimeService:
         root_session_id: uuid.UUID | str | None = None,
         run_metadata: dict[str, Any] | None = None,
         enqueue_only: bool = False,
+        budget_run_id: uuid.UUID | str | None = None,
+        budget_service: RuntimeBudgetService | None = None,
     ) -> WorkflowRunHandle:
         if not get_settings().WORKFLOW_RUNTIME_ENABLED:
             raise WorkflowAdmissionError("workflow runtime disabled by feature flag WORKFLOW_RUNTIME_ENABLED")
@@ -758,6 +775,50 @@ class WorkflowRuntimeService:
         # A caller may pre-generate the id so run-scoped artifacts can land
         # BEFORE execution starts.
         run_id = run_id or uuid.uuid4()
+        budget_uuid = _uuid_or_none(budget_run_id)
+        budget_admission_status = "inherited" if budget_uuid is not None else None
+        if budget_uuid is None:
+            service = budget_service or RuntimeBudgetService(session_factory=self._session_factory)
+            policy = await service.resolve_policy(
+                RuntimeBudgetPolicyLookup(
+                    tenant_id=tenant_id,
+                    source="workflow",
+                    profile="workflow",
+                    agent_id=agent_id,
+                )
+            )
+            budget_run = await service.create_run(
+                RuntimeBudgetRunCreate(
+                    tenant_id=tenant_id,
+                    root_run_kind="workflow_run",
+                    root_run_key=f"workflow:{run_id}",
+                    source="workflow",
+                    profile="workflow",
+                    policy_id=getattr(policy, "id", None),
+                    root_runtime_task_id=run_id,
+                    root_session_id=str(root_session_id or parent_session_id or ""),
+                    root_agent_id=agent_id,
+                    root_user_id=_uuid_or_none(user_id),
+                    enforcement_mode=str(getattr(policy, "enforcement_mode", None) or "enforce"),
+                    fail_mode=str(getattr(policy, "fail_mode", None) or "fail_closed"),
+                    max_tokens=getattr(policy, "max_tokens", None),
+                    max_cache_miss_tokens=getattr(policy, "max_cache_miss_tokens", None),
+                    max_subagents=getattr(policy, "max_subagents", None),
+                    max_delegations=getattr(policy, "max_delegations", None),
+                    max_background_tasks=getattr(policy, "max_background_tasks", None),
+                    max_continuation_wakes=getattr(policy, "max_continuation_wakes", None),
+                    max_provider_calls=getattr(policy, "max_provider_calls", None),
+                    policy_snapshot={
+                        "policy_id": str(getattr(policy, "id", "")),
+                        "scope_type": getattr(policy, "scope_type", None),
+                        "source": getattr(policy, "source", None),
+                        "profile": getattr(policy, "profile", None),
+                        "policy_json": getattr(policy, "policy_json", None),
+                    },
+                )
+            )
+            budget_uuid = budget_run.id
+            budget_admission_status = "root"
         parent_session_value = str(parent_session_id) if parent_session_id else None
         root_session_value = str(root_session_id or parent_session_id) if root_session_id or parent_session_id else None
         metadata_json = {
@@ -777,6 +838,7 @@ class WorkflowRuntimeService:
             if not isinstance(definition_data, dict)
             else definition_data,
             "args": args,
+            "budget_run_id": str(budget_uuid) if budget_uuid else None,
         }
         if run_metadata:
             metadata_json.update(run_metadata)
@@ -789,6 +851,8 @@ class WorkflowRuntimeService:
                 parent_agent_id=agent_id,
                 parent_session_id=parent_session_value,
                 child_session_id=parent_session_value,
+                budget_run_id=budget_uuid,
+                budget_admission_status=budget_admission_status,
                 metadata_json=metadata_json,
             )
             session.add(task)

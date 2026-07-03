@@ -41,6 +41,7 @@ from app.services.runtime_task_service import (
     merge_restart_replay_journal,
     update_runtime_task_record,
 )
+from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
 from app.services.trigger_preflight import (
     collect_trigger_runtime_options,
     evaluate_trigger_preflight,
@@ -97,6 +98,65 @@ async def _create_trigger_runtime_task(
         task_id = uuid.uuid4().hex
         trace_id = f"trigger:{task_id}"
         side_effect_risk = str(metadata.get("side_effect_risk") or "mutating")
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        budget_run = None
+        trigger_id_values = [getattr(trigger, "id", None) for trigger in triggers if getattr(trigger, "id", None)]
+        trigger_profile = str(
+            next(
+                (
+                    (getattr(trigger, "config", None) or {}).get("trigger_class")
+                    for trigger in triggers
+                    if (getattr(trigger, "config", None) or {}).get("trigger_class")
+                ),
+                "",
+            )
+            or (getattr(triggers[0], "type", "") if triggers else "")
+            or "trigger"
+        )
+        if tenant_id is not None:
+            budget_service = RuntimeBudgetService()
+            budget_lookup = RuntimeBudgetPolicyLookup(
+                tenant_id=tenant_id,
+                source="trigger",
+                profile=trigger_profile,
+                agent_id=agent_id,
+                trigger_id=trigger_id_values[0] if len(trigger_id_values) == 1 else None,
+            )
+            budget_policy = await budget_service.resolve_policy(budget_lookup)
+            budget_run = await budget_service.create_run(
+                RuntimeBudgetRunCreate(
+                    tenant_id=tenant_id,
+                    root_run_kind="trigger_fire",
+                    root_run_key=task_id,
+                    source="trigger",
+                    profile=trigger_profile,
+                    policy_id=getattr(budget_policy, "id", None),
+                    root_runtime_task_id=uuid.UUID(task_id),
+                    root_agent_id=agent_id,
+                    enforcement_mode=str(getattr(budget_policy, "enforcement_mode", None) or "enforce"),
+                    fail_mode=str(getattr(budget_policy, "fail_mode", None) or "fail_closed"),
+                    max_tokens=getattr(budget_policy, "max_tokens", None),
+                    max_cache_miss_tokens=getattr(budget_policy, "max_cache_miss_tokens", None),
+                    max_subagents=getattr(budget_policy, "max_subagents", None),
+                    max_delegations=getattr(budget_policy, "max_delegations", None),
+                    max_background_tasks=getattr(budget_policy, "max_background_tasks", None),
+                    max_continuation_wakes=getattr(budget_policy, "max_continuation_wakes", None),
+                    max_provider_calls=getattr(budget_policy, "max_provider_calls", None),
+                    policy_snapshot={
+                        "policy_id": str(getattr(budget_policy, "id", "")),
+                        "scope_type": getattr(budget_policy, "scope_type", None),
+                        "source": getattr(budget_policy, "source", None),
+                        "profile": getattr(budget_policy, "profile", None),
+                        "default_child_token_reservation": getattr(
+                            budget_policy, "default_child_token_reservation", None
+                        ),
+                        "default_llm_call_token_reservation": getattr(
+                            budget_policy, "default_llm_call_token_reservation", None
+                        ),
+                        "policy_json": getattr(budget_policy, "policy_json", None),
+                    },
+                )
+            )
         metadata.update(
             {
                 "runtime_task_id": task_id,
@@ -113,6 +173,8 @@ async def _create_trigger_runtime_task(
                 ),
             }
         )
+        if budget_run is not None:
+            metadata["budget_run_id"] = str(budget_run.id)
         metadata = merge_restart_replay_journal(
             metadata,
             build_restart_replay_journal_entry(
@@ -131,6 +193,8 @@ async def _create_trigger_runtime_task(
             prompt=f"Trigger wake: {', '.join(name for name in trigger_names if name) or 'unknown'}",
             trace_id=trace_id,
             metadata_json=metadata,
+            budget_run_id=budget_run.id if budget_run is not None else None,
+            budget_admission_status="root" if budget_run is not None else None,
         )
     except Exception as exc:
         logger.warning("[TriggerDaemon] Failed to create trigger RuntimeTask for {}: {}", agent_id, exc)

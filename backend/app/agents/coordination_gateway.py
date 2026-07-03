@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from app.agents.coordination import (
     Checkpoint,
@@ -64,6 +64,7 @@ class CoordinationGateway(Protocol):
         content: str,
         signal_type: str,
         thread_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Signal: ...
 
     async def read_signals(self, agent_id: str, *, thread_id: str | None = None) -> list[Signal]: ...
@@ -100,6 +101,7 @@ class InProcessCoordinationGateway:
         content: str,
         signal_type: str,
         thread_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Signal:
         return self._runtime.send_signal(
             from_agent_id=from_agent_id,
@@ -107,6 +109,7 @@ class InProcessCoordinationGateway:
             content=content,
             signal_type=signal_type,
             thread_id=thread_id,
+            metadata=metadata,
         )
 
     async def read_signals(self, agent_id: str, *, thread_id: str | None = None) -> list[Signal]:

@@ -1442,6 +1442,7 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Recent Activity');
     expect(markup).toContain('GPT-5.4');
+    expect(markup).toContain('Runtime Protection');
     expect(markup).toContain('Handles release coordination.');
     expect(markup).toContain('Sent release reminder');
     expect(markup).toContain('Capability Install Status');

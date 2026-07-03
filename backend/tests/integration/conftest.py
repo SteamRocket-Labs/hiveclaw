@@ -61,8 +61,8 @@ def pg_container():
         pytest.skip("testcontainers is not installed (pip install -e '.[dev]')")
 
     _ensure_docker_host()
-    container = PostgresContainer("postgres:16-alpine")
     try:
+        container = PostgresContainer("postgres:16-alpine")
         container.start()
     except Exception as exc:  # Docker daemon missing or not running
         pytest.skip(f"Docker unavailable for Testcontainers: {exc}")

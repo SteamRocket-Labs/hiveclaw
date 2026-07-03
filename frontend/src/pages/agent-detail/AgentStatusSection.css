@@ -65,6 +65,37 @@
   margin-bottom: var(--space-6);
 }
 
+.agent-status-runtime-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+  border-left: 4px solid var(--success);
+}
+
+.agent-status-runtime-card.is-warning {
+  border-left-color: var(--warning);
+}
+
+.agent-status-runtime-main {
+  font-size: var(--text-title);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: var(--space-1);
+}
+
+.agent-status-runtime-reason {
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.agent-status-runtime-next {
+  color: var(--text-tertiary);
+  font-size: var(--text-row);
+  margin-top: var(--space-2);
+}
+
 .agent-status-card-title {
   font-size: var(--text-emphasis);
   font-weight: 600;

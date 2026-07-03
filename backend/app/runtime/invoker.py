@@ -59,6 +59,7 @@ from app.services.agent_tools import (
 )
 from app.services.feature_flags import is_enabled as is_feature_enabled
 from app.services.llm_utils import LLMMessage, create_llm_client, get_max_tokens
+from app.services.runtime_budget_llm import RuntimeBudgetedLLMClient
 from app.services.invocation_trace import persist_invocation_span
 from app.services.governance_capability_taxonomy import capability_descriptor_for_name, iter_runtime_l2_capabilities
 from app.services.memory_service import (
@@ -195,6 +196,20 @@ def _session_metadata(session_context: SessionContext | None) -> dict[str, Any]:
     return session_context.metadata
 
 
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text)
+    except (TypeError, ValueError):
+        return None
+
+
 def _prefixed_turn_id(prefix: str, value: Any) -> str:
     raw = str(value or "").strip()
     if raw.startswith(f"{prefix}-"):
@@ -298,6 +313,8 @@ def _tool_frame_kwargs_from_session_context(session_context: SessionContext | No
         result["turn_id"] = str(metadata["turn_id"])
     if metadata.get("runtime_task_id") or metadata.get("task_id"):
         result["runtime_task_id"] = str(metadata.get("runtime_task_id") or metadata.get("task_id"))
+    if metadata.get("budget_run_id"):
+        result["budget_run_id"] = str(metadata["budget_run_id"])
     origin_channel = (
         metadata.get("origin_channel")
         or getattr(session_context, "channel", None)
@@ -1011,12 +1028,21 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         return [tool for tool in tools if tool["function"]["name"] not in excluded_tool_names]
 
     def _kernel_create_client(model: Any):
-        return create_llm_client(
+        client = create_llm_client(
             provider=model.provider,
             api_key=model.api_key,
             model=model.model,
             base_url=model.base_url,
             timeout=120.0,
+        )
+        metadata = _session_metadata(request.session_context)
+        budget_run_id = _uuid_or_none(metadata.get("budget_run_id"))
+        if budget_run_id is None:
+            return client
+        return RuntimeBudgetedLLMClient(
+            client,
+            budget_run_id=budget_run_id,
+            runtime_task_id=_uuid_or_none(metadata.get("runtime_task_id") or metadata.get("request_id")),
         )
 
     async def _kernel_execute_tool(

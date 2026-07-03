@@ -32,6 +32,12 @@ from app.services.runtime_task_service import (
     merge_restart_replay_journal,
     update_runtime_task_record,
 )
+from app.services.runtime_budget_service import (
+    RuntimeBudgetReservation,
+    RuntimeBudgetService,
+    RuntimeBudgetSettlement,
+    estimate_reservation_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,7 @@ AGENT_MESSAGE_TIMEOUT_SECONDS = 300.0
 ASYNC_DELEGATION_TIMEOUT_SECONDS = 600.0
 ASYNC_DELEGATION_CANCEL_GRACE_SECONDS = 180.0
 MAX_DELEGATION_TIMEOUT_SECONDS = 3600.0
+_DEFAULT_DELEGATION_START_TOKEN_RESERVATION = 50_000
 
 ToolExecutor = Callable[..., Awaitable[str] | str]
 _DELEGATION_BASE_EXCLUDED_TOOLS = DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
@@ -404,6 +411,13 @@ def _permission_profile_metadata(value: Any | None) -> dict[str, Any] | None:
     return None
 
 
+def _estimate_prompt_tokens_from_messages(messages: list[dict] | None) -> int:
+    text = "\n".join(str(message.get("content") or "") for message in (messages or []) if isinstance(message, dict))
+    if not text:
+        return 0
+    return max(1, (len(text) + 3) // 4)
+
+
 def _permission_profile_mode(value: Any | None) -> str | None:
     metadata = _permission_profile_metadata(value)
     if not metadata:
@@ -563,6 +577,7 @@ class AgentDelegationRequest:
     target_artifact_path: str | None = None
     target_artifacts: list[dict[str, Any]] = field(default_factory=list)
     edit_mode: str | None = None
+    budget_run_id: str | None = None
 
 
 def _delegation_coordination_key(request: AgentDelegationRequest) -> str:
@@ -1067,6 +1082,36 @@ def _write_back_ledger_todo(request: AgentDelegationRequest, *, failed: bool) ->
         )
 
 
+async def _settle_delegation_budget(
+    *,
+    request: AgentDelegationRequest,
+    task_id: str,
+    status: str,
+) -> None:
+    budget_run_id = _maybe_uuid(request.budget_run_id)
+    if budget_run_id is None:
+        return
+    reservation_key = f"delegation:{task_id}:start"
+    try:
+        await RuntimeBudgetService().settle(
+            RuntimeBudgetSettlement(
+                budget_run_id=budget_run_id,
+                reservation_key=reservation_key,
+                actual_delegations=1,
+                actual_background_tasks=1,
+                reason=f"delegation_{status}",
+                runtime_task_id=uuid.UUID(task_id),
+                metadata={
+                    "status": status,
+                    "target_agent_id": str(getattr(request.target, "id", "")),
+                    "target_agent_name": getattr(request.target, "name", None),
+                },
+            )
+        )
+    except Exception:
+        logger.debug("[Orchestrator] delegation budget settlement failed for %s", task_id, exc_info=True)
+
+
 async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
     trace_id = request.trace_id or uuid.uuid4().hex
     child_session_id = request.session_id or uuid.uuid4().hex
@@ -1205,6 +1250,8 @@ async def _delegate_after_cycle_check(
             session_metadata["permission_mode"] = permission_mode
     if request.runtime_task_id:
         session_metadata["runtime_task_id"] = request.runtime_task_id
+    if request.budget_run_id:
+        session_metadata["budget_run_id"] = str(request.budget_run_id)
     session_metadata.update(artifact_contract)
     if request.restart_replay_contract:
         session_metadata["restart_replay_contract"] = dict(request.restart_replay_contract)
@@ -1939,6 +1986,7 @@ async def _wake_parent_session_from_delegation_completion(
                     "to_agent": str(request.target.id),
                     "to_agent_name": getattr(request.target, "name", None),
                     "depth": request.depth,
+                    **({"budget_run_id": str(request.budget_run_id)} if request.budget_run_id else {}),
                 },
                 artifacts=artifacts or [],
             )
@@ -1985,6 +2033,7 @@ def _spawn_async_delegation_task(
                     )
                 except Exception as exc:
                     logger.warning("[Orchestrator] Failed to persist plan gate block %s: %s", task_id, exc)
+                await _settle_delegation_budget(request=request, task_id=task_id, status="failed")
                 return AgentDelegationResult(
                     content=content,
                     child_session_id=request.session_id,
@@ -2008,6 +2057,7 @@ def _spawn_async_delegation_task(
                 )
             except Exception as exc:
                 logger.warning("[Orchestrator] Failed to update runtime task %s: %s", task_id, exc)
+            await _settle_delegation_budget(request=request, task_id=task_id, status=terminal_status)
             await _project_delegation_completion_to_parent(
                 request=request,
                 task_id=task_id,
@@ -2027,6 +2077,7 @@ def _spawn_async_delegation_task(
                 )
             except Exception as update_exc:
                 logger.warning("[Orchestrator] Failed to persist runtime task cancellation %s: %s", task_id, update_exc)
+            await _settle_delegation_budget(request=request, task_id=task_id, status="killed")
             raise
         except Exception as exc:
             logger.error("[Orchestrator] Async delegation %s failed: %s", task_id, exc)
@@ -2041,6 +2092,7 @@ def _spawn_async_delegation_task(
                 )
             except Exception as update_exc:
                 logger.warning("[Orchestrator] Failed to persist runtime task failure %s: %s", task_id, update_exc)
+            await _settle_delegation_budget(request=request, task_id=task_id, status="failed")
             return AgentDelegationResult(
                 content=f"Async task {task_id} failed: {exc}",
                 child_session_id=request.session_id,
@@ -2117,6 +2169,7 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
         tenant_id=metadata.get("tenant_id") or record.get("tenant_id"),
         ledger_todo_id=metadata.get("ledger_todo_id"),
         runtime_task_id=task_id,
+        budget_run_id=str(record.get("budget_run_id") or metadata.get("budget_run_id") or "") or None,
         restart_replay_contract=metadata.get("restart_replay_contract")
         if isinstance(metadata.get("restart_replay_contract"), dict)
         else None,
@@ -2184,6 +2237,8 @@ async def delegate_async(
     target_artifact_path: str | None = None,
     target_artifacts: list[dict[str, Any]] | None = None,
     edit_mode: str | None = None,
+    budget_run_id: uuid.UUID | str | None = None,
+    budget_service: RuntimeBudgetService | None = None,
 ) -> AsyncDelegationHandle:
     """Launch a child agent in the background and return immediately.
 
@@ -2196,6 +2251,8 @@ async def delegate_async(
     _cleanup_stale_tasks()
     task_id = uuid.uuid4().hex
     real_trace_id = trace_id or uuid.uuid4().hex
+    budget_uuid = _maybe_uuid(budget_run_id)
+    budget_reservation_key = f"delegation:{task_id}:start" if budget_uuid is not None else None
     request = AgentDelegationRequest(
         target=target,
         target_model=target_model,
@@ -2231,6 +2288,7 @@ async def delegate_async(
             if artifact
         ],
         edit_mode=_normalize_delegation_edit_mode(edit_mode),
+        budget_run_id=str(budget_uuid) if budget_uuid is not None else None,
     )
     plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
     if not plan_allowed:
@@ -2272,6 +2330,32 @@ async def delegate_async(
             "signal_thread_id": signal.thread_id,
         }
     )
+    reservation_service = budget_service or (RuntimeBudgetService() if budget_uuid is not None else None)
+    if budget_uuid is not None and reservation_service is not None:
+        estimated_tokens = estimate_reservation_tokens(
+            default_tokens=_DEFAULT_DELEGATION_START_TOKEN_RESERVATION,
+            prompt_tokens=_estimate_prompt_tokens_from_messages(conversation_messages),
+        )
+        await reservation_service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=budget_uuid,
+                reservation_key=budget_reservation_key or f"delegation:{task_id}:start",
+                tokens=estimated_tokens,
+                cache_miss_tokens=estimated_tokens,
+                delegations=1,
+                background_tasks=1,
+                reason="delegation_start",
+                runtime_task_id=uuid.UUID(task_id),
+                metadata={
+                    "work_type": "delegation",
+                    "target_agent_id": str(getattr(target, "id", "")),
+                    "target_agent_name": getattr(target, "name", None),
+                    "parent_session_id": parent_session_id,
+                },
+            )
+        )
+        metadata_json["budget_run_id"] = str(budget_uuid)
+        metadata_json["budget_reservation_key"] = budget_reservation_key
     _remember_async_task_parent(
         task_id,
         parent_agent_id,
@@ -2295,8 +2379,23 @@ async def delegate_async(
             child_session_id=session_id,
             depth=depth,
             metadata_json=metadata_json,
+            budget_run_id=budget_uuid,
+            budget_reservation_key=budget_reservation_key,
+            budget_admission_status="reserved" if budget_uuid is not None else None,
         )
     except Exception as exc:
+        if budget_uuid is not None and budget_reservation_key and reservation_service is not None:
+            try:
+                await reservation_service.settle(
+                    RuntimeBudgetSettlement(
+                        budget_run_id=budget_uuid,
+                        reservation_key=budget_reservation_key,
+                        reason="delegation_enqueue_failed",
+                        runtime_task_id=uuid.UUID(task_id),
+                    )
+                )
+            except Exception:
+                logger.debug("[Orchestrator] Failed to release delegation budget reservation %s", task_id, exc_info=True)
         logger.warning("[Orchestrator] Failed to create runtime task record %s: %s", task_id, exc)
     try:
         from app.services.runtime_task_worker import notify_runtime_task_worker

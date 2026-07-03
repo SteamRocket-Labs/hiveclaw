@@ -20,10 +20,22 @@ from app.agents.subagent import SUBAGENT_COMPLETION_SIGNAL
 from app.database import enter_rls_bypass, tenant_scoped_session
 from app.models.coordination import CoordinationSignal
 from app.models.runtime_task import RuntimeTask
+from app.services.runtime_budget_service import (
+    RuntimeBudgetDenied,
+    RuntimeBudgetReservation,
+    RuntimeBudgetService,
+    RuntimeBudgetSettlement,
+)
 
 logger = logging.getLogger(__name__)
 
 _ACTIVE_PARENT_RUN_STATUSES = ("pending", "running", "suspended")
+_CHILD_TERMINAL_STATUSES = ("completed", "failed", "killed", "needs_reconciliation")
+_BREAKER_FAILED_STATUSES = ("failed", "killed")
+_MAX_NEEDS_RECONCILIATION_BEFORE_STOP = 3
+_MAX_FAILURES_BEFORE_STOP = 5
+_MIN_CHILDREN_FOR_FAILURE_RATIO = 8
+_MAX_CHILD_FAILURE_RATIO = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +46,7 @@ class SubagentWakeRequest:
     from_agent_id: str
     thread_id: str
     content: str
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +59,103 @@ class SubagentWakeResult:
 
 
 ParentWakeInvoker = Callable[[SubagentWakeRequest], Awaitable[Any]]
+
+
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    text_value = str(value).strip()
+    if not text_value:
+        return None
+    try:
+        return uuid.UUID(text_value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _reserve_continuation_wake_budget(
+    *,
+    signal_id: uuid.UUID,
+    metadata: dict[str, Any] | None,
+) -> tuple[RuntimeBudgetService, RuntimeBudgetReservation] | None:
+    budget_run_id = _uuid_or_none((metadata or {}).get("budget_run_id"))
+    if budget_run_id is None:
+        return None
+    reservation = RuntimeBudgetReservation(
+        budget_run_id=budget_run_id,
+        reservation_key=f"subagent_wake:{signal_id}:continuation",
+        continuation_wakes=1,
+        reason="subagent_completion_wake",
+        metadata={"signal_id": str(signal_id), **(metadata or {})},
+    )
+    service = RuntimeBudgetService()
+    await service.reserve(reservation)
+    return service, reservation
+
+
+async def _settle_continuation_wake_budget(
+    reservation_pair: tuple[RuntimeBudgetService, RuntimeBudgetReservation] | None,
+    *,
+    actual_wakes: int,
+    reason: str,
+) -> None:
+    if reservation_pair is None:
+        return
+    service, reservation = reservation_pair
+    try:
+        await service.settle(
+            RuntimeBudgetSettlement(
+                budget_run_id=reservation.budget_run_id,
+                reservation_key=reservation.reservation_key,
+                actual_continuation_wakes=actual_wakes,
+                reason=reason,
+                metadata=reservation.metadata,
+            )
+        )
+    except Exception as exc:
+        logger.warning("[SubagentWake] failed to settle continuation wake budget reservation: %s", exc)
+
+
+async def _trip_child_failure_breaker_if_needed(
+    *,
+    tenant_id: uuid.UUID,
+    budget_run_id: uuid.UUID,
+    session_factory: Any = None,
+) -> str | None:
+    async with tenant_scoped_session(str(tenant_id), session_factory=session_factory) as session:
+        rows = (
+            await session.execute(
+                select(RuntimeTask.status).where(
+                    RuntimeTask.budget_run_id == budget_run_id,
+                    RuntimeTask.task_type == "subagent",
+                    RuntimeTask.status.in_(_CHILD_TERMINAL_STATUSES),
+                )
+            )
+        ).all()
+    statuses = [str(row[0]) for row in rows]
+    if not statuses:
+        return None
+    total = len(statuses)
+    needs_reconciliation = statuses.count("needs_reconciliation")
+    failed = sum(1 for status in statuses if status in _BREAKER_FAILED_STATUSES)
+    failure_ratio = failed / total if total else 0
+    reason: str | None = None
+    if needs_reconciliation >= _MAX_NEEDS_RECONCILIATION_BEFORE_STOP:
+        reason = f"runtime_child_needs_reconciliation_breaker:{needs_reconciliation}"
+    elif failed >= _MAX_FAILURES_BEFORE_STOP and total >= _MIN_CHILDREN_FOR_FAILURE_RATIO and failure_ratio >= _MAX_CHILD_FAILURE_RATIO:
+        reason = f"runtime_child_failure_ratio_breaker:{failed}/{total}"
+    if reason is None:
+        return None
+    service_kwargs = {"session_factory": session_factory} if session_factory is not None else {}
+    stopped = await RuntimeBudgetService(**service_kwargs).hard_stop_run(
+        tenant_id=tenant_id,
+        budget_run_id=budget_run_id,
+        reason=reason,
+        actor="subagent_wake_consumer",
+    )
+    return reason if stopped is not None else None
 
 
 def _parent_session_id_from_wake_thread(thread_id: str | None) -> uuid.UUID | None:
@@ -110,6 +220,7 @@ async def drain_subagent_completion_wakes(
                 row.from_agent_id,
                 row.thread_id,
                 row.content,
+                dict(getattr(row, "metadata_json", None) or {}),
             )
             for row in rows
         ]
@@ -117,7 +228,7 @@ async def drain_subagent_completion_wakes(
     results: list[SubagentWakeResult] = []
     woken_parents: set[uuid.UUID] = set()  # per-tick per-parent dedup (one wake reads all signals)
     woken_count = 0
-    for signal_id, tenant_id, parent_value, from_agent_id, thread_id, content in candidates:
+    for signal_id, tenant_id, parent_value, from_agent_id, thread_id, content, metadata in candidates:
         try:
             parent_agent_id = uuid.UUID(str(parent_value))
         except (TypeError, ValueError):
@@ -140,6 +251,51 @@ async def drain_subagent_completion_wakes(
         ):
             continue
 
+        budget_run_id = _uuid_or_none(metadata.get("budget_run_id"))
+        if budget_run_id is not None:
+            breaker_reason = await _trip_child_failure_breaker_if_needed(
+                tenant_id=tenant_id,
+                budget_run_id=budget_run_id,
+                session_factory=session_factory,
+            )
+            if breaker_reason is not None:
+                await _consume_completion_signal(
+                    tenant_id=tenant_id,
+                    signal_id=signal_id,
+                    parent_agent_id=parent_agent_id,
+                    session_factory=session_factory,
+                )
+                results.append(
+                    SubagentWakeResult(
+                        tenant_id=tenant_id,
+                        parent_agent_id=parent_agent_id,
+                        signal_id=signal_id,
+                        status="breaker",
+                        detail=breaker_reason,
+                    )
+                )
+                continue
+
+        try:
+            wake_budget = await _reserve_continuation_wake_budget(signal_id=signal_id, metadata=metadata)
+        except RuntimeBudgetDenied as exc:
+            await _consume_completion_signal(
+                tenant_id=tenant_id,
+                signal_id=signal_id,
+                parent_agent_id=parent_agent_id,
+                session_factory=session_factory,
+            )
+            results.append(
+                SubagentWakeResult(
+                    tenant_id=tenant_id,
+                    parent_agent_id=parent_agent_id,
+                    signal_id=signal_id,
+                    status="denied",
+                    detail=str(exc)[:300],
+                )
+            )
+            continue
+
         consumed = await _consume_completion_signal(
             tenant_id=tenant_id,
             signal_id=signal_id,
@@ -147,6 +303,11 @@ async def drain_subagent_completion_wakes(
             session_factory=session_factory,
         )
         if consumed is None:
+            await _settle_continuation_wake_budget(
+                wake_budget,
+                actual_wakes=0,
+                reason="subagent_completion_wake_already_consumed",
+            )
             continue
 
         # A wake is committed for this parent: count it toward both guards even
@@ -162,9 +323,15 @@ async def drain_subagent_completion_wakes(
             from_agent_id=consumed["from_agent_id"],
             thread_id=consumed["thread_id"],
             content=consumed["content"],
+            metadata=consumed["metadata"],
         )
         try:
             await invoke_parent(request)
+            await _settle_continuation_wake_budget(
+                wake_budget,
+                actual_wakes=1,
+                reason="subagent_completion_wake_completed",
+            )
             results.append(
                 SubagentWakeResult(
                     tenant_id=tenant_id,
@@ -175,6 +342,11 @@ async def drain_subagent_completion_wakes(
             )
         except Exception as exc:
             logger.error("[SubagentWake] parent wake failed for signal %s: %s", signal_id, exc, exc_info=True)
+            await _settle_continuation_wake_budget(
+                wake_budget,
+                actual_wakes=1,
+                reason="subagent_completion_wake_failed",
+            )
             results.append(
                 SubagentWakeResult(
                     tenant_id=tenant_id,
@@ -224,7 +396,7 @@ async def _consume_completion_signal(
                     "  WHERE tenant_id = :tenant AND id = :signal_id "
                     "    AND to_agent_id = :parent_agent_id AND signal_type = :signal_type "
                     "  ORDER BY created_at LIMIT 1"
-                    ") RETURNING id, from_agent_id, thread_id, content"
+                    ") RETURNING id, from_agent_id, thread_id, content, metadata"
                 ),
                 {
                     "tenant": tenant_id,
@@ -236,11 +408,13 @@ async def _consume_completion_signal(
         ).first()
     if row is None:
         return None
+    row_mapping = row._mapping
     return {
-        "signal_id": row.id,
-        "from_agent_id": row.from_agent_id,
-        "thread_id": row.thread_id,
-        "content": row.content,
+        "signal_id": row_mapping["id"],
+        "from_agent_id": row_mapping["from_agent_id"],
+        "thread_id": row_mapping["thread_id"],
+        "content": row_mapping["content"],
+        "metadata": dict(row_mapping["metadata"] or {}),
     }
 
 
@@ -323,6 +497,7 @@ def build_production_parent_wake_invoker() -> ParentWakeInvoker:
                     "from_agent_id": request.from_agent_id,
                     "thread_id": request.thread_id,
                     "parent_agent_id": str(request.parent_agent_id),
+                    **(request.metadata or {}),
                 },
             )
 

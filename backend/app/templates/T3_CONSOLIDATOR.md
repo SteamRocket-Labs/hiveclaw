@@ -20,12 +20,14 @@ entries into a smaller, stronger T3 semantic wiki.
 - Produce `consolidation_pitch.md` first with `submit_t3_consolidation_pitch`.
 - Produce `revised_patch.md` with `submit_t3_revised_patch` only after the pitch is ready and any Memory Gate feedback has been addressed.
 - A final Memory Gate review must be submitted after the latest `revised_patch.md`; an older review cannot authorize a newer patch.
-- Use only:
-  - `memory/t3/episodes.md`
-  - `memory/t3/user.md`
-  - `memory/t3/worker.md`
-  - `memory/t3/capabilities.md`
-- Use XML blocks inside Markdown.
+- Use only accepted two-plane targets:
+  - Profile plane: `memory/self/self.md`, `memory/profiles/owner.md`,
+    `memory/profiles/collaborators.md`, `memory/profiles/domain.md`
+  - Knowledge plane: `memory/knowledge/<slug>.md`,
+    `memory/milestones/<slug>.md`
+- Use XML blocks for the patch envelope, but write target content in the format
+  required by each plane: profile entries are `###` Markdown entries with
+  `<!-- id: ... -->`; knowledge/milestone pages are whole Markdown pages.
 - Prefer convergence over proliferation.
 - Treat dedup as semantic consolidation, not binary rejection.
 - preserve unique deltas when two paths overlap.
@@ -45,9 +47,10 @@ Use these decision names exactly:
 - `reject`
 
 For `merge_required`, explain the overlap and the unique deltas to preserve.
-For pure reinforcement of an existing block, use `reinforced` in the pitch,
-`consolidation_mode=reinforce` in `target_view_labels`, and a `reinforce_block`
-operation in `proposed_changes`.
+For pure reinforcement of an existing source, use `reinforced` in the pitch,
+`consolidation_mode=reinforce` in `target_view_labels`, and either no content
+change or an `upsert_entry` / `upsert_page` that preserves the existing claim
+while adding evidence. Platform Gate marks the source package `reinforced`.
 
 ## Redlines
 
@@ -80,6 +83,19 @@ operation in `proposed_changes`.
 - `<proposed_changes>`
 - `<evidence>`
 
-All accepted block bodies must be complete LLM-authored XML in `block_content` CDATA.
+`proposed_changes` supports these operations:
+
+- `<upsert_entry target="memory/self/self.md|memory/profiles/*.md" entry_id="..." section="...">`
+  with a complete `entry_content` block beginning with `###` and carrying
+  `<!-- id: ... -->`.
+- `<retire_entry target="memory/self/self.md|memory/profiles/*.md" entry_id="..." reason="..."/>`
+  to mark profile entries retired; convergence later removes retired entries
+  through a reviewed full-file rewrite.
+- `<rewrite_file target="memory/self/self.md|memory/profiles/*.md" convergence_note="...">`
+  with complete `file_content` for profile-plane convergence.
+- `<upsert_page target="memory/knowledge/<slug>.md|memory/milestones/<slug>.md">`
+  with complete `page_content`. New knowledge pages must include at least one
+  `## Relations` edge; forward references count.
+
 Allowed `target_view_labels.consolidation_mode` values are:
 `create`, `merge`, `supersede`, `reinforce`, `contradict`, `retract`, `noop`.

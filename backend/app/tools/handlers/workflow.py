@@ -364,6 +364,7 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
             definition_source="dynamic_workflow" if proposal_id or candidate_id else "ephemeral",
             run_metadata=run_metadata,
             enqueue_only=True,
+            budget_run_id=request.context.budget_run_id,
         )
     except (WorkflowCompileError, WorkflowAdmissionError, LookupError) as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)

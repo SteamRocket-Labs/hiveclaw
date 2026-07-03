@@ -213,6 +213,156 @@ async def test_delegate_to_agent_async_passes_tool_profile(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delegate_to_agent_async_threads_runtime_budget_to_cloud_delegation(monkeypatch):
+    from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
+
+    from_agent_id = uuid4()
+    budget_run_id = uuid4()
+    source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
+    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
+    target_model = SimpleNamespace(
+        provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+    )
+    captured = {}
+
+    async def fake_resolve(_from_agent_id, _agent_name, **_kwargs):
+        return source_agent, target, target_model, None
+
+    async def fake_delegate_async(**kwargs):
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(task_id="task-1", trace_id="trace-1", target_name="Target Agent")
+
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging._resolve_target_agent_runtime", fake_resolve)
+    monkeypatch.setattr("app.agents.orchestrator.delegate_async", fake_delegate_async)
+
+    result = await _delegate_to_agent_async(
+        from_agent_id,
+        {
+            "agent_name": "Target Agent",
+            "message": "search memory and summarize the result",
+            "_budget_run_id": str(budget_run_id),
+        },
+    )
+
+    payload = json.loads(result)
+    assert payload["task_id"] == "task-1"
+    assert captured["kwargs"]["budget_run_id"] == budget_run_id
+
+
+@pytest.mark.asyncio
+async def test_delegate_async_reserves_budget_before_creating_runtime_task(monkeypatch):
+    from app.agents import orchestrator
+    from app.agents.orchestrator import delegate_async
+
+    captured: dict = {}
+
+    class FakeBudgetService:
+        async def reserve(self, reservation):
+            captured["reservation"] = reservation
+            return object()
+
+    async def fake_create_runtime_task_record(**kwargs):
+        captured["create"] = kwargs
+        return kwargs["task_id"]
+
+    async def fake_acquire_lease(**_kwargs):
+        return SimpleNamespace(acquired=True, lease=SimpleNamespace(id="lease-1"))
+
+    async def fake_send_signal(**_kwargs):
+        return SimpleNamespace(id="signal-1", thread_id="trace-1")
+
+    class FakeGateway:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        acquire_lease = staticmethod(fake_acquire_lease)
+        send_signal = staticmethod(fake_send_signal)
+
+    def fake_gateway_scope(*_args, **_kwargs):
+        return FakeGateway()
+
+    monkeypatch.setattr(orchestrator, "create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr(orchestrator, "gateway_scope", fake_gateway_scope)
+
+    budget_run_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="BudgetedWorker", role_description="")
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+
+    handle = await delegate_async(
+        target=target,
+        target_model=model,
+        conversation_messages=[{"role": "user", "content": "do delegated work"}],
+        owner_id=uuid4(),
+        session_id="delegation-session",
+        parent_agent_id=uuid4(),
+        budget_run_id=budget_run_id,
+        budget_service=FakeBudgetService(),
+    )
+
+    reservation = captured["reservation"]
+    assert reservation.budget_run_id == budget_run_id
+    assert reservation.reservation_key == f"delegation:{handle.task_id}:start"
+    assert reservation.delegations == 1
+    assert reservation.background_tasks == 1
+    assert reservation.tokens >= 50_000
+    assert reservation.cache_miss_tokens == reservation.tokens
+    assert captured["create"]["budget_run_id"] == budget_run_id
+    assert captured["create"]["budget_reservation_key"] == reservation.reservation_key
+    assert captured["create"]["budget_admission_status"] == "reserved"
+
+
+@pytest.mark.asyncio
+async def test_local_agent_delegation_releases_budget_reservation_when_enqueue_fails(monkeypatch):
+    from app.services import local_agent_channel_service
+    from app.services.agent_tool_domains import messaging
+    from app.services.agent_tool_domains.messaging import _delegate_to_local_agent_channel
+
+    source_agent = SimpleNamespace(id=uuid4(), name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
+    target_agent = SimpleNamespace(id=uuid4(), name="Target Agent", tenant_id=source_agent.tenant_id)
+    budget_run_id = uuid4()
+    captured: dict[str, list] = {"reserve": [], "settle": []}
+
+    class FakeBudgetService:
+        async def reserve(self, reservation):
+            captured["reserve"].append(reservation)
+
+        async def settle(self, settlement):
+            captured["settle"].append(settlement)
+
+    class FakeSession:
+        async def __aenter__(self):
+            return SimpleNamespace()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def fail_create_channel_session(*_args, **_kwargs):
+        raise RuntimeError("local channel unavailable")
+
+    monkeypatch.setattr("app.services.runtime_budget_service.RuntimeBudgetService", FakeBudgetService)
+    monkeypatch.setattr(messaging, "tenant_scoped_session", lambda *_args, **_kwargs: FakeSession())
+    monkeypatch.setattr(local_agent_channel_service, "create_channel_session", fail_create_channel_session)
+
+    with pytest.raises(RuntimeError, match="local channel unavailable"):
+        await _delegate_to_local_agent_channel(
+            source_agent=source_agent,
+            target_agent=target_agent,
+            message_text="Please work from the local machine.",
+            args={},
+            budget_run_id=budget_run_id,
+        )
+
+    assert len(captured["reserve"]) == 1
+    assert len(captured["settle"]) == 1
+    assert captured["settle"][0].budget_run_id == budget_run_id
+    assert captured["settle"][0].reservation_key == captured["reserve"][0].reservation_key
+    assert captured["settle"][0].reason == "local_agent_delegation_enqueue_failed"
+
+
+@pytest.mark.asyncio
 async def test_delegate_to_agent_async_threads_cross_workspace_target_artifacts(monkeypatch):
     from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Callable
+from typing import Any, Callable
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -106,10 +106,12 @@ class CoordinationRepository:
         content: str,
         signal_type: str,
         thread_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Signal:
         new_id = uuid.uuid4()
         created_at = self._now()
         thread = thread_id or str(uuid.uuid4())
+        metadata_payload = dict(metadata or {})
         row = CoordinationSignal(
             id=new_id,
             tenant_id=self._tenant_id,
@@ -119,6 +121,7 @@ class CoordinationRepository:
             signal_type=signal_type,
             thread_id=thread,
             created_at=created_at,
+            metadata_json=metadata_payload,
         )
         self._session.add(row)
         await self._session.flush()
@@ -130,6 +133,7 @@ class CoordinationRepository:
             signal_type=signal_type,
             thread_id=thread,
             created_at=created_at,
+            metadata=metadata_payload,
         )
 
     async def read_signals(self, agent_id: str, *, thread_id: str | None = None) -> list[Signal]:
@@ -151,6 +155,7 @@ class CoordinationRepository:
                 signal_type=row.signal_type,
                 thread_id=row.thread_id,
                 created_at=row.created_at,
+                metadata=dict(getattr(row, "metadata_json", None) or {}),
             )
             for row in rows
         ]

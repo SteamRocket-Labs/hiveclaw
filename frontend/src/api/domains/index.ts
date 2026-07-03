@@ -24,3 +24,4 @@ export { memoryApi } from './memory';
 export { officeApi } from './office';
 export { localBridgeApi } from './localBridge';
 export { ccParityApi } from './ccParity';
+export { runtimeBudgetApi } from './runtimeBudgets';

@@ -1,5 +1,7 @@
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
 import type { AgentCapabilityInstall, AgentChannelCapability } from '../../api/domains/agents';
+import { runtimeBudgetApi } from '../../api/domains/runtimeBudgets';
 import './AgentStatusSection.css';
 
 type AgentStatusSectionProps = {
@@ -45,6 +47,15 @@ export default function AgentStatusSection({
   const installedCount = capabilityInstalls.filter((item) => item.status === 'installed').length;
   const pendingCount = capabilityInstalls.filter((item) => item.status === 'pending').length;
   const failedItems = capabilityInstalls.filter((item) => item.status === 'failed');
+  const runtimeBudgetQuery = useQuery({
+    queryKey: ['agent-runtime-budget-runs', agent.id],
+    queryFn: () => runtimeBudgetApi.listRuns({ agentId: agent.id, limit: 5 }),
+    enabled: !!agent.id,
+    staleTime: 30_000,
+  });
+  const runtimeRuns = runtimeBudgetQuery.data || [];
+  const protectedRun = runtimeRuns.find((run) => ['exhausted', 'hard_stopped', 'expired', 'cancelled'].includes(run.status));
+  const latestRun = protectedRun || runtimeRuns[0];
   const renderCapabilityValue = (value: boolean | string) => {
     if (value === true) return t('agent.status.capabilitySupported', 'Supported');
     if (value === false) return t('agent.status.capabilityUnsupported', 'Unsupported');
@@ -121,6 +132,30 @@ export default function AgentStatusSection({
             </div>
           </>
         )}
+      </div>
+
+      <div className={`card agent-status-runtime-card ${protectedRun ? 'is-warning' : 'is-healthy'}`}>
+        <div>
+          <h3 className="agent-status-card-title">{t('agent.status.runtimeProtection', 'Runtime Protection')}</h3>
+          <div className="agent-status-runtime-main">
+            {latestRun
+              ? latestRun.user_status
+              : t('agent.status.runtimeHealthy', 'No protected runs')}
+          </div>
+          <div className="agent-status-runtime-reason">
+            {latestRun
+              ? latestRun.user_reason
+              : t('agent.status.runtimeHealthyDesc', 'This employee has no recent run stopped by the platform guard.')}
+          </div>
+          {latestRun && (
+            <div className="agent-status-runtime-next">
+              {t('agent.status.nextAction', 'Next action')}: {latestRun.user_next_action}
+            </div>
+          )}
+        </div>
+        <span className={`badge ${protectedRun ? 'badge-warning' : 'badge-success'}`}>
+          {protectedRun ? t('agent.status.needsAttention', 'Needs attention') : t('agent.status.ok', 'OK')}
+        </span>
       </div>
 
       <div className="agent-status-two-col">

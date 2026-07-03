@@ -52,6 +52,26 @@ class TestMemorySectionProperties:
         assert "TURN_STOP" in out
         assert "SESSION_CLOSE" in out
 
+    def test_t3_is_described_as_two_plane_layout(self) -> None:
+        """Runtime guidance must not teach the retired flat-T3 four-file layout."""
+        out = build_memory_section()
+        for target in (
+            "memory/self/self.md",
+            "memory/profiles/owner.md",
+            "memory/profiles/collaborators.md",
+            "memory/profiles/domain.md",
+            "memory/knowledge/<slug>.md",
+            "memory/milestones/<slug>.md",
+        ):
+            assert target in out
+        for retired in (
+            "memory/t3/episodes.md",
+            "memory/t3/user.md",
+            "memory/t3/worker.md",
+            "memory/t3/capabilities.md",
+        ):
+            assert retired not in out
+
     def test_trusting_recall_requires_file_claim_revalidation(self) -> None:
         out = build_memory_section()
         assert "TRUSTING_RECALL" in out

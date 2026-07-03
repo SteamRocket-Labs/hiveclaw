@@ -44,12 +44,19 @@ from app.services.runtime_task_service import (
     merge_restart_replay_journal,
     update_runtime_task_record,
 )
+from app.services.runtime_budget_service import (
+    RuntimeBudgetReservation,
+    RuntimeBudgetService,
+    RuntimeBudgetSettlement,
+    estimate_reservation_tokens,
+)
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 SUBAGENT_RUN_TASK_TYPE = "subagent"
 SUBAGENT_RESTART_REPLAY_SAFE_TYPES = frozenset({SUBAGENT_TYPE_EXPLORER, SUBAGENT_TYPE_CRITIC})
 _CHILD_TOOL_TERMINAL_STATUSES = frozenset({"done", "completed", "failed", "error", "cancelled", "timed_out"})
 _DEFAULT_SUBAGENT_RESUME_BUDGET_CHARS = 240_000
+_DEFAULT_SUBAGENT_START_TOKEN_RESERVATION = 50_000
 _SUBAGENT_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 _PENDING_SUBAGENT_CANCELS: set[str] = set()
 logger = logging.getLogger(__name__)
@@ -140,6 +147,13 @@ def _uuid_or_none(value: uuid.UUID | str | None) -> uuid.UUID | None:
         return uuid.UUID(text)
     except ValueError:
         return None
+
+
+def _estimate_prompt_tokens_from_text(value: str | None) -> int:
+    text = str(value or "")
+    if not text:
+        return 0
+    return max(1, (len(text) + 3) // 4)
 
 
 def _build_subagent_session_contract(
@@ -252,10 +266,40 @@ async def start_subagent_run(
     definition_scope: str | None = None,
     ledger_todo_id: str | None = None,
     context_window_tokens: int | None = None,
+    budget_run_id: uuid.UUID | str | None = None,
+    budget_service: RuntimeBudgetService | None = None,
 ) -> SubagentRunStart:
     """Create the durable queued record for a background subagent. Returns
     the run id and child session id the parent can use for continuation."""
     run_id = uuid.uuid4().hex
+    budget_uuid = _uuid_or_none(budget_run_id)
+    budget_reservation_key: str | None = None
+    reservation_service = budget_service or (RuntimeBudgetService() if budget_uuid is not None else None)
+    if budget_uuid is not None and reservation_service is not None:
+        estimated_tokens = estimate_reservation_tokens(
+            default_tokens=_DEFAULT_SUBAGENT_START_TOKEN_RESERVATION,
+            prompt_tokens=_estimate_prompt_tokens_from_text(task),
+        )
+        budget_reservation_key = f"subagent:{run_id}:start"
+        await reservation_service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=budget_uuid,
+                reservation_key=budget_reservation_key,
+                tokens=estimated_tokens,
+                cache_miss_tokens=estimated_tokens,
+                subagents=1,
+                background_tasks=1,
+                reason="subagent_start",
+                runtime_task_id=uuid.UUID(run_id),
+                metadata={
+                    "work_type": SUBAGENT_RUN_TASK_TYPE,
+                    "subagent_name": spec_name,
+                    "subagent_type": spec_type,
+                    "parent_session_id": parent_session_id,
+                },
+            )
+        )
+
     child_session_id = None
     if parent_user_id is not None:
         child_session_id = await create_subagent_child_session(
@@ -294,6 +338,9 @@ async def start_subagent_run(
             session_id=parent_session_id,
         ),
     }
+    if budget_uuid is not None:
+        metadata["budget_run_id"] = str(budget_uuid)
+        metadata["budget_reservation_key"] = budget_reservation_key
     if context_window_tokens is not None:
         metadata["context_window_tokens"] = int(context_window_tokens)
     snapshot_dict: dict[str, Any] | None = None
@@ -323,18 +370,33 @@ async def start_subagent_run(
             session_id=parent_session_id,
         ),
     )
-    persisted_run_id = await create_runtime_task_record(
-        task_id=run_id,
-        task_type=SUBAGENT_RUN_TASK_TYPE,
-        status="pending",
-        parent_agent_id=parent_agent_id,
-        child_agent_name=spec_name,
-        prompt=task,
-        trace_id=trace_id,
-        parent_session_id=parent_session_id,
-        child_session_id=child_session_id,
-        metadata_json=metadata,
-    )
+    try:
+        persisted_run_id = await create_runtime_task_record(
+            task_id=run_id,
+            task_type=SUBAGENT_RUN_TASK_TYPE,
+            status="pending",
+            parent_agent_id=parent_agent_id,
+            child_agent_name=spec_name,
+            prompt=task,
+            trace_id=trace_id,
+            parent_session_id=parent_session_id,
+            child_session_id=child_session_id,
+            metadata_json=metadata,
+            budget_run_id=budget_uuid,
+            budget_reservation_key=budget_reservation_key,
+            budget_admission_status="reserved" if budget_uuid is not None else None,
+        )
+    except Exception:
+        if budget_uuid is not None and budget_reservation_key and reservation_service is not None:
+            await reservation_service.settle(
+                RuntimeBudgetSettlement(
+                    budget_run_id=budget_uuid,
+                    reservation_key=budget_reservation_key,
+                    reason="subagent_enqueue_failed",
+                    runtime_task_id=uuid.UUID(run_id),
+                )
+            )
+        raise
     try:
         from app.services.runtime_task_worker import notify_runtime_task_worker
 
@@ -374,8 +436,41 @@ def make_run_completer(run_id: str):
             status=status,
             summary=summary,
         )
+        await _settle_subagent_budget(run_id=run_id, result=result)
 
     return _complete
+
+
+async def _settle_subagent_budget(*, run_id: str, result: SubagentResult) -> None:
+    try:
+        record = await get_runtime_task_record(run_id)
+        if record is None:
+            return
+        metadata = dict(record.get("metadata") or {})
+        budget_run_id = _uuid_or_none(record.get("budget_run_id") or metadata.get("budget_run_id"))
+        reservation_key = str(record.get("budget_reservation_key") or metadata.get("budget_reservation_key") or "").strip()
+        if budget_run_id is None or not reservation_key:
+            return
+        tokens = max(0, int(getattr(result, "tokens_used", 0) or 0))
+        await RuntimeBudgetService().settle(
+            RuntimeBudgetSettlement(
+                budget_run_id=budget_run_id,
+                reservation_key=reservation_key,
+                actual_tokens=tokens,
+                actual_cache_miss_tokens=tokens,
+                actual_subagents=1,
+                actual_background_tasks=1,
+                reason="subagent_completed" if result.ok else "subagent_failed",
+                runtime_task_id=uuid.UUID(run_id),
+                metadata={
+                    "subagent_name": result.name,
+                    "subagent_type": result.type,
+                    "status": result.status,
+                },
+            )
+        )
+    except Exception:
+        logger.debug("[Subagent] budget settlement failed for run %s", run_id, exc_info=True)
 
 
 async def update_subagent_child_session_state_for_run(
@@ -404,6 +499,7 @@ async def update_subagent_child_session_state_for_run(
         if session is None:
             return
         metadata = dict(session.transcript_metadata_json or {})
+        budget_run_id = _uuid_or_none(metadata.get("budget_run_id"))
         metadata["session_state"] = status
         metadata["last_run_id"] = run_id
         metadata["last_result_summary"] = summary
@@ -468,16 +564,19 @@ async def update_subagent_child_session_state_for_run(
                 listed_surface="chat",
                 source="subagent",
             )
-            await _wake_parent_session_from_subagent_completion(
-                run_id=run_id,
-                tenant_id=tenant_id,
-                parent_agent_id=parent_agent_uuid,
-                parent_user_id=session.user_id,
-                parent_session_id=parent_session_id,
-                child_session_id=child_session_uuid,
-                status=status,
-                summary=summary,
-            )
+            wake_kwargs = {
+                "run_id": run_id,
+                "tenant_id": tenant_id,
+                "parent_agent_id": parent_agent_uuid,
+                "parent_user_id": session.user_id,
+                "parent_session_id": parent_session_id,
+                "child_session_id": child_session_uuid,
+                "status": status,
+                "summary": summary,
+            }
+            if budget_run_id is not None:
+                wake_kwargs["budget_run_id"] = budget_run_id
+            await _wake_parent_session_from_subagent_completion(**wake_kwargs)
         await db.commit()
 
 
@@ -550,6 +649,7 @@ async def _wake_parent_session_from_subagent_completion(
     child_session_id: uuid.UUID,
     status: str,
     summary: str,
+    budget_run_id: uuid.UUID | str | None = None,
 ) -> None:
     try:
         from app.models.user import User
@@ -583,6 +683,7 @@ async def _wake_parent_session_from_subagent_completion(
                 metadata={
                     "subagent_session_state": status,
                     "parent_agent_id": str(parent_agent_id),
+                    **({"budget_run_id": str(budget_run_id)} if budget_run_id else {}),
                 },
             )
     except Exception as exc:
@@ -1153,6 +1254,7 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
     runtime.parent_session_id = parent_session_id or runtime.parent_session_id or ""
     runtime.subagent_run_id = run_id
     runtime.child_session_id = child_session_id or runtime.child_session_id
+    runtime.budget_run_id = str(record.get("budget_run_id") or metadata.get("budget_run_id") or "") or None
     if isinstance(metadata.get("recovery_metadata"), dict):
         runtime.recovery_metadata = dict(metadata["recovery_metadata"])
     elif child_frame is not None:

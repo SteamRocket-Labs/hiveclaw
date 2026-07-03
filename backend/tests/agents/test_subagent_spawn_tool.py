@@ -881,6 +881,78 @@ async def test_send_agent_session_message_appends_child_mailbox_event(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_send_agent_session_message_budget_denial_does_not_append_mailbox(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+    from app.services.runtime_budget_service import RuntimeBudgetDenied
+
+    class _ScalarResult:
+        def __init__(self, row):
+            self._row = row
+
+        def scalar_one_or_none(self):
+            return self._row
+
+    class _FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(fake_session)
+
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
+    budget_run_id = uuid.uuid4()
+    fake_session = SimpleNamespace(
+        id=child_session_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        parent_session_id=uuid.uuid4(),
+        root_session_id=uuid.uuid4(),
+        visibility_scope="team",
+        listed_surface="parent",
+        transcript_metadata_json={"budget_run_id": str(budget_run_id)},
+    )
+
+    class DenyingBudgetService:
+        async def reserve(self, reservation):
+            assert reservation.budget_run_id == budget_run_id
+            assert reservation.continuation_wakes == 1
+            raise RuntimeBudgetDenied("runtime budget exhausted", budget_run_id=reservation.budget_run_id)
+
+    async def fail_continue_agent_session_from_mailbox(**_kwargs):
+        raise AssertionError("budget-denied send_agent_session_message must not append mailbox")
+
+    monkeypatch.setattr(handler_mod, "tenant_scoped_session", lambda _tenant_id: _FakeDB())
+    monkeypatch.setattr(handler_mod, "RuntimeBudgetService", DenyingBudgetService)
+    monkeypatch.setattr(handler_mod, "continue_agent_session_from_mailbox", fail_continue_agent_session_from_mailbox)
+
+    request = ToolExecutionRequest(
+        tool_name="send_agent_session_message",
+        arguments={"child_session_id": str(child_session_id), "message": "continue"},
+        context=ToolExecutionContext(
+            agent_id=agent_id,
+            user_id=user_id,
+            tenant_id=str(tenant_id),
+            workspace=Path("/tmp"),
+            session_id=str(uuid.uuid4()),
+            budget_run_id=str(budget_run_id),
+        ),
+    )
+
+    out = await handler_mod.send_agent_session_message(request)
+    data = json.loads(out)
+
+    assert data["ok"] is False
+    assert data["error_code"] == "runtime_budget_denied"
+
+
+@pytest.mark.asyncio
 async def test_send_agent_session_message_accepts_a2a_peer_child_session(monkeypatch):
     import app.tools.handlers.subagent as handler_mod
     from app.models.agent import Agent

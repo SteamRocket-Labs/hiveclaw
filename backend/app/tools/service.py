@@ -168,6 +168,7 @@ async def _resolve_runtime_context(
     permission_profile: Any | None = None,
     turn_id: str | None = None,
     runtime_task_id: str | None = None,
+    budget_run_id: str | None = None,
     origin_channel: str | None = None,
     round_state: dict[str, Any] | None = None,
     t0_refs: tuple[str, ...] = (),
@@ -187,6 +188,8 @@ async def _resolve_runtime_context(
         kwargs["turn_id"] = turn_id
     if runtime_task_id is not None and (accepts_kwargs or "runtime_task_id" in params):
         kwargs["runtime_task_id"] = runtime_task_id
+    if budget_run_id is not None and (accepts_kwargs or "budget_run_id" in params):
+        kwargs["budget_run_id"] = budget_run_id
     if origin_channel is not None and (accepts_kwargs or "origin_channel" in params):
         kwargs["origin_channel"] = origin_channel
     if round_state is not None and (accepts_kwargs or "round_state" in params):
@@ -232,6 +235,8 @@ def _inject_runtime_context_arguments(
     enriched = dict(arguments)
     if runtime_context.session_id and not enriched.get("parent_session_id"):
         enriched["parent_session_id"] = runtime_context.session_id
+    if runtime_context.budget_run_id and not enriched.get("_budget_run_id"):
+        enriched["_budget_run_id"] = runtime_context.budget_run_id
 
     profile_payload = _permission_profile_payload(runtime_context.permission_profile)
     if profile_payload and "_permission_profile" not in enriched:
@@ -517,6 +522,7 @@ class ToolRuntimeService:
         permission_profile: Any | None = None,
         turn_id: str | None = None,
         runtime_task_id: str | None = None,
+        budget_run_id: str | None = None,
         origin_channel: str | None = None,
         round_state: dict[str, Any] | None = None,
         t0_refs: tuple[str, ...] = (),
@@ -548,6 +554,7 @@ class ToolRuntimeService:
             permission_profile=permission_profile,
             turn_id=turn_id,
             runtime_task_id=runtime_task_id,
+            budget_run_id=budget_run_id,
             origin_channel=origin_channel,
             round_state=round_state,
             t0_refs=t0_refs,

@@ -50,6 +50,10 @@ def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
         "parent_session_id": task.parent_session_id,
         "child_session_id": task.child_session_id,
         "depth": task.depth,
+        "budget_run_id": str(task.budget_run_id) if task.budget_run_id else None,
+        "budget_reservation_key": task.budget_reservation_key,
+        "budget_admission_status": task.budget_admission_status,
+        "budget_terminal_reason": task.budget_terminal_reason,
         "metadata": task.metadata_json or {},
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "started_at": task.started_at.isoformat() if task.started_at else None,
@@ -334,6 +338,10 @@ async def create_runtime_task_record(
     child_session_id: str | None = None,
     depth: int = 1,
     metadata_json: dict[str, Any] | None = None,
+    budget_run_id: uuid.UUID | None = None,
+    budget_reservation_key: str | None = None,
+    budget_admission_status: str | None = None,
+    budget_terminal_reason: str | None = None,
 ) -> str:
     runtime_task_id = _coerce_task_id(task_id)
     if runtime_task_id is None:
@@ -363,6 +371,10 @@ async def create_runtime_task_record(
                     metadata_json=metadata_json,
                     started_at=started_at,
                     tenant_id=tenant_id,
+                    budget_run_id=budget_run_id,
+                    budget_reservation_key=budget_reservation_key,
+                    budget_admission_status=budget_admission_status,
+                    budget_terminal_reason=budget_terminal_reason,
                 )
             )
             await db.commit()

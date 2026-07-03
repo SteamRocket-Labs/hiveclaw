@@ -504,6 +504,32 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
         created.append(kwargs)
         return "runtime-task-1"
 
+    tenant_id = uuid4()
+    budget_run_id = uuid4()
+    budget_payloads = []
+
+    class FakeRuntimeBudgetService:
+        async def resolve_policy(self, lookup):
+            return SimpleNamespace(
+                id=uuid4(),
+                enforcement_mode="enforce",
+                fail_mode="fail_closed",
+                max_tokens=1_000_000,
+                max_cache_miss_tokens=250_000,
+                max_subagents=32,
+                max_delegations=32,
+                max_background_tasks=32,
+                max_continuation_wakes=64,
+                max_provider_calls=128,
+                default_child_token_reservation=50_000,
+                default_llm_call_token_reservation=50_000,
+                policy_json={"test": True},
+            )
+
+        async def create_run(self, payload):
+            budget_payloads.append(payload)
+            return SimpleNamespace(id=budget_run_id)
+
     async def fake_acquire_trigger_fire_lease(_trigger_id, _event_key):
         return True
 
@@ -523,9 +549,10 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: fake_async_session())
 
     async def _fake_resolve_tenant(_agent_id, *_a, **_k):
-        return None
+        return tenant_id
 
     monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _fake_resolve_tenant)
+    monkeypatch.setattr(trigger_daemon, "RuntimeBudgetService", FakeRuntimeBudgetService, raising=False)
     monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
     monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire_trigger_fire_lease)
     monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
@@ -544,6 +571,13 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     assert created[0]["metadata_json"]["resumable_trigger"] is True
     assert created[0]["metadata_json"]["restart_replay_contract"]["task_type"] == "trigger"
     assert created[0]["metadata_json"]["restart_replay_journal"][0]["phase"] == "spawn_intent_recorded"
+    assert created[0]["budget_run_id"] == budget_run_id
+    assert created[0]["budget_admission_status"] == "root"
+    assert created[0]["metadata_json"]["budget_run_id"] == str(budget_run_id)
+    assert budget_payloads[0].tenant_id == tenant_id
+    assert budget_payloads[0].root_run_kind == "trigger_fire"
+    assert budget_payloads[0].root_runtime_task_id.hex == created[0]["task_id"]
+    assert budget_payloads[0].root_agent_id == agent_id
     assert scheduled_runtime_ids == ["runtime-task-1"]
 
 

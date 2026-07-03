@@ -15,6 +15,7 @@ from app.database import tenant_scoped_session
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.services import subagent_run_service as svc
+from app.services.runtime_budget_service import RuntimeBudgetDenied
 
 
 @pytest.mark.asyncio
@@ -62,6 +63,68 @@ async def test_start_subagent_run_queues_subagent_task_and_wakes_worker(monkeypa
     )
     assert "restart_resume_blocker" not in captured["metadata_json"]
     assert captured["notify"] == {"reason": "subagent_created", "runtime_task_id": started.run_id}
+
+
+@pytest.mark.asyncio
+async def test_start_subagent_run_reserves_runtime_budget_before_creating_task(monkeypatch):
+    captured: dict = {}
+
+    async def _fake_create(**kwargs):
+        captured["create"] = kwargs
+        return kwargs["task_id"]
+
+    class FakeBudgetService:
+        async def reserve(self, reservation):
+            captured["reservation"] = reservation
+            return object()
+
+    monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    parent = uuid.uuid4()
+    budget_run_id = uuid.uuid4()
+
+    started = await svc.start_subagent_run(
+        parent_agent_id=parent,
+        spec_name="scout",
+        spec_type=SUBAGENT_TYPE_WORKER,
+        task="do x",
+        context_window_tokens=1_000_000,
+        budget_run_id=budget_run_id,
+        budget_service=FakeBudgetService(),
+    )
+
+    reservation = captured["reservation"]
+    assert reservation.budget_run_id == budget_run_id
+    assert reservation.reservation_key == f"subagent:{started.run_id}:start"
+    assert reservation.subagents == 1
+    assert reservation.background_tasks == 1
+    assert reservation.tokens >= 50_000
+    assert reservation.cache_miss_tokens == reservation.tokens
+    assert captured["create"]["budget_run_id"] == budget_run_id
+    assert captured["create"]["budget_reservation_key"] == reservation.reservation_key
+    assert captured["create"]["budget_admission_status"] == "reserved"
+    assert captured["create"]["metadata_json"]["budget_run_id"] == str(budget_run_id)
+
+
+@pytest.mark.asyncio
+async def test_start_subagent_run_budget_denial_does_not_create_runtime_task(monkeypatch):
+    async def _fake_create(**_kwargs):  # pragma: no cover - denied admission must stop before enqueue
+        raise AssertionError("RuntimeTask must not be created after budget denial")
+
+    class DenyingBudgetService:
+        async def reserve(self, reservation):
+            raise RuntimeBudgetDenied("runtime budget exhausted", budget_run_id=reservation.budget_run_id)
+
+    monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+
+    with pytest.raises(RuntimeBudgetDenied):
+        await svc.start_subagent_run(
+            parent_agent_id=uuid.uuid4(),
+            spec_name="scout",
+            spec_type=SUBAGENT_TYPE_WORKER,
+            task="do x",
+            budget_run_id=uuid.uuid4(),
+            budget_service=DenyingBudgetService(),
+        )
 
 
 @pytest.mark.asyncio

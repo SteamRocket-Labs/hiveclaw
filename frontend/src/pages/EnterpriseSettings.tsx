@@ -19,6 +19,7 @@ import WorkspaceInvitesSection from './workspace/WorkspaceInvitesSection';
 import WorkspaceLlmSection from './workspace/WorkspaceLlmSection';
 import WorkspaceOrgSection from './workspace/WorkspaceOrgSection';
 import WorkspaceQuotasSection from './workspace/WorkspaceQuotasSection';
+import WorkspaceRuntimeBudgetsSection from './workspace/WorkspaceRuntimeBudgetsSection';
 import WorkspaceSkillsSection from './workspace/WorkspaceSkillsSection';
 import WorkspaceSubagentsSection from './workspace/WorkspaceSubagentsSection';
 import WorkspaceHrAgentSection from './workspace/WorkspaceHrAgentSection';
@@ -56,6 +57,7 @@ export type EnterpriseSettingsTab = WorkspaceSettingsSectionTab;
 function enterpriseTabPath(tab: EnterpriseSettingsTab) {
     if (tab === 'invites') return 'invitations';
     if (tab === 'digital_employees') return 'digital-employees';
+    if (tab === 'runtime_budgets') return 'runtime-budgets';
     return tab;
 }
 
@@ -669,7 +671,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                         {([
                             { tabs: ['info', 'org', 'users', 'invites'] as const },
                             { tabs: ['llm', 'tools', 'skills', 'subagents', 'digital_employees', 'hr'] as const },
-                            { tabs: ['quotas', 'approvals', 'audit'] as const },
+                            { tabs: ['runtime_budgets', 'quotas', 'approvals', 'audit'] as const },
                         ]).flatMap((group, gi) => [
                             ...(gi > 0 ? [<div key={`sep-${gi}`} className="tab-separator" />] : []),
                             ...group.tabs.map(tab => (
@@ -732,6 +734,9 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                         onDeleteCompany={handleDeleteCompany}
                     />
                 )}
+
+                {/* ── Quotas Tab ── */}
+                {activeTab === 'runtime_budgets' && <WorkspaceRuntimeBudgetsSection />}
 
                 {/* ── Quotas Tab ── */}
                 {activeTab === 'quotas' && <WorkspaceQuotasSection />}

@@ -50,6 +50,21 @@ def test_runtime_task_claim_statement_uses_skip_locked_and_queue_order():
     assert "runtime_tasks.created_at ASC" in compiled
 
 
+def test_runtime_task_claim_statement_excludes_stopped_budget_runs():
+    from app.services.runtime_task_claim_service import build_runtime_task_claim_statement
+
+    stmt = build_runtime_task_claim_statement(
+        task_types=("subagent", "delegation"),
+        now=datetime(2026, 7, 4, tzinfo=timezone.utc),
+        batch_size=10,
+    )
+
+    compiled = str(stmt.compile(dialect=postgresql.dialect()))
+    assert "runtime_tasks.budget_run_id IS NULL" in compiled
+    assert "runtime_budget_runs.status = " in compiled
+    assert "EXISTS" in compiled
+
+
 @pytest.mark.asyncio
 async def test_claim_available_marks_tasks_running_with_lease():
     from app.models.runtime_task import RuntimeTask

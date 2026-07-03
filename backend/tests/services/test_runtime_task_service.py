@@ -57,6 +57,15 @@ class _FailingSession:
         self.rollback_calls += 1
 
 
+class _CreateSession(_FailingSession):
+    def __init__(self):
+        super().__init__(fail_on="never")
+        self.commit_calls = 0
+
+    async def commit(self):
+        self.commit_calls += 1
+
+
 class _ListResult:
     def __init__(self, values):
         self._values = values
@@ -131,6 +140,29 @@ async def test_create_runtime_task_record_rolls_back_on_commit_error(monkeypatch
         await create_runtime_task_record(task_id=uuid4().hex)
 
     assert fake_session.rollback_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_create_runtime_task_record_persists_runtime_budget_metadata(monkeypatch):
+    from app.services.runtime_task_service import create_runtime_task_record
+
+    fake_session = _CreateSession()
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=uuid4())
+    budget_run_id = uuid4()
+
+    task_id = await create_runtime_task_record(
+        task_id=uuid4().hex,
+        task_type="subagent",
+        budget_run_id=budget_run_id,
+        budget_reservation_key="subagent:child-1",
+        budget_admission_status="reserved",
+    )
+
+    assert task_id
+    task = fake_session.added[0]
+    assert task.budget_run_id == budget_run_id
+    assert task.budget_reservation_key == "subagent:child-1"
+    assert task.budget_admission_status == "reserved"
 
 
 @pytest.mark.asyncio

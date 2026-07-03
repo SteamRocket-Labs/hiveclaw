@@ -196,6 +196,7 @@ async def start_ephemeral_workflow_for_agent(
     root_session_id: uuid.UUID | str | None = None,
     run_metadata: dict[str, Any] | None = None,
     enqueue_only: bool = False,
+    budget_run_id: uuid.UUID | str | None = None,
 ) -> WorkflowRunHandle:
     """Resolve agent runtime → build governed leaf executor → start the run.
 
@@ -214,6 +215,7 @@ async def start_ephemeral_workflow_for_agent(
         parent_agent_name=getattr(agent, "name", "Agent"),
         role_description=getattr(agent, "role_description", "") or "",
         tenant_id=tenant_id,
+        budget_run_id=str(budget_run_id) if budget_run_id else None,
     )
     service = WorkflowRuntimeService(session_factory=session_factory)
     executor = build_subagent_leaf_executor(ctx, spawn=spawn)
@@ -240,6 +242,7 @@ async def start_ephemeral_workflow_for_agent(
         root_session_id=root_session_id,
         run_metadata=run_metadata,
         enqueue_only=enqueue_only,
+        budget_run_id=budget_run_id,
     )
     if enqueue_only:
         try:

@@ -2798,7 +2798,6 @@ async def _load_runtime_context(
             user=user,
             session=session,
         )
-        await db.commit()
 
         primary_model = None
         fallback_model = None
@@ -2847,6 +2846,7 @@ async def _load_runtime_context(
         )
         history_messages = list(reversed(history_result.scalars().all()))
         history_messages = await _apply_active_projection_to_history(db, session, history_messages)
+        await db.commit()
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 
 

@@ -496,6 +496,107 @@ def _history_msg(
 
 
 @pytest.mark.asyncio
+async def test_load_runtime_context_resolves_model_before_rls_bypass_transaction_commit(monkeypatch):
+    import app.services.model_resolution as model_resolution
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    model_id = uuid4()
+
+    task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        status="pending",
+        started_at=None,
+        metadata_json={"user_id": str(user_id)},
+    )
+    session_row = SimpleNamespace(id=session_id, transcript_metadata_json={})
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        tenant_id=tenant_id,
+        primary_model_id=model_id,
+        fallback_model_id=None,
+        sponsor=None,
+        deleted_at=None,
+        deactivated_at=None,
+    )
+    user = SimpleNamespace(id=user_id)
+    model = SimpleNamespace(id=model_id, provider="minimax", model="minimax-m3", max_input_tokens=200000)
+
+    class _Session:
+        def __init__(self):
+            self.bypass_active = False
+            self.commits = 0
+            self.calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            self.calls += 1
+            if self.calls == 1:
+                return _QueuedScalarResult(task)
+            if self.calls == 2:
+                return _QueuedScalarResult(session_row)
+            if self.calls == 3:
+                return _QueuedScalarResult(agent)
+            if self.calls == 4:
+                return _QueuedScalarResult(user)
+            if self.calls == 5:
+                return _QueuedScalarResult(model if self.bypass_active else None)
+            return _QueuedScalarResult([])
+
+        async def commit(self):
+            self.commits += 1
+            # PostgreSQL SET LOCAL scope is transaction-local; a commit inside
+            # enter_rls_bypass clears BYPASS before any later SELECT.
+            self.bypass_active = False
+
+    class _BypassContext:
+        def __init__(self, db):
+            self.db = db
+
+        async def __aenter__(self):
+            self.db.bypass_active = True
+            return self.db
+
+        async def __aexit__(self, *_args):
+            self.db.bypass_active = False
+            return False
+
+    db = _Session()
+
+    async def noop_materialize(**_kwargs):
+        return None
+
+    async def noop_projection(_db, _session, messages):
+        return messages
+
+    async def no_default_model(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_async_session", lambda: db)
+    monkeypatch.setattr(runtime, "enter_rls_bypass", lambda db, **_kwargs: _BypassContext(db))
+    monkeypatch.setattr(runtime, "_materialize_initial_user_turn_for_worker", noop_materialize)
+    monkeypatch.setattr(runtime, "_apply_active_projection_to_history", noop_projection)
+    monkeypatch.setattr(model_resolution, "resolve_default_model_for_tenant", no_default_model)
+
+    _task, _agent, _user, resolved_model, _fallback, _history, _session = await runtime._load_runtime_context(run_id)
+
+    assert resolved_model is model
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
 async def test_active_compact_projection_replaces_prior_history_and_keeps_later_tail():
     import app.services.web_chat_runtime as runtime
 

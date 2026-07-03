@@ -565,6 +565,8 @@ export function pickFocusedCheckpointIdForScroll(
 }
 
 export type SessionGitLineDensity = 'empty' | 'sparse' | 'regular' | 'scrollable';
+const SESSION_CHECKPOINT_PREVIEW_MAX_CHARS = 22;
+const SESSION_CHECKPOINT_PREVIEW_ELLIPSIS = '...';
 
 export function getSessionGitLineDensity(itemCount: number): SessionGitLineDensity {
   if (itemCount <= 0) return 'empty';
@@ -636,7 +638,8 @@ function checkpointPromptIntent(checkpoint: Record<string, unknown>): string {
 
 export function sessionCheckpointPreview(checkpoint: Record<string, unknown>, index: number): string {
   const intent = checkpointPromptIntent(checkpoint) || `Checkpoint ${index + 1}`;
-  return intent.length > 96 ? `${intent.slice(0, 93).trimEnd()}...` : intent;
+  if (intent.length <= SESSION_CHECKPOINT_PREVIEW_MAX_CHARS) return intent;
+  return `${intent.slice(0, SESSION_CHECKPOINT_PREVIEW_MAX_CHARS - SESSION_CHECKPOINT_PREVIEW_ELLIPSIS.length).trimEnd()}${SESSION_CHECKPOINT_PREVIEW_ELLIPSIS}`;
 }
 
 function branchAnchorId(item: BranchLineageItem): string {

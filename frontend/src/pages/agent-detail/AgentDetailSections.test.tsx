@@ -1234,8 +1234,10 @@ describe('AgentDetail extracted sections', () => {
       content_preview: '我希望创建一个专注于 AI 硬件的产品分析师，持续跟踪 GPU/NPU/TPU 芯片发布。',
     }, 0);
 
-    expect(preview).toBe('我希望创建一个专注于 AI 硬件的产品分析师，持续跟踪 GPU/NPU/TPU 芯片发布。');
+    expect(preview).toBe('我希望创建一个专注于 AI 硬件的产品...');
+    expect(preview.length).toBeLessThanOrEqual(28);
     expect(preview).not.toContain('1782721813033911000');
+    expect(preview).not.toContain('持续跟踪 GPU/NPU/TPU 芯片发布');
 
     expect(sessionCheckpointPreview({
       checkpoint_event_id: '1782721813033911000.11602f20-12fb-4bba-8604-c8efca5d90dc',

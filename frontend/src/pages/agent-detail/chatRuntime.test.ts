@@ -423,6 +423,55 @@ describe('chatRuntime helpers', () => {
     expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
   });
 
+  it('recovers clarification cards from persisted content replacement envelopes', () => {
+    const next = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-inline-clarification',
+      sequence: 14,
+      type: 'tool_result',
+      event_type: 'tool_result',
+      actor_type: 'tool',
+      content: JSON.stringify({
+        name: 'ask_user_question',
+        status: 'done',
+        args: {
+          questions: [{ question: 'Fallback args question?', options: [{ label: 'Args option' }] }],
+        },
+        content_replacement: {
+          inline_chars: 220,
+          inline_content: JSON.stringify({
+            status: 'awaiting_user_clarification',
+            blocking: true,
+            questions: [
+              {
+                header: '方向选择',
+                question: '「创新型金融模式」具体指哪个方向？',
+                options: [],
+                multiSelect: false,
+              },
+            ],
+            next_action: 'END your turn now.',
+          }),
+        },
+      }),
+      metadata: { tool_name: 'ask_user_question' },
+      created_at: '2026-07-03T06:43:41Z',
+    });
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({
+      role: 'tool_call',
+      toolName: 'ask_user_question',
+      toolStatus: 'done',
+      toolResult: '「创新型金融模式」具体指哪个方向？',
+      toolMeta: {
+        kind: 'user_clarification',
+        blocking: true,
+        questions: [{ header: '方向选择', question: '「创新型金融模式」具体指哪个方向？' }],
+      },
+    });
+    expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
+  });
+
   it('preserves runtime step metadata from persisted tool transcript events', () => {
     const next = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
       id: 'evt-tool-step',

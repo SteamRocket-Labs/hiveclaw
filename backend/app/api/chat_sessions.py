@@ -917,6 +917,21 @@ _TRANSCRIPT_METADATA_KEEP_KEYS = {
     "type",
     "url",
 }
+_TRANSCRIPT_INTERACTIVE_TOOL_RESULT_STATUSES = {
+    "awaiting_user_clarification",
+    "dynamic_workflow_proposed",
+    "needs_plan",
+    "plan_mode_entry_requested",
+    "planning_failed",
+}
+_TRANSCRIPT_INTERACTIVE_TOOL_PAYLOAD_KEYS = (
+    "name",
+    "status",
+    "tool_call_id",
+    "step_id",
+    "duration_ms",
+    "visibility",
+)
 
 
 def _json_size_bytes(value: Any) -> int:
@@ -930,6 +945,63 @@ def _truncate_text_for_transcript(value: str, limit: int) -> tuple[str, bool]:
     if len(value) <= limit:
         return value, False
     return f"{value[:limit]}...[truncated]", True
+
+
+def _inline_content_replacement(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    inline_content = value.get("inline_content")
+    return inline_content if isinstance(inline_content, str) and inline_content.strip() else None
+
+
+def _interactive_tool_result_status_allowed(tool_name: str, status: Any) -> bool:
+    if status in _TRANSCRIPT_INTERACTIVE_TOOL_RESULT_STATUSES:
+        return True
+    if status == "preview" and tool_name == "preview_agent_blueprint":
+        return True
+    return status == "success" and tool_name == "create_digital_employee"
+
+
+def _project_interactive_tool_card_content(event: ChatTranscriptEvent, content: str) -> str | None:
+    if getattr(event, "event_type", None) not in {"tool_call", "tool_result"}:
+        return None
+
+    payload = _json_object(content)
+    if not payload:
+        return None
+
+    result_value = payload.get("result")
+    result_payload = _json_object(result_value)
+    if not result_payload:
+        inline_content = _inline_content_replacement(payload.get("content_replacement"))
+        if inline_content:
+            result_value = inline_content
+            result_payload = _json_object(inline_content)
+
+    metadata = getattr(event, "metadata_json", None) or {}
+    metadata_tool_name = metadata.get("tool_name") if isinstance(metadata, dict) else None
+    payload_tool_name = payload.get("name")
+    tool_name = (
+        payload_tool_name
+        if isinstance(payload_tool_name, str) and payload_tool_name
+        else metadata_tool_name if isinstance(metadata_tool_name, str) and metadata_tool_name else ""
+    )
+    if not _interactive_tool_result_status_allowed(tool_name, result_payload.get("status")):
+        return None
+
+    projected: dict[str, Any] = {}
+    for key in _TRANSCRIPT_INTERACTIVE_TOOL_PAYLOAD_KEYS:
+        if key in payload:
+            projected[key] = payload[key]
+    if "name" not in projected:
+        if tool_name:
+            projected["name"] = tool_name
+    projected["result"] = (
+        result_value
+        if isinstance(result_value, str) and result_value.strip()
+        else json.dumps(result_payload, ensure_ascii=False, default=str)
+    )
+    return json.dumps(projected, ensure_ascii=False, default=str)
 
 
 def _compact_transcript_json_value(
@@ -1042,9 +1114,24 @@ def _compact_transcript_metadata(metadata: Any, truncations: list[dict[str, Any]
 def _serialize_transcript_event(event: ChatTranscriptEvent) -> dict:
     truncations: list[dict[str, Any]] = []
     content = event.content or ""
-    content, content_truncated = _truncate_text_for_transcript(content, _TRANSCRIPT_CONTENT_CHAR_LIMIT)
-    if content_truncated:
-        truncations.append({"field": "content", "original_chars": len(event.content or "")})
+    projected_content = (
+        _project_interactive_tool_card_content(event, content)
+        if len(content) > _TRANSCRIPT_CONTENT_CHAR_LIMIT
+        else None
+    )
+    if projected_content is not None:
+        content = projected_content
+        truncations.append(
+            {
+                "field": "content",
+                "projection": "interactive_tool_card",
+                "original_chars": len(event.content or ""),
+            }
+        )
+    else:
+        content, content_truncated = _truncate_text_for_transcript(content, _TRANSCRIPT_CONTENT_CHAR_LIMIT)
+        if content_truncated:
+            truncations.append({"field": "content", "original_chars": len(event.content or "")})
 
     parts: list[Any] = []
     for index, part in enumerate(event.parts_json or []):

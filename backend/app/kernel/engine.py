@@ -272,6 +272,10 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+def _is_terminal_tool_card_signal(exc: BaseException) -> bool:
+    return exc.__class__.__name__ == "_TerminalToolCardSignal"
+
+
 def _hook_event_label(event: Any) -> str:
     return str(getattr(event, "value", event) or "unknown")
 
@@ -4671,6 +4675,8 @@ class AgentKernel:
                                 try:
                                     await _maybe_await(request.on_tool_call(running_payload))
                                 except Exception as _cb_exc:
+                                    if _is_terminal_tool_card_signal(_cb_exc):
+                                        raise
                                     logger.warning("[Kernel] on_tool_call(running) callback failed: %s", _cb_exc)
                                     _callback_failure_count += 1
                                     if _callback_failure_count == 3:
@@ -4825,6 +4831,8 @@ class AgentKernel:
                                 try:
                                     await _maybe_await(request.on_tool_call(done_payload))
                                 except Exception as _cb_exc:
+                                    if _is_terminal_tool_card_signal(_cb_exc):
+                                        raise
                                     logger.warning("[Kernel] on_tool_call(done) callback failed: %s", _cb_exc)
                                     _callback_failure_count += 1
                                     if _callback_failure_count == 3:
@@ -4884,6 +4892,8 @@ class AgentKernel:
                                 try:
                                     await _maybe_await(request.on_tool_call(running_payload))
                                 except Exception as _cb_exc:
+                                    if _is_terminal_tool_card_signal(_cb_exc):
+                                        raise
                                     logger.warning("[Kernel] on_tool_call(running) callback failed: %s", _cb_exc)
                                     _callback_failure_count += 1
                                     if _callback_failure_count == 3:
@@ -5084,6 +5094,8 @@ class AgentKernel:
                                 try:
                                     await _maybe_await(request.on_tool_call(done_payload))
                                 except Exception as _cb_exc:
+                                    if _is_terminal_tool_card_signal(_cb_exc):
+                                        raise
                                     logger.warning("[Kernel] on_tool_call(done) callback failed: %s", _cb_exc)
                                     _callback_failure_count += 1
                                     if _callback_failure_count == 3:

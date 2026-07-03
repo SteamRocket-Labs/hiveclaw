@@ -600,6 +600,24 @@ function parseTranscriptObject(content: string): Record<string, unknown> | null 
   }
 }
 
+function inlineContentReplacementFromEnvelope(envelope: Record<string, unknown> | null): string | undefined {
+  const replacement = envelope?.content_replacement;
+  if (!replacement || typeof replacement !== 'object' || Array.isArray(replacement)) return undefined;
+  const inlineContent = (replacement as Record<string, unknown>).inline_content;
+  return typeof inlineContent === 'string' && inlineContent.trim() ? inlineContent : undefined;
+}
+
+function toolResultValueFromEnvelope(envelope: Record<string, unknown> | null): unknown {
+  if (!envelope) return '';
+  if (Object.prototype.hasOwnProperty.call(envelope, 'result')) {
+    const result = envelope.result;
+    if (typeof result !== 'string' || result.trim()) {
+      return result;
+    }
+  }
+  return inlineContentReplacementFromEnvelope(envelope) ?? '';
+}
+
 const TERMINAL_TRANSCRIPT_EVENT_TYPES = new Set(['assistant_message', 'run_completed', 'done', 'error', 'quota_exceeded']);
 
 export function getTerminalRunIdFromTranscriptEvent(event: ChatTranscriptEventPayload): string | null {
@@ -733,7 +751,7 @@ function toolResultFromTranscriptEvent(event: ChatTranscriptEventPayload): {
     const status = typeof envelope?.status === 'string' ? envelope.status : (typeof meta.status === 'string' ? meta.status : undefined);
     return {
       toolName: metadataToolName || envelopeToolName,
-      result: envelope?.result ?? '',
+      result: toolResultValueFromEnvelope(envelope),
       args: envelope?.args && typeof envelope.args === 'object' && !Array.isArray(envelope.args)
         ? envelope.args as Record<string, unknown>
         : undefined,

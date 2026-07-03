@@ -2038,6 +2038,95 @@ async def test_agent_kernel_stops_after_blocking_ask_user_question_result():
 
 
 @pytest.mark.asyncio
+async def test_agent_kernel_propagates_terminal_tool_card_signal_from_callback():
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
+
+    class _TerminalToolCardSignal(Exception):
+        pass
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_read",
+                        "function": {"name": "read_file", "arguments": '{"path":"workspace/a.md"}'},
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 4},
+            ),
+            SimpleNamespace(
+                content="callback signal was swallowed",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 4},
+            ),
+        ]
+    )
+
+    async def execute_tool(tool_name, args, request, emit_event):
+        del args, request, emit_event
+        assert tool_name == "read_file"
+        return "file content"
+
+    async def on_tool_call(payload):
+        if payload.get("status") == "done":
+            raise _TerminalToolCardSignal("terminal card finalized")
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda request, tenant_id, memory_context, current_user_name: "PROMPT",
+            resolve_memory_context=lambda request, tenant_id: "",
+            get_tools=lambda _agent_id, _core_only: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=execute_tool,
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens") if usage else None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    with pytest.raises(_TerminalToolCardSignal):
+        await kernel.handle(
+            InvocationRequest(
+                model=model,
+                messages=[{"role": "user", "content": "read a file"}],
+                agent_name="Reader",
+                role_description="Read files",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                on_tool_call=on_tool_call,
+            )
+        )
+
+    assert len(fake_client.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_agent_kernel_splits_concatenated_tool_arguments_into_separate_calls():
     """Tier 1-4: concatenated DeepSeek-V4 style args `{"a":1}{"b":2}` must be split into
     two executable tool_calls (rather than dropped to `{}`). Both calls execute and the

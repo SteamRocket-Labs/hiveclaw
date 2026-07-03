@@ -174,3 +174,109 @@ def test_transcript_projection_caps_oversize_event_payloads():
     assert payload["parts"][0]["_payload_truncated"] is True
     assert len(payload["content"]) <= api._TRANSCRIPT_CONTENT_CHAR_LIMIT + len("...[truncated]")
     assert len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= 12_000
+
+
+def test_transcript_projection_preserves_large_interactive_tool_card_json():
+    import app.api.chat_sessions as api
+
+    questions = [
+        {
+            "question": "这次 Agent Team 跑哪个方向的「创新型金融模式」报告?",
+            "header": "报告方向",
+            "options": [
+                {
+                    "label": f"方向 {index}",
+                    "description": "ABS 优先级/劣后级 + 永续债转股权双重结构，适用于基础设施/新能源/产业基金等长期资本占用场景。"
+                    * 8,
+                }
+                for index in range(8)
+            ],
+            "multiSelect": False,
+        }
+    ]
+    result = {
+        "status": "awaiting_user_clarification",
+        "questions": questions,
+        "blocking": True,
+        "next_action": "END your turn now — the question card is shown to the user.",
+    }
+    content = json.dumps(
+        {
+            "name": "ask_user_question",
+            "args": {"questions": questions},
+            "status": "done",
+            "tool_call_id": "toolu_question",
+            "step_id": "tool:toolu_question",
+            "visibility": "collapsed",
+            "reasoning_content": "reasoning " * 900,
+            "result": json.dumps(result, ensure_ascii=False),
+            "content_replacement": {
+                "inline_content": json.dumps(result, ensure_ascii=False),
+                "inline_chars": len(json.dumps(result, ensure_ascii=False)),
+            },
+        },
+        ensure_ascii=False,
+    )
+    assert len(content) > api._TRANSCRIPT_CONTENT_CHAR_LIMIT
+
+    event = SimpleNamespace(
+        id=uuid4(),
+        session_id=uuid4(),
+        run_id=None,
+        message_id=None,
+        sequence=43,
+        event_type="tool_result",
+        actor_type="tool",
+        visibility_scope="session",
+        listed_surface="chat",
+        content=content,
+        parts_json=[],
+        metadata_json={"role": "tool_call", "tool_name": "ask_user_question"},
+        created_at=None,
+    )
+
+    payload = api._serialize_transcript_event(event)
+    envelope = json.loads(payload["content"])
+    card = json.loads(envelope["result"])
+
+    assert envelope["name"] == "ask_user_question"
+    assert envelope["status"] == "done"
+    assert envelope["tool_call_id"] == "toolu_question"
+    assert "reasoning_content" not in envelope
+    assert card["status"] == "awaiting_user_clarification"
+    assert card["questions"][0]["question"] == questions[0]["question"]
+    assert card["questions"][0]["options"][7]["label"] == "方向 7"
+    assert payload["metadata"]["_payload_truncated"] is True
+
+
+def test_transcript_projection_still_caps_generic_success_tool_payloads():
+    import app.api.chat_sessions as api
+
+    content = json.dumps(
+        {
+            "name": "read_file",
+            "status": "done",
+            "result": json.dumps({"status": "success", "content": "x" * 30_000}),
+        },
+        ensure_ascii=False,
+    )
+    event = SimpleNamespace(
+        id=uuid4(),
+        session_id=uuid4(),
+        run_id=None,
+        message_id=None,
+        sequence=44,
+        event_type="tool_result",
+        actor_type="tool",
+        visibility_scope="session",
+        listed_surface="chat",
+        content=content,
+        parts_json=[],
+        metadata_json={"role": "tool_call", "tool_name": "read_file"},
+        created_at=None,
+    )
+
+    payload = api._serialize_transcript_event(event)
+
+    assert payload["metadata"]["_payload_truncated"] is True
+    assert len(payload["content"]) <= api._TRANSCRIPT_CONTENT_CHAR_LIMIT + len("...[truncated]")

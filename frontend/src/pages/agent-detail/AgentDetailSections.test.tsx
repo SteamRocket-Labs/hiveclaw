@@ -19,6 +19,7 @@ import AgentChatSection, {
   getSessionGitLineDensity,
   getArtifactOpenMode,
   isPendingEmptyArtifactPreview,
+  isUserFacingDeliveryArtifact,
   isClarificationCardAnsweredByLaterUserMessage,
   pickFocusedCheckpointIdForScroll,
   sessionCheckpointPreview,
@@ -474,6 +475,30 @@ vi.mock('@tanstack/react-query', () => ({
       };
     }
     if (key === 'chat-session-workbench') {
+      if (queryKey.includes('session-subagent-worker')) {
+        return {
+          data: {
+            schema: 'session_workbench.v1',
+            agent_id: 'agent-1',
+            session: { id: 'session-subagent-worker', title: 'Sub-agent worker session' },
+            runtime_sections: {
+              subagents: [
+                {
+                  id: 'subagent-worker-1',
+                  runtime_kind: 'subagent',
+                  label: 'One-shot critic',
+                  status: 'completed',
+                  child_session_id: 'child-subagent-session',
+                  enterable: false,
+                },
+              ],
+            },
+          },
+          isLoading: false,
+          isError: false,
+          error: null,
+        };
+      }
       if (!queryKey.includes('runtime-panel-session')) {
         return { data: undefined, isLoading: false, isError: false, error: null };
       }
@@ -1172,7 +1197,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('session-tui-message-row session-tui-message-row-assistant');
     expect(markup).toContain('session-tui-message-bubble');
     expect(markup).toContain('data-testid="run-disclosure-block"');
-    expect(markup).toContain('I checked the current branch state.');
+    expect(markup).toContain('Processed');
+    expect(markup).toContain('Checkpoint trail updated.');
+    expect(markup).not.toContain('I checked the current branch state.');
     expect(markup).not.toContain('rgba(16,185,129');
     expect(markup).not.toContain('147, 130, 220');
   });
@@ -2440,7 +2467,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('/api/agents/agent-1/files/artifacts/artifact-1/download');
   });
 
-  it('shows ordinary tool-call steps while keeping raw results collapsed by default', () => {
+  it('folds completed ordinary tool-call steps while keeping raw results hidden by default', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Release Bot' }}
@@ -2512,13 +2539,13 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Processed');
-    expect(markup).toContain('Read file');
-    expect(markup).toContain('report.md');
+    expect(markup).not.toContain('Read file');
+    expect(markup).not.toContain('report.md');
     expect(markup).not.toContain('path:');
     expect(markup).not.toContain('RAW FILE CONTENT SHOULD NOT BE INLINE');
   });
 
-  it('renders tool-produced artifacts inside the session timeline', () => {
+  it('keeps raw tool-produced workspace artifacts out of user-facing delivery cards', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Release Bot' }}
@@ -2597,11 +2624,12 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('office_document_apply');
+    expect(markup).toContain('Processed');
+    expect(markup).not.toContain('office_document_apply');
     expect(markup).toContain('proposal.docx');
-    expect(markup).toContain('Open');
-    expect(markup).toContain('Download');
-    expect(markup).toContain('data-testid="chat-artifact-row-open"');
+    expect(markup).toContain('data-testid="session-workspace-documents-unattributed"');
+    expect(markup).not.toContain('data-testid="session-workspace-documents-currentSession"');
+    expect(markup).not.toContain('data-testid="chat-artifact-row-open"');
   });
 
   it('groups consecutive runtime steps into one turn-level disclosure block before the final answer', () => {
@@ -2704,13 +2732,14 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup.match(/data-testid="run-disclosure-block"/g)?.length).toBe(1);
-    expect(markup).toContain('Thinking');
-    expect(markup).toContain('Read 1 file');
-    expect(markup).toContain('Ran 1 command');
-    expect(markup).toContain('Read file');
-    expect(markup).toContain('Context Compacted');
-    expect(markup).toContain('Run command');
+    expect(markup).toContain('Processed');
     expect(markup).toContain('最终答案已经完成。');
+    expect(markup).not.toContain('Thinking');
+    expect(markup).not.toContain('Read 1 file');
+    expect(markup).not.toContain('Ran 1 command');
+    expect(markup).not.toContain('Read file');
+    expect(markup).not.toContain('Context Compacted');
+    expect(markup).not.toContain('Run command');
     expect(markup).not.toContain('RAW READ FILE CONTENT');
     expect(markup).not.toContain('RAW COMMAND OUTPUT');
   });
@@ -2987,8 +3016,8 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Child Session');
     expect(markup).toContain('Research worker completed.');
-    expect(markup).toContain('child:child-session-1');
-    expect(markup).toContain('run:run-1');
+    expect(markup).toContain('session:child-session-1');
+    expect(markup).toContain('run-1');
   });
 
   it('routes chat artifacts to the session inspector only when the file type is previewable', () => {
@@ -2998,6 +3027,12 @@ describe('AgentDetail extracted sections', () => {
     expect(getArtifactOpenMode({ name: 'slides.pdf', path: 'workspace/slides.pdf', previewKind: 'pdf' })).toBe('inspector_preview');
     expect(getArtifactOpenMode({ name: 'deck.pptx', path: 'workspace/deck.pptx', previewKind: 'office' })).toBe('download');
     expect(getArtifactOpenMode({ name: 'archive.zip', path: 'workspace/archive.zip', previewKind: 'download' })).toBe('download');
+  });
+
+  it('keeps raw tool workspace writes out of user-facing delivery cards', () => {
+    expect(isUserFacingDeliveryArtifact({ name: 'draft.md', path: 'workspace/draft.md', source: 'workspace_write' }, 'tool')).toBe(false);
+    expect(isUserFacingDeliveryArtifact({ name: 'report.md', path: 'workspace/report.md', source: 'workspace_write' }, 'assistant')).toBe(true);
+    expect(isUserFacingDeliveryArtifact({ name: 'child.md', path: 'workspace/child.md', source: 'a2a_delivery_ref' }, 'tool')).toBe(true);
   });
 
   it('shows a pending empty-state for zero-byte artifact previews instead of a blank panel', () => {
@@ -3826,6 +3861,76 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-runtime-runs"');
     expect(markup).not.toContain('data-testid="session-runtime-raw"');
     expect(markup).not.toContain('No active collaboration surfaces');
+  });
+
+  it('renders one-shot Sub-agent workers with Inspect only, not a follow-up conversation action', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Runtime Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-subagent-worker',
+          user_id: 'user-1',
+          title: 'Sub-agent worker session',
+          created_at: '2026-07-04T00:00:00Z',
+        }}
+        branchLineage={[]}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        onLoadOlderMessages={vi.fn()}
+        olderMessagesLoading={false}
+        hasOlderMessages={false}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="session-subagent-worker"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus="idle"
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-runtime-segment-body-workers"');
+    expect(markup).toContain('One-shot critic');
+    expect(markup).toContain('data-runtime-action="subagent-worker-inspect"');
+    expect(markup).not.toContain('data-runtime-action="subagent-worker-continue"');
   });
 
   it('renders Agent Team member sessions as enterable child-session windows with composer target', () => {

@@ -1167,6 +1167,22 @@ export function isPendingEmptyArtifactPreview(
   return artifact.size === 0 && !String(content ?? '').trim();
 }
 
+export type ArtifactDeliveryContext = 'assistant' | 'tool';
+
+export function isUserFacingDeliveryArtifact(
+  artifact: Partial<ChatArtifactPart>,
+  context: ArtifactDeliveryContext = 'assistant',
+): boolean {
+  if (context === 'assistant') return true;
+  const source = String(artifact.source || '').toLowerCase();
+  return (
+    source.includes('artifact_delivery')
+    || source.includes('a2a_delivery_ref')
+    || source.includes('terminal')
+    || source.includes('final')
+  );
+}
+
 function artifactWorkspaceAgentId(
   artifact: Pick<ChatArtifactPart, 'downloadAgentId' | 'ownerAgentId' | 'sourceAgentId'>,
   fallbackAgentId?: string | null,
@@ -1365,13 +1381,17 @@ function ArtifactCards({
   agentId,
   artifacts,
   onOpenArtifact,
+  context = 'assistant',
 }: {
   agentId?: string | null;
   artifacts?: ChatArtifactPart[];
   onOpenArtifact?: (artifact: ChatArtifactPart) => void;
+  context?: ArtifactDeliveryContext;
 }) {
   const { t } = useTranslation();
-  const visibleArtifacts = (artifacts || []).filter((artifact) => artifact.path);
+  const visibleArtifacts = (artifacts || []).filter((artifact) => (
+    artifact.path && isUserFacingDeliveryArtifact(artifact, context)
+  ));
   if (!agentId || visibleArtifacts.length === 0) return null;
 
   // Codex 式聚合卡：一个容器承载全部交付物，每文件一行，动作 hover 浮现。
@@ -1772,15 +1792,6 @@ function SessionRuntimePanel({
             canInspect
               ? t('sessionWorkbench.rightPanel.workerInspectTitle', 'Inspect worker session')
               : t('sessionWorkbench.rightPanel.workerInspectDisabled', 'No worker session is available'),
-            canInspect && sessionId ? () => onSelectSession?.(sessionId) : undefined,
-          )}
-          {workerAction(
-            'continue',
-            t('sessionWorkbench.rightPanel.workerContinue', 'Continue'),
-            !canInspect,
-            canInspect
-              ? t('sessionWorkbench.rightPanel.workerContinueTitle', 'Open worker session to send a follow-up')
-              : t('sessionWorkbench.rightPanel.workerContinueDisabled', 'No worker session is available'),
             canInspect && sessionId ? () => onSelectSession?.(sessionId) : undefined,
           )}
         </span>
@@ -2860,7 +2871,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         ) : (
           <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
         )}
-        <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={onOpenArtifact} />
+        <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={onOpenArtifact} context="assistant" />
         {inlinePlanId && effectiveAgentId && (
           <div style={{ marginTop: '10px', minWidth: 'min(520px, 100%)' }} data-testid="chat-inline-plan-card">
             <InlinePlanCard agentId={effectiveAgentId} planId={inlinePlanId} />
@@ -3282,7 +3293,7 @@ function AgentChatSection({
           t={t}
         />
       )}
-      <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={openArtifact} />
+      <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={openArtifact} context="tool" />
     </div>
   );
 

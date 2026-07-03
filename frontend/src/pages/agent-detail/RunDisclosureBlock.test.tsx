@@ -7,8 +7,8 @@ import type { RunTimelineSnapshot } from './chatDisclosureReducer';
 
 // Codex-parity contract:
 // - running: shimmering "Working" header + live elapsed seconds
-// - done: ALWAYS collapses by default (process recedes; the answer is the
-//   star) — including runs that contain reasoning/a2a steps
+// - done: ALWAYS collapses by default to a single boundary row (process
+//   recedes; the answer is the star) — including runs that contain reasoning/a2a steps
 // - command details render head/tail-clipped output with exit-code badge,
 //   not a raw JSON blob
 
@@ -38,13 +38,15 @@ describe('RunDisclosureBlock', () => {
     ],
   };
 
-  it('collapses completed runs by default while keeping a compact readable summary', () => {
+  it('collapses completed runs by default to a single boundary row', () => {
     const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={baseTimeline} />);
 
     expect(markup).toContain('aria-expanded="false"');
-    expect(markup).toContain('read_file');
-    expect(markup).toContain('AgentChatSection.tsx');
+    expect(markup).toContain('Processed');
+    expect(markup).not.toContain('read_file');
+    expect(markup).not.toContain('AgentChatSection.tsx');
     expect(markup).not.toContain('RAW FILE CONTENT');
+    expect(markup).not.toContain('run-disclosure-compact-summary');
   });
 
   it('collapses completed runs even when they contain reasoning or A2A steps', () => {
@@ -74,10 +76,12 @@ describe('RunDisclosureBlock', () => {
       />,
     );
 
-    // Codex parity: finished work recedes into one line; the chips still
-    // carry the step summaries for scanning.
+    // Codex parity: finished work recedes into one line; details come back
+    // only when the user expands the same ordered step stream.
     expect(markup).toContain('aria-expanded="false"');
-    expect(markup).toContain('run-disclosure-compact-summary');
+    expect(markup).not.toContain('Verified the delegated artifact');
+    expect(markup).not.toContain('Delegated to Web3 researcher');
+    expect(markup).not.toContain('run-disclosure-compact-summary');
   });
 
   it('expands active runs and shows a shimmering Working header with live elapsed', () => {

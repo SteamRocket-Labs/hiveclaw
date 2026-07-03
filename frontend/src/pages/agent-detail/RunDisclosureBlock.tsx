@@ -162,7 +162,8 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
 
 function shouldExpandTimeline(timeline: RunTimelineSnapshot): boolean {
   // Codex parity: only live/problem states stay open. A finished run always
-  // recedes to one line — the compact summary still shows what happened.
+  // recedes to one boundary line; the answer and delivery cards stay outside
+  // the folded process.
   return timeline.status === 'running' || timeline.status === 'blocked' || timeline.status === 'failed';
 }
 
@@ -207,6 +208,7 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
       : t('agent.chat.disclosure.processed', 'Processed');
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: timeline.steps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
+  const processFullyFolded = timeline.status === 'done' && !expanded;
 
   return (
     <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
@@ -222,8 +224,8 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
             {title}
           </span>
           {duration && <span className="run-disclosure-duration">{duration}</span>}
-          {timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
-          <span className="run-disclosure-count">{stepCount}</span>
+          {!processFullyFolded && timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
+          {!processFullyFolded && <span className="run-disclosure-count">{stepCount}</span>}
         </button>
         {expanded && (
           <div className="run-disclosure-steps">
@@ -232,7 +234,7 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
             ))}
           </div>
         )}
-        {!expanded && <CompactStepSummary steps={timeline.steps} />}
+        {!expanded && !processFullyFolded && <CompactStepSummary steps={timeline.steps} />}
       </div>
     </div>
   );

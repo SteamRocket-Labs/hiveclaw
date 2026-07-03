@@ -911,9 +911,13 @@ export function buildRuntimeSectionsModel(sessionWorkbench?: Record<string, unkn
 function workspaceDocumentGroup(
   artifact: ChatArtifactPart,
   sessionRunTaskIds?: Set<string>,
+  messageRole?: AgentChatMessage['role'],
 ): WorkspaceDocumentGroupKey {
   const source = String(artifact.source || '').toLowerCase();
   if (source.includes('historical')) return 'historical';
+  if (messageRole === 'tool_call' && source === 'workspace_write') {
+    return 'unattributed';
+  }
   // Session deliverables are what THIS session's runs delivered. An artifact
   // stamped with a runtime task that does not belong to this session (another
   // workflow/task touching the shared workspace) is history, not a deliverable.
@@ -955,7 +959,7 @@ export function buildWorkspaceDocumentsModel(
   messages.forEach((message) => {
     (message.artifacts || []).forEach((artifact) => {
       if (!artifact.path) return;
-      const group = workspaceDocumentGroup(artifact, sessionRunTaskIds);
+      const group = workspaceDocumentGroup(artifact, sessionRunTaskIds, message.role);
       const key = `${group}:${artifact.path}`;
       const existing = docs.get(key);
       if (existing) {

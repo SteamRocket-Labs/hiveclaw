@@ -145,6 +145,10 @@ export interface ChatArtifactPart {
   sourceAgentId?: string;
   downloadAgentId?: string;
   deliveryAgentId?: string;
+  sourceArtifactId?: string;
+  producerAgentId?: string;
+  sourceSessionId?: string;
+  rootSessionId?: string;
   ownerAgentName?: string;
   sourceAgentName?: string;
   downloadAgentName?: string;
@@ -490,6 +494,12 @@ function isStreamingAssistantPlaceholder(message: AgentChatMessage | undefined):
   );
 }
 
+function sealStreamingAssistantStep(message: AgentChatMessage): AgentChatMessage {
+  const next = { ...(message as any) };
+  delete next._streaming;
+  return next as AgentChatMessage;
+}
+
 function isTerminalToolCard(message: AgentChatMessage): boolean {
   if (message.role !== 'tool_call' || message.toolStatus !== 'done') return false;
   const kind = message.toolMeta?.kind;
@@ -507,8 +517,12 @@ export function appendToolCallMessage(
   const terminalCard = isTerminalToolCard(toolMessage);
   let base = messages;
   const last = base[base.length - 1];
-  if (terminalCard && isStreamingAssistantPlaceholder(last)) {
-    base = base.slice(0, -1);
+  if (last && isStreamingAssistantPlaceholder(last)) {
+    if (String(last.thinking || '').trim()) {
+      base = [...base.slice(0, -1), sealStreamingAssistantStep(last)];
+    } else if (terminalCard) {
+      base = base.slice(0, -1);
+    }
   }
 
   const lastIdx = base.length - 1;
@@ -1166,6 +1180,10 @@ function normalizeArtifactPart(part: any): ChatArtifactPart | null {
     sourceAgentId: typeof part.sourceAgentId === 'string' ? part.sourceAgentId : (typeof part.source_agent_id === 'string' ? part.source_agent_id : undefined),
     downloadAgentId: typeof part.downloadAgentId === 'string' ? part.downloadAgentId : (typeof part.download_agent_id === 'string' ? part.download_agent_id : undefined),
     deliveryAgentId: typeof part.deliveryAgentId === 'string' ? part.deliveryAgentId : (typeof part.delivery_agent_id === 'string' ? part.delivery_agent_id : undefined),
+    sourceArtifactId: typeof part.sourceArtifactId === 'string' ? part.sourceArtifactId : (typeof part.source_artifact_id === 'string' ? part.source_artifact_id : undefined),
+    producerAgentId: typeof part.producerAgentId === 'string' ? part.producerAgentId : (typeof part.producer_agent_id === 'string' ? part.producer_agent_id : undefined),
+    sourceSessionId: typeof part.sourceSessionId === 'string' ? part.sourceSessionId : (typeof part.source_session_id === 'string' ? part.source_session_id : undefined),
+    rootSessionId: typeof part.rootSessionId === 'string' ? part.rootSessionId : (typeof part.root_session_id === 'string' ? part.root_session_id : undefined),
     ownerAgentName: typeof part.ownerAgentName === 'string' ? part.ownerAgentName : (typeof part.owner_agent_name === 'string' ? part.owner_agent_name : undefined),
     sourceAgentName: typeof part.sourceAgentName === 'string' ? part.sourceAgentName : (typeof part.source_agent_name === 'string' ? part.source_agent_name : undefined),
     downloadAgentName: typeof part.downloadAgentName === 'string' ? part.downloadAgentName : (typeof part.download_agent_name === 'string' ? part.download_agent_name : undefined),

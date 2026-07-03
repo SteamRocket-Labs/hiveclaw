@@ -131,6 +131,37 @@ describe('session workbench timeline model', () => {
     expect(model.header.status).toBe('complete');
   });
 
+  it('keeps completed run steps in interleaved thinking/tool sequence', () => {
+    const messages: AgentChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'Fix the session renderer.' },
+      { id: 'r1', role: 'assistant', content: '', thinking: 'Need to inspect the chat renderer.' },
+      { id: 't1', role: 'tool_call', content: '', toolName: 'read_file', toolArgs: { path: 'AgentChatSection.tsx' }, toolStatus: 'done' },
+      { id: 'r2', role: 'assistant', content: '', thinking: 'Now inspect the timeline projection.' },
+      { id: 't2', role: 'tool_call', content: '', toolName: 'read_file', toolArgs: { path: 'timelineModel.ts' }, toolStatus: 'done' },
+      { id: 'a1', role: 'assistant', content: 'Done. The process is fixed.' },
+    ];
+
+    const model = buildThreadTimeline({
+      messages,
+      activeSession: { id: 'session-1', title: 'Session renderer' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run']);
+    const runCell = model.cells[1];
+    expect(runCell.kind).toBe('active_run');
+    if (runCell.kind !== 'active_run') throw new Error('expected active run cell');
+    expect(runCell.timeline.steps.map((step) => `${step.kind}:${step.summary}`)).toEqual([
+      'reasoning:Need to inspect the chat renderer.',
+      'file:AgentChatSection.tsx',
+      'reasoning:Now inspect the timeline projection.',
+      'file:timelineModel.ts',
+    ]);
+    expect(runCell.answer?.content).toBe('Done. The process is fixed.');
+  });
+
   it('keeps an assistant answer visible when reasoning and content share one transcript message', () => {
     const messages: AgentChatMessage[] = [
       { id: 'u1', role: 'user', content: 'Check the checkpoint behavior.' },
@@ -957,5 +988,63 @@ describe('buildWorkspaceDocumentsModel (session deliverables semantics)', () => 
     );
     expect(model.currentSession.items.map((doc) => doc.path)).toEqual(['workspace/report.md']);
     expect(model.historical.items.map((doc) => doc.path)).toEqual(['workspace/other.md']);
+  });
+
+  it('does not promote raw tool workspace writes into current session deliverables', () => {
+    const sessionRuns = new Set(['run-mine']);
+    const model = buildWorkspaceDocumentsModel(
+      [
+        {
+          role: 'tool_call',
+          content: '',
+          toolName: 'write_file',
+          artifacts: [
+            artifact({
+              id: 'tool-write',
+              runtimeTaskId: 'run-mine',
+              source: 'workspace_write',
+            }),
+          ],
+        } as never,
+      ],
+      sessionRuns,
+    );
+
+    expect(model.currentSession.items).toEqual([]);
+    expect(model.unattributed.items.map((doc) => doc.path)).toEqual(['workspace/report.md']);
+  });
+
+  it('keeps A2A delivery refs in current session deliverables while preserving producer provenance', () => {
+    const sessionRuns = new Set(['parent-run']);
+    const model = buildWorkspaceDocumentsModel(
+      [
+        msg([
+          artifact({
+            id: 'projected-artifact',
+            sourceArtifactId: 'child-artifact',
+            runtimeTaskId: 'parent-run',
+            source: 'a2a_delivery_ref',
+            ownerAgentId: 'child-agent',
+            sourceAgentId: 'child-agent',
+            downloadAgentId: 'child-agent',
+            deliveryAgentId: 'parent-agent',
+            producerAgentId: 'child-agent',
+            sourceSessionId: 'child-session',
+            rootSessionId: 'parent-session',
+          }),
+        ]),
+      ],
+      sessionRuns,
+    );
+
+    expect(model.currentSession.items).toHaveLength(1);
+    expect(model.currentSession.items[0].artifact).toMatchObject({
+      id: 'projected-artifact',
+      sourceArtifactId: 'child-artifact',
+      downloadAgentId: 'child-agent',
+      deliveryAgentId: 'parent-agent',
+      sourceSessionId: 'child-session',
+      rootSessionId: 'parent-session',
+    });
   });
 });

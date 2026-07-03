@@ -154,13 +154,81 @@ describe('chatRuntime helpers', () => {
       created_at: '2026-06-20T12:00:01Z',
     });
 
-    expect(next.messages).toHaveLength(1);
+    expect(next.messages).toHaveLength(2);
     expect(next.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: '',
+      thinking: 'Need more input',
+    });
+    expect((next.messages[0] as any)._streaming).toBeUndefined();
+    expect(next.messages[1]).toMatchObject({
       role: 'tool_call',
       toolName: 'ask_user_question',
       toolMeta: { kind: 'user_clarification', blocking: true },
     });
     expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
+  });
+
+  it('replays interleaved thinking and tool events as separate ordered steps', () => {
+    const firstThinking = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-thinking-1',
+      sequence: 1,
+      type: 'thinking',
+      event_type: 'thinking',
+      actor_type: 'assistant',
+      role: 'assistant',
+      content: 'Need to read the session renderer.',
+      created_at: '2026-07-04T00:00:01Z',
+    });
+    const firstTool = applyTranscriptEvent(firstThinking, {
+      id: 'evt-tool-1',
+      sequence: 2,
+      type: 'tool_result',
+      event_type: 'tool_result',
+      actor_type: 'agent',
+      role: 'tool_call',
+      content: 'Read AgentChatSection.tsx',
+      metadata: { tool_name: 'read_file', arguments: { path: 'AgentChatSection.tsx' } },
+      created_at: '2026-07-04T00:00:02Z',
+    });
+    const secondThinking = applyTranscriptEvent(firstTool, {
+      id: 'evt-thinking-2',
+      sequence: 3,
+      type: 'thinking',
+      event_type: 'thinking',
+      actor_type: 'assistant',
+      role: 'assistant',
+      content: 'Now inspect the timeline projection.',
+      created_at: '2026-07-04T00:00:03Z',
+    });
+    const secondTool = applyTranscriptEvent(secondThinking, {
+      id: 'evt-tool-2',
+      sequence: 4,
+      type: 'tool_result',
+      event_type: 'tool_result',
+      actor_type: 'agent',
+      role: 'tool_call',
+      content: 'Read timelineModel.ts',
+      metadata: { tool_name: 'read_file', arguments: { path: 'timelineModel.ts' } },
+      created_at: '2026-07-04T00:00:04Z',
+    });
+
+    expect(secondTool.messages.map((message) => message.role)).toEqual([
+      'assistant',
+      'tool_call',
+      'assistant',
+      'tool_call',
+    ]);
+    expect(secondTool.messages[0]).toMatchObject({
+      role: 'assistant',
+      thinking: 'Need to read the session renderer.',
+    });
+    expect((secondTool.messages[0] as any)._streaming).toBeUndefined();
+    expect(secondTool.messages[2]).toMatchObject({
+      role: 'assistant',
+      thinking: 'Now inspect the timeline projection.',
+    });
+    expect((secondTool.messages[2] as any)._streaming).toBeUndefined();
   });
 
   it('keeps only the oldest unresolved session permission gate visible', () => {
@@ -377,8 +445,14 @@ describe('chatRuntime helpers', () => {
       created_at: '2026-06-21T09:09:09Z',
     });
 
-    expect(next.messages).toHaveLength(1);
+    expect(next.messages).toHaveLength(2);
     expect(next.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: '',
+      thinking: 'Need more input',
+    });
+    expect((next.messages[0] as any)._streaming).toBeUndefined();
+    expect(next.messages[1]).toMatchObject({
       role: 'tool_call',
       toolName: 'ask_user_question',
       toolMeta: { kind: 'user_clarification', blocking: true },
@@ -1077,6 +1151,52 @@ describe('chatRuntime helpers', () => {
     ]);
   });
 
+  it('preserves A2A artifact provenance metadata for parent-session delivery refs', () => {
+    const artifacts = extractArtifactParts({
+      parts: [
+        {
+          type: 'artifact',
+          artifact_id: 'projected-artifact-1',
+          source_artifact_id: 'child-artifact-9',
+          name: 'chapter9.md',
+          path: 'workspace/chapter9.md',
+          preview_kind: 'markdown',
+          source: 'a2a_delivery_ref',
+          runtime_task_id: 'parent-run-1',
+          owner_agent_id: 'child-agent',
+          source_agent_id: 'child-agent',
+          download_agent_id: 'child-agent',
+          delivery_agent_id: 'parent-agent',
+          producer_agent_id: 'child-agent',
+          source_session_id: 'child-session',
+          root_session_id: 'parent-session',
+          revision_id: 'sha256:snapshot',
+          action: 'delivered',
+          preview_snapshot_content: '# Chapter 9\n',
+        },
+      ],
+    });
+
+    expect(artifacts).toEqual([
+      expect.objectContaining({
+        id: 'projected-artifact-1',
+        sourceArtifactId: 'child-artifact-9',
+        path: 'workspace/chapter9.md',
+        source: 'a2a_delivery_ref',
+        runtimeTaskId: 'parent-run-1',
+        ownerAgentId: 'child-agent',
+        sourceAgentId: 'child-agent',
+        downloadAgentId: 'child-agent',
+        deliveryAgentId: 'parent-agent',
+        producerAgentId: 'child-agent',
+        sourceSessionId: 'child-session',
+        rootSessionId: 'parent-session',
+        action: 'delivered',
+        previewSnapshotContent: '# Chapter 9\n',
+      }),
+    ]);
+  });
+
   it('preserves destructive permission metadata from runtime events', () => {
     const message = getRuntimeEventMessage({
       type: 'permission',
@@ -1340,7 +1460,7 @@ describe('chatRuntime helpers', () => {
     expect(applyRuntimeDoneEvent(current, { type: 'done', content: '' })).toBe(current);
   });
 
-  it('removes dangling thinking placeholders when a terminal tool card arrives', () => {
+  it('seals dangling thinking placeholders before a terminal tool card arrives', () => {
     const current = [
       { role: 'assistant' as const, content: '', thinking: 'Need a cadence.', _streaming: true } as any,
     ];
@@ -1354,7 +1474,16 @@ describe('chatRuntime helpers', () => {
       }),
     });
 
-    expect(appendToolCallMessage(current, toolMessage)).toEqual([toolMessage]);
+    const next = appendToolCallMessage(current, toolMessage);
+
+    expect(next).toHaveLength(2);
+    expect(next[0]).toMatchObject({
+      role: 'assistant',
+      content: '',
+      thinking: 'Need a cadence.',
+    });
+    expect((next[0] as any)._streaming).toBeUndefined();
+    expect(next[1]).toEqual(toolMessage);
   });
 
   it('normalizes persisted system compaction events from JSON content', () => {

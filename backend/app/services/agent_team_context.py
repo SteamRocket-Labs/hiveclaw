@@ -16,9 +16,11 @@ from app.database import tenant_scoped_session
 from app.models.agent_team import AgentTeam, AgentTeamMember
 from app.models.coordination import CoordinationSignal
 from app.models.runtime_task import RuntimeTask
+from app.services.agent_work_ledger import read_agent_work_ledger_view
 
 _ACTIVE_STATUSES = {"pending", "running", "in_progress", "blocked", "suspended"}
 _TEAM_TASK_TYPES = {"subagent", "workflow", "delegation"}
+_COMPLETE_TASK_STATUSES = {"completed", "done", "skipped"}
 
 
 def _clean(value: Any) -> str:
@@ -86,11 +88,24 @@ def _team_member_line(member: dict[str, Any]) -> str:
     return f"  - {name} [{status}]{session_suffix}{role_suffix}"
 
 
+def _shared_task_line(task: dict[str, Any]) -> str:
+    task_id = _clean(task.get("id"))[:8]
+    status = _clean(task.get("status")) or "pending"
+    owner = _clean(task.get("owner"))
+    title = _short(task.get("title") or task.get("content") or task.get("subject"), limit=180)
+    description = _short(task.get("description"), limit=120)
+    owner_suffix = f" owner={owner}" if owner else ""
+    description_suffix = f" — {description}" if description else ""
+    id_suffix = f" {task_id}" if task_id else ""
+    return f"- task{id_suffix} [{status}]{owner_suffix}: {title}{description_suffix}"
+
+
 def render_team_context_block(
     *,
     tasks: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     signals: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     teams: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    shared_tasks: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     task_limit: int = 8,
     signal_limit: int = 8,
     team_limit: int = 5,
@@ -98,7 +113,8 @@ def render_team_context_block(
     task_rows = [task for task in (tasks or []) if isinstance(task, dict)]
     signal_rows = [signal for signal in (signals or []) if isinstance(signal, dict)]
     team_rows = [team for team in (teams or []) if isinstance(team, dict)]
-    if not task_rows and not signal_rows and not team_rows:
+    shared_task_rows = [task for task in (shared_tasks or []) if isinstance(task, dict)]
+    if not task_rows and not signal_rows and not team_rows and not shared_task_rows:
         return ""
 
     lines: list[str] = []
@@ -112,6 +128,18 @@ def render_team_context_block(
                     lines.append(_team_member_line(member))
         if len(team_rows) > team_limit:
             lines.append(f"- ... {len(team_rows) - team_limit} more active team workspace(s)")
+
+    if shared_task_rows:
+        if lines:
+            lines.append("")
+        lines.append("## Team Shared Task List")
+        lines.append(
+            "Open parent-session Work Ledger todos for this Team; use owner=member_name to pick the next slice:"
+        )
+        for task in shared_task_rows[: max(1, task_limit)]:
+            lines.append(_shared_task_line(task))
+        if len(shared_task_rows) > task_limit:
+            lines.append(f"- ... {len(shared_task_rows) - task_limit} more shared task(s); call read_ledger for detail.")
 
     if task_rows:
         if lines:
@@ -245,6 +273,30 @@ async def build_prompt_facing_team_context(
             for item in (_team_to_dict(team) for team in (await db.execute(team_stmt)).scalars().all())
             if item is not None
         ]
+        if not teams and session_uuid is not None:
+            member_rows = (
+                await db.execute(select(AgentTeamMember).where(AgentTeamMember.chat_session_id == session_uuid))
+            ).scalars().all()
+            member_team_ids = [member.team_id for member in member_rows if getattr(member, "team_id", None)]
+            if member_team_ids:
+                teams = [
+                    item
+                    for item in (
+                        _team_to_dict(team)
+                        for team in (
+                            await db.execute(
+                                select(AgentTeam).where(
+                                    AgentTeam.id.in_(member_team_ids),
+                                    AgentTeam.lead_agent_id == agent_id,
+                                    AgentTeam.status == "active",
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    if item is not None
+                ]
         if teams:
             team_ids = [team["id"] for team in teams]
             member_stmt = (
@@ -264,11 +316,26 @@ async def build_prompt_facing_team_context(
                 team = by_team.get(str(member["team_id"]))
                 if team is not None:
                     team["members"].append(member)
+        shared_tasks: list[dict[str, Any]] = []
+        for team in teams:
+            parent_session_id = _id(team.get("parent_session_id"))
+            if not parent_session_id:
+                continue
+            view = read_agent_work_ledger_view(agent_id=agent_id, session_id=parent_session_id)
+            if not isinstance(view, dict):
+                continue
+            for item in view.get("todo_items") or []:
+                if not isinstance(item, dict):
+                    continue
+                if _clean(item.get("status")).lower() in _COMPLETE_TASK_STATUSES:
+                    continue
+                shared_tasks.append(item)
 
     return render_team_context_block(
         tasks=tasks,
         signals=signals,
         teams=teams,
+        shared_tasks=shared_tasks,
         task_limit=task_limit,
         signal_limit=signal_limit,
     )

@@ -76,6 +76,25 @@ def test_compute_context_budget_256k_research_is_more_aggressive():
     assert budget.rerank_max_select >= 8
 
 
+def test_compute_context_budget_1m_model_uses_long_context_capacity():
+    from app.runtime.context_budget import compute_context_budget
+
+    budget = compute_context_budget(
+        context_window_tokens=1_000_000,
+        query="请做非常全面的 deep research，比较多个公开资料、历史记录和工作区证据",
+        active_pack_count=4,
+    )
+
+    assert budget.system_prompt_budget_chars >= 300_000
+    assert budget.retrieval_budget_chars >= 40_000
+    assert budget.knowledge_budget_chars >= 30_000
+    assert budget.memory_budget_chars >= 80_000
+    assert budget.restore_budget_chars >= 160_000
+    assert budget.restore_per_file_cap_chars >= 30_000
+    assert budget.semantic_limit >= 32
+    assert budget.external_limit >= 12
+
+
 def test_compute_context_budget_small_model_stays_bounded():
     from app.runtime.context_budget import compute_context_budget
 

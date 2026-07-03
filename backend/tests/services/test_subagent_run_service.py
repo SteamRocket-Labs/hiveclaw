@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from app.agents.subagent import SUBAGENT_TYPE_WORKER, SubagentResult
+from app.agents.subagent import SUBAGENT_TYPE_WORKER, SubagentResult, SubagentSpawnContext, SubagentSpec
+from app.agents.subagent_memory import SubagentMemoryStore
 from app.database import tenant_scoped_session
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
@@ -17,28 +18,40 @@ from app.services import subagent_run_service as svc
 
 
 @pytest.mark.asyncio
-async def test_start_subagent_run_records_running_subagent_task(monkeypatch):
+async def test_start_subagent_run_queues_subagent_task_and_wakes_worker(monkeypatch):
     captured: dict = {}
 
     async def _fake_create(**kwargs):
         captured.update(kwargs)
         return kwargs["task_id"]
 
+    async def _fake_notify(**kwargs):
+        captured["notify"] = kwargs
+
     monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", _fake_notify)
     parent = uuid.uuid4()
     started = await svc.start_subagent_run(
-        parent_agent_id=parent, spec_name="scout", spec_type=SUBAGENT_TYPE_WORKER, task="do x"
+        parent_agent_id=parent,
+        spec_name="scout",
+        spec_type=SUBAGENT_TYPE_WORKER,
+        task="do x",
+        context_window_tokens=1_000_000,
     )
     assert started.run_id == captured["task_id"]
     assert started.child_session_id is None
     assert captured["task_type"] == svc.SUBAGENT_RUN_TASK_TYPE == "subagent"
-    assert captured["status"] == "running"
+    assert captured["status"] == "pending"
     assert captured["parent_agent_id"] == parent
     assert captured["child_agent_name"] == "scout"
     assert captured["metadata_json"]["subagent_type"] == SUBAGENT_TYPE_WORKER
+    assert captured["metadata_json"]["execution_backend"] == "runtime_task_worker"
+    assert captured["metadata_json"]["worker_claim_required"] is True
+    assert captured["metadata_json"]["worker_dispatched"] is False
     assert captured["metadata_json"]["resumable_subagent"] is True
     assert captured["metadata_json"]["resume_after_restart"] is True
     assert captured["metadata_json"]["side_effect_risk"] == "mutating"
+    assert captured["metadata_json"]["context_window_tokens"] == 1_000_000
     assert captured["metadata_json"]["restart_replay_contract"]["schema"] == "runtime_restart_replay_contract.v1"
     assert (
         captured["metadata_json"]["restart_replay_contract"]["idempotency_key"] == f"subagent:{started.run_id}:restart"
@@ -48,6 +61,77 @@ async def test_start_subagent_run_records_running_subagent_task(monkeypatch):
         f"subagent:{started.run_id}:restart:spawn_intent_recorded"
     )
     assert "restart_resume_blocker" not in captured["metadata_json"]
+    assert captured["notify"] == {"reason": "subagent_created", "runtime_task_id": started.run_id}
+
+
+@pytest.mark.asyncio
+async def test_start_subagent_run_persists_full_spec_snapshot(monkeypatch):
+    captured: dict = {}
+
+    async def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return kwargs["task_id"]
+
+    monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    parent = uuid.uuid4()
+    spec = SubagentSpec(
+        name="code-reviewer",
+        description="Use for code review.",
+        type="critic",
+        allowed_tools=("read_file", "grep_search"),
+        excluded_tools=("write_file",),
+        model="inherit",
+        max_tool_rounds=7,
+        isolation="worktree",
+        memory_scope="project",
+        system_prompt="Persistent reviewer prompt.",
+        background=True,
+        permission_mode="acceptEdits",
+        skills=("security-review",),
+        initial_prompt="Load checklist first.",
+        mcp_servers=("github",),
+        hooks={"Stop": []},
+        color="red",
+        effort="high",
+    )
+
+    await svc.start_subagent_run(
+        parent_agent_id=parent,
+        spec_name=spec.name,
+        spec_type=spec.type,
+        task="review x",
+        spec_snapshot=spec,
+        definition_name="code-reviewer",
+        definition_scope="tenant",
+    )
+
+    snapshot = captured["metadata_json"]["subagent_spec"]
+    assert snapshot == {
+        "name": "code-reviewer",
+        "description": "Use for code review.",
+        "type": "critic",
+        "allowed_tools": ["read_file", "grep_search"],
+        "excluded_tools": ["write_file"],
+        "model": "inherit",
+        "max_tool_rounds": 7,
+        "isolation": "worktree",
+        "memory_scope": "project",
+        "has_own_memory": True,
+        "parent_knowledge": "readonly",
+        "soul": False,
+        "system_prompt": "Persistent reviewer prompt.",
+        "disable_tools": False,
+        "background": True,
+        "permission_mode": "acceptEdits",
+        "skills": ["security-review"],
+        "initial_prompt": "Load checklist first.",
+        "mcp_servers": ["github"],
+        "hooks": {"Stop": []},
+        "color": "red",
+        "effort": "high",
+    }
+    assert captured["metadata_json"]["definition_name"] == "code-reviewer"
+    assert captured["metadata_json"]["definition_scope"] == "tenant"
 
 
 @pytest.mark.asyncio
@@ -627,7 +711,8 @@ def test_spawn_schema_exposes_run_in_background_and_check_tool_registered():
     assert "run_in_background" in _SPAWN_PARAMETERS["properties"]
     assert "prompt" in _SPAWN_PARAMETERS["properties"]
     assert "subagent_type" in _SPAWN_PARAMETERS["properties"]
-    assert "general-purpose" in _SPAWN_PARAMETERS["properties"]["subagent_type"]["enum"]
+    assert "enum" not in _SPAWN_PARAMETERS["properties"]["subagent_type"]
+    assert "general-purpose" in _SPAWN_PARAMETERS["properties"]["subagent_type"]["description"]
     # check_subagent is a registered @tool (callable handler).
     assert callable(check_subagent)
 
@@ -683,6 +768,162 @@ async def test_resume_persisted_subagent_runs_rehydrates_readonly_worker(monkeyp
             }
         ]
 
+    async def fake_resolve_parent_runtime(_parent_agent_id):
+        raise AssertionError("startup resume must enqueue; worker dispatch resolves runtime")
+
+    async def fake_spawn_subagent(*_args, **_kwargs):
+        raise AssertionError("startup resume must not spawn in the startup process")
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    async def fake_notify(**kwargs):
+        calls["notify"] = kwargs
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
+
+    resumed = await svc.resume_persisted_subagent_runs()
+
+    assert resumed == [run_id]
+    assert calls["updates"][-1][0] == run_id
+    assert calls["updates"][-1][1]["status"] == "resumable"
+    assert calls["updates"][-1][1]["metadata_json"]["resumed_after_restart"] is True
+    assert calls["updates"][-1][1]["metadata_json"]["worker_dispatched"] is False
+    assert calls["notify"] == {"reason": "subagent_resumed_after_restart", "runtime_task_id": run_id}
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_uses_full_spec_snapshot(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    calls: dict[str, object] = {}
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "parent_agent_id": str(parent),
+                "child_agent_name": "code-reviewer",
+                "prompt": "review x",
+                "trace_id": "trace-subagent",
+                "parent_session_id": "parent-session",
+                "metadata": {
+                    "subagent_type": "critic",
+                    "subagent_name": "code-reviewer",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                    "subagent_spec": {
+                        "name": "code-reviewer",
+                        "description": "Use for code review.",
+                        "type": "critic",
+                        "allowed_tools": ["read_file", "grep_search"],
+                        "excluded_tools": ["write_file"],
+                        "model": "inherit",
+                        "max_tool_rounds": 7,
+                        "isolation": "worktree",
+                        "memory_scope": "project",
+                        "system_prompt": "Persistent reviewer prompt.",
+                        "background": True,
+                        "permission_mode": "acceptEdits",
+                        "skills": ["security-review"],
+                        "initial_prompt": "Load checklist first.",
+                        "mcp_servers": ["github"],
+                        "hooks": {"Stop": []},
+                        "color": "red",
+                        "effort": "high",
+                    },
+                },
+            }
+        ]
+
+    async def fake_resolve_parent_runtime(_parent_agent_id):
+        raise AssertionError("startup resume must enqueue; worker dispatch resolves runtime")
+
+    async def fake_spawn_subagent(*_args, **_kwargs):
+        raise AssertionError("startup resume must not spawn in the startup process")
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    async def fake_notify(**kwargs):
+        calls["notify"] = kwargs
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
+
+    resumed = await svc.resume_persisted_subagent_runs()
+
+    assert resumed == [run_id]
+    assert calls["updates"][-1][1]["status"] == "resumable"
+    resumed_snapshot = calls["updates"][-1][1]["metadata_json"]["subagent_spec"]
+    assert resumed_snapshot["name"] == "code-reviewer"
+    assert resumed_snapshot["allowed_tools"] == ["read_file", "grep_search"]
+    assert resumed_snapshot["excluded_tools"] == ["write_file"]
+    assert resumed_snapshot["isolation"] == "worktree"
+    assert resumed_snapshot["permission_mode"] == "acceptEdits"
+    assert resumed_snapshot["skills"] == ["security-review"]
+    assert resumed_snapshot["mcp_servers"] == ["github"]
+    assert resumed_snapshot["hooks"] == {"Stop": []}
+    assert calls["notify"]["runtime_task_id"] == run_id
+
+
+@pytest.mark.asyncio
+async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    child_session_id = str(uuid.uuid4())
+    calls: dict[str, object] = {}
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == run_id
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "running",
+            "parent_agent_id": str(parent),
+            "child_agent_name": "code-reviewer",
+            "prompt": "review x",
+            "trace_id": "trace-subagent",
+            "parent_session_id": "parent-session",
+            "child_session_id": child_session_id,
+            "metadata": {
+                "subagent_type": "critic",
+                "subagent_name": "code-reviewer",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+                "subagent_spec": {
+                    "name": "code-reviewer",
+                    "description": "Use for code review.",
+                    "type": "critic",
+                    "allowed_tools": ["read_file", "grep_search"],
+                    "excluded_tools": ["write_file"],
+                    "model": "inherit",
+                    "max_tool_rounds": 7,
+                    "isolation": "worktree",
+                    "memory_scope": "project",
+                    "system_prompt": "Persistent reviewer prompt.",
+                    "background": True,
+                    "permission_mode": "acceptEdits",
+                    "skills": ["security-review"],
+                    "initial_prompt": "Load checklist first.",
+                    "mcp_servers": ["github"],
+                    "hooks": {"Stop": []},
+                    "color": "red",
+                    "effort": "high",
+                },
+            },
+        }
+
     async def fake_resolve_parent_runtime(parent_agent_id):
         calls["resolved_parent"] = parent_agent_id
         return {
@@ -700,10 +941,698 @@ async def test_resume_persisted_subagent_runs_rehydrates_readonly_worker(monkeyp
         calls["spec"] = spec
         calls["task"] = task
         calls["kwargs"] = kwargs
-        return object()
+        return SimpleNamespace(
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="review done")
+        )
 
     async def fake_update_runtime_task_record(task_id, **kwargs):
         calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    async def fake_update_child_session(**kwargs):
+        calls["child_session_update"] = kwargs
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+
+    dispatched = await svc.dispatch_persisted_subagent_run(run_id)
+
+    assert dispatched is True
+    assert calls["resolved_parent"] == parent
+    assert calls["ctx"].subagent_run_id == run_id
+    assert calls["ctx"].child_session_id == child_session_id
+    spec = calls["spec"]
+    assert spec.name == "code-reviewer"
+    assert spec.description == "Use for code review."
+    assert spec.type == "critic"
+    assert spec.allowed_tools == ("read_file", "grep_search")
+    assert spec.excluded_tools == ("write_file",)
+    assert spec.isolation == "worktree"
+    assert spec.permission_mode == "acceptEdits"
+    assert spec.skills == ("security-review",)
+    assert spec.mcp_servers == ("github",)
+    assert spec.hooks == {"Stop": []}
+    assert calls["task"] == "review x"
+    assert calls["kwargs"]["run_in_background"] is False
+    assert calls["kwargs"]["fork"] == "worktree"
+    assert calls["updates"][0][1]["metadata_json"]["worker_dispatched"] is True
+    assert calls["updates"][-1][1]["status"] == "completed"
+    assert calls["child_session_update"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_general_purpose_with_child_transcript_uses_resume_messages(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    child_session_id = str(uuid.uuid4())
+    resume_messages = [
+        {"role": "user", "content": "original task"},
+        {"role": "assistant", "content": "partial progress"},
+        {"role": "user", "content": "resume the interrupted task"},
+    ]
+    calls: dict[str, object] = {}
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == run_id
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "running",
+            "parent_agent_id": str(parent),
+            "child_agent_name": "general-purpose",
+            "prompt": "resume the interrupted task",
+            "trace_id": "trace-subagent",
+            "parent_session_id": "parent-session",
+            "child_session_id": child_session_id,
+            "metadata": {
+                "subagent_type": "general-purpose",
+                "subagent_name": "general-purpose",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+                "child_session_id": child_session_id,
+                "context_window_tokens": 1_000_000,
+            },
+        }
+
+    async def fake_load_subagent_resume_messages(**kwargs):
+        calls["resume_kwargs"] = kwargs
+        return list(resume_messages)
+
+    async def fake_resolve_parent_runtime(parent_agent_id):
+        return {
+            "ctx_kwargs": {
+                "parent_agent_id": parent_agent_id,
+                "parent_user_id": uuid.uuid4(),
+                "model": object(),
+                "parent_agent_name": "Parent",
+                "tenant_id": uuid.uuid4(),
+            }
+        }
+
+    async def fake_spawn_subagent(ctx, spec, task, **kwargs):
+        calls["ctx"] = ctx
+        calls["spec"] = spec
+        calls["task"] = task
+        calls["kwargs"] = kwargs
+        return SimpleNamespace(
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="resumed")
+        )
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    async def fake_update_child_session(**kwargs):
+        calls["child_session_update"] = kwargs
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_load_subagent_resume_messages", fake_load_subagent_resume_messages, raising=False)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+
+    dispatched = await svc.dispatch_persisted_subagent_run(run_id)
+
+    assert dispatched is True
+    assert calls["resume_kwargs"]["child_session_id"] == child_session_id
+    assert calls["resume_kwargs"]["context_window_tokens"] == 1_000_000
+    assert calls["spec"].type == "general-purpose"
+    assert calls["kwargs"]["resume_messages"] == resume_messages
+    assert calls["task"] == "resume the interrupted task"
+    assert calls["updates"][0][1]["status"] == "running"
+    assert calls["updates"][-1][1]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_load_subagent_resume_messages_uses_budget_not_fixed_event_count(monkeypatch):
+    parent_agent_id = uuid.uuid4()
+    child_session_id = uuid.uuid4().hex
+
+    events = []
+    for i in range(450):
+        events.append(
+            SimpleNamespace(
+                event_type="user_message",
+                role="user",
+                content=f"event-{i}",
+                metadata={},
+            )
+        )
+
+    def fake_replay_t0_session_events(**kwargs):
+        assert kwargs["agent_id"] == parent_agent_id
+        assert kwargs["session_id"] == child_session_id
+        return list(events)
+
+    monkeypatch.setattr("app.memory.t0.ledger.replay_t0_session_events", fake_replay_t0_session_events)
+
+    messages = await svc._load_subagent_resume_messages(
+        parent_agent_id=parent_agent_id,
+        child_session_id=child_session_id,
+        prompt="continue",
+        max_resume_chars=100_000,
+    )
+
+    assert messages[0]["content"] == "event-0"
+    assert any(message["content"] == "event-449" for message in messages)
+    assert messages[-1] == {"role": "user", "content": "continue"}
+
+
+@pytest.mark.asyncio
+async def test_load_subagent_resume_messages_preserves_tool_metadata_without_executable_tool_calls(monkeypatch):
+    parent_agent_id = uuid.uuid4()
+    child_session_id = uuid.uuid4().hex
+    events = [
+        SimpleNamespace(event_type="user_message", role="user", content="start", metadata={}),
+        SimpleNamespace(
+            event_type="tool_call",
+            role="tool",
+            content='{"path":"workspace/a.md"}',
+            metadata={
+                "tool_call_id": "call-1",
+                "tool_name": "read_file",
+                "arguments": {"path": "workspace/a.md"},
+                "status": "started",
+            },
+        ),
+        SimpleNamespace(
+            event_type="tool_result",
+            role="tool",
+            content="file contents",
+            metadata={
+                "tool_call_id": "call-1",
+                "tool_name": "read_file",
+                "status": "completed",
+            },
+        ),
+        SimpleNamespace(event_type="assistant_message", role="assistant", content="done", metadata={}),
+    ]
+
+    monkeypatch.setattr("app.memory.t0.ledger.replay_t0_session_events", lambda **_kwargs: list(events))
+
+    messages = await svc._load_subagent_resume_messages(
+        parent_agent_id=parent_agent_id,
+        child_session_id=child_session_id,
+        prompt="continue",
+        max_resume_chars=100_000,
+    )
+
+    tool_messages = [message for message in messages if "<subagent-transcript-event" in message["content"]]
+    assert tool_messages
+    assert all(message["role"] == "user" for message in tool_messages)
+    assert all("tool_calls" not in message for message in tool_messages)
+    assert '"tool_call_id": "call-1"' in tool_messages[0]["content"]
+    assert '"tool_name": "read_file"' in tool_messages[0]["content"]
+    assert '"arguments": {"path": "workspace/a.md"}' in tool_messages[0]["content"]
+    assert '"status": "completed"' in tool_messages[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_allows_audited_non_idempotent_reconciliation_retry(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    calls: dict[str, object] = {}
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == run_id
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "pending",
+            "parent_agent_id": str(parent),
+            "child_agent_name": "general-purpose",
+            "prompt": "retry approved work",
+            "trace_id": "trace-subagent",
+            "parent_session_id": "parent-session",
+            "metadata": {
+                "subagent_type": "general-purpose",
+                "subagent_name": "general-purpose",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+                "reconciliation_status": "retry_requested",
+                "reconciliation_retry_allowed": True,
+                "reconciliation_retry_contract": {
+                    "schema": "runtime_reconciliation_retry_contract.v1",
+                    "kind": "audited_subagent_restart_retry",
+                    "task_type": "subagent",
+                    "task_id": run_id,
+                    "blocker": "non_idempotent_subagent_type",
+                    "requires_human_approval": True,
+                    "retry_mode": "restart_from_prompt",
+                    "side_effect_risk": "mutating",
+                },
+            },
+        }
+
+    async def fake_load_subagent_resume_messages(**_kwargs):
+        return []
+
+    async def fake_resolve_parent_runtime(parent_agent_id):
+        calls["resolved_parent"] = parent_agent_id
+        return {
+            "ctx_kwargs": {
+                "parent_agent_id": parent_agent_id,
+                "parent_user_id": uuid.uuid4(),
+                "model": object(),
+                "parent_agent_name": "Parent",
+                "tenant_id": uuid.uuid4(),
+            }
+        }
+
+    async def fake_spawn_subagent(ctx, spec, task, **kwargs):
+        calls["ctx"] = ctx
+        calls["spec"] = spec
+        calls["task"] = task
+        calls["kwargs"] = kwargs
+        return SimpleNamespace(
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="retried")
+        )
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    async def fake_update_child_session(**kwargs):
+        calls["child_session_update"] = kwargs
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_load_subagent_resume_messages", fake_load_subagent_resume_messages, raising=False)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+
+    dispatched = await svc.dispatch_persisted_subagent_run(run_id)
+
+    assert dispatched is True
+    assert calls["resolved_parent"] == parent
+    assert calls["spec"].type == "general-purpose"
+    assert calls["task"] == "retry approved work"
+    assert calls["kwargs"]["resume_messages"] is None
+    assert calls["updates"][0][1]["status"] == "running"
+    assert calls["updates"][-1][1]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_spawn(monkeypatch):
+    from app.agents import subagent as subagent_core
+
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    parent_model = SimpleNamespace(provider="openai", model="parent", api_key="k", base_url=None)
+    child_model = SimpleNamespace(provider="openai", model="child", api_key="k", base_url=None)
+    calls: dict[str, object] = {}
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == run_id
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "running",
+            "parent_agent_id": str(parent),
+            "child_agent_name": "code-reviewer",
+            "prompt": "review x",
+            "trace_id": "trace-subagent",
+            "parent_session_id": "parent-session",
+            "metadata": {
+                "subagent_type": "critic",
+                "subagent_name": "code-reviewer",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+                "subagent_spec": {
+                    "name": "code-reviewer",
+                    "description": "Use for code review.",
+                    "type": "critic",
+                    "allowed_tools": ["read_file"],
+                    "model": "child-model",
+                    "isolation": "none",
+                },
+            },
+        }
+
+    async def fake_resolve_parent_runtime(parent_agent_id):
+        assert parent_agent_id == parent
+        return SubagentSpawnContext(
+            parent_agent_id=parent,
+            parent_user_id=uuid.uuid4(),
+            model=parent_model,
+            parent_agent_name="Parent",
+            tenant_id=tenant_id,
+        )
+
+    async def fake_resolve_model_override(model_name, override_tenant_id):
+        calls["model_override"] = (model_name, override_tenant_id)
+        return child_model
+
+    async def fake_invoke(request):
+        calls["request"] = request
+        return SimpleNamespace(content="review done", tokens_used=3)
+
+    async def real_spawn_with_fake_invoke(ctx, spec, task, **kwargs):
+        calls["ctx"] = ctx
+        return await subagent_core.spawn_subagent(ctx, spec, task, **kwargs, invoke=fake_invoke)
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    async def fake_update_child_session(**kwargs):
+        calls["child_session_update"] = kwargs
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "_resolve_model_override", fake_resolve_model_override, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", real_spawn_with_fake_invoke, raising=False)
+    monkeypatch.setattr(subagent_core, "_append_subagent_t0_event", lambda **_kwargs: None)
+    monkeypatch.setattr(subagent_core, "_seal_subagent_t0_segment", lambda **_kwargs: None)
+    monkeypatch.setattr(subagent_core, "_emit_subagent_lifecycle_hook", lambda **_kwargs: None)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+
+    dispatched = await svc.dispatch_persisted_subagent_run(run_id)
+
+    assert dispatched is True
+    assert calls["model_override"] == ("child-model", tenant_id)
+    assert calls["request"].model is child_model
+    assert calls["updates"][-1][1]["status"] == "completed"
+    assert calls["child_session_update"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(monkeypatch, tmp_path):
+    from app.agents import subagent as subagent_core
+    from app.agents import subagent_memory as memory_mod
+
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    parent_model = SimpleNamespace(provider="openai", model="parent", api_key="k", base_url=None)
+    memory_store = SubagentMemoryStore(tmp_path / "subagent-memory")
+    memory_store.record_how("researcher", "Prefer primary filings.", category="source_calibration")
+    calls: dict[str, object] = {}
+
+    async def allowed_memory_write(content, **_kwargs):
+        return SimpleNamespace(
+            rejected=False,
+            reason="",
+            content=content,
+            metadata={"entry_id": "worker-lesson", "sensitivity": "internal"},
+        )
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == run_id
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "running",
+            "parent_agent_id": str(parent),
+            "child_agent_name": "researcher",
+            "prompt": "continue research",
+            "trace_id": "trace-subagent",
+            "parent_session_id": "parent-session",
+            "metadata": {
+                "subagent_type": "explorer",
+                "subagent_name": "researcher",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+                "definition_scope": "agent",
+                "subagent_spec": {
+                    "name": "researcher",
+                    "description": "Use for research.",
+                    "type": "explorer",
+                    "allowed_tools": ["read_file"],
+                    "isolation": "all",
+                    "memory_scope": "project",
+                },
+            },
+        }
+
+    async def fake_resolve_parent_runtime(parent_agent_id):
+        assert parent_agent_id == parent
+        return SubagentSpawnContext(
+            parent_agent_id=parent,
+            parent_user_id=uuid.uuid4(),
+            model=parent_model,
+            parent_agent_name="Parent",
+            tenant_id=tenant_id,
+        )
+
+    async def fake_load_parent_messages_for_fork(**kwargs):
+        calls["parent_message_loader"] = kwargs
+        return [{"role": "user", "content": "parent context survives restart"}]
+
+    async def fake_invoke(request):
+        calls["request"] = request
+        return SimpleNamespace(content="new research lesson", tokens_used=5)
+
+    async def real_spawn_with_fake_invoke(ctx, spec, task, **kwargs):
+        calls["ctx"] = ctx
+        return await subagent_core.spawn_subagent(ctx, spec, task, **kwargs, invoke=fake_invoke)
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    async def fake_update_child_session(**kwargs):
+        calls["child_session_update"] = kwargs
+
+    monkeypatch.setattr(memory_mod, "prepare_memory_write_with_llm", allowed_memory_write)
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "_load_parent_messages_for_fork", fake_load_parent_messages_for_fork, raising=False)
+    monkeypatch.setattr(svc, "memory_store_for_agent", lambda _agent_id: memory_store, raising=False)
+    monkeypatch.setattr(svc, "memory_store_for_tenant", lambda _tenant_id: None, raising=False)
+    monkeypatch.setattr(
+        svc,
+        "make_llm_how_distiller",
+        lambda *_args, **_kwargs: (lambda _run_log: [("pitfall", "Avoid stale restart assumptions.")]),
+        raising=False,
+    )
+    monkeypatch.setattr(svc, "spawn_subagent", real_spawn_with_fake_invoke, raising=False)
+    monkeypatch.setattr(subagent_core, "_append_subagent_t0_event", lambda **_kwargs: None)
+    monkeypatch.setattr(subagent_core, "_seal_subagent_t0_segment", lambda **_kwargs: None)
+    monkeypatch.setattr(subagent_core, "_emit_subagent_lifecycle_hook", lambda **_kwargs: None)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+
+    dispatched = await svc.dispatch_persisted_subagent_run(run_id)
+
+    assert dispatched is True
+    assert calls["request"].messages[0]["content"] == "parent context survives restart"
+    assert "Subagent Memory" in calls["request"].standalone_system_prompt
+    assert "Prefer primary filings." in calls["request"].standalone_system_prompt
+    assert "Avoid stale restart assumptions." in memory_store.load("researcher")
+    assert calls["parent_message_loader"]["session_id"] == "parent-session"
+    assert calls["updates"][-1][1]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_reconciles_general_purpose_without_child_transcript_resume(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    calls: dict[str, object] = {}
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "parent_agent_id": str(parent),
+                "child_agent_name": "analyst",
+                "prompt": "summarize this report",
+                "trace_id": "trace-subagent",
+                "parent_session_id": "parent-session",
+                "metadata": {
+                    "subagent_type": "general-purpose",
+                    "subagent_name": "analyst",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                    "side_effect_risk": "mutating",
+                    "restart_replay_contract": {
+                        "schema": "runtime_restart_replay_contract.v1",
+                        "idempotency_key": f"subagent:{run_id}:restart",
+                        "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                    },
+                    "restart_replay_journal": [
+                        {
+                            "phase": "spawn_intent_recorded",
+                            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                            "task_id": run_id,
+                        }
+                    ],
+                },
+            }
+        ]
+
+    async def fake_resolve_parent_runtime(_parent_agent_id):
+        raise AssertionError("startup resume must enqueue; worker dispatch resolves runtime")
+
+    async def fake_spawn_subagent(*_args, **_kwargs):
+        raise AssertionError("startup resume must not spawn in the startup process")
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    async def fake_notify(**kwargs):  # pragma: no cover - fail-closed runs must not wake worker
+        calls["notify"] = kwargs
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
+
+    resumed = await svc.resume_persisted_subagent_runs()
+
+    assert resumed == []
+    assert calls["updates"][-1][1]["status"] == "needs_reconciliation"
+    assert calls["updates"][-1][1]["metadata_json"]["needs_reconciliation"] is True
+    assert calls["updates"][-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_subagent_type"
+    assert calls["updates"][-1][1]["metadata_json"]["reconciliation_retry_allowed"] is True
+    assert calls["updates"][-1][1]["metadata_json"]["reconciliation_retry_contract"] == {
+        "schema": "runtime_reconciliation_retry_contract.v1",
+        "kind": "audited_subagent_restart_retry",
+        "task_type": "subagent",
+        "task_id": run_id,
+        "blocker": "non_idempotent_subagent_type",
+        "requires_human_approval": True,
+        "retry_mode": "restart_from_prompt",
+        "side_effect_risk": "mutating",
+    }
+    assert calls["updates"][-1][1]["metadata_json"]["subagent_type"] == "general-purpose"
+    assert "notify" not in calls
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_recovers_false_positive_reconciliation_without_known_tool_frames(
+    monkeypatch,
+):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    calls: dict[str, object] = {}
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        assert statuses == ("pending", "running", "needs_reconciliation")
+        return [
+            {
+                "task_id": run_id,
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "needs_reconciliation",
+                "parent_agent_id": str(parent),
+                "child_agent_name": "analyst",
+                "prompt": "summarize this report",
+                "trace_id": "trace-subagent",
+                "parent_session_id": "parent-session",
+                "metadata": {
+                    "subagent_type": "general-purpose",
+                    "subagent_name": "analyst",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                    "orphaned_by_restart": True,
+                    "restart_resume_blocker": "non_idempotent_subagent_type",
+                    "side_effect_risk": "mutating",
+                    "restart_replay_contract": {
+                        "schema": "runtime_restart_replay_contract.v1",
+                        "idempotency_key": f"subagent:{run_id}:restart",
+                        "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                    },
+                    "restart_replay_journal": [
+                        {
+                            "phase": "spawn_intent_recorded",
+                            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                            "task_id": run_id,
+                        }
+                    ],
+                },
+            }
+        ]
+
+    async def fake_resolve_parent_runtime(_parent_agent_id):
+        raise AssertionError("startup resume must enqueue; worker dispatch resolves runtime")
+
+    async def fake_spawn_subagent(*_args, **_kwargs):
+        raise AssertionError("startup resume must not spawn in the startup process")
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    async def fake_notify(**kwargs):
+        calls["notify"] = kwargs
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
+
+    resumed = await svc.resume_persisted_subagent_runs()
+
+    assert resumed == []
+    assert "updates" not in calls
+    assert "notify" not in calls
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_reconciles_general_purpose_with_readonly_last_frame(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    updates: list[tuple[str, dict]] = []
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "parent_agent_id": str(parent),
+                "child_agent_name": "analyst",
+                "prompt": "write file then inspect it",
+                "trace_id": "trace-subagent",
+                "parent_session_id": "parent-session",
+                "metadata": {
+                    "subagent_type": "general-purpose",
+                    "subagent_name": "analyst",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                    "side_effect_risk": "mutating",
+                    "restart_replay_contract": {
+                        "schema": "runtime_restart_replay_contract.v1",
+                        "idempotency_key": f"subagent:{run_id}:restart",
+                        "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                    },
+                    "restart_replay_journal": [
+                        {
+                            "phase": "spawn_intent_recorded",
+                            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                            "task_id": run_id,
+                        }
+                    ],
+                    "last_child_tool_frame": {
+                        "tool_call_id": "call-read",
+                        "tool_name": "read_file",
+                        "arguments": {"path": "workspace/a.md"},
+                        "status": "done",
+                        "origin_channel": "subagent",
+                        "subagent_run_id": run_id,
+                    },
+                },
+            }
+        ]
+
+    async def fake_spawn_subagent(*_args, **_kwargs):  # pragma: no cover - mutating worker must not replay
+        raise AssertionError("general-purpose replay must fail closed without transcript continuation")
+
+    async def fake_resolve_parent_runtime(_parent_agent_id):  # pragma: no cover - must not resolve runtime
+        raise AssertionError("general-purpose replay must fail closed before runtime resolution")
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        updates.append((task_id, kwargs))
         return True
 
     monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
@@ -713,12 +1642,10 @@ async def test_resume_persisted_subagent_runs_rehydrates_readonly_worker(monkeyp
 
     resumed = await svc.resume_persisted_subagent_runs()
 
-    assert resumed == [run_id]
-    assert calls["resolved_parent"] == parent
-    assert calls["spec"].type == "explorer"
-    assert calls["task"] == "read x"
-    assert calls["kwargs"]["run_in_background"] is True
-    assert callable(calls["kwargs"]["on_complete"])
+    assert resumed == []
+    assert updates[-1][0] == run_id
+    assert updates[-1][1]["status"] == "needs_reconciliation"
+    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_subagent_type"
 
 
 @pytest.mark.asyncio
@@ -755,47 +1682,38 @@ async def test_resume_persisted_subagent_runs_restores_readonly_child_pending_fr
             }
         ]
 
-    async def fake_resolve_parent_runtime(parent_agent_id):
-        calls["resolved_parent"] = parent_agent_id
-        return {
-            "ctx_kwargs": {
-                "parent_agent_id": parent,
-                "parent_user_id": uuid.uuid4(),
-                "model": object(),
-                "parent_agent_name": "Parent",
-                "tenant_id": uuid.uuid4(),
-            }
-        }
+    async def fake_resolve_parent_runtime(_parent_agent_id):
+        raise AssertionError("startup resume must enqueue; worker dispatch resolves runtime")
 
-    async def fake_spawn_subagent(ctx, spec, task, **kwargs):
-        calls["ctx"] = ctx
-        calls["spec"] = spec
-        calls["task"] = task
-        calls["kwargs"] = kwargs
-        return object()
+    async def fake_spawn_subagent(*_args, **_kwargs):
+        raise AssertionError("startup resume must not spawn in the startup process")
 
     async def fake_update_runtime_task_record(task_id, **kwargs):
         calls.setdefault("updates", []).append((task_id, kwargs))
         return True
 
+    async def fake_notify(**kwargs):
+        calls["notify"] = kwargs
+
     monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
     monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
 
     resumed = await svc.resume_persisted_subagent_runs()
 
     assert resumed == [run_id]
-    assert calls["resolved_parent"] == parent
-    assert calls["ctx"].subagent_run_id == run_id
-    assert calls["ctx"].child_session_id == child_session_id
-    assert calls["ctx"].recovery_metadata["pending_tool_frame"]["tool_call_id"] == "call-read"
-    assert calls["ctx"].recovery_metadata["pending_tool_frame"]["tool_name"] == "read_file"
-    assert calls["ctx"].recovery_metadata["pending_tool_frame"]["subagent_run_id"] == run_id
+    assert calls["updates"][-1][1]["status"] == "resumable"
     assert calls["updates"][-1][1]["metadata_json"]["child_frame_recovered_after_restart"] is True
+    recovery = calls["updates"][-1][1]["metadata_json"]["recovery_metadata"]
+    assert recovery["pending_tool_frame"]["tool_call_id"] == "call-read"
+    assert recovery["pending_tool_frame"]["tool_name"] == "read_file"
+    assert recovery["pending_tool_frame"]["subagent_run_id"] == run_id
     assert calls["updates"][-1][1]["metadata_json"]["restart_replay_journal"][-1]["phase"] == (
         "child_frame_resume_intent_recorded"
     )
+    assert calls["notify"]["runtime_task_id"] == run_id
 
 
 @pytest.mark.asyncio
@@ -852,6 +1770,8 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_child_pending_
     assert updates[-1][0] == run_id
     assert updates[-1][1]["status"] == "needs_reconciliation"
     assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "child_pending_tool_frame_not_replay_safe"
+    assert updates[-1][1]["metadata_json"].get("reconciliation_retry_allowed") is not True
+    assert "reconciliation_retry_contract" not in updates[-1][1]["metadata_json"]
     assert updates[-1][1]["metadata_json"]["child_pending_tool_frame"]["tool_name"] == "write_file"
     assert session_updates[-1]["run_id"] == run_id
     assert session_updates[-1]["status"] == "needs_reconciliation"
@@ -936,6 +1856,14 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_worker_even_wi
                             "side_effect_risk": "mutating",
                         }
                     ],
+                    "last_child_tool_frame": {
+                        "tool_call_id": "call-write",
+                        "tool_name": "write_file",
+                        "arguments": {"path": "workspace/a.md", "content": "x"},
+                        "status": "done",
+                        "origin_channel": "subagent",
+                        "subagent_run_id": run_id,
+                    },
                 },
             }
         ]
@@ -961,7 +1889,7 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_worker_even_wi
     assert updates[-1][0] == run_id
     assert updates[-1][1]["status"] == "needs_reconciliation"
     assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
-    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_subagent_type"
+    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "child_tool_frame_not_replay_safe"
 
 
 @pytest.mark.asyncio
@@ -1021,3 +1949,92 @@ async def test_resume_persisted_subagent_runs_refuses_mutating_worker_without_re
     assert updates[-1][0] == run_id
     assert updates[-1][1]["status"] == "needs_reconciliation"
     assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_subagent_type"
+
+
+@pytest.mark.asyncio
+async def test_subagent_cancel_received_before_dispatch_registration_is_applied():
+    run_id = uuid.uuid4().hex
+
+    assert svc.apply_remote_subagent_cancel(run_id) is True
+
+    cancel_event = svc._subagent_cancel_event_for_run(run_id)
+    try:
+        assert cancel_event.is_set() is True
+    finally:
+        svc._release_subagent_cancel_event(run_id, cancel_event)
+
+    fresh_event = svc._subagent_cancel_event_for_run(run_id)
+    try:
+        assert fresh_event.is_set() is False
+    finally:
+        svc._release_subagent_cancel_event(run_id, fresh_event)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hydration(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    updates: list[tuple[str, dict]] = []
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == run_id
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "pending",
+            "parent_agent_id": str(parent),
+            "child_agent_name": "scout",
+            "prompt": "read x",
+            "trace_id": "trace-subagent",
+            "parent_session_id": "parent-session",
+            "metadata": {
+                "subagent_type": "explorer",
+                "subagent_name": "scout",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+            },
+        }
+
+    async def fake_load_resume_messages(**_kwargs):
+        return []
+
+    async def fake_resolve_parent_runtime(_parent_agent_id):
+        assert svc.apply_remote_subagent_cancel(run_id) is True
+        return {
+            "ctx_kwargs": {
+                "parent_agent_id": parent,
+                "parent_user_id": uuid.uuid4(),
+                "model": SimpleNamespace(provider="test", model="fake-model"),
+                "parent_agent_name": "Parent",
+                "tenant_id": uuid.uuid4(),
+            }
+        }
+
+    async def fake_hydrate_worker_runtime_context(runtime, **_kwargs):
+        return runtime
+
+    async def fake_spawn_subagent(runtime, spec, *_args, **_kwargs):
+        assert runtime.cancel_event.is_set() is True
+        return SimpleNamespace(result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="ignored"))
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        updates.append((task_id, kwargs))
+        return True
+
+    async def fake_update_child_session_state_for_run(**_kwargs):
+        return None
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_load_subagent_resume_messages", fake_load_resume_messages)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "_hydrate_worker_runtime_context", fake_hydrate_worker_runtime_context)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session_state_for_run)
+
+    dispatched = await svc.dispatch_persisted_subagent_run(run_id)
+
+    assert dispatched is True
+    assert updates[-1][0] == run_id
+    assert updates[-1][1]["status"] == "killed"
+    assert updates[-1][1]["metadata_json"]["cancelled"] is True

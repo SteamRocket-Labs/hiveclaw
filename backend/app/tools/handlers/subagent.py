@@ -14,12 +14,14 @@ on the kernel's default governed tool path, so governance still applies.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
 
 from sqlalchemy import and_, desc, or_, select
 
 from app.agents.subagent import (
+    DEFAULT_SUBAGENT_TOOL_ROUNDS,
     PUBLIC_BUILTIN_SUBAGENT_TYPES,
     SUBAGENT_TYPE_GENERAL_PURPOSE,
     SubagentSpawnContext,
@@ -45,9 +47,15 @@ from app.services.agent_team_runtime_service import (
     send_agent_team_message_from_tool_request,
     spawn_agent_team_member_from_tool_request,
 )
+from app.services.subagent_run_service import (
+    create_subagent_child_session,
+    update_subagent_child_session_state,
+)
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
+
+logger = logging.getLogger(__name__)
 
 
 def _json(payload: dict[str, Any]) -> str:
@@ -158,10 +166,10 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         },
         "subagent_type": {
             "type": "string",
-            "enum": list(PUBLIC_BUILTIN_SUBAGENT_TYPES),
             "description": (
-                "Canonical AgentTool worker type. Defaults to 'general-purpose'. Use 'explorer' for "
-                "read-only reconnaissance and 'critic' for independent verification."
+                "Canonical AgentTool worker type or custom active subagent definition name. Defaults to "
+                "'general-purpose'. Use 'explorer' for read-only reconnaissance, 'critic' for independent "
+                "verification, or pass the exact name of an active agent/tenant subagent definition."
             ),
         },
         "model": {
@@ -178,9 +186,9 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         },
         "type": {
             "type": "string",
-            "enum": list(PUBLIC_BUILTIN_SUBAGENT_TYPES),
             "description": (
-                "Compatibility alias for subagent_type. Prefer subagent_type for new calls."
+                "Compatibility alias for subagent_type. Prefer subagent_type for new calls. Accepts builtin "
+                "types and custom active subagent definition names."
             ),
         },
         "name": {
@@ -200,11 +208,13 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         },
         "isolation": {
             "type": "string",
-            "enum": ["none", "all"],
+            "enum": ["none", "all", "worktree"],
             "description": (
                 "Fork mode. 'none' starts a fresh AgentTool worker with only your prompt. 'all' forks the current "
-                "session context into the child. If subagent_type/type/definition_name is omitted on a foreground "
-                "spawn, 'all' is used; background agents stay fresh unless isolation='all' is explicit."
+                "session context into the child. 'worktree' is the CC-compatible filesystem-isolation marker and "
+                "keeps message context fresh unless paired with an explicit fork design. If subagent_type/type/"
+                "definition_name is omitted on a foreground spawn, 'all' is used; background agents stay fresh "
+                "unless isolation='all' is explicit."
             ),
         },
         "definition_name": {
@@ -217,7 +227,7 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         },
         "max_tool_rounds": {
             "type": "integer",
-            "description": "Optional cap on the subagent's tool rounds (default 8).",
+            "description": f"Optional cap on the subagent's tool rounds (default {DEFAULT_SUBAGENT_TOOL_ROUNDS}).",
         },
         "run_in_background": {
             "type": "boolean",
@@ -264,7 +274,7 @@ def _normalize_spawn_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         subagent_type = SUBAGENT_TYPE_GENERAL_PURPOSE
     subagent_type = canonical_subagent_type(subagent_type, default=SUBAGENT_TYPE_GENERAL_PURPOSE)
     raw_isolation = str(arguments.get("isolation") or "").strip()
-    if raw_isolation not in {"none", "all"}:
+    if raw_isolation not in {"none", "all", "worktree"}:
         raw_isolation = ""
     background = bool(arguments.get("run_in_background"))
     isolation = raw_isolation or ("all" if not explicit_type and not team_name and not background else "none")
@@ -470,17 +480,23 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             tenant_id = None
 
     definition_name = str(normalized_args.get("definition_name") or "").strip()
+    subagent_type_arg = str(normalized_args.get("subagent_type") or SUBAGENT_TYPE_GENERAL_PURPOSE).strip()
     raw_rounds = normalized_args.get("max_tool_rounds")
     max_tool_rounds = int(raw_rounds) if isinstance(raw_rounds, int) else None
     model_override = str(normalized_args.get("model") or "").strip()
 
     definition_scope: str | None = None
-    if definition_name:
+    explicit_subagent_selector = bool(normalized_args.get("_explicit_subagent_type"))
+    candidate_definition_name = definition_name or (subagent_type_arg if explicit_subagent_selector else "")
+    resolved = None
+    if candidate_definition_name:
         try:
-            resolved = resolve_subagent_definition(definition_name, agent_id=agent_id, tenant_id=tenant_id)
+            resolved = resolve_subagent_definition(candidate_definition_name, agent_id=agent_id, tenant_id=tenant_id)
         except ValueError as exc:
-            return _json({"ok": False, "error": str(exc)})
-        if resolved is None:
+            if definition_name:
+                return _json({"ok": False, "error": str(exc)})
+            resolved = None
+        if resolved is None and definition_name:
             # §12.4: attach the merged available list (agent + tenant + builtin
             # template rows) with their whenToUse descriptions so the model can
             # self-correct — builtins spawn via inline `type`, not definition_name.
@@ -499,16 +515,33 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                     ],
                 }
             )
+        if resolved is None and explicit_subagent_selector and subagent_type_arg not in PUBLIC_BUILTIN_SUBAGENT_TYPES:
+            available = list_subagent_definitions(agent_id=agent_id, tenant_id=tenant_id)
+            return _json(
+                {
+                    "ok": False,
+                    "error": (
+                        f"subagent_type {subagent_type_arg!r} is neither a builtin type nor an active "
+                        f"agent/tenant subagent definition. Builtin types: {list(PUBLIC_BUILTIN_SUBAGENT_TYPES)}."
+                    ),
+                    "builtin_types": list(PUBLIC_BUILTIN_SUBAGENT_TYPES),
+                    "available": [
+                        {"name": row["name"], "scope": row["scope"], "description": row.get("description", "")}
+                        for row in available
+                    ],
+                }
+            )
+    if resolved is not None:
         spec = resolved.spec
         if model_override:
             spec.model = model_override
         if normalized_args.get("description"):
             spec.description = str(normalized_args["description"])
-        if str(normalized_args.get("isolation") or "").strip() in {"none", "all"}:
+        if str(normalized_args.get("isolation") or "").strip() in {"none", "all", "worktree"}:
             spec.isolation = str(normalized_args["isolation"])  # type: ignore[assignment]
         definition_scope = resolved.scope
     else:
-        subagent_type = str(normalized_args.get("subagent_type") or SUBAGENT_TYPE_GENERAL_PURPOSE).strip()
+        subagent_type = subagent_type_arg
         if subagent_type not in PUBLIC_BUILTIN_SUBAGENT_TYPES:
             return _json(
                 {
@@ -589,9 +622,9 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     ledger_todo_id = str(normalized_args.get("ledger_todo_id") or "").strip() or None
 
     if bool(normalized_args.get("run_in_background")):
-        # Durable fire-and-forget: record the run so a crash → reconcile → failed
-        # (not a forever-"running" poll), then schedule the worker and return now.
-        from app.services.subagent_run_service import make_run_completer, start_subagent_run
+        # Durable fire-and-forget: enqueue a RuntimeTask and let the shared worker
+        # claim/execute it. The request process must not spawn an in-memory child.
+        from app.services.subagent_run_service import start_subagent_run
 
         started = await start_subagent_run(
             parent_agent_id=agent_id,
@@ -602,19 +635,15 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             parent_session_id=request.context.session_id,
             trace_id=ctx.trace_id,
             context_mode=spec.isolation,
+            spec_snapshot=spec,
+            definition_name=definition_name or spec.name if definition_scope else None,
+            definition_scope=definition_scope,
+            ledger_todo_id=ledger_todo_id,
+            context_window_tokens=getattr(model, "max_input_tokens", None),
         )
         run_id = started.run_id
         ctx.subagent_run_id = run_id
         ctx.child_session_id = started.child_session_id
-        await spawn_subagent(
-            ctx,
-            spec,
-            task,
-            fork=spec.isolation,
-            ledger_todo_id=ledger_todo_id,
-            run_in_background=True,
-            on_complete=make_run_completer(run_id),
-        )
         child_session_id = started.child_session_id
         return _json(
             {
@@ -626,8 +655,8 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                 "type": spec.type,
                 "definition_scope": definition_scope,
                 "team_name": normalized_args.get("team_name") or None,
-                "status": "running",
-                "session_state": "running",
+                "status": "queued",
+                "session_state": "queued",
                 "continuation": {
                     "address": child_session_id,
                     "tool": "send_agent_session_message",
@@ -638,17 +667,54 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                     "parent_session_id": request.context.session_id,
                 },
                 "message": (
-                    f"Subagent {spec.name!r} is running in the background. Keep working and wait for the "
+                    f"Subagent {spec.name!r} is queued for the runtime worker. Keep working and wait for the "
                     "completion wake; use check_subagent only if you explicitly need fallback status inspection."
                 ),
             }
         )
 
+    foreground_run_id = uuid.uuid4().hex
+    child_session_id: str | None = None
+    parent_session_id = str(request.context.session_id or "").strip()
+    can_create_child_session = _uuid_or_none(parent_session_id) is not None and request.context.user_id is not None
+    if can_create_child_session:
+        try:
+            child_session_id = await create_subagent_child_session(
+                parent_agent_id=agent_id,
+                parent_user_id=request.context.user_id,
+                spec_name=spec.name,
+                spec_type=spec.type,
+                task=task,
+                run_id=foreground_run_id,
+                parent_session_id=parent_session_id,
+                tenant_id=tenant_id,
+                trace_id=ctx.trace_id,
+                context_mode=spec.isolation,
+            )
+        except Exception as exc:  # noqa: BLE001 - foreground execution must not depend on session persistence.
+            logger.warning(
+                "Foreground subagent child session creation failed for agent %s session %s: %s",
+                agent_id,
+                parent_session_id,
+                exc,
+            )
+    ctx.child_session_id = child_session_id
+
     handle = await spawn_subagent(ctx, spec, task, fork=spec.isolation, ledger_todo_id=ledger_todo_id)
     result = handle.result
+    if child_session_id:
+        await update_subagent_child_session_state(
+            child_session_id=child_session_id,
+            parent_agent_id=agent_id,
+            status=result.status if result else "failed",
+            summary=(result.content or result.error or "spawn produced no result")[:8000] if result else "spawn produced no result",
+            run_id=foreground_run_id,
+        )
     return _json(
         {
             "ok": bool(result and result.ok),
+            "mode": "foreground",
+            "child_session_id": child_session_id,
             "subagent": spec.name,
             "type": spec.type,
             "definition_scope": definition_scope,
@@ -657,6 +723,16 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             "content": result.content if result else "",
             "error": result.error if result else "spawn produced no result",
             "tokens_used": result.tokens_used if result else 0,
+            "continuation": {
+                "address": child_session_id,
+                "tool": "send_agent_session_message",
+                "interrupt_supported": False,
+                "available": bool(child_session_id),
+            },
+            "transcript_refs": {
+                "session_id": child_session_id,
+                "parent_session_id": request.context.session_id,
+            },
         }
     )
 

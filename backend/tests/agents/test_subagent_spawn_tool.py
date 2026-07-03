@@ -152,6 +152,69 @@ async def test_spawn_tool_resolves_model_and_spawns(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
+
+    async def fake_create_child_session(**kwargs):
+        captured["create_child_session"] = kwargs
+        return "child-session"
+
+    async def fake_update_child_session_state(**kwargs):
+        captured["update_child_session"] = kwargs
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["ctx"] = ctx
+        captured["spec"] = spec
+        captured["task"] = task
+        captured["kwargs"] = kwargs
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="digest", tokens_used=7),
+        )
+
+    async def fake_active_agent_team_contract(_request):
+        return None
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "active_agent_team_contract_from_tool_request", fake_active_agent_team_contract)
+    monkeypatch.setattr(handler_mod, "create_subagent_child_session", fake_create_child_session, raising=False)
+    monkeypatch.setattr(
+        handler_mod,
+        "update_subagent_child_session_state",
+        fake_update_child_session_state,
+        raising=False,
+    )
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    parent_session_id = str(uuid.uuid4())
+    out = await handler_mod.spawn_subagent_tool(
+        _tool_request({"task": "investigate", "name": "scout"}, session_id=parent_session_id)
+    )
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["mode"] == "foreground"
+    assert data["child_session_id"] == "child-session"
+    assert data["continuation"]["address"] == "child-session"
+    assert data["continuation"]["tool"] == "send_agent_session_message"
+    assert data["transcript_refs"]["session_id"] == "child-session"
+    assert captured["ctx"].child_session_id == "child-session"
+    assert captured["create_child_session"]["parent_session_id"] == parent_session_id
+    assert captured["update_child_session"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_spawn_tool_permission_profile_narrows_child_allowed_tools(monkeypatch):
     import app.tools.handlers.subagent as handler_mod
 
@@ -453,6 +516,64 @@ async def test_spawn_tool_can_load_persistent_definition(monkeypatch, tmp_path):
     assert captured["ctx"].memory_store is not None
 
 
+@pytest.mark.asyncio
+async def test_spawn_tool_can_select_persistent_definition_with_subagent_type(monkeypatch, tmp_path):
+    import app.tools.handlers.subagent as handler_mod
+    from app.agents.subagent_definition import definition_store_for_tenant
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+    tenant_id = str(uuid.uuid4())
+    definition_store_for_tenant(tenant_id, agent_data_dir=tmp_path).save(
+        SubagentSpec(
+            name="code-reviewer",
+            description="Use for independent code review.",
+            type="critic",
+            allowed_tools=("read_file", "grep_search"),
+            max_tool_rounds=5,
+            system_prompt="Persistent code reviewer prompt.",
+        )
+    )
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["ctx"] = ctx
+        captured["spec"] = spec
+        captured["task"] = task
+        captured["kwargs"] = kwargs
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="digest", tokens_used=7),
+        )
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    out = await handler_mod.spawn_subagent_tool(
+        _tool_request({"task": "review", "subagent_type": "code-reviewer"}, tenant_id=tenant_id)
+    )
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["definition_scope"] == "tenant"
+    assert data["subagent"] == "code-reviewer"
+    assert data["type"] == "critic"
+    assert captured["task"] == "review"
+    assert captured["spec"].name == "code-reviewer"
+    assert captured["spec"].type == "critic"
+    assert captured["spec"].allowed_tools == ("read_file", "grep_search")
+    assert captured["spec"].system_prompt == "Persistent code reviewer prompt."
+
+
 # --- C1 (§12.4): scope resolution chain in the spawn tool --------------------
 
 
@@ -607,20 +728,11 @@ async def test_spawn_tool_background_returns_child_session_and_wake_first_contra
         captured["start"] = kwargs
         return run_svc.SubagentRunStart(run_id="run-1", child_session_id="child-session")
 
-    def fake_completer(run_id):
-        captured["completer_run_id"] = run_id
+    def fake_completer(_run_id):
+        raise AssertionError("background tool path must enqueue only; worker builds the completion callback")
 
-        async def _complete(_result):
-            return None
-
-        return _complete
-
-    async def fake_spawn(ctx, spec, task, **kwargs):
-        captured["ctx"] = ctx
-        captured["spec"] = spec
-        captured["task"] = task
-        captured["spawn_kwargs"] = kwargs
-        return SubagentHandle(name=spec.name, trace_id="trace", depth=2, result=None)
+    async def fake_spawn(*_args, **_kwargs):
+        raise AssertionError("background tool path must not spawn in the API/request process")
 
     monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
     monkeypatch.setattr(run_svc, "start_subagent_run", fake_start)
@@ -636,15 +748,15 @@ async def test_spawn_tool_background_returns_child_session_and_wake_first_contra
     assert data["mode"] == "background"
     assert data["run_id"] == "run-1"
     assert data["child_session_id"] == "child-session"
-    assert data["session_state"] == "running"
+    assert data["status"] == "queued"
+    assert data["session_state"] == "queued"
     assert data["continuation"]["address"] == "child-session"
     assert data["continuation"]["tool"] == "send_agent_session_message"
     assert "wait for the completion wake" in data["message"]
     assert "poll" not in data["message"].lower()
-    assert captured["start"]["parent_user_id"] == captured["ctx"].parent_user_id
+    assert captured["start"]["parent_user_id"] is not None
     assert captured["start"]["parent_session_id"] == "sess-1"
     assert captured["start"]["context_mode"] == "none"
-    assert captured["completer_run_id"] == "run-1"
 
 
 @pytest.mark.asyncio

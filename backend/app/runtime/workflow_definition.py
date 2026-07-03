@@ -30,6 +30,8 @@ _STEP_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
 
 ConditionOp = Literal["eq", "ne", "gt", "lt", "gte", "lte", "contains", "exists", "in"]
 EffectsLevel = Literal["read_only", "workspace_write", "external", "irreversible"]
+ArgType = Literal["string", "number", "boolean", "array", "object"]
+_ARG_TYPES = {"string", "number", "boolean", "array", "object"}
 
 
 class WorkflowDefinitionError(ValueError):
@@ -95,7 +97,7 @@ class LeafRef(BaseModel):
 
     name: str = Field(min_length=1, max_length=200)
     type: Literal["explorer", "worker", "critic"] = "worker"
-    max_tool_rounds: int | None = Field(None, ge=1, le=64)
+    max_tool_rounds: int | None = Field(None, ge=1)
 
 
 class RetrySpec(BaseModel):
@@ -137,7 +139,7 @@ class FanoutStep(_StepBase):
     leaf: LeafRef
     items_from: str
     per_item_task: str = Field(min_length=1)
-    max_concurrency: int = Field(default=4, ge=1, le=64)
+    max_concurrency: int = Field(default=4, ge=1)
 
     @field_validator("items_from")
     @classmethod
@@ -186,10 +188,64 @@ class BudgetSpec(BaseModel):
     max_wall_clock_seconds: int | None = Field(None, ge=1)
 
 
+def _schema_type(value: Any) -> str | None:
+    if isinstance(value, str):
+        candidate = value.strip()
+        return candidate if candidate in _ARG_TYPES else None
+    if isinstance(value, list):
+        for item in value:
+            candidate = _schema_type(item)
+            if candidate:
+                return candidate
+    return None
+
+
+def _arg_spec_from_json_schema(schema: Any, *, required: bool = False) -> Any:
+    if isinstance(schema, str):
+        schema_type = _schema_type(schema)
+        return {"type": schema_type, "required": required} if schema_type else schema
+    if not isinstance(schema, dict):
+        return schema
+    schema_type = _schema_type(schema.get("type"))
+    if schema_type is None:
+        return schema
+    spec: dict[str, Any] = {"type": schema_type}
+    if required:
+        spec["required"] = True
+    elif "required" in schema:
+        spec["required"] = bool(schema.get("required"))
+    return spec
+
+
+def normalize_args_schema(args_schema: Any) -> Any:
+    """Accept compact Hive arg specs or a standard JSON Schema object.
+
+    Workflow execution only needs top-level argument types and required flags.
+    Nested JSON Schema details stay outside the orchestration contract rather
+    than becoming a partial validator with surprising semantics.
+    """
+    if args_schema is None:
+        return {}
+    if not isinstance(args_schema, dict):
+        return args_schema
+    properties = args_schema.get("properties")
+    if _schema_type(args_schema.get("type")) == "object" and isinstance(properties, dict):
+        required = {
+            str(item).strip()
+            for item in args_schema.get("required", [])
+            if isinstance(item, str) and item.strip()
+        }
+        return {
+            str(name): _arg_spec_from_json_schema(schema, required=str(name) in required)
+            for name, schema in properties.items()
+        }
+    return {str(name): _arg_spec_from_json_schema(schema) for name, schema in args_schema.items()}
+
+
 class ArgSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["string", "number", "boolean", "array", "object"]
+    type: ArgType
     required: bool = False
 
 
@@ -201,6 +257,15 @@ class WorkflowDefinition(BaseModel):
     args_schema: dict[str, ArgSpec] = Field(default_factory=dict)
     default_budget: BudgetSpec = Field(default_factory=BudgetSpec)
     steps: list[Step] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_args_schema_shape(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "args_schema" in data:
+            normalized = dict(data)
+            normalized["args_schema"] = normalize_args_schema(data.get("args_schema"))
+            return normalized
+        return data
 
     @model_validator(mode="after")
     def _unique_step_ids(self) -> "WorkflowDefinition":

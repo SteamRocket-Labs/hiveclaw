@@ -50,6 +50,58 @@ def test_valid_sequence_with_condition_parses():
     assert [s.id for s in definition.steps] == ["extract", "summarize"]
 
 
+def test_leaf_tool_rounds_accept_cc_sized_and_larger_budgets():
+    data = _minimal_definition()
+    data["steps"][0]["leaf"]["max_tool_rounds"] = 200
+    data["steps"][1]["leaf"]["max_tool_rounds"] = 1000
+
+    definition = parse_workflow_definition(data)
+
+    assert definition.steps[0].leaf.max_tool_rounds == 200
+    assert definition.steps[1].leaf.max_tool_rounds == 1000
+
+
+def test_fanout_concurrency_schema_defers_cap_to_admission():
+    data = _minimal_definition()
+    data["args_schema"]["items"] = {"type": "array", "required": True}
+    data["steps"][0] = {
+        "id": "fan",
+        "type": "fanout_step",
+        "leaf": {"name": "scanner", "type": "worker"},
+        "items_from": "args.items",
+        "per_item_task": "Scan {{item}}",
+        "max_concurrency": 128,
+    }
+
+    definition = parse_workflow_definition(data)
+
+    assert definition.steps[0].max_concurrency == 128
+
+
+def test_json_schema_args_schema_is_normalized_to_arg_specs():
+    data = _minimal_definition(
+        args_schema={
+            "type": "object",
+            "properties": {
+                "doc_path": {"type": "string", "description": "Workspace path"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["doc_path"],
+        },
+    )
+
+    definition = parse_workflow_definition(data)
+
+    assert definition.args_schema["doc_path"].type == "string"
+    assert definition.args_schema["doc_path"].required is True
+    assert definition.args_schema["tags"].type == "array"
+    assert definition.args_schema["tags"].required is False
+    assert definition.canonical_dict()["args_schema"] == {
+        "doc_path": {"type": "string", "required": True},
+        "tags": {"type": "array"},
+    }
+
+
 def test_unknown_top_level_field_rejected():
     with pytest.raises(WorkflowDefinitionError):
         parse_workflow_definition(_minimal_definition(python_hook="import os"))

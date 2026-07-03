@@ -23,6 +23,7 @@ _RESTART_RESUMABLE_TASK_TYPES = (
 _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
 RUNTIME_RESTART_REPLAY_CONTRACT_SCHEMA = "runtime_restart_replay_contract.v1"
 RUNTIME_RESTART_REPLAY_JOURNAL_SCHEMA = "runtime_restart_replay_journal.v1"
+RUNTIME_RECONCILIATION_RETRY_CONTRACT_SCHEMA = "runtime_reconciliation_retry_contract.v1"
 
 
 def _coerce_task_id(task_id: str | uuid.UUID) -> uuid.UUID | None:
@@ -225,6 +226,54 @@ def merge_completion_journal(
     return merged
 
 
+def _build_restart_reconciliation_retry_contract(
+    *,
+    task_type: str,
+    task_id: str,
+    blocker: str,
+) -> dict[str, Any] | None:
+    normalized_task_type = str(task_type or "").strip()
+    normalized_blocker = str(blocker or "").strip()
+    if normalized_task_type != "subagent" or normalized_blocker != "non_idempotent_subagent_type":
+        return None
+    return {
+        "schema": RUNTIME_RECONCILIATION_RETRY_CONTRACT_SCHEMA,
+        "kind": "audited_subagent_restart_retry",
+        "task_type": normalized_task_type,
+        "task_id": str(task_id or "").strip(),
+        "blocker": normalized_blocker,
+        "requires_human_approval": True,
+        "retry_mode": "restart_from_prompt",
+        "side_effect_risk": "mutating",
+    }
+
+
+def has_restart_reconciliation_retry_contract(
+    metadata: dict[str, Any] | None,
+    *,
+    task_type: str,
+    task_id: str,
+    blocker: str,
+) -> bool:
+    data = dict(metadata or {})
+    if data.get("reconciliation_status") != "retry_requested":
+        return False
+    if not bool(data.get("reconciliation_retry_allowed")):
+        return False
+    contract = data.get("reconciliation_retry_contract")
+    if not isinstance(contract, dict):
+        return False
+    return (
+        contract.get("schema") == RUNTIME_RECONCILIATION_RETRY_CONTRACT_SCHEMA
+        and contract.get("kind") == "audited_subagent_restart_retry"
+        and str(contract.get("task_type") or "") == str(task_type or "")
+        and str(contract.get("task_id") or "") == str(task_id or "")
+        and str(contract.get("blocker") or "") == str(blocker or "")
+        and contract.get("requires_human_approval") is True
+        and str(contract.get("retry_mode") or "") == "restart_from_prompt"
+    )
+
+
 def build_restart_reconciliation_metadata(
     metadata: dict[str, Any] | None,
     *,
@@ -248,6 +297,17 @@ def build_restart_reconciliation_metadata(
             "side_effect_risk": "mutating",
         }
     )
+    retry_contract = _build_restart_reconciliation_retry_contract(
+        task_type=task_type,
+        task_id=task_id,
+        blocker=blocker,
+    )
+    if retry_contract is not None:
+        merged["reconciliation_retry_allowed"] = True
+        merged["reconciliation_retry_contract"] = retry_contract
+    else:
+        merged.pop("reconciliation_retry_allowed", None)
+        merged.pop("reconciliation_retry_contract", None)
     entry = build_completion_journal_entry(
         task_type=task_type,
         task_id=task_id,

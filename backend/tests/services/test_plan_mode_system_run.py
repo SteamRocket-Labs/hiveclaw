@@ -136,6 +136,7 @@ async def test_launch_arms_plan_mode_with_draft_id_then_resets(monkeypatch):
     assert captured["source"] == mod.SYSTEM_PLAN_RUN_SOURCE
     assert captured["plan_mode_active"] is True
     assert captured["state_plan_id"] == str(plan.id)
+    assert mod.SYSTEM_PLAN_RUN_MAX_ROUNDS == 200
     assert captured["max_tool_rounds"] == mod.SYSTEM_PLAN_RUN_MAX_ROUNDS
     assert captured["agent_id"] == plan.agent_id
     # ContextVar reset after the run — must not leak into a later invocation.

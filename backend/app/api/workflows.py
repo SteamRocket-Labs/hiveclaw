@@ -35,7 +35,7 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
-from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
+from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow, normalize_workflow_args
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.runtime.workflow_preview import record_workflow_preview, validate_workflow_preview_binding
@@ -80,11 +80,12 @@ def _compile_and_assess(payload: WorkflowPreviewRequest | WorkflowStartRequest):
 
     try:
         compiled = compile_workflow(payload.definition)
-        admission = admit_workflow(compiled, args=payload.args, limits=AdmissionLimits.from_settings(get_settings()))
+        args = normalize_workflow_args(compiled, payload.args)
+        admission = admit_workflow(compiled, args=args, limits=AdmissionLimits.from_settings(get_settings()))
     except (WorkflowCompileError, WorkflowAdmissionError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    confirmation = inspect_workflow_confirmation_needs(compiled, args=payload.args)
-    return compiled, admission, confirmation
+    confirmation = inspect_workflow_confirmation_needs(compiled, args=args)
+    return compiled, admission, confirmation, args
 
 
 @router.post("/{agent_id}/workflows/preview")
@@ -95,8 +96,8 @@ async def preview_workflow_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     await check_agent_access(db, current_user, agent_id)
-    compiled, admission, confirmation = _compile_and_assess(payload)
-    args_hash = compute_definition_hash(payload.args)
+    compiled, admission, confirmation, args = _compile_and_assess(payload)
+    args_hash = compute_definition_hash(args)
     return {
         "preview_id": record_workflow_preview(
             agent_id=agent_id,
@@ -121,11 +122,11 @@ async def start_workflow_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     await check_agent_access(db, current_user, agent_id)
-    compiled, _admission, confirmation = _compile_and_assess(payload)
+    compiled, _admission, confirmation, args = _compile_and_assess(payload)
     preview_ok, preview_error, _preview_record = validate_workflow_preview_binding(
         agent_id=agent_id,
         definition=payload.definition,
-        args=payload.args,
+        args=args,
         preview_id=payload.preview_id,
         expected_definition_hash=payload.definition_hash,
         expected_args_hash=payload.args_hash,
@@ -138,7 +139,7 @@ async def start_workflow_endpoint(
         handle = await start_ephemeral_workflow_for_agent(
             agent_id=agent_id,
             definition=payload.definition,
-            args=payload.args,
+            args=args,
             user_id=getattr(current_user, "id", None),
             confirmed_plan_id=payload.confirmed_plan_id,
             ledger_todo_id=payload.ledger_todo_id,

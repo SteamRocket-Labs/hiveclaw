@@ -12,7 +12,7 @@ import json
 import uuid
 from typing import Any
 
-from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
+from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow, normalize_workflow_args
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 
@@ -68,8 +68,8 @@ def admit_dynamic_candidate(
     if not isinstance(lowered_definition, dict):
         raise WorkflowCompileError(f"candidate {_proposal_candidate_id(candidate, index)!r} lowered_definition must be an object")
 
-    preview_args = mapping(candidate.get("args")) or proposal_args
     compiled = compile_workflow(lowered_definition)
+    preview_args = normalize_workflow_args(compiled, mapping(candidate.get("args")) or proposal_args)
     from app.config import get_settings
     from app.services.workflow_launch import inspect_workflow_confirmation_needs
 

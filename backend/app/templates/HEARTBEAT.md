@@ -326,7 +326,7 @@ outcome line.
 </required_output>
 
 <constraints>
-- Maximum 40 tool rounds per tick.
+- Maximum 200 tool rounds per tick.
 - Never skip the required output tags.
 - Never directly mutate accepted T3 files; Platform Gate owns physical commit.
 </constraints>

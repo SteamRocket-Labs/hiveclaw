@@ -34,9 +34,11 @@ import inspect
 import json
 import logging
 import re
+import shutil
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
@@ -131,7 +133,10 @@ _CRITIC_ALLOWED_TOOLS: tuple[str, ...] = (
 _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 
 DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth
-DEFAULT_SUBAGENT_TOOL_ROUNDS = 8
+# CC AgentTool parity: fork agents run with a 200-turn cap, and ordinary
+# general-purpose agents are not starved by an 8-turn local cap. Hive's main
+# agent default is also 200, so subagents inherit the same practical floor.
+DEFAULT_SUBAGENT_TOOL_ROUNDS = 200
 _SOURCE_CAPTURE_TOOLS: frozenset[str] = frozenset({"web_fetch", "firecrawl_fetch", "xcrawl_scrape", "read_webpage"})
 _SAFE_T0_SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 
@@ -139,7 +144,7 @@ _SAFE_T0_SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 #: fresh (subagent_type present) vs full-fork (omitted). The old ``brief`` middle
 #: level (a compressed parent digest) was a self-invented intermediate the LLM
 #: spawn tool never exposed — removed; legacy ``brief`` definitions coerce to ``all``.
-ForkLevel = Literal["none", "all"]
+ForkLevel = Literal["none", "all", "worktree"]
 AgentMemoryScope = Literal["user", "project", "local"]
 SubagentStatus = Literal["completed", "failed", "timed_out", "depth_limited"]
 
@@ -320,6 +325,100 @@ class SubagentSpec:
     # ``allowed_tools`` falls back to the type preset, so this is an explicit
     # switch threaded to ``AgentInvocationRequest.disable_tools``.
     disable_tools: bool = False
+    # CC agent.md frontmatter compatibility. These fields are kept as metadata
+    # on Hive's SubagentSpec even when a lower-level runtime does not yet act on
+    # every one of them, so background resume and list surfaces do not collapse
+    # the selected definition back to a lossy builtin shell.
+    background: bool = False
+    permission_mode: str | None = None
+    skills: tuple[str, ...] = ()
+    initial_prompt: str | None = None
+    mcp_servers: tuple[Any, ...] = ()
+    hooks: dict[str, Any] | None = None
+    color: str | None = None
+    effort: Any | None = None
+
+
+def subagent_spec_to_snapshot(spec: SubagentSpec) -> dict[str, Any]:
+    """Serialize a SubagentSpec into RuntimeTask-safe JSON metadata."""
+
+    return {
+        "name": spec.name,
+        "description": spec.description,
+        "type": spec.type,
+        "allowed_tools": list(spec.allowed_tools),
+        "excluded_tools": list(spec.excluded_tools),
+        "model": spec.model,
+        "max_tool_rounds": spec.max_tool_rounds,
+        "isolation": spec.isolation,
+        "memory_scope": spec.memory_scope,
+        "has_own_memory": spec.has_own_memory,
+        "parent_knowledge": spec.parent_knowledge,
+        "soul": spec.soul,
+        "system_prompt": spec.system_prompt,
+        "disable_tools": spec.disable_tools,
+        "background": spec.background,
+        "permission_mode": spec.permission_mode,
+        "skills": list(spec.skills),
+        "initial_prompt": spec.initial_prompt,
+        "mcp_servers": list(spec.mcp_servers),
+        "hooks": spec.hooks,
+        "color": spec.color,
+        "effort": spec.effort,
+    }
+
+
+def _snapshot_tuple(value: Any) -> tuple[Any, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, tuple):
+        return value
+    if isinstance(value, list):
+        return tuple(value)
+    return (value,)
+
+
+def _snapshot_string_tuple(value: Any) -> tuple[str, ...]:
+    return tuple(str(item).strip() for item in _snapshot_tuple(value) if str(item).strip())
+
+
+def subagent_spec_from_snapshot(value: Any) -> SubagentSpec | None:
+    """Restore a SubagentSpec from RuntimeTask metadata.
+
+    Older records did not persist the full spec; return ``None`` for malformed
+    snapshots so callers can fall back to the legacy name/type reconstruction.
+    """
+
+    if not isinstance(value, dict):
+        return None
+    name = str(value.get("name") or "").strip()
+    if not name:
+        return None
+    hooks = value.get("hooks")
+    return SubagentSpec(
+        name=name,
+        description=str(value.get("description") or ""),
+        type=canonical_subagent_type(value.get("type"), default=SUBAGENT_TYPE_EXPLORER),
+        allowed_tools=_snapshot_string_tuple(value.get("allowed_tools")),
+        excluded_tools=_snapshot_string_tuple(value.get("excluded_tools")),
+        model=str(value["model"]).strip() if value.get("model") is not None else None,
+        max_tool_rounds=value.get("max_tool_rounds") if isinstance(value.get("max_tool_rounds"), int) else None,
+        isolation=str(value.get("isolation") or "none") if str(value.get("isolation") or "") in {"none", "all", "worktree"} else "none",  # type: ignore[arg-type]
+        memory_scope=str(value.get("memory_scope")) if value.get("memory_scope") in {"user", "project", "local"} else None,  # type: ignore[arg-type]
+        has_own_memory=bool(value.get("has_own_memory", True)),
+        parent_knowledge="none" if value.get("parent_knowledge") == "none" else "readonly",
+        soul=bool(value.get("soul", False)),
+        system_prompt=str(value.get("system_prompt") or ""),
+        disable_tools=bool(value.get("disable_tools", False)),
+        background=bool(value.get("background", False)),
+        permission_mode=str(value["permission_mode"]).strip() if value.get("permission_mode") is not None else None,
+        skills=_snapshot_string_tuple(value.get("skills")),
+        initial_prompt=str(value["initial_prompt"]).strip() if value.get("initial_prompt") is not None else None,
+        mcp_servers=_snapshot_tuple(value.get("mcp_servers")),
+        hooks=dict(hooks) if isinstance(hooks, dict) else None,
+        color=str(value["color"]).strip() if value.get("color") is not None else None,
+        effort=value.get("effort"),
+    )
 
 
 @dataclass(slots=True)
@@ -346,6 +445,7 @@ class SubagentSpawnContext:
     child_session_id: str | None = None
     recovery_metadata: dict[str, Any] = field(default_factory=dict)
     parent_messages: list[dict] = field(default_factory=list)  # source for fork=all
+    cancel_event: asyncio.Event | None = None
 
 
 @dataclass(slots=True)
@@ -370,6 +470,7 @@ class SubagentJob:
     spec: SubagentSpec
     task: str
     context_brief: str | None = None  # explicit parent-context override for fork=all
+    resume_messages: list[dict[str, Any]] | None = None
 
 
 @dataclass(slots=True)
@@ -447,6 +548,8 @@ async def _maybe_await(value: Any) -> Any:
 
 async def _resolve_child_model(ctx: SubagentSpawnContext, spec: SubagentSpec) -> Any:
     if not spec.model:
+        return ctx.model
+    if str(spec.model).strip().lower() == "inherit":
         return ctx.model
     if ctx.model_resolver is None:
         raise ValueError(f"subagent model override {spec.model!r} requires a model_resolver")
@@ -565,6 +668,9 @@ def _build_subagent_messages(
     * ``none`` — task only (cleanest, the explorer default; a fresh worker).
     * ``all`` — full-context fork: the parent's recent messages verbatim (or an
       explicit ``context_brief`` when given), then the task.
+    * ``worktree`` — CC-compatible filesystem-isolation marker; message context
+      remains fresh like ``none``. The workspace layer owns the actual file
+      isolation contract.
     """
 
     messages: list[dict] = []
@@ -591,6 +697,72 @@ def _subagent_t0_session_id(ctx: SubagentSpawnContext, spec: SubagentSpec, child
         name=_safe_subagent_t0_id(spec.name, max_len=48),
         depth=child_depth,
     )
+
+
+def _subagent_worktree_path(ctx: SubagentSpawnContext, spec: SubagentSpec, child_depth: int) -> Path:
+    from app.config import get_settings
+
+    parent_root = Path(get_settings().AGENT_DATA_DIR) / str(ctx.parent_agent_id)
+    anchor = _safe_subagent_t0_id(ctx.trace_id or ctx.parent_session_id or uuid.uuid4().hex, max_len=80)
+    name = _safe_subagent_t0_id(spec.name, max_len=48)
+    return parent_root / "runtime_artifacts" / "subagent_worktrees" / f"{anchor}-{name}-d{child_depth}"
+
+
+def _copy_worktree_entry(source: Path, target: Path) -> None:
+    if source.is_dir():
+        shutil.copytree(source, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    elif source.is_file():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def _prepare_subagent_worktree(ctx: SubagentSpawnContext, spec: SubagentSpec, child_depth: int) -> Path:
+    from app.config import get_settings
+
+    parent_root = Path(get_settings().AGENT_DATA_DIR) / str(ctx.parent_agent_id)
+    worktree_root = _subagent_worktree_path(ctx, spec, child_depth)
+    if worktree_root.exists():
+        shutil.rmtree(worktree_root)
+    worktree_root.mkdir(parents=True, exist_ok=True)
+
+    # Hive workspaces are not guaranteed to be git repositories. Snapshot the
+    # user-working surface that file tools operate on; platform-managed memory
+    # stays outside this isolated write area.
+    for entry_name in ("workspace", "tasks.json"):
+        source = parent_root / entry_name
+        if source.exists():
+            _copy_worktree_entry(source, worktree_root / entry_name)
+    (worktree_root / "workspace").mkdir(parents=True, exist_ok=True)
+    return worktree_root
+
+
+def _build_worktree_tool_executor(ctx: SubagentSpawnContext, worktree_path: Path):
+    async def _execute(tool_name: str, arguments: dict, **kwargs: Any) -> Any:
+        from app.services.agent_tools import execute_tool
+
+        round_state = dict(kwargs.get("round_state") or {})
+        round_state["subagent_worktree_path"] = str(worktree_path)
+        return await execute_tool(
+            tool_name,
+            arguments,
+            agent_id=ctx.parent_agent_id,
+            user_id=ctx.parent_user_id,
+            tool_call_id=kwargs.get("tool_call_id"),
+            event_callback=kwargs.get("event_callback"),
+            delegation_token=kwargs.get("delegation_token") or ctx.delegation_token,
+            session_id=ctx.child_session_id or ctx.parent_session_id,
+            permission_profile=kwargs.get("permission_profile"),
+            turn_id=kwargs.get("turn_id"),
+            runtime_task_id=ctx.subagent_run_id,
+            origin_channel="subagent",
+            round_state=round_state,
+            t0_refs=tuple(kwargs.get("t0_refs") or ()),
+            plan_mode_interactive_available=bool(kwargs.get("plan_mode_interactive_available", False)),
+            trace_metadata_sink=kwargs.get("trace_metadata_sink"),
+            workspace_override=worktree_path,
+        )
+
+    return _execute
 
 
 def _append_subagent_t0_event(
@@ -752,8 +924,26 @@ async def _spawn_one(
             error=str(exc),
         )
 
-    messages = _build_subagent_messages(
-        job.task, fork=fork, context_brief=job.context_brief, parent_messages=ctx.parent_messages
+    worktree_path: Path | None = None
+    tool_executor = ctx.tool_executor
+    if spec.isolation == "worktree" and tool_executor is None:
+        try:
+            worktree_path = _prepare_subagent_worktree(ctx, spec, child_depth)
+            tool_executor = _build_worktree_tool_executor(ctx, worktree_path)
+        except Exception as exc:
+            return SubagentResult(
+                name=spec.name,
+                type=spec.type,
+                status="failed",
+                error=f"failed to prepare subagent worktree: {exc}",
+            )
+
+    messages = (
+        list(job.resume_messages)
+        if job.resume_messages is not None
+        else _build_subagent_messages(
+            job.task, fork=fork, context_brief=job.context_brief, parent_messages=ctx.parent_messages
+        )
     )
     t0_session_id = _subagent_t0_session_id(ctx, spec, child_depth)
     for idx, message in enumerate(messages):
@@ -888,6 +1078,7 @@ async def _spawn_one(
                 "subagent_run_id": ctx.subagent_run_id,
                 "child_session_id": ctx.child_session_id,
                 "parent_session_id": ctx.parent_session_id,
+                "worktree_path": str(worktree_path) if worktree_path is not None else None,
                 "origin_channel": "subagent",
                 **dict(ctx.recovery_metadata or {}),
             },
@@ -899,7 +1090,8 @@ async def _spawn_one(
         disable_tools=spec.disable_tools,
         max_tool_rounds=rounds,
         delegation_token=ctx.delegation_token,
-        tool_executor=ctx.tool_executor,
+        tool_executor=tool_executor,
+        cancel_event=ctx.cancel_event,
     )
 
     try:
@@ -1079,10 +1271,10 @@ def _background_subagent_capacity() -> int:
             if task_type.strip() != "subagent":
                 continue
             return max(1, int(value.strip()))
-        worker_limit = int(getattr(settings, "RUNTIME_TASK_WORKER_MAX_CONCURRENT", 8) or 8)
-        return max(1, min(worker_limit, 8))
+        worker_limit = int(getattr(settings, "RUNTIME_TASK_WORKER_MAX_CONCURRENT", 16) or 16)
+        return max(1, worker_limit)
     except Exception:
-        return 8
+        return 16
 
 
 def _background_subagent_semaphore() -> asyncio.Semaphore:
@@ -1191,6 +1383,7 @@ async def spawn_subagent(
     context_brief: str | None = None,
     run_in_background: bool = False,
     ledger_todo_id: str | None = None,
+    resume_messages: list[dict[str, Any]] | None = None,
     on_complete: Callable[[SubagentResult], Awaitable[None]] | None = None,
     invoke: InvokeAgent = invoke_agent,
 ) -> SubagentHandle:
@@ -1212,7 +1405,7 @@ async def spawn_subagent(
       terminal status back (owner-mismatch fail-closed).
     """
 
-    job = SubagentJob(spec=spec, task=task, context_brief=context_brief)
+    job = SubagentJob(spec=spec, task=task, context_brief=context_brief, resume_messages=resume_messages)
     _stamp_subagent_ledger_todo(ctx, spec.name, ledger_todo_id)
 
     if not run_in_background:

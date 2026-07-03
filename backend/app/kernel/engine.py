@@ -443,7 +443,10 @@ def _build_runtime_attachment_sections(agent_id: Any, session_context: Any | Non
     try:
         manifest = _load_and_hydrate_recovery_manifest(agent_id, session_context)
         if manifest is not None:
-            manifest_text = manifest.to_restoration_text()
+            metadata = getattr(session_context, "metadata", {}) or {}
+            budget_profile = metadata.get("context_budget") if isinstance(metadata, dict) else None
+            restore_budget = getattr(budget_profile, "restore_budget_chars", 20000)
+            manifest_text = manifest.to_restoration_text(budget_chars=restore_budget)
             if manifest_text:
                 sections.append(f"### Recovery Manifest\n{manifest_text}")
     except Exception as exc:

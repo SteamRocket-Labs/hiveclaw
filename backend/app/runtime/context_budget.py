@@ -10,7 +10,7 @@ _DEFAULT_SYSTEM_PROMPT_CHAR_BUDGET = 60000
 _SYSTEM_PROMPT_CONTEXT_RATIO = 0.20
 _CHARS_PER_TOKEN = 3.5
 _MIN_SYSTEM_PROMPT_BUDGET = 15000
-_MAX_SYSTEM_PROMPT_BUDGET = 180000  # ~51K tokens — allows 256K models to use full 20% ratio
+_MAX_SYSTEM_PROMPT_BUDGET = 350000  # ~100K tokens — lets 1M-window models use materially more context
 
 
 def compute_system_prompt_budget(context_window_tokens: int | None) -> int:
@@ -510,32 +510,39 @@ def compute_context_budget(
         external_base = 3
 
     complexity_bonus = {"low": 0, "medium": 1, "high": 2}[profile.complexity]
-    large_context_bonus = 2 if system_budget >= 80000 else 0
+    if system_budget >= 300000:
+        large_context_bonus = 8
+    elif system_budget >= 160000:
+        large_context_bonus = 4
+    elif system_budget >= 80000:
+        large_context_bonus = 2
+    else:
+        large_context_bonus = 0
 
     active_tool_groups_budget = _clamp(
         int(system_budget * 0.04) + active_pack_count * 500,
         2000,
-        12000,
+        24000,
     )
-    retrieval_budget = _clamp(int(system_budget * retrieval_ratio), 3000, 24000)
-    knowledge_budget = _clamp(int(system_budget * knowledge_ratio), 1500, 16000)
-    memory_budget = _clamp(int(system_budget * memory_ratio), 12000, 36000)
-    skill_catalog_budget = _clamp(int(system_budget * 0.08), 4000, 12000)
+    retrieval_budget = _clamp(int(system_budget * retrieval_ratio), 3000, 48000)
+    knowledge_budget = _clamp(int(system_budget * knowledge_ratio), 1500, 40000)
+    memory_budget = _clamp(int(system_budget * memory_ratio), 12000, 96000)
+    skill_catalog_budget = _clamp(int(system_budget * 0.08), 4000, 32000)
     if profile.name == "self_evolution":
-        skill_catalog_budget = _clamp(int(system_budget * 0.11), 6000, 16000)
-    soul_budget = _clamp(int(system_budget * 0.22), 16000, 32000)
-    relationships_budget = _clamp(int(system_budget * 0.035), 2000, 6000)
-    company_info_budget = _clamp(int(system_budget * 0.07), 5000, 12000)
-    org_structure_budget = _clamp(int(system_budget * 0.035), 2000, 6000)
-    focus_budget = _clamp(int(system_budget * focus_ratio), 3000, 12000)
-    runtime_triggers_budget = _clamp(int(system_budget * triggers_ratio), 2000, 10000)
-    restore_budget = _clamp(int(system_budget * restore_ratio), 12000, 100000)
-    restore_per_file_cap = _clamp(int(restore_budget * 0.2), 2500, 12000)
+        skill_catalog_budget = _clamp(int(system_budget * 0.11), 6000, 48000)
+    soul_budget = _clamp(int(system_budget * 0.22), 16000, 80000)
+    relationships_budget = _clamp(int(system_budget * 0.035), 2000, 16000)
+    company_info_budget = _clamp(int(system_budget * 0.07), 5000, 32000)
+    org_structure_budget = _clamp(int(system_budget * 0.035), 2000, 16000)
+    focus_budget = _clamp(int(system_budget * focus_ratio), 3000, 36000)
+    runtime_triggers_budget = _clamp(int(system_budget * triggers_ratio), 2000, 24000)
+    restore_budget = _clamp(int(system_budget * restore_ratio), 12000, 240000)
+    restore_per_file_cap = _clamp(int(restore_budget * 0.2), 2500, 40000)
 
-    semantic_limit = _clamp(semantic_base + complexity_bonus * 2 + large_context_bonus * 2, 8, 32)
-    episodic_limit = _clamp(episodic_base + complexity_bonus + large_context_bonus, 3, 8)
-    external_limit = _clamp(external_base + complexity_bonus + large_context_bonus, 2, 10)
-    rerank_max_select = _clamp(max(semantic_limit // 2, 8), 5, 12)
+    semantic_limit = _clamp(semantic_base + complexity_bonus * 2 + large_context_bonus * 2, 8, 64)
+    episodic_limit = _clamp(episodic_base + complexity_bonus + large_context_bonus, 3, 16)
+    external_limit = _clamp(external_base + complexity_bonus + large_context_bonus, 2, 24)
+    rerank_max_select = _clamp(max(semantic_limit // 2, 8), 5, 24)
 
     return ContextBudget(
         task_profile=profile,

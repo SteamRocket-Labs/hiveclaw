@@ -806,6 +806,32 @@ def test_runtime_attachment_sections_include_persisted_recovery_manifest(tmp_pat
     assert "call-running" in joined
 
 
+def test_runtime_attachment_sections_use_context_restore_budget(tmp_path: Path, monkeypatch) -> None:
+    from app.kernel.engine import _build_runtime_attachment_sections
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    manifest_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-recover",
+                "recent_reads": ["x" * 24_000 + " SENTINEL_RESTORE_BUDGET"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    session = SessionContext(session_id="session-recover")
+    session.metadata["context_budget"] = SimpleNamespace(restore_budget_chars=60_000)
+
+    sections = _build_runtime_attachment_sections(agent_id, session)
+
+    assert "SENTINEL_RESTORE_BUDGET" in "\n\n".join(sections)
+
+
 @pytest.mark.asyncio
 async def test_compress_messages_with_lifecycle_hooks_emits_pre_and_post(monkeypatch):
     from app.kernel.engine import _compress_messages_with_lifecycle_hooks

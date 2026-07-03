@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.runtime.workflow_compiler import CompiledWorkflow
+from app.runtime.workflow_definition import ArgSpec
 from app.runtime.workflow_definition import AgentStep, FanoutStep, WaitUntilStep
 
 _ARG_TYPE_CHECKS = {
@@ -105,6 +106,22 @@ def _validate_args(compiled: CompiledWorkflow, args: dict) -> None:
         raise WorkflowAdmissionError(f"args: unknown arguments {sorted(unknown)}")
 
 
+def _normalize_arg_value(spec: ArgSpec, value: Any) -> Any:
+    if spec.type == "array" and isinstance(value, dict) and set(value) == {"item"} and isinstance(value.get("item"), list):
+        return value["item"]
+    return value
+
+
+def normalize_workflow_args(compiled: CompiledWorkflow, args: dict) -> dict:
+    if not isinstance(args, dict):
+        return args
+    normalized = dict(args)
+    for key, spec in compiled.definition.args_schema.items():
+        if key in normalized:
+            normalized[key] = _normalize_arg_value(spec, normalized[key])
+    return normalized
+
+
 def admit_workflow(
     compiled: CompiledWorkflow,
     *,
@@ -112,6 +129,7 @@ def admit_workflow(
     limits: AdmissionLimits,
     allowed_leaves: set[str] | None = None,
 ) -> AdmissionResult:
+    args = normalize_workflow_args(compiled, args)
     _validate_args(compiled, args)
 
     budget = compiled.definition.default_budget.max_total_tokens

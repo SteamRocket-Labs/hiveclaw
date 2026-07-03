@@ -244,6 +244,48 @@ async def test_task_stop_cancels_runtime_task_record(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_task_stop_publishes_subagent_cancel(tmp_path, monkeypatch):
+    from app.tools.handlers import command_parity
+
+    runtime_task_id = str(uuid4())
+    parent_agent_id = uuid4()
+    published: list[dict] = []
+
+    async def fake_get_runtime_task_record(task_id: str):
+        assert task_id == runtime_task_id
+        return {
+            "task_id": runtime_task_id,
+            "task_type": "subagent",
+            "status": "running",
+            "parent_agent_id": str(parent_agent_id),
+        }
+
+    async def fake_update_runtime_task_record(_task_id: str, **_fields):
+        return True
+
+    async def fake_publish_subagent_cancel(**kwargs):
+        published.append(kwargs)
+
+    monkeypatch.setattr(command_parity, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(command_parity, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.services.runtime_control_bus.publish_subagent_cancel", fake_publish_subagent_cancel)
+
+    result = await command_parity.task_stop(
+        _request(
+            "task_stop",
+            {"runtime_task_id": runtime_task_id, "reason": "stop subagent"},
+            tmp_path,
+            agent_id=parent_agent_id,
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["status"] == "killed"
+    assert published == [{"run_id": runtime_task_id, "parent_agent_id": str(parent_agent_id)}]
+
+
+@pytest.mark.asyncio
 async def test_advanced_plan_tool_returns_runtime_handoff_payload(tmp_path):
     from app.tools.handlers.command_parity import advanced_plan
 

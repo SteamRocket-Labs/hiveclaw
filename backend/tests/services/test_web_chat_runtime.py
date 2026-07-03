@@ -1332,6 +1332,9 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
         def add(self, value):
             added.append(value)
 
+        async def flush(self):
+            return None
+
         async def commit(self):
             self.commits += 1
 
@@ -1431,6 +1434,9 @@ async def test_finalize_web_chat_run_binds_recent_workspace_artifacts(monkeypatc
 
     async def fake_create_chat_artifacts_for_message(**kwargs):
         artifact_calls.append(kwargs)
+        materialized_messages = [item for item in added if getattr(item, "role", None) == "assistant"]
+        assert materialized_messages
+        assert kwargs["message_id"] == materialized_messages[0].id
         return [
             {
                 "artifact_id": "artifact-1",
@@ -4352,3 +4358,80 @@ async def test_deliver_run_result_skips_current_web_session_delivery_target(monk
 
     await runtime._deliver_run_result_to_channel(uuid4(), session_id, "执行完成")
     assert calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_web_chat_stream_micro_batcher_coalesces_chunk_bursts():
+    import app.services.web_chat_runtime as runtime
+
+    sent: list[tuple[str, str, bool]] = []
+    now = [100.0]
+
+    async def send(kind: str, text: str, *, reset: bool = False) -> None:
+        sent.append((kind, text, reset))
+
+    batcher = runtime._WebChatStreamMicroBatcher(
+        send,
+        flush_interval_seconds=10,
+        max_chars=100,
+        clock=lambda: now[0],
+    )
+
+    await batcher.emit_chunk("hel")
+    await batcher.emit_chunk("lo")
+
+    assert sent == []
+
+    await batcher.flush()
+
+    assert sent == [("chunk", "hello", False)]
+
+
+@pytest.mark.asyncio
+async def test_web_chat_stream_micro_batcher_flushes_sparse_delta_after_interval():
+    import app.services.web_chat_runtime as runtime
+
+    sent: list[tuple[str, str, bool]] = []
+
+    async def send(kind: str, text: str, *, reset: bool = False) -> None:
+        sent.append((kind, text, reset))
+
+    batcher = runtime._WebChatStreamMicroBatcher(
+        send,
+        flush_interval_seconds=0.001,
+        max_chars=100,
+    )
+
+    await batcher.emit_chunk("slow")
+    await asyncio.sleep(0.02)
+
+    assert sent == [("chunk", "slow", False)]
+
+
+@pytest.mark.asyncio
+async def test_web_chat_stream_micro_batcher_flushes_before_reset_and_preserves_order():
+    import app.services.web_chat_runtime as runtime
+
+    sent: list[tuple[str, str, bool]] = []
+
+    async def send(kind: str, text: str, *, reset: bool = False) -> None:
+        sent.append((kind, text, reset))
+
+    batcher = runtime._WebChatStreamMicroBatcher(
+        send,
+        flush_interval_seconds=10,
+        max_chars=100,
+        clock=lambda: 100.0,
+    )
+
+    await batcher.emit_chunk("a")
+    await batcher.emit_thinking("think")
+    await batcher.emit_chunk("b")
+    await batcher.reset_chunk()
+
+    assert sent == [
+        ("chunk", "a", False),
+        ("thinking", "think", False),
+        ("chunk", "b", False),
+        ("chunk", "", True),
+    ]

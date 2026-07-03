@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from app.agents.subagent import (
+    DEFAULT_SUBAGENT_TOOL_ROUNDS,
     SUBAGENT_TYPE_EXPLORER,
     SubagentBudget,
     SubagentHandle,
@@ -75,6 +77,32 @@ def test_explorer_spec_constructs_explorer():
     assert spec.type == SUBAGENT_TYPE_EXPLORER
     assert spec.isolation == "none"
     assert spec.max_tool_rounds == 12
+
+
+def test_default_subagent_tool_rounds_match_cc_fork_capacity():
+    """Subagents must not be starved below the CC AgentTool capacity.
+
+    CC's fork agent is capped at 200 turns and ordinary general-purpose agents
+    are not given an 8-turn hard cap. Hive's main agent default is already 200,
+    so the subagent budget must inherit that same practical floor.
+    """
+
+    assert DEFAULT_SUBAGENT_TOOL_ROUNDS == 200
+    assert SubagentBudget().max_tool_rounds == 200
+
+
+def test_background_subagent_capacity_falls_back_to_runtime_worker_limit(monkeypatch):
+    import app.agents.subagent as subagent_module
+
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(
+            RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS="workflow=16,delegation=16",
+            RUNTIME_TASK_WORKER_MAX_CONCURRENT=24,
+        ),
+    )
+
+    assert subagent_module._background_subagent_capacity() == 24
 
 
 # --- tool resolution --------------------------------------------------------
@@ -455,6 +483,77 @@ async def test_spawn_uses_spec_model_override():
     await _spawn_one(ctx, SubagentJob(spec=spec, task="t"), invoke=_ok_invoke(capture=captured))
 
     assert captured[0].model is child_model
+
+
+@pytest.mark.asyncio
+async def test_spawn_treats_inherit_model_as_parent_model():
+    captured: list = []
+    parent_model = SimpleNamespace(model="parent")
+
+    async def resolve_model(_model_name: str):  # pragma: no cover - inherit must not resolve as a named model
+        raise AssertionError("model='inherit' must use the parent model directly")
+
+    ctx = _ctx(model=parent_model, model_resolver=resolve_model)
+    spec = SubagentSpec(name="e", type="explorer", model="inherit")
+
+    await _spawn_one(ctx, SubagentJob(spec=spec, task="t"), invoke=_ok_invoke(capture=captured))
+
+    assert captured[0].model is parent_model
+
+
+@pytest.mark.asyncio
+async def test_spawn_threads_cancel_event_to_invocation_request():
+    captured: list = []
+    cancel_event = asyncio.Event()
+    ctx = _ctx(cancel_event=cancel_event)
+
+    await _spawn_one(ctx, SubagentJob(spec=explorer_spec("e"), task="t"), invoke=_ok_invoke(capture=captured))
+
+    assert captured[0].cancel_event is cancel_event
+
+
+@pytest.mark.asyncio
+async def test_spawn_worktree_isolation_uses_distinct_workspace(monkeypatch, tmp_path):
+    parent_agent_id = uuid.uuid4()
+    parent_root = tmp_path / str(parent_agent_id)
+    (parent_root / "workspace").mkdir(parents=True)
+    (parent_root / "workspace" / "base.txt").write_text("base", encoding="utf-8")
+    captured: list = []
+
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    ctx = _ctx(parent_agent_id=parent_agent_id)
+    spec = SubagentSpec(name="worker", type="general-purpose", isolation="worktree")
+
+    result = await _spawn_one(
+        ctx,
+        SubagentJob(spec=spec, task="edit safely"),
+        fork="worktree",
+        invoke=_ok_invoke(capture=captured),
+    )
+
+    assert result.ok
+    req = captured[0]
+    assert req.tool_executor is not None
+    worktree_path = Path(req.session_context.metadata["worktree_path"])
+    assert worktree_path != parent_root
+    assert worktree_path.exists()
+    assert (worktree_path / "workspace" / "base.txt").read_text(encoding="utf-8") == "base"
+
+    executor_seen: dict = {}
+
+    async def fake_execute_tool(tool_name, arguments, **kwargs):
+        executor_seen["tool_name"] = tool_name
+        executor_seen["arguments"] = arguments
+        executor_seen["workspace_override"] = kwargs.get("workspace_override")
+        return "ok"
+
+    monkeypatch.setattr("app.services.agent_tools.execute_tool", fake_execute_tool)
+    assert await req.tool_executor("read_file", {"path": "workspace/base.txt"}) == "ok"
+    assert executor_seen["workspace_override"] == worktree_path
 
 
 @pytest.mark.asyncio

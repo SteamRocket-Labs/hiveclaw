@@ -12,6 +12,7 @@ import time
 import uuid
 from typing import Any
 
+from app.runtime.workflow_admission import normalize_workflow_args
 from app.runtime.workflow_compiler import compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 
@@ -75,6 +76,7 @@ def validate_workflow_preview_binding(
 ) -> tuple[bool, str, dict[str, Any] | None]:
     compiled = compile_workflow(definition)
     actual_definition_hash = compiled.definition_hash
+    args = normalize_workflow_args(compiled, args)
     actual_args_hash = compute_definition_hash(args)
 
     if preview_id:

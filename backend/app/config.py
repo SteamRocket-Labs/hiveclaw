@@ -79,11 +79,11 @@ class Settings(BaseSettings):
     HIVE_PROCESS_ROLE: str = "runtime"
     RUNTIME_TASK_WORKER_ENABLED: bool = True
     RUNTIME_TASK_WORKER_ID: str = ""
-    RUNTIME_TASK_WORKER_BATCH_SIZE: int = 4
-    RUNTIME_TASK_WORKER_MAX_CONCURRENT: int = 8
+    RUNTIME_TASK_WORKER_BATCH_SIZE: int = 8
+    RUNTIME_TASK_WORKER_MAX_CONCURRENT: int = 16
     RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS: str = (
-        "web_chat_turn=8,goal_continuation=4,team_member=4,advanced_plan=2,"
-        "workflow=8,delegation=16,business_task=4,subagent=8"
+        "web_chat_turn=16,goal_continuation=8,team_member=8,advanced_plan=4,"
+        "workflow=16,delegation=16,business_task=8,subagent=16"
     )
     RUNTIME_TASK_CLAIM_LEASE_SECONDS: int = 180
     RUNTIME_TASK_CLAIM_POLL_SECONDS: float = 1.0
@@ -184,10 +184,10 @@ class Settings(BaseSettings):
     # admission rejects (never warns) past these. Env-overridable per deploy.
     WORKFLOW_RUNTIME_ENABLED: bool = True
     WORKFLOW_TRIGGER_ENABLED: bool = True
-    WORKFLOW_MAX_RUN_BUDGET_TOKENS: int = 2_000_000
-    WORKFLOW_MAX_FANOUT_ITEMS: int = 16
-    WORKFLOW_MAX_CONCURRENCY: int = 8
-    WORKFLOW_MAX_LEAF_CALLS: int = 64
+    WORKFLOW_MAX_RUN_BUDGET_TOKENS: int = 16_000_000
+    WORKFLOW_MAX_FANOUT_ITEMS: int = 128
+    WORKFLOW_MAX_CONCURRENCY: int = 128
+    WORKFLOW_MAX_LEAF_CALLS: int = 512
     WORKFLOW_MAX_WALL_CLOCK_SECONDS: int = 86_400
 
     # Workflow risk-grading thresholds (§9 P4, §10 decision 3) — past any of

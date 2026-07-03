@@ -46,6 +46,55 @@ You are a market research explorer. Investigate and report.
     assert "market research explorer" in spec.system_prompt
 
 
+def test_parse_cc_agent_markdown_frontmatter_aliases():
+    text = """---
+name: code-reviewer
+description: Use for independent code review.
+tools:
+  - read_file
+  - grep_search
+disallowedTools:
+  - write_file
+model: inherit
+maxTurns: 11
+permissionMode: acceptEdits
+background: true
+skills:
+  - security-review
+initialPrompt: Load the review checklist first.
+mcpServers:
+  - github
+hooks:
+  Stop:
+    - matcher: ""
+      hooks: []
+color: red
+effort: high
+isolation: worktree
+---
+
+You are the code reviewer.
+"""
+
+    spec = parse_subagent_definition(text)
+
+    assert spec.name == "code-reviewer"
+    assert spec.allowed_tools == ("read_file", "grep_search")
+    assert spec.excluded_tools == ("write_file",)
+    assert spec.model == "inherit"
+    assert spec.max_tool_rounds == 11
+    assert spec.permission_mode == "acceptEdits"
+    assert spec.background is True
+    assert spec.skills == ("security-review",)
+    assert spec.initial_prompt == "Load the review checklist first."
+    assert spec.mcp_servers == ("github",)
+    assert spec.hooks == {"Stop": [{"matcher": "", "hooks": []}]}
+    assert spec.color == "red"
+    assert spec.effort == "high"
+    assert spec.isolation == "worktree"
+    assert spec.system_prompt == "You are the code reviewer."
+
+
 def test_parse_requires_name():
     with pytest.raises(ValueError, match="name"):
         parse_subagent_definition("---\ntype: explorer\n---\nbody")

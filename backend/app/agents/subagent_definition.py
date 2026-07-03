@@ -27,7 +27,7 @@ import yaml
 from app.agents.subagent import (
     _TYPE_PRESETS,
     PUBLIC_BUILTIN_SUBAGENT_TYPES,
-    SUBAGENT_TYPE_EXPLORER,
+    SUBAGENT_TYPE_GENERAL_PURPOSE,
     ForkLevel,
     SubagentSpec,
     builtin_type_description,
@@ -37,7 +37,7 @@ from app.agents.subagent import (
 logger = logging.getLogger(__name__)
 
 _FRONTMATTER_DELIM = "---"
-_VALID_ISOLATION = ("none", "all")
+_VALID_ISOLATION = ("none", "all", "worktree")
 _VALID_MEMORY_SCOPES = ("user", "project", "local")
 _SAFE_SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -85,8 +85,15 @@ def _coerce_isolation(value: object) -> ForkLevel:
     raise ValueError(f"invalid isolation {raw!r}: expected one of {_VALID_ISOLATION}")
 
 
-def _coerce_tool_list(front: dict, field_name: str) -> tuple[str, ...]:
-    value = front.get(field_name)
+def _front_value(front: dict, field_name: str, *aliases: str) -> object:
+    for key in (field_name, *aliases):
+        if key in front:
+            return front.get(key)
+    return None
+
+
+def _coerce_tool_list(front: dict, field_name: str, *aliases: str) -> tuple[str, ...]:
+    value = _front_value(front, field_name, *aliases)
     if value is None:
         return ()
     if not isinstance(value, list):
@@ -113,8 +120,8 @@ def _coerce_memory_scope(front: dict) -> str | None:
     return raw
 
 
-def _coerce_optional_positive_int(front: dict, field_name: str) -> int | None:
-    value = front.get(field_name)
+def _coerce_optional_positive_int(front: dict, field_name: str, *aliases: str) -> int | None:
+    value = _front_value(front, field_name, *aliases)
     if value is None:
         return None
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -122,14 +129,57 @@ def _coerce_optional_positive_int(front: dict, field_name: str) -> int | None:
     return value
 
 
-def _coerce_optional_string(front: dict, field_name: str) -> str | None:
-    value = front.get(field_name)
+def _coerce_optional_string(front: dict, field_name: str, *aliases: str) -> str | None:
+    value = _front_value(front, field_name, *aliases)
     if value is None:
         return None
     if not isinstance(value, str):
         raise ValueError(f"{field_name} must be a string or null")
     stripped = value.strip()
     return stripped or None
+
+
+def _coerce_optional_bool(front: dict, field_name: str) -> bool:
+    value = front.get(field_name)
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean")
+    return value
+
+
+def _coerce_string_tuple(front: dict, field_name: str, *aliases: str) -> tuple[str, ...]:
+    value = _front_value(front, field_name, *aliases)
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a YAML list of non-empty strings")
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{field_name} must contain only non-empty string values")
+        items.append(item.strip())
+    return tuple(items)
+
+
+def _coerce_any_tuple(front: dict, field_name: str, *aliases: str) -> tuple[object, ...]:
+    value = _front_value(front, field_name, *aliases)
+    if value is None:
+        return ()
+    if isinstance(value, list):
+        return tuple(value)
+    if isinstance(value, dict):
+        return (value,)
+    raise ValueError(f"{field_name} must be a YAML list or mapping")
+
+
+def _coerce_optional_dict(front: dict, field_name: str) -> dict | None:
+    value = front.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a YAML mapping")
+    return value
 
 
 def parse_subagent_definition(text: str) -> SubagentSpec:
@@ -165,14 +215,22 @@ def parse_subagent_definition(text: str) -> SubagentSpec:
     return SubagentSpec(
         name=name,
         description=description,
-        type=canonical_subagent_type(front.get("type"), default=SUBAGENT_TYPE_EXPLORER),
-        allowed_tools=_coerce_tool_list(front, "allowed_tools"),
-        excluded_tools=_coerce_tool_list(front, "excluded_tools"),
+        type=canonical_subagent_type(front.get("type"), default=SUBAGENT_TYPE_GENERAL_PURPOSE),
+        allowed_tools=_coerce_tool_list(front, "allowed_tools", "tools"),
+        excluded_tools=_coerce_tool_list(front, "excluded_tools", "disallowedTools"),
         model=_coerce_optional_string(front, "model"),
-        max_tool_rounds=_coerce_optional_positive_int(front, "max_tool_rounds"),
+        max_tool_rounds=_coerce_optional_positive_int(front, "max_tool_rounds", "maxTurns"),
         isolation=_coerce_isolation(front.get("isolation")),
         memory_scope=_coerce_memory_scope(front),
         system_prompt=body.strip(),
+        background=_coerce_optional_bool(front, "background"),
+        permission_mode=_coerce_optional_string(front, "permission_mode", "permissionMode"),
+        skills=_coerce_string_tuple(front, "skills"),
+        initial_prompt=_coerce_optional_string(front, "initial_prompt", "initialPrompt"),
+        mcp_servers=_coerce_any_tuple(front, "mcp_servers", "mcpServers"),
+        hooks=_coerce_optional_dict(front, "hooks"),
+        color=_coerce_optional_string(front, "color"),
+        effort=front.get("effort"),
     )
 
 
@@ -197,6 +255,14 @@ def render_subagent_definition(spec: SubagentSpec) -> str:
         "max_tool_rounds": spec.max_tool_rounds,
         "isolation": spec.isolation,
         "memory": spec.memory_scope,
+        "background": spec.background,
+        "permission_mode": spec.permission_mode,
+        "skills": list(spec.skills),
+        "initial_prompt": spec.initial_prompt,
+        "mcp_servers": list(spec.mcp_servers),
+        "hooks": spec.hooks,
+        "color": spec.color,
+        "effort": spec.effort,
     }
     yaml_block = yaml.safe_dump(front, allow_unicode=True, sort_keys=False).strip()
     return f"{_FRONTMATTER_DELIM}\n{yaml_block}\n{_FRONTMATTER_DELIM}\n\n{spec.system_prompt}\n"

@@ -18,7 +18,7 @@ from app.runtime.dynamic_workflow import (
     mapping,
     validate_dynamic_workflow_proposal,
 )
-from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
+from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow, normalize_workflow_args
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.runtime.workflow_preview import (
@@ -190,6 +190,7 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
     dynamic_candidate = _load_dynamic_candidate(proposal_id, candidate_id)
     try:
         compiled = compile_workflow(definition)
+        args = normalize_workflow_args(compiled, args)
         from app.config import get_settings
 
         admission = admit_workflow(compiled, args=args, limits=AdmissionLimits.from_settings(get_settings()))
@@ -309,6 +310,8 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
     proposal_id = str(arguments.get("proposal_id") or "").strip() or None
     candidate_id = str(arguments.get("candidate_id") or "").strip() or None
     try:
+        compiled = compile_workflow(definition)
+        args = normalize_workflow_args(compiled, args)
         preview_ok, preview_error, preview_record = validate_workflow_preview_binding(
             agent_id=agent_id,
             definition=definition,
@@ -346,7 +349,7 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
             proposal_id=proposal_id,
             candidate_id=candidate_id,
             preview_id=preview_id,
-            definition_hash=compile_workflow(definition).definition_hash,
+            definition_hash=compiled.definition_hash,
             args_hash=compute_definition_hash(args),
             candidate=dynamic_candidate,
         )

@@ -36,7 +36,7 @@ from app.runtime.dynamic_workflow import build_dynamic_workflow_repair_plan, sum
 from app.services.channel_delivery_service import ChannelDeliveryService
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
-from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
+from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow, normalize_workflow_args
 from app.runtime.workflow_compiler import CompiledWorkflow, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.runtime.workflow_engine import (
@@ -750,6 +750,7 @@ class WorkflowRuntimeService:
         if not get_settings().WORKFLOW_RUNTIME_ENABLED:
             raise WorkflowAdmissionError("workflow runtime disabled by feature flag WORKFLOW_RUNTIME_ENABLED")
         compiled = compile_workflow(definition_data, known_leaves=allowed_leaves)
+        args = normalize_workflow_args(compiled, args)
         limits = AdmissionLimits.from_settings(get_settings())
         admission = admit_workflow(compiled, args=args, limits=limits, allowed_leaves=allowed_leaves)
 

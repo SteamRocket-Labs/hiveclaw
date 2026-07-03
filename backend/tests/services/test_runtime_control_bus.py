@@ -44,6 +44,29 @@ async def test_publish_web_chat_cancel_uses_runtime_control_channel(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_publish_subagent_cancel_uses_runtime_control_channel(monkeypatch):
+    import app.services.runtime_control_bus as bus
+
+    redis = _FakeRedis()
+
+    async def fake_get_redis():
+        return redis
+
+    monkeypatch.setattr(bus, "get_redis", fake_get_redis)
+    run_id = uuid4().hex
+    parent_agent_id = uuid4()
+
+    await bus.publish_subagent_cancel(run_id=run_id, parent_agent_id=parent_agent_id)
+
+    assert redis.published[0][0] == bus.RUNTIME_CONTROL_CHANNEL
+    payload = json.loads(redis.published[0][1])
+    assert payload["schema"] == bus.RUNTIME_CONTROL_SCHEMA
+    assert payload["type"] == "subagent_cancel"
+    assert payload["run_id"] == run_id
+    assert payload["parent_agent_id"] == str(parent_agent_id)
+
+
+@pytest.mark.asyncio
 async def test_publish_transcript_t0_bridge_uses_runtime_control_channel(monkeypatch):
     import app.services.runtime_control_bus as bus
 
@@ -119,6 +142,46 @@ async def test_runtime_control_web_chat_cancel_sets_local_cancel_event():
         assert cancel_event.is_set() is True
     finally:
         unregister_web_chat_run_for_test(run_id)
+
+
+@pytest.mark.asyncio
+async def test_runtime_control_subagent_cancel_sets_local_cancel_event():
+    import app.services.runtime_control_bus as bus
+    from app.services.subagent_run_service import (
+        register_subagent_run_for_test,
+        unregister_subagent_run_for_test,
+    )
+
+    run_id = uuid4().hex
+    cancel_event = asyncio.Event()
+    register_subagent_run_for_test(run_id, cancel_event=cancel_event)
+
+    try:
+        await bus.handle_runtime_control_message(
+            {"schema": bus.RUNTIME_CONTROL_SCHEMA, "type": "subagent_cancel", "run_id": run_id}
+        )
+        assert cancel_event.is_set() is True
+    finally:
+        unregister_subagent_run_for_test(run_id)
+
+
+@pytest.mark.asyncio
+async def test_runtime_control_subagent_cancel_latches_before_local_registration():
+    import app.services.runtime_control_bus as bus
+    from app.services import subagent_run_service as svc
+
+    run_id = uuid4().hex
+
+    handled = await bus.handle_runtime_control_message(
+        {"schema": bus.RUNTIME_CONTROL_SCHEMA, "type": "subagent_cancel", "run_id": run_id}
+    )
+    assert handled is True
+
+    cancel_event = svc._subagent_cancel_event_for_run(run_id)
+    try:
+        assert cancel_event.is_set() is True
+    finally:
+        svc._release_subagent_cancel_event(run_id, cancel_event)
 
 
 @pytest.mark.asyncio

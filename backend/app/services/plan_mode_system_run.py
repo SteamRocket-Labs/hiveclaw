@@ -39,10 +39,10 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PLAN_RUN_SOURCE = "system_plan_run"
 #: Generous-but-bounded exploration budget for a system-initiated plan run. The
-#: agent needs room to inspect read-only context before authoring, but Plan
-#: Mode's read-only policy already prevents side effects, so this is purely a
-#: cost cap (path-unification §12.6).
-SYSTEM_PLAN_RUN_MAX_ROUNDS = 20
+#: agent needs room to inspect read-only context before authoring, and Plan
+#: Mode's read-only policy prevents side effects. Keep this aligned with the
+#: main agent / CC AgentTool practical floor so planning is not starved.
+SYSTEM_PLAN_RUN_MAX_ROUNDS = 200
 
 
 def _build_launcher_user_prompt(plan: AgentPlanRequest, *, seed_context: dict[str, Any] | None) -> str:

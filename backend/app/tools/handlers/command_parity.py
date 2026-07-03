@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from loguru import logger
+
 from app.runtime.prompts.command_parity import (
     ADVANCED_PLAN_DESCRIPTION,
     GOAL_START_DESCRIPTION,
@@ -246,6 +248,16 @@ async def task_stop(request: ToolExecutionRequest) -> str:
         result_summary=reason,
         metadata_json={"cancel_reason": reason},
     )
+    if str(record.get("task_type") or "") == "subagent":
+        try:
+            from app.services.runtime_control_bus import publish_subagent_cancel
+
+            await publish_subagent_cancel(
+                run_id=plan.runtime_task_id or "",
+                parent_agent_id=record.get("parent_agent_id"),
+            )
+        except Exception as exc:  # noqa: BLE001 - persisted killed state remains the fallback contract.
+            logger.debug("Failed to publish subagent cancellation {}: {}", plan.runtime_task_id, exc)
     return _json({"ok": True, "runtime_task_id": plan.runtime_task_id, "status": "killed"})
 
 

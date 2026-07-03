@@ -47,15 +47,22 @@ def test_spawn_subagent_schema_exposes_agenttool_compatible_fields() -> None:
     ):
         assert field in properties, field
 
-    assert "general-purpose" in properties["subagent_type"]["enum"]
-    assert "explorer" in properties["subagent_type"]["enum"]
-    assert "critic" in properties["subagent_type"]["enum"]
-    assert "worker" not in properties["subagent_type"]["enum"]
-    assert "worker" not in properties["type"]["enum"]
-    assert properties["isolation"]["enum"] == ["none", "all"]
+    assert "enum" not in properties["subagent_type"]
+    assert "enum" not in properties["type"]
+    assert properties["isolation"]["enum"] == ["none", "all", "worktree"]
+    assert "worktree" in properties["isolation"]["description"]
+    assert "default 200" in properties["max_tool_rounds"]["description"]
     assert properties["permission_profile"]["properties"]["allowed_tools"]["items"]["type"] == "string"
     assert {"required": ["prompt"]} in _SPAWN_PARAMETERS["anyOf"]
     assert {"required": ["task"]} in _SPAWN_PARAMETERS["anyOf"]
+
+
+def test_spawn_subagent_schema_allows_custom_agent_names_in_subagent_type() -> None:
+    from app.tools.handlers.subagent import _SPAWN_PARAMETERS
+
+    desc = _SPAWN_PARAMETERS["properties"]["subagent_type"]["description"]
+    assert "custom" in desc.lower()
+    assert "active" in desc.lower()
 
 
 def test_spawn_subagent_normalizes_worker_alias_and_fork_semantics() -> None:
@@ -78,6 +85,11 @@ def test_spawn_subagent_normalizes_worker_alias_and_fork_semantics() -> None:
         {"prompt": "survey current state", "run_in_background": True, "isolation": "all"}
     )
     assert background_fork["isolation"] == "all"
+
+    worktree = _normalize_spawn_arguments(
+        {"prompt": "edit safely", "subagent_type": "general-purpose", "isolation": "worktree"}
+    )
+    assert worktree["isolation"] == "worktree"
 
     fresh = _normalize_spawn_arguments({"prompt": "survey current state", "subagent_type": "explorer"})
     assert fresh["isolation"] == "none"

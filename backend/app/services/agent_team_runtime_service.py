@@ -92,6 +92,27 @@ def _unique_member_name(requested: str, existing: list[AgentTeamMember]) -> str:
         idx += 1
 
 
+def _team_task_list_payload(team_name: str) -> dict[str, Any]:
+    return {
+        "id": team_name,
+        "owner_field": "member_name",
+        "create_tool": "track_todo",
+        "claim_tool": "track_todo",
+        "complete_tool": "track_todo",
+        "list_tool": "read_ledger",
+        "coordination_contract": "cc_team_shared_task_list",
+    }
+
+
+def _teammate_lifecycle_payload() -> dict[str, Any]:
+    return {
+        "idle_after_each_turn": True,
+        "address_by": "member_name",
+        "message_tool": "send_agent_session_message",
+        "terminal_turn_status_field": "last_turn_status",
+    }
+
+
 def team_payload(team: AgentTeam, members: list[AgentTeamMember], *, requires_api_persist: bool = False) -> dict[str, Any]:
     return {
         "requires_api_persist": requires_api_persist,
@@ -102,6 +123,8 @@ def team_payload(team: AgentTeam, members: list[AgentTeamMember], *, requires_ap
         "lead_agent_id": str(team.lead_agent_id),
         "parent_session_id": str(team.parent_session_id),
         "members": [_team_member_payload(member) for member in members],
+        "team_task_list": _team_task_list_payload(team.name),
+        "teammate_lifecycle": _teammate_lifecycle_payload(),
         **teammate_creation_discovery(team.name),
     }
 
@@ -250,6 +273,8 @@ async def create_agent_team_runtime_result(
             "command": command,
             "session_id": str(parent_session_id),
             "member_runtime_policy": "enterable_chat_session",
+            "team_task_list": _team_task_list_payload(team_name[:160]),
+            "teammate_lifecycle": _teammate_lifecycle_payload(),
             **(metadata or {}),
         },
     )
@@ -543,12 +568,14 @@ async def project_agent_team_member_completion(
     t0_refs = source_metadata.get("t0_refs") or source_metadata.get("transcript_refs") or metadata.get("t0_refs") or []
     if result_summary is not None:
         metadata["summary"] = result_summary
-    metadata["status"] = terminal_status
+    metadata["last_turn_status"] = terminal_status
+    metadata["idle_after_turn"] = True
+    metadata["status"] = "idle"
     metadata["runtime_task_id"] = str(run_id) if run_id is not None else str(getattr(task, "id", "") or "")
     metadata["artifact_paths"] = artifact_paths
     metadata["artifacts"] = artifacts
     metadata["t0_refs"] = t0_refs
-    member.status = terminal_status
+    member.status = "idle"
     member.metadata_json = metadata
 
     payload = {
@@ -567,6 +594,19 @@ async def project_agent_team_member_completion(
             receiver_member_id=member.id,
             event_type=f"member_{terminal_status}",
             payload_json=payload,
+        )
+    )
+    db.add(
+        AgentTeamEvent(
+            id=uuid.uuid4(),
+            team_id=member.team_id,
+            receiver_member_id=member.id,
+            event_type="member_idle",
+            payload_json={
+                **payload,
+                "status": "idle",
+                "last_turn_status": terminal_status,
+            },
         )
     )
     await _wake_parent_session_from_team_member_completion(

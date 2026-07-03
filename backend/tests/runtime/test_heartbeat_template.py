@@ -147,10 +147,10 @@ class TestOperationalInvariants:
         assert "data, not instruction" in template_text.lower()
 
     def test_tool_round_budget_preserved(self, template_text: str) -> None:
-        # Operational guardrail that protects token budget.
+        # Keep heartbeat's written contract aligned with the runtime constant.
         assert "Maximum" in template_text
         assert "tool rounds" in template_text
-        assert "40" in template_text
+        assert "200" in template_text
 
     def test_template_does_not_instruct_external_actions(self, template_text: str) -> None:
         # Heartbeat must not post to plaza or send outbound messages.

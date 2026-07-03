@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +85,97 @@ _TERMINAL_ARTIFACT_DECLARATION_RE = re.compile(
     r"(?i)\b(deliverable|deliverables|artifact|artifacts|final file|final files)\b|交付物|最终文件|最终交付"
 )
 _TERMINAL_ARTIFACT_PATH_RE = re.compile(r"(?:workspace|runtime_artifacts)/[^\s`'\"<>)\]，。；;]+")
+_WEB_CHAT_STREAM_BATCH_INTERVAL_SECONDS = 0.05
+_WEB_CHAT_STREAM_BATCH_MAX_CHARS = 1200
+
+
+class _WebChatStreamMicroBatcher:
+    """Coalesce high-frequency streaming deltas before they hit WebSocket clients."""
+
+    def __init__(
+        self,
+        send: Callable[..., Awaitable[None]],
+        *,
+        flush_interval_seconds: float = _WEB_CHAT_STREAM_BATCH_INTERVAL_SECONDS,
+        max_chars: int = _WEB_CHAT_STREAM_BATCH_MAX_CHARS,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    ) -> None:
+        self._send = send
+        self._flush_interval_seconds = flush_interval_seconds
+        self._max_chars = max_chars
+        self._clock = clock
+        self._sleep = sleep
+        self._last_flush_at = clock()
+        self._pending: list[tuple[str, str]] = []
+        self._flush_task: asyncio.Task[None] | None = None
+
+    def _pending_char_count(self) -> int:
+        return sum(len(text) for _kind, text in self._pending)
+
+    def _should_flush(self) -> bool:
+        if self._pending_char_count() >= self._max_chars:
+            return True
+        return self._clock() - self._last_flush_at >= self._flush_interval_seconds
+
+    def _cancel_scheduled_flush(self) -> None:
+        task = self._flush_task
+        self._flush_task = None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _ensure_scheduled_flush(self) -> None:
+        if self._flush_interval_seconds <= 0:
+            return
+        if self._flush_task and not self._flush_task.done():
+            return
+        self._flush_task = asyncio.create_task(self._flush_after_interval())
+
+    async def _flush_after_interval(self) -> None:
+        try:
+            await self._sleep(self._flush_interval_seconds)
+            await self.flush()
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._flush_task is asyncio.current_task():
+                self._flush_task = None
+
+    async def _enqueue(self, kind: str, text: str) -> None:
+        if not text:
+            return
+        self._pending.append((kind, text))
+        if self._should_flush():
+            await self.flush()
+        else:
+            self._ensure_scheduled_flush()
+
+    async def emit_chunk(self, text: str) -> None:
+        await self._enqueue("chunk", text)
+
+    async def emit_thinking(self, text: str) -> None:
+        await self._enqueue("thinking", text)
+
+    async def reset_chunk(self) -> None:
+        await self.flush()
+        await self._send("chunk", "", reset=True)
+        self._last_flush_at = self._clock()
+
+    async def flush(self) -> None:
+        self._cancel_scheduled_flush()
+        if not self._pending:
+            return
+        pending = self._pending
+        self._pending = []
+        grouped: list[tuple[str, str]] = []
+        for kind, text in pending:
+            if grouped and grouped[-1][0] == kind:
+                grouped[-1] = (kind, f"{grouped[-1][1]}{text}")
+            else:
+                grouped.append((kind, text))
+        for kind, text in grouped:
+            await self._send(kind, text, reset=False)
+        self._last_flush_at = self._clock()
 
 
 class ActiveWebChatRunExists(Exception):
@@ -1990,6 +2083,21 @@ async def _finalize_web_chat_run_with_assistant(
             return True
 
         assistant_message_id = uuid.uuid4()
+        db.add(
+            ChatMessage(
+                id=assistant_message_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                role="assistant",
+                content=content,
+                conversation_id=session_id,
+                thinking=thinking,
+                thinking_signature=thinking_signature,
+                decision_trace_id=final_decision_trace_id,
+            )
+        )
+        await db.flush()
         artifact_parts = await create_chat_artifacts_for_message(
             db=db,
             agent_id=agent_id,
@@ -2034,9 +2142,7 @@ async def _finalize_web_chat_run_with_assistant(
             content=content,
             message_id=assistant_message_id,
             source="web_chat_runtime",
-            thinking=thinking,
-            thinking_signature=thinking_signature,
-            decision_trace_id=final_decision_trace_id,
+            materialize_chat_message=False,
             parts=_assistant_transcript_parts(content, thinking=thinking, artifacts=artifact_parts),
             metadata={
                 "source": "web_chat_runtime",
@@ -2954,6 +3060,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     cancel_event = cancel_event or _CANCEL_EVENTS.setdefault(run_key, asyncio.Event())
     streamed_chunks: list[str] = []
     thinking_content: list[str] = []
+    stream_batcher: _WebChatStreamMicroBatcher | None = None
     terminal_agent_id: uuid.UUID | None = None
     terminal_session_id: str | None = None
     terminal_runtime_metadata: dict[str, Any] | None = None
@@ -3078,28 +3185,41 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response))
             return
 
+        async def send_stream_event(kind: str, text: str, *, reset: bool = False) -> None:
+            if kind == "thinking":
+                event = build_thinking_event(text)
+            else:
+                event = build_chunk_event(text, reset=reset)
+            await broadcast_web_chat_event(agent.id, session_id, event)
+
+        stream_batcher = _WebChatStreamMicroBatcher(send_stream_event)
+
         async def stream_to_ws(text: str) -> None:
+            assert stream_batcher is not None
             if text == STREAM_RETRY_TOMBSTONE:
                 streamed_chunks.clear()
-                await broadcast_web_chat_event(agent.id, session_id, build_chunk_event("", reset=True))
+                await stream_batcher.reset_chunk()
                 return
             streamed_chunks.append(text)
-            await broadcast_web_chat_event(agent.id, session_id, build_chunk_event(text))
+            await stream_batcher.emit_chunk(text)
 
         async def thinking_to_ws(text: str) -> None:
+            assert stream_batcher is not None
             thinking_content.append(text)
-            await broadcast_web_chat_event(agent.id, session_id, build_thinking_event(text))
+            await stream_batcher.emit_thinking(text)
 
         async def runtime_event_to_ws(data: dict[str, Any]) -> None:
+            assert stream_batcher is not None
             if data.get("type") == "stream_retry_tombstone":
                 streamed_chunks.clear()
-                await broadcast_web_chat_event(agent.id, session_id, build_chunk_event("", reset=True))
+                await stream_batcher.reset_chunk()
                 return
             event_type = str(data.get("type") or data.get("event_type") or "")
             if event_type in SESSION_NATIVE_EVENT_TYPES:
                 event_payload = build_session_native_event(data)
             else:
                 event_payload = data
+            await stream_batcher.flush()
             await broadcast_web_chat_event(agent.id, session_id, event_payload)
             if _should_persist_runtime_event(data):
                 await _persist_runtime_event(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
@@ -3227,6 +3347,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     source=runtime_session_context.source,
                     extra_metadata=metadata_update,
                 )
+                if stream_batcher is not None:
+                    await stream_batcher.flush()
                 await broadcast_web_chat_event(agent.id, session_id, build_done_event(""))
             return terminal_tool_card_finalized
 
@@ -3249,6 +3371,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             nonlocal interactive_pause_summary, plan_mode_submitted
             if terminal_tool_card_finalized:
                 return
+            if stream_batcher is not None:
+                await stream_batcher.flush()
             data = _tool_step_contract(data, fallback_run_id=run_uuid)
             if data.get("status") != "done":
                 persisted_event = await _persist_tool_call(
@@ -3382,6 +3506,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
         if terminal_tool_card_finalized:
             return
+        if stream_batcher is not None:
+            await stream_batcher.flush()
         if result is None and interactive_pause_summary:
             metadata_update = {
                 "cancelled_by_user": bool(cancel_event.is_set()),
@@ -3543,6 +3669,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         result_summary = f"Web chat run failed: {type(exc).__name__}"
         metadata_update = {"error": str(exc)[:500], "terminal_reason": TerminalReason.PROVIDER_ERROR.value}
         try:
+            if stream_batcher is not None:
+                await stream_batcher.flush()
             runtime_task, agent, user, *_rest = await _load_runtime_context(run_uuid)
             session_id = str(runtime_task.parent_session_id)
             finalized = await _finalize_web_chat_run_with_assistant(

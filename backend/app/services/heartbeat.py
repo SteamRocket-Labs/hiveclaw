@@ -101,7 +101,9 @@ _HEARTBEAT_T2_INCREMENTAL_MAX_CHARS = 16_000
 _HEARTBEAT_T3_MAX_CHARS = 8_000
 _HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS = 16_000
 _HEARTBEAT_COMPACT_SUMMARY_MAX_CHARS = 6_000
-_HEARTBEAT_MAX_TOOL_ROUNDS = 40
+# Heartbeat is agentic curation work, not a tiny maintenance callback. Keep the
+# tool-loop budget aligned with the main agent / CC AgentTool practical floor.
+_HEARTBEAT_MAX_TOOL_ROUNDS = 200
 _HEARTBEAT_CHECKPOINT_FILENAME = "heartbeat_checkpoint.json"
 
 

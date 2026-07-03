@@ -69,8 +69,7 @@ def compile_workflow(
     except WorkflowDefinitionError as exc:
         raise WorkflowCompileError(str(exc)) from exc
 
-    raw_for_hash = data if isinstance(data, dict) else definition.canonical_dict()
-    definition_hash = compute_definition_hash(raw_for_hash)
+    definition_hash = compute_definition_hash(definition.canonical_dict())
 
     args_keys = set(definition.args_schema.keys())
     prior_steps: set[str] = set()

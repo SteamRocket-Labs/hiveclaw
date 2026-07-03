@@ -8,6 +8,7 @@ from app.runtime.dynamic_workflow import (
     summarize_dynamic_workflow_outcome,
     validate_dynamic_workflow_proposal,
 )
+from app.runtime.workflow_compiler import compile_workflow
 
 
 def _definition() -> dict:
@@ -50,6 +51,41 @@ def test_validate_dynamic_workflow_proposal_lowers_candidates():
     assert proposal["recommended_candidate_id"] == "fanout-critic"
     assert proposal["candidates"][0]["definition_hash"]
     assert proposal["candidates"][0]["preview_args"] == {"slices": ["api", "runtime"]}
+
+
+def test_validate_dynamic_workflow_proposal_accepts_json_schema_args_and_item_wrapped_arrays():
+    definition = _definition()
+    definition["args_schema"] = {
+        "type": "object",
+        "properties": {
+            "slices": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["slices"],
+    }
+
+    proposal = validate_dynamic_workflow_proposal(
+        {
+            "goal": "Audit repository slices.",
+            "why_workflow": "Needs fanout plus synthesis.",
+            "success_criteria": ["Each slice cites evidence."],
+            "args": {"slices": {"item": ["api", "runtime"]}},
+            "candidates": [
+                {
+                    "candidate_id": "fanout-json-schema",
+                    "name": "Fanout",
+                    "lowered_definition": definition,
+                }
+            ],
+            "recommended_candidate_id": "fanout-json-schema",
+        }
+    )
+
+    candidate = proposal["candidates"][0]
+
+    assert proposal["ok"] is True
+    assert candidate["preview_args"] == {"slices": ["api", "runtime"]}
+    assert candidate["lowered_definition"]["args_schema"] == {"slices": {"type": "array", "required": True}}
+    assert candidate["definition_hash"] == compile_workflow(candidate["lowered_definition"]).definition_hash
 
 
 def test_validate_dynamic_workflow_proposal_rejects_code_surfaces():

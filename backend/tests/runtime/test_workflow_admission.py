@@ -14,6 +14,7 @@ from app.runtime.workflow_admission import (
     AdmissionLimits,
     WorkflowAdmissionError,
     admit_workflow,
+    normalize_workflow_args,
 )
 from app.runtime.workflow_compiler import compile_workflow
 
@@ -58,6 +59,18 @@ def test_valid_run_admitted():
     result = admit_workflow(compiled, args={"targets": ["a", "b", "c"]}, limits=_limits())
     assert result.admitted is True
     assert result.planned_leaf_calls == 3
+
+
+def test_model_item_wrapped_array_arg_is_normalized_for_fanout():
+    compiled = compile_workflow(_definition())
+    raw_args = {"targets": {"item": ["a", "b"]}, "label": "demo"}
+
+    normalized = normalize_workflow_args(compiled, raw_args)
+    result = admit_workflow(compiled, args=normalized, limits=_limits())
+
+    assert normalized == {"targets": ["a", "b"], "label": "demo"}
+    assert result.admitted is True
+    assert result.planned_leaf_calls == 2
 
 
 def test_fanout_over_item_cap_rejected():
@@ -157,3 +170,20 @@ def test_limits_from_settings_factory():
     assert limits.max_concurrency > 0
     assert limits.max_leaf_calls > 0
     assert limits.max_wall_clock_seconds > 0
+
+
+def test_default_settings_admit_cc_sized_fanout_workflow():
+    from app.config import get_settings
+
+    data = _definition()
+    data["steps"][0]["max_concurrency"] = 128
+    compiled = compile_workflow(data)
+
+    result = admit_workflow(
+        compiled,
+        args={"targets": [f"target-{i}" for i in range(128)]},
+        limits=AdmissionLimits.from_settings(get_settings()),
+    )
+
+    assert result.admitted is True
+    assert result.planned_leaf_calls == 128

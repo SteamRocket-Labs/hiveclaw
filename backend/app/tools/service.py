@@ -13,6 +13,7 @@ import uuid
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.agents.coordination import CoordinationRuntime, coordination_runtime
@@ -523,6 +524,7 @@ class ToolRuntimeService:
         plan_mode_unattended_available: bool = False,
         emit_runtime_hooks: bool = True,
         trace_metadata_sink: dict[str, Any] | None = None,
+        workspace_override: Path | str | None = None,
     ) -> str | ToolContentEnvelope:
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
@@ -550,6 +552,8 @@ class ToolRuntimeService:
             round_state=round_state,
             t0_refs=t0_refs,
         )
+        if workspace_override is not None:
+            runtime_context.workspace = Path(workspace_override)
         effective_tool_call_id = tool_call_id or _new_runtime_tool_call_id()
         original_arguments = dict(arguments or {})
         _record_tool_lifecycle(

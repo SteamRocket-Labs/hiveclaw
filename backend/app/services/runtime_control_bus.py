@@ -80,6 +80,20 @@ async def publish_delegation_cancel(
     )
 
 
+async def publish_subagent_cancel(
+    *,
+    run_id: str | Any,
+    parent_agent_id: str | Any | None = None,
+) -> None:
+    await publish_runtime_control_event(
+        {
+            "type": "subagent_cancel",
+            "run_id": str(run_id).replace("-", ""),
+            "parent_agent_id": str(parent_agent_id) if parent_agent_id is not None else None,
+        }
+    )
+
+
 async def publish_transcript_t0_bridge(
     *,
     transcript_event_id: str | Any,
@@ -266,6 +280,11 @@ async def handle_runtime_control_message(message: dict[str, Any]) -> bool:
         from app.agents.orchestrator import apply_remote_async_delegation_cancel
 
         return bool(await _maybe_await(apply_remote_async_delegation_cancel(str(message.get("task_id") or ""))))
+
+    if event_type == "subagent_cancel":
+        from app.services.subagent_run_service import apply_remote_subagent_cancel
+
+        return bool(await _maybe_await(apply_remote_subagent_cancel(str(message.get("run_id") or ""))))
 
     if event_type == "transcript_t0_bridge":
         return bool(

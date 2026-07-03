@@ -26,6 +26,7 @@ SUPPORTED_RUNTIME_TASK_TYPES = (
     "workflow",
     "delegation",
     "business_task",
+    "subagent",
 )
 _DISPATCHED_TASKS: dict[str, tuple[str, asyncio.Task]] = {}
 _STATE: dict[str, Any] = {
@@ -206,6 +207,8 @@ def _dispatch_claimed_task(task: RuntimeTask) -> bool:
         return _dispatch_async_runtime_task(task, _execute_claimed_delegation_task(task.id), task_type="delegation")
     if task.task_type == "business_task":
         return _dispatch_async_runtime_task(task, _execute_claimed_business_task(task.id), task_type="business_task")
+    if task.task_type == "subagent":
+        return _dispatch_async_runtime_task(task, _execute_claimed_subagent_task(task.id), task_type="subagent")
     logger.warning("[RuntimeTaskWorker] Claimed unsupported task type {}; leaving task {}", task.task_type, task.id)
     return False
 
@@ -240,6 +243,18 @@ async def _execute_claimed_delegation_task(task_id: UUID) -> None:
     except Exception as exc:  # noqa: BLE001
         _STATE["last_error"] = f"delegation:{type(exc).__name__}:{str(exc)[:300]}"
         logger.exception("[RuntimeTaskWorker] delegation task {} failed", task_id)
+
+
+async def _execute_claimed_subagent_task(task_id: UUID) -> None:
+    try:
+        from app.services.subagent_run_service import dispatch_persisted_subagent_run
+
+        ok = await dispatch_persisted_subagent_run(task_id.hex)
+        if not ok:
+            logger.warning("[RuntimeTaskWorker] subagent task {} could not be dispatched", task_id)
+    except Exception as exc:  # noqa: BLE001
+        _STATE["last_error"] = f"subagent:{type(exc).__name__}:{str(exc)[:300]}"
+        logger.exception("[RuntimeTaskWorker] subagent task {} failed", task_id)
 
 
 async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:

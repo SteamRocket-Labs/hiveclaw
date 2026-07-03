@@ -89,6 +89,11 @@ async def test_team_create_runtime_persists_container_without_teammate_sessions(
     assert payload["members"] == []
     assert payload["team_create_semantics"] == "container_only"
     assert payload["teammate_creation_tool"] == "spawn_subagent"
+    assert payload["team_task_list"]["id"] == "Parity Review"
+    assert payload["team_task_list"]["owner_field"] == "member_name"
+    assert payload["team_task_list"]["claim_tool"] == "track_todo"
+    assert payload["teammate_lifecycle"]["idle_after_each_turn"] is True
+    assert payload["teammate_lifecycle"]["address_by"] == "member_name"
     assert payload["teammate_creation_args"] == {
         "team_name": "Parity Review",
         "name": "<member-name>",
@@ -333,16 +338,20 @@ async def test_team_member_completion_projects_to_member_metadata_and_event():
     )
 
     assert payload is not None
-    assert member.status == "completed"
+    assert member.status == "idle"
     assert member.metadata_json["existing"] == "keep"
     assert member.metadata_json["summary"] == "review passed"
+    assert member.metadata_json["last_turn_status"] == "completed"
+    assert member.metadata_json["idle_after_turn"] is True
     assert member.metadata_json["artifact_paths"] == ["workspace/review.md"]
     assert member.metadata_json["artifacts"] == [{"path": "workspace/review.md", "type": "artifact"}]
     assert member.metadata_json["t0_refs"] == ["session#event-1"]
-    event = next(item for item in db.added if isinstance(item, AgentTeamEvent))
-    assert event.event_type == "member_completed"
-    assert event.receiver_member_id == member.id
-    assert event.payload_json["summary"] == "review passed"
+    event_types = [item.event_type for item in db.added if isinstance(item, AgentTeamEvent)]
+    assert "member_completed" in event_types
+    assert "member_idle" in event_types
+    idle_event = next(item for item in db.added if isinstance(item, AgentTeamEvent) and item.event_type == "member_idle")
+    assert idle_event.receiver_member_id == member.id
+    assert idle_event.payload_json["summary"] == "review passed"
 
 
 @pytest.mark.asyncio

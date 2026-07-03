@@ -196,3 +196,33 @@ async def test_bypass_exit_restore_failure_is_logged_not_raised():
 
     async with enter_rls_bypass(_FlakySession(), reason="unit-test flaky restore"):
         pass  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_bypass_scope_reapplies_bypass_after_commit_transaction_begin():
+    from app import database
+
+    session = _FakeAsyncSession()
+    connection = _FakeConnection()
+
+    async with database.enter_rls_bypass(session, reason="unit-test bypass transaction continuity"):
+        assert session.sync_session.info[database._RLS_TENANT_INFO_KEY] == "BYPASS"
+
+        database._apply_rls_tenant_for_transaction(session.sync_session, object(), connection)
+
+    assert "SET LOCAL app.current_tenant_id = 'BYPASS'" in connection.statements
+    assert database._RLS_TENANT_INFO_KEY not in session.sync_session.info
+
+
+@pytest.mark.asyncio
+async def test_bypass_scope_restores_previous_session_info_after_exit():
+    from app import database
+
+    previous_tenant = str(uuid4())
+    session = _FakeAsyncSession()
+    session.sync_session.info[database._RLS_TENANT_INFO_KEY] = previous_tenant
+
+    async with database.enter_rls_bypass(session, reason="unit-test bypass previous restore"):
+        assert session.sync_session.info[database._RLS_TENANT_INFO_KEY] == "BYPASS"
+
+    assert session.sync_session.info[database._RLS_TENANT_INFO_KEY] == previous_tenant

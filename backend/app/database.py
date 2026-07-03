@@ -82,6 +82,7 @@ schema_engine = (
 # Set by get_db() from request.state.tenant_id (populated by TenantMiddleware).
 _current_tenant_id: ContextVar[str | None] = ContextVar("_current_tenant_id", default=None)
 _RLS_TENANT_INFO_KEY = "hive_rls_tenant_id"
+_RLS_BYPASS_VALUE = "BYPASS"
 
 
 def _normalize_rls_tenant_value(tenant_id: str | uuid.UUID | None) -> str:
@@ -89,6 +90,19 @@ def _normalize_rls_tenant_value(tenant_id: str | uuid.UUID | None) -> str:
     if tenant_id:
         return str(uuid.UUID(str(tenant_id)))
     return ""
+
+
+def _normalize_rls_transaction_scope_value(value: str | uuid.UUID | None) -> str:
+    """Normalize a persisted ORM-session RLS scope.
+
+    Regular tenant pinning must remain UUID-only. ``BYPASS`` is accepted only
+    from the sanctioned ``enter_rls_bypass`` session-info path so the
+    transaction re-pin hook can survive explicit commits inside that audited
+    scope.
+    """
+    if value == _RLS_BYPASS_VALUE:
+        return _RLS_BYPASS_VALUE
+    return _normalize_rls_tenant_value(value)
 
 
 def _set_rls_tenant_context(session: AsyncSession, tenant_id: str | uuid.UUID | None) -> str:
@@ -118,7 +132,7 @@ def _apply_rls_tenant_for_transaction(session: SyncSession, _transaction, connec
     """
     if _RLS_TENANT_INFO_KEY not in session.info:
         return
-    tenant_id = _normalize_rls_tenant_value(session.info.get(_RLS_TENANT_INFO_KEY))
+    tenant_id = _normalize_rls_transaction_scope_value(session.info.get(_RLS_TENANT_INFO_KEY))
     connection.exec_driver_sql(_rls_tenant_statement(tenant_id))
 
 
@@ -252,8 +266,26 @@ async def enter_rls_bypass(
         reason,
         actor_id,
     )
-    await session.execute(text("SET LOCAL app.current_tenant_id = 'BYPASS'"))
+    sync_session = getattr(session, "sync_session", None)
+    had_previous_session_info = False
+    previous_session_info: str | uuid.UUID | None = None
+    if sync_session is not None:
+        had_previous_session_info = _RLS_TENANT_INFO_KEY in sync_session.info
+        previous_session_info = sync_session.info.get(_RLS_TENANT_INFO_KEY)
+        sync_session.info[_RLS_TENANT_INFO_KEY] = _RLS_BYPASS_VALUE
+
+    def restore_session_info() -> None:
+        if sync_session is None:
+            return
+        if had_previous_session_info:
+            sync_session.info[_RLS_TENANT_INFO_KEY] = previous_session_info
+        else:
+            sync_session.info.pop(_RLS_TENANT_INFO_KEY, None)
+
+    bypass_guc_set = False
     try:
+        await session.execute(text(_rls_tenant_statement(_RLS_BYPASS_VALUE)))
+        bypass_guc_set = True
         yield session
     finally:
         # Restore tenant scoping. ContextVar fallback covers the case
@@ -264,7 +296,10 @@ async def enter_rls_bypass(
         # caller's rollback clear the scope. If the restore itself fails,
         # log it rather than shadowing the body's exception.
         try:
-            if not getattr(session, "is_active", True):
+            if not bypass_guc_set:
+                restore_session_info()
+            elif not getattr(session, "is_active", True):
+                restore_session_info()
                 logger.warning(
                     "[RLS] BYPASS scope exited with a failed transaction; skipping GUC restore — "
                     "the caller's rollback clears the scope. (reason=%r)",
@@ -277,7 +312,10 @@ async def enter_rls_bypass(
                 except ValueError:
                     logger.error("[RLS] Invalid tenant id %r after BYPASS; failing closed to ''", tenant_value)
                     restored = ""
+                restore_session_info()
                 await session.execute(text(_rls_tenant_statement(restored)))
         except Exception as exc:  # noqa: BLE001 - never mask the body's exception from finally
             logger.error("[RLS] Failed to restore tenant scope after BYPASS: %s", exc)
+        finally:
+            restore_session_info()
         logger.info("[RLS] Exited BYPASS scope (reason=%r)", reason)

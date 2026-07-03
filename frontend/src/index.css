@@ -1285,6 +1285,15 @@
   white-space: nowrap;
 }
 
+.session-runtime-waiters {
+  display: grid;
+  gap: 0;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-panel);
+  background: var(--bg-primary);
+}
+
 .session-runtime-segmented {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1557,6 +1566,18 @@
 
 .session-tui-history-content {
   min-width: 0;
+  contain: paint;
+}
+
+.session-tui-render-cell {
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: 1px 96px;
+}
+
+.session-tui-active-run-cell {
+  contain-intrinsic-size: 1px 180px;
+  transform: translateZ(0);
 }
 
 .session-gitline {

@@ -39,8 +39,11 @@ import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChr
 import {
   buildSessionRightPanelModel,
   buildThreadTimeline,
+  buildThreadTimelineCached,
+  createThreadTimelineCache,
   buildWorkflowRunWindowModel,
   type RuntimeConsoleSegmentKey,
+  type RuntimeConsoleWaiterModel,
   type RuntimeSectionItemModel,
   type WorkflowRunActionModel,
   type WorkspaceDocumentGroupModel,
@@ -76,6 +79,7 @@ type AttachedFile = {
 
 type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
 export type SessionPermissionMode = 'auto' | 'default' | 'bypassPermissions';
+const EMPTY_CHAT_MESSAGES: AgentChatMessage[] = [];
 
 const SESSION_PERMISSION_MODE_OPTIONS: Array<{
   value: SessionPermissionMode;
@@ -1559,6 +1563,10 @@ function SessionRuntimePanel({
     item.metrics.toolUseLabel ? `${item.metrics.toolUseLabel} tools` : null,
   ].filter(Boolean).join(' · ');
 
+  const runtimeWaiterTestId = (waiter: RuntimeConsoleWaiterModel): string => (
+    `session-runtime-waiter-${waiter.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+  );
+
   const renderRuntimeItem = (item: RuntimeSectionItemModel, fallback: string) => {
     const sessionId = item.childSessionId;
     const clickable = Boolean(item.enterable && sessionId && onSelectSession);
@@ -1583,6 +1591,49 @@ function SessionRuntimePanel({
       </button>
     ) : (
       <div key={item.id} className="session-runtime-row">
+        {content}
+      </div>
+    );
+  };
+
+  const renderRuntimeWaiter = (waiter: RuntimeConsoleWaiterModel) => {
+    const sessionId = waiter.childSessionId;
+    const clickable = Boolean(waiter.enterable && sessionId && onSelectSession);
+    const segmentLabel = t(`sessionWorkbench.rightPanel.runtimeSegments.${waiter.segment}`, waiter.segment);
+    const meta = [
+      segmentLabel,
+      waiter.runtimeKind,
+      waiter.summary,
+      sessionId ? `session:${sessionId}` : '',
+    ].filter(Boolean).join(' · ');
+    const content = (
+      <>
+        <span className="session-runtime-row-main">
+          <span className="session-runtime-row-title">{waiter.label}</span>
+          <span className="session-runtime-row-meta">{meta || waiter.id}</span>
+        </span>
+        <span className="session-runtime-status">{waiter.status || 'waiting'}</span>
+      </>
+    );
+    return clickable ? (
+      <button
+        key={`${waiter.segment}:${waiter.id}`}
+        type="button"
+        data-testid={runtimeWaiterTestId(waiter)}
+        data-runtime-waiter-segment={waiter.segment}
+        className="session-runtime-row session-runtime-row-button"
+        title={t('sessionWorkbench.rightPanel.waiterOpenTitle', 'Open waiting session')}
+        onClick={() => sessionId && onSelectSession?.(sessionId)}
+      >
+        {content}
+      </button>
+    ) : (
+      <div
+        key={`${waiter.segment}:${waiter.id}`}
+        data-testid={runtimeWaiterTestId(waiter)}
+        data-runtime-waiter-segment={waiter.segment}
+        className="session-runtime-row"
+      >
         {content}
       </div>
     );
@@ -2037,6 +2088,16 @@ function SessionRuntimePanel({
             </div>
           </div>
 
+          {runtimeConsole.waiters.length > 0 && (
+            <div
+              data-testid="session-runtime-waiters"
+              className="session-runtime-waiters"
+              aria-label={t('sessionWorkbench.rightPanel.waiters', 'Waiting items')}
+            >
+              {runtimeConsole.waiters.map(renderRuntimeWaiter)}
+            </div>
+          )}
+
           <div className="session-runtime-segmented" role="tablist" aria-label={t('sessionWorkbench.rightPanel.runtimeConsole', 'Runtime Console')}>
             {runtimeConsole.segments.map((segment) => {
               const selected = selectedRuntimeSegment === segment.key;
@@ -2353,12 +2414,27 @@ function MessageBranchActions({
   );
 }
 
-function previousUserCheckpointForMessage(messages: AgentChatMessage[], index: number): AgentChatMessage | null {
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    const candidate = messages[cursor];
-    if (candidate?.role === 'user' && candidate.transcriptEventId) return candidate;
-  }
-  return null;
+function getChatMessageKey(message: AgentChatMessage, index: number, prefix = 'message'): string {
+  return String(
+    message.transcriptEventId
+    || message.messageId
+    || message.id
+    || `${prefix}-${index}`,
+  );
+}
+
+function buildPreviousUserCheckpointMap(messages: AgentChatMessage[]): Map<number, AgentChatMessage> {
+  const checkpoints = new Map<number, AgentChatMessage>();
+  let previousUserCheckpoint: AgentChatMessage | null = null;
+  messages.forEach((message, index) => {
+    if (message.role === 'assistant' && previousUserCheckpoint) {
+      checkpoints.set(index, previousUserCheckpoint);
+    }
+    if (message.role === 'user' && message.transcriptEventId) {
+      previousUserCheckpoint = message;
+    }
+  });
+  return checkpoints;
 }
 
 function RawToolResultBlock({ text }: { text: string }) {
@@ -2661,7 +2737,142 @@ function SessionHydratingState({ label }: { label: string }) {
   );
 }
 
-export default function AgentChatSection({
+interface ChatMessageItemProps {
+  msg: AgentChatMessage;
+  i: number;
+  isLeft: boolean;
+  checkpointMessage?: AgentChatMessage | null;
+  effectiveAgentId: string | null;
+  onOpenArtifact: (artifact: ChatArtifactPart) => void | Promise<unknown>;
+  onBranchMessage?: (message: AgentChatMessage) => void | Promise<unknown>;
+  onFeedbackMessage?: (message: AgentChatMessage, label: RecordSessionFeedbackInput['label']) => void | Promise<unknown>;
+  onRewindMessage?: (message: AgentChatMessage) => void | Promise<unknown>;
+  t: Translate;
+}
+
+const ChatMessageItem = React.memo(function ChatMessageItem({
+  msg,
+  i,
+  isLeft,
+  checkpointMessage,
+  effectiveAgentId,
+  onOpenArtifact,
+  onBranchMessage,
+  onFeedbackMessage,
+  onRewindMessage,
+  t,
+}: ChatMessageItemProps) {
+  const extension = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
+  const fileIcon =
+    extension === 'pdf'
+      ? '📄'
+      : extension === 'csv' || extension === 'xlsx' || extension === 'xls'
+        ? '📊'
+        : extension === 'docx' || extension === 'doc'
+          ? '📝'
+          : '📎';
+  const isImage = !!msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(extension);
+  const inlinePlanId = isLeft && msg.role === 'assistant' ? extractPlanIdFromPlanModeMessage(msg.content) : null;
+
+  const timestampHtml = (() => {
+    let timeStr = '';
+    if (msg.timestamp) {
+      const date = new Date(msg.timestamp);
+      const now = new Date();
+      const diffMs = now.getTime() - date.getTime();
+      const isToday = date.toDateString() === now.toDateString();
+      if (isToday) timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      else if (diffMs < 7 * 86400000) {
+        timeStr = `${date.toLocaleDateString([], { weekday: 'short' })} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      } else {
+        timeStr = `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      }
+    }
+    return (
+      <div
+        className={`session-tui-message-meta ${isLeft ? 'align-left' : 'align-right'}`}
+      >
+        {timeStr}
+        {msg.content && <CopyMessageButton text={msg.content} />}
+        <MessageBranchActions
+          message={msg}
+          checkpointMessage={checkpointMessage}
+          isLeft={isLeft}
+          onBranchMessage={onBranchMessage}
+          onFeedbackMessage={onFeedbackMessage}
+          onRewindMessage={onRewindMessage}
+        />
+      </div>
+    );
+  })();
+
+  return (
+    <div
+      data-session-message-id={msg.transcriptEventId || msg.id || undefined}
+      data-session-message-index={i}
+      className={`session-tui-render-cell session-tui-message-row ${isLeft ? 'session-tui-message-row-assistant' : 'session-tui-message-row-user'}`}
+    >
+      <div className="session-tui-message-avatar">
+        {isLeft ? (msg.sender_name ? msg.sender_name[0] : 'A') : 'U'}
+      </div>
+      <div className="session-tui-message-bubble">
+        {isLeft && msg.sender_name && (
+          <div className="session-tui-message-sender">
+            {msg.sender_name}
+          </div>
+        )}
+        {isImage ? (
+          <div style={{ marginBottom: '4px' }}>
+            <img
+              src={msg.imageUrl}
+              alt={msg.fileName}
+              style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}
+              loading="lazy"
+            />
+          </div>
+        ) : (
+          msg.fileName && (
+            <div
+              className="session-tui-file-chip"
+              style={{ marginBottom: msg.content ? '4px' : '0' }}
+            >
+              <span>{fileIcon}</span>
+              <span
+                style={{
+                  fontWeight: 500,
+                  color: 'var(--text-primary)',
+                  maxWidth: '200px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {msg.fileName}
+              </span>
+            </div>
+          )
+        )}
+        {msg.thinking && (
+          <ThinkingDisclosure thinking={msg.thinking} streaming={Boolean((msg as any)._streaming)} />
+        )}
+        {msg.role === 'assistant' ? (
+          <StreamingMarkdown content={msg.content} streaming={Boolean((msg as any)._streaming)} />
+        ) : (
+          <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+        )}
+        <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={onOpenArtifact} />
+        {inlinePlanId && effectiveAgentId && (
+          <div style={{ marginTop: '10px', minWidth: 'min(520px, 100%)' }} data-testid="chat-inline-plan-card">
+            <InlinePlanCard agentId={effectiveAgentId} planId={inlinePlanId} />
+          </div>
+        )}
+        {timestampHtml}
+      </div>
+    </div>
+  );
+});
+
+function AgentChatSection({
   agentId,
   agent,
   currentUser,
@@ -2979,7 +3190,11 @@ export default function AgentChatSection({
       ) : null;
 
       return (
-        <div key={`event-${index}`} style={{ paddingLeft: '36px', marginBottom: '8px' }}>
+        <div
+          key={`event-${getChatMessageKey(msg, index, 'event')}`}
+          className="session-tui-render-cell"
+          style={{ paddingLeft: '36px', marginBottom: '8px' }}
+        >
           <div
             style={{
               borderRadius: '10px',
@@ -3042,201 +3257,13 @@ export default function AgentChatSection({
     [onResolveSessionPermission, t],
   );
 
-	  const ChatMessageItem = React.useMemo(
-	    () =>
-	      React.memo(({ msg, i, isLeft, checkpointMessage }: { msg: AgentChatMessage; i: number; isLeft: boolean; checkpointMessage?: AgentChatMessage | null }) => {
-        const extension = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
-        const fileIcon =
-          extension === 'pdf'
-            ? '📄'
-            : extension === 'csv' || extension === 'xlsx' || extension === 'xls'
-              ? '📊'
-              : extension === 'docx' || extension === 'doc'
-                ? '📝'
-                : '📎';
-        const isImage = !!msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(extension);
-        const inlinePlanId = isLeft && msg.role === 'assistant' ? extractPlanIdFromPlanModeMessage(msg.content) : null;
-
-        const timestampHtml = (() => {
-          let timeStr = '';
-          if (msg.timestamp) {
-            const date = new Date(msg.timestamp);
-            const now = new Date();
-            const diffMs = now.getTime() - date.getTime();
-            const isToday = date.toDateString() === now.toDateString();
-            if (isToday) timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            else if (diffMs < 7 * 86400000)
-              timeStr = `${date.toLocaleDateString([], { weekday: 'short' })} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-            else
-              timeStr = `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-          }
-          return (
-            <div
-              className={`session-tui-message-meta ${isLeft ? 'align-left' : 'align-right'}`}
-            >
-              {timeStr}
-              {msg.content && <CopyMessageButton text={msg.content} />}
-	              <MessageBranchActions
-	                message={msg}
-	                checkpointMessage={checkpointMessage}
-	                isLeft={isLeft}
-	                onBranchMessage={startBranchAction}
-                onFeedbackMessage={submitMessageFeedback}
-                onRewindMessage={rewindFromMessage}
-              />
-            </div>
-          );
-        })();
-
-        return (
-          <div
-            key={i}
-	            data-session-message-id={msg.transcriptEventId || msg.id || undefined}
-            data-session-message-index={i}
-            className={`session-tui-message-row ${isLeft ? 'session-tui-message-row-assistant' : 'session-tui-message-row-user'}`}
-          >
-            <div className="session-tui-message-avatar">
-              {isLeft ? (msg.sender_name ? msg.sender_name[0] : 'A') : 'U'}
-            </div>
-            <div className="session-tui-message-bubble">
-              {isLeft && msg.sender_name && (
-                <div className="session-tui-message-sender">
-                  {msg.sender_name}
-                </div>
-              )}
-              {isImage ? (
-                <div style={{ marginBottom: '4px' }}>
-                  <img
-                    src={msg.imageUrl}
-                    alt={msg.fileName}
-                    style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}
-                    loading="lazy"
-                  />
-                </div>
-              ) : (
-                msg.fileName && (
-                  <div
-                    className="session-tui-file-chip"
-                    style={{ marginBottom: msg.content ? '4px' : '0' }}
-                  >
-                    <span>{fileIcon}</span>
-                    <span
-                      style={{
-                        fontWeight: 500,
-                        color: 'var(--text-primary)',
-                        maxWidth: '200px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {msg.fileName}
-                    </span>
-                  </div>
-                )
-              )}
-              {msg.thinking && (
-                <ThinkingDisclosure thinking={msg.thinking} streaming={Boolean((msg as any)._streaming)} />
-              )}
-              {msg.role === 'assistant' ? (
-                <StreamingMarkdown content={msg.content} streaming={Boolean((msg as any)._streaming)} />
-              ) : (
-                <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-              )}
-              <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={openArtifact} />
-              {inlinePlanId && effectiveAgentId && (
-                <div style={{ marginTop: '10px', minWidth: 'min(520px, 100%)' }} data-testid="chat-inline-plan-card">
-                  <InlinePlanCard agentId={effectiveAgentId} planId={inlinePlanId} />
-                </div>
-              )}
-              {timestampHtml}
-            </div>
-          </div>
-        );
-      }),
-    [effectiveAgentId, openArtifact, rewindFromMessage, startBranchAction, submitMessageFeedback, t],
-  );
-
-  const renderToolCall = (msg: AgentChatMessage, index: number, running = false) => {
-    const permissionActions = msg.sessionPermissionRequest ? (
-      <SessionPermissionActions
-        permissionRequest={msg.sessionPermissionRequest}
-        onResolveSessionPermission={onResolveSessionPermission}
-        t={t}
-      />
-    ) : null;
-
-    return (
-      <div key={index} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
-        <details
-          style={{
-            flex: 1,
-            minWidth: 0,
-            borderRadius: '8px',
-            background: 'var(--accent-subtle)',
-            border: '1px solid var(--accent-subtle)',
-            fontSize: '12px',
-            overflow: 'hidden',
-          }}
-        >
-          <summary
-            style={{
-              padding: '6px 10px',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              userSelect: 'none',
-              listStyle: 'none',
-              overflow: 'hidden',
-            }}
-          >
-            <span style={{ fontSize: '13px' }}>{running ? '⏳' : '⚡'}</span>
-            <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{msg.toolName}</span>
-            {msg.toolArgs && Object.keys(msg.toolArgs).length > 0 && (
-              <span
-                style={{
-                  color: 'var(--text-tertiary)',
-                  fontSize: '11px',
-                  fontFamily: 'var(--font-mono)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  flex: 1,
-                }}
-              >
-                {`(${Object.entries(msg.toolArgs)
-                  .map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`)
-                  .join(', ')})`}
-              </span>
-            )}
-            {running && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', marginLeft: 'auto' }}>{t('common.loading')}</span>}
-          </summary>
-          {(msg.toolResult || msg.toolMeta) && (
-            <div style={{ padding: '4px 10px 8px' }}>
-              <StructuredToolResultBody
-                toolName={msg.toolName}
-                toolMeta={msg.toolMeta}
-                toolResult={msg.toolResult}
-                toolRawResult={msg.toolRawResult}
-                agentId={effectiveAgentId ?? undefined}
-                agentName={agent?.name}
-                submitted={isClarificationCardAnsweredByLaterUserMessage(visibleTimeline, index)}
-                onSendMessage={onSendMessage}
-                onEnterPlanMode={onEnterPlanMode}
-              />
-              {permissionActions}
-            </div>
-          )}
-          {!(msg.toolResult || msg.toolMeta) && permissionActions}
-          <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={openArtifact} />
-        </details>
-      </div>
-    );
-  };
-
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => (
-    <div key={index} style={{ paddingLeft: '36px', marginBottom: '8px', maxWidth: '75%' }} data-testid="chat-inline-plan-tool-call">
+    <div
+      key={`tool-inline-${getChatMessageKey(msg, index, 'tool')}`}
+      className="session-tui-render-cell"
+      style={{ paddingLeft: '36px', marginBottom: '8px', maxWidth: '75%' }}
+      data-testid="chat-inline-plan-tool-call"
+    >
       <StructuredToolResultBody
         toolName={msg.toolName}
         toolMeta={msg.toolMeta}
@@ -3272,7 +3299,12 @@ export default function AgentChatSection({
     )
   );
 
-	  const renderConversationMessage = (message: AgentChatMessage, index: number, isLeft: boolean, timelineMessages: AgentChatMessage[]) => {
+	  const renderConversationMessage = (
+    message: AgentChatMessage,
+    index: number,
+    isLeft: boolean,
+    checkpointByIndex: Map<number, AgentChatMessage>,
+  ) => {
 	    if (message.role === 'event') {
 	      return renderEventMessage(message, index);
     }
@@ -3285,11 +3317,17 @@ export default function AgentChatSection({
 	    }
 	    return (
 	      <ChatMessageItem
-	        key={index}
+	        key={getChatMessageKey(message, index, isLeft ? 'assistant' : 'user')}
 	        msg={message}
 	        i={index}
 	        isLeft={isLeft}
-	        checkpointMessage={message.role === 'assistant' ? previousUserCheckpointForMessage(timelineMessages, index) : null}
+	        checkpointMessage={message.role === 'assistant' ? checkpointByIndex.get(index) || null : null}
+          effectiveAgentId={effectiveAgentId}
+          onOpenArtifact={openArtifact}
+          onBranchMessage={startBranchAction}
+          onFeedbackMessage={submitMessageFeedback}
+          onRewindMessage={rewindFromMessage}
+          t={t}
 	      />
 	    );
 	  };
@@ -3300,6 +3338,7 @@ export default function AgentChatSection({
     timelineModel?: ThreadTimelineModel,
   ) => {
     const nodes: React.ReactNode[] = [];
+    const checkpointByIndex = buildPreviousUserCheckpointMap(messages);
     const model = timelineModel ?? buildThreadTimeline({
       messages,
       activeSession,
@@ -3311,16 +3350,21 @@ export default function AgentChatSection({
 
     model.cells.forEach((cell) => {
       if (cell.kind === 'user_turn') {
-	        nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index), messages));
+	        nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index), checkpointByIndex));
 	        return;
 	      }
 	      if (cell.kind === 'assistant_final') {
-	        nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index), messages));
+	        nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index), checkpointByIndex));
         return;
       }
       if (cell.kind === 'active_run') {
         nodes.push(
-          <div key={cell.id} data-testid="active-run-cell" style={{ marginBottom: '8px' }}>
+          <div
+            key={cell.id}
+            className="session-tui-render-cell session-tui-active-run-cell"
+            data-testid="active-run-cell"
+            style={{ marginBottom: '8px' }}
+          >
             <RunDisclosureBlock timeline={cell.timeline} />
             {cell.sourceMessages.map((entry) => (
               entry.message.role === 'event' && entry.message.sessionPermissionRequest
@@ -3329,7 +3373,7 @@ export default function AgentChatSection({
                   ? renderInlinePlanToolCall(entry.message, entry.index)
                   : null
             ))}
-	            {cell.answer ? renderConversationMessage(cell.answer, cell.answerIndex ?? 0, resolveIsLeft(cell.answer, cell.answerIndex ?? 0), messages) : null}
+	            {cell.answer ? renderConversationMessage(cell.answer, cell.answerIndex ?? 0, resolveIsLeft(cell.answer, cell.answerIndex ?? 0), checkpointByIndex) : null}
           </div>,
         );
         return;
@@ -3337,6 +3381,7 @@ export default function AgentChatSection({
       nodes.push(
         <div
           key={cell.id}
+          className="session-tui-render-cell"
           data-testid="session-boundary-cell"
           style={{
             margin: '8px auto',
@@ -3363,8 +3408,8 @@ export default function AgentChatSection({
   React.useEffect(() => {
     setFocusedWorkflow(null);
   }, [activeSessionId]);
-  const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : [];
-  const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : [];
+  const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : EMPTY_CHAT_MESSAGES;
+  const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : EMPTY_CHAT_MESSAGES;
   const activeSessionHydrating = Boolean(activeSessionId) && (
     isReadOnlySession ? historyMessagesSessionId !== activeSessionId : chatMessagesSessionId !== activeSessionId
   );
@@ -3576,17 +3621,31 @@ export default function AgentChatSection({
     onChatScroll();
     trackGitCheckpointFromScroll();
   }, [onChatScroll, trackGitCheckpointFromScroll]);
-  const threadTimelineModel = buildThreadTimeline({
-    messages: visibleTimeline,
-    activeSession,
-    runtimeSummary,
-    sessionIndex,
-    sessionWorkbench,
-    branchLineage,
-    isWaiting,
-    isStreaming,
-    activeRunStatus,
-  });
+  const threadTimelineCacheRef = React.useRef(createThreadTimelineCache());
+  const threadTimelineModel = React.useMemo(
+    () => buildThreadTimelineCached({
+      messages: visibleTimeline,
+      activeSession,
+      runtimeSummary,
+      sessionIndex,
+      sessionWorkbench,
+      branchLineage,
+      isWaiting,
+      isStreaming,
+      activeRunStatus,
+    }, threadTimelineCacheRef.current),
+    [
+      activeRunStatus,
+      activeSession,
+      branchLineage,
+      isStreaming,
+      isWaiting,
+      runtimeSummary,
+      sessionIndex,
+      sessionWorkbench,
+      visibleTimeline,
+    ],
+  );
   const showDetailAuditBrowser = !sessionOnly && isAdmin;
   const detailSessionRows = allSessions;
   const detailSessionsLoading = allSessionsLoading;
@@ -4487,3 +4546,5 @@ export default function AgentChatSection({
     </div>
   );
 }
+
+export default React.memo(AgentChatSection);

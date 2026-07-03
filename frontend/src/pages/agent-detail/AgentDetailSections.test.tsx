@@ -538,7 +538,7 @@ vi.mock('@tanstack/react-query', () => ({
                   chat_session_id: 'member-session-1',
                   runtime_task_id: 'member-task-1',
                   runtime_task_type: 'web_chat_turn',
-                  status: 'running',
+                  status: 'awaiting_approval',
                   summary: 'Checking runtime panel evidence.',
                 },
               ],
@@ -565,13 +565,13 @@ vi.mock('@tanstack/react-query', () => ({
                     id: 'member-1',
                     runtime_kind: 'team_member',
                     label: 'Reviewer',
-                    status: 'running',
                     elapsed_seconds: 95,
                     total_tokens: 3600,
                     tool_use_count: 4,
                     child_session_id: 'member-session-1',
                     enterable: true,
                     summary: 'Checking runtime panel evidence.',
+                    status: 'awaiting_approval',
                   },
                 ],
               },
@@ -581,7 +581,7 @@ vi.mock('@tanstack/react-query', () => ({
                 id: 'subagent-1',
                 runtime_kind: 'subagent',
                 label: 'One-shot critic',
-                status: 'completed',
+                status: 'awaiting_user_clarification',
                 child_session_id: 'subagent-session-1',
                 enterable: true,
               },
@@ -595,7 +595,7 @@ vi.mock('@tanstack/react-query', () => ({
                 elapsed_seconds: 125,
                 token_count: 4200,
                 tool_count: 3,
-                steps: [{ id: 'workflow-step-1', label: 'Review plan', status: 'completed' }],
+                steps: [{ id: 'workflow-step-1', label: 'Review plan', status: 'gate_waiting' }],
                 leaf_calls: [{ id: 'workflow-leaf-1', label: 'Leaf check', status: 'completed', enterable: false }],
               },
             ],
@@ -3675,10 +3675,17 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-runtime-collaboration"');
     expect(markup).toContain('data-testid="session-runtime-console"');
     expect(markup).toContain('data-testid="session-runtime-summary-strip"');
-    expect(markup).toContain('data-runtime-state="running"');
+    expect(markup).toContain('data-runtime-state="waiting"');
     expect(markup).toContain('Runtime panel session');
-    expect(markup).toContain('4 running');
-    expect(markup).toContain('0 waiting');
+    expect(markup).toContain('3 running');
+    expect(markup).toContain('3 waiting');
+    expect(markup).toContain('data-testid="session-runtime-waiters"');
+    expect(markup).toContain('data-testid="session-runtime-waiter-member-1"');
+    expect(markup).toContain('data-testid="session-runtime-waiter-subagent-1"');
+    expect(markup).toContain('data-testid="session-runtime-waiter-workflow-step-1"');
+    expect(markup).toContain('Reviewer');
+    expect(markup).toContain('One-shot critic');
+    expect(markup).toContain('Review plan');
     expect(markup).toContain('2m 5s');
     expect(markup).toContain('8.7K');
     expect(markup).toContain('8');

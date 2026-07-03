@@ -88,6 +88,8 @@
         "unattributed": "未归属"
       },
       "runtimeConsole": "运行控制台",
+      "waiters": "等待项",
+      "waiterOpenTitle": "打开等待中的会话",
       "runtimeSegments": {
         "team": "Team",
         "workers": "Workers",

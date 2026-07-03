@@ -122,6 +122,12 @@ export interface ThreadTimelineModel {
   inspector: SessionWorkbenchInspectorModel;
 }
 
+export interface ThreadTimelineCache {
+  previousInputSignature: string | null;
+  previousMessages: AgentChatMessage[] | null;
+  previousModel: ThreadTimelineModel | null;
+}
+
 export interface BuildThreadTimelineInput {
   messages: AgentChatMessage[];
   activeSession?: Record<string, unknown> | null;
@@ -275,10 +281,22 @@ export interface RuntimeConsoleSummaryModel {
   toolUseLabel: string | null;
 }
 
+export interface RuntimeConsoleWaiterModel {
+  id: string;
+  label: string;
+  status: string;
+  segment: RuntimeConsoleSegmentKey;
+  runtimeKind: string;
+  summary: string;
+  childSessionId: string | null;
+  enterable: boolean;
+}
+
 export interface RuntimeConsoleModel {
   defaultSegment: RuntimeConsoleSegmentKey;
   summary: RuntimeConsoleSummaryModel;
   segments: RuntimeConsoleSegmentModel[];
+  waiters: RuntimeConsoleWaiterModel[];
   team: RuntimeConsoleGroupModel;
   workers: RuntimeConsoleGroupModel;
   workflow: RuntimeConsoleGroupModel;
@@ -620,14 +638,30 @@ function runtimeStatusText(item: RuntimeSectionItemModel): string {
   return String(item.status || item.state || '').trim().toLowerCase();
 }
 
+function isWaitingStatusText(status: string): boolean {
+  return (
+    status === 'waiting' ||
+    status === 'queued' ||
+    status === 'scheduled' ||
+    status === 'gate_waiting' ||
+    status === 'approval_required' ||
+    status === 'pending_approval' ||
+    status === 'requires_input' ||
+    status === 'needs_user_input' ||
+    status.startsWith('awaiting_')
+  );
+}
+
 function isWaitingRuntimeItem(item: RuntimeSectionItemModel): boolean {
-  const status = runtimeStatusText(item);
-  return status === 'waiting' || status === 'queued' || status === 'scheduled' || status === 'gate_waiting';
+  return isWaitingStatusText(runtimeStatusText(item));
+}
+
+function isBlockedStatusText(status: string): boolean {
+  return status === 'blocked' || status === 'stalled' || status === 'needs_reconciliation' || status === 'suspended';
 }
 
 function isBlockedRuntimeItem(item: RuntimeSectionItemModel): boolean {
-  const status = runtimeStatusText(item);
-  return status === 'blocked' || status === 'stalled' || status === 'needs_reconciliation' || status === 'suspended';
+  return isBlockedStatusText(runtimeStatusText(item));
 }
 
 function hasActiveRuntimeItem(items: RuntimeSectionItemModel[]): boolean {
@@ -1000,6 +1034,49 @@ function runtimeConsoleState({
   return 'idle';
 }
 
+function runtimeWaiterFromItem(
+  item: RuntimeSectionItemModel,
+  segment: RuntimeConsoleSegmentKey,
+): RuntimeConsoleWaiterModel | null {
+  if (!isWaitingRuntimeItem(item) && !isBlockedRuntimeItem(item)) return null;
+  return {
+    id: item.id,
+    label: item.label || item.id,
+    status: item.status || item.state || 'waiting',
+    segment,
+    runtimeKind: item.runtimeKind,
+    summary: item.summary,
+    childSessionId: item.childSessionId,
+    enterable: item.enterable,
+  };
+}
+
+function runtimeWaitersFromItem(
+  item: RuntimeSectionItemModel,
+  segment: RuntimeConsoleSegmentKey,
+): RuntimeConsoleWaiterModel[] {
+  const nestedWaiters = [
+    ...item.members,
+    ...item.steps,
+    ...item.leafCalls,
+  ].flatMap((child) => runtimeWaitersFromItem(child, segment));
+  if (nestedWaiters.length > 0) return nestedWaiters;
+  const waiter = runtimeWaiterFromItem(item, segment);
+  return waiter ? [waiter] : [];
+}
+
+function buildRuntimeConsoleWaiters(runtimeSections: RuntimeSectionsModel): RuntimeConsoleWaiterModel[] {
+  return [
+    ...runtimeSections.agentTeams.flatMap((item) => runtimeWaitersFromItem(item, 'team')),
+    ...runtimeSections.subagents.flatMap((item) => runtimeWaitersFromItem(item, 'workers')),
+    ...runtimeSections.workflows.flatMap((item) => runtimeWaitersFromItem(item, 'workflow')),
+    ...[
+      ...runtimeSections.background,
+      ...runtimeSections.runs,
+    ].flatMap((item) => runtimeWaitersFromItem(item, 'activity')),
+  ];
+}
+
 function buildRuntimeConsoleModel(
   runtimeSections: RuntimeSectionsModel,
   metrics: RuntimeMetricModel & { runningCount: number; totalCount: number },
@@ -1023,15 +1100,16 @@ function buildRuntimeConsoleModel(
   };
 
   const operationalItems = [
-    ...runtimeSections.agentTeams.flatMap((item) => [item, ...item.members]),
-    ...runtimeSections.subagents,
-    ...runtimeSections.workflows,
-    ...runtimeSections.background,
-    ...runtimeSections.runs,
+    ...runtimeSections.agentTeams.flatMap((item) => flattenRuntimeItems([item])),
+    ...runtimeSections.subagents.flatMap((item) => flattenRuntimeItems([item])),
+    ...runtimeSections.workflows.flatMap((item) => flattenRuntimeItems([item])),
+    ...runtimeSections.background.flatMap((item) => flattenRuntimeItems([item])),
+    ...runtimeSections.runs.flatMap((item) => flattenRuntimeItems([item])),
   ];
   const runningCount = operationalItems.filter(isRunningRuntimeItem).length;
-  const waitingCount = operationalItems.filter(isWaitingRuntimeItem).length;
-  const blockedCount = operationalItems.filter(isBlockedRuntimeItem).length;
+  const waiters = buildRuntimeConsoleWaiters(runtimeSections);
+  const waitingCount = waiters.filter((waiter) => isWaitingStatusText(String(waiter.status || '').toLowerCase())).length;
+  const blockedCount = waiters.filter((waiter) => isBlockedStatusText(String(waiter.status || '').toLowerCase())).length;
   const defaultSegment: RuntimeConsoleSegmentKey = hasActiveRuntimeItem(runtimeSections.workflows)
     ? 'workflow'
     : hasActiveRuntimeItem(runtimeSections.agentTeams)
@@ -1080,6 +1158,7 @@ function buildRuntimeConsoleModel(
       toolUseLabel: metrics.toolUseLabel,
     },
     segments,
+    waiters,
     team,
     workers,
     workflow,
@@ -1362,6 +1441,35 @@ function getHeaderStatus(
   return 'idle';
 }
 
+function normalizedActiveRunStatus(status?: string | null): string | null {
+  const value = String(status || '').trim().toLowerCase();
+  if (!value) return null;
+  if (value === 'completed' || value === 'complete' || value === 'succeeded' || value === 'success') return null;
+  if (value === 'cancelled' || value === 'canceled' || value === 'killed') return null;
+  return value;
+}
+
+function latestUserMessageIndex(messages: AgentChatMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') return index;
+  }
+  return -1;
+}
+
+function hasAssistantAnswerAfterLatestUser(messages: AgentChatMessage[]): boolean {
+  const latestUserIndex = latestUserMessageIndex(messages);
+  return messages.some((message, index) => index > latestUserIndex && isRenderableAssistantAnswer(message));
+}
+
+function mainTurnActiveRunStatus(input: BuildThreadTimelineInput, cells: ThreadTimelineCell[]): string | null {
+  const activeRunStatus = normalizedActiveRunStatus(input.activeRunStatus);
+  if (!activeRunStatus) return null;
+  if (activeRunStatus === 'failed') return activeRunStatus;
+  if (input.isWaiting || input.isStreaming) return activeRunStatus;
+  if (hasOpenRunCell(cells)) return activeRunStatus;
+  return hasAssistantAnswerAfterLatestUser(input.messages) ? null : activeRunStatus;
+}
+
 function isRenderableAssistantAnswer(message: AgentChatMessage): boolean {
   return message.role === 'assistant' && Boolean(message.content?.trim());
 }
@@ -1404,12 +1512,15 @@ function hasOpenRunCell(cells: ThreadTimelineCell[]): boolean {
   ));
 }
 
-function buildPendingRunCell(input: BuildThreadTimelineInput): Extract<ThreadTimelineCell, { kind: 'active_run' }> | null {
-  if (!input.isWaiting && !input.isStreaming && !input.activeRunStatus) return null;
-  const status: RunTimelineSnapshot['status'] = input.activeRunStatus === 'failed' ? 'failed' : 'running';
+function buildPendingRunCell(
+  input: BuildThreadTimelineInput,
+  activeRunStatus: string | null,
+): Extract<ThreadTimelineCell, { kind: 'active_run' }> | null {
+  if (!input.isWaiting && !input.isStreaming && !activeRunStatus) return null;
+  const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed' ? 'failed' : 'running';
   const title = input.isStreaming ? 'Streaming response' : 'Waiting for model';
-  const summary = input.activeRunStatus
-    ? `Active run: ${input.activeRunStatus}`
+  const summary = activeRunStatus
+    ? `Active run: ${activeRunStatus}`
     : input.isStreaming
       ? 'The assistant is streaming this turn.'
       : 'The assistant is continuing this turn.';
@@ -1504,9 +1615,88 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
   return cells;
 }
 
+function stableStringify(value: unknown): string {
+  if (value == null) return '';
+  const seen = new WeakSet<object>();
+  try {
+    return JSON.stringify(value, (_key, nested) => {
+      if (!nested || typeof nested !== 'object') return nested;
+      if (seen.has(nested)) return '[Circular]';
+      seen.add(nested);
+      if (Array.isArray(nested)) return nested;
+      return Object.keys(nested as Record<string, unknown>)
+        .sort()
+        .reduce<Record<string, unknown>>((acc, key) => {
+          acc[key] = (nested as Record<string, unknown>)[key];
+          return acc;
+        }, {});
+    });
+  } catch {
+    return String(value);
+  }
+}
+
+function threadTimelineInputSignature(input: BuildThreadTimelineInput): string {
+  return stableStringify({
+    activeSession: input.activeSession,
+    runtimeSummary: input.runtimeSummary,
+    sessionIndex: input.sessionIndex,
+    sessionWorkbench: input.sessionWorkbench,
+    branchLineage: input.branchLineage,
+    isWaiting: input.isWaiting,
+    isStreaming: input.isStreaming,
+    activeRunStatus: input.activeRunStatus ?? null,
+  });
+}
+
+function sameCellIdentity(previous: ThreadTimelineCell, next: ThreadTimelineCell): boolean {
+  if (previous.kind !== next.kind || previous.id !== next.id) return false;
+  if (previous.kind === 'user_turn' && next.kind === 'user_turn') {
+    return previous.index === next.index && previous.message === next.message;
+  }
+  if (previous.kind === 'assistant_final' && next.kind === 'assistant_final') {
+    return previous.index === next.index && previous.message === next.message;
+  }
+  if (previous.kind === 'boundary' && next.kind === 'boundary') {
+    return previous.index === next.index && previous.title === next.title && previous.summary === next.summary;
+  }
+  if (previous.kind === 'active_run' && next.kind === 'active_run') {
+    if (previous.answer !== next.answer || previous.answerIndex !== next.answerIndex) return false;
+    if (previous.sourceMessages.length !== next.sourceMessages.length) return false;
+    return previous.sourceMessages.every((entry, index) => (
+      entry.index === next.sourceMessages[index]?.index && entry.message === next.sourceMessages[index]?.message
+    ));
+  }
+  return false;
+}
+
+function reuseStableTimelineCells(
+  previousModel: ThreadTimelineModel | null,
+  nextModel: ThreadTimelineModel,
+): ThreadTimelineModel {
+  if (!previousModel || previousModel.cells.length === 0 || nextModel.cells.length === 0) return nextModel;
+  let reusedAny = false;
+  const nextCells = nextModel.cells.map((cell, index) => {
+    const previous = previousModel.cells[index];
+    if (!previous || !sameCellIdentity(previous, cell)) return cell;
+    reusedAny = true;
+    return previous;
+  });
+  return reusedAny ? { ...nextModel, cells: nextCells } : nextModel;
+}
+
+export function createThreadTimelineCache(): ThreadTimelineCache {
+  return {
+    previousInputSignature: null,
+    previousMessages: null,
+    previousModel: null,
+  };
+}
+
 export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTimelineModel {
   const cells = buildCells(input.messages);
-  const pendingRunCell = buildPendingRunCell(input);
+  const activeRunStatus = mainTurnActiveRunStatus(input, cells);
+  const pendingRunCell = buildPendingRunCell(input, activeRunStatus);
   if (pendingRunCell && !hasOpenRunCell(cells)) {
     cells.push(pendingRunCell);
   }
@@ -1514,7 +1704,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
   const contextWindow = getContextWindowProjection(sessionWorkbench);
   const runtimeSummary = input.runtimeSummary || null;
-  const headerStatus = getHeaderStatus(cells, input.isWaiting, input.isStreaming, input.activeRunStatus);
+  const headerStatus = getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus);
 
   return {
     cells,
@@ -1533,7 +1723,7 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       compactionCount: runtimeSummary?.compaction_count ?? 0,
       contextWindowStatusLabel: contextWindow.label,
       contextWindowTitle: contextWindow.title,
-      activeRunStatus: input.activeRunStatus || null,
+      activeRunStatus,
     },
     inspector: {
       sessionEventCount: typeof sessionIndex?.event_count === 'number' ? sessionIndex.event_count : null,
@@ -1544,4 +1734,25 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       activatedToolGroupCount: runtimeSummary?.activated_tool_groups?.length ?? 0,
     },
   };
+}
+
+export function buildThreadTimelineCached(
+  input: BuildThreadTimelineInput,
+  cache: ThreadTimelineCache,
+): ThreadTimelineModel {
+  const messagesUnchanged = cache.previousMessages === input.messages;
+  const signature = !cache.previousModel || messagesUnchanged ? threadTimelineInputSignature(input) : null;
+  if (
+    cache.previousModel
+    && messagesUnchanged
+    && cache.previousInputSignature === signature
+  ) {
+    return cache.previousModel;
+  }
+
+  const nextModel = reuseStableTimelineCells(cache.previousModel, buildThreadTimeline(input));
+  cache.previousMessages = input.messages;
+  cache.previousInputSignature = signature;
+  cache.previousModel = nextModel;
+  return nextModel;
 }

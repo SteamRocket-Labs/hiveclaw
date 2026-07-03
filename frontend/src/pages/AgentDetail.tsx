@@ -65,6 +65,11 @@ import {
     type TranscriptReplayState,
 } from './agent-detail/chatRuntime';
 import { buildPlanModeScopeKey, nextPlanModeRequestedForScope } from './agent-detail/planModeComposer';
+import {
+    createSessionMessageStore,
+    useSessionMessages,
+    type ChatMessagesUpdater,
+} from './agent-detail/sessionMessageStore';
 import AgentA2ASection from './agent-detail/AgentA2ASection';
 import ToolsManager from './agent-detail/ToolsManager';
 import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
@@ -624,7 +629,7 @@ function AgentDetailInner() {
         messageInput: AgentChatMessage,
     ) => {
         const message = parseChatMsg(messageInput);
-        setChatMessages(prev => {
+        setChatMessagesAfterQueued(prev => {
             pendingUserMessagesRef.current[key] = [
                 ...(pendingUserMessagesRef.current[key] || []),
                 { message, anchorMessageCount: prev.length },
@@ -676,7 +681,8 @@ function AgentDetailInner() {
 
         if (isActiveRuntime) {
             setChatMessagesSessionId(sessionId);
-            setChatMessages(mergePendingForSession(key, next.messages.map(parseChatMsg)));
+            const commitChatMessages = terminal ? setChatMessagesAfterQueued : enqueueChatMessagesUpdate;
+            commitChatMessages(() => mergePendingForSession(key, next.messages.map(parseChatMsg)));
             setIsWaiting(next.ui.isWaiting);
             setIsStreaming(next.ui.isStreaming);
         }
@@ -767,7 +773,7 @@ function AgentDetailInner() {
 
         if (draftSession) {
             sessionMsgAbortRef.current?.abort();
-            setChatMessages([]);
+            setChatMessagesAfterQueued(() => []);
             setChatMessagesSessionId(sessionId);
             setHistoryMsgs([]);
             setHistoryMessagesSessionId(null);
@@ -839,7 +845,7 @@ function AgentDetailInner() {
             
             if (writableSession) {
                 setChatMessagesSessionId(sessionId);
-                setChatMessages(mergePendingForSession(runtimeKey, preParsed));
+                setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, preParsed));
             } else {
                 setHistoryMessagesSessionId(sessionId);
                 setHistoryMsgs(preParsed);
@@ -859,7 +865,7 @@ function AgentDetailInner() {
             setTranscriptHasOlder((prev) => ({ ...prev, [runtimeKey]: false }));
             if (writableSession) {
                 setChatMessagesSessionId(sessionId);
-                setChatMessages(mergePendingForSession(runtimeKey, [failureMessage]));
+                setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, [failureMessage]));
             } else {
                 setHistoryMessagesSessionId(sessionId);
                 setHistoryMsgs([failureMessage]);
@@ -903,7 +909,7 @@ function AgentDetailInner() {
             sessionUiStateRef.current[runtimeKey] = replay.ui;
             const preParsed = replay.messages.map(parseChatMsg);
             if (chatMessagesSessionId === sessionId) {
-                setChatMessages(mergePendingForSession(runtimeKey, preParsed));
+                setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, preParsed));
             } else if (historyMessagesSessionId === sessionId) {
                 setHistoryMsgs(preParsed);
             }
@@ -1120,7 +1126,7 @@ function AgentDetailInner() {
                         };
                     }
                     const marker = rewindMarkerMessage(checkpointEventId);
-                    setChatMessages(prev => (
+                    setChatMessagesAfterQueued(prev => (
                         chatMessagesSessionId === currentSessionId
                             ? [...trimMessagesBeforeTranscriptEvent(prev, checkpointEventId, checkpointCreatedAt), marker]
                             : prev
@@ -1294,7 +1300,7 @@ function AgentDetailInner() {
             if (activeSession?.id === sessionId) {
                 activeSessionIdRef.current = null;
                 setActiveSession(null);
-                setChatMessages([]);
+                setChatMessagesAfterQueued(() => []);
                 setChatMessagesSessionId(null);
                 setHistoryMsgs([]);
                 setHistoryMessagesSessionId(null);
@@ -1338,8 +1344,27 @@ function AgentDetailInner() {
         } catch (e) { showToast(`Failed: ${e}`, 'error'); }
         setExpirySaving(false);
     };
-    const [chatMessages, setChatMessages] = useState<AgentChatMessage[]>([]);
     const [chatMessagesSessionId, setChatMessagesSessionId] = useState<string | null>(null);
+    const sessionMessageStoreRef = useRef<ReturnType<typeof createSessionMessageStore> | null>(null);
+    if (!sessionMessageStoreRef.current) {
+        sessionMessageStoreRef.current = createSessionMessageStore();
+    }
+    const sessionMessageStore = sessionMessageStoreRef.current;
+    const chatMessages = useSessionMessages(sessionMessageStore, chatMessagesSessionId);
+    const resolveCurrentChatMessagesSessionId = React.useCallback(() => (
+        activeSessionIdRef.current
+        || chatMessagesSessionId
+        || (activeSession?.id ? String(activeSession.id) : null)
+    ), [activeSession?.id, chatMessagesSessionId]);
+    const enqueueChatMessagesUpdate = React.useCallback((update: ChatMessagesUpdater) => {
+        sessionMessageStore.enqueueUpdate(resolveCurrentChatMessagesSessionId(), update);
+    }, [resolveCurrentChatMessagesSessionId, sessionMessageStore]);
+    const setChatMessagesAfterQueued = React.useCallback((update: ChatMessagesUpdater) => {
+        sessionMessageStore.updateAfterQueued(resolveCurrentChatMessagesSessionId(), update);
+    }, [resolveCurrentChatMessagesSessionId, sessionMessageStore]);
+    useEffect(() => () => {
+        sessionMessageStore.clearAll();
+    }, [sessionMessageStore]);
     const [chatInput, setChatInput] = useState('');
     const [planModeRequested, setPlanModeRequested] = useState(false);
     const [sessionPermissionMode, setSessionPermissionMode] = useState<SessionPermissionMode>(DEFAULT_SESSION_PERMISSION_MODE);
@@ -1536,7 +1561,7 @@ function AgentDetailInner() {
         sessionTranscriptLoadRef.current = null;
         activeSessionIdRef.current = null;
         setActiveSession(null);
-        setChatMessages([]);
+        setChatMessagesAfterQueued(() => []);
         setChatMessagesSessionId(null);
         setHistoryMsgs([]);
         setHistoryMessagesSessionId(null);
@@ -1768,12 +1793,12 @@ function AgentDetailInner() {
 
             const runtimeEvent = getRuntimeEventMessage({ ...d, timestamp: new Date().toISOString() });
             if (runtimeEvent) {
-                setChatMessages(prev => [...prev, parseChatMsg(runtimeEvent)]);
+                enqueueChatMessagesUpdate(prev => [...prev, parseChatMsg(runtimeEvent)]);
                 return;
             }
 
             if (d.type === 'thinking') {
-                setChatMessages(prev => {
+                enqueueChatMessagesUpdate(prev => {
                     const last = prev[prev.length - 1];
                     if (last && last.role === 'assistant' && (last as any)._streaming) {
                         return [...prev.slice(0, -1), { ...last, thinking: (last.thinking || '') + d.content } as any];
@@ -1799,19 +1824,19 @@ function AgentDetailInner() {
                     setIsWaiting(false);
                     setIsStreaming(false);
                 }
-                setChatMessages(prev => appendToolCallMessage(prev, toolMsg));
                 if (normalizedResult.createdAgentId) {
                     setCreatedAgentId(normalizedResult.createdAgentId);
                 }
+                enqueueChatMessagesUpdate(prev => appendToolCallMessage(prev, toolMsg));
             } else if (d.type === 'chunk') {
-                setChatMessages(prev => applyStreamingChunkEvent(prev, d));
+                enqueueChatMessagesUpdate(prev => applyStreamingChunkEvent(prev, d));
             } else if (d.type === 'done') {
-                setChatMessages(prev => applyRuntimeDoneEvent(prev, d).map(parseChatMsg));
+                setChatMessagesAfterQueued(prev => applyRuntimeDoneEvent(prev, d).map(parseChatMsg));
                 fetchMySessions(true, agentId);
                 void selectSession(sess);
             } else if (d.type === 'error' || d.type === 'quota_exceeded') {
                 const msg = d.content || d.detail || d.message || 'Request denied';
-                setChatMessages(prev => {
+                setChatMessagesAfterQueued(prev => {
                     const last = prev[prev.length - 1];
                     if (last && last.role === 'assistant' && last.content === `⚠️ ${msg}`) return prev;
                     return [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })];
@@ -1822,12 +1847,12 @@ function AgentDetailInner() {
                     if (msg.includes('expired')) setAgentExpired(true);
                 }
             } else if (d.type === 'trigger_notification') {
-                setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: d.content })]);
+                enqueueChatMessagesUpdate(prev => [...prev, parseChatMsg({ role: 'assistant', content: d.content })]);
                 fetchMySessions(true, agentId);
                 queryClient.invalidateQueries({ queryKey: ['autonomy-overview', agentId] });
                 queryClient.invalidateQueries({ queryKey: ['triggers', agentId] });
             } else if (typeof d.content === 'string' && (d.role === 'assistant' || d.role === 'user')) {
-                setChatMessages(prev => [...prev, parseChatMsg({ role: d.role, content: d.content })]);
+                enqueueChatMessagesUpdate(prev => [...prev, parseChatMsg({ role: d.role, content: d.content })]);
             }
         };
     };
@@ -1964,7 +1989,7 @@ function AgentDetailInner() {
                 parsedSlashCommand = parseSlashCommandInput(userMsg);
             } catch (err) {
                 setChatMessagesSessionId(String(activeSession.id));
-                setChatMessages(prev => [
+                setChatMessagesAfterQueued(prev => [
                     ...prev,
                     parseChatMsg({ role: 'user', content: userMsg, timestamp: new Date().toISOString() }),
                     parseChatMsg({
@@ -1983,7 +2008,7 @@ function AgentDetailInner() {
                 } catch (err: any) {
                     const msg = err?.message || t('agent.chat.sessionCreateFailed', 'Failed to create session');
                     setChatMessagesSessionId(String(activeSession.id));
-                    setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+                    setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
                     return;
                 }
                 if (!commandSession?.id) return;
@@ -1994,7 +2019,7 @@ function AgentDetailInner() {
                 setTransportNotice(null);
                 setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
                 setChatMessagesSessionId(commandSessionId);
-                setChatMessages(prev => [...prev, parseChatMsg({
+                setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({
                     role: 'user',
                     content: userMsg,
                     timestamp: new Date().toISOString(),
@@ -2030,21 +2055,21 @@ function AgentDetailInner() {
                     if (actionResult?.action === 'open_tab') {
                         const tab = typeof actionResult.tab === 'string' ? actionResult.tab : '';
                         if (tab) selectDetailTab(tab);
-                        setChatMessages(prev => [...prev, parseChatMsg({
+                        setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({
                             role: 'assistant',
                             content: typeof actionResult.message === 'string' ? actionResult.message : formatSlashCommandResult(response),
                         })]);
                         invalidateSessionRuntimeQueries(id, commandSessionId);
                         return;
                     }
-                    setChatMessages(prev => [...prev, parseChatMsg({
+                    setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({
                         role: 'assistant',
                         content: formatSlashCommandResult(response),
                     })]);
                     invalidateSessionRuntimeQueries(id, commandSessionId);
                 } catch (err: any) {
                     const msg = err?.message || t('agent.chat.commands.failed', 'Failed to run command');
-                    setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+                    setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
                 } finally {
                     if (!commandStartedRun) {
                         setIsWaiting(false);
@@ -2122,7 +2147,7 @@ function AgentDetailInner() {
             setIsStreaming(false);
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             setChatMessagesSessionId(String(activeSession.id));
-            setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+            setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
         }
     };
 
@@ -2163,7 +2188,7 @@ function AgentDetailInner() {
             setIsStreaming(false);
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             setChatMessagesSessionId(String(activeSession.id));
-            setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+            setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
             throw err;
         }
     };
@@ -2436,6 +2461,34 @@ function AgentDetailInner() {
         queryFn: () => agentApi.getPermissions(id!),
         enabled: canLoadAgentScopedData && activeTab === 'chat',
     });
+    const handleTogglePlanMode = React.useCallback(() => {
+        setPlanModeRequested((value) => !value);
+    }, []);
+    const handleDismissSessionCommandControl = React.useCallback(() => {
+        setSessionCommandControl(null);
+    }, []);
+    const handleRemoveAttachedFile = React.useCallback((index: number) => {
+        setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+    }, []);
+    const handleAbortGeneration = React.useCallback(() => {
+        if (!id || !activeSession?.id) return;
+        const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
+        const activeRun = activeRunStateRef.current[activeRuntimeKey];
+        if (activeRun?.runId) {
+            chatApi.cancelSessionRun(id, String(activeSession.id), activeRun.runId).catch((err) => {
+                console.warn('Failed to cancel chat run:', err);
+            });
+            markActiveRunTerminal(activeRuntimeKey);
+            setIsStreaming(false);
+            setIsWaiting(false);
+            setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+            return;
+        }
+        const activeSocket = wsMapRef.current[activeRuntimeKey];
+        if (activeSocket?.readyState === WebSocket.OPEN) {
+            activeSocket.send(JSON.stringify({ type: 'abort' }));
+        }
+    }, [activeSession?.id, id]);
 
     // ─── File viewer ─────────────────────────────────────
     const [viewingFile, setViewingFile] = useState<string | null>(null);
@@ -2808,11 +2861,11 @@ function AgentDetailInner() {
                             isWaiting={isWaiting}
                             activeRunStatus={currentActiveRunState?.status || null}
                             planModeRequested={planModeRequested}
-                            onTogglePlanMode={() => setPlanModeRequested((value) => !value)}
+                            onTogglePlanMode={handleTogglePlanMode}
                             sessionPermissionMode={sessionPermissionMode}
                             onSetSessionPermissionMode={handleSetSessionPermissionMode}
                             sessionCommandControl={sessionCommandControl}
-                            onDismissSessionCommandControl={() => setSessionCommandControl(null)}
+                            onDismissSessionCommandControl={handleDismissSessionCommandControl}
                             onRunSessionCommand={handleRunSessionCommandFromUi}
                             onResolveSessionPermission={resolveSessionPermission}
 
@@ -2821,7 +2874,7 @@ function AgentDetailInner() {
                             onScrollToBottom={scrollToBottom}
                             agentExpired={agentExpired}
                             attachedFiles={attachedFiles}
-                            onRemoveAttachedFile={(index) => setAttachedFiles((prev) => prev.filter((_, i) => i !== index))}
+                            onRemoveAttachedFile={handleRemoveAttachedFile}
                             fileInputRef={fileInputRef}
                             onHandleChatFile={handleChatFile}
                             uploading={uploading}
@@ -2837,25 +2890,7 @@ function AgentDetailInner() {
                             onEnterPlanMode={(reason: string) => sendChatMessageText(reason, { planMode: true })}
                             isStreaming={isStreaming}
                             sessionOnly={sessionWorkbenchMode}
-                            onAbortGeneration={() => {
-                                if (!id || !activeSession?.id) return;
-                                const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-                                const activeRun = activeRunStateRef.current[activeRuntimeKey];
-                                if (activeRun?.runId) {
-                                    chatApi.cancelSessionRun(id, String(activeSession.id), activeRun.runId).catch((err) => {
-                                        console.warn('Failed to cancel chat run:', err);
-                                    });
-                                    markActiveRunTerminal(activeRuntimeKey);
-                                    setIsStreaming(false);
-                                    setIsWaiting(false);
-                                    setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
-                                    return;
-                                }
-                                const activeSocket = wsMapRef.current[activeRuntimeKey];
-                                if (activeSocket?.readyState === WebSocket.OPEN) {
-                                    activeSocket.send(JSON.stringify({ type: 'abort' }));
-                                }
-                            }}
+                            onAbortGeneration={handleAbortGeneration}
                         />
                         )
                     )

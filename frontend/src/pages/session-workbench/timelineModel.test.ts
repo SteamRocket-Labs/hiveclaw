@@ -8,6 +8,8 @@ import {
   buildSessionRightPanelModel,
   buildSessionWindowModel,
   buildThreadTimeline,
+  buildThreadTimelineCached,
+  createThreadTimelineCache,
   buildWorkflowRunWindowModel,
 } from './timelineModel';
 import type { AgentChatMessage } from '../agent-detail/chatRuntime';
@@ -15,6 +17,95 @@ import type { SessionIndex } from '../../api/domains/chat';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
 
 describe('session workbench timeline model', () => {
+  it('reuses the previous timeline model when streaming state did not change', () => {
+    const messages: AgentChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'Profile the session renderer.' },
+      { id: 'a1', role: 'assistant', content: 'The baseline is ready.' },
+    ];
+    const cache = createThreadTimelineCache();
+
+    const first = buildThreadTimelineCached({
+      messages,
+      activeSession: { id: 'session-1', title: 'Perf baseline' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    }, cache);
+    const second = buildThreadTimelineCached({
+      messages,
+      activeSession: { id: 'session-1', title: 'Perf baseline' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    }, cache);
+
+    expect(second).toBe(first);
+  });
+
+  it('keeps stable cell identities for the unchanged static history prefix', () => {
+    const messages: AgentChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'First prompt.' },
+      { id: 'a1', role: 'assistant', content: 'First answer.' },
+    ];
+    const cache = createThreadTimelineCache();
+    const first = buildThreadTimelineCached({
+      messages,
+      activeSession: { id: 'session-1', title: 'Incremental timeline' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    }, cache);
+
+    const appended = [...messages, { id: 'u2', role: 'user', content: 'Second prompt.' } satisfies AgentChatMessage];
+    const second = buildThreadTimelineCached({
+      messages: appended,
+      activeSession: { id: 'session-1', title: 'Incremental timeline' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    }, cache);
+
+    expect(second).not.toBe(first);
+    expect(second.cells[0]).toBe(first.cells[0]);
+    expect(second.cells[1]).toBe(first.cells[1]);
+    expect(second.cells[second.cells.length - 1]).toMatchObject({ kind: 'user_turn', id: 'u2' });
+  });
+
+  it('does not scan signature-only inputs when the message reference changed', () => {
+    const messages: AgentChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'First prompt.' },
+    ];
+    const cache = createThreadTimelineCache();
+    buildThreadTimelineCached({
+      messages,
+      activeSession: { id: 'session-1', title: 'Streaming timeline' },
+      isWaiting: false,
+      isStreaming: true,
+      activeRunStatus: null,
+    }, cache);
+
+    let signatureReads = 0;
+    const sessionIndex = {} as SessionIndex & { expensive_signature_only_field: string };
+    Object.defineProperty(sessionIndex, 'expensive_signature_only_field', {
+      enumerable: true,
+      get() {
+        signatureReads += 1;
+        return 'large-derived-index';
+      },
+    });
+
+    buildThreadTimelineCached({
+      messages: [...messages, { id: 'a1', role: 'assistant', content: 'Streaming answer.' }],
+      activeSession: { id: 'session-1', title: 'Streaming timeline' },
+      sessionIndex,
+      isWaiting: false,
+      isStreaming: true,
+      activeRunStatus: null,
+    }, cache);
+
+    expect(signatureReads).toBe(0);
+  });
+
   it('keeps a turn run as one cell with reasoning, tool, and final answer parts', () => {
     const messages: AgentChatMessage[] = [
       { id: 'u1', role: 'user', content: 'Check the current frontend state.' },
@@ -137,6 +228,42 @@ describe('session workbench timeline model', () => {
       activeRunStatus: 'running',
     });
 
+    expect(model.cells.filter((cell) => cell.kind === 'active_run')).toHaveLength(1);
+  });
+
+  it('keeps background worker activity out of the main session header once the handoff answer is rendered', () => {
+    const model = buildThreadTimeline({
+      messages: [
+        { id: 'u1', role: 'user', content: 'Use Agent Team to produce the report.' },
+        {
+          id: 's1',
+          role: 'tool_call',
+          content: '',
+          toolName: 'spawn_subagent',
+          toolStatus: 'done',
+          toolMeta: {
+            kind: 'runtime_step',
+            toolCallId: 'spawn-1',
+            stepId: 'spawn-1',
+            durationMs: null,
+            visibility: 'visible',
+            status: 'completed',
+          },
+        },
+        {
+          id: 'a1',
+          role: 'assistant',
+          content: '收到。4 个 subagent 已成功后台启动，完成后我会汇总结果。',
+        },
+      ],
+      activeSession: { id: 'session-1', title: 'Background handoff' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: 'running',
+    });
+
+    expect(model.header.status).toBe('complete');
+    expect(model.header.activeRunStatus).toBeNull();
     expect(model.cells.filter((cell) => cell.kind === 'active_run')).toHaveLength(1);
   });
 
@@ -528,10 +655,69 @@ describe('session workbench timeline model', () => {
       id: 'workflow-1',
       status: 'waiting',
     });
+    expect(rightPanel.runtimeConsole.waiters.map((waiter) => [waiter.segment, waiter.label])).toEqual([
+      ['workflow', 'Gate review'],
+    ]);
     expect(rightPanel.runtimeConsole.activity.background.map((item) => item.id)).toEqual(['background-1']);
     expect(rightPanel.runtimeConsole.activity.notifications.map((item) => item.id)).toEqual(['notification-1']);
     expect(rightPanel.runtimeConsole.activity.runs.map((item) => item.id)).toEqual(['run-1']);
     expect(rightPanel.runtimeConsole.activity.raw.map((item) => item.id)).toEqual(['raw-1']);
+  });
+
+  it('keeps multiple runtime waiters as separate rows across team, workers, and workflows', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [],
+      sessionWorkbench: {
+        runtime_sections: {
+          agent_teams: [
+            {
+              id: 'team-1',
+              runtime_kind: 'agent_team',
+              label: 'ABS team',
+              status: 'running',
+              members: [
+                {
+                  id: 'member-1',
+                  runtime_kind: 'team_member',
+                  label: 'credit analyst',
+                  status: 'awaiting_approval',
+                  child_session_id: 'member-session',
+                  enterable: true,
+                },
+              ],
+            },
+          ],
+          subagents: [
+            {
+              id: 'subagent-1',
+              runtime_kind: 'subagent',
+              label: 'risk reviewer',
+              status: 'awaiting_user_clarification',
+              child_session_id: 'subagent-session',
+            },
+          ],
+          workflows: [
+            {
+              id: 'workflow-1',
+              runtime_kind: 'workflow',
+              label: 'Report workflow',
+              status: 'running',
+              steps: [{ id: 'step-1', label: 'Data gate', status: 'gate_waiting' }],
+            },
+          ],
+        },
+      } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeConsole.summary).toMatchObject({
+      state: 'waiting',
+      waitingCount: 3,
+    });
+    expect(rightPanel.runtimeConsole.waiters.map((waiter) => [waiter.segment, waiter.label, waiter.status])).toEqual([
+      ['team', 'credit analyst', 'awaiting_approval'],
+      ['workers', 'risk reviewer', 'awaiting_user_clarification'],
+      ['workflow', 'Data gate', 'gate_waiting'],
+    ]);
   });
 
   it('falls back to session runtime events when workbench runtime sections are missing', () => {

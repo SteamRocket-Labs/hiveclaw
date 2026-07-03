@@ -88,6 +88,8 @@
         "unattributed": "Unattributed"
       },
       "runtimeConsole": "Runtime Console",
+      "waiters": "Waiting items",
+      "waiterOpenTitle": "Open waiting session",
       "runtimeSegments": {
         "team": "Team",
         "workers": "Workers",

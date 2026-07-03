@@ -1370,8 +1370,13 @@ function ArtifactCards({
   const visibleArtifacts = (artifacts || []).filter((artifact) => artifact.path);
   if (!agentId || visibleArtifacts.length === 0) return null;
 
+  // Codex 式聚合卡：一个容器承载全部交付物，每文件一行，动作 hover 浮现。
   return (
-    <div style={{ display: 'grid', gap: '6px', marginTop: '8px' }}>
+    <div className="chat-artifacts" data-testid="chat-artifacts-card">
+      <div className="chat-artifacts-title">
+        <IconFileText size={13} />
+        {t('agent.chat.artifacts.count', '{{count}} files', { count: visibleArtifacts.length })}
+      </div>
       {visibleArtifacts.map((artifact) => {
         const downloadAgentId = artifactWorkspaceAgentId(artifact, agentId);
         const href = downloadAgentId
@@ -1393,84 +1398,36 @@ function ArtifactCards({
                 openArtifact();
               }
             }}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '8px',
-              borderRadius: '8px',
-              border: '1px solid var(--border-subtle)',
-              background: 'var(--bg-elevated)',
-              minWidth: 0,
-              cursor: onOpenArtifact ? 'pointer' : 'default',
-            }}
+            className="chat-artifact-row"
           >
-            <IconFileText size={16} color="var(--text-tertiary)" style={{ flexShrink: 0 }} />
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div
-                style={{
-                  fontSize: '12px',
-                  fontWeight: 600,
-                  color: 'var(--text-primary)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+            <IconFileText size={14} className="chat-artifact-icon" />
+            <span className="chat-artifact-name">{artifact.name}</span>
+            <span className="chat-artifact-meta">
+              {[artifact.previewKind, size].filter(Boolean).join(' · ') || artifact.path}
+            </span>
+            <span className="chat-artifact-actions">
+              <button
+                type="button"
+                data-testid="chat-artifact-open"
+                className="chat-artifact-action"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openArtifact();
                 }}
               >
-                {artifact.name}
-              </div>
-              <div
-                style={{
-                  fontSize: '10px',
-                  color: 'var(--text-tertiary)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
+                <IconExternalLink size={12} />
+                {t('agent.chat.artifacts.open', 'Open')}
+              </button>
+              <a
+                href={href}
+                download={artifact.name}
+                className="chat-artifact-action"
+                onClick={(event) => event.stopPropagation()}
               >
-                {[artifact.previewKind, size].filter(Boolean).join(' · ') || artifact.path}
-              </div>
-            </div>
-            <button
-              type="button"
-              data-testid="chat-artifact-open"
-              onClick={(event) => {
-                event.stopPropagation();
-                openArtifact();
-              }}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-                padding: 0,
-                border: 'none',
-                background: 'transparent',
-                fontSize: '11px',
-                color: 'var(--accent-primary)',
-                cursor: 'pointer',
-                flexShrink: 0,
-              }}
-            >
-              <IconExternalLink size={13} />
-              {t('agent.chat.artifacts.open', 'Open')}
-            </button>
-            <a
-              href={href}
-              download={artifact.name}
-              onClick={(event) => event.stopPropagation()}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-                fontSize: '11px',
-                color: 'var(--text-secondary)',
-                textDecoration: 'none',
-                flexShrink: 0,
-              }}
-            >
-              <IconDownload size={13} />
-              {t('agent.chat.artifacts.download', 'Download')}
-            </a>
+                <IconDownload size={12} />
+                {t('agent.chat.artifacts.download', 'Download')}
+              </a>
+            </span>
           </div>
         );
       })}
@@ -4120,9 +4077,8 @@ export default function AgentChatSection({
                 style={{
                   position: 'relative',
                   border: '1px solid var(--border-default)',
-                  borderRadius: '18px',
+                  borderRadius: 'var(--radius-lg)',
                   background: 'var(--bg-primary)',
-                  boxShadow: '0 16px 36px rgba(15, 23, 42, 0.08)',
                   overflow: 'visible',
                 }}
               >
@@ -4135,10 +4091,10 @@ export default function AgentChatSection({
                     bottom: '44px',
                     width: '248px',
                     border: '1px solid var(--border-subtle)',
-                    borderRadius: '12px',
+                    borderRadius: 'var(--radius-lg)',
                     background: 'var(--bg-primary)',
-                    boxShadow: '0 18px 48px rgba(15, 23, 42, 0.18)',
-                    padding: '6px',
+                    boxShadow: 'var(--shadow-popover)',
+                    padding: '4px',
                     zIndex: 16,
                     display: composerMenuOpen ? 'grid' : 'none',
                     gap: '2px',
@@ -4237,7 +4193,7 @@ export default function AgentChatSection({
                               height: '12px',
                               borderRadius: '50%',
                               background: 'var(--bg-primary)',
-                              boxShadow: '0 1px 2px rgba(15, 23, 42, 0.25)',
+                              border: '1px solid var(--border-default)',
                               transition: 'left 0.15s ease',
                             }}
                           />
@@ -4265,13 +4221,13 @@ export default function AgentChatSection({
                   rows={1}
                   style={{
                     width: '100%',
-                    minHeight: '58px',
+                    minHeight: '52px',
                     maxHeight: '180px',
                     resize: 'none',
-                    padding: '16px 18px 8px',
+                    padding: '12px 14px 6px',
                     lineHeight: 1.5,
                     border: 0,
-                    borderRadius: '18px 18px 0 0',
+                    borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0',
                     background: 'transparent',
                     boxShadow: 'none',
                     boxSizing: 'border-box',
@@ -4328,11 +4284,11 @@ export default function AgentChatSection({
                       height: '30px',
                       padding: '0 9px',
                       border: '1px solid transparent',
-                      borderRadius: '8px',
+                      borderRadius: 'var(--radius-md)',
                       background: permissionMenuOpen ? 'var(--bg-secondary)' : 'transparent',
-                      color: 'rgb(194, 86, 0)',
-                      fontSize: '12px',
-                      fontWeight: 650,
+                      color: 'var(--text-secondary)',
+                      fontSize: 'var(--text-row)',
+                      fontWeight: 500,
                       whiteSpace: 'nowrap',
                       cursor: 'pointer',
                     }}
@@ -4349,10 +4305,10 @@ export default function AgentChatSection({
                       bottom: '44px',
                       width: '238px',
                       border: '1px solid var(--border-subtle)',
-                      borderRadius: '12px',
+                      borderRadius: 'var(--radius-lg)',
                       background: 'var(--bg-primary)',
-                      boxShadow: '0 18px 48px rgba(15, 23, 42, 0.18)',
-                      padding: '6px',
+                      boxShadow: 'var(--shadow-popover)',
+                      padding: '4px',
                       zIndex: 17,
                       display: permissionMenuOpen ? 'grid' : 'none',
                       gap: '2px',

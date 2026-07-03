@@ -1059,7 +1059,7 @@
   margin: 2px 0 0;
   color: var(--text-primary);
   font-size: var(--session-tui-font-row);
-  font-weight: 700;
+  font-weight: 600;
   line-height: var(--session-tui-line-row);
 }
 
@@ -2200,19 +2200,22 @@
   background: var(--bg-elevated);
   color: var(--text-secondary);
   font-size: var(--session-tui-font-meta);
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1;
 }
 
-.session-tui-message-row-user .session-tui-message-avatar {
-  background: var(--session-tui-selected-bg);
+/* Codex 文档感：单人会话无头像 — 用户由右侧灰泡表达，assistant 直排。
+   多参与者会话（team/agent）由 sender 行承载身份。 */
+.session-tui-message-row-user .session-tui-message-avatar,
+.session-tui-message-row-assistant .session-tui-message-avatar {
+  display: none;
 }
 
 .session-tui-message-bubble {
   max-width: 75%;
   padding: var(--session-tui-padding-message);
-  border: 1px solid var(--session-tui-message-border);
-  border-radius: var(--session-tui-radius-row);
+  border: none;
+  border-radius: var(--radius-lg);
   background: var(--session-tui-message-bg);
   color: var(--text-primary);
   font-size: var(--session-tui-font-body);
@@ -2221,7 +2224,15 @@
 }
 
 .session-tui-message-row-user .session-tui-message-bubble {
-  background: var(--session-tui-message-user-bg);
+  background: color-mix(in srgb, var(--text-primary) 6%, var(--bg-primary));
+}
+
+/* assistant 消息去容器 — 转录像一篇文档 */
+.session-tui-message-row-assistant .session-tui-message-bubble {
+  max-width: 100%;
+  padding: 2px 0;
+  background: transparent;
+  border-radius: 0;
 }
 
 .session-tui-message-sender {
@@ -2239,6 +2250,12 @@
   color: var(--text-tertiary);
   font-size: var(--session-tui-font-tiny);
   line-height: 1.25;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.session-tui-message-row:hover .session-tui-message-meta,
+.session-tui-message-row:focus-within .session-tui-message-meta {
   opacity: 0.7;
 }
 
@@ -2260,6 +2277,437 @@
   background: var(--session-tui-selected-bg);
   color: var(--text-secondary);
   font-size: var(--session-tui-font-meta);
+}
+
+/* ── Chat artifacts — 聚合交付物卡（Codex diff-card 形态）── */
+
+.chat-artifacts {
+  margin-top: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.chat-artifacts-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--session-tui-muted-bg);
+}
+
+.chat-artifact-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  min-width: 0;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.chat-artifact-row:hover,
+.chat-artifact-row:focus-visible {
+  background: var(--bg-hover);
+}
+
+.chat-artifact-icon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.chat-artifact-name {
+  font-size: var(--text-row);
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-artifact-meta {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-tiny);
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-artifact-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.chat-artifact-row:hover .chat-artifact-actions,
+.chat-artifact-row:focus-within .chat-artifact-actions {
+  opacity: 1;
+}
+
+.chat-artifact-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: var(--text-meta);
+  color: var(--text-secondary);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.chat-artifact-action:hover {
+  color: var(--text-primary);
+}
+
+/* ── Markdown content — 全站唯一 markdown 密度基线 ──── */
+
+.md-content {
+  line-height: var(--leading-body);
+  word-break: break-word;
+}
+
+.md-content p {
+  margin: 6px 0;
+  line-height: var(--leading-body);
+}
+
+.md-content p:first-child,
+.md-content .md-h:first-child {
+  margin-top: 0;
+}
+
+.md-content p:last-child {
+  margin-bottom: 0;
+}
+
+.md-code {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.md-pre {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.md-pre code {
+  font-family: var(--font-mono);
+  font-size: var(--text-row);
+  line-height: 1.55;
+}
+
+.md-h {
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.md-h1 { margin: 14px 0 6px; font-size: 1.25em; }
+.md-h2 { margin: 12px 0 5px; font-size: 1.15em; }
+.md-h3 { margin: 10px 0 4px; font-size: 1.05em; }
+.md-h4, .md-h5, .md-h6 { margin: 8px 0 4px; font-size: 1em; }
+
+.md-hr {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  margin: 12px 0;
+}
+
+.md-quote {
+  border-left: 2px solid var(--border-strong);
+  margin: 8px 0;
+  padding: 2px 12px;
+  color: var(--text-secondary);
+}
+
+.md-table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: var(--text-row);
+  width: 100%;
+}
+
+.md-table th,
+.md-table td {
+  border: 1px solid var(--border-subtle);
+  padding: 5px 10px;
+  text-align: left;
+}
+
+.md-table th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+}
+
+.md-list {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+.md-list li {
+  margin: 2px 0;
+}
+
+.md-link {
+  color: var(--accent-text);
+}
+
+.md-link:hover {
+  color: var(--accent-hover);
+}
+
+.md-img {
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: var(--radius-md);
+  margin: 8px 0;
+  object-fit: contain;
+  cursor: pointer;
+}
+
+/* ── Run disclosure — 工作块（Codex 收敛形态）───────── */
+
+.run-disclosure {
+  margin-bottom: 8px;
+  max-width: 100%;
+}
+
+.run-disclosure-frame {
+  border-left: 2px solid var(--border-subtle);
+}
+
+.run-disclosure-frame.is-live {
+  border-left-color: var(--accent-primary);
+}
+
+.run-disclosure-header {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 5px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+
+.run-disclosure-header:hover {
+  background: var(--session-tui-hover-bg);
+}
+
+.run-disclosure-title {
+  font-size: var(--text-row);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.run-disclosure-duration {
+  font-size: var(--text-row);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.run-disclosure-summary {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-disclosure-count {
+  margin-left: auto;
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+
+.run-disclosure-steps {
+  display: grid;
+  gap: 4px;
+  padding: 0 10px 8px;
+}
+
+.run-step {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.run-step-icon {
+  color: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 2px;
+}
+
+.run-step-icon.is-running {
+  color: var(--accent-primary);
+}
+
+.run-step-body {
+  min-width: 0;
+}
+
+.run-step-toggle {
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.run-step-toggle.has-details {
+  cursor: pointer;
+}
+
+.run-step-toggle.has-details:hover .run-step-title {
+  color: var(--text-primary);
+}
+
+.run-step-title {
+  font-size: var(--text-row);
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.run-step-summary {
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-step-caret {
+  width: 13px;
+  flex-shrink: 0;
+}
+
+/* 完成即收敛：暗淡文字摘要行，不再是 pill */
+.run-compact-steps {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 12px;
+  row-gap: 2px;
+  padding: 0 10px 8px 32px;
+}
+
+.run-compact-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+}
+
+.run-compact-step-title {
+  color: var(--text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.run-compact-step-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-compact-more {
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+  align-self: center;
+}
+
+/* exec 输出 — 低对比代码块，行内 meta */
+.exec-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-meta);
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  min-width: 0;
+  margin-bottom: 4px;
+}
+
+.exec-command {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.exec-exit-ok {
+  flex-shrink: 0;
+  color: var(--success);
+  font-weight: 600;
+}
+
+.exec-exit-bad {
+  flex-shrink: 0;
+  color: var(--error);
+  font-weight: 600;
+}
+
+.exec-duration {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.exec-pre,
+.run-detail-pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--text-meta);
+  font-family: var(--font-mono);
+}
+
+.run-detail-pre {
+  margin-top: 6px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.exec-clip {
+  color: var(--text-tertiary);
 }
 
 .session-tui-thinking {

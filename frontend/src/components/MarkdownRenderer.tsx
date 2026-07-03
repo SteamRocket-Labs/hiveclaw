@@ -2,6 +2,8 @@
  * Lightweight Markdown renderer — no external dependencies.
  * Renders: headings, bold, italic, inline code, code blocks,
  * unordered/ordered lists, blockquotes, horizontal rules, links, tables.
+ * All visual styling lives in index.css under `.md-content` — this module
+ * emits semantic classes only (design authority: frontend-design-refinement).
  */
 import React, { useMemo } from 'react';
 
@@ -24,7 +26,7 @@ function renderInline(text: string): string {
         .replace(/\*(.*?)\*/g, '<em>$1</em>')
         .replace(/_(.*?)_/g, '<em>$1</em>')
         // Inline code
-        .replace(/`([^`]+)`/g, '<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">$1</code>')
+        .replace(/`([^`]+)`/g, '<code class="md-code">$1</code>')
         // Images
         .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
             let finalUrl = url;
@@ -34,7 +36,7 @@ function renderInline(text: string): string {
                     finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
                 }
             }
-            return `<a href="${finalUrl}" target="_blank"><img src="${finalUrl}" alt="${alt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`;
+            return `<a href="${finalUrl}" target="_blank" class="md-img-link"><img src="${finalUrl}" alt="${alt}" class="md-img" /></a>`;
         })
         // Links
         .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
@@ -47,7 +49,7 @@ function renderInline(text: string): string {
                     finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
                 }
             }
-            return `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary)">${text}</a>`;
+            return `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" class="md-link">${text}</a>`;
         })
         // Strikethrough
         .replace(/~~(.*?)~~/g, '<del>$1</del>');
@@ -86,7 +88,7 @@ function markdownToHtml(md: string): string {
                 codeLines = [];
             } else {
                 const codeContent = escapeHtml(codeLines.join('\n'));
-                html += `<pre style="background:var(--bg-secondary);border-radius:8px;padding:12px 16px;overflow-x:auto;margin:8px 0"><code style="font-family:monospace;font-size:12px;line-height:1.5"${codeLang ? ` class="language-${codeLang}"` : ''}>${codeContent}</code></pre>`;
+                html += `<pre class="md-pre"><code${codeLang ? ` class="language-${codeLang}"` : ''}>${codeContent}</code></pre>`;
                 inCodeBlock = false;
                 codeLang = '';
                 codeLines = [];
@@ -95,10 +97,9 @@ function markdownToHtml(md: string): string {
         }
         if (inCodeBlock) { codeLines.push(line); continue; }
 
-        // Blank line
+        // Blank line — block separator only; paragraph margins carry the gap.
         if (line.trim() === '') {
             flushList(); flushBlockquote(); flushTable();
-            html += '<br>';
             continue;
         }
 
@@ -107,16 +108,14 @@ function markdownToHtml(md: string): string {
         if (hMatch) {
             flushList(); flushBlockquote(); flushTable();
             const level = hMatch[1].length;
-            const sizes = ['1.6em', '1.4em', '1.2em', '1.1em', '1em', '0.9em'];
-            const margins = ['20px 0 8px', '16px 0 6px', '14px 0 5px', '12px 0 4px', '10px 0 4px', '8px 0 4px'];
-            html += `<h${level} style="margin:${margins[level - 1]};font-size:${sizes[level - 1]};font-weight:600;line-height:1.3">${renderInline(hMatch[2])}</h${level}>`;
+            html += `<h${level} class="md-h md-h${level}">${renderInline(hMatch[2])}</h${level}>`;
             continue;
         }
 
         // Horizontal rule
         if (/^[-*_]{3,}$/.test(line.trim())) {
             flushList(); flushBlockquote(); flushTable();
-            html += '<hr style="border:none;border-top:1px solid var(--border-color);margin:12px 0">';
+            html += '<hr class="md-hr">';
             continue;
         }
 
@@ -124,7 +123,7 @@ function markdownToHtml(md: string): string {
         if (line.startsWith('> ')) {
             flushList(); flushTable();
             if (!inBlockquote) {
-                html += '<blockquote style="border-left:3px solid var(--accent-primary);margin:8px 0;padding:4px 12px;color:var(--text-secondary);background:var(--bg-secondary);border-radius:0 4px 4px 0">';
+                html += '<blockquote class="md-quote">';
                 inBlockquote = true;
             }
             html += `<div>${renderInline(line.slice(2))}</div>`;
@@ -143,14 +142,14 @@ function markdownToHtml(md: string): string {
                 continue;
             }
             if (!inTable) {
-                html += '<table style="border-collapse:collapse;margin:8px 0;font-size:13px;width:100%"><thead>';
+                html += '<table class="md-table"><thead>';
                 inTable = true;
                 tableHeader = false;
                 // This is the header row
-                html += '<tr>' + cols.map(c => `<th style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px;background:var(--bg-secondary);text-align:left;font-weight:600">${renderInline(c)}</th>`).join('') + '</tr>';
+                html += '<tr>' + cols.map(c => `<th>${renderInline(c)}</th>`).join('') + '</tr>';
                 html += '</thead><tbody>';
             } else {
-                html += '<tr>' + cols.map(c => `<td style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px">${renderInline(c)}</td>`).join('') + '</tr>';
+                html += '<tr>' + cols.map(c => `<td>${renderInline(c)}</td>`).join('') + '</tr>';
             }
             continue;
         } else if (inTable) {
@@ -161,8 +160,8 @@ function markdownToHtml(md: string): string {
         const ulMatch = line.match(/^(\s*)[*\-+]\s+(.*)/);
         if (ulMatch) {
             flushBlockquote(); flushTable();
-            if (inList !== 'ul') { if (inList) flushList(); html += '<ul style="margin:6px 0;padding-left:24px">'; inList = 'ul'; }
-            html += `<li style="margin:2px 0">${renderInline(ulMatch[2])}</li>`;
+            if (inList !== 'ul') { if (inList) flushList(); html += '<ul class="md-list">'; inList = 'ul'; }
+            html += `<li>${renderInline(ulMatch[2])}</li>`;
             continue;
         }
 
@@ -170,20 +169,20 @@ function markdownToHtml(md: string): string {
         const olMatch = line.match(/^(\s*)\d+\.\s+(.*)/);
         if (olMatch) {
             flushBlockquote(); flushTable();
-            if (inList !== 'ol') { if (inList) flushList(); html += '<ol style="margin:6px 0;padding-left:24px">'; inList = 'ol'; }
-            html += `<li style="margin:2px 0">${renderInline(olMatch[2])}</li>`;
+            if (inList !== 'ol') { if (inList) flushList(); html += '<ol class="md-list">'; inList = 'ol'; }
+            html += `<li>${renderInline(olMatch[2])}</li>`;
             continue;
         }
 
         // Regular paragraph
         flushList(); flushBlockquote(); flushTable();
-        html += `<p style="margin:4px 0;line-height:1.7">${renderInline(line)}</p>`;
+        html += `<p>${renderInline(line)}</p>`;
     }
 
     // Close any open structures
     flushList(); flushBlockquote(); flushTable();
     if (inCodeBlock) {
-        html += `<pre style="background:var(--bg-secondary);border-radius:8px;padding:12px 16px"><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`;
+        html += `<pre class="md-pre"><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`;
     }
 
     return html;
@@ -199,8 +198,8 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, 
     const html = useMemo(() => markdownToHtml(content), [content]);
     return (
         <div
-            className={className}
-            style={{ lineHeight: 1.6, fontSize: 'inherit', ...style, wordBreak: 'break-word' }}
+            className={className ? `md-content ${className}` : 'md-content'}
+            style={style}
             dangerouslySetInnerHTML={{ __html: html }}
         />
     );

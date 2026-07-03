@@ -99,57 +99,20 @@ function ExecOutput({ exec }: { exec: ExecDetails }) {
   const exitCode = exec.exit_code;
   const duration = formatDuration(exec.duration_ms);
   return (
-    <div className="session-tui-exec-output" style={{ marginTop: '6px' }}>
+    <div className="session-tui-exec-output">
       {(exec.command || exitCode != null || duration) && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            fontSize: '11px',
-            fontFamily: 'var(--font-mono)',
-            color: 'var(--text-secondary)',
-            marginBottom: output ? '4px' : 0,
-            minWidth: 0,
-          }}
-        >
-          {exec.command && (
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
-              $ {exec.command}
-            </span>
-          )}
+        <div className="exec-meta">
+          {exec.command && <span className="exec-command">$ {exec.command}</span>}
           {exitCode != null && (
-            <span
-              style={{
-                flexShrink: 0,
-                color: exitCode === 0 ? 'var(--success, #16a34a)' : 'var(--danger, #ef4444)',
-                fontWeight: 600,
-              }}
-            >
-              exit {exitCode}
-            </span>
+            <span className={exitCode === 0 ? 'exec-exit-ok' : 'exec-exit-bad'}>exit {exitCode}</span>
           )}
-          {duration && <span style={{ flexShrink: 0, color: 'var(--text-tertiary)' }}>{duration}</span>}
+          {duration && <span className="exec-duration">{duration}</span>}
         </div>
       )}
       {output && (
-        <pre
-          style={{
-            margin: 0,
-            padding: '8px 10px',
-            borderRadius: '6px',
-            background: 'var(--bg-secondary)',
-            color: 'var(--text-secondary)',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            fontSize: '11px',
-            fontFamily: 'var(--font-mono)',
-          }}
-        >
+        <pre className="exec-pre">
           {head.join('\n')}
-          {clipped > 0 && (
-            <span style={{ color: 'var(--text-tertiary)' }}>{`\n… ${clipped} lines …\n`}</span>
-          )}
+          {clipped > 0 && <span className="exec-clip">{`\n… ${clipped} lines …\n`}</span>}
           {tail.length > 0 && tail.join('\n')}
         </pre>
       )}
@@ -162,25 +125,7 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
   if (exec) return <ExecOutput exec={exec} />;
   const detailText = typeof step.details === 'string' ? step.details : JSON.stringify(step.details ?? {}, null, 2);
   if (!detailText || detailText === '{}') return null;
-  return (
-    <pre
-      style={{
-        margin: '6px 0 0',
-        padding: '8px 10px',
-        borderRadius: '6px',
-        background: 'var(--bg-secondary)',
-        color: 'var(--text-secondary)',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        fontSize: '11px',
-        fontFamily: 'var(--font-mono)',
-        maxHeight: '240px',
-        overflow: 'auto',
-      }}
-    >
-      {detailText}
-    </pre>
-  );
+  return <pre className="run-detail-pre">{detailText}</pre>;
 }
 
 function RunStepRow({ step }: { step: RunStepSnapshot }) {
@@ -190,66 +135,24 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
   const [expanded, setExpanded] = React.useState(Boolean(exec));
   const hasDetails = step.details != null;
   return (
-    <div
-      data-testid="run-disclosure-step"
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '18px minmax(0, 1fr)',
-        gap: '8px',
-        alignItems: 'start',
-      }}
-    >
-      <span
-        style={{
-          color: running ? 'var(--accent-primary)' : 'var(--text-tertiary)',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          paddingTop: '2px',
-        }}
-      >
+    <div data-testid="run-disclosure-step" className="run-step">
+      <span className={running ? 'run-step-icon is-running' : 'run-step-icon'}>
         <StepIcon kind={step.kind} running={running} />
       </span>
-      <div style={{ minWidth: 0 }}>
+      <div className="run-step-body">
         <button
           type="button"
           disabled={!hasDetails}
           onClick={() => setExpanded((value) => !value)}
-          style={{
-            border: 'none',
-            background: 'transparent',
-            padding: 0,
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            color: 'inherit',
-            cursor: hasDetails ? 'pointer' : 'default',
-            textAlign: 'left',
-          }}
+          className={hasDetails ? 'run-step-toggle has-details' : 'run-step-toggle'}
         >
           {hasDetails ? (
             expanded ? <IconChevronDown size={13} stroke={2.2} /> : <IconChevronRight size={13} stroke={2.2} />
           ) : (
-            <span style={{ width: '13px' }} />
+            <span className="run-step-caret" />
           )}
-          <span style={{ fontSize: '12px', fontWeight: 650, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-            {step.title}
-          </span>
-          {step.summary && (
-            <span
-              style={{
-                fontSize: '11px',
-                color: 'var(--text-tertiary)',
-                minWidth: 0,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {step.summary}
-            </span>
-          )}
+          <span className="run-step-title">{step.title}</span>
+          {step.summary && <span className="run-step-summary">{step.summary}</span>}
         </button>
         {expanded && <RunStepDetails step={step} />}
       </div>
@@ -259,7 +162,7 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
 
 function shouldExpandTimeline(timeline: RunTimelineSnapshot): boolean {
   // Codex parity: only live/problem states stay open. A finished run always
-  // recedes to one line — the compact chips still show what happened.
+  // recedes to one line — the compact summary still shows what happened.
   return timeline.status === 'running' || timeline.status === 'blocked' || timeline.status === 'failed';
 }
 
@@ -267,47 +170,19 @@ function CompactStepSummary({ steps }: { steps: RunStepSnapshot[] }) {
   const visibleSteps = steps.slice(0, 5);
   const remaining = steps.length - visibleSteps.length;
   return (
-    <div
-      data-testid="run-disclosure-compact-summary"
-      style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: '5px',
-        padding: '0 10px 10px 32px',
-      }}
-    >
+    <div data-testid="run-disclosure-compact-summary" className="run-compact-steps">
       {visibleSteps.map((step) => (
         <span
           key={step.id}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '5px',
-            minWidth: 0,
-            maxWidth: '100%',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '6px',
-            background: 'var(--bg-secondary)',
-            color: 'var(--text-secondary)',
-            padding: '3px 6px',
-            fontSize: '11px',
-          }}
+          className="run-compact-step"
           title={step.summary ? `${step.title} · ${step.summary}` : step.title}
         >
           <StepIcon kind={step.kind} running={step.status === 'running'} />
-          <strong style={{ color: 'var(--text-primary)', fontWeight: 600, whiteSpace: 'nowrap' }}>{step.title}</strong>
-          {step.summary && (
-            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {step.summary}
-            </span>
-          )}
+          <span className="run-compact-step-title">{step.title}</span>
+          {step.summary && <span className="run-compact-step-summary">{step.summary}</span>}
         </span>
       ))}
-      {remaining > 0 && (
-        <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', alignSelf: 'center' }}>
-          +{remaining}
-        </span>
-      )}
+      {remaining > 0 && <span className="run-compact-more">+{remaining}</span>}
     </div>
   );
 }
@@ -331,63 +206,27 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
       ? t('agent.chat.disclosure.waiting', 'Waiting for input')
       : t('agent.chat.disclosure.processed', 'Processed');
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: timeline.steps.length });
+  const live = timeline.status === 'running' || timeline.status === 'blocked';
 
   return (
-    <div data-testid="run-disclosure-block" data-status={timeline.status} style={{ marginBottom: '8px', maxWidth: '100%' }}>
-      <div
-        style={{
-          borderLeft: `2px solid ${timeline.status === 'running' || timeline.status === 'blocked' ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
-          background: 'transparent',
-          overflow: 'hidden',
-        }}
-      >
+    <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
+      <div className={live ? 'run-disclosure-frame is-live' : 'run-disclosure-frame'}>
         <button
           type="button"
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
-          style={{
-            width: '100%',
-            border: 'none',
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-            padding: '7px 10px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            cursor: 'pointer',
-            textAlign: 'left',
-          }}
+          className="run-disclosure-header"
         >
           {expanded ? <IconChevronDown size={14} stroke={2.2} /> : <IconChevronRight size={14} stroke={2.2} />}
-          <span
-            className={running ? 'session-tui-shimmer' : undefined}
-            style={{ fontSize: '12px', fontWeight: 700, color: running ? undefined : 'var(--text-primary)' }}
-          >
+          <span className={running ? 'session-tui-shimmer run-disclosure-title' : 'run-disclosure-title'}>
             {title}
           </span>
-          {duration && (
-            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>
-              {duration}
-            </span>
-          )}
-          {timeline.summary && (
-            <span
-              style={{
-                fontSize: '11px',
-                color: 'var(--text-tertiary)',
-                minWidth: 0,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {timeline.summary}
-            </span>
-          )}
-          <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-tertiary)' }}>{stepCount}</span>
+          {duration && <span className="run-disclosure-duration">{duration}</span>}
+          {timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
+          <span className="run-disclosure-count">{stepCount}</span>
         </button>
         {expanded && (
-          <div style={{ display: 'grid', gap: '7px', padding: '0 10px 10px' }}>
+          <div className="run-disclosure-steps">
             {timeline.steps.map((step) => (
               <RunStepRow key={step.id} step={step} />
             ))}

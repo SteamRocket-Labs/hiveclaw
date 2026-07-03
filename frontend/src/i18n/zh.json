@@ -1313,6 +1313,7 @@
       "artifacts": {
         "open": "打开",
         "download": "下载",
+        "count": "{{count}} 个文件",
         "preview": "预览",
         "openInNewTab": "新窗口打开",
         "previewFailed": "预览失败",

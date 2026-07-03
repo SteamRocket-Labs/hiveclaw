@@ -1313,6 +1313,7 @@
       "artifacts": {
         "open": "Open",
         "download": "Download",
+        "count": "{{count}} files",
         "preview": "Preview",
         "openInNewTab": "Open in new tab",
         "previewFailed": "Preview failed",

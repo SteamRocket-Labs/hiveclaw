@@ -37,6 +37,12 @@ vi.mock('react-router-dom', () => ({
   useLocation: () => routeState.location,
 }));
 
+function cssBlock(css: string, selector: string) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = css.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\}`));
+  return match?.[1] ?? '';
+}
+
 describe('Layout extracted sections', () => {
   it('labels agent-to-agent sessions with an A2A badge', () => {
     const t = (key: string, fallback?: string) => fallback || key;
@@ -102,6 +108,21 @@ describe('Layout extracted sections', () => {
     expect(css).toContain('.agent-detail-session-only');
     expect(css).toContain('margin-left: var(--sidebar-width);');
     expect(css).toContain('width: calc(100vw - var(--sidebar-width));');
+  });
+
+  it('keeps session navigation active states precise and GitLine hover styles viewport anchored', async () => {
+    const fsModuleId = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsModuleId)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const css = readFileSync(new URL('../../index.css', import.meta.url), 'utf8');
+
+    expect(cssBlock(css, '.sidebar-session-row.has-active-branch:not(.active)')).toContain('background: transparent;');
+    expect(cssBlock(css, '.sidebar-session-row.has-active-branch:not(.active)::before')).toContain('width: 2px;');
+    expect(cssBlock(css, '.session-gitline-hovercard')).toContain('position: fixed;');
+    expect(cssBlock(css, '.session-gitline-hovercard')).not.toContain('position: absolute;');
+    expect(css).not.toContain('scaleX(1.8) scaleY(1.4)');
+    expect(css).not.toContain('scaleX(1.72) scaleY(1.3)');
   });
 
   it('renders AppSidebar as a standalone shell module', () => {
@@ -449,6 +470,10 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('Branch');
     expect(markup).toContain('data-testid="sidebar-session-branch-count"');
     expect(markup).not.toContain('你能干嘛? (branch)');
+    expect(markup.match(/class="sidebar-session-row active/g) || []).toHaveLength(1);
+    expect(markup.match(/class="sidebar-session-item active"/g) || []).toHaveLength(1);
+    expect(markup).toContain('class="sidebar-session-row has-children has-active-branch"');
+    expect(markup).toContain('class="sidebar-session-row active branch-child"');
   });
 
   it('renders local agents as normal agent rows with local session dropdowns', () => {

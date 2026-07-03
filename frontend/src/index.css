@@ -748,24 +748,62 @@ select:focus {
   align-items: center;
   min-height: 44px;
   border-radius: 8px;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  isolation: isolate;
+  transition: color var(--transition-fast);
+}
+
+.sidebar-session-row::before {
+  position: absolute;
+  inset: 2px 1px;
+  z-index: 0;
+  border-radius: 7px;
+  background: transparent;
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast), opacity var(--transition-fast);
 }
 
 .sidebar-session-row:hover,
 .sidebar-session-row:focus-within {
+  background: transparent;
+}
+
+.sidebar-session-row:hover::before,
+.sidebar-session-row:focus-within::before {
   background: var(--bg-hover);
+  opacity: 1;
 }
 
 .sidebar-session-row.active {
-  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  background: transparent;
+}
+
+.sidebar-session-row.active::before {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 8%, transparent);
+  opacity: 1;
 }
 
 .sidebar-session-row.has-active-branch:not(.active) {
-  background: color-mix(in srgb, var(--accent-primary) 4%, transparent);
+  background: transparent;
+}
+
+.sidebar-session-row.has-active-branch:not(.active)::before {
+  inset: auto;
+  top: 10px;
+  bottom: 10px;
+  left: 1px;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-primary) 28%, transparent);
+  box-shadow: none;
+  opacity: 1;
 }
 
 .sidebar-session-family-toggle {
   position: absolute;
+  z-index: 1;
   left: -22px;
   top: 50%;
   transform: translateY(-50%);
@@ -805,6 +843,8 @@ select:focus {
 
 .sidebar-session-item,
 .sidebar-session-new {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   column-gap: 6px;
@@ -841,6 +881,8 @@ select:focus {
 }
 
 .sidebar-session-action {
+  position: relative;
+  z-index: 1;
   grid-column: 2;
   grid-row: 1;
   align-self: center;
@@ -1071,9 +1113,10 @@ select:focus {
   gap: 2px;
   min-width: 0;
   padding: 8px 34px 8px 9px;
+  box-shadow: inset 0 0 0 1px transparent;
   text-align: left;
   font-family: inherit;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast), color var(--transition-fast);
 }
 
 .detail-session-row-main:hover {
@@ -1082,7 +1125,8 @@ select:focus {
 }
 
 .detail-session-row.active .detail-session-row-main {
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 8%, transparent);
   color: var(--text-primary);
 }
 
@@ -1768,9 +1812,9 @@ select:focus {
 
 .session-tui-history-frame {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr);
   align-items: start;
-  gap: 8px;
+  gap: 10px;
   min-height: 100%;
 }
 
@@ -1784,7 +1828,7 @@ select:focus {
   align-self: start;
   display: flex;
   justify-content: center;
-  width: 26px;
+  width: 24px;
   height: clamp(160px, 40vh, 380px);
   min-height: 112px;
   padding: 4px 0;
@@ -1814,7 +1858,7 @@ select:focus {
   justify-items: center;
   width: 100%;
   min-height: 100%;
-  gap: 5px;
+  gap: 4px;
   padding: 8px 0;
   overflow: visible;
 }
@@ -1843,10 +1887,10 @@ select:focus {
   transform: translateX(-50%);
   background: repeating-linear-gradient(
     to bottom,
-    color-mix(in srgb, var(--border-default) 72%, transparent) 0,
-    color-mix(in srgb, var(--border-default) 72%, transparent) 3px,
-    transparent 3px,
-    transparent 8px
+    color-mix(in srgb, var(--border-default) 56%, transparent) 0,
+    color-mix(in srgb, var(--border-default) 56%, transparent) 2px,
+    transparent 2px,
+    transparent 7px
   );
   content: "";
 }
@@ -1857,11 +1901,11 @@ select:focus {
   display: grid;
   place-items: center;
   width: 100%;
-  min-height: 9px;
+  min-height: 16px;
 }
 
 .session-gitline-node-wrap.has-branches {
-  min-height: 11px;
+  min-height: 18px;
 }
 
 .session-gitline-node,
@@ -1870,11 +1914,11 @@ select:focus {
   z-index: 1;
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 9px;
+  width: 22px;
+  height: 16px;
   padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: 6px;
   background: transparent;
   cursor: pointer;
   transition: transform 140ms cubic-bezier(0.25, 1, 0.5, 1);
@@ -1883,15 +1927,17 @@ select:focus {
 .session-gitline-node::after,
 .session-gitline-branch-node::after {
   width: 8px;
-  height: 2px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--border-strong) 82%, transparent);
+  height: 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border-strong) 68%, transparent);
   content: "";
-  opacity: 0.78;
+  opacity: 0.82;
   transition:
     background 140ms cubic-bezier(0.25, 1, 0.5, 1),
+    height 140ms cubic-bezier(0.25, 1, 0.5, 1),
     opacity 140ms cubic-bezier(0.25, 1, 0.5, 1),
-    transform 140ms cubic-bezier(0.25, 1, 0.5, 1);
+    transform 140ms cubic-bezier(0.25, 1, 0.5, 1),
+    width 140ms cubic-bezier(0.25, 1, 0.5, 1);
 }
 
 .session-gitline-node:hover,
@@ -1906,8 +1952,10 @@ select:focus {
 .session-gitline-branch-node:hover::after,
 .session-gitline-branch-node:focus-visible::after {
   background: var(--text-primary);
+  width: 15px;
+  height: 5px;
   opacity: 1;
-  transform: scaleX(1.8) scaleY(1.4);
+  transform: none;
 }
 
 .session-gitline-node:has(+ .session-gitline-node:hover)::after,
@@ -1919,7 +1967,9 @@ select:focus {
 .session-gitline-node-wrap:has(.session-gitline-node:hover) + .session-gitline-node-wrap .session-gitline-node::after,
 .session-gitline-node-wrap:has(.session-gitline-node:focus-visible) + .session-gitline-node-wrap .session-gitline-node::after {
   opacity: 0.9;
-  transform: scaleX(1.28) scaleY(1.2);
+  width: 11px;
+  height: 4px;
+  transform: none;
 }
 
 .session-gitline-node.is-focused,
@@ -1931,8 +1981,10 @@ select:focus {
 .session-gitline-node.is-focused::after,
 .session-gitline-branch-node.is-active::after {
   background: var(--text-primary);
+  width: 16px;
+  height: 5px;
   opacity: 1;
-  transform: scaleX(1.72) scaleY(1.3);
+  transform: none;
 }
 
 .session-gitline-preview {
@@ -1976,12 +2028,12 @@ select:focus {
 
 .session-gitline-branch-group {
   position: absolute;
-  left: calc(50% + 8px);
+  left: calc(50% + 7px);
   top: 50%;
   transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   z-index: 5;
 }
 
@@ -1989,7 +2041,7 @@ select:focus {
   position: absolute;
   right: 100%;
   top: 50%;
-  width: 7px;
+  width: 6px;
   height: 1px;
   transform: translateY(-50%);
   background: color-mix(in srgb, var(--accent-primary) 48%, var(--border-default));
@@ -1999,7 +2051,7 @@ select:focus {
 .session-gitline-branch-group.is-expanded {
   align-items: flex-start;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   padding: 2px;
   border: 1px solid color-mix(in srgb, var(--accent-primary) 24%, var(--border-subtle));
   border-radius: 7px;
@@ -2011,21 +2063,22 @@ select:focus {
 .session-gitline-branch-node {
   color: var(--accent-primary);
   width: 18px;
-  height: 9px;
+  height: 14px;
 }
 
 .session-gitline-branch-node::after {
-  width: 7px;
-  background: color-mix(in srgb, var(--accent-primary) 64%, var(--border-default));
+  width: 8px;
+  height: 4px;
+  background: color-mix(in srgb, var(--accent-primary) 58%, var(--border-default));
 }
 
 .session-gitline-branch-node.is-compact {
   width: 16px;
-  height: 8px;
+  height: 13px;
 }
 
 .session-gitline-root-node::after {
-  width: 9px;
+  width: 11px;
   background: color-mix(in srgb, var(--text-primary) 72%, var(--border-default));
   opacity: 0.92;
 }
@@ -2041,11 +2094,11 @@ select:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 22px;
-  height: 16px;
+  min-width: 21px;
+  height: 15px;
   padding: 0 5px;
   border: 1px solid color-mix(in srgb, var(--accent-primary) 38%, var(--border-default));
-  border-radius: 999px;
+  border-radius: 6px;
   background: var(--bg-primary);
   color: color-mix(in srgb, var(--accent-primary) 78%, var(--text-primary));
   font-size: 9px;
@@ -2063,9 +2116,9 @@ select:focus {
 .session-gitline-branch-cluster:focus-visible,
 .session-gitline-branch-cluster.is-active {
   border-color: color-mix(in srgb, var(--accent-primary) 72%, var(--border-default));
-  background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-primary));
+  background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-primary));
   color: var(--text-primary);
-  transform: translateX(1px) scale(1.04);
+  transform: translateX(1px);
 }
 
 .session-gitline-branch-stem {
@@ -5740,16 +5793,17 @@ select:focus {
 
 /* GitLine hover state card */
 .session-gitline-hovercard {
-  position: absolute;
-  z-index: 30;
-  min-width: 180px;
-  max-width: 260px;
+  position: fixed;
+  z-index: 80;
+  width: 276px;
+  min-width: 0;
+  max-width: min(276px, 44vw);
   padding: 8px 10px;
-  border: 1px solid var(--border-primary);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   background: var(--bg-primary);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
-  font-size: 11px;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.12);
+  font-size: 12px;
   color: var(--text-secondary);
   pointer-events: none;
 }

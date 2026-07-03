@@ -28,7 +28,7 @@
   padding: 1px 4px;
   cursor: pointer;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-default);
   background: var(--bg-primary);
   color: var(--text-secondary);
   vertical-align: middle;
@@ -76,7 +76,7 @@
 .channel-config-perm {
   margin: 8px 0;
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-default);
   overflow: hidden;
 }
 .channel-config-perm-header {
@@ -85,7 +85,7 @@
   justify-content: space-between;
   padding: 4px 10px;
   background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-default);
 }
 .channel-config-perm-header-left {
   display: flex;
@@ -103,7 +103,7 @@
   padding: 1px 7px;
   cursor: pointer;
   border-radius: var(--radius-full);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-default);
   background: transparent;
   color: var(--text-secondary);
   transition: background var(--transition-fast), color var(--transition-fast);
@@ -118,7 +118,7 @@
   padding: 1px 7px;
   cursor: pointer;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-default);
   background: var(--bg-primary);
   color: var(--text-secondary);
   transition: background var(--transition-fast), color var(--transition-fast);
@@ -413,7 +413,7 @@
 }
 .channel-config-radio-inline:hover { color: var(--text-primary); }
 .channel-config-link {
-  color: var(--primary-color);
+  color: var(--accent-text);
   transition: color var(--transition-fast);
 }
 .channel-config-link:hover { color: var(--accent-hover); }

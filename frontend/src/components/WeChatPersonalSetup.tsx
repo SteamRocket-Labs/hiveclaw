@@ -127,7 +127,7 @@ export default function WeChatPersonalSetup({ agentId, onConnected }: WeChatPers
         fontSize: '13px',
         fontWeight: 500,
         borderRadius: '8px',
-        border: '1px solid var(--border-color)',
+        border: '1px solid var(--border-default)',
         background: 'var(--accent-primary)',
         color: '#fff',
         cursor: 'pointer',
@@ -137,7 +137,7 @@ export default function WeChatPersonalSetup({ agentId, onConnected }: WeChatPers
         ...btnStyle,
         background: 'transparent',
         color: 'var(--text-primary)',
-        border: '1px solid var(--border-color)',
+        border: '1px solid var(--border-default)',
     };
     const statusStyle: React.CSSProperties = {
         fontSize: '12px',

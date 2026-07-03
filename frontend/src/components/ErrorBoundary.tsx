@@ -37,7 +37,7 @@ class ErrorBoundary extends Component<Props, State> {
                     <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>
                         An unexpected error occurred. You can try refreshing the page or contact support if the problem persists.
                     </p>
-                    <details style={{ whiteSpace: 'pre-wrap', marginBottom: '20px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '4px', fontSize: '13px', border: '1px solid var(--border-color)', color: 'var(--error)' }}>
+                    <details style={{ whiteSpace: 'pre-wrap', marginBottom: '20px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '4px', fontSize: '13px', border: '1px solid var(--border-default)', color: 'var(--error)' }}>
                         <summary style={{ cursor: 'pointer', fontWeight: 'bold', marginBottom: '8px' }}>Error Details</summary>
                         {this.state.error && this.state.error.toString()}
                     </details>

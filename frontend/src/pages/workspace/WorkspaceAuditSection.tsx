@@ -47,7 +47,7 @@ export default function WorkspaceAuditSection({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-      <div style={{ display: 'flex', gap: '8px', padding: '8px 12px', borderBottom: '1px solid var(--border-color)' }}>
+      <div style={{ display: 'flex', gap: '8px', padding: '8px 12px', borderBottom: '1px solid var(--border-default)' }}>
         {([
           ['all', t('enterprise.audit.filterAll', 'All')],
           ['background', t('enterprise.audit.filterBackground', 'Background')],

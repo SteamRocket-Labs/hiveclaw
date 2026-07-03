@@ -41,6 +41,7 @@ from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.agent_session_continuation import continue_agent_session_from_mailbox
 from app.services.agent_team_runtime_service import (
+    active_agent_team_contract_from_tool_request,
     send_agent_team_message_from_tool_request,
     spawn_agent_team_member_from_tool_request,
 )
@@ -307,18 +308,28 @@ def _agent_team_execution_contract(request: ToolExecutionRequest) -> dict[str, A
 
 def _agent_team_contract_required_payload(contract: dict[str, Any]) -> dict[str, Any]:
     team_name = str(contract.get("name") or contract.get("team_name") or "").strip()
-    return {
-        "ok": False,
-        "error": "agent_team_contract_required",
-        "message": (
+    if str(contract.get("source") or "") == "active_session_team":
+        message = (
+            "This session already has an active Agent Team. Plain spawn_subagent would bypass the Team container; "
+            "spawn teammates with spawn_subagent using both team_name and name."
+        )
+    else:
+        message = (
             "The confirmed plan requires Agent Team execution. Call team_create first, then spawn teammates "
             "with spawn_subagent using both team_name and name."
-        ),
+        )
+    payload = {
+        "ok": False,
+        "error": "agent_team_contract_required",
+        "message": message,
         "required_tool": "team_create",
         "teammate_creation_tool": "spawn_subagent",
         "expected_arguments": {"team_name": team_name or "<team_name>", "name": "<member_name>"},
         "contract_type": "agent_team",
     }
+    if contract.get("team_id"):
+        payload["team_id"] = str(contract["team_id"])
+    return payload
 
 
 async def _load_parent_messages_for_fork(
@@ -424,6 +435,8 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     team_name = str(normalized_args.get("team_name") or "").strip()
     member_name = str(normalized_args.get("name") or "").strip()
     agent_team_contract = _agent_team_execution_contract(request)
+    if agent_team_contract is None and not team_name:
+        agent_team_contract = await active_agent_team_contract_from_tool_request(request)
     if agent_team_contract and not (team_name and member_name):
         return _json(_agent_team_contract_required_payload(agent_team_contract))
     if team_name and member_name:

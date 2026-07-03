@@ -730,6 +730,44 @@ async def create_agent_team_from_tool_request(
         )
 
 
+async def active_agent_team_contract_from_tool_request(request: Any) -> dict[str, Any] | None:
+    """Return the active session Team contract that forbids silent one-shot downgrades.
+
+    ``team_create`` creates a durable session-local container. Once it exists,
+    plain ``spawn_subagent`` would bypass the requested Agent Team unless the
+    caller supplies ``team_name + name`` and enters the teammate branch.
+    """
+    session_id = _uuid_or_none(getattr(request.context, "session_id", None))
+    if session_id is None:
+        return None
+    tenant_id = _uuid_or_none(getattr(request.context, "tenant_id", None)) or await resolve_tenant_for_agent(
+        request.context.agent_id
+    )
+    async with tenant_scoped_session(tenant_id) as db:
+        team = (
+            await db.execute(
+                select(AgentTeam)
+                .where(
+                    AgentTeam.lead_agent_id == request.context.agent_id,
+                    AgentTeam.parent_session_id == session_id,
+                    AgentTeam.status == "active",
+                )
+                .order_by(AgentTeam.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if team is None:
+            return None
+        return {
+            "type": "agent_team",
+            "source": "active_session_team",
+            "team_id": str(team.id),
+            "name": team.name,
+            "team_name": team.name,
+            **teammate_creation_discovery(team.name),
+        }
+
+
 async def spawn_agent_team_member_from_tool_request(
     request: Any,
     *,

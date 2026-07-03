@@ -259,6 +259,32 @@ describe('chatDisclosureReducer', () => {
     });
   });
 
+  it('treats the run as delivered once an assistant summary exists even if background steps are still running', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'event',
+        content: 'Subagent regulatory-expert is running in the background.',
+        eventType: 'runtime_action_started',
+        eventStatus: 'running',
+        eventNotificationSource: 'subagent_wake',
+        eventRuntimeTaskId: 'run-subagent-1',
+        eventChildSessionId: 'child-subagent-1',
+      },
+      {
+        role: 'assistant',
+        content: '收到，4 个 subagent 已成功后台启动。',
+        timestamp: '2026-07-03T06:48:00Z',
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.status).toBe('done');
+    expect(timeline.answerMessageId).toBe('answer-1');
+    expect(timeline.steps[0]).toMatchObject({
+      kind: 'subagent',
+      status: 'running',
+    });
+  });
+
   it('classifies task notifications by their completion source', () => {
     const timeline = buildRunTimelineFromMessages([
       {

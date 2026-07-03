@@ -123,6 +123,26 @@ def _start_request(
     )
 
 
+def _tool_request(
+    tool_name: str,
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    session_id: str = "session-workflow",
+) -> ToolExecutionRequest:
+    return ToolExecutionRequest(
+        tool_name=tool_name,
+        arguments=arguments,
+        context=ToolExecutionContext(
+            agent_id=agent_id,
+            user_id=uuid.uuid4(),
+            tenant_id=str(uuid.uuid4()),
+            workspace=Path("/tmp/hive-workflow-test"),
+            session_id=session_id,
+        ),
+    )
+
+
 # ── plan-gate registry (early intercept) ──────────────────────────
 
 
@@ -154,6 +174,44 @@ def test_workflow_tools_registered_in_capability_map():
     assert "start_workflow" in CAPABILITY_MAP
     assert "preview_workflow" in CAPABILITY_MAP
     assert "propose_dynamic_workflow" in CAPABILITY_MAP
+
+
+async def test_preview_workflow_registered_adapter_matches_agent_arguments_signature():
+    from app.tools.adapters import adapt_and_call
+    from app.tools.decorator import get_all_registered_tools
+    import app.tools.handlers.workflow  # noqa: F401
+
+    meta, handler = get_all_registered_tools()["preview_workflow"]
+    result = await adapt_and_call(
+        meta,
+        handler,
+        _tool_request(
+            "preview_workflow",
+            uuid.uuid4(),
+            {"definition": _low_risk_definition(), "args": {}},
+        ),
+    )
+    payload = json.loads(result)
+
+    assert payload["preview_id"]
+    assert payload["planned_leaf_calls"] == 1
+
+
+async def test_propose_dynamic_workflow_registered_adapter_matches_agent_arguments_signature():
+    from app.tools.adapters import adapt_and_call
+    from app.tools.decorator import get_all_registered_tools
+    import app.tools.handlers.workflow  # noqa: F401
+
+    meta, handler = get_all_registered_tools()["propose_dynamic_workflow"]
+    result = await adapt_and_call(
+        meta,
+        handler,
+        _tool_request("propose_dynamic_workflow", uuid.uuid4(), _dynamic_workflow_proposal()),
+    )
+    payload = json.loads(result)
+
+    assert payload["ok"] is True
+    assert payload["status"] == "dynamic_workflow_proposed"
 
 
 # ── tool handlers ─────────────────────────────────────────────────

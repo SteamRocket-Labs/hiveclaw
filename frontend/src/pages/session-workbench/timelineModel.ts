@@ -697,6 +697,136 @@ function buildRuntimeSectionsSummary(sections: Omit<RuntimeSectionsModel, 'summa
   };
 }
 
+function runtimeSectionFallbackFromMessage(
+  message: AgentChatMessage,
+  index: number,
+): { section: RuntimeSectionName; record: Record<string, unknown>; fallbackKind: string } | null {
+  if (message.role !== 'event') return null;
+  const eventType = String(message.eventType || '').toLowerCase();
+  const source = String(message.eventNotificationSource || '').toLowerCase();
+  const sourceText = `${source} ${eventType}`;
+
+  let section: RuntimeSectionName | null = null;
+  let runtimeKind = 'runtime_event';
+  let fallbackKind = 'runtime_event';
+
+  if (
+    sourceText.includes('workflow') ||
+    eventType === 'dynamic_workflow' ||
+    eventType === 'workflow_run' ||
+    eventType === 'workflow_step'
+  ) {
+    section = 'workflows';
+    runtimeKind = 'workflow';
+    fallbackKind = 'workflow';
+  } else if (sourceText.includes('agent_team') || sourceText.includes('team_member') || eventType === 'team_member') {
+    section = 'agent_teams';
+    runtimeKind = sourceText.includes('team_member') || eventType === 'team_member' ? 'team_member' : 'agent_team';
+    fallbackKind = runtimeKind;
+  } else if (sourceText.includes('subagent') || eventType === 'subagent' || eventType === 'child_session') {
+    section = 'subagents';
+    runtimeKind = 'subagent';
+    fallbackKind = 'subagent';
+  } else if (sourceText.includes('background') || eventType.includes('completion_wake')) {
+    section = 'background';
+    runtimeKind = 'background_agent';
+    fallbackKind = 'background_agent';
+  } else if (eventType.startsWith('runtime_action_') || message.eventRuntimeTaskId) {
+    section = 'runs';
+    runtimeKind = 'runtime_task';
+    fallbackKind = 'runtime_task';
+  } else {
+    return null;
+  }
+
+  const record = message as unknown as Record<string, unknown>;
+  const id =
+    readString(record, ['eventRuntimeTaskId', 'eventWorkflowRunId', 'eventWorkflowStepId', 'eventChildSessionId', 'id']) ||
+    `session-runtime-${index}`;
+  const label =
+    readString(record, ['eventTitle', 'eventNotificationSource', 'eventType']) ||
+    readString(record, ['content'], id);
+  const status = readString(record, ['eventStatus'], 'unknown');
+  const summary = readString(record, ['content', 'eventReason', 'eventNextStep'], '');
+  const childSessionId = readString(record, ['eventChildSessionId'], '');
+
+  return {
+    section,
+    fallbackKind,
+    record: {
+      id,
+      runtime_kind: runtimeKind,
+      label,
+      status,
+      state: status,
+      summary,
+      child_session_id: childSessionId || undefined,
+      source_event_type: eventType,
+      source_notification: source,
+    },
+  };
+}
+
+function runtimeSectionsFromMessages(messages: AgentChatMessage[]): RuntimeSectionsModel {
+  const buckets: Record<RuntimeSectionName, Map<string, Record<string, unknown>>> = {
+    agent_teams: new Map(),
+    subagents: new Map(),
+    workflows: new Map(),
+    background: new Map(),
+    notifications: new Map(),
+    runs: new Map(),
+    raw: new Map(),
+  };
+
+  messages.forEach((message, index) => {
+    const fallback = runtimeSectionFallbackFromMessage(message, index);
+    if (!fallback) return;
+    const key = `${fallback.record.runtime_kind || fallback.fallbackKind}:${fallback.record.id}`;
+    buckets[fallback.section].set(key, fallback.record);
+  });
+
+  return buildRuntimeSectionsSummary({
+    agentTeams: normalizeRuntimeSectionItems(Array.from(buckets.agent_teams.values()), 'agent_team'),
+    subagents: normalizeRuntimeSectionItems(Array.from(buckets.subagents.values()), 'subagent'),
+    workflows: normalizeRuntimeSectionItems(Array.from(buckets.workflows.values()), 'workflow'),
+    background: normalizeRuntimeSectionItems(Array.from(buckets.background.values()), 'background_agent'),
+    notifications: normalizeRuntimeSectionItems(Array.from(buckets.notifications.values()), 'notification'),
+    runs: normalizeRuntimeSectionItems(Array.from(buckets.runs.values()), 'runtime_task'),
+    raw: normalizeRuntimeSectionItems(Array.from(buckets.raw.values()), 'raw_event'),
+  });
+}
+
+function runtimeItemIdentity(item: RuntimeSectionItemModel): string {
+  return `${item.runtimeKind}:${item.id}`;
+}
+
+function mergeRuntimeItemLists(
+  primary: RuntimeSectionItemModel[],
+  fallback: RuntimeSectionItemModel[],
+): RuntimeSectionItemModel[] {
+  const seen = new Set(primary.map(runtimeItemIdentity));
+  const merged = [...primary];
+  fallback.forEach((item) => {
+    const key = runtimeItemIdentity(item);
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(item);
+  });
+  return merged;
+}
+
+function mergeRuntimeSections(primary: RuntimeSectionsModel, fallback: RuntimeSectionsModel): RuntimeSectionsModel {
+  return buildRuntimeSectionsSummary({
+    agentTeams: mergeRuntimeItemLists(primary.agentTeams, fallback.agentTeams),
+    subagents: mergeRuntimeItemLists(primary.subagents, fallback.subagents),
+    workflows: mergeRuntimeItemLists(primary.workflows, fallback.workflows),
+    background: mergeRuntimeItemLists(primary.background, fallback.background),
+    notifications: mergeRuntimeItemLists(primary.notifications, fallback.notifications),
+    runs: mergeRuntimeItemLists(primary.runs, fallback.runs),
+    raw: mergeRuntimeItemLists(primary.raw, fallback.raw),
+  });
+}
+
 const RUNTIME_SECTION_TITLES: Record<RuntimeSectionName, string> = {
   agent_teams: 'Agent Teams',
   subagents: 'Sub-agents',
@@ -1077,7 +1207,10 @@ export function buildSessionRightPanelModel({
   activeRunStatus?: string | null;
 }): SessionRightPanelModel {
   const workbenchRecord = asRecord(sessionWorkbench) ?? null;
-  const runtimeSections = buildRuntimeSectionsModel(workbenchRecord);
+  const runtimeSections = mergeRuntimeSections(
+    buildRuntimeSectionsModel(workbenchRecord),
+    runtimeSectionsFromMessages(messages),
+  );
   const runtimeTables = buildRuntimeSectionModels(runtimeSections);
   const sectionByKey = new Map(runtimeTables.map((section) => [section.key, section]));
   const fallbackSection = (key: RuntimeSectionName) => runtimeSectionModel(key, []);

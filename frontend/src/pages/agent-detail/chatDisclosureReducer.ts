@@ -391,6 +391,7 @@ function getTimestampMs(value?: string): number | null {
 function getTimelineStatus(steps: RunStepSnapshot[], hasAnswer: boolean): RunTimelineSnapshot['status'] {
   if (steps.some((step) => step.status === 'failed')) return 'failed';
   if (steps.some((step) => step.status === 'blocked')) return 'blocked';
+  if (hasAnswer) return 'done';
   if (steps.some((step) => step.status === 'running')) return 'running';
   if (steps.length > 0 || hasAnswer) return 'done';
   return 'idle';

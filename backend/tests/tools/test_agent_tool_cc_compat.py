@@ -188,6 +188,51 @@ async def test_spawn_subagent_rejects_plain_worker_when_plan_requires_agent_team
     }
 
 
+@pytest.mark.asyncio
+async def test_spawn_subagent_rejects_plain_worker_when_session_has_active_agent_team(monkeypatch) -> None:
+    import app.tools.handlers.subagent as handler_mod
+
+    async def fake_active_team_contract(_request):
+        return {
+            "type": "agent_team",
+            "source": "active_session_team",
+            "team_id": "team-123",
+            "name": "金融创新产品族研究 Team",
+        }
+
+    async def fail_resolve_parent_runtime(_agent_id):  # pragma: no cover - must not reach plain worker path
+        raise AssertionError("plain subagent runtime must not start while an active Agent Team contract exists")
+
+    monkeypatch.setattr(
+        handler_mod,
+        "active_agent_team_contract_from_tool_request",
+        fake_active_team_contract,
+        raising=False,
+    )
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fail_resolve_parent_runtime)
+
+    out = await handler_mod.spawn_subagent_tool(
+        _request(
+            {
+                "name": "scenario-expert",
+                "subagent_type": "explorer",
+                "prompt": "Research scenarios for the Agent Team.",
+            }
+        )
+    )
+    payload = json.loads(out)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "agent_team_contract_required"
+    assert payload["required_tool"] == "team_create"
+    assert payload["teammate_creation_tool"] == "spawn_subagent"
+    assert payload["expected_arguments"] == {
+        "team_name": "金融创新产品族研究 Team",
+        "name": "<member_name>",
+    }
+    assert payload["team_id"] == "team-123"
+
+
 def test_spawn_subagent_description_draws_session_worker_employee_boundary() -> None:
     from app.tools.handlers.communication import delegate_to_agent
     from app.tools.handlers.subagent import spawn_subagent_tool

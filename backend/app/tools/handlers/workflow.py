@@ -136,6 +136,7 @@ def _dynamic_candidate_binding_error(
         read_only=True,
         parallel_safe=True,
         governance="safe",
+        adapter="agent_args",
     )
 )
 async def propose_dynamic_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -178,6 +179,7 @@ async def propose_dynamic_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
         read_only=True,
         parallel_safe=True,
         governance="safe",
+        adapter="agent_args",
     )
 )
 async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:

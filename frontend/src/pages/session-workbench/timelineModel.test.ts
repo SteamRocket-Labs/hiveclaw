@@ -534,6 +534,73 @@ describe('session workbench timeline model', () => {
     expect(rightPanel.runtimeConsole.activity.raw.map((item) => item.id)).toEqual(['raw-1']);
   });
 
+  it('falls back to session runtime events when workbench runtime sections are missing', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [
+        {
+          id: 'evt-subagent-started',
+          role: 'event',
+          content: 'Subagent regulatory-expert is running in the background.',
+          eventType: 'runtime_action_started',
+          eventStatus: 'running',
+          eventNotificationSource: 'subagent_wake',
+          eventRuntimeTaskId: 'run-subagent-1',
+          eventChildSessionId: 'child-subagent-1',
+        },
+        {
+          id: 'evt-workflow-started',
+          role: 'event',
+          content: 'Dynamic workflow is waiting on a gate.',
+          eventType: 'workflow_run',
+          eventStatus: 'waiting',
+          eventNotificationSource: 'workflow',
+          eventWorkflowRunId: 'workflow-1',
+        },
+        {
+          id: 'evt-team-member-started',
+          role: 'event',
+          content: 'Team member analyst is running.',
+          eventType: 'team_member',
+          eventStatus: 'running',
+          eventNotificationSource: 'team_member',
+          eventRuntimeTaskId: 'member-run-1',
+          eventChildSessionId: 'member-session-1',
+        },
+      ] as AgentChatMessage[],
+      sessionWorkbench: { runtime_sections: {} } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeConsole.summary).toMatchObject({
+      state: 'waiting',
+      totalCount: 3,
+      runningCount: 2,
+      waitingCount: 1,
+    });
+    expect(rightPanel.runtimeConsole.defaultSegment).toBe('workflow');
+    expect(rightPanel.runtimeConsole.workers.items).toEqual([
+      expect.objectContaining({
+        id: 'run-subagent-1',
+        runtimeKind: 'subagent',
+        childSessionId: 'child-subagent-1',
+        enterable: false,
+      }),
+    ]);
+    expect(rightPanel.runtimeConsole.workflow.items).toEqual([
+      expect.objectContaining({
+        id: 'workflow-1',
+        runtimeKind: 'workflow',
+        status: 'waiting',
+      }),
+    ]);
+    expect(rightPanel.runtimeConsole.team.items).toEqual([
+      expect.objectContaining({
+        id: 'member-run-1',
+        runtimeKind: 'team_member',
+        childSessionId: 'member-session-1',
+      }),
+    ]);
+  });
+
   it('builds named session workbench models for windows, checkpoints, right panel, runtime sections, and workflow run windows', () => {
     const messages: AgentChatMessage[] = [
       {

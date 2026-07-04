@@ -252,6 +252,16 @@ def test_format_heartbeat_exception_includes_type_and_message():
     assert _format_heartbeat_exception(ValueError("bad state")) == "ValueError: bad state"
 
 
+def test_log_heartbeat_error_accepts_json_error_text_without_format_keyerror():
+    import uuid
+
+    from app.services.heartbeat import _log_heartbeat_error
+
+    error_text = 'LLMError: HTTP 402: {"error":{"message":"Insufficient Balance"}}'
+
+    _log_heartbeat_error(uuid.uuid4(), error_text)
+
+
 def test_parse_heartbeat_outcome_score_capped_at_10():
     from app.services.heartbeat import _parse_heartbeat_outcome
 

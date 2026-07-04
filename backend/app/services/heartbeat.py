@@ -73,6 +73,10 @@ def _format_heartbeat_exception(exc: BaseException) -> str:
     return f"{exc_type}: {message}" if message else exc_type
 
 
+def _log_heartbeat_error(agent_id: uuid.UUID, error_text: str) -> None:
+    logger.opt(exception=True).error("Heartbeat error for agent {}: {}", agent_id, error_text)
+
+
 def _truncate_heartbeat_text(text: str, max_chars: int, label: str) -> str:
     """Trim a single heartbeat section while preserving its opening and latest tail."""
     if len(text) <= max_chars:
@@ -1589,7 +1593,7 @@ async def _execute_heartbeat(
 
     except Exception as e:
         error_text = _format_heartbeat_exception(e)
-        logger.error(f"Heartbeat error for agent {agent_id}: {error_text}", exc_info=True)
+        _log_heartbeat_error(agent_id, error_text)
         # CRITICAL: Update last_heartbeat_at even on failure to prevent
         # every-minute storm (if timestamp stays None, agent is always eligible)
         try:
@@ -1602,7 +1606,7 @@ async def _execute_heartbeat(
                     _agent.last_heartbeat_at = datetime.now(timezone.utc)
                     await _db.commit()
         except Exception as db_err:
-            logger.warning(f"Failed to update last_heartbeat_at after error: {db_err}")
+            logger.opt(exception=True).warning("Failed to update last_heartbeat_at after error: {}", db_err)
         # Log crash to activity so evolution system can see it
         try:
             from app.services.activity_logger import log_activity
@@ -1614,7 +1618,7 @@ async def _execute_heartbeat(
                 detail={"outcome_type": "crash", "error": error_text[:300]},
             )
         except Exception as log_err:
-            logger.debug(f"Failed to log heartbeat crash to activity: {log_err}")
+            logger.opt(exception=True).debug("Failed to log heartbeat crash to activity: {}", log_err)
         await _update_heartbeat_runtime_task(
             runtime_task_id,
             status="failed",
@@ -1684,7 +1688,7 @@ async def _heartbeat_tick():
             )
 
     except Exception as e:
-        logger.error(f"Heartbeat tick error: {e}", exc_info=True)
+        logger.opt(exception=True).error("Heartbeat tick error: {}", e)
         await write_audit_log("heartbeat_error", {"error": str(e)[:300]})
 
 async def _sync_one_tenant(tenant_id: uuid.UUID) -> None:
@@ -1730,7 +1734,7 @@ async def _workspace_dirty_tick() -> None:
         for agent_id in agents:
             await _sync_one_agent(agent_id)
     except Exception as e:
-        logger.error(f"Workspace dirty tick error: {e}", exc_info=True)
+        logger.opt(exception=True).error("Workspace dirty tick error: {}", e)
 
 
 async def _workspace_full_sweep() -> None:
@@ -1759,7 +1763,7 @@ async def _workspace_full_sweep() -> None:
         for tenant_id in tenant_ids:
             await _sync_one_tenant(tenant_id)
     except Exception as e:
-        logger.error(f"Workspace full sweep error: {e}", exc_info=True)
+        logger.opt(exception=True).error("Workspace full sweep error: {}", e)
 
 
 async def _workspace_sync_loop():

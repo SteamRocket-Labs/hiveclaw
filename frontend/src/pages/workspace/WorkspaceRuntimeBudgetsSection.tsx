@@ -6,6 +6,18 @@ import { IconAlertTriangle, IconPlayerPause, IconShieldCheck, IconShieldOff } fr
 import { runtimeBudgetApi, type RuntimeBudgetPolicy, type RuntimeBudgetRun } from '../../api/domains/runtimeBudgets';
 import './WorkspaceRuntimeBudgetsSection.css';
 
+const DEFAULT_RUNTIME_POLICY_VALUES = {
+  max_tokens: 1_000_000,
+  max_cache_miss_tokens: 250_000,
+  max_subagents: 32,
+  max_delegations: 32,
+  max_background_tasks: 32,
+  max_continuation_wakes: 64,
+  max_provider_calls: 128,
+  default_child_token_reservation: 50_000,
+  default_llm_call_token_reservation: 50_000,
+};
+
 function formatNumber(value?: number | null) {
   if (value == null) return '—';
   return value.toLocaleString();
@@ -66,6 +78,27 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
     () => policies.find((policy) => policy.scope_type === 'source_profile' && policy.source === 'scheduled') || policies[0],
     [policies],
   );
+  const builtInPolicy = useMemo<RuntimeBudgetPolicy>(
+    () => ({
+      id: 'built-in-runtime-default',
+      tenant_id: null,
+      name: t('runtimeBudgets.builtInPolicyName', 'Built-in runtime protection'),
+      enabled: true,
+      priority: 0,
+      scope_type: 'tenant_default',
+      source: null,
+      profile: null,
+      agent_id: null,
+      trigger_id: null,
+      enforcement_mode: 'enforce',
+      fail_mode: 'fail_closed',
+      created_at: null,
+      updated_at: null,
+      ...DEFAULT_RUNTIME_POLICY_VALUES,
+    }),
+    [t],
+  );
+  const effectivePolicy = activePolicy || builtInPolicy;
   const protectedRuns = runs.filter((run) => ['exhausted', 'hard_stopped', 'expired', 'cancelled'].includes(run.status));
 
   const invalidate = () => {
@@ -124,7 +157,7 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
           <p>
             {t(
               'runtimeBudgets.description',
-              'Set hard guardrails for triggers, background work, subagents, delegation, wake loops, and provider calls. Users only see the outcome and next action.',
+              'Protection is on by default. The platform stops abnormal autonomous work from spreading, and users only see whether the task paused and what to do next.',
             )}
           </p>
         </div>
@@ -135,7 +168,7 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
             disabled={switchMode.isPending}
           >
             <IconShieldOff size={16} stroke={1.7} />
-            {t('runtimeBudgets.observeMode', 'Observe mode')}
+            {t('runtimeBudgets.observeMode', 'Observe only')}
           </button>
           <button
             className="btn btn-primary"
@@ -143,8 +176,14 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
             disabled={switchMode.isPending}
           >
             <IconShieldCheck size={16} stroke={1.7} />
-            {t('runtimeBudgets.enforceMode', 'Enforce mode')}
+            {t('runtimeBudgets.enforceMode', 'Enforce protection')}
           </button>
+          <p className="workspace-runtime-action-help">
+            {t(
+              'runtimeBudgets.modeHelp',
+              'Observe only records what would be stopped. Enforce protection is the default hard-stop mode.',
+            )}
+          </p>
         </div>
       </section>
 
@@ -152,13 +191,24 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
         <div className="card workspace-runtime-card">
           <div className="workspace-runtime-card-header">
             <div>
-              <h3>{t('runtimeBudgets.activePolicy', 'Active policy')}</h3>
-              {activePolicy && <div className="workspace-runtime-policy-name">{activePolicy.name}</div>}
-              <p>{activePolicy ? policySummary(activePolicy) : t('runtimeBudgets.noPolicy', 'No tenant policy yet.')}</p>
+              <h3>{t('runtimeBudgets.activePolicy', 'Effective policy')}</h3>
+              <div className="workspace-runtime-policy-name">{effectivePolicy.name}</div>
+              <p>
+                {activePolicy
+                  ? policySummary(effectivePolicy)
+                  : t('runtimeBudgets.noPolicy', 'Built-in default protection is active.')}
+              </p>
+              {!activePolicy && <p className="workspace-runtime-policy-summary">{policySummary(effectivePolicy)}</p>}
             </div>
-            {activePolicy && <span className={`badge ${activePolicy.enforcement_mode === 'enforce' ? 'badge-success' : 'badge-warning'}`}>{activePolicy.enforcement_mode}</span>}
+            <span className={`badge ${effectivePolicy.enforcement_mode === 'enforce' ? 'badge-success' : 'badge-warning'}`}>{effectivePolicy.enforcement_mode}</span>
           </div>
           <div className="workspace-runtime-form">
+            <p className="workspace-runtime-form-note">
+              {t(
+                'runtimeBudgets.overrideNote',
+                'Saving creates a tenant override for these limits. It does not turn protection on; protection is already active.',
+              )}
+            </p>
             <label>
               {t('runtimeBudgets.policyName', 'Policy name')}
               <input className="form-input" value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} />
@@ -178,7 +228,7 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
               <input className="form-input" type="number" min={0} value={draft.max_cache_miss_tokens} onChange={(event) => setDraft((current) => ({ ...current, max_cache_miss_tokens: Number(event.target.value) }))} />
             </label>
             <button className="btn btn-primary" onClick={() => createPolicy.mutate()} disabled={createPolicy.isPending}>
-              {createPolicy.isPending ? t('common.loading', 'Loading...') : t('runtimeBudgets.savePolicy', 'Save policy')}
+              {createPolicy.isPending ? t('common.loading', 'Loading...') : t('runtimeBudgets.savePolicy', 'Save override policy')}
             </button>
           </div>
         </div>

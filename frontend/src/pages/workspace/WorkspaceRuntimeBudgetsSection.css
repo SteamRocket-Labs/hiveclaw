@@ -41,6 +41,7 @@
   flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
+  max-width: 360px;
 }
 
 .workspace-runtime-actions .btn,
@@ -48,6 +49,15 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.workspace-runtime-action-help {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: right;
 }
 
 .workspace-runtime-grid {
@@ -79,10 +89,21 @@
   font-weight: 700;
 }
 
+.workspace-runtime-policy-summary {
+  margin-top: 4px !important;
+}
+
 .workspace-runtime-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.workspace-runtime-form-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .workspace-runtime-form label {
@@ -176,6 +197,11 @@
 
   .workspace-runtime-actions {
     justify-content: flex-start;
+    max-width: none;
+  }
+
+  .workspace-runtime-action-help {
+    text-align: left;
   }
 
   .workspace-runtime-grid {

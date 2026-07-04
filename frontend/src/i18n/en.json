@@ -1967,6 +1967,28 @@
     "minutesAgo": "{{count}} minutes ago",
     "hoursAgo": "{{count}} hours ago"
   },
+  "runtimeBudgets": {
+    "title": "Runtime Protection",
+    "heading": "Autonomous run protection",
+    "description": "Protection is on by default. The platform stops abnormal autonomous work from spreading, and users only see whether the task paused and what to do next.",
+    "builtInPolicyName": "Built-in runtime protection",
+    "observeMode": "Observe only",
+    "enforceMode": "Enforce protection",
+    "modeHelp": "Observe only records what would be stopped. Enforce protection is the default hard-stop mode.",
+    "activePolicy": "Effective policy",
+    "noPolicy": "Built-in default protection is active.",
+    "overrideNote": "Saving creates a tenant override for these limits. It does not turn protection on; protection is already active.",
+    "policyName": "Policy name",
+    "maxSubagents": "Max subagents",
+    "maxWakes": "Max wakes",
+    "cacheMissLimit": "Cache-miss token limit",
+    "savePolicy": "Save override policy",
+    "protectedRuns": "Protected runs",
+    "protectedRunsDesc": "Recent runs paused or stopped by the runtime guard.",
+    "approveContinue": "Approve",
+    "stopRun": "Stop",
+    "emptyRuns": "No runtime budget runs yet."
+  },
   "enterprise": {
     "title": "Company Admin",
     "dangerZone": "Danger Zone",

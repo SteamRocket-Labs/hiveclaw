@@ -1994,6 +1994,28 @@
     "minutesAgo": "{{count}} 分钟前",
     "hoursAgo": "{{count}} 小时前"
   },
+  "runtimeBudgets": {
+    "title": "运行保护",
+    "heading": "自动运行保护",
+    "description": "保护默认已经开启。平台会自动拦住异常扩散的自主任务，用户只需要看到任务是否暂停以及下一步怎么处理。",
+    "builtInPolicyName": "内置默认保护",
+    "observeMode": "只观察",
+    "enforceMode": "强制保护",
+    "modeHelp": "只观察只记录本来会被拦住的异常，不会真正暂停任务。强制保护是默认模式，会拦住异常扩散。",
+    "activePolicy": "当前生效策略",
+    "noPolicy": "内置默认保护已生效。",
+    "overrideNote": "保存会创建公司的覆盖配置，用来调整这些上限；这不是开启保护，保护已经默认生效。",
+    "policyName": "策略名称",
+    "maxSubagents": "最多子任务",
+    "maxWakes": "最多续跑",
+    "cacheMissLimit": "非缓存 Token 上限",
+    "savePolicy": "保存覆盖配置",
+    "protectedRuns": "被保护的任务",
+    "protectedRunsDesc": "最近被运行保护暂停或拦截的任务。",
+    "approveContinue": "允许继续",
+    "stopRun": "暂停",
+    "emptyRuns": "还没有运行保护记录。"
+  },
   "enterprise": {
     "title": "公司后台",
     "dangerZone": "危险操作",

@@ -425,10 +425,10 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
         "heartbeat_skill_curation_consistency": _CheckSpec(
             predicate=lambda: _heartbeat_templates_pass("heartbeat_skill_curation_consistency"),
             severity="medium",
-            remediation="Restore heartbeat guidance that permits internal save_skill curation while still blocking external-facing autonomous actions.",
-            success_detail="All runtime heartbeat templates stay consistent with the save_skill loop and external-action boundaries.",
+            remediation="Restore heartbeat guidance that records candidate signals in staged T3 artifacts while blocking external-facing autonomous actions.",
+            success_detail="All runtime heartbeat templates stay consistent with candidate lanes and external-action boundaries.",
             failure_detail=(
-                "Heartbeat templates no longer align internal skill curation with external-action safety boundaries: "
+                "Heartbeat templates no longer align staged candidate curation with external-action safety boundaries: "
                 f"{_heartbeat_template_failures('heartbeat_skill_curation_consistency') or 'unknown'}."
             ),
         ),

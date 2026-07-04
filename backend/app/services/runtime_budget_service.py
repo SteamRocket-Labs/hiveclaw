@@ -25,6 +25,7 @@ _DIMENSIONS = (
     "tokens",
     "cache_miss_tokens",
     "subagents",
+    "team_sessions",
     "delegations",
     "background_tasks",
     "continuation_wakes",
@@ -48,6 +49,74 @@ _POLICY_SCOPE_RANK = {
     "tenant_default": 200,
     "platform_default": 100,
 }
+
+_BUILTIN_PROFILE_DEFAULTS: dict[str, dict[str, int | str]] = {
+    "interactive": {
+        "max_tokens": 50_000_000,
+        "max_cache_miss_tokens": 10_000_000,
+        "max_subagents": 24,
+        "max_team_sessions": 4,
+        "max_delegations": 16,
+        "max_background_tasks": 24,
+        "max_continuation_wakes": 64,
+        "max_provider_calls": 300,
+        "default_child_token_reservation": 200_000,
+        "default_llm_call_token_reservation": 200_000,
+        "fail_mode": "require_confirmation",
+    },
+    "scheduled": {
+        "max_tokens": 40_000_000,
+        "max_cache_miss_tokens": 8_000_000,
+        "max_subagents": 32,
+        "max_team_sessions": 0,
+        "max_delegations": 12,
+        "max_background_tasks": 32,
+        "max_continuation_wakes": 64,
+        "max_provider_calls": 240,
+        "default_child_token_reservation": 250_000,
+        "default_llm_call_token_reservation": 250_000,
+        "fail_mode": "summary_only",
+    },
+    "workflow": {
+        "max_tokens": 250_000_000,
+        "max_cache_miss_tokens": 80_000_000,
+        "max_subagents": 256,
+        "max_team_sessions": 0,
+        "max_delegations": 64,
+        "max_background_tasks": 256,
+        "max_continuation_wakes": 512,
+        "max_provider_calls": 2_000,
+        "default_child_token_reservation": 300_000,
+        "default_llm_call_token_reservation": 300_000,
+        "fail_mode": "hard_stop",
+    },
+    "agent_team": {
+        "max_tokens": 80_000_000,
+        "max_cache_miss_tokens": 16_000_000,
+        "max_subagents": 16,
+        "max_team_sessions": 4,
+        "max_delegations": 16,
+        "max_background_tasks": 16,
+        "max_continuation_wakes": 96,
+        "max_provider_calls": 500,
+        "default_child_token_reservation": 250_000,
+        "default_llm_call_token_reservation": 250_000,
+        "fail_mode": "require_confirmation",
+    },
+}
+
+_BUILTIN_PROFILE_ALIASES = {
+    "web": "interactive",
+    "web_chat": "interactive",
+    "web_chat_turn": "interactive",
+    "chat": "interactive",
+}
+
+
+def _canonical_runtime_profile(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _BUILTIN_PROFILE_ALIASES.get(value, value)
 
 
 class RuntimeBudgetDenied(Exception):
@@ -89,6 +158,7 @@ class RuntimeBudgetRunCreate:
     max_tokens: int | None = None
     max_cache_miss_tokens: int | None = None
     max_subagents: int | None = None
+    max_team_sessions: int | None = None
     max_delegations: int | None = None
     max_background_tasks: int | None = None
     max_continuation_wakes: int | None = None
@@ -104,6 +174,7 @@ class RuntimeBudgetReservation:
     tokens: int = 0
     cache_miss_tokens: int = 0
     subagents: int = 0
+    team_sessions: int = 0
     delegations: int = 0
     background_tasks: int = 0
     continuation_wakes: int = 0
@@ -120,6 +191,7 @@ class RuntimeBudgetSettlement:
     actual_tokens: int = 0
     actual_cache_miss_tokens: int = 0
     actual_subagents: int = 0
+    actual_team_sessions: int = 0
     actual_delegations: int = 0
     actual_background_tasks: int = 0
     actual_continuation_wakes: int = 0
@@ -156,7 +228,7 @@ class BudgetFailureDecision:
 def _work_amplifying_amounts(amounts: dict[str, int]) -> bool:
     return any(
         amounts.get(dimension, 0) > 0
-        for dimension in ("subagents", "delegations", "background_tasks", "continuation_wakes")
+        for dimension in ("subagents", "team_sessions", "delegations", "background_tasks", "continuation_wakes")
     )
 
 
@@ -196,6 +268,7 @@ def _positive_amounts(payload: RuntimeBudgetReservation | RuntimeBudgetSettlemen
             "tokens": payload.actual_tokens,
             "cache_miss_tokens": payload.actual_cache_miss_tokens,
             "subagents": payload.actual_subagents,
+            "team_sessions": payload.actual_team_sessions,
             "delegations": payload.actual_delegations,
             "background_tasks": payload.actual_background_tasks,
             "continuation_wakes": payload.actual_continuation_wakes,
@@ -217,8 +290,10 @@ def _policy_matches(policy: RuntimeBudgetPolicy, lookup: RuntimeBudgetPolicyLook
     if scope == "source_profile":
         if policy.tenant_id != lookup.tenant_id:
             return False
-        source_matches = policy.source is None or policy.source == lookup.source
-        profile_matches = policy.profile is None or policy.profile == lookup.profile
+        lookup_source = _canonical_runtime_profile(lookup.source)
+        lookup_profile = _canonical_runtime_profile(lookup.profile)
+        source_matches = policy.source is None or policy.source in {lookup.source, lookup_source}
+        profile_matches = policy.profile is None or policy.profile in {lookup.profile, lookup_profile}
         return source_matches and profile_matches
     if scope == "agent":
         return policy.tenant_id == lookup.tenant_id and policy.agent_id == lookup.agent_id
@@ -238,24 +313,49 @@ def _policy_rank(policy: RuntimeBudgetPolicy) -> tuple[int, int]:
 
 
 def _builtin_policy(lookup: RuntimeBudgetPolicyLookup) -> RuntimeBudgetPolicy:
+    requested_profile = lookup.profile or lookup.source or "scheduled"
+    profile = _canonical_runtime_profile(requested_profile) or "scheduled"
+    if profile not in _BUILTIN_PROFILE_DEFAULTS:
+        profile = "scheduled"
+    defaults = _BUILTIN_PROFILE_DEFAULTS[profile]
     return RuntimeBudgetPolicy(
         id=uuid.uuid4(),
         tenant_id=lookup.tenant_id,
-        name="built-in runtime default",
+        name=f"built-in {profile} runtime default",
         scope_type="tenant_default" if lookup.tenant_id else "platform_default",
         enforcement_mode="enforce",
-        fail_mode="fail_closed",
-        max_tokens=1_000_000,
-        max_cache_miss_tokens=250_000,
-        max_subagents=32,
-        max_delegations=32,
-        max_background_tasks=32,
-        max_continuation_wakes=64,
-        max_provider_calls=128,
-        default_child_token_reservation=50_000,
-        default_llm_call_token_reservation=50_000,
-        policy_json={"source": "built_in_fallback"},
+        fail_mode=str(defaults["fail_mode"]),
+        max_tokens=int(defaults["max_tokens"]),
+        max_cache_miss_tokens=int(defaults["max_cache_miss_tokens"]),
+        max_subagents=int(defaults["max_subagents"]),
+        max_team_sessions=int(defaults["max_team_sessions"]),
+        max_delegations=int(defaults["max_delegations"]),
+        max_background_tasks=int(defaults["max_background_tasks"]),
+        max_continuation_wakes=int(defaults["max_continuation_wakes"]),
+        max_provider_calls=int(defaults["max_provider_calls"]),
+        default_child_token_reservation=int(defaults["default_child_token_reservation"]),
+        default_llm_call_token_reservation=int(defaults["default_llm_call_token_reservation"]),
+        policy_json={"source": "built_in_fallback", "profile": profile, "requested_profile": requested_profile},
     )
+
+
+def _normalize_run_policy_reference(
+    policy_id: uuid.UUID | None,
+    policy_snapshot: dict | None,
+) -> tuple[uuid.UUID | None, dict | None]:
+    if policy_snapshot is None:
+        return policy_id, None
+
+    normalized_snapshot = dict(policy_snapshot)
+    policy_json = normalized_snapshot.get("policy_json")
+    is_builtin_fallback = isinstance(policy_json, dict) and policy_json.get("source") == "built_in_fallback"
+    if is_builtin_fallback:
+        normalized_snapshot["policy_id"] = None
+        return None, normalized_snapshot
+
+    if policy_id is not None:
+        normalized_snapshot.setdefault("policy_id", str(policy_id))
+    return policy_id, normalized_snapshot
 
 
 class RuntimeBudgetService:
@@ -285,9 +385,10 @@ class RuntimeBudgetService:
 
     async def create_run(self, payload: RuntimeBudgetRunCreate) -> RuntimeBudgetRun:
         async with self._budget_session("create_run") as db:
+            policy_id, policy_snapshot = _normalize_run_policy_reference(payload.policy_id, payload.policy_snapshot)
             run = RuntimeBudgetRun(
                 tenant_id=payload.tenant_id,
-                policy_id=payload.policy_id,
+                policy_id=policy_id,
                 root_run_kind=payload.root_run_kind,
                 root_run_key=payload.root_run_key,
                 root_runtime_task_id=payload.root_runtime_task_id,
@@ -301,12 +402,13 @@ class RuntimeBudgetService:
                 max_tokens=payload.max_tokens,
                 max_cache_miss_tokens=payload.max_cache_miss_tokens,
                 max_subagents=payload.max_subagents,
+                max_team_sessions=payload.max_team_sessions,
                 max_delegations=payload.max_delegations,
                 max_background_tasks=payload.max_background_tasks,
                 max_continuation_wakes=payload.max_continuation_wakes,
                 max_provider_calls=payload.max_provider_calls,
                 expires_at=payload.expires_at,
-                policy_snapshot=payload.policy_snapshot,
+                policy_snapshot=policy_snapshot,
             )
             db.add(run)
             await db.commit()
@@ -605,6 +707,7 @@ class RuntimeBudgetService:
         max_tokens: int | None = None,
         max_cache_miss_tokens: int | None = None,
         max_subagents: int | None = None,
+        max_team_sessions: int | None = None,
         max_delegations: int | None = None,
         max_background_tasks: int | None = None,
         max_continuation_wakes: int | None = None,
@@ -629,6 +732,7 @@ class RuntimeBudgetService:
                 max_tokens=max_tokens,
                 max_cache_miss_tokens=max_cache_miss_tokens,
                 max_subagents=max_subagents,
+                max_team_sessions=max_team_sessions,
                 max_delegations=max_delegations,
                 max_background_tasks=max_background_tasks,
                 max_continuation_wakes=max_continuation_wakes,
@@ -663,6 +767,7 @@ class RuntimeBudgetService:
             "max_tokens",
             "max_cache_miss_tokens",
             "max_subagents",
+            "max_team_sessions",
             "max_delegations",
             "max_background_tasks",
             "max_continuation_wakes",
@@ -711,6 +816,7 @@ class RuntimeBudgetService:
         max_tokens: int | None = None,
         max_cache_miss_tokens: int | None = None,
         max_subagents: int | None = None,
+        max_team_sessions: int | None = None,
         max_delegations: int | None = None,
         max_background_tasks: int | None = None,
         max_continuation_wakes: int | None = None,
@@ -729,6 +835,7 @@ class RuntimeBudgetService:
                 "max_tokens": max_tokens,
                 "max_cache_miss_tokens": max_cache_miss_tokens,
                 "max_subagents": max_subagents,
+                "max_team_sessions": max_team_sessions,
                 "max_delegations": max_delegations,
                 "max_background_tasks": max_background_tasks,
                 "max_continuation_wakes": max_continuation_wakes,

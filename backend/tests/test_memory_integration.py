@@ -249,12 +249,11 @@ class TestPromptIntegration:
         assert "## Your Memory System" in ds
         assert "## Environment" in ds
 
-    def test_v16_heartbeat_md_has_curate(self) -> None:
-        # PR-12 rewrote HEARTBEAT.md with XML tags; the curate phase and
-        # persistent-session contract are preserved under new tag names.
+    def test_v16_heartbeat_md_has_direct_core_contract(self) -> None:
         template = (Path(__file__).parent.parent / "app" / "templates" / "HEARTBEAT.md").read_text()
-        assert "<phase_2_curate>" in template
-        assert "<persistent_session_notes>" in template
+        assert "Direct T3 Core Protocol" in template
+        assert "does not receive tools" in template
+        assert "consolidation_pitch_md" in template
 
     def test_v17_dream_md_has_soul_reconsolidation_boundary(self) -> None:
         template = (Path(__file__).parent.parent / "app" / "templates" / "DREAM.md").read_text()
@@ -264,16 +263,16 @@ class TestPromptIntegration:
         assert "Platform Gate" in template
 
 
-# ── §6: Heartbeat KAIROS (Phase 5) ──
+# ── §6: Heartbeat direct-core maintenance ──
 
 
 class TestHeartbeatIntegration:
-    def test_v18_kairos_state_dicts_exist(self) -> None:
-        from app.services.heartbeat import _heartbeat_contexts, _heartbeat_session_ids, _heartbeat_tick_counts
+    def test_v18_heartbeat_maintenance_cache_exists_without_session_state(self) -> None:
+        import app.services.heartbeat as heartbeat
 
-        assert isinstance(_heartbeat_contexts, dict)
-        assert isinstance(_heartbeat_session_ids, dict)
-        assert isinstance(_heartbeat_tick_counts, dict)
+        assert isinstance(heartbeat._heartbeat_tick_counts, dict)
+        assert not hasattr(heartbeat, "_heartbeat_contexts")
+        assert not hasattr(heartbeat, "_heartbeat_session_ids")
 
     def test_v19_incremental_t2_returns_empty_on_unchanged(self, tmp_path: Path) -> None:
         from app.services.heartbeat import _read_incremental_t2, _read_t2_full

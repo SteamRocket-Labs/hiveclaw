@@ -138,6 +138,7 @@ async def _create_trigger_runtime_task(
                     max_tokens=getattr(budget_policy, "max_tokens", None),
                     max_cache_miss_tokens=getattr(budget_policy, "max_cache_miss_tokens", None),
                     max_subagents=getattr(budget_policy, "max_subagents", None),
+                    max_team_sessions=getattr(budget_policy, "max_team_sessions", None),
                     max_delegations=getattr(budget_policy, "max_delegations", None),
                     max_background_tasks=getattr(budget_policy, "max_background_tasks", None),
                     max_continuation_wakes=getattr(budget_policy, "max_continuation_wakes", None),
@@ -147,6 +148,7 @@ async def _create_trigger_runtime_task(
                         "scope_type": getattr(budget_policy, "scope_type", None),
                         "source": getattr(budget_policy, "source", None),
                         "profile": getattr(budget_policy, "profile", None),
+                        "max_team_sessions": getattr(budget_policy, "max_team_sessions", None),
                         "default_child_token_reservation": getattr(
                             budget_policy, "default_child_token_reservation", None
                         ),

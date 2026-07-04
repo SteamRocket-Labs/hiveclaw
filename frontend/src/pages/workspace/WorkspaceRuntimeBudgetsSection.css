@@ -106,6 +106,31 @@
   line-height: 1.5;
 }
 
+.workspace-runtime-profile-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.workspace-runtime-profile-tabs button {
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workspace-runtime-profile-tabs button.active {
+  border-color: var(--text-primary);
+  background: var(--text-primary);
+  color: var(--bg-primary);
+}
+
 .workspace-runtime-form label {
   display: flex;
   flex-direction: column;
@@ -113,6 +138,13 @@
   color: var(--text-secondary);
   font-size: 13px;
   font-weight: 600;
+}
+
+.workspace-runtime-field-help {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
 }
 
 .workspace-runtime-form-row {

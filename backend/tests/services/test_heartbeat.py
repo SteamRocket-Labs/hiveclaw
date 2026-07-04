@@ -185,76 +185,15 @@ def test_heartbeat_memory_lifecycle_maintenance_uses_agent_data_dir(monkeypatch,
     assert MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id)).get("expired").status == LifecycleStatus.DISCARDED
 
 
-def test_compose_heartbeat_instruction_adds_strategy_boundary() -> None:
+def test_compose_heartbeat_instruction_adds_direct_core_score_boundary() -> None:
     from app.services.heartbeat import _compose_heartbeat_instruction
 
     text = _compose_heartbeat_instruction("Base heartbeat")
 
     assert "Base heartbeat" in text
-    assert "Do not write durable semantic learning into legacy evolution scorecards" in text
-    assert "inactive Skill Candidate Package" in text
-
-
-def test_compact_heartbeat_runtime_messages_full_fidelity_under_budget() -> None:
-    """C1 (docs/agent-lifecycle-cc-alignment.md 主题 C): full fidelity first —
-    a single large message that still fits the TOTAL budget must NOT be trimmed
-    (the curator decides on complete input; mechanical trimming is a fallback)."""
-    from app.services.heartbeat import (
-        _HEARTBEAT_CONTEXT_MAX_CHARS,
-        _HEARTBEAT_MESSAGE_MAX_CHARS,
-        _compact_heartbeat_runtime_messages,
-    )
-
-    payload_size = _HEARTBEAT_MESSAGE_MAX_CHARS * 3  # 72K — over per-message, under total
-    assert payload_size < _HEARTBEAT_CONTEXT_MAX_CHARS  # sanity: scenario is under total budget
-    huge_payload = "BEGIN-" + ("x" * payload_size) + "-END"
-
-    compacted = _compact_heartbeat_runtime_messages([{"role": "user", "content": huge_payload}])
-
-    assert len(compacted) == 1
-    assert compacted[0]["content"] == huge_payload  # untouched
-    assert "truncated" not in compacted[0]["content"]
-
-
-def test_compact_heartbeat_runtime_messages_trims_single_oversized_message_over_budget() -> None:
-    """Mechanical trimming engages only once the TOTAL exceeds the budget,
-    and stays observable (truncation marker, head+tail preserved)."""
-    from app.services.heartbeat import (
-        _HEARTBEAT_CONTEXT_MAX_CHARS,
-        _compact_heartbeat_runtime_messages,
-    )
-
-    huge_payload = "BEGIN-" + ("x" * (_HEARTBEAT_CONTEXT_MAX_CHARS * 2)) + "-END"
-
-    compacted = _compact_heartbeat_runtime_messages([{"role": "user", "content": huge_payload}])
-
-    assert len(compacted) == 1
-    content = compacted[0]["content"]
-    assert len(content) <= _HEARTBEAT_CONTEXT_MAX_CHARS
-    assert "truncated to fit heartbeat context budget" in content
-    assert content.startswith("BEGIN-")
-    assert content.endswith("-END")
-
-
-def test_compact_heartbeat_runtime_messages_summarizes_middle_history() -> None:
-    from app.services.heartbeat import (
-        _HEARTBEAT_CONTEXT_MAX_CHARS,
-        _compact_heartbeat_runtime_messages,
-    )
-
-    messages = [{"role": "user", "content": "base heartbeat instruction"}]
-    messages.extend(
-        {"role": "assistant" if idx % 2 else "user", "content": f"old-{idx}-" + ("x" * 7000)} for idx in range(24)
-    )
-    messages.append({"role": "user", "content": "latest tick payload"})
-
-    compacted = _compact_heartbeat_runtime_messages(messages)
-    total_chars = sum(len(msg.get("content") or "") for msg in compacted)
-
-    assert total_chars <= _HEARTBEAT_CONTEXT_MAX_CHARS
-    assert compacted[0]["content"].startswith("base heartbeat instruction")
-    assert any("Heartbeat context compacted" in (msg.get("content") or "") for msg in compacted)
-    assert compacted[-1]["content"] == "latest tick payload"
+    assert "<heartbeat_score_rubric>" in text
+    assert "0-1: noop" in text
+    assert "7-8: high-value evidence-backed action" in text
 
 
 def test_parse_heartbeat_outcome_noop():
@@ -408,7 +347,7 @@ async def test_heartbeat_distributed_lease_failure_fails_closed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_build_evolution_context_cold_start_bootstrap():
-    """When agent has < 3 non-heartbeat activities, inject bootstrap guidance."""
+    """When agent has < 3 non-heartbeat activities, avoid agentic bootstrap actions."""
     from app.services.heartbeat import _build_evolution_context
 
     agent_id = uuid4()
@@ -418,9 +357,10 @@ async def test_build_evolution_context_cold_start_bootstrap():
     ]
     result = await _build_evolution_context(agent_id, activities)
     assert "Bootstrap Mode" in result
-    assert "Read soul.md" in result
+    assert "does not perform bootstrap actions" in result
+    assert "Read soul.md" not in result
     assert "Write to evolution/" not in result
-    assert "runtime records evidence into governed memory/session paths" in result
+    assert "direct T3 consolidation" in result
 
 
 @pytest.mark.asyncio
@@ -483,7 +423,7 @@ async def test_build_evolution_context_suggests_skill_candidate_for_repeated_wor
     assert "Skill Candidate Opportunity" in result
     assert "consolidation_pitch.md" in result
     assert "skill_candidate" in result
-    assert "load_skill" in result
+    assert "load_skill" not in result
     assert "workflow" in result.lower()
 
 
@@ -545,12 +485,13 @@ async def test_build_evolution_context_stages_pending_t3_consolidation_job(tmp_p
     assert "T3 Consolidation Job Ready" in result
     assert "source_bundle.json" in result
     assert "t3_neighborhood.md" in result
-    assert "submit_t3_consolidation_pitch" in result
+    assert "direct core reads `source_bundle.json`" in result
+    assert "submit_t3_" not in result
     assert (tmp_path / str(agent_id) / "memory" / ".staging" / "t3_jobs").exists()
 
 
 @pytest.mark.asyncio
-async def test_build_evolution_context_includes_proactive_steward_plan():
+async def test_build_evolution_context_does_not_include_proactive_steward_plan():
     from app.services.heartbeat import _build_evolution_context
 
     agent_id = uuid4()
@@ -567,49 +508,22 @@ async def test_build_evolution_context_includes_proactive_steward_plan():
 
     result = await _build_evolution_context(agent_id, activities)
 
-    assert "Proactive Steward Context" in result
-    assert "Prepare local draft" in result
-    assert "Evidence: task_updated" in result
+    assert "Proactive Steward Context" not in result
+    assert "Prepare local draft" not in result
+    assert "Activity Pattern Analysis" in result
 
 
-# ─── plaza executor limits ──────────────────────────────────────
+# ─── direct-core execution boundary ─────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_build_heartbeat_tool_executor_enforces_plaza_limits(monkeypatch):
-    from app.services.heartbeat import _build_heartbeat_tool_executor
+def test_heartbeat_has_no_tool_executor_surface() -> None:
+    from pathlib import Path
 
-    agent_id = uuid4()
-    creator_id = uuid4()
-    calls = []
+    source = Path("app/services/heartbeat.py").read_text(encoding="utf-8")
 
-    async def fake_execute_tool(tool_name, args, _agent_id, _creator_id):
-        calls.append((tool_name, args, _agent_id, _creator_id))
-        return f"ran:{tool_name}"
-
-    monkeypatch.setattr("app.services.heartbeat.execute_tool", fake_execute_tool)
-
-    executor = _build_heartbeat_tool_executor(agent_id, creator_id)
-
-    first_post = await executor("plaza_create_post", {"content": "post-1"})
-    blocked_post = await executor("plaza_create_post", {"content": "post-2"})
-    first_comment = await executor("plaza_add_comment", {"content": "comment-1"})
-    second_comment = await executor("plaza_add_comment", {"content": "comment-2"})
-    blocked_comment = await executor("plaza_add_comment", {"content": "comment-3"})
-    generic = await executor("web_search", {"query": "heartbeat"})
-
-    assert first_post == "ran:plaza_create_post"
-    assert blocked_post.startswith("[BLOCKED]")
-    assert first_comment == "ran:plaza_add_comment"
-    assert second_comment == "ran:plaza_add_comment"
-    assert blocked_comment.startswith("[BLOCKED]")
-    assert generic == "ran:web_search"
-    assert calls == [
-        ("plaza_create_post", {"content": "post-1"}, agent_id, creator_id),
-        ("plaza_add_comment", {"content": "comment-1"}, agent_id, creator_id),
-        ("plaza_add_comment", {"content": "comment-2"}, agent_id, creator_id),
-        ("web_search", {"query": "heartbeat"}, agent_id, creator_id),
-    ]
+    assert "_build_heartbeat_tool_executor" not in source
+    assert "execute_tool" not in source
+    assert "plaza_create_post" not in source
 
 
 # ─── _execute_heartbeat integration ────────────────────────────
@@ -648,6 +562,9 @@ async def test_heartbeat_tick_uses_platform_managed_cadence(monkeypatch):
 
     def fake_create_task(coro, *args, **kwargs):
         triggered.append(agent_id)
+        inner = coro.cr_frame.f_locals.get("awaitable") if coro.cr_frame else None
+        if inner is not None:
+            inner.close()
         coro.close()
         return SimpleNamespace()
 
@@ -667,10 +584,9 @@ async def test_heartbeat_tick_uses_platform_managed_cadence(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_heartbeat_uses_correct_settings(monkeypatch):
-    """Verify invoke_agent is called with core_tools_only=False, CC-sized tool budget,
-    and a heartbeat session is created."""
-    from app.services.heartbeat import _HEARTBEAT_MAX_TOOL_ROUNDS, _execute_heartbeat
+async def test_execute_heartbeat_uses_direct_t3_core(monkeypatch):
+    """Verify heartbeat creates an audit session and calls direct T3 core, not the agent runtime."""
+    from app.services import heartbeat
 
     agent_id = uuid4()
     creator_id = uuid4()
@@ -697,41 +613,58 @@ async def test_execute_heartbeat_uses_correct_settings(monkeypatch):
     )
     participant = SimpleNamespace(id=uuid4(), type="agent", ref_id=agent_id)
 
-    # Sequence: Agent, LLMModel, ActivityLogs, Participant
-    fake_session = _FakeSession([agent, model, [], participant])
+    fake_session = _FakeSession([agent, model, participant])
     captured = {}
 
-    async def fake_invoke_agent(request):
-        captured["request"] = request
-        return SimpleNamespace(content="Did work\n[OUTCOME:action_taken] [SCORE:5]")
+    async def fake_core(**kwargs):
+        captured["core"] = kwargs
+        return None
 
     async def fake_try_acquire_heartbeat_lease(_agent_id):
         return True
 
-    monkeypatch.setattr("app.database.async_session", lambda: fake_session)
-    monkeypatch.setattr("app.services.heartbeat.invoke_agent", fake_invoke_agent)
-    monkeypatch.setattr("app.services.heartbeat._load_heartbeat_instruction", lambda _id: "HB")
-    monkeypatch.setattr("app.services.heartbeat._try_acquire_heartbeat_lease_async", fake_try_acquire_heartbeat_lease)
+    async def _noop_async(*_args, **_kwargs):
+        return None
 
-    # Stub activity logger and execution context
-    async def _noop_log(*args, **kwargs):
-        pass
+    async def fake_resolve_default(*_args, **_kwargs):
+        return None
+
+    async def _fake_t2_job_sweep(*_args, **_kwargs):
+        return SimpleNamespace(recovered_stale=[], retried=[], alerted=False, committed=[], exhausted=[])
+
+    async def _fake_consolidation_debt_refresh(*_args, **_kwargs):
+        return SimpleNamespace(stalled=False)
+
+    async def _fake_t2_retention(*_args, **_kwargs):
+        return SimpleNamespace(archived=[], kept_referenced=0, kept_pipeline=0)
+
+    async def _fake_chat_artifact_snapshot_retention(*_args, **_kwargs):
+        return {}
+
+    async def _fake_convergence_dirtiness_refresh(*_args, **_kwargs):
+        return SimpleNamespace(dirty_files=[])
+
+    monkeypatch.setattr(heartbeat, "tenant_scoped_session", lambda *_args, **_kwargs: fake_session)
+    monkeypatch.setattr(heartbeat, "_try_acquire_heartbeat_lease_async", fake_try_acquire_heartbeat_lease)
+    monkeypatch.setattr(heartbeat, "_run_heartbeat_core_and_persist", fake_core)
+    monkeypatch.setattr(heartbeat, "_create_heartbeat_runtime_task", _noop_async)
+    monkeypatch.setattr(heartbeat, "update_runtime_task_record", _noop_async)
+    monkeypatch.setattr(heartbeat, "_run_memory_lifecycle_maintenance", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(heartbeat, "_run_t2_job_sweep", _fake_t2_job_sweep)
+    monkeypatch.setattr(heartbeat, "_run_consolidation_debt_refresh", _fake_consolidation_debt_refresh)
+    monkeypatch.setattr(heartbeat, "_run_t2_retention", _fake_t2_retention)
+    monkeypatch.setattr(heartbeat, "_run_chat_artifact_snapshot_retention", _fake_chat_artifact_snapshot_retention)
+    monkeypatch.setattr(heartbeat, "_run_convergence_dirtiness_refresh", _fake_convergence_dirtiness_refresh)
+    monkeypatch.setattr("app.services.model_resolution.resolve_default_model_for_tenant", fake_resolve_default)
 
     monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
 
-    await _execute_heartbeat(agent_id, tenant_id=tenant_id)
+    await heartbeat._execute_heartbeat(agent_id, tenant_id=tenant_id)
 
-    request = captured["request"]
-
-    # Core assertions — the critical fixes
-    assert request.core_tools_only is False, "Heartbeat should have full tool access"
-    assert _HEARTBEAT_MAX_TOOL_ROUNDS == 200
-    assert request.max_tool_rounds == 200, "Heartbeat should have enough rounds for multi-step curation"
-    assert request.session_context is not None
-    assert request.session_context.source == "heartbeat"
-    assert request.session_context.session_id is not None, "Heartbeat must have session_id for memory"
-    assert request.on_tool_call is not None, "Heartbeat must persist tool calls"
-    assert request.execution_identity.identity_type == "agent_bot"
+    assert captured["core"]["agent"] is agent
+    assert captured["core"]["model"] is model
+    assert captured["core"]["session_id"] is not None
+    assert captured["core"]["tick_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -762,15 +695,15 @@ async def test_execute_heartbeat_releases_db_session_before_invoking_model(monke
         tenant_id=tenant_id,
     )
     participant = SimpleNamespace(id=uuid4(), type="agent", ref_id=agent_id)
-    execute_values = [agent, model, None, None, [], participant, agent]
-    tracker = {"active": 0, "max_active": 0, "active_at_invoke": None}
+    execute_values = [agent, model, participant]
+    tracker = {"active": 0, "max_active": 0, "active_at_core": None}
 
     def fake_tenant_scoped_session(*_args, **_kwargs):
         return _TrackedSession(execute_values, tracker)
 
-    async def fake_invoke_agent(_request):
-        tracker["active_at_invoke"] = tracker["active"]
-        return SimpleNamespace(content="Did work\n[OUTCOME:action_taken] [SCORE:5]")
+    async def fake_core(**_kwargs):
+        tracker["active_at_core"] = tracker["active"]
+        return None
 
     async def _noop_async(*_args, **_kwargs):
         return None
@@ -799,16 +732,11 @@ async def test_execute_heartbeat_releases_db_session_before_invoking_model(monke
     async def _fake_convergence_dirtiness_refresh(*_args, **_kwargs):
         return SimpleNamespace(dirty_files=[])
 
-    async def _fake_evolution_context(*_args, **_kwargs):
-        return ""
-
-    async def _fake_reflection_learning(*_args, **_kwargs):
-        return {"status": "skipped"}
+    async def fake_resolve_default(*_args, **_kwargs):
+        return None
 
     monkeypatch.setattr(heartbeat, "tenant_scoped_session", fake_tenant_scoped_session)
-    monkeypatch.setattr(heartbeat, "invoke_agent", fake_invoke_agent)
-    monkeypatch.setattr(heartbeat, "_load_heartbeat_instruction", lambda _id: "HB")
-    monkeypatch.setattr(heartbeat, "_save_heartbeat_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(heartbeat, "_run_heartbeat_core_and_persist", fake_core)
     monkeypatch.setattr(heartbeat, "_create_heartbeat_runtime_task", _fake_create_heartbeat_runtime_task)
     monkeypatch.setattr(heartbeat, "_update_heartbeat_runtime_task", _noop_async)
     monkeypatch.setattr(heartbeat, "update_runtime_task_record", _noop_async)
@@ -819,22 +747,12 @@ async def test_execute_heartbeat_releases_db_session_before_invoking_model(monke
     monkeypatch.setattr(heartbeat, "_run_t2_retention", _fake_t2_retention)
     monkeypatch.setattr(heartbeat, "_run_chat_artifact_snapshot_retention", _fake_chat_artifact_snapshot_retention)
     monkeypatch.setattr(heartbeat, "_run_convergence_dirtiness_refresh", _fake_convergence_dirtiness_refresh)
-    monkeypatch.setattr(heartbeat, "_build_evolution_context", _fake_evolution_context)
-    monkeypatch.setattr(heartbeat, "_read_t3_summary", lambda *_args, **_kwargs: "")
-    monkeypatch.setattr(heartbeat, "_run_growth_report_refresh", _noop_async)
-    monkeypatch.setattr(heartbeat, "_route_heartbeat_reflection_learning", _fake_reflection_learning)
+    monkeypatch.setattr("app.services.model_resolution.resolve_default_model_for_tenant", fake_resolve_default)
     monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
-    monkeypatch.setattr("app.services.activity_logger.log_activity", _noop_async)
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", _noop_async)
-
-    heartbeat._heartbeat_contexts.pop(agent_id, None)
-    heartbeat._heartbeat_session_ids.pop(agent_id, None)
-    heartbeat._heartbeat_tick_counts.pop(agent_id, None)
-    heartbeat._heartbeat_session_ctxs.pop(agent_id, None)
 
     await heartbeat._execute_heartbeat(agent_id, tenant_id=tenant_id, lease_acquired=True)
 
-    assert tracker["active_at_invoke"] == 0
+    assert tracker["active_at_core"] == 0
     assert tracker["active"] == 0
 
 
@@ -989,114 +907,4 @@ async def test_resume_persisted_heartbeat_runs_requires_reconciliation_after_ses
     assert updates[-1][0] == run_id
     assert updates[-1][1]["status"] == "needs_reconciliation"
     assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
-    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "session_bound_heartbeat"
-
-
-@pytest.mark.asyncio
-async def test_execute_heartbeat_does_not_resurrect_session_state_after_reset(monkeypatch):
-    from app.services import heartbeat
-
-    agent_id = uuid4()
-    creator_id = uuid4()
-    model_id = uuid4()
-    tenant_id = uuid4()
-    agent = SimpleNamespace(
-        id=agent_id,
-        name="Reset Race Agent",
-        role_description="Watcher",
-        primary_model_id=model_id,
-        fallback_model_id=None,
-        creator_id=creator_id,
-        tenant_id=tenant_id,
-        last_heartbeat_at=None,
-    )
-    model = SimpleNamespace(
-        id=model_id,
-        provider="openai",
-        model="gpt-4.1",
-        api_key="key",
-        base_url=None,
-        max_output_tokens=None,
-        tenant_id=tenant_id,
-    )
-    participant = SimpleNamespace(id=uuid4(), type="agent", ref_id=agent_id)
-    fake_session = _FakeSession([agent, model, [], participant])
-
-    async def fake_invoke_agent(_request):
-        heartbeat._reset_heartbeat_session(agent_id)
-        return SimpleNamespace(content="Nothing changed\n[OUTCOME:noop] [SCORE:1]")
-
-    async def _noop(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr("app.database.async_session", lambda: fake_session)
-    monkeypatch.setattr(heartbeat, "invoke_agent", fake_invoke_agent)
-    monkeypatch.setattr(heartbeat, "_load_heartbeat_instruction", lambda _id: "HB")
-    monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
-    monkeypatch.setattr("app.services.activity_logger.log_activity", _noop)
-
-    heartbeat._heartbeat_contexts.pop(agent_id, None)
-    heartbeat._heartbeat_session_ids.pop(agent_id, None)
-    heartbeat._heartbeat_tick_counts.pop(agent_id, None)
-    heartbeat._heartbeat_session_ctxs.pop(agent_id, None)
-
-    await heartbeat._execute_heartbeat(agent_id, tenant_id=tenant_id, lease_acquired=True)
-
-    assert agent_id not in heartbeat._heartbeat_contexts
-    assert agent_id not in heartbeat._heartbeat_session_ids
-
-
-@pytest.mark.asyncio
-async def test_execute_heartbeat_recovers_from_incomplete_persistent_session(monkeypatch):
-    from app.services import heartbeat
-
-    agent_id = uuid4()
-    creator_id = uuid4()
-    model_id = uuid4()
-    tenant_id = uuid4()
-    agent = SimpleNamespace(
-        id=agent_id,
-        name="Recovered Heartbeat Agent",
-        role_description="Watcher",
-        primary_model_id=model_id,
-        fallback_model_id=None,
-        creator_id=creator_id,
-        tenant_id=tenant_id,
-        last_heartbeat_at=None,
-    )
-    model = SimpleNamespace(
-        id=model_id,
-        provider="openai",
-        model="gpt-4.1",
-        api_key="key",
-        base_url=None,
-        max_output_tokens=None,
-        tenant_id=tenant_id,
-    )
-    participant = SimpleNamespace(id=uuid4(), type="agent", ref_id=agent_id)
-    fake_session = _FakeSession([agent, model, [], participant])
-    captured = {}
-
-    async def fake_invoke_agent(request):
-        captured["request"] = request
-        return SimpleNamespace(content="Recovered\n[OUTCOME:noop] [SCORE:1]")
-
-    async def _noop(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr("app.database.async_session", lambda: fake_session)
-    monkeypatch.setattr(heartbeat, "invoke_agent", fake_invoke_agent)
-    monkeypatch.setattr(heartbeat, "_load_heartbeat_instruction", lambda _id: "HB")
-    monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
-    monkeypatch.setattr("app.services.activity_logger.log_activity", _noop)
-
-    heartbeat._heartbeat_contexts[agent_id] = [{"role": "user", "content": "stale context"}]
-    heartbeat._heartbeat_session_ids.pop(agent_id, None)
-    heartbeat._heartbeat_tick_counts[agent_id] = 3
-    heartbeat._heartbeat_session_ctxs.pop(agent_id, None)
-
-    await heartbeat._execute_heartbeat(agent_id, tenant_id=tenant_id, lease_acquired=True)
-
-    assert captured["request"].messages[0]["content"].startswith("HB")
-    assert agent_id in heartbeat._heartbeat_contexts
-    assert agent_id in heartbeat._heartbeat_session_ids
+    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "direct_core_audit_session_bound"

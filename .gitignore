@@ -22,6 +22,9 @@ backend/agent_data/
 ss-nodes.json
 .data/
 
+# Generated artifacts
+outputs/
+
 # Ignore Antigravity / Claude Code agent configurations
 .agent/
 .agents/

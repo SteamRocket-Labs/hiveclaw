@@ -38,14 +38,16 @@ def test_t3_consolidator_and_memory_gate_templates_exist_with_rubrics() -> None:
         "merge_required",
         "preserve unique deltas",
         "XML blocks",
-        "submit_t3_consolidation_pitch",
-        "submit_t3_revised_patch",
+        "direct LLM core",
+        '"consolidation_pitch_md"',
+        '"revised_patch_md"',
         "memory/self/self.md",
         "memory/profiles/owner.md",
         "memory/knowledge/<slug>.md",
         "memory/milestones/<slug>.md",
     ):
         assert required in consolidator
+    assert "submit_t3_" not in consolidator
     for legacy_target in _LEGACY_FLAT_T3_TARGETS:
         assert legacy_target not in consolidator
 

@@ -256,11 +256,11 @@ async def test_preview_workflow_reports_compile_errors():
     assert payload["error"]
 
 
-async def test_preview_workflow_rejects_over_threshold_fanout_before_start():
+async def test_preview_workflow_allows_explicit_workflow_profile_fanout_preview():
     from app.tools.handlers.workflow import preview_workflow
 
     definition = {
-        "name": "too-wide-fanout",
+        "name": "explicit-workflow-fanout",
         "args_schema": {"targets": {"type": "array", "required": True}},
         "steps": [
             {
@@ -278,9 +278,10 @@ async def test_preview_workflow_rejects_over_threshold_fanout_before_start():
     )
     payload = json.loads(result)
 
-    assert payload["ok"] is False
-    assert "fanout" in payload["error"]
-    assert "preview_id" not in payload
+    assert payload["ok"] is True
+    assert payload["preview_id"]
+    assert payload["planned_leaf_calls"] == 64
+    assert payload["budget_tokens"] > 0
 
 
 async def test_propose_dynamic_workflow_lowers_candidates_without_starting_runtime():

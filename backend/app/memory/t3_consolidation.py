@@ -117,15 +117,15 @@ def build_t3_consolidation_batch(
 
     _write_if_missing(
         job_dir / "consolidation_pitch.md",
-        "# T3 Consolidation Pitch\n\nPending T3 Consolidator. Use `submit_t3_consolidation_pitch`.\n",
+        "# T3 Consolidation Pitch\n\nPending heartbeat direct T3 core.\n",
     )
     _write_if_missing(
         job_dir / "review.md",
-        "# T3 Memory Gate Review\n\nPending Memory Gate Agent. Use `submit_t3_memory_gate_review`.\n",
+        "# T3 Memory Gate Review\n\nPending direct Memory Gate review.\n",
     )
     _write_if_missing(
         job_dir / "revised_patch.md",
-        "# T3 Revised Patch\n\nPending T3 Consolidator. Use `submit_t3_revised_patch`.\n",
+        "# T3 Revised Patch\n\nPending heartbeat direct T3 core.\n",
     )
     manifest = {
         "schema_version": "t3.job_manifest.v1",

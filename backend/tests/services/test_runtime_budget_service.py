@@ -31,6 +31,7 @@ async def _create_run(service, tenant_id: uuid.UUID, **overrides):
         "max_tokens": 10_000,
         "max_cache_miss_tokens": 2_000,
         "max_subagents": 2,
+        "max_team_sessions": 2,
         "max_delegations": 2,
         "max_background_tasks": 2,
         "max_continuation_wakes": 2,
@@ -229,6 +230,146 @@ async def test_policy_resolution_chooses_most_specific_enabled_policy(owner_sess
     assert policy.max_subagents == 5
 
 
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        (
+            "interactive",
+            {
+                "max_subagents": 24,
+                "max_team_sessions": 4,
+                "max_delegations": 16,
+                "max_continuation_wakes": 64,
+                "max_provider_calls": 300,
+                "max_tokens": 50_000_000,
+                "max_cache_miss_tokens": 10_000_000,
+                "default_child_token_reservation": 200_000,
+                "fail_mode": "require_confirmation",
+            },
+        ),
+        (
+            "scheduled",
+            {
+                "max_subagents": 32,
+                "max_team_sessions": 0,
+                "max_delegations": 12,
+                "max_continuation_wakes": 64,
+                "max_provider_calls": 240,
+                "max_tokens": 40_000_000,
+                "max_cache_miss_tokens": 8_000_000,
+                "default_child_token_reservation": 250_000,
+                "fail_mode": "summary_only",
+            },
+        ),
+        (
+            "workflow",
+            {
+                "max_subagents": 256,
+                "max_team_sessions": 0,
+                "max_delegations": 64,
+                "max_continuation_wakes": 512,
+                "max_provider_calls": 2_000,
+                "max_tokens": 250_000_000,
+                "max_cache_miss_tokens": 80_000_000,
+                "default_child_token_reservation": 300_000,
+                "fail_mode": "hard_stop",
+            },
+        ),
+        (
+            "agent_team",
+            {
+                "max_subagents": 16,
+                "max_team_sessions": 4,
+                "max_delegations": 16,
+                "max_continuation_wakes": 96,
+                "max_provider_calls": 500,
+                "max_tokens": 80_000_000,
+                "max_cache_miss_tokens": 16_000_000,
+                "default_child_token_reservation": 250_000,
+                "fail_mode": "require_confirmation",
+            },
+        ),
+    ],
+)
+async def test_builtin_policy_uses_documented_profile_defaults(owner_sessionmaker, profile, expected):
+    from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetService
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+
+    policy = await service.resolve_policy(
+        RuntimeBudgetPolicyLookup(
+            tenant_id=tenant_id,
+            source=profile,
+            profile=profile,
+        )
+    )
+
+    for key, value in expected.items():
+        assert getattr(policy, key) == value
+    assert policy.enforcement_mode == "enforce"
+    assert policy.default_llm_call_token_reservation == expected["default_child_token_reservation"]
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_create_run_with_builtin_fallback_policy_does_not_write_unpersisted_policy_id(owner_sessionmaker):
+    from app.models.runtime_budget import RuntimeBudgetPolicy
+    from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetService
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    policy = await service.resolve_policy(
+        RuntimeBudgetPolicyLookup(tenant_id=tenant_id, source="trigger", profile="scheduled_job")
+    )
+
+    async with owner_sessionmaker() as db:
+        persisted_policy = (
+            await db.execute(select(RuntimeBudgetPolicy).where(RuntimeBudgetPolicy.id == policy.id))
+        ).scalar_one_or_none()
+    assert persisted_policy is None
+
+    run = await _create_run(
+        service,
+        tenant_id,
+        source="trigger",
+        profile="scheduled_job",
+        policy_id=policy.id,
+        policy_snapshot={
+            "policy_id": str(policy.id),
+            "scope_type": policy.scope_type,
+            "policy_json": policy.policy_json,
+        },
+    )
+
+    assert run.policy_id is None
+    assert run.policy_snapshot["policy_id"] is None
+    assert run.policy_snapshot["policy_json"]["source"] == "built_in_fallback"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_interactive_company_policy_matches_web_chat_lookup(owner_sessionmaker):
+    from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetService
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    await service.create_policy(
+        tenant_id=tenant_id,
+        name="interactive override",
+        scope_type="source_profile",
+        source="interactive",
+        profile="interactive",
+        max_subagents=7,
+    )
+
+    policy = await service.resolve_policy(
+        RuntimeBudgetPolicyLookup(tenant_id=tenant_id, source="web", profile="web_chat_turn")
+    )
+
+    assert policy.name == "interactive override"
+    assert policy.max_subagents == 7
+
+
 def test_reservation_estimate_uses_default_prompt_and_observed_floor():
     from app.services.runtime_budget_service import estimate_reservation_tokens
 
@@ -237,6 +378,100 @@ def test_reservation_estimate_uses_default_prompt_and_observed_floor():
         prompt_tokens=2_500,
         observed_floor_tokens=84_868,
     ) == 84_868
+
+
+@pytest.mark.parametrize(
+    ("profile", "max_tokens", "max_cache_miss_tokens", "max_team_sessions", "fail_mode"),
+    [
+        ("interactive", 50_000_000, 10_000_000, 4, "require_confirmation"),
+        ("scheduled", 40_000_000, 8_000_000, 0, "summary_only"),
+        ("workflow", 250_000_000, 80_000_000, 0, "hard_stop"),
+        ("agent_team", 80_000_000, 16_000_000, 4, "require_confirmation"),
+    ],
+)
+def test_builtin_policy_unit_defaults_match_documented_profiles(
+    profile,
+    max_tokens,
+    max_cache_miss_tokens,
+    max_team_sessions,
+    fail_mode,
+):
+    from app.services import runtime_budget_service as module
+
+    policy = module._builtin_policy(module.RuntimeBudgetPolicyLookup(tenant_id=uuid.uuid4(), source=profile, profile=profile))
+
+    assert policy.max_tokens == max_tokens
+    assert policy.max_cache_miss_tokens == max_cache_miss_tokens
+    assert policy.max_team_sessions == max_team_sessions
+    assert policy.fail_mode == fail_mode
+
+
+def test_builtin_policy_maps_web_chat_profile_to_interactive_defaults():
+    from app.services import runtime_budget_service as module
+
+    policy = module._builtin_policy(
+        module.RuntimeBudgetPolicyLookup(tenant_id=uuid.uuid4(), source="web", profile="web_chat_turn")
+    )
+
+    assert policy.max_subagents == 24
+    assert policy.max_team_sessions == 4
+    assert policy.max_cache_miss_tokens == 10_000_000
+    assert policy.fail_mode == "require_confirmation"
+    assert policy.policy_json == {
+        "source": "built_in_fallback",
+        "profile": "interactive",
+        "requested_profile": "web_chat_turn",
+    }
+
+
+def test_builtin_fallback_policy_reference_is_not_written_as_foreign_key():
+    from app.services import runtime_budget_service as module
+
+    policy_id = uuid.uuid4()
+    effective_policy_id, normalized_snapshot = module._normalize_run_policy_reference(
+        policy_id,
+        {
+            "policy_id": str(policy_id),
+            "scope_type": "tenant_default",
+            "policy_json": {"source": "built_in_fallback", "profile": "scheduled"},
+        },
+    )
+
+    assert effective_policy_id is None
+    assert normalized_snapshot["policy_id"] is None
+
+
+def test_persisted_policy_reference_is_kept_as_foreign_key():
+    from app.services import runtime_budget_service as module
+
+    policy_id = uuid.uuid4()
+    effective_policy_id, normalized_snapshot = module._normalize_run_policy_reference(
+        policy_id,
+        {
+            "policy_id": str(policy_id),
+            "scope_type": "tenant_default",
+            "policy_json": {"source": "company_override", "profile": "scheduled"},
+        },
+    )
+
+    assert effective_policy_id == policy_id
+    assert normalized_snapshot["policy_id"] == str(policy_id)
+
+
+def test_interactive_source_profile_policy_matches_web_chat_lookup_unit():
+    from app.models.runtime_budget import RuntimeBudgetPolicy
+    from app.services import runtime_budget_service as module
+
+    tenant_id = uuid.uuid4()
+    policy = RuntimeBudgetPolicy(
+        tenant_id=tenant_id,
+        scope_type="source_profile",
+        source="interactive",
+        profile="interactive",
+    )
+    lookup = module.RuntimeBudgetPolicyLookup(tenant_id=tenant_id, source="web", profile="web_chat_turn")
+
+    assert module._policy_matches(policy, lookup) is True
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -373,6 +608,42 @@ async def test_summary_only_mode_disables_work_amplifying_reservations(owner_ses
     assert provider_result.allowed is True
     assert stored.status == "summary_only"
     assert stored.reserved_provider_calls == 1
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_agent_team_sessions_are_reserved_separately_from_subagents(owner_sessionmaker):
+    from app.models.runtime_budget import RuntimeBudgetRun
+    from app.services.runtime_budget_service import RuntimeBudgetDenied, RuntimeBudgetReservation, RuntimeBudgetService
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(service, tenant_id, max_subagents=0, max_team_sessions=1)
+
+    first = await service.reserve(
+        RuntimeBudgetReservation(
+            budget_run_id=run.id,
+            reservation_key="team-member-1",
+            team_sessions=1,
+            reason="first teammate session",
+        )
+    )
+    with pytest.raises(RuntimeBudgetDenied):
+        await service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=run.id,
+                reservation_key="team-member-2",
+                team_sessions=1,
+                reason="second teammate session",
+            )
+        )
+
+    async with owner_sessionmaker() as db:
+        stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
+
+    assert first.allowed is True
+    assert stored.reserved_team_sessions == 1
+    assert stored.reserved_subagents == 0
+    assert stored.status == "exhausted"
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

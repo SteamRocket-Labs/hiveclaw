@@ -59,6 +59,7 @@ async def main():
     import app.models.trigger        # noqa
     import app.models.notification   # noqa
     import app.models.runtime_task    # noqa
+    import app.models.runtime_budget  # noqa
     import app.models.capability_install  # noqa
     import app.models.mcp_server          # noqa
     import app.models.installed_plugin    # noqa — plugin system install/dependency tables

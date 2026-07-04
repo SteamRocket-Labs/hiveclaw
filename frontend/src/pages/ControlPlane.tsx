@@ -144,8 +144,8 @@ const CONTROL_PLANE_CARDS: ControlPlaneCard[] = [
   {
     tab: 'runtime_budgets',
     to: '/enterprise/runtime-budgets',
-    title: 'Runtime Budgets',
-    description: 'Hard guardrails for autonomous triggers, subagents, delegation, wakes, and provider calls.',
+    title: 'Runtime Protection',
+    description: 'Company-level limits that take priority over the platform defaults.',
     icon: <IconShieldHalfFilled size={18} stroke={1.6} />,
     group: 'runtime',
   },

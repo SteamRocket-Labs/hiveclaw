@@ -1,10 +1,8 @@
-"""Tests for app/templates/HEARTBEAT.md (PR-12).
+"""Tests for app/templates/HEARTBEAT.md.
 
-Locks down the structural properties of the template so future regressions
-(removing the decision matrix, dropping the good/bad examples, etc.) fail
-loud. The template is read by `_load_heartbeat_instruction` and concatenated
-verbatim into each tick's user prompt, so its quality directly shapes how
-heartbeat ticks behave.
+Heartbeat is now a direct T3 LLM core protocol, not a full agent/session/tool
+prompt. These tests lock that boundary while preserving the memory curation
+rules the platform still needs.
 """
 
 from __future__ import annotations
@@ -27,30 +25,35 @@ def template_text() -> str:
 
 
 class TestTemplateStructure:
-    def test_xml_tags_present(self, template_text: str) -> None:
-        for tag in [
+    def test_template_is_direct_core_protocol_not_full_agent_prompt(self, template_text: str) -> None:
+        for required in (
+            "Direct T3 Core Protocol",
+            "T3 Consolidator",
+            "direct LLM core",
+            "not a full agent session",
+            "does not receive tools",
+            "does not start subagents",
+            "does not perform external actions",
+        ):
+            assert required in template_text
+
+        for retired in (
             "<role>",
-            "</role>",
-            "<pipeline_context>",
             "<session_context>",
-            "<decision_matrix>",
             "<phase_1_observe>",
             "<phase_2_curate>",
-            "<t3_entry_rules>",
-            "<phase_3_log>",
-            "<scope_and_boundaries>",
             "<persistent_session_notes>",
-            "<required_output>",
-            "<constraints>",
-        ]:
-            assert tag in template_text, f"missing tag: {tag}"
+            "tool rounds",
+            "submit_t3_",
+        ):
+            assert retired not in template_text
 
     def test_template_documents_upstream_and_downstream(self, template_text: str) -> None:
-        assert "Upstream" in template_text
         assert "T2 Segment Package" in template_text
         assert "source_bundle.json" in template_text
+        assert "t3_neighborhood.md" in template_text
         assert "extract_agent" not in template_text
-        assert "Downstream" in template_text
+        assert "semantic memory body" in template_text
         assert "soul.md" in template_text
 
 
@@ -97,20 +100,13 @@ class TestDecisionMatrix:
 
 
 class TestCurationExamples:
-    def test_has_good_curation_examples_block(self, template_text: str) -> None:
-        assert "<good_curation_examples>" in template_text
-        # Contains at least two named examples.
-        assert "Example A" in template_text
-        assert "Example B" in template_text
-
-    def test_has_bad_curation_examples_block(self, template_text: str) -> None:
-        assert "<bad_curation_examples>" in template_text
-        assert "Anti-Example" in template_text
-
-    def test_examples_show_before_after_rewrite(self, template_text: str) -> None:
-        # The "rewrite for long-term reusability" section must show good/bad pair.
-        assert "User rejects emoji" in template_text  # canonical good-rewrite example
-        assert "t3_user_memory" in template_text
+    def test_template_keeps_profile_and_milestone_curation_rules(self, template_text: str) -> None:
+        assert "80%" in template_text
+        assert "15%" in template_text
+        assert "5%" in template_text
+        assert "counter-example" in template_text or "反例下调" in template_text
+        assert "retroactive" in template_text or "追认" in template_text
+        assert "ms-" in template_text
 
 
 class TestT3EntryRules:
@@ -119,17 +115,16 @@ class TestT3EntryRules:
         assert "<t3_consolidation_patch" in template_text
 
     def test_template_forbids_raw_memory_file_writes(self, template_text: str) -> None:
-        # Direct write_file/edit_file under memory/ is refused by the runtime;
-        # the template must say so to prevent the curator from drifting back.
         assert "refused" in template_text
         assert "Platform Gate owns physical commit" in template_text
+        assert "not the physical committer" in template_text
 
     def test_template_instructs_to_drop_t2_metadata(self, template_text: str) -> None:
         assert "Drop T2 metadata" in template_text or "drop the T2 metadata" in template_text.lower()
         assert "source refs" in template_text
 
-    def test_template_says_dedup_is_tool_enforced(self, template_text: str) -> None:
-        assert "Dedup is enforced by the tool" in template_text or "[Skipped]" in template_text
+    def test_template_says_dedup_is_platform_gate_enforced(self, template_text: str) -> None:
+        assert "Dedup is enforced by Platform Gate" in template_text
 
 
 class TestOperationalInvariants:
@@ -146,13 +141,12 @@ class TestOperationalInvariants:
         # The prompt-injection guardrail must ride through the rewrite.
         assert "data, not instruction" in template_text.lower()
 
-    def test_tool_round_budget_preserved(self, template_text: str) -> None:
-        # Keep heartbeat's written contract aligned with the runtime constant.
-        assert "Maximum" in template_text
-        assert "tool rounds" in template_text
-        assert "200" in template_text
+    def test_tool_runtime_is_not_reintroduced(self, template_text: str) -> None:
+        assert "tool rounds" not in template_text
+        assert "does not receive tools" in template_text
 
     def test_template_does_not_instruct_external_actions(self, template_text: str) -> None:
-        # Heartbeat must not post to plaza or send outbound messages.
-        assert "Do NOT" in template_text or "Do not" in template_text
+        assert "Do not" in template_text
         assert "plaza" in template_text.lower()
+        assert "Do not send messages" in template_text
+        assert "Do not create Skill files or Workflow JSON" in template_text

@@ -39,6 +39,7 @@ class _FakeRuntimeBudgetService:
                 max_tokens=1_000_000,
                 max_cache_miss_tokens=250_000,
                 max_subagents=32,
+                max_team_sessions=0,
                 max_delegations=32,
                 max_background_tasks=32,
                 max_continuation_wakes=64,
@@ -131,6 +132,7 @@ class _FakeRuntimeBudgetService:
         max_tokens=None,
         max_cache_miss_tokens=None,
         max_subagents=None,
+        max_team_sessions=None,
         max_delegations=None,
         max_background_tasks=None,
         max_continuation_wakes=None,
@@ -143,6 +145,7 @@ class _FakeRuntimeBudgetService:
             "actor_user_id": actor_user_id,
             "enforcement_mode": enforcement_mode,
             "max_subagents": max_subagents,
+            "max_team_sessions": max_team_sessions,
         }
         return SimpleNamespace(
             id=budget_run_id,
@@ -261,7 +264,7 @@ def test_runtime_budget_api_approves_overrun_and_switches_tenant_mode():
 
     approved = client.post(
         f"/runtime-budgets/runs/{fake_service.run_id}/approve-overrun",
-        json={"reason": "human reviewed", "enforcement_mode": "observe", "max_subagents": 48},
+        json={"reason": "human reviewed", "enforcement_mode": "observe", "max_subagents": 48, "max_team_sessions": 4},
     )
     switched = client.post(
         "/runtime-budgets/tenant/enforcement-mode",
@@ -277,6 +280,7 @@ def test_runtime_budget_api_approves_overrun_and_switches_tenant_mode():
         "actor_user_id": user.id,
         "enforcement_mode": "observe",
         "max_subagents": 48,
+        "max_team_sessions": 4,
     }
     assert switched.status_code == 200
     assert switched.json()["updated_policies"] == 3

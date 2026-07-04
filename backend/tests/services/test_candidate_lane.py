@@ -12,8 +12,6 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -53,29 +51,12 @@ already promoted method
 # ── Heartbeat lane: candidate signals only, no direct skill writes ──
 
 
-@pytest.mark.asyncio
-async def test_heartbeat_executor_blocks_save_skill(monkeypatch) -> None:
-    from app.services.heartbeat import _build_heartbeat_tool_executor
+def test_heartbeat_has_no_skill_write_executor() -> None:
+    source = (PROJECT_ROOT / "backend" / "app" / "services" / "heartbeat.py").read_text(encoding="utf-8")
 
-    calls: list[str] = []
-
-    async def fake_execute_tool(tool_name, args, agent_id, creator_id):
-        calls.append(tool_name)
-        return "executed"
-
-    monkeypatch.setattr("app.services.heartbeat.execute_tool", fake_execute_tool)
-
-    executor = _build_heartbeat_tool_executor(uuid.uuid4(), uuid.uuid4())
-    out = await executor("save_skill", {"name": "smuggled"})
-
-    assert "save_skill" not in calls  # never reached real execution
-    assert "BLOCKED" in out or "candidate" in out.lower()
-    assert "T3 consolidation pitch" in out
-
-    # Other tools still pass through.
-    passthrough = await executor("read_file", {"path": "soul.md"})
-    assert passthrough == "executed"
-    assert calls == ["read_file"]
+    assert "_build_heartbeat_tool_executor" not in source
+    assert "execute_tool" not in source
+    assert "save_skill" not in source
 
 
 def test_heartbeat_template_routes_skill_evidence_to_candidate_lane() -> None:

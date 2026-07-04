@@ -115,13 +115,14 @@ def test_trigger_and_heartbeat_runs_are_attempt_ledger_entries() -> None:
     assert "RuntimeTask" in heartbeat
 
 
-def test_trigger_sessions_are_created_per_wake() -> None:
+def test_trigger_sessions_are_created_per_wake_and_heartbeat_is_direct_core() -> None:
     trigger_daemon = (APP_ROOT / "services/trigger_daemon.py").read_text(encoding="utf-8")
     heartbeat = (APP_ROOT / "services/heartbeat.py").read_text(encoding="utf-8")
     runtime_invoker = (APP_ROOT / "runtime/invoker.py").read_text(encoding="utf-8")
 
     assert 'source_channel="trigger"' in trigger_daemon
-    assert "_get_or_create_heartbeat_session_ctx" in heartbeat
+    assert "run_heartbeat_t3_core" in heartbeat
+    assert "_get_or_create_heartbeat_session_ctx" not in heartbeat
     assert "session_context: SessionContext | None = None" in runtime_invoker
 
 

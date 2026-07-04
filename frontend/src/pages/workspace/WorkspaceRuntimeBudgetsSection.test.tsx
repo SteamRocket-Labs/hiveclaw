@@ -18,6 +18,7 @@ const scheduledPolicy = {
   max_tokens: 1000000,
   max_cache_miss_tokens: 250000,
   max_subagents: 32,
+  max_team_sessions: 0,
   max_delegations: 32,
   max_background_tasks: 32,
   max_continuation_wakes: 64,
@@ -26,6 +27,17 @@ const scheduledPolicy = {
   default_llm_call_token_reservation: 50000,
   created_at: null,
   updated_at: null,
+};
+
+const agentTeamPolicy = {
+  ...scheduledPolicy,
+  id: 'policy-agent-team',
+  name: 'Agent Team guard',
+  source: 'agent_team',
+  profile: 'agent_team',
+  max_subagents: 16,
+  max_team_sessions: 4,
+  max_cache_miss_tokens: 16000000,
 };
 
 let policyData: unknown[] = [scheduledPolicy];
@@ -99,7 +111,28 @@ describe('WorkspaceRuntimeBudgetsSection', () => {
 
     expect(html).toContain('Built-in default protection is active.');
     expect(html).toContain('Subagents 32');
-    expect(html).toContain('Saving creates a tenant override');
-    expect(html).toContain('Save override policy');
+    expect(html).toContain('Cache miss 8,000,000');
+    expect(html).toContain('Saving creates a company policy that takes priority over the platform default.');
+    expect(html).toContain('Maximum child workers this run may start.');
+    expect(html).toContain('Maximum teammate sessions for explicit Agent Team runs.');
+    expect(html).toContain('Interactive');
+    expect(html).toContain('Dynamic Workflow');
+    expect(html).toContain('Agent Team');
+    expect(html).toContain('Maximum times this run chain may resume after background signals.');
+    expect(html).toContain('Maximum model calls allowed in this run chain.');
+    expect(html).toContain('Maximum total tokens allowed for this run chain, including cached and non-cached tokens.');
+    expect(html).toContain('Maximum non-cached input tokens allowed for this run chain.');
+    expect(html).toContain('What the platform should do when this run hits the protection limit.');
+    expect(html).toContain('Save company policy');
+  });
+
+  it('does not show another profile override as the active daily policy', () => {
+    policyData = [agentTeamPolicy];
+
+    const html = renderToStaticMarkup(<WorkspaceRuntimeBudgetsSection />);
+
+    expect(html).toContain('Built-in default protection is active.');
+    expect(html).toContain('Cache miss 8,000,000');
+    expect(html).not.toContain('Agent Team guard');
   });
 });

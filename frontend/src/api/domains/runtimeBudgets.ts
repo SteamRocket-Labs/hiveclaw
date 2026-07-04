@@ -16,6 +16,7 @@ export interface RuntimeBudgetPolicy {
   max_tokens: number | null;
   max_cache_miss_tokens: number | null;
   max_subagents: number | null;
+  max_team_sessions: number | null;
   max_delegations: number | null;
   max_background_tasks: number | null;
   max_continuation_wakes: number | null;
@@ -40,6 +41,7 @@ export interface RuntimeBudgetPolicyWrite {
   max_tokens?: number | null;
   max_cache_miss_tokens?: number | null;
   max_subagents?: number | null;
+  max_team_sessions?: number | null;
   max_delegations?: number | null;
   max_background_tasks?: number | null;
   max_continuation_wakes?: number | null;
@@ -108,6 +110,7 @@ export const runtimeBudgetApi = {
       reason: string;
       enforcement_mode?: 'observe' | 'enforce' | string;
       max_subagents?: number | null;
+      max_team_sessions?: number | null;
       max_cache_miss_tokens?: number | null;
       max_tokens?: number | null;
     },

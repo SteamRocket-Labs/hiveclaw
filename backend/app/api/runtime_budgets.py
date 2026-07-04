@@ -31,6 +31,7 @@ class RuntimeBudgetPolicyOut(BaseModel):
     max_tokens: int | None = None
     max_cache_miss_tokens: int | None = None
     max_subagents: int | None = None
+    max_team_sessions: int | None = None
     max_delegations: int | None = None
     max_background_tasks: int | None = None
     max_continuation_wakes: int | None = None
@@ -57,6 +58,7 @@ class RuntimeBudgetPolicyWrite(BaseModel):
     max_tokens: int | None = Field(default=None, ge=0)
     max_cache_miss_tokens: int | None = Field(default=None, ge=0)
     max_subagents: int | None = Field(default=None, ge=0)
+    max_team_sessions: int | None = Field(default=None, ge=0)
     max_delegations: int | None = Field(default=None, ge=0)
     max_background_tasks: int | None = Field(default=None, ge=0)
     max_continuation_wakes: int | None = Field(default=None, ge=0)
@@ -80,6 +82,7 @@ class RuntimeBudgetPolicyPatch(BaseModel):
     max_tokens: int | None = Field(default=None, ge=0)
     max_cache_miss_tokens: int | None = Field(default=None, ge=0)
     max_subagents: int | None = Field(default=None, ge=0)
+    max_team_sessions: int | None = Field(default=None, ge=0)
     max_delegations: int | None = Field(default=None, ge=0)
     max_background_tasks: int | None = Field(default=None, ge=0)
     max_continuation_wakes: int | None = Field(default=None, ge=0)
@@ -143,6 +146,7 @@ class RuntimeBudgetApproveOverrunRequest(BaseModel):
     max_tokens: int | None = Field(default=None, ge=0)
     max_cache_miss_tokens: int | None = Field(default=None, ge=0)
     max_subagents: int | None = Field(default=None, ge=0)
+    max_team_sessions: int | None = Field(default=None, ge=0)
     max_delegations: int | None = Field(default=None, ge=0)
     max_background_tasks: int | None = Field(default=None, ge=0)
     max_continuation_wakes: int | None = Field(default=None, ge=0)
@@ -350,6 +354,7 @@ async def approve_runtime_budget_overrun(
         max_tokens=body.max_tokens,
         max_cache_miss_tokens=body.max_cache_miss_tokens,
         max_subagents=body.max_subagents,
+        max_team_sessions=body.max_team_sessions,
         max_delegations=body.max_delegations,
         max_background_tasks=body.max_background_tasks,
         max_continuation_wakes=body.max_continuation_wakes,

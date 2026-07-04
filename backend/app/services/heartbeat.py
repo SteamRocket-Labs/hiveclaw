@@ -1,14 +1,13 @@
-"""Heartbeat service — platform-managed memory/evolution maintenance loop.
+"""Heartbeat service — platform-managed memory maintenance loop.
 
-Periodically curates recent learning into long-term memory and runs internal
-self-evolution maintenance. User-facing autonomous patrols belong to triggers
-and wake policies; heartbeat itself is always-on platform infrastructure.
+Periodically runs deterministic memory maintenance and direct T3 consolidation.
+User-facing autonomous patrols belong to triggers and wake policies; heartbeat
+itself is always-on platform infrastructure and does not run a full agent loop.
 
 Runs as a background task inside the FastAPI process.
 """
 
 import asyncio
-import json
 import re
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -22,10 +21,7 @@ from app.services.daemon_concurrency import run_bounded
 from app.core.events import get_redis
 from app.database import enter_rls_bypass, tenant_scoped_session
 from app.memory.t2.read_model import load_t2_package_snapshots, render_t2_package_snapshots
-from app.kernel.contracts import ExecutionIdentityRef
-from app.runtime.invoker import AgentInvocationRequest, invoke_agent
-from app.runtime.session import SessionContext
-from app.services.agent_tools import execute_tool
+from app.services.heartbeat_t3_core import run_heartbeat_t3_core
 from app.services.heartbeat_policy import managed_heartbeat_interval_minutes
 from app.services.runtime_task_service import (
     build_restart_reconciliation_metadata,
@@ -39,30 +35,11 @@ from app.services.runtime_task_service import (
 from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
-# Single source of truth: app/templates/HEARTBEAT.md
-# No hardcoded instruction here — read from template file at runtime.
+# Legacy human-readable protocol note. Runtime consolidation uses
+# app/templates/T3_CONSOLIDATOR.md via app.services.heartbeat_t3_core.
 _HEARTBEAT_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
 _HEARTBEAT_LEASE_TTL_SECONDS = 600
 _heartbeat_leases: dict[uuid.UUID, datetime] = {}
-
-_HEARTBEAT_PRIVACY_SUFFIX = """
-## Plaza Posting Scope
-When posting to the plaza during heartbeat, be selective:
-
-- Focus on: general work insights, patterns you've learned, opinions on others' posts
-- Avoid: private user conversations, confidential task details, literal excerpts from memory or workspace
-- Per heartbeat: 1 new post + up to 2 comments max. Skip trivial or repetitive posts.
-"""
-
-_HEARTBEAT_STRATEGY_SUFFIX = """
-
-## Learning Write Scope
-Do not write durable semantic learning into legacy evolution scorecards or lineage files.
-The legacy evolution directory is not the semantic memory body.
-Reflect normally in your heartbeat response. Runtime evidence enters T0/T2/T3 memory
-through governed Memory Gate paths, and reusable capability evidence may become an
-inactive Skill Candidate Package for a later Skill Writer review.
-"""
 
 _HEARTBEAT_SCORE_RUBRIC_SUFFIX = """
 
@@ -81,46 +58,19 @@ Use [SCORE:0-10] as a calibrated action-quality score, not a feeling:
 """
 
 
-# ── KAIROS persistent session state ──
-# Instead of creating a fresh invocation each tick, maintain conversation
-# history across ticks so the agent has continuity of thought.
-_heartbeat_contexts: dict[uuid.UUID, list[dict]] = {}
-_heartbeat_session_ids: dict[uuid.UUID, uuid.UUID] = {}
 _heartbeat_tick_counts: dict[uuid.UUID, int] = {}
 _t2_mtimes: dict[uuid.UUID, dict[str, float]] = {}
-# Persistent SessionContext per agent — allows the kernel to reuse the
-# frozen prompt prefix across heartbeat ticks instead of rebuilding it
-# every 45 minutes (saves DB queries + string rendering + enables
-# Anthropic prompt cache hits within multi-round ticks).
-_heartbeat_session_ctxs: dict[uuid.UUID, "SessionContext"] = {}
 
-_HEARTBEAT_MESSAGE_MAX_CHARS = 24_000
-_HEARTBEAT_CONTEXT_MAX_CHARS = 80_000
-_HEARTBEAT_RECENT_MESSAGE_COUNT = 8
 _HEARTBEAT_T2_FULL_MAX_CHARS = 24_000
 _HEARTBEAT_T2_INCREMENTAL_MAX_CHARS = 16_000
 _HEARTBEAT_T3_MAX_CHARS = 8_000
 _HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS = 16_000
-_HEARTBEAT_COMPACT_SUMMARY_MAX_CHARS = 6_000
-# Heartbeat is agentic curation work, not a tiny maintenance callback. Keep the
-# tool-loop budget aligned with the main agent / CC AgentTool practical floor.
-_HEARTBEAT_MAX_TOOL_ROUNDS = 200
-_HEARTBEAT_CHECKPOINT_FILENAME = "heartbeat_checkpoint.json"
 
 
 def _format_heartbeat_exception(exc: BaseException) -> str:
     message = str(exc).strip()
     exc_type = type(exc).__name__
     return f"{exc_type}: {message}" if message else exc_type
-
-
-def _heartbeat_content_chars(message: dict) -> int:
-    content = message.get("content")
-    return len(content) if isinstance(content, str) else 0
-
-
-def _heartbeat_context_chars(messages: list[dict]) -> int:
-    return sum(_heartbeat_content_chars(message) for message in messages)
 
 
 def _truncate_heartbeat_text(text: str, max_chars: int, label: str) -> str:
@@ -137,89 +87,6 @@ def _truncate_heartbeat_text(text: str, max_chars: int, label: str) -> str:
     head_chars = max(100, int((max_chars - len(marker)) * 0.6))
     tail_chars = max_chars - len(marker) - head_chars
     return text[:head_chars] + marker + text[-tail_chars:]
-
-
-def _cap_heartbeat_message(message: dict, max_chars: int = _HEARTBEAT_MESSAGE_MAX_CHARS) -> dict:
-    content = message.get("content")
-    if not isinstance(content, str):
-        return dict(message)
-    capped = dict(message)
-    capped["content"] = _truncate_heartbeat_text(content, max_chars, f"{message.get('role', 'message')} message")
-    return capped
-
-
-def _build_heartbeat_context_summary(messages: list[dict]) -> dict:
-    lines = [
-        "[Heartbeat context compacted]",
-        f"Compacted {len(messages)} older heartbeat messages before invocation.",
-        "This preserves continuity without replaying the full raw heartbeat transcript.",
-    ]
-    for idx, message in enumerate(messages[-12:], start=max(1, len(messages) - 11)):
-        content = str(message.get("content") or "").replace("\n", " ").strip()
-        if len(content) > 260:
-            content = content[:260] + "..."
-        lines.append(f"- #{idx} {message.get('role', 'unknown')}: {content}")
-    return {
-        "role": "system",
-        "content": _truncate_heartbeat_text(
-            "\n".join(lines),
-            _HEARTBEAT_COMPACT_SUMMARY_MAX_CHARS,
-            "heartbeat context summary",
-        ),
-    }
-
-
-def _compact_heartbeat_runtime_messages(messages: list[dict]) -> list[dict]:
-    """Keep heartbeat continuity bounded before it reaches the kernel.
-
-    Kernel compaction handles multi-message LLM loops, but heartbeat can create
-    a single very large initialization message from T2/T3 files. This guard caps
-    both single-message payloads and accumulated KAIROS history deterministically.
-
-    C1 (docs/agent-lifecycle-cc-alignment.md 主题 C): full fidelity first —
-    when the whole context fits the total budget, NOTHING is trimmed (the
-    curator decides on complete input). Per-message caps and compaction engage
-    only once the total exceeds the budget (mechanical only as observable
-    fallback, same philosophy as compaction P0).
-    """
-    if not messages:
-        return []
-
-    raw = [dict(message) for message in messages]
-    if _heartbeat_context_chars(raw) <= _HEARTBEAT_CONTEXT_MAX_CHARS:
-        return raw
-
-    capped = [_cap_heartbeat_message(message) for message in messages]
-    if _heartbeat_context_chars(capped) <= _HEARTBEAT_CONTEXT_MAX_CHARS:
-        return capped
-
-    keep_recent = min(_HEARTBEAT_RECENT_MESSAGE_COUNT, max(0, len(capped) - 1))
-    first = [_cap_heartbeat_message(capped[0])]
-    recent = capped[-keep_recent:] if keep_recent else []
-    middle = capped[1:-keep_recent] if keep_recent else capped[1:]
-    summary = _build_heartbeat_context_summary(middle)
-    compacted = first + [summary] + recent
-
-    if _heartbeat_context_chars(compacted) <= _HEARTBEAT_CONTEXT_MAX_CHARS:
-        return compacted
-
-    remaining = max(_HEARTBEAT_CONTEXT_MAX_CHARS - _heartbeat_content_chars(summary), 1)
-    first_budget = min(_HEARTBEAT_MESSAGE_MAX_CHARS, max(4_000, remaining // 3))
-    recent_budget = max(1_000, (remaining - first_budget) // max(len(recent), 1))
-    compacted = [_cap_heartbeat_message(first[0], first_budget), summary]
-    compacted.extend(_cap_heartbeat_message(message, recent_budget) for message in recent)
-
-    # Final defensive pass for pathological inputs.
-    while _heartbeat_context_chars(compacted) > _HEARTBEAT_CONTEXT_MAX_CHARS:
-        largest_idx = max(range(len(compacted)), key=lambda idx: _heartbeat_content_chars(compacted[idx]))
-        largest = compacted[largest_idx]
-        largest_chars = _heartbeat_content_chars(largest)
-        if largest_chars <= 1_000:
-            break
-        overflow = _heartbeat_context_chars(compacted) - _HEARTBEAT_CONTEXT_MAX_CHARS
-        compacted[largest_idx] = _cap_heartbeat_message(largest, max(1_000, largest_chars - overflow - 200))
-
-    return compacted
 
 
 async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None) -> str | None:
@@ -253,6 +120,7 @@ async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid
                     max_tokens=getattr(policy, "max_tokens", None),
                     max_cache_miss_tokens=getattr(policy, "max_cache_miss_tokens", None),
                     max_subagents=getattr(policy, "max_subagents", None),
+                    max_team_sessions=getattr(policy, "max_team_sessions", None),
                     max_delegations=getattr(policy, "max_delegations", None),
                     max_background_tasks=getattr(policy, "max_background_tasks", None),
                     max_continuation_wakes=getattr(policy, "max_continuation_wakes", None),
@@ -260,6 +128,9 @@ async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid
                     policy_snapshot={
                         "policy_id": str(getattr(policy, "id", "")),
                         "scope_type": getattr(policy, "scope_type", None),
+                        "source": getattr(policy, "source", None),
+                        "profile": getattr(policy, "profile", None),
+                        "max_team_sessions": getattr(policy, "max_team_sessions", None),
                         "default_child_token_reservation": getattr(policy, "default_child_token_reservation", None),
                         "default_llm_call_token_reservation": getattr(policy, "default_llm_call_token_reservation", None),
                         "policy_json": getattr(policy, "policy_json", None),
@@ -398,9 +269,9 @@ async def resume_persisted_heartbeat_runs(*, limit: int = 50) -> list[str]:
             await _mark_heartbeat_runtime_task_needs_reconciliation(
                 run_id,
                 metadata=metadata,
-                blocker="session_bound_heartbeat",
+                blocker="direct_core_audit_session_bound",
                 summary=(
-                    "Heartbeat was interrupted after binding a session; replay could duplicate internal side effects. "
+                    "Heartbeat was interrupted after binding an audit session; replay could duplicate T3 artifact writes. "
                     "Reconciliation is required before retry."
                 ),
                 trace_id=trace_id,
@@ -455,144 +326,10 @@ async def resume_persisted_heartbeat_runs(*, limit: int = 50) -> list[str]:
 
 
 def _reset_heartbeat_session(agent_id: uuid.UUID) -> None:
-    """Reset heartbeat persistent session (called after dream, day change, or process restart)."""
-    _heartbeat_contexts.pop(agent_id, None)
-    _heartbeat_session_ids.pop(agent_id, None)
+    """Reset heartbeat maintenance caches after dream, day change, or process restart."""
     _heartbeat_tick_counts.pop(agent_id, None)
     _t2_mtimes.pop(agent_id, None)
-    _heartbeat_session_ctxs.pop(agent_id, None)
-    _clear_heartbeat_checkpoint(agent_id)
-    logger.info("[Heartbeat] Session reset for {}", agent_id)
-
-
-def _has_complete_heartbeat_session_state(agent_id: uuid.UUID) -> bool:
-    has_context = agent_id in _heartbeat_contexts
-    has_session_id = agent_id in _heartbeat_session_ids
-    if has_context and has_session_id:
-        return True
-    if _restore_heartbeat_checkpoint(agent_id):
-        return True
-    if has_context or has_session_id:
-        logger.warning("[Heartbeat] Incomplete persistent session state for {}; resetting cache", agent_id)
-        _reset_heartbeat_session(agent_id)
-    return False
-
-
-def _get_or_create_heartbeat_session_ctx(
-    agent_id: uuid.UUID,
-    session_id: uuid.UUID,
-    *,
-    tenant_id: uuid.UUID | None = None,
-    runtime_task_id: str | None = None,
-) -> "SessionContext":
-    """Return a persistent SessionContext for heartbeat ticks.
-
-    On first call for an agent, creates a new context; subsequent calls
-    reuse it so the kernel's frozen prompt prefix cache carries across ticks.
-    """
-    ctx = _heartbeat_session_ctxs.get(agent_id)
-    if ctx is not None:
-        # Update session_id if it changed (e.g. after day-boundary reset)
-        ctx.session_id = str(session_id)
-        if tenant_id or runtime_task_id:
-            ctx.metadata.update(
-                {
-                    "tenant_id": str(tenant_id) if tenant_id else None,
-                    "runtime_task_id": runtime_task_id,
-                    "request_id": str(uuid.UUID(runtime_task_id)) if runtime_task_id else None,
-                    "trace_id": f"heartbeat:{runtime_task_id}" if runtime_task_id else None,
-                }
-            )
-        return ctx
-    ctx = SessionContext(
-        source="heartbeat",
-        channel="heartbeat",
-        session_id=str(session_id),
-        metadata={"agent_id": str(agent_id)},
-    )
-    if tenant_id or runtime_task_id:
-        ctx.metadata.update(
-            {
-                "tenant_id": str(tenant_id) if tenant_id else None,
-                "runtime_task_id": runtime_task_id,
-                "request_id": str(uuid.UUID(runtime_task_id)) if runtime_task_id else None,
-                "trace_id": f"heartbeat:{runtime_task_id}" if runtime_task_id else None,
-            }
-        )
-    _heartbeat_session_ctxs[agent_id] = ctx
-    return ctx
-
-
-def _heartbeat_checkpoint_path(agent_id: uuid.UUID) -> Path:
-    from app.config import get_settings
-
-    return Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory" / _HEARTBEAT_CHECKPOINT_FILENAME
-
-
-def _save_heartbeat_checkpoint(
-    agent_id: uuid.UUID,
-    *,
-    session_id: uuid.UUID,
-    tick_count: int,
-    runtime_messages: list[dict],
-    t2_mtimes: dict[str, float] | None = None,
-) -> None:
-    path = _heartbeat_checkpoint_path(agent_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "session_id": str(session_id),
-        "tick_count": max(0, int(tick_count)),
-        "runtime_messages": _compact_heartbeat_runtime_messages(runtime_messages),
-        "t2_mtimes": {str(key): float(value) for key, value in (t2_mtimes or {}).items()},
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
-
-
-def _restore_heartbeat_checkpoint(agent_id: uuid.UUID) -> bool:
-    path = _heartbeat_checkpoint_path(agent_id)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return False
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("[Heartbeat] Failed to restore checkpoint for {}: {}", agent_id, exc)
-        return False
-
-    try:
-        session_id = uuid.UUID(str(payload.get("session_id")))
-    except (TypeError, ValueError):
-        logger.warning("[Heartbeat] Invalid checkpoint session_id for {}", agent_id)
-        return False
-    messages = payload.get("runtime_messages")
-    if not isinstance(messages, list) or not messages:
-        return False
-
-    _heartbeat_session_ids[agent_id] = session_id
-    _heartbeat_contexts[agent_id] = _compact_heartbeat_runtime_messages([m for m in messages if isinstance(m, dict)])
-    if not _heartbeat_contexts[agent_id]:
-        _reset_heartbeat_session(agent_id)
-        return False
-    try:
-        _heartbeat_tick_counts[agent_id] = max(0, int(payload.get("tick_count", 0)))
-    except (TypeError, ValueError):
-        _heartbeat_tick_counts[agent_id] = 0
-    mtimes = payload.get("t2_mtimes") or {}
-    if isinstance(mtimes, dict):
-        _t2_mtimes[agent_id] = {str(key): float(value) for key, value in mtimes.items()}
-    logger.info("[Heartbeat] Restored KAIROS checkpoint for {}", agent_id)
-    return True
-
-
-def _clear_heartbeat_checkpoint(agent_id: uuid.UUID) -> None:
-    try:
-        _heartbeat_checkpoint_path(agent_id).unlink()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        logger.debug("[Heartbeat] Failed to clear checkpoint for {}: {}", agent_id, exc)
+    logger.info("[Heartbeat] Maintenance cache reset for {}", agent_id)
 
 
 def _read_t2_full(agent_id: uuid.UUID) -> str:
@@ -658,10 +395,9 @@ def _read_pending_t3_intake(agent_id: uuid.UUID) -> str:
         f"- job_dir: `{rel_job_dir}`",
         f"- reviewed_t2_packages: {len(pending_t3.package_dirs)}",
         f"- active_explicit_overlay_entries: {len(pending_t3.explicit_entry_ids)}",
-        "- read `source_bundle.json` and `t3_neighborhood.md`",
-        "- submit `consolidation_pitch.md` with `submit_t3_consolidation_pitch`",
-        "- submit `revised_patch.md` with `submit_t3_revised_patch` after the pitch is ready",
-        "- Memory Gate must review the latest `revised_patch.md`; older reviews become stale if the patch changes",
+        "- direct core reads `source_bundle.json` and `t3_neighborhood.md`",
+        "- direct core writes `consolidation_pitch.md` and `revised_patch.md` artifacts",
+        "- direct Memory Gate review writes `review.md` for the latest `revised_patch.md`",
         "- Platform Gate commits accepted T3 and marks sources absorbed only after fresh review validation",
     ]
     if t3_job.issues:
@@ -703,7 +439,7 @@ def _get_default_heartbeat_instruction() -> str:
 
 
 def _compose_heartbeat_instruction(base_instruction: str) -> str:
-    return base_instruction + _HEARTBEAT_SCORE_RUBRIC_SUFFIX + _HEARTBEAT_STRATEGY_SUFFIX + _HEARTBEAT_PRIVACY_SUFFIX
+    return base_instruction + _HEARTBEAT_SCORE_RUBRIC_SUFFIX
 
 
 def _try_acquire_heartbeat_lease(
@@ -1048,7 +784,7 @@ def _load_skill_opportunity_state(ws_root) -> dict:
         return {}
 
 
-def _save_skill_opportunity_state(ws_root, *, tick: int, tools: list[str]) -> None:
+def _save_capability_opportunity_state(ws_root, *, tick: int, tools: list[str]) -> None:
     import json
 
     if ws_root is None:
@@ -1179,28 +915,8 @@ async def _build_evolution_context(
 
         parts.append(pattern_section)
 
-        try:
-            from app.services.agency_charter import build_default_accountability_context
-            from app.services.proactive_employee_loop import build_proactive_employee_plan
-
-            proactive_plan = build_proactive_employee_plan(
-                agent_id=str(agent_id),
-                accountability=build_default_accountability_context(
-                    company_id=str(company_id or "heartbeat-company"),
-                    company_name=company_name or "Company",
-                    owner_id=str(owner_id or agent_id),
-                    owner_name=owner_name or "Owner",
-                    current_user_id=str(owner_id or agent_id),
-                    current_user_name=owner_name or "Owner",
-                ),
-                recent_activities=recent_activities,
-            )
-            if proactive_plan.markdown:
-                parts.append(proactive_plan.markdown)
-        except Exception as exc:
-            logger.warning("[Heartbeat] proactive steward context skipped for {}: {}", agent_id, exc)
-
-        # 4. Skill creation hint — detect repeated tool-use patterns worth codifying
+        # Skill candidate hint — detect repeated tool-use patterns worth codifying.
+        # This is a candidate signal only; heartbeat itself has no tool surface.
         _SKILL_THRESHOLD = 3  # same tool combo used 3+ times → suggest skill
         if top_tools and tool_count >= 6:
             # Check if any tool appears frequently enough to be worth a skill
@@ -1241,16 +957,14 @@ async def _build_evolution_context(
                     "\n---\n## Skill Candidate Opportunity\n"
                     f"You have used these tools repeatedly: {', '.join(frequent_tools)}.\n"
                     "If the workflow around them is genuinely reusable, record it as a candidate "
-                    "signal — you curate evidence; the skill distillation lane decides promotion:\n"
-                    "1. FIRST call `tool_search` and `load_skill` to confirm no existing skill already covers this workflow\n"
-                    "2. If none covers it, include a `skill_candidate` capability block in the active "
-                    "`consolidation_pitch.md` or `revised_patch.md` through the T3 artifact submit tools\n"
-                    "3. Include source refs pointing at the sessions/evidence where the workflow repeated\n"
-                    "4. A good candidate captures the *workflow* (multiple tools in sequence), not a single tool or one-off note\n"
-                    "This counts as a high-value heartbeat action (score 7+)."
+                    "signal. The skill distillation lane decides promotion:\n"
+                    "1. Include a `skill_candidate` capability block in the active "
+                    "`consolidation_pitch.md` or `revised_patch.md` artifact.\n"
+                    "2. Include source refs pointing at the sessions/evidence where the workflow repeated.\n"
+                    "3. A good candidate captures the *workflow* (multiple tools in sequence), not a single tool or one-off note."
                 )
                 if tick_count:
-                    _save_skill_opportunity_state(ws_root, tick=tick_count, tools=list(frequent_tools))
+                    _save_capability_opportunity_state(ws_root, tick=tick_count, tools=list(frequent_tools))
             elif suppression_note:
                 logger.debug(
                     "[Heartbeat] skill opportunity suppressed for {}: {}",
@@ -1258,7 +972,7 @@ async def _build_evolution_context(
                     suppression_note,
                 )
 
-    # 3. Cold start bootstrap — guide new agents through first heartbeats
+    # Cold start note: heartbeat is not a full agent bootstrap loop.
     non_heartbeat_activities = [a for a in recent_activities if a.action_type != "heartbeat"]
     is_cold_start = len(non_heartbeat_activities) < 3
 
@@ -1291,13 +1005,8 @@ async def _build_evolution_context(
             parts.append(
                 "\n---\n## Bootstrap Mode (first heartbeats)\n"
                 "You have very little activity history. This is normal for a new agent.\n"
-                "Instead of the normal heartbeat protocol, do these bootstrapping steps:\n"
-                "1. **Read soul.md** — understand your identity and role\n"
-                "2. **List and read your skills/** — understand your capabilities\n"
-                "3. Summarize your bootstrap observations in your final reply; "
-                "runtime records evidence into governed memory/session paths after the tick\n"
-                "6. Output: [OUTCOME:action_taken] [SCORE:3]\n\n"
-                "After bootstrapping, future heartbeats will follow the normal 4-phase protocol."
+                "Heartbeat does not perform bootstrap actions. It waits for reviewed T2 evidence "
+                "or explicit memory overlay entries before direct T3 consolidation."
             )
 
     return _truncate_heartbeat_text(
@@ -1329,37 +1038,6 @@ def _get_canonical_workspace(agent_id: uuid.UUID) -> "Path | None":
         return ephemeral
 
     return None
-
-
-def _build_heartbeat_tool_executor(agent_id: uuid.UUID, creator_id: uuid.UUID):
-    """Build a tool executor with per-heartbeat plaza posting limits."""
-    plaza_posts_made = 0
-    plaza_comments_made = 0
-
-    async def _executor(tool_name: str, args: dict) -> str:
-        nonlocal plaza_posts_made, plaza_comments_made
-
-        if tool_name == "save_skill":
-            # Skill creation runs through the T3 capability consolidation lane.
-            # Heartbeat must not use save_memory as a hidden accepted-T3 writer.
-            return (
-                "[BLOCKED] Heartbeat does not write skills directly. Capture reusable workflow evidence in "
-                "the current T3 consolidation pitch or revised patch as a capability candidate. "
-                "Accepted capability memory is committed only after Memory Gate review and Platform Gate commit."
-            )
-
-        if tool_name == "plaza_create_post":
-            if plaza_posts_made >= 1:
-                return "[BLOCKED] You have already made 1 plaza post this heartbeat. Do not post again."
-            plaza_posts_made += 1
-        elif tool_name == "plaza_add_comment":
-            if plaza_comments_made >= 2:
-                return "[BLOCKED] You have already made 2 comments this heartbeat. Do not comment again."
-            plaza_comments_made += 1
-
-        return await execute_tool(tool_name, args, agent_id, creator_id)
-
-    return _executor
 
 
 async def _touch_last_heartbeat(agent_id: uuid.UUID, tenant_id: uuid.UUID | None = None) -> None:
@@ -1508,107 +1186,41 @@ async def _run_growth_report_refresh(agent_id: uuid.UUID, tenant_id: uuid.UUID |
         )
 
 
-async def _invoke_heartbeat_and_persist(
+async def _run_heartbeat_core_and_persist(
     *,
     agent,
     tenant_id: uuid.UUID | None,
     model,
-    fallback_model,
-    runtime_messages: list[dict],
     session_id: uuid.UUID,
     runtime_task_id: str | None,
     heartbeat_session_id: str | None,
     agent_participant_id: uuid.UUID | None,
     tick_count: int,
 ) -> None:
-    """Run the long heartbeat model/tool loop outside the preparatory DB session."""
-    import json as _json
-
-    from app.models.agent import Agent
+    """Run direct T3 consolidation outside the preparatory DB session."""
+    from app.config import get_settings
     from app.models.audit import ChatMessage
 
-    runtime_messages = _compact_heartbeat_runtime_messages(runtime_messages)
-
-    async def _on_tool_call(data: dict) -> None:
-        if data.get("status") != "done":
-            return
-        try:
-            async with tenant_scoped_session(tenant_id) as _tc_db:
-                _tc_db.add(
-                    ChatMessage(
-                        agent_id=agent.id,
-                        tenant_id=tenant_id,
-                        conversation_id=str(session_id),
-                        role="tool_call",
-                        content=_json.dumps(
-                            {
-                                "name": data["name"],
-                                "args": data.get("args"),
-                                "status": "done",
-                                "result": str(data.get("result", ""))[:2000],
-                                "reasoning_content": data.get("reasoning_content"),
-                                "reasoning_signature": data.get("reasoning_signature"),
-                            },
-                            ensure_ascii=False,
-                            default=str,
-                        ),
-                        user_id=agent.creator_id,
-                        participant_id=agent_participant_id,
-                    )
-                )
-                await _tc_db.commit()
-        except Exception as tc_err:
-            logger.debug(f"Failed to persist heartbeat tool call: {tc_err}")
-
-    _HEARTBEAT_TIMEOUT_SECONDS = 300  # 5 min hard limit to prevent event loop deadlock
+    _HEARTBEAT_TIMEOUT_SECONDS = 300
     result = await asyncio.wait_for(
-        invoke_agent(
-            AgentInvocationRequest(
-                model=model,
-                fallback_model=fallback_model,
-                messages=runtime_messages,
-                memory_messages=runtime_messages,
-                agent_name=agent.name,
-                role_description=agent.role_description or "",
-                agent_id=agent.id,
-                user_id=agent.creator_id,
-                execution_identity=ExecutionIdentityRef(
-                    identity_type="agent_bot",
-                    identity_id=agent.id,
-                    label=f"Agent: {agent.name} (heartbeat)",
-                ),
-                session_context=_get_or_create_heartbeat_session_ctx(
-                    agent.id,
-                    session_id,
-                    tenant_id=tenant_id,
-                    runtime_task_id=runtime_task_id,
-                ),
-                on_tool_call=_on_tool_call,
-                tool_executor=_build_heartbeat_tool_executor(agent.id, agent.creator_id),
-                core_tools_only=False,
-                max_tool_rounds=_HEARTBEAT_MAX_TOOL_ROUNDS,
-            )
+        run_heartbeat_t3_core(
+            agent_id=agent.id,
+            tenant_id=tenant_id,
+            data_root=Path(get_settings().AGENT_DATA_DIR),
+            model=model,
         ),
         timeout=_HEARTBEAT_TIMEOUT_SECONDS,
     )
-    reply = result.content
-
-    runtime_messages.append({"role": "assistant", "content": reply or ""})
-    if _heartbeat_session_ids.get(agent.id) == session_id:
-        _heartbeat_contexts[agent.id] = _compact_heartbeat_runtime_messages(runtime_messages)
-        _save_heartbeat_checkpoint(
-            agent.id,
-            session_id=session_id,
-            tick_count=tick_count,
-            runtime_messages=_heartbeat_contexts[agent.id],
-            t2_mtimes=_t2_mtimes.get(agent.id, {}),
-        )
-    else:
-        logger.info(
-            "[Heartbeat] Session cache for {} was reset during execution; not restoring stale context",
-            agent.id,
-        )
-
+    outcome_type = result.outcome_type
+    outcome_lane = _heartbeat_outcome_lane(outcome_type)
+    heartbeat_score = result.score
+    reply = (
+        f"Heartbeat direct T3 core: {result.summary}\n\n"
+        f"[OUTCOME:{outcome_type}] [SCORE:{heartbeat_score}]\n"
+        f"status: {result.status}\n"
+        f"job_id: {result.job_id or '(none)'}\n"
+        f"artifacts: {', '.join(result.artifact_paths) if result.artifact_paths else '(none)'}"
+    )
     assistant_message_id: str | None = None
     async with tenant_scoped_session(tenant_id) as db2:
         assistant_message = ChatMessage(
@@ -1625,19 +1237,11 @@ async def _invoke_heartbeat_and_persist(
         assistant_message_id = str(assistant_message.id)
         await db2.commit()
 
-    outcome_type, heartbeat_score = _parse_heartbeat_outcome(reply)
-    outcome_lane = _heartbeat_outcome_lane(outcome_type)
-
-    async with tenant_scoped_session(tenant_id) as db3:
-        a_result = await db3.execute(select(Agent).where(Agent.id == agent.id))
-        a = a_result.scalar_one_or_none()
-        if a:
-            a.last_heartbeat_at = datetime.now(timezone.utc)
-            await db3.commit()
+    await _touch_last_heartbeat(agent.id, tenant_id)
 
     from app.services.activity_logger import log_activity
 
-    summary = reply[:80] if reply else "empty"
+    summary = result.summary[:120] if result.summary else "empty"
     await log_activity(
         agent.id,
         "heartbeat",
@@ -1648,42 +1252,15 @@ async def _invoke_heartbeat_and_persist(
             "outcome_lane": outcome_lane,
             "score": heartbeat_score,
             "session_id": str(session_id),
+            "runtime": "direct_t3_core",
+            "status": result.status,
+            "job_id": result.job_id,
+            "skip_reason": result.skip_reason,
+            "platform_gate_status": result.platform_gate_status,
+            "issues": list(result.issues),
+            "artifact_paths": list(result.artifact_paths),
         },
     )
-
-    try:
-        reflection_result = await _route_heartbeat_reflection_learning(
-            agent_id=agent.id,
-            tenant_id=agent.tenant_id,
-            agent_name=agent.name,
-            session_id=session_id,
-            runtime_task_id=runtime_task_id,
-            assistant_message_id=assistant_message_id,
-            runtime_messages=runtime_messages,
-            reply=reply,
-            outcome_type=outcome_type,
-            outcome_lane=outcome_lane,
-            score=heartbeat_score,
-        )
-        if reflection_result.get("status") in {"emitted", "scheduled"}:
-            await log_activity(
-                agent.id,
-                "heartbeat",
-                "Heartbeat reflection routed to Learning Brain",
-                detail={
-                    "activity_kind": "llm_reflection_extracted",
-                    "source": "heartbeat_reflection",
-                    "outcome_type": outcome_type,
-                    "score": heartbeat_score,
-                    "source_refs": reflection_result.get("source_refs") or [],
-                },
-            )
-    except Exception as _reflection_err:
-        logger.warning(
-            "[Heartbeat] Reflection learning route failed for {}: {}",
-            agent.id,
-            _reflection_err,
-        )
 
     try:
         from app.runtime.hooks import HookEvent, emit_hook
@@ -1699,8 +1276,13 @@ async def _invoke_heartbeat_and_persist(
                 "outcome": outcome_type,
                 "outcome_lane": outcome_lane,
                 "score": heartbeat_score,
-                "distillation_scope": "audit_only",
+                "distillation_scope": "direct_t3_core",
                 "tenant_id": str(agent.tenant_id) if agent.tenant_id else None,
+                "runtime_task_id": runtime_task_id,
+                "assistant_message_id": assistant_message_id,
+                "job_id": result.job_id,
+                "status": result.status,
+                "skip_reason": result.skip_reason,
             },
         )
     except Exception as _hook_err:
@@ -1713,12 +1295,24 @@ async def _invoke_heartbeat_and_persist(
 
     score_str = f" score={heartbeat_score}" if heartbeat_score is not None else ""
     logger.info(f"💓 Heartbeat for {agent.name}: {outcome_type}{score_str} — {summary}")
+    task_status = "skipped" if result.status == "skipped" else "completed"
     await _update_heartbeat_runtime_task(
         runtime_task_id,
-        status="completed",
+        status=task_status,
         result_summary=f"Heartbeat [{outcome_type}]: {summary}",
         session_id=heartbeat_session_id,
-        metadata_json={"outcome": outcome_type, "outcome_lane": outcome_lane, "score": heartbeat_score},
+        metadata_json={
+            "outcome": outcome_type,
+            "outcome_lane": outcome_lane,
+            "score": heartbeat_score,
+            "runtime": "direct_t3_core",
+            "status": result.status,
+            "job_id": result.job_id,
+            "skip_reason": result.skip_reason,
+            "platform_gate_status": result.platform_gate_status,
+            "issues": list(result.issues),
+            "artifact_paths": list(result.artifact_paths),
+        },
     )
 
 
@@ -1731,8 +1325,9 @@ async def _execute_heartbeat(
 ):
     """Execute a single heartbeat for an agent.
 
-    Creates a Reflection Session (like trigger_daemon) so tool calls and
-    the final reply are persisted and visible in the UI.
+    Creates a hidden audit session, runs deterministic maintenance, then calls
+    the direct T3 consolidation core. The model never enters the full agent
+    runtime and receives no tool executor.
 
     ``tenant_id`` is threaded from ``_heartbeat_tick`` (which already filtered
     on it) so every session here can pin the RLS GUC — under enforced
@@ -1742,7 +1337,6 @@ async def _execute_heartbeat(
     """
     if tenant_id is None:
         tenant_id = await resolve_tenant_for_agent(agent_id)
-    runtime_task_id: str | None = None
     heartbeat_session_id: str | None = None
     lease_held = lease_acquired
     if not lease_held:
@@ -1926,55 +1520,8 @@ async def _execute_heartbeat(
                 )
                 return
 
-            # Fetch recent activity for evolution context
-            from app.models.activity_log import AgentActivityLog
-
-            try:
-                recent_result = await db.execute(
-                    select(AgentActivityLog)
-                    .where(AgentActivityLog.agent_id == agent_id)
-                    .where(
-                        AgentActivityLog.action_type.in_(
-                            [
-                                "chat_reply",
-                                "tool_call",
-                                "task_created",
-                                "task_updated",
-                                "error",
-                                "heartbeat",
-                                "web_msg_sent",
-                                "feishu_msg_sent",
-                                "agent_msg_sent",
-                                "file_written",
-                                "schedule_run",
-                                "plaza_post",
-                            ]
-                        )
-                    )
-                    .order_by(AgentActivityLog.created_at.desc())
-                    .limit(50)
-                )
-                recent_activities = list(recent_result.scalars().all())
-            except Exception as e:
-                logger.warning(f"Failed to fetch recent activities for heartbeat: {e}")
-                recent_activities = []
-
-            # ── KAIROS persistent session: first tick vs subsequent tick ──
-            has_persistent_session = _has_complete_heartbeat_session_state(agent_id)
             tick_count = _heartbeat_tick_counts.get(agent_id, 0) + 1
             _heartbeat_tick_counts[agent_id] = tick_count
-
-            try:
-                evolution_context = await _build_evolution_context(
-                    agent_id,
-                    recent_activities,
-                    tick_count=tick_count,
-                    owner_id=agent.creator_id,
-                    company_id=agent.tenant_id,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to build evolution context for heartbeat: {e}")
-                evolution_context = ""
 
             # Resolve participant for DB session
             p_result = await db.execute(
@@ -1983,143 +1530,54 @@ async def _execute_heartbeat(
             agent_participant = p_result.scalar_one_or_none()
             agent_participant_id = agent_participant.id if agent_participant else None
 
-            if not has_persistent_session:
-                # ═══ First tick: full initialization ═══
-                heartbeat_instruction = _load_heartbeat_instruction(agent_id)
-                if evolution_context:
-                    heartbeat_instruction += "\n\n" + evolution_context
-
-                # Inject accepted T3 memory only as dedup/reference. Pending T3 intake
-                # already comes from canonical Segment Packages inside evolution_context.
-                t3_summary = _read_t3_summary(agent_id)
-                heartbeat_instruction += f"\n\n## Current T3 Memory (reference — don't duplicate these)\n{t3_summary}"
-
-                runtime_messages = _compact_heartbeat_runtime_messages(
-                    [{"role": "user", "content": heartbeat_instruction}]
-                )
-
-                # Create new DB session (only on first tick)
-                session = ChatSession(
+            session = ChatSession(
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=agent.creator_id,
+                participant_id=agent_participant_id,
+                source_channel="heartbeat",
+                session_kind="agent_internal_maintenance",
+                actor_type="platform",
+                runtime_source="heartbeat",
+                visibility_scope="agent_internal",
+                listed_surface="hidden",
+                title=f"Heartbeat T3: {agent.name}"[:200],
+            )
+            db.add(session)
+            await db.flush()
+            session_id = session.id
+            heartbeat_session_id = str(session_id)
+            tick_msg = f"Heartbeat direct T3 core tick #{tick_count} at {datetime.now(timezone.utc).isoformat()}"
+            db.add(
+                ChatMessage(
                     agent_id=agent_id,
                     tenant_id=tenant_id,
+                    conversation_id=str(session_id),
+                    role="user",
+                    content=tick_msg,
                     user_id=agent.creator_id,
                     participant_id=agent_participant_id,
-                    source_channel="heartbeat",
-                    session_kind="agent_internal_maintenance",
-                    actor_type="agent",
-                    runtime_source="heartbeat",
-                    visibility_scope="agent_internal",
-                    listed_surface="hidden",
-                    title=f"💓 Heartbeat: {agent.name}"[:200],
                 )
-                db.add(session)
-                await db.flush()
-                session_id = session.id
-                _heartbeat_session_ids[agent_id] = session_id
-                heartbeat_session_id = str(session_id)
+            )
+            await db.commit()
+            if runtime_task_id:
+                await update_runtime_task_record(
+                    runtime_task_id,
+                    status="running",
+                    child_session_id=str(session_id),
+                    result_summary="Heartbeat direct T3 core started.",
+                    metadata_json={
+                        "session_id": str(session_id),
+                        "session_bound": False,
+                        "runtime": "direct_t3_core",
+                    },
+                )
+            logger.info("[Heartbeat] Tick #{} direct T3 core for {}", tick_count, agent.name)
 
-                # Save heartbeat instruction as first message
-                db.add(
-                    ChatMessage(
-                        agent_id=agent_id,
-                        tenant_id=tenant_id,
-                        conversation_id=str(session_id),
-                        role="user",
-                        content=heartbeat_instruction[:4000],
-                        user_id=agent.creator_id,
-                        participant_id=agent_participant_id,
-                    )
-                )
-                await db.commit()
-                if runtime_task_id:
-                    await update_runtime_task_record(
-                        runtime_task_id,
-                        status="running",
-                        child_session_id=str(session_id),
-                        result_summary="Heartbeat session started.",
-                        metadata_json={
-                            "session_id": str(session_id),
-                            "session_bound": True,
-                        },
-                    )
-                _save_heartbeat_checkpoint(
-                    agent_id,
-                    session_id=session_id,
-                    tick_count=tick_count,
-                    runtime_messages=runtime_messages,
-                    t2_mtimes=_t2_mtimes.get(agent_id, {}),
-                )
-                logger.info("[Heartbeat] Tick #{} (full init) for {}", tick_count, agent.name)
-            else:
-                # ═══ Subsequent tick: <tick> + canonical pending T3 intake ═══
-                pending_t3_intake = _read_pending_t3_intake(agent_id)
-                if not pending_t3_intake:
-                    logger.info(
-                        "[Heartbeat] Skip tick #{} for {}: no pending canonical T3 intake", tick_count, agent.name
-                    )
-                    await _release_heartbeat_lease_async(agent_id)
-                    await _touch_last_heartbeat(agent_id, tenant_id)
-                    await _skip_heartbeat_runtime_task(
-                        runtime_task_id,
-                        skip_reason="no_pending_t3_intake",
-                        result_summary="Skipped heartbeat because there is no pending canonical T3 intake.",
-                    )
-                    return
-
-                session_id = _heartbeat_session_ids[agent_id]
-                heartbeat_session_id = str(session_id)
-                runtime_messages = _heartbeat_contexts[agent_id]
-
-                tick_msg = f"<tick>{datetime.now(timezone.utc).isoformat()} tick #{tick_count}</tick>"
-                if evolution_context:
-                    tick_msg += "\n\n" + evolution_context
-                else:
-                    tick_msg += "\n\n" + pending_t3_intake
-                runtime_messages.append({"role": "user", "content": tick_msg})
-
-                # Save tick message to DB session
-                db.add(
-                    ChatMessage(
-                        agent_id=agent_id,
-                        tenant_id=tenant_id,
-                        conversation_id=str(session_id),
-                        role="user",
-                        content=tick_msg[:4000],
-                        user_id=agent.creator_id,
-                        participant_id=agent_participant_id,
-                    )
-                )
-                await db.commit()
-                if runtime_task_id:
-                    await update_runtime_task_record(
-                        runtime_task_id,
-                        status="running",
-                        child_session_id=str(session_id),
-                        result_summary="Heartbeat session continued.",
-                        metadata_json={
-                            "session_id": str(session_id),
-                            "session_bound": True,
-                        },
-                    )
-                _save_heartbeat_checkpoint(
-                    agent_id,
-                    session_id=session_id,
-                    tick_count=tick_count,
-                    runtime_messages=runtime_messages,
-                    t2_mtimes=_t2_mtimes.get(agent_id, {}),
-                )
-                logger.info(
-                    "[Heartbeat] Tick #{} (canonical T3 intake ready) for {}",
-                    tick_count,
-                    agent.name,
-                )
-
-            heartbeat_continuation = _invoke_heartbeat_and_persist(
+            heartbeat_continuation = _run_heartbeat_core_and_persist(
                 agent=agent,
                 tenant_id=tenant_id,
                 model=model,
-                fallback_model=fallback_model,
-                runtime_messages=runtime_messages,
                 session_id=session_id,
                 runtime_task_id=runtime_task_id,
                 heartbeat_session_id=heartbeat_session_id,
@@ -2228,20 +1686,6 @@ async def _heartbeat_tick():
     except Exception as e:
         logger.error(f"Heartbeat tick error: {e}", exc_info=True)
         await write_audit_log("heartbeat_error", {"error": str(e)[:300]})
-
-    # P1-W2-7: prune skills idle past TTL across all cached heartbeat
-    # session contexts. Web-chat sessions are recreated per request, so
-    # they don't accumulate; only the long-lived heartbeat ctxs need this.
-    try:
-        total_pruned = 0
-        for ctx in list(_heartbeat_session_ctxs.values()):
-            dropped = ctx.prune_expired_skills()
-            total_pruned += len(dropped)
-        if total_pruned:
-            logger.info(f"[Heartbeat] Pruned {total_pruned} expired skill activations")
-    except Exception as e:
-        logger.warning(f"[Heartbeat] Skill prune failed (non-fatal): {e}")
-
 
 async def _sync_one_tenant(tenant_id: uuid.UUID) -> None:
     """Run sync_all_for_tenant in an isolated session with one retry."""

@@ -15,8 +15,9 @@ def test_runtime_entrypoints_pass_session_context_to_invoker() -> None:
 
     assert "SessionContext(" in websocket
     assert "session_context=effective_session_context" in websocket
-    assert "_get_or_create_heartbeat_session_ctx" in heartbeat
-    assert "session_context=_get_or_create_heartbeat_session_ctx" in heartbeat
+    assert "run_heartbeat_t3_core" in heartbeat
+    assert "_get_or_create_heartbeat_session_ctx" not in heartbeat
+    assert "session_context=_get_or_create_heartbeat_session_ctx" not in heartbeat
     assert 'source_channel="trigger"' in trigger_daemon
     assert 'listed_surface="task_updates"' in trigger_daemon
     assert 'listed_surface="hidden"' in heartbeat

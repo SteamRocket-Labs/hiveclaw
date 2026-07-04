@@ -804,6 +804,7 @@ class WorkflowRuntimeService:
                     max_tokens=getattr(policy, "max_tokens", None),
                     max_cache_miss_tokens=getattr(policy, "max_cache_miss_tokens", None),
                     max_subagents=getattr(policy, "max_subagents", None),
+                    max_team_sessions=getattr(policy, "max_team_sessions", None),
                     max_delegations=getattr(policy, "max_delegations", None),
                     max_background_tasks=getattr(policy, "max_background_tasks", None),
                     max_continuation_wakes=getattr(policy, "max_continuation_wakes", None),
@@ -813,6 +814,7 @@ class WorkflowRuntimeService:
                         "scope_type": getattr(policy, "scope_type", None),
                         "source": getattr(policy, "source", None),
                         "profile": getattr(policy, "profile", None),
+                        "max_team_sessions": getattr(policy, "max_team_sessions", None),
                         "policy_json": getattr(policy, "policy_json", None),
                     },
                 )

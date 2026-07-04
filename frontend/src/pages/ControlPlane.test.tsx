@@ -70,4 +70,12 @@ describe('ControlPlane', () => {
     expect(markup).not.toContain('Company Admin');
   });
 
+  it('labels runtime budgets as runtime protection rather than a technical budget page', () => {
+    const markup = renderToStaticMarkup(<ControlPlane tab="runtime_budgets" />);
+
+    expect(markup).toContain('Runtime Protection');
+    expect(markup).toContain('Company-level limits that take priority over the platform defaults.');
+    expect(markup).toContain('Enterprise section runtime_budgets chrome=embedded');
+  });
+
 });

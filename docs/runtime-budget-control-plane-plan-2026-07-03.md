@@ -1,7 +1,7 @@
 # Runtime Budget Control Plane 方案
 
 日期：2026-07-03
-状态：已定稿，进入实现验收
+状态：已定稿；2026-07-04 补充主 Agent 终止契约、Subagent/Workflow/Agent Team 计量边界和默认 profile 数值后进入实现验收
 范围：Hive runtime admission、预算预占、执行计量、自动运行熔断，以及企业控制中台里的预算治理。
 
 ## 1. 问题定义
@@ -24,6 +24,25 @@ Hive 现在已经有 tenant、user、agent 三个层级的 token quota counter�
 这个缺口危险的原因是：Hive 有 Claude Code 本地 CLI 没有以同样形式暴露的长期 durable execution surface，包括 scheduled trigger、heartbeat、durable `RuntimeTask`、background subagent、workflow run、parent continuation wake、restart recovery。
 
 因此这不是单个“众筹雷达”问题，而是 runtime 控制中台缺少一层统一预算治理。
+
+### 1.1 本轮根因拆分
+
+常春藤 / 众筹雷达事故不是单一 bug，而是两个问题叠在一起：
+
+1. **主 Agent 没有足够明确的终止/失败判断。**
+   定时任务本质上是平台在固定时间往一个 session chain 里投递 wake prompt。主 Agent 仍然负责判断任务是否完成、是否失败、是否还需要更多 subagent。但如果它把“子任务完成/失败”理解成“继续探索”，就会在 parent wake 后继续 spawn。
+
+2. **平台没有足够硬的 root-run 保护。**
+   即使主 Agent 判断失误，平台也不能允许一次 trigger fire 在 durable `RuntimeTask`、subagent completion signal、parent continuation wake 之间无限放大。模型可以判断，平台必须设边界。
+
+因此方案必须同时落两层：
+
+| 层级 | 目标 | 失败时谁兜底 |
+| --- | --- | --- |
+| 主 Agent 行为层 | 让模型知道什么时候继续、什么时候总结、什么时候失败并停止。 | runtime prompt / parent wake contract / tool result contract。 |
+| 平台硬保护层 | 就算模型没停，也不能无限创建 subagent、workflow leaf、delegation、parent wake 或 provider call。 | Runtime Budget Control Plane。 |
+
+只做主 Agent prompt 会变成“相信模型一定会停”；只做平台预算会让模型体验像突然撞墙。两层必须一起做。
 
 ## 2. 北极星
 
@@ -143,7 +162,7 @@ daily_scan trigger
    所有预算预占必须是数据库内的 conditional update / row lock / advisory lock；禁止 read-then-write。
 
 10. **预算系统故障要有明确安全语义。**
-    background、scheduled、heartbeat、workflow、work-amplifying tools 默认 fail-closed；直接真人 interactive 回复可以 fail-open 但必须降级并告警。
+    background、scheduled、heartbeat/evolution maintenance、workflow、work-amplifying tools 默认 fail-closed；直接真人 interactive 回复可以 fail-open 但必须降级并告警。
 
 11. **budget run 绑定一次活跃续跑链，不绑定整个 session。**
     同一个用户长会话里的多条独立消息不能永久累积到同一个 budget；但一条消息或一次 trigger fire 引发的 subagent、wake、delegation、workflow leaf 必须共享同一个 budget。
@@ -153,6 +172,18 @@ daily_scan trigger
 
 13. **hard stop 必须处理存量 work。**
     熔断不仅禁止新建工作，还要处理同一 budget 下已经入队但尚未执行的 work item。
+
+14. **主 Agent 必须显式做继续/完成/失败判断。**
+    parent wake 不是“继续原样运行”的空白授权。每次 wake 都必须要求主 Agent 在继续、完成、失败/阻塞并停止之间做选择，并把选择写入 runtime event / session timeline。
+
+15. **Agent Team 不计入 Subagent。**
+    普通 Mix Sub Agent 和 workflow 内 Mix Sub Agent 都消费 `subagents`；Agent Team member 是完整 child session / teammate lane，应消费单独的 `team_sessions`，否则会把两个语义不同的执行单元混在一起。
+
+16. **cache-miss 按 root run 计量，按 agent/display 归因。**
+    非缓存 token 是本次事故的主要成本放大面。预算 admission 必须按 root run 统计，不能按单个 agent 分散重置；UI 可以展示每个 subagent / team member / provider call 的归因，但不能改变 admission root。
+
+17. **记忆蒸馏不进入本轮控制分类。**
+    Summary Agent、Learning Brain、Memory Gate Agent、T3/Heartbeat Curator、Dream/Soul Writer、Skill Distiller 这类蒸馏/自进化 actor 不是 `spawn_subagent` worker，也不是 Agent Team member。它们是 direct LLM call / curation actor，没有普通 agent tool surface，不能自己调用 `spawn_subagent`。本轮 Runtime Budget 分类不为蒸馏新增额度、不假设蒸馏 token 很小、不把它放进公司后台这组三类控制项。唯一必须守住的边界是：蒸馏 actor 自身不消费 `subagents`。
 
 ## 6. 术语
 
@@ -167,6 +198,11 @@ daily_scan trigger
 | Settlement | 执行完成后按真实 usage 结算。 |
 | Circuit breaker | 强制 stop、summary-only 或 require-confirmation 的 runtime 状态。 |
 | Summary-only mode | parent 只能总结当前结果，不能再 enqueue 新工作。 |
+| Run Control Contract | 每次 autonomous root run / parent wake 给主 Agent 的继续、完成、失败判断契约。 |
+| Mix Sub Agent | 通过 `spawn_subagent` 创建的 session-local worker；包括普通 subagent 和 workflow leaf 中调用的同一 worker primitive。 |
+| Agent Team session | Team teammate / member session，是可进入的完整 child session；不计入 `subagents`，计入 `team_sessions`。 |
+| Distillation actor | 蒸馏/自进化维护 actor，例如 Summary Agent、Learning Brain、Memory Gate Agent、T3/Heartbeat Curator、Dream/Soul Writer、Skill Distiller；本轮不进入控制分类，也不计入 `subagents`。 |
+| Cache-miss tokens | 本次 root run 内未命中 provider prompt cache 的输入 token 风险；provider 不返回该指标时按 prompt estimate 计入 admission。 |
 
 ## 7. 数据模型
 
@@ -181,8 +217,8 @@ id
 tenant_id
 scope_type: global | tenant | user | agent | trigger | task_type | source
 scope_id
-source: web_chat | trigger | heartbeat | workflow | subagent | task_notification | agent_session_mailbox | delegation
-profile: interactive | scheduled | heartbeat | workflow | background_worker | heavy_research
+source: web_chat | trigger | heartbeat | workflow | subagent | task_notification | agent_session_mailbox | delegation | agent_team
+profile: interactive | scheduled | heartbeat | workflow | agent_team | background_worker
 is_enabled
 enforcement_mode: observe | enforce
 priority
@@ -190,11 +226,13 @@ max_tokens
 max_cache_miss_tokens
 max_llm_calls
 max_subagents
+max_team_sessions
 max_delegations
 max_background_tasks
 max_concurrency
 max_tool_rounds
 max_continuation_wakes
+max_parent_invocations
 max_wall_clock_seconds
 max_failures
 max_needs_reconciliation
@@ -233,7 +271,7 @@ agent_id
 root_runtime_task_id
 root_session_id
 parent_session_id
-root_run_kind: interactive_turn | trigger_fire | heartbeat_tick | workflow_run | delegation_run | system_repair
+root_run_kind: interactive_turn | trigger_fire | heartbeat_tick | workflow_run | agent_team_run | delegation_run | system_repair
 root_run_key
 origin_invocation_id
 trigger_id
@@ -253,11 +291,14 @@ reserved_llm_calls
 used_llm_calls
 reserved_subagents
 used_subagents
+reserved_team_sessions
+used_team_sessions
 reserved_delegations
 used_delegations
 reserved_background_tasks
 used_background_tasks
 continuation_wakes
+parent_invocations
 failures
 needs_reconciliation_count
 started_at
@@ -297,6 +338,13 @@ delegation run:
 heartbeat:
   root_run_kind = heartbeat_tick
   root_run_key = heartbeat:<agent_id>:<runtime_task_id_or_tick_id>
+  profile = heartbeat
+  note: existing independent heartbeat/evolution budget; not one of the three company control categories in §9
+
+explicit Agent Team root:
+  root_run_kind = agent_team_run
+  root_run_key = agent_team:<session_id_or_runtime_task_id>
+  profile = agent_team
 ```
 
 `root_session_id` 是 transcript / UI lineage，不是 budget lifetime boundary。budget lifetime boundary 由 `root_run_kind + root_run_key` 决定。
@@ -314,8 +362,8 @@ budget_run_id
 runtime_task_id
 agent_id
 user_id
-event_type: create | reserve | settle | release | deny | would_deny | circuit_break | complete | expire | cancel
-dimension: tokens | cache_miss_tokens | llm_calls | subagents | delegations | background_tasks | wall_clock | failures | continuation_wakes
+event_type: create | reserve | settle | release | deny | would_deny | circuit_break | complete | expire | cancel | parent_decision
+dimension: tokens | cache_miss_tokens | llm_calls | subagents | team_sessions | delegations | background_tasks | wall_clock | failures | continuation_wakes | parent_invocations
 amount
 source
 reason
@@ -397,7 +445,7 @@ reservation 估值是安全系统的一部分，不是 UI 默认值。
 `runtime_budget_runs.expires_at` 必须被 runtime daemon/reaper 实际消费：
 
 - trigger/scheduled：`expires_at = started_at + max_wall_clock_seconds`。
-- heartbeat：使用 heartbeat profile 的短 wall-clock cap。
+- heartbeat / distillation：沿用已有 heartbeat / evolution 预算或内部节流；本轮不新增公司后台控制分类。
 - interactive turn：使用 active run idle timeout；下一条独立用户消息新建 budget run，不复用旧 run。
 - workflow：使用 workflow profile wall-clock cap，wait/suspend 状态按 workflow policy 决定是否延长。
 
@@ -425,7 +473,7 @@ for each expired run:
 
 ### 8.1 Root run 创建
 
-web chat、trigger、heartbeat、workflow、delegation 等 executable runtime root：
+web chat、trigger、heartbeat、workflow、Agent Team、delegation 等 executable runtime root：
 
 ```text
 resolve root_run_kind/root_run_key
@@ -569,7 +617,7 @@ budget service 自身故障时必须安全可预期：
 | Runtime source | Budget unavailable / policy invalid / DB reservation error |
 | --- | --- |
 | `trigger` / `scheduled` | fail-closed；不创建 work item，不调用 provider。 |
-| `heartbeat` | fail-closed；记录 skipped/blocked runtime event。 |
+| `heartbeat` / evolution maintenance | 保持现有独立预算/节流语义；不进入本轮 sub-agent/team/workflow 分类。 |
 | `workflow` | fail-closed；不启动 leaf execution。 |
 | `spawn_subagent(run_in_background=true)` | fail-closed；不创建 `RuntimeTask`。 |
 | foreground `spawn_subagent` | fail-closed；避免无预算 work amplification。 |
@@ -581,75 +629,204 @@ budget service 自身故障时必须安全可预期：
 
 交互体验边界：budget service 故障时，真人在线会话仍可继续 direct LLM response，但 foreground `spawn_subagent` 仍然 fail-closed。这是刻意的安全取舍：服务故障时不阻断真人继续沟通，但也不允许模型放大工作量。产品表现应是“预算系统降级，子任务暂不可用”，而不是“模型失败”或“工具 bug”。
 
+### 8.8 Run Control Contract：主 Agent 终止/失败判断
+
+每个 autonomous root run 和 parent wake continuation 都必须给主 Agent 注入一段明确的运行契约。它不是用户可见文案，而是 runtime 对模型的执行边界：
+
+```text
+Run objective:
+  <本次 trigger / workflow / user message 要达成什么>
+
+Success criteria:
+  <满足哪些事实时必须结束并总结>
+
+Failure / stop criteria:
+  <连续失败、无新增证据、预算耗尽、权限缺失、外部依赖不可用时如何停止>
+
+Remaining runtime guard:
+  subagents: used/reserved/max
+  team_sessions: used/reserved/max
+  continuation_wakes: used/max
+  provider_calls: used/reserved/max
+  cache_miss_tokens: used/reserved/max
+
+Decision required on every parent wake:
+  continue_with_new_evidence | complete_and_summarize | fail_or_block_and_stop
+```
+
+主 Agent 的行为规则：
+
+- 只有在“新的子任务会带来新的证据或新的行动路径”时才能继续 spawn。
+- 如果最近一批 subagent 没有新增证据、重复失败、进入 `needs_reconciliation`，主 Agent 应停止扩散，汇总失败原因。
+- 如果成功条件已经满足，必须完成并总结，不能因为还有剩余额度就继续探索。
+- 如果失败条件满足，必须记录原因并停止，不能用新的 subagent 掩盖失败。
+- 如果需要人类或管理员决策，必须进入 blocked / approval path，不得自建 trigger 或继续 fanout。
+
+这层解决“主 Agent 会不会停”的问题；但它不是唯一安全边界。平台硬保护仍然必须独立生效。
+
+### 8.9 重复 spawn 与无新增证据 breaker
+
+除了数值预算，runtime 还应记录 parent 在同一 root run 内的 subagent intent 指纹：
+
+```text
+fingerprint = hash(parent_agent_id, root_budget_run_id, subagent_type, normalized_prompt_goal, definition_name)
+```
+
+规则：
+
+- 相同 fingerprint 连续出现，且上一批结果没有新增 artifact / finding / evidence，应触发 `repeated_subagent_intent` warning。
+- 超过 policy 阈值后，parent wake 必须进入 summary-only 或 blocked；禁止继续创建相同 intent 的 subagent。
+- workflow leaf fanout 不用这个语义 breaker 误杀，因为 workflow definition 已声明 fanout；但 workflow leaf 仍消费 `subagents` 和 token/cache-miss 预算。
+- Agent Team member 不进入 `subagents` fingerprint；Team 使用 `team_sessions` 和 team mailbox / session lineage 计量。
+
+这个 breaker 用来补足纯数值 cap 的盲区：即使还没达到 `max_subagents`，重复无收益的探索也应该停止。
+
+### 8.10 记忆蒸馏 / Heartbeat / Skill Distiller 的边界
+
+Heartbeat 不是 Subagent。Heartbeat 是平台维护 tick / session 续跑机制，用来触发记忆整理、自进化维护、T2/T3 intake、reflection learning、skill candidate 检查等工作。
+
+蒸馏 actor 也不是 Subagent：
+
+```text
+Summary Agent
+Learning Brain
+Memory Gate Agent
+T3 / Heartbeat Curator
+Dream / Soul Writer
+Skill Distiller
+```
+
+这些 actor 是平台维护型 LLM actor / curator。它们可以有 agent-like prompt、可以调用 LLM、可以写候选包或审查候选包，但它们不是通过 `spawn_subagent` 创建的业务 worker，也不是用户可进入的 Agent Team member session。当前代码里的 SkillDistiller、Skill Referee、T2 phase agent、Dream 都是 `create_llm_client_from_config(...).complete/stream(...)` 的 direct LLM call，不传 `tool_executor`，因此不能调用 `spawn_subagent`。
+
+本轮决策：
+
+- 不新增蒸馏专用 profile。
+- 不新增蒸馏专用预算维度。
+- 不把蒸馏/heartbeat/skill distiller 放进 Company Admin 的本轮三类控制项。
+- 不假设蒸馏 token 消耗很小；大底座文本下，蒸馏可能是高 token 工作。
+- 如果蒸馏线已有独立预算或内部节流，保持它在自己的 lane 中治理，不并入本轮 sub-agent/team/workflow 分类。
+- 唯一必须接入本轮语义的是：蒸馏 actor 自身不消费 `subagents`，也不能被实现成普通 agent tool-loop 后再暴露 `spawn_subagent`。
+- Heartbeat 需要单独表述：当前 heartbeat 已退化为平台维护 tick + direct T3 core，不再通过完整 `invoke_agent` tool-loop 执行，也不暴露 `spawn_subagent`。它可以调用 direct LLM core 做 T3 artifact drafting / Memory Gate review，但蒸馏 actor 自身不消费 `subagents`，也不进入 Company Admin 本轮三类控制项。
+
+产品表达：
+
+- 公司后台本轮不要展示蒸馏相关配置入口。
+- 普通用户只看到记忆整理/自进化的结果状态；不需要看到 Summary Agent、T3 Curator、reservation、root_run_kind 等内部细节。
+
 ## 9. 默认 Policy Profile
 
-具体数值需要结合生产成本模型确定，但 profile 形态应先固定。
+默认 profile 是平台内置保护，不是用户手动开启的功能。Company Admin 可以覆盖数值和 observe/enforce，但没有公司策略时平台默认策略必须生效。
 
-### 9.1 `interactive`
+公司后台本轮只放三类控制项：
 
-用于直接用户 web chat。
+1. **Sub-agent 线**：覆盖普通 `spawn_subagent`，包括 interactive / scheduled root 下的 Mix Sub Agent。
+2. **Agent Team 线**：覆盖显式进入的 teammate / member session；Team member 本身不算 subagent。
+3. **Dynamic Workflow 线**：覆盖显式 workflow runtime；大 fanout 只能通过这个线或它的 policy override 承载。
 
-特征：
+数值原则：
 
-- 中等 token budget。
-- 低到中等 background subagent budget。
-- 因为用户在线，允许更高 continuation 容忍度。
-- 预算耗尽时倾向 require confirmation。
+- **按 root run 算，不按单 agent 算。** 一次 trigger fire、一次 workflow run、一次 Agent Team run，或一条用户消息引发的所有 provider call / wake / child work 都共享同一个预算。
+- **Subagent、Agent Team、Workflow 分开。** 普通 `spawn_subagent` 和 workflow leaf 中的 Mix Sub Agent 消费 `subagents`；Agent Team member 消费 `team_sessions`；Workflow 通过 workflow profile 管 declared fanout。
+- **蒸馏不进入本轮分类。** 蒸馏 actor 不消费 `subagents`，也不在本表假设 token 很小或新增默认 token cap。
+- **cache-miss 是独立硬维度。** `total_tokens` 可以较高，但 `cache_miss_tokens` 必须更严格，因为它代表真实新输入成本。provider 不返回 cache 指标时按 prompt estimate 计入风险。
+- **scheduled 默认不承载 100-200 worker fanout。** 如果一次任务预期启动 100-200 个 subagent，它应走 Dynamic Workflow runtime，并由 workflow policy 或公司 override 提高该 run 的预算，而不是落到普通 daily trigger profile。
+- **公司策略优于默认设置。** Override 只影响新 run；已开始的 run 使用启动时 policy snapshot。
 
-### 9.2 `scheduled`
+### 9.1 初始内置默认值
 
-用于 cron/trigger run。
+这些值是初始安全默认，用于避免裸奔。上线前可以用 production readout 校准，但不能把默认保护删掉或改成无限。
 
-特征：
+| Profile | 控制线 | 典型入口 | max_subagents | max_team_sessions | max_delegations | max_continuation_wakes | max_parent_invocations | max_provider_calls | max_tokens | max_cache_miss_tokens | default work reservation | 默认 fail mode |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `interactive` | Sub-agent | 真人 web chat 一条消息 | 24 | 4 | 16 | 64 | 16 | 300 | 50,000,000 | 10,000,000 | 200,000 | require_confirmation |
+| `scheduled` | Sub-agent | cron / daily_scan / interval trigger | 32 | 0 | 12 | 64 | 16 | 240 | 40,000,000 | 8,000,000 | 250,000 | summary_only |
+| `workflow` | Dynamic Workflow | 已声明 fanout 的 Dynamic Workflow run | 256 | 0 | 64 | 512 | 64 | 2,000 | 250,000,000 | 80,000,000 | 300,000 | hard_stop |
+| `agent_team` | Agent Team | 显式 Agent Team / teammate run | 16 | 4 | 16 | 96 | 24 | 500 | 80,000,000 | 16,000,000 | 250,000 | require_confirmation |
 
-- 默认保守预算。
-- 严格 subagent cap。
-- 严格 wall-clock cap。
-- circuit breaker 进入 summary-only 或 hard-stop，不允许 silent continuation。
-- heavy research 必须显式 policy override。
+解释：
 
-### 9.3 `heartbeat`
+- `scheduled` 允许几十个 subagent，足够覆盖常规扫描、检索、验证，但默认不会允许 100-200 个 worker 的大规模 fanout。需要这种规模时，应该把任务建成 Dynamic Workflow 或由管理员给特定 trigger 覆盖策略。
+- `workflow` 默认允许 100-200 个 subagent，因为 WorkflowDefinition 预先声明 fanout、barrier、leaf call 和结果汇总；但它同时有更高的 token/cache-miss/provider-call 上限和 hard_stop。
+- `agent_team` 允许 3-4 个 teammate session。Team member 本身消费 `team_sessions`；如果 teammate session 内部又调用普通 `spawn_subagent`，那个 worker 才消费 `subagents`。
+- `interactive` 允许少量 Agent Team，因为 Team 常见规模是 3-4 个可进入 teammate session；这不应挤占 `subagents`。
+- 蒸馏/heartbeat/skill distiller 不在本表。它们如果已有独立预算或内部节流，继续沿用独立 lane；不要为了本轮控制台把它们压进 Sub-agent / Agent Team / Workflow。
+- 大规模 workflow 不需要第二种 Workflow runtime。它仍然是同一条 `propose_dynamic_workflow` / `preview_workflow` / `start_workflow` 路径，只是这次 run 绑定了更高的 workflow policy 或公司 override。
 
-用于 self-evolution 和后台维护。
+### 9.1.1 大规模 Workflow 不是第二种 Workflow
 
-特征：
+“高预算 Workflow”不能作为产品概念或 runtime type。Hive 只有一个 Workflow runtime：
 
-- 极低预算。
-- 默认不允许大规模 fanout。
-- 没有额外 governance 时不能触发 external-visible action。
-- 耗尽时优先 summary-only。
+```text
+propose_dynamic_workflow
+→ lowered WorkflowDefinition
+→ preview_workflow
+→ start_workflow
+→ RuntimeTask(task_type="workflow")
+```
 
-### 9.4 `workflow`
+所谓“大规模 workflow”只表示 **同一个 Workflow runtime 使用了更高的 runtime budget policy**。例如：
 
-用于 deterministic workflow run。
+| Policy label | 适用场景 | max_subagents | max_provider_calls | max_tokens | max_cache_miss_tokens |
+| --- | --- | ---: | ---: | ---: | ---: |
+| workflow default | 常规 workflow fanout | 256 | 2,000 | 250,000,000 | 80,000,000 |
+| workflow elevated override | 管理员批准的大规模审计 / 研究 | 1,000 | 8,000 | 1,000,000,000 | 250,000,000 |
 
-特征：
+这里的 `workflow elevated override` 是 policy label，不是 profile、不是新工具、不是第二套 UI。它可以通过公司策略、特定 workflow definition、特定 trigger，或一次性 approval 绑定到某个 root run。
 
-- budget 由 workflow definition 声明。
-- fanout 和 concurrency 由 workflow definition 声明。
-- static admission 加 runtime reservation。
-- repair round 消费同一个 budget。
+### 9.2 Cache-miss 的计量方式
 
-### 9.5 `background_worker`
+`cache_miss_tokens` 不按单 agent 单独封顶，而是按 root run 聚合：
 
-用于 background subagent 和 child worker。
+```text
+root_budget_run.cache_miss_tokens =
+  sum(provider_call.cache_miss_tokens or provider_call.prompt_token_estimate_when_unknown)
+```
 
-特征：
+展示层可以按下面维度归因：
 
-- 继承 parent/root budget。
-- 不能自己创建 fresh root budget。
-- 除非 policy 显式允许，否则不能递归 spawn background worker。
+```text
+by parent agent
+by subagent run
+by team member session
+by workflow leaf
+by provider/model
+```
 
-### 9.6 `heavy_research`
+但 admission 只能看 root run 总量。否则一个 parent 只要不断创建 fresh subagent / fresh Team member，就会把 cache-miss 风险分散成很多“小账本”，重新打开绕过口。
 
-用于显式批准的大型研究任务。
+### 9.3 Company override 执行语义
 
-特征：
+公司策略可以覆盖平台默认值，覆盖粒度从粗到细：
 
-- 需要 owner/admin confirmation。
-- 更高 token 和 subagent cap。
-- 必须产生 progress/receipt events。
-- 如果 fanout plan 已知，默认应走 workflow shape。
+```text
+tenant default
+source/profile default
+agent-specific
+trigger-specific
+agent + trigger specific
+workflow-specific override / one-run approval
+```
+
+执行规则：
+
+- 更具体的 enabled policy 胜出。
+- 同一粒度内 priority 高者胜出。
+- policy 在 root run 创建时 snapshot；运行中的 root run 不因后台修改 policy 改变 admission 语义。
+- override 不能把安全系统关掉，只能在 `observe` / `enforce` 和数值阈值上调整；平台级 emergency kill-switch 可以把 tenant 临时降到 observe，但必须记录事件。
+
+### 9.4 Profile 选择规则
+
+| 场景 | Profile |
+| --- | --- |
+| 用户在 web chat 发起一条普通消息 | `interactive` |
+| cron / interval / once / poll 触发器直接唤醒 agent | `scheduled` |
+| trigger 携带 workflow_ref，或 agent 调用 `start_workflow` | `workflow` |
+| 明确批准的大规模研究 workflow | `workflow` + elevated policy override |
+| heartbeat / T2->T3 / soul / skill distillation 等自进化维护 | 不进入本轮三类控制；沿用独立 heartbeat/evolution lane |
+| 显式 Agent Team root run | `agent_team` |
+| subagent / delegation / team member 由已有 root run 创建 | 不创建新 profile，继承 parent root budget |
+
+如果主 Agent 在 `scheduled` profile 下尝试启动 100-200 个 subagent，默认应被 budget admission 拦住，并提示它改为总结当前进展、请求管理员批准、或把任务转成同一套 Workflow runtime。管理员可以给这个 workflow run 或这个 trigger 绑定 elevated policy，但这不产生第二种 Workflow。
 
 ## 10. Circuit Breaker
 
@@ -662,9 +839,11 @@ used_tokens + reserved_tokens >= max_tokens
 used_cache_miss_tokens + reserved_cache_miss_tokens >= max_cache_miss_tokens
 used_llm_calls >= max_llm_calls
 used_subagents >= max_subagents
+used_team_sessions >= max_team_sessions
 used_delegations >= max_delegations
 used_background_tasks >= max_background_tasks
 continuation_wakes >= max_continuation_wakes
+parent_invocations >= max_parent_invocations
 failures >= max_failures
 needs_reconciliation_count >= max_needs_reconciliation
 child_failure_ratio >= max_child_failure_ratio
@@ -701,6 +880,7 @@ hard_stop 的止血目标是同时处理增量和存量：
 | Runtime root creation | 创建 budget run |
 | `spawn_subagent(run_in_background=true)` | enqueue 前 reserve subagent/background/tokens |
 | foreground `spawn_subagent` | 执行前 reserve subagent/tokens |
+| Agent Team member spawn | 创建 teammate session 前 reserve team_sessions/background/tokens |
 | `delegate_to_agent` | enqueue 前 reserve delegation/background/tokens |
 | local-agent delegation enqueue | enqueue 前 reserve delegation/background/tokens |
 | `send_agent_session_message` | 唤醒/继续 child work 前 reserve continuation/tokens；如会排队后台执行则 reserve background_tasks |
@@ -708,6 +888,7 @@ hard_stop 的止血目标是同时处理增量和存量：
 | provider response | settle actual usage |
 | `subagent_wake_consumer` | parent wake 前检查 breaker |
 | `continue_parent_session_with_task_notification` | 遵守 `summary_only` mode |
+| parent wake runtime prompt | 注入 Run Control Contract，要求 continue/complete/fail 决策 |
 | `workflow_admission` | 使用 shared budget admission |
 | `runtime_task_worker` claim | 不 claim exhausted/cancelled budget 的 task |
 | restart reconciliation | 保留 budget state 和 terminal reason |
@@ -744,6 +925,16 @@ UI surfaces：
 - Agent detail runtime panel：当前运行状态、影响范围、用户可理解原因、下一步操作、管理员处理入口；默认不展示 raw budget dimensions / runtime ids。
 - Platform Admin dashboard：top budget denials、cache-miss spikes、runaway fanout、pending approvals、tenant kill-switch、observe/enforce rollout、reaper health。
 - Session timeline：用用户语言展示本次运行的关键状态变化，例如“已开始”“已暂停以避免继续消耗额度”“需要管理员批准后继续”“已停止未启动的后续任务”。
+
+Company Admin 可调项应按用户能理解的策略线表达，不直接暴露内部 root kind：
+
+| UI 分组 | 对应 profile | 公司可调项 | 默认说明 |
+| --- | --- | --- | --- |
+| 日常运行保护 | `interactive` / `scheduled` | 子任务上限、续跑上限、调用次数、总 token、非缓存 token、失败后处理方式 | 默认已开启；用于防止普通对话和定时任务扩散。 |
+| Dynamic Workflow | `workflow` | workflow 子任务上限、调用次数、总 token、非缓存 token、是否允许更高预算 override | 显式 workflow 才进入；大 fanout 走这里。 |
+| Agent Team | `agent_team` | team member 上限、team run 调用次数、总 token、非缓存 token、是否需要确认 | 显式 Agent Team 才进入；team member 不算子代理。 |
+
+覆盖规则在 UI 上要表达成“公司策略优于平台默认”，而不是“手动开启保护”。保存 tenant policy 只是创建覆盖配置；没有覆盖配置时，平台内置默认仍然按 `enforce` 生效。
 
 Agent Detail 的“局部”默认面向小白用户，只围绕当前 agent 回答四个问题：
 
@@ -801,9 +992,11 @@ Alerts：
 
 ### Step 2：Root run attachment
 
-- web chat、trigger、heartbeat、workflow、subagent root 都挂 budget run。
+- web chat、trigger、heartbeat、workflow、Agent Team、subagent root 都挂 budget run。
 - 在 runtime context metadata 中传递 `budget_run_id`。
 - 给所有 tenant 安装 default runtime policies；没有手动 quota 的 tenant 也必须被默认 policy 保护。
+- 安装内置 profile 默认值：`interactive` / `scheduled` / `workflow` / `agent_team`。
+- 固化 profile 选择规则：100-200 subagent fanout 默认只能走 `workflow` + elevated policy override，不能落到普通 `scheduled`。
 - 测试每个 executable root 都有 budget。
 
 ### Step 3：LLM call reservation
@@ -817,14 +1010,18 @@ Alerts：
 
 - background subagent enqueue 前 admission。
 - foreground subagent execution 前 admission。
+- Agent Team member session 创建前 admission，消费 `team_sessions`，不得消费 `subagents`。
 - `delegate_to_agent` / local-agent delegation enqueue 前 admission。
 - `send_agent_session_message` 对 continuation / wake / queued background work 做 budget admission。
 - 持久化完整 `subagent_spec`。
-- 补 fanout cap、delegation cap、spec preservation 测试。
+- 补 fanout cap、team session cap、delegation cap、spec preservation 测试。
 
 ### Step 5：Parent wake circuit breaker
 
 - 在 `subagent_wake_consumer` 加 budget check。
+- parent wake 注入 Run Control Contract，要求主 Agent 明确选择继续、完成、失败/阻塞并停止。
+- 记录 parent decision event，用于 timeline 和 admin/support 排障。
+- 增加 repeated subagent intent / no-new-evidence breaker。
 - 增加 `summary_only` continuation mode。
 - summary-only 下禁用 work-amplifying tools。
 - 补 failure/reconciliation breaker 测试。
@@ -835,7 +1032,8 @@ Alerts：
 
 - workflow admission 预算检查接入 shared budget service。
 - 保留现有 workflow static checks。
-- 补 workflow 与 subagent 共享 budget dimension 的测试。
+- workflow leaf 中调用的 Mix Sub Agent 消费 `subagents`；Agent Team lane 消费 `team_sessions`。
+- 补 workflow 与 subagent/team session 共享 budget root、但维度分开的测试。
 
 ### Step 7：UI 与 ops visibility
 
@@ -868,8 +1066,10 @@ backend/tests/services/test_runtime_budget_estimates.py
 backend/tests/services/test_runtime_budget_reaper.py
 backend/tests/services/test_runtime_budget_fail_modes.py
 backend/tests/services/test_subagent_budget_admission.py
+backend/tests/services/test_agent_team_budget_admission.py
 backend/tests/services/test_delegation_budget_admission.py
 backend/tests/services/test_subagent_wake_budget_breaker.py
+backend/tests/services/test_run_control_contract.py
 backend/tests/runtime/test_runtime_budget_context.py
 backend/tests/runtime/test_workflow_budget_unification.py
 backend/tests/kernel/test_runtime_budget_enforcement.py
@@ -900,11 +1100,20 @@ budget service unavailable fail-opens direct interactive LLM response with degra
 provider call is blocked before LLM request when budget is exhausted
 background subagent is not enqueued without budget context
 subagent cap rejects excess fanout
+Agent Team member session consumes team_sessions and does not consume subagents
+team_sessions cap rejects excess teammate sessions
+distillation direct LLM calls are not counted as subagents
+distillation direct LLM calls do not receive spawn_subagent tool schemas
 delegate_to_agent is not enqueued without budget context
 delegation cap rejects excess A2A fanout
+workflow leaf Mix Sub Agent consumes subagents under the workflow root budget
+scheduled profile rejects 100-200 subagent fanout unless workflow + elevated policy override is used
 parent wake enters summary-only after child failure threshold
+parent wake requires a continue/complete/fail decision event
+repeated subagent intent with no new evidence trips summary-only or blocked mode
 summary-only mode disables work-amplifying tools
-workflow fanout and subagent fanout consume the same budget dimensions
+workflow fanout and subagent fanout consume the same root budget while preserving distinct dimensions
+cache-miss tokens are aggregated at root_run even when attributed by child run
 tenant/user/agent quota still blocks even when runtime budget remains
 runtime budget still blocks even when account quota is unset
 restart reconciliation preserves budget terminal reason
@@ -923,8 +1132,10 @@ pytest tests/services/test_runtime_budget_service.py \
        tests/services/test_runtime_budget_reaper.py \
        tests/services/test_runtime_budget_fail_modes.py \
        tests/services/test_subagent_budget_admission.py \
+       tests/services/test_agent_team_budget_admission.py \
        tests/services/test_delegation_budget_admission.py \
        tests/services/test_subagent_wake_budget_breaker.py \
+       tests/services/test_run_control_contract.py \
        tests/runtime/test_runtime_budget_context.py \
        tests/runtime/test_workflow_budget_unification.py \
        tests/kernel/test_runtime_budget_enforcement.py \
@@ -985,6 +1196,11 @@ You may summarize completed work, but you may not call spawn_subagent, start_wor
 
 已拍板、不可降级为实现细节的决策：
 
+- **两层治理模型**：主 Agent 行为层负责继续/完成/失败判断；平台硬保护层负责 root-run fanout/token/cache-miss/wake/provider-call 上限。两层都必须实现，不能用 prompt 替代 hard guard，也不能用 hard guard 替代主 Agent 的终止契约。
+- **Run Control Contract**：autonomous root run 和 parent wake 必须注入明确的 objective、success criteria、failure/stop criteria、remaining guard 和 decision required。parent wake 必须产出 continue / complete / fail_or_block decision event。
+- **Subagent / Workflow / Agent Team / 记忆蒸馏边界**：普通 Mix Sub Agent 和 workflow 内 Mix Sub Agent 都消费 `subagents`；Agent Team member 是完整 teammate session，消费 `team_sessions`；Summary Agent、Learning Brain、Memory Gate Agent、T3/Heartbeat Curator、Dream/Soul Writer、Skill Distiller 这类蒸馏 actor 是 direct LLM call / curator，不消费 `subagents`，也不进入本轮公司后台控制分类；三者不能混算。
+- **Cache-miss root-run 聚合**：cache-miss budget 按 root run admission，不能按每个 agent / subagent / team member 单独重置。UI 可做归因展示，但 admission root 不变。
+- **默认 profile 数值已作为初始内置保护拍板**：`interactive`、`scheduled`、`workflow`、`agent_team` 使用 §9.1 初始默认值；production data 只负责校准这些默认，不得让默认保护退化成空值或无限。Heartbeat / distillation 保持现有独立 lane，不进入本轮三类公司控制项。大规模 workflow 通过 elevated policy override 表达，不是新 profile。
 - **跨 agent delegation 的 budget root ownership**：`delegate_to_agent`、local-agent delegation、以及后续 `send_agent_session_message` 唤醒/排队后台执行时，必须继承发起方当前 root `budget_run_id`，不得为目标 agent 创建 fresh root budget。唯一例外是没有发起方 active chain 的 external/standalone delegation ingress，此时它自己就是 root，使用 `root_run_kind=delegation_run`。目标 agent 仍保留自己的 identity、permission、audit 和 transcript 归属，但 work-amplification 预算归属于发起 run。原因：如果 B 作为独立 digital employee 自动另起 root budget，A→B→A 或 A→B→C 循环会在每次 delegation 时重置预算，重新打开无限 fanout / continuation 绕过口。若未来产品需要展示 B 的独立成本，可在同一个 root budget 下增加 target-agent cost attribution，不得改变 admission root。
 - **interactive 降级时 foreground subagent 仍 fail-closed**：budget service unavailable 不是预算耗尽，而是控制中台不可判定安全性。direct LLM response 可以 fail-open 以保证真人会话连续性；但 foreground/background `spawn_subagent`、`delegate_to_agent`、workflow start 等 work-amplifying action 必须 fail-closed。这个边界是预期行为，不应在事故排查时被当成可自动修复的工具失败。
 - **root run boundary**：`budget_run` 绑定一次 active continuation chain。一次 trigger fire 一个 budget_run；一条用户消息及其引发的 subagent/delegation/wake/workflow leaf 一个 budget_run；同一 chat session 的下一条独立用户消息新建 budget_run。parent wake 不因新 invocation 创建 fresh budget。
@@ -994,11 +1210,11 @@ You may summarize completed work, but you may not call spawn_subagent, start_wor
 - **rollout safety**：budget policy 必须支持 `enforcement_mode: observe | enforce`；上线先 observe 记录 would-deny，再逐 tenant enforce；必须有 tenant-level emergency kill-switch 降回 observe。
 - **frontend ownership**：Runtime Budget enforcement 是 Agent Framework / runtime core 的内置兜底能力，不依赖前端配置；Company Admin 必须提供 tenant-facing Runtime Budgets 配置页；Platform Admin 只承载平台方 ops/kill-switch/rollout；Agent Detail 和 Session Timeline 只做局部可见性。
 
-实现前仍必须用生产数据定值：
+实现前仍必须用生产数据校准：
 
-1. scheduled / background / heartbeat / workflow profile 的默认数值。
-2. scheduled trigger 默认策略是 tenant-wide 还是 agent-type-specific。
-3. 初始 `default_child_token_reservation`、`default_llm_call_token_reservation`、`max_cache_miss_tokens` 用哪段 production readout 反推。
+1. §9.1 默认值是否需要按真实 production p50/p75 上调或下调。
+2. 特定 agent / trigger 是否需要公司级 override，而不是修改平台默认。
+3. `default_child_token_reservation`、`default_llm_call_token_reservation`、`max_cache_miss_tokens` 的 calibration window 和更新频率。
 
 可延后到对应 Step 前收敛的工程细节：
 
@@ -1008,7 +1224,7 @@ You may summarize completed work, but you may not call spawn_subagent, start_wor
 4. cache-miss budget 对不暴露 cache metrics 的 provider 如何展示 uncertainty。
 5. reservation 与 actual usage 之间允许多少 overrun tolerance。
 6. owner/admin 是否能从 chat、admin UI 或两者批准 overrun。
-7. heavy research 在 fanout plan 已知时是否默认必须走 Workflow。
+7. 大规模研究在 fanout plan 已知时是否默认必须走 Dynamic Workflow。
 8. session timeline 里如何展示 budget stop，避免普通用户误以为 agent crash。
 9. 现有 `quota_tokens_per_day/month` UI 继续放在 User Management，还是迁到统一 Budget Settings。
 
@@ -1019,6 +1235,8 @@ You may summarize completed work, but you may not call spawn_subagent, start_wor
 - 每个 executable root runtime 都有 budget run。
 - budget run 边界是 active continuation chain；同一用户消息的 wake 共享预算，同一 session 下一条独立消息新建预算。
 - `root_session_id` 不再被误用为 budget lifetime boundary；预算边界由 `root_run_kind/root_run_key` 决定。
+- autonomous root run 和 parent wake 都注入 Run Control Contract。
+- parent wake 必须记录 continue / complete / fail_or_block decision event。
 - 每次 provider call 都在 request 前 reserve budget。
 - 每次 provider response 都 settle actual usage。
 - reservation estimate 由生产成本观测初始化和校准，不能用脱离真实成本的小常数。
@@ -1026,8 +1244,14 @@ You may summarize completed work, but you may not call spawn_subagent, start_wor
 - 过期 budget run 和悬挂 reservation 会被 reaper/reconciliation 回收。
 - budget service 故障时，autonomous/background work fail-closed；direct interactive response 的 fail-open 必须可观测并禁用 work-amplifying tools。
 - background subagent enqueue 在没有可用 run budget 时被阻止。
+- Agent Team member session 消费 `team_sessions`，不会挤占或绕过 `subagents`。
+- distillation actor 是 direct LLM call / curator，不消费 `subagents`，也不接收 `spawn_subagent` tool schema。
+- workflow leaf 中的 Mix Sub Agent 消费 `subagents`，并继承 workflow/root budget。
+- scheduled profile 默认会阻止 100-200 subagent fanout；这类任务必须使用 workflow + elevated policy override 或公司 override。
+- cache-miss tokens 作为 root-run 硬预算聚合，不能按 child agent 重置。
 - `delegate_to_agent` / local-agent delegation enqueue 在没有可用 run budget 时被阻止。
 - parent wake 在 child failure / reconciliation spike 后不能无限 continuation。
+- repeated subagent intent / no-new-evidence loop 会进入 summary-only 或 blocked。
 - hard_stop 会取消同一 budget 下 pending/unclaimed 的存量 RuntimeTask，不只是不再创建新 task。
 - workflow 与 subagent 使用同一个 budget service。
 - tenant/user/agent quota 继续作为 account-level outer cap 生效。

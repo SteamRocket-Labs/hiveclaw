@@ -13,6 +13,20 @@ _MIN_SYSTEM_PROMPT_BUDGET = 15000
 _MAX_SYSTEM_PROMPT_BUDGET = 350000  # ~100K tokens — lets 1M-window models use materially more context
 
 
+def _normalize_deferred_tool_group_name(name: str) -> str:
+    normalized = str(name or "").strip()
+    if normalized.endswith("_pack"):
+        normalized = normalized[: -len("_pack")]
+    return normalized
+
+
+def _legacy_pack_name(group_name: str) -> str:
+    normalized = str(group_name or "").strip()
+    if not normalized:
+        return ""
+    return normalized if normalized.endswith("_pack") else f"{normalized}_pack"
+
+
 def compute_system_prompt_budget(context_window_tokens: int | None) -> int:
     """Derive the overall system-prompt budget from the model context window."""
     if not context_window_tokens or context_window_tokens <= 0:
@@ -21,11 +35,38 @@ def compute_system_prompt_budget(context_window_tokens: int | None) -> int:
     return max(_MIN_SYSTEM_PROMPT_BUDGET, min(budget_chars, _MAX_SYSTEM_PROMPT_BUDGET))
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class TaskProfile:
     name: str
     complexity: str
-    suggested_pack_names: tuple[str, ...] = ()
+    suggested_deferred_tool_group_names: tuple[str, ...] = ()
+
+    def __init__(
+        self,
+        name: str,
+        complexity: str,
+        suggested_deferred_tool_group_names: tuple[str, ...] = (),
+        *,
+        suggested_pack_names: tuple[str, ...] | None = None,
+    ) -> None:
+        raw_groups = suggested_deferred_tool_group_names or tuple(suggested_pack_names or ())
+        groups = tuple(
+            group
+            for group in (_normalize_deferred_tool_group_name(item) for item in raw_groups)
+            if group
+        )
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "complexity", complexity)
+        object.__setattr__(self, "suggested_deferred_tool_group_names", groups)
+
+    @property
+    def suggested_pack_names(self) -> tuple[str, ...]:
+        """Legacy compatibility alias for stored/plugin policy surfaces."""
+        return tuple(
+            legacy_name
+            for legacy_name in (_legacy_pack_name(item) for item in self.suggested_deferred_tool_group_names)
+            if legacy_name
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,13 +363,17 @@ def infer_task_profile(query: str, messages: list[dict] | None = None) -> TaskPr
 
     explicit_mcp_extension = any(hint in haystack for hint in _MCP_EXTENSION_HINTS)
 
-    suggested_packs: tuple[str, ...] = ()
+    suggested_deferred_tool_groups: tuple[str, ...] = ()
     if explicit_mcp_extension:
-        suggested_packs = ("mcp_admin_pack",)
+        suggested_deferred_tool_groups = ("mcp_admin",)
     elif name == "research":
-        suggested_packs = ("web_pack",)
+        suggested_deferred_tool_groups = ("web",)
 
-    return TaskProfile(name=name, complexity=complexity, suggested_pack_names=suggested_packs)
+    return TaskProfile(
+        name=name,
+        complexity=complexity,
+        suggested_deferred_tool_group_names=suggested_deferred_tool_groups,
+    )
 
 
 def resolve_turn_model_route(

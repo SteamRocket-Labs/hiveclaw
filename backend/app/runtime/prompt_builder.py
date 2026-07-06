@@ -636,14 +636,19 @@ def build_dynamic_prompt_suffix(
         if knowledge:
             parts.append(knowledge)
 
-    if budget_profile and not active_tool_groups and budget_profile.task_profile.suggested_pack_names:
+    suggested_deferred_tool_groups = (
+        getattr(budget_profile.task_profile, "suggested_deferred_tool_group_names", ())
+        if budget_profile
+        else ()
+    )
+    if budget_profile and not active_tool_groups and suggested_deferred_tool_groups:
         hint_lines = [
             "## Likely Deferred Tool Groups",
             "These deferred tool groups are likely useful for the current request. Use `tool_search` to load "
             "matching schemas when the visible tools are not enough.",
         ]
-        for pack_name in budget_profile.task_profile.suggested_pack_names:
-            hint_lines.append(f"- {pack_name}")
+        for group_name in suggested_deferred_tool_groups:
+            hint_lines.append(f"- {group_name}")
         parts.append(_trim_block("\n".join(hint_lines), budget_chars=tool_groups_budget))
 
     # § Environment (user, channel, time)

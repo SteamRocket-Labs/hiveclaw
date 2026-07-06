@@ -119,7 +119,7 @@ def test_dynamic_suffix_suggests_deferred_tool_groups_not_capability_packs():
             "task_profile": TaskProfile(
                 name="research",
                 complexity="medium",
-                suggested_pack_names=("web_pack",),
+                suggested_deferred_tool_group_names=("web",),
             ),
             "active_tool_groups_budget_chars": 2000,
             "retrieval_budget_chars": 3000,
@@ -130,6 +130,8 @@ def test_dynamic_suffix_suggests_deferred_tool_groups_not_capability_packs():
 
     assert "## Likely Deferred Tool Groups" in suffix
     assert "tool_search" in suffix
+    assert "- web" in suffix
+    assert "web_pack" not in suffix
     assert "## Likely Capability Packs" not in suffix
     assert "These packs are likely useful" not in suffix
 

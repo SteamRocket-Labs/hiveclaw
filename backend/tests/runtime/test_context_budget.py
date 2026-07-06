@@ -118,17 +118,26 @@ def test_infer_task_profile_does_not_suggest_mcp_pack_for_generic_operations():
     )
 
     assert profile.name == "operations"
+    assert "mcp_admin" not in profile.suggested_deferred_tool_group_names
     assert "mcp_admin_pack" not in profile.suggested_pack_names
 
 
-def test_infer_task_profile_suggests_mcp_pack_for_explicit_platform_extension():
-    from app.runtime.context_budget import infer_task_profile
+def test_infer_task_profile_suggests_deferred_tool_group_for_explicit_platform_extension():
+    from app.runtime.context_budget import TaskProfile, infer_task_profile
 
     profile = infer_task_profile(
         "请帮我导入一个 MCP server 扩展能力，并读取它暴露的 resource",
     )
 
+    assert "mcp_admin" in profile.suggested_deferred_tool_group_names
     assert "mcp_admin_pack" in profile.suggested_pack_names
+
+    legacy_profile = TaskProfile(
+        name="research",
+        complexity="medium",
+        suggested_pack_names=("web_pack",),
+    )
+    assert legacy_profile.suggested_deferred_tool_group_names == ("web",)
 
 
 def test_resolve_turn_model_route_keeps_primary_for_simple_general_turn_without_explicit_routing():

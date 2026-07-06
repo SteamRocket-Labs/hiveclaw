@@ -137,6 +137,8 @@ def test_runtime_prompt_manifest_includes_context_usage_ledger():
 
     assert ledger["schema"] == "hive.ccplus.context_usage_ledger.v1"
     assert ledger["model_window_tokens"] == 1000
+    assert ledger["deferred_tool_index_tokens"] == categories["deferred_tool_index"]["tokens"]
+    assert ledger["loaded_tool_schema_tokens"] == categories["system_tools"]["tokens"] + categories["mcp_tools"]["tokens"]
     assert categories["system_prompt"]["tokens"] > 0
     assert categories["system_tools"]["tokens"] > 0
     assert categories["custom_agents"]["tokens"] > 0
@@ -144,6 +146,7 @@ def test_runtime_prompt_manifest_includes_context_usage_ledger():
     assert categories["skills"]["tokens"] > 0
     assert categories["messages"]["tokens"] > 0
     assert categories["mcp_tools"]["tokens"] > 0
+    assert categories["deferred_tool_index"]["item_count"] == 1
     assert categories["free_space"]["tokens"] >= 0
     assert ledger["used_tokens"] == sum(
         item["tokens"] for item in ledger["categories"] if item["name"] != "free_space"

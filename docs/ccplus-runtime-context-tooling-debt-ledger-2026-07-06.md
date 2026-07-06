@@ -378,6 +378,7 @@ flowchart TD
 | 返回影响 | 可达工具多时会占 prompt token，并模糊“列表 token”和“schema token” |
 | 代码位置 | `backend/app/runtime/prompt_builder.py:510`；`backend/app/runtime/turn_envelope.py:247` |
 | 一轮修复 | Ledger 区分 `deferred_tool_index_tokens` 和 `loaded_tool_schema_tokens`；prompt 列表按 budget / relevance 渲染，其余只进 manifest count |
+| 2026-07-06 落地证据 | `backend/app/runtime/prompt_builder.py` 新增 `_render_deferred_tool_index()`，按 `active_tool_groups_budget_chars` 预算逐行渲染 deferred tool index，并保留 `(+N more available in manifest)` 说明，避免固定塞入前 40 个候选。`backend/app/runtime/turn_envelope.py::build_context_usage_ledger()` 新增 `deferred_tool_index` category，并在 ledger 顶层区分 `deferred_tool_index_tokens` 与 `loaded_tool_schema_tokens`，后者由已加载 system/MCP tool schema token 汇总而非重复 category 计数；完整 deferred 候选仍保留在 prompt manifest。验证：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_prompt_builder.py backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_context_candidate_ref.py -q` -> `57 passed, 4 warnings`；`ruff check backend/app/runtime/prompt_builder.py backend/app/runtime/turn_envelope.py backend/tests/runtime/test_prompt_builder.py backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_context_candidate_ref.py` -> `All checks passed!` |
 
 ### RTD-20：Hook additional contexts 没有统一优先级与预算理由
 

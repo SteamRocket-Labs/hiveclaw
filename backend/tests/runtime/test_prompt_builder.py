@@ -106,6 +106,42 @@ def test_dynamic_suffix_renders_available_deferred_tools():
     assert "schema_tokens=42" in suffix
 
 
+def test_dynamic_suffix_caps_deferred_tool_index_by_budget() -> None:
+    from app.runtime.context_budget import TaskProfile
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    budget_profile = type(
+        "Budget",
+        (),
+        {
+            "memory_budget_chars": 8000,
+            "active_tool_groups_budget_chars": 360,
+            "retrieval_budget_chars": 3000,
+            "runtime_triggers_budget_chars": 3000,
+            "skill_catalog_budget_chars": 1200,
+            "task_profile": TaskProfile(name="general", complexity="medium"),
+        },
+    )()
+    candidates = [
+        {
+            "name": f"tool_{idx}",
+            "group": "bulk",
+            "reason": "available",
+            "selector": f"select:tool_{idx}",
+            "schema_token_cost": 99,
+            "risk": "governed_runtime",
+        }
+        for idx in range(30)
+    ]
+
+    suffix = build_dynamic_prompt_suffix(available_deferred_tools=candidates, budget_profile=budget_profile)
+
+    assert "## Available Deferred Tools" in suffix
+    assert "tool_0" in suffix
+    assert "tool_29" not in suffix
+    assert "more available in manifest" in suffix
+
+
 def test_dynamic_suffix_records_context_candidate_selection_ledger():
     from app.runtime.context_budget import TaskProfile
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix

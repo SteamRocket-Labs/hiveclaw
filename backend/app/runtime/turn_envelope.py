@@ -576,9 +576,11 @@ def build_context_usage_ledger(
     skill_ranking: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     mcp_server_refs: list[Any] | None = None,
     available_agent_types: list[Any] | tuple[Any, ...] | None = None,
+    available_deferred_tools: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Build a CC /context-style usage ledger from the actual prompt inputs."""
     system_tools, mcp_tools = _split_tool_schemas(tools_for_llm)
+    deferred_tool_candidates = deferred_tool_candidate_payload(available_deferred_tools)
     skill_payload = {
         "catalog": skill_catalog or "",
         "active_skill_names": list(active_skill_names or []),
@@ -602,9 +604,17 @@ def build_context_usage_ledger(
             payload=skill_payload,
             item_count=len(active_skill_names or []) or len(_skill_refs(skill_catalog, active_skill_names)),
         ),
+        _usage_category(
+            "deferred_tool_index",
+            payload=deferred_tool_candidates,
+            item_count=len(deferred_tool_candidates),
+        ),
         _usage_category("messages", payload=list(messages or []), item_count=len(messages or [])),
         _usage_category("mcp_tools", payload=mcp_payload, item_count=len(mcp_tools) + len(mcp_server_refs or [])),
     ]
+    category_by_name = {item["name"]: item for item in categories}
+    loaded_tool_schema_tokens = category_by_name["system_tools"]["tokens"] + category_by_name["mcp_tools"]["tokens"]
+    deferred_tool_index_tokens = category_by_name["deferred_tool_index"]["tokens"]
     used_tokens = sum(item["tokens"] for item in categories)
     free_tokens = max(int(model_window) - used_tokens, 0) if model_window is not None else 0
     categories.append(
@@ -620,6 +630,8 @@ def build_context_usage_ledger(
         "model_window_tokens": model_window,
         "used_tokens": used_tokens,
         "free_space_tokens": free_tokens,
+        "deferred_tool_index_tokens": deferred_tool_index_tokens,
+        "loaded_tool_schema_tokens": loaded_tool_schema_tokens,
         "categories": categories,
     }
 
@@ -701,6 +713,7 @@ def build_runtime_prompt_assembly_manifest(
         skill_ranking=skill_ranking,
         mcp_server_refs=mcp_server_refs,
         available_agent_types=available_agent_types,
+        available_deferred_tools=available_deferred_tools,
     )
     selection_manifest = build_context_selection_manifest(
         frozen_prefix=frozen_prefix,

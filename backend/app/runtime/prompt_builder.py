@@ -578,6 +578,41 @@ def _render_active_tool_groups(
     return build_active_tool_groups_section(active_tool_groups, budget_chars=budget_chars)
 
 
+def _render_deferred_tool_index(deferred_candidates: list[Any], *, budget_chars: int) -> str:
+    if not deferred_candidates:
+        return ""
+    header = [
+        "## Available Deferred Tools",
+        "These tools are not loaded yet. To load exactly one schema, call `tool_search` with `select:<tool_name>`.",
+    ]
+    lines = list(header)
+    rendered_count = 0
+    for idx, candidate in enumerate(deferred_candidates):
+        details = (
+            f"group={candidate.group}; risk={candidate.risk}; "
+            f"schema_tokens={candidate.schema_token_cost}; reason={candidate.reason}"
+        )
+        line = f"- {candidate.name} — `{candidate.selector}` ({details})"
+        remaining_after = len(deferred_candidates) - idx - 1
+        omitted_line = f"- ...(+{remaining_after} more available in manifest)" if remaining_after else ""
+        tentative = "\n".join([*lines, line, *([omitted_line] if omitted_line else [])])
+        if len(tentative) > budget_chars:
+            break
+        lines.append(line)
+        rendered_count += 1
+
+    if rendered_count < len(deferred_candidates):
+        omitted_line = f"- ...(+{len(deferred_candidates) - rendered_count} more available in manifest)"
+        while len(lines) > len(header) and len("\n".join([*lines, omitted_line])) > budget_chars:
+            lines.pop()
+            rendered_count -= 1
+            omitted_line = f"- ...(+{len(deferred_candidates) - rendered_count} more available in manifest)"
+        if len("\n".join([*lines, omitted_line])) <= budget_chars:
+            lines.append(omitted_line)
+    rendered = "\n".join(lines)
+    return rendered if len(rendered) <= budget_chars else _trim_block(rendered, budget_chars=budget_chars)
+
+
 # B4 (docs/agent-lifecycle-cc-alignment.md 主题 B): autonomous-work semantics
 # for wake-to-work runs — CC's "# Autonomous work" equivalent.
 #
@@ -790,19 +825,10 @@ def build_dynamic_prompt_suffix(
 
         deferred_candidates = coerce_deferred_tool_candidates(available_deferred_tools)
         if deferred_candidates:
-            lines = [
-                "## Available Deferred Tools",
-                "These tools are not loaded yet. To load exactly one schema, call `tool_search` with `select:<tool_name>`.",
-            ]
-            for candidate in deferred_candidates[:40]:
-                details = (
-                    f"group={candidate.group}; risk={candidate.risk}; "
-                    f"schema_tokens={candidate.schema_token_cost}; reason={candidate.reason}"
-                )
-                lines.append(f"- {candidate.name} — `{candidate.selector}` ({details})")
-            if len(deferred_candidates) > 40:
-                lines.append(f"- ...(+{len(deferred_candidates) - 40} more)")
-            deferred_tools_section = _trim_block("\n".join(lines), budget_chars=min(tool_groups_budget, 1600))
+            deferred_tools_section = _render_deferred_tool_index(
+                deferred_candidates,
+                budget_chars=min(tool_groups_budget, 1600),
+            )
     add_candidate(
         candidate_id="dynamic:tools:available_deferred_tools",
         kind="tools",

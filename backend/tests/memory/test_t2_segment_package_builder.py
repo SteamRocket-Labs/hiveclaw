@@ -101,6 +101,21 @@ def _labels_xml(source_bundle: dict, *, package_status: str = "closed", continui
 """
 
 
+def _source_bundle_fixture() -> dict:
+    return {
+        "package_id": "t2pkg-test",
+        "session_id": "session-test",
+        "t0_segment_id": "seg-test",
+        "source_refs": [
+            {
+                "uri": "t0://session/session-test/segment/seg-test#seq=1..2",
+                "path": "memory/t0/sessions/session-test/segments/seg-test/source.md",
+                "sha256": "0" * 64,
+            }
+        ],
+    }
+
+
 def test_source_bundle_excludes_projection_only_t0_events(tmp_path: Path) -> None:
     from app.memory.t2.segment_package import _build_source_bundle
 
@@ -1396,6 +1411,87 @@ def test_labels_prompt_teaches_activation_keys_for_qkv_router() -> None:
         "<risk_flag>",
     ):
         assert marker in LEARNING_BRAIN_LABELS_PROMPT
+
+
+def _labels_with_activation_keys(source_bundle: dict, activation_keys_xml: str) -> str:
+    return _labels_xml(source_bundle).replace("</t2_labels>", f"{activation_keys_xml}\n</t2_labels>")
+
+
+def test_validate_candidate_allows_legacy_labels_without_activation_keys() -> None:
+    from app.memory.t2.segment_package import _validate_candidate
+
+    source_bundle = _source_bundle_fixture()
+    ref = source_bundle["source_refs"][0]["uri"]
+    issues = _validate_candidate(
+        source_bundle=source_bundle,
+        summary_md=_summary_xml(source_bundle),
+        labels_md=_labels_xml(source_bundle),
+        review_md="# Review\n\n" + _approved_review_xml(package_id=source_bundle["package_id"], ref=ref),
+    )
+
+    assert not [issue for issue in issues if "activation_keys" in issue]
+
+
+def test_validate_candidate_accepts_controlled_activation_keys() -> None:
+    from app.memory.t2.segment_package import _validate_candidate
+
+    source_bundle = _source_bundle_fixture()
+    ref = source_bundle["source_refs"][0]["uri"]
+    labels_md = _labels_with_activation_keys(
+        source_bundle,
+        """
+  <activation_keys schema_version="t2.activation_keys.20260705">
+    <task_intent>architecture_design</task_intent>
+    <scenario>memory_runtime_design</scenario>
+    <entity type="doc">memory-system-spec.md</entity>
+    <temporal_hint kind="continuation">previous discussion</temporal_hint>
+    <decision status="accepted">Only three products.</decision>
+    <open_loop>Define QKV runtime path.</open_loop>
+    <relation_seed rel="depends_on">memory-system-spec</relation_seed>
+    <risk_flag>architecture_drift</risk_flag>
+  </activation_keys>""",
+    )
+    issues = _validate_candidate(
+        source_bundle=source_bundle,
+        summary_md=_summary_xml(source_bundle),
+        labels_md=labels_md,
+        review_md="# Review\n\n" + _approved_review_xml(package_id=source_bundle["package_id"], ref=ref),
+    )
+
+    assert not [issue for issue in issues if "activation_keys" in issue]
+
+
+def test_validate_candidate_rejects_invalid_activation_keys() -> None:
+    from app.memory.t2.segment_package import _validate_candidate
+
+    source_bundle = _source_bundle_fixture()
+    ref = source_bundle["source_refs"][0]["uri"]
+    labels_md = _labels_with_activation_keys(
+        source_bundle,
+        """
+  <activation_keys schema_version="bad">
+    <task_intent>unsupported</task_intent>
+    <entity type="unknown">x</entity>
+    <temporal_hint kind="invalid">soon</temporal_hint>
+    <decision status="maybe">x</decision>
+    <relation_seed rel="magic">x</relation_seed>
+    <risk_flag>surprise</risk_flag>
+  </activation_keys>""",
+    )
+    issues = _validate_candidate(
+        source_bundle=source_bundle,
+        summary_md=_summary_xml(source_bundle),
+        labels_md=labels_md,
+        review_md="# Review\n\n" + _approved_review_xml(package_id=source_bundle["package_id"], ref=ref),
+    )
+
+    assert "labels.md activation_keys schema_version must be t2.activation_keys.20260705" in issues
+    assert "labels.md activation_keys task_intent must be controlled enum" in issues
+    assert "labels.md activation_keys entity type must be controlled enum" in issues
+    assert "labels.md activation_keys temporal_hint kind must be controlled enum" in issues
+    assert "labels.md activation_keys decision status must be controlled enum" in issues
+    assert "labels.md activation_keys relation_seed rel must be controlled enum" in issues
+    assert "labels.md activation_keys risk_flag must be controlled enum" in issues
 
 
 def test_source_bundle_includes_known_failure_modes(tmp_path) -> None:

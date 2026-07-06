@@ -77,6 +77,29 @@ _EPISODE_T3_INTAKE_THRESHOLDS = {
     "safety_scope": 0.85,
 }
 _ALLOWED_REVIEW_NEXT = {"t3_intake", "episode_stitching", "short_term_carryover", "archive_recall_only", "none"}
+_ACTIVATION_KEYS_SCHEMA_VERSION = "t2.activation_keys.20260705"
+_ALLOWED_ACTIVATION_TASK_INTENTS = {
+    "architecture_design",
+    "coding",
+    "research",
+    "operations",
+    "memory_recall",
+    "self_evolution",
+    "general",
+}
+_ALLOWED_ACTIVATION_ENTITY_TYPES = {"doc", "file", "person", "org", "concept", "tool", "skill"}
+_ALLOWED_ACTIVATION_TEMPORAL_KINDS = {"explicit", "relative", "continuation"}
+_ALLOWED_ACTIVATION_DECISION_STATUSES = {"accepted", "rejected", "superseded", "open"}
+_ALLOWED_ACTIVATION_RELATION_RELS = {"depends_on", "blocks", "related_to", "contradicts"}
+_ALLOWED_ACTIVATION_RISK_FLAGS = {
+    "architecture_drift",
+    "privacy_sensitive",
+    "cross_tenant",
+    "security_relevant",
+    "production_impact",
+    "policy_conflict",
+    "evidence_gap",
+}
 _LINEAGE_METADATA_KEYS = (
     "root_session_id",
     "parent_session_id",
@@ -1340,10 +1363,49 @@ def _validate_candidate(*, source_bundle: dict[str, Any], summary_md: str, label
         elif not found.intersection(expected_uris):
             issues.append(f"{name} source_refs do not match source_bundle")
     _validate_continuity_fields(summary=summary, labels=labels, review=review, issues=issues)
+    _validate_activation_keys(labels=labels, issues=issues)
     if review is not None and (review.findtext("decision") or "").strip() != "approved":
         issues.append("review decision is not approved")
     _validate_review_rubric(summary=summary, labels=labels, review=review, issues=issues)
     return issues
+
+
+def _validate_activation_keys(*, labels: ET.Element | None, issues: list[str]) -> None:
+    if labels is None:
+        return
+    nodes = labels.findall("activation_keys")
+    if not nodes:
+        return
+    if len(nodes) > 1:
+        issues.append("labels.md activation_keys must appear at most once")
+    node = nodes[0]
+    if (node.attrib.get("schema_version") or "").strip() != _ACTIVATION_KEYS_SCHEMA_VERSION:
+        issues.append("labels.md activation_keys schema_version must be t2.activation_keys.20260705")
+    for task_intent in node.findall("task_intent"):
+        if _xml_text(task_intent) and _xml_text(task_intent) not in _ALLOWED_ACTIVATION_TASK_INTENTS:
+            issues.append("labels.md activation_keys task_intent must be controlled enum")
+    for entity in node.findall("entity"):
+        if _xml_text(entity) and (entity.attrib.get("type") or "").strip() not in _ALLOWED_ACTIVATION_ENTITY_TYPES:
+            issues.append("labels.md activation_keys entity type must be controlled enum")
+    for temporal_hint in node.findall("temporal_hint"):
+        if (
+            _xml_text(temporal_hint)
+            and (temporal_hint.attrib.get("kind") or "").strip() not in _ALLOWED_ACTIVATION_TEMPORAL_KINDS
+        ):
+            issues.append("labels.md activation_keys temporal_hint kind must be controlled enum")
+    for decision in node.findall("decision"):
+        if _xml_text(decision) and (decision.attrib.get("status") or "").strip() not in _ALLOWED_ACTIVATION_DECISION_STATUSES:
+            issues.append("labels.md activation_keys decision status must be controlled enum")
+    for relation_seed in node.findall("relation_seed"):
+        if _xml_text(relation_seed) and (relation_seed.attrib.get("rel") or "").strip() not in _ALLOWED_ACTIVATION_RELATION_RELS:
+            issues.append("labels.md activation_keys relation_seed rel must be controlled enum")
+    for risk_flag in node.findall("risk_flag"):
+        if _xml_text(risk_flag) and _xml_text(risk_flag) not in _ALLOWED_ACTIVATION_RISK_FLAGS:
+            issues.append("labels.md activation_keys risk_flag must be controlled enum")
+
+
+def _xml_text(node: ET.Element) -> str:
+    return str(node.text or "").strip()
 
 
 def _validate_continuity_fields(

@@ -145,6 +145,80 @@ class MemoryRetriever:
         )
         return [_memory_item_activation_candidate(item) for item in items]
 
+    def gather_t2_evidence_candidates(
+        self,
+        agent_id: uuid.UUID,
+        *,
+        keys: dict[str, str | list[str] | tuple[str, ...] | set[str] | frozenset[str]],
+        limit: int = 20,
+    ) -> list[ActivationCandidate]:
+        from app.memory.reference_index import candidate_refs_for_keys, query_activation_keys, resolve_memory_ref
+
+        refs = candidate_refs_for_keys(
+            agent_id=agent_id,
+            data_root=self.data_root,
+            scope="t2_package",
+            keys=keys,
+            limit=limit,
+        )
+        if not refs:
+            return []
+        rows = query_activation_keys(
+            agent_id=agent_id,
+            data_root=self.data_root,
+            scope="t2_package",
+            limit=max(1000, limit * 20),
+        )
+        rows_by_ref: dict[str, list[dict[str, Any]]] = {ref: [] for ref in refs}
+        for row in rows:
+            if row["candidate_ref"] in rows_by_ref:
+                rows_by_ref[row["candidate_ref"]].append(row)
+
+        candidates: list[ActivationCandidate] = []
+        for candidate_ref in refs:
+            rows_for_ref = rows_by_ref.get(candidate_ref) or []
+            source_ref = str(rows_for_ref[0]["source_ref"] if rows_for_ref else "").strip()
+            resolved = resolve_memory_ref(agent_id=agent_id, data_root=self.data_root, ref=source_ref) if source_ref else None
+            key_features: dict[str, list[str]] = {}
+            for row in rows_for_ref:
+                key_features.setdefault(row["key_axis"], [])
+                if row["key_value"] not in key_features[row["key_axis"]]:
+                    key_features[row["key_axis"]].append(row["key_value"])
+            confidence = max((float(row["confidence"]) for row in rows_for_ref), default=0.55)
+            candidates.append(
+                ActivationCandidate(
+                    candidate_kind="agent_memory",
+                    candidate_ref={
+                        "schema": "hive.ccplus.context_candidate_ref.v1",
+                        "candidate_id": candidate_ref,
+                        "kind": "agent_memory",
+                        "source_type": "t2_package",
+                        "item_id": source_ref,
+                    },
+                    key_features=key_features,
+                    value_pointer={
+                        "loader": "t2_package",
+                        "ref": source_ref,
+                        "path": resolved.path if resolved else "",
+                    },
+                    surface=ActivationSurface(
+                        surface_kind="evidence_pointer",
+                        preview=f"T2 evidence package {source_ref}",
+                        token_estimate=8,
+                        source_refs=(source_ref,) if source_ref else (),
+                    ),
+                    source_refs=(source_ref,) if source_ref else (),
+                    score=ActivationScore(
+                        head_scores={"key_match": confidence},
+                        total_score=confidence,
+                        reasons=("activation_key_match", "t2_evidence_pointer"),
+                        scorer="memory_t2_gatherer",
+                    ),
+                    metadata={"scope": "t2_package", "source_ref": source_ref},
+                )
+            )
+        return candidates
+
     def _retrieve_knowledge_pages(self, agent_id: uuid.UUID, *, query: str = "", limit: int = 5) -> list[MemoryItem]:
         """Knowledge plane retrieval (spec §4.2): PPR top-k over knowledge/milestones.
 

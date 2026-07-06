@@ -60,6 +60,37 @@ def _write_overlay_entry(
     )
 
 
+def _write_t2_package(data_root: Path, agent_id: uuid.UUID, *, package_id: str = "t2pkg-evidence") -> str:
+    package_dir = data_root / str(agent_id) / "memory" / "t2" / "sessions" / "sess-1" / "segments" / "seg-1"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    (package_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "t2.segment-package.manifest.v1",
+                "package_id": package_id,
+                "package_status": "reviewed",
+                "session_id": "sess-1",
+                "t0_segment_id": "seg-1",
+                "created_at": "2026-07-05T00:00:00+00:00",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (package_dir / "summary.md").write_text("# Summary\nEvidence for memory runtime.\n", encoding="utf-8")
+    (package_dir / "labels.md").write_text(
+        f"""<t2_labels schema_version="t2.labels.v1" package_id="{package_id}">
+  <continuity_state>standalone</continuity_state>
+  <engineering_labels>
+    <risk_flags><risk_flag>privacy_sensitive</risk_flag></risk_flags>
+    <systems><system>memory</system></systems>
+  </engineering_labels>
+</t2_labels>""",
+        encoding="utf-8",
+    )
+    return package_id.replace("t2pkg-", "t2-")
+
+
 def _activation_context(*, current_user_id: str = "owner-1", owner_id: str = "owner-1") -> ActivationContext:
     return ActivationContext(
         query="salary planning",
@@ -222,6 +253,31 @@ async def test_memory_retriever_projects_agent_memory_activation_candidates(
     assert manifest["surface"]["surface_kind"] == "memory_item"
     assert source_ref in manifest["source_refs"]
     assert manifest["score"]["head_scores"]["retrieval"] == 0.98
+
+
+def test_memory_retriever_gathers_t2_evidence_candidates(data_root: Path, agent_id: uuid.UUID) -> None:
+    from app.memory.reference_index import rebuild_reference_index
+
+    short_ref = _write_t2_package(data_root, agent_id)
+    rebuild_reference_index(agent_id=agent_id, data_root=data_root)
+    retriever = MemoryRetriever(data_root=data_root)
+
+    candidates = retriever.gather_t2_evidence_candidates(
+        agent_id,
+        keys={"risk_flag": ["privacy_sensitive"], "system": ["memory"]},
+    )
+
+    assert len(candidates) == 1
+    manifest = candidates[0].to_manifest()
+    assert manifest["candidate_kind"] == "agent_memory"
+    assert manifest["candidate_ref"]["candidate_id"] == f"agent_memory:t2_package:{short_ref}"
+    assert manifest["candidate_ref"]["source_type"] == "t2_package"
+    assert manifest["key_features"]["risk_flag"] == ["privacy_sensitive"]
+    assert manifest["key_features"]["system"] == ["memory"]
+    assert manifest["value_pointer"]["loader"] == "t2_package"
+    assert manifest["value_pointer"]["ref"] == short_ref
+    assert manifest["surface"]["surface_kind"] == "evidence_pointer"
+    assert manifest["source_refs"] == [short_ref]
 
 
 @pytest.mark.asyncio

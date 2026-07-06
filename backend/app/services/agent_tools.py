@@ -40,6 +40,7 @@ from app.services.capability_group_policy_service import (
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
+from app.runtime.deferred_tools import make_deferred_tool_candidate
 from app.tools import (
     ToolExecutionRegistry,
     ToolGovernanceResolver,
@@ -610,6 +611,42 @@ async def available_deferred_tool_names_for_agent(agent_id: uuid.UUID, *, limit:
     """Stable turn-1 list of deferred tool names the agent may select/load."""
     names = await discoverable_tool_names_for_query(agent_id, "")
     return sorted(dict.fromkeys(names))[:limit]
+
+
+def _deferred_tool_group_for_name(tool_name: str) -> str:
+    if tool_name in AGENT_TEAM_DEFERRED_TOOL_NAMES:
+        return "agent_team"
+    if tool_name.startswith(("mcp_", "mcp__")):
+        return "mcp"
+    for capability in iter_runtime_l2_capabilities():
+        if tool_name in capability.tools:
+            return capability.name
+    return "deferred"
+
+
+def _deferred_tool_risk_for_name(tool_name: str) -> str:
+    if tool_name.startswith(("mcp_", "mcp__")):
+        return "external_mcp"
+    if any(token in tool_name for token in ("send", "create", "update", "delete", "write", "append")):
+        return "side_effect_governed"
+    return "governed_runtime"
+
+
+async def available_deferred_tool_candidates_for_agent(agent_id: uuid.UUID, *, limit: int = 80) -> list[dict[str, Any]]:
+    """Stable turn-1 deferred tool candidates with selector contract metadata."""
+    names = await available_deferred_tool_names_for_agent(agent_id, limit=limit)
+    candidates = []
+    for name in names:
+        candidate = make_deferred_tool_candidate(
+            name,
+            group=_deferred_tool_group_for_name(name),
+            reason="available_in_turn_via_tool_search",
+            schema_token_cost=0,
+            risk=_deferred_tool_risk_for_name(name),
+        )
+        if candidate is not None:
+            candidates.append(candidate.to_manifest())
+    return candidates
 
 
 async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:

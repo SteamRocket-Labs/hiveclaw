@@ -613,16 +613,22 @@ def build_dynamic_prompt_suffix(
         parts.append(tool_groups_section)
 
     if available_deferred_tools:
-        names = [str(name).strip() for name in available_deferred_tools if str(name).strip()]
-        if names:
+        from app.runtime.deferred_tools import coerce_deferred_tool_candidates
+
+        candidates = coerce_deferred_tool_candidates(available_deferred_tools)
+        if candidates:
             lines = [
                 "## Available Deferred Tools",
                 "These tools are not loaded yet. To load exactly one schema, call `tool_search` with `select:<tool_name>`.",
             ]
-            for name in names[:40]:
-                lines.append(f"- {name} — `select:{name}`")
-            if len(names) > 40:
-                lines.append(f"- ...(+{len(names) - 40} more)")
+            for candidate in candidates[:40]:
+                details = (
+                    f"group={candidate.group}; risk={candidate.risk}; "
+                    f"schema_tokens={candidate.schema_token_cost}; reason={candidate.reason}"
+                )
+                lines.append(f"- {candidate.name} — `{candidate.selector}` ({details})")
+            if len(candidates) > 40:
+                lines.append(f"- ...(+{len(candidates) - 40} more)")
             parts.append(_trim_block("\n".join(lines), budget_chars=min(tool_groups_budget, 1600)))
 
     # § Skills catalog (Step 9 — CC parity): progressive-disclosure index lives

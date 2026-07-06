@@ -114,7 +114,16 @@ def test_runtime_prompt_manifest_includes_context_usage_ledger():
             },
         ],
         active_tool_groups=[{"name": "web", "tools": ["web_search"]}],
-        available_deferred_tools=["firecrawl_fetch"],
+        available_deferred_tools=[
+            {
+                "name": "firecrawl_fetch",
+                "group": "web_pack",
+                "reason": "advanced crawl needed",
+                "selector": "select:firecrawl_fetch",
+                "schema_token_cost": 42,
+                "risk": "network_read",
+            }
+        ],
         memory_snapshot="memory text",
         retrieval_context="knowledge text",
         skill_catalog="## Skills\n- python",
@@ -162,6 +171,16 @@ def test_runtime_prompt_manifest_records_selection_reasons_source_hashes_and_bud
         skill_ranking=[
             {"skill_name": "python", "rank": 1, "score": 300, "reasons": ["scenario_overlap:python"]}
         ],
+        available_deferred_tools=[
+            {
+                "name": "firecrawl_fetch",
+                "group": "web_pack",
+                "reason": "advanced crawl needed",
+                "selector": "select:firecrawl_fetch",
+                "schema_token_cost": 42,
+                "risk": "network_read",
+            }
+        ],
     )
 
     candidates = {item["id"]: item for item in manifest["context_candidates"]}
@@ -175,6 +194,8 @@ def test_runtime_prompt_manifest_records_selection_reasons_source_hashes_and_bud
     assert candidates["ctx:skill:skill_catalog"]["source_hash"] == manifest["source_hashes"]["ctx:skill:skill_catalog"]
     assert candidates["ctx:skill:skill_catalog"]["payload"]["ranking"][0]["skill_name"] == "python"
     assert candidates["ctx:skill:skill_catalog"]["payload"]["ranking"][0]["reasons"] == ["scenario_overlap:python"]
+    assert candidates["ctx:tools:available_deferred_tools"]["payload"][0]["selector"] == "select:firecrawl_fetch"
+    assert candidates["ctx:tools:available_deferred_tools"]["payload"][0]["group"] == "web_pack"
     assert "ctx:memory:memory_files" in selected_ids
     assert "ctx:permissions:permissions_context" in suppressed_ids
     assert budget_decisions["ctx:memory:memory_files"]["budget_key"] == "memory_budget_chars"

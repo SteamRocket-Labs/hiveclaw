@@ -312,6 +312,8 @@ flowchart TD
 | 代码位置 | `backend/app/runtime/prompt_builder.py:510`；`backend/app/services/agent_tools.py` |
 | 一轮修复 | 建 `DeferredToolCandidate{name, group, reason, selector, schema_token_cost, risk}`，prompt 从 contract 渲染 |
 
+2026-07-06 落地证据：新增 `backend/app/runtime/deferred_tools.py`，定义 `DeferredToolCandidate{name, group, reason, selector, schema_token_cost, risk}` 与 coercion/payload helper；`backend/app/services/agent_tools.py` 新增 `available_deferred_tool_candidates_for_agent()`，从 discoverable deferred tool names 推导 group/risk/reason/selector contract；`backend/app/kernel/engine.py` 使用 candidate contract 注入 dynamic suffix 与 session metadata；`backend/app/runtime/prompt_builder.py` 从 candidate contract 渲染 `select:<tool>`、group、risk、schema token cost、reason；`backend/app/runtime/turn_envelope.py` 的 `ctx:tools:available_deferred_tools` payload 保存 candidate dict，同时顶层保留 names 兼容。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_prompt_builder.py::test_dynamic_suffix_renders_available_deferred_tools backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/services/test_mcp_tool_discovery.py::test_select_syntax_directly_discovers_one_deferred_tool backend/tests/runtime/test_invoker.py::test_tool_search_records_discovered_tools_and_returns_deferred_schema -q` -> `7 passed, 4 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/runtime/deferred_tools.py backend/app/runtime/prompt_builder.py backend/app/runtime/turn_envelope.py backend/app/services/agent_tools.py backend/app/kernel/engine.py backend/tests/runtime/test_prompt_builder.py backend/tests/runtime/test_turn_envelope_prompt_manifest.py` -> `All checks passed!`。
+
 ### RTD-14：Tool result 对上下文的影响没有统一分类
 
 | 字段 | 内容 |

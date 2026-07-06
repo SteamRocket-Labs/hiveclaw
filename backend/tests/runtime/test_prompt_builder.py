@@ -84,12 +84,26 @@ def test_dynamic_suffix_renders_available_deferred_tools():
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
     suffix = build_dynamic_prompt_suffix(
-        available_deferred_tools=["firecrawl_fetch", "mcp__github__search"],
+        available_deferred_tools=[
+            {
+                "name": "firecrawl_fetch",
+                "group": "web_pack",
+                "reason": "advanced crawl needed",
+                "selector": "select:firecrawl_fetch",
+                "schema_token_cost": 42,
+                "risk": "network_read",
+            },
+            "mcp__github__search",
+        ],
     )
 
     assert "## Available Deferred Tools" in suffix
     assert "select:firecrawl_fetch" in suffix
     assert "select:mcp__github__search" in suffix
+    assert "group=web_pack" in suffix
+    assert "risk=network_read" in suffix
+    assert "advanced crawl needed" in suffix
+    assert "schema_tokens=42" in suffix
 
 
 def test_dynamic_suffix_renders_effective_permissions_context():

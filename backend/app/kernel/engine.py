@@ -3222,14 +3222,19 @@ class AgentKernel:
             session_ctx = request.session_context
             budget_profile = session_ctx.metadata.get("context_budget") if session_ctx else None
             latest_user_query = _latest_user_query(request.messages)
-            available_deferred_tools: list[str] = []
+            available_deferred_tools: list[dict[str, Any]] = []
             if request.agent_id:
                 try:
-                    from app.services.agent_tools import available_deferred_tool_names_for_agent
+                    from app.services.agent_tools import available_deferred_tool_candidates_for_agent
 
-                    available_deferred_tools = await available_deferred_tool_names_for_agent(request.agent_id)
+                    available_deferred_tools = await available_deferred_tool_candidates_for_agent(request.agent_id)
                     if session_ctx is not None:
-                        session_ctx.metadata["available_deferred_tools"] = list(available_deferred_tools)
+                        session_ctx.metadata["available_deferred_tool_candidates"] = list(available_deferred_tools)
+                        session_ctx.metadata["available_deferred_tools"] = [
+                            str(candidate.get("name"))
+                            for candidate in available_deferred_tools
+                            if str(candidate.get("name") or "").strip()
+                        ]
                 except Exception as exc:
                     logger.debug("[Kernel] available deferred tool list unavailable: %s", exc)
             # Prompt cache: reuse frozen prefix if available and still matches

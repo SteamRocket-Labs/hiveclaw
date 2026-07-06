@@ -16,6 +16,7 @@ import uuid
 import re
 from typing import Any
 
+from app.runtime.deferred_tools import deferred_tool_candidate_payload
 from app.services.token_tracker import estimate_tokens_from_text
 
 _HOOK_LIFECYCLE_STATUS = {
@@ -474,7 +475,7 @@ def build_context_selection_manifest(
             "source_ref": "runtime.deferred_tool_discovery",
             "why_selected": "available_deferred_tools_present",
             "suppressed_reason": "available_deferred_tools_empty",
-            "payload": list(available_deferred_tools or []),
+            "payload": deferred_tool_candidate_payload(available_deferred_tools),
             "budget_key": "active_tool_groups_budget_chars",
         },
         {
@@ -642,6 +643,7 @@ def build_runtime_prompt_assembly_manifest(
     messages: list[Any] | tuple[Any, ...] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest from the actual prompt surface sent to the provider."""
+    deferred_tool_candidates = deferred_tool_candidate_payload(available_deferred_tools)
     frozen_sections = _section_names_from_text(frozen_prefix)
     dynamic_sections = _dynamic_input_sections(
         dynamic_suffix=dynamic_suffix,
@@ -698,7 +700,8 @@ def build_runtime_prompt_assembly_manifest(
         "context_budget": _budget_manifest(context_budget, model_window),
         "loaded_skills": _skill_refs(skill_catalog, active_skill_names),
         "active_tool_names": _tool_names(tools_for_llm),
-        "available_deferred_tools": [str(name) for name in (available_deferred_tools or []) if str(name).strip()],
+        "available_deferred_tools": [str(item["name"]) for item in deferred_tool_candidates],
+        "available_deferred_tool_candidates": deferred_tool_candidates,
         "available_agent_types": list(available_agent_types or []),
         "mcp_instructions_delta": {
             "server_refs": list(mcp_server_refs or []),

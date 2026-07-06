@@ -104,8 +104,11 @@ def _labels_xml(source_bundle: dict, *, package_status: str = "closed", continui
 def _source_bundle_fixture() -> dict:
     return {
         "package_id": "t2pkg-test",
+        "agent_id": "agent-test",
+        "tenant_id": "tenant-test",
         "session_id": "session-test",
         "t0_segment_id": "seg-test",
+        "source_range": {"start_sequence": 1, "end_sequence": 2},
         "source_refs": [
             {
                 "uri": "t0://session/session-test/segment/seg-test#seq=1..2",
@@ -1459,6 +1462,49 @@ def test_validate_candidate_accepts_controlled_activation_keys() -> None:
     )
 
     assert not [issue for issue in issues if "activation_keys" in issue]
+
+
+def test_build_manifest_writes_activation_key_preview() -> None:
+    from app.memory.t2.segment_package import LABELS_FILENAME, REVIEW_FILENAME, SUMMARY_FILENAME, _build_manifest
+
+    source_bundle = _source_bundle_fixture()
+    ref = source_bundle["source_refs"][0]["uri"]
+    labels_md = _labels_with_activation_keys(
+        source_bundle,
+        """
+  <activation_keys schema_version="t2.activation_keys.20260705">
+    <task_intent>architecture_design</task_intent>
+    <scenario>memory_runtime_design</scenario>
+    <entity type="doc">memory-system-spec.md</entity>
+    <temporal_hint kind="continuation">previous discussion</temporal_hint>
+    <decision status="accepted">Only three products.</decision>
+    <open_loop>Define QKV runtime path.</open_loop>
+    <relation_seed rel="depends_on">memory-system-spec</relation_seed>
+    <risk_flag>architecture_drift</risk_flag>
+  </activation_keys>""",
+    )
+    manifest = _build_manifest(
+        source_bundle=source_bundle,
+        files={
+            SUMMARY_FILENAME: _summary_xml(source_bundle),
+            LABELS_FILENAME: labels_md,
+            REVIEW_FILENAME: "# Review\n\n" + _approved_review_xml(package_id=source_bundle["package_id"], ref=ref),
+        },
+        package_status="reviewed",
+        job_id="job-test",
+    )
+
+    preview = manifest["activation_keys_preview"]
+    assert preview["schema_version"] == "t2.activation_keys.preview.v1"
+    assert preview["present"] is True
+    assert preview["task_intents"] == ["architecture_design"]
+    assert preview["scenarios"] == ["memory_runtime_design"]
+    assert preview["entities"] == [{"type": "doc", "value": "memory-system-spec.md"}]
+    assert preview["temporal_hints"] == [{"kind": "continuation", "value": "previous discussion"}]
+    assert preview["decisions"] == [{"status": "accepted", "value": "Only three products."}]
+    assert preview["open_loops"] == ["Define QKV runtime path."]
+    assert preview["relation_seeds"] == [{"rel": "depends_on", "value": "memory-system-spec"}]
+    assert preview["risk_flags"] == ["architecture_drift"]
 
 
 def test_validate_candidate_rejects_invalid_activation_keys() -> None:

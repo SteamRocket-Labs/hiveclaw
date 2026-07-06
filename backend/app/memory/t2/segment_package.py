@@ -1703,6 +1703,7 @@ def _build_manifest(
         "source_refs": [str(ref["uri"]) for ref in source_bundle.get("source_refs") or []],
         "context_refs": source_bundle.get("context_refs") or [],
         "excluded_refs": source_bundle.get("excluded_refs") or [],
+        "activation_keys_preview": _activation_keys_preview_from_labels(files.get(LABELS_FILENAME, "")),
         "lineage": source_bundle.get("lineage") or {},
         "visible_source_view": source_bundle.get("visible_source_view") or {},
         "package_status": package_status,
@@ -1720,6 +1721,61 @@ def _build_manifest(
         },
         "rollback_refs": [],
     }
+
+
+def _activation_keys_preview_from_labels(labels_md: str) -> dict[str, Any]:
+    preview: dict[str, Any] = {
+        "schema_version": "t2.activation_keys.preview.v1",
+        "present": False,
+        "task_intents": [],
+        "scenarios": [],
+        "entities": [],
+        "temporal_hints": [],
+        "decisions": [],
+        "open_loops": [],
+        "relation_seeds": [],
+        "risk_flags": [],
+    }
+    issues: list[str] = []
+    labels = _extract_single_xml(labels_md, "t2_labels", issues)
+    if labels is None:
+        if issues:
+            preview["parse_issues"] = issues
+        return preview
+    node = labels.find("activation_keys")
+    if node is None:
+        return preview
+    preview["present"] = True
+    preview["source_schema_version"] = (node.attrib.get("schema_version") or "").strip()
+    preview["task_intents"] = _activation_child_texts(node, "task_intent")
+    preview["scenarios"] = _activation_child_texts(node, "scenario")
+    preview["entities"] = [
+        {"type": (item.attrib.get("type") or "").strip(), "value": _xml_text(item)}
+        for item in node.findall("entity")
+        if _xml_text(item)
+    ]
+    preview["temporal_hints"] = [
+        {"kind": (item.attrib.get("kind") or "").strip(), "value": _xml_text(item)}
+        for item in node.findall("temporal_hint")
+        if _xml_text(item)
+    ]
+    preview["decisions"] = [
+        {"status": (item.attrib.get("status") or "").strip(), "value": _xml_text(item)}
+        for item in node.findall("decision")
+        if _xml_text(item)
+    ]
+    preview["open_loops"] = _activation_child_texts(node, "open_loop")
+    preview["relation_seeds"] = [
+        {"rel": (item.attrib.get("rel") or "").strip(), "value": _xml_text(item)}
+        for item in node.findall("relation_seed")
+        if _xml_text(item)
+    ]
+    preview["risk_flags"] = _activation_child_texts(node, "risk_flag")
+    return preview
+
+
+def _activation_child_texts(node: ET.Element, tag: str) -> list[str]:
+    return [text for item in node.findall(tag) if (text := _xml_text(item))]
 
 
 def _build_episode_manifest(

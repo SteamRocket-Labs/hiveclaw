@@ -1111,6 +1111,7 @@ def _grep_search(ws: Path, pattern: str, root: str = "", max_results: int = 50, 
 
 async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | None = None) -> str:
     from app.services.agent_tools import discoverable_tool_names_for_query
+    from app.services.tool_search_manifest import build_tool_search_manifest, render_tool_search_manifest_sections
 
     registry = _build_skill_registry(ws)
     normalized = query.strip().lower()
@@ -1134,9 +1135,26 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
             deferred_names = await discoverable_tool_names_for_query(uuid.UUID(str(resolved_agent_id)), query)
         except Exception:
             deferred_names = []
+    subagent_rows: list[dict] = []
+    if resolved_agent_id:
+        try:
+            from app.agents.subagent_definition import list_subagent_definitions
+
+            subagent_rows = list_subagent_definitions(agent_id=resolved_agent_id, tenant_id=None)
+        except Exception:
+            subagent_rows = []
+
+    manifest = build_tool_search_manifest(
+        query=query,
+        loaded_tool_names=deferred_names,
+        skills=matching_skills,
+        subagents=subagent_rows,
+    )
 
     lines = [
         "Tool search discovered deferred capabilities. Matching deferred tool schemas become callable in this session.",
+        "",
+        render_tool_search_manifest_sections(manifest),
     ]
     if deferred_names:
         lines.append("")

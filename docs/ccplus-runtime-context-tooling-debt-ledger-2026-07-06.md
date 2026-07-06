@@ -300,6 +300,8 @@ flowchart TD
 | 代码位置 | `backend/app/services/agent_tool_domains/workspace.py:1098`；`backend/app/runtime/invoker.py:816` |
 | 一轮修复 | `tool_search` 返回结构分区：`loaded_tool_schemas`、`skill_candidates`、`subagent_candidates`、`mcp_candidates`；文本可保留，但 manifest 必须结构化 |
 
+2026-07-06 落地证据：新增 `backend/app/services/tool_search_manifest.py` 作为共享结构化 discovery manifest，统一生成 `loaded_tool_schemas`、`skill_candidates`、`subagent_candidates`、`mcp_candidates`；`backend/app/services/agent_tool_domains/workspace.py::_tool_search()` 保留原有可读文本，同时追加四段结构化分区，并从 `SkillRegistry` 与 `list_subagent_definitions()` 填充 skill/subagent 候选；`backend/app/runtime/invoker.py::_resolve_tool_expansion()` 在 schema expansion event payload 与 `session_context.metadata["tool_search_manifests"]` 写入同一 manifest，明确 `load_skill` 候选不等于 callable schema。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/tools/test_workspace.py::test_tool_search_returns_structured_discovery_sections backend/tests/runtime/test_invoker.py::test_tool_search_records_discovered_tools_and_returns_deferred_schema backend/tests/runtime/test_invoker.py::test_tool_search_records_compact_requested_tool_alias backend/tests/services/test_mcp_tool_discovery.py::test_tool_search_text_and_schema_agree_on_mcp backend/tests/services/test_prompt_contracts.py::test_core_tool_descriptions_define_when_not_to_use_and_fallbacks -q` -> `5 passed, 4 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/services/tool_search_manifest.py backend/app/services/agent_tool_domains/workspace.py backend/app/runtime/invoker.py backend/tests/tools/test_workspace.py backend/tests/runtime/test_invoker.py` -> `All checks passed!`。
+
 ### RTD-13：Deferred tools 的 selector 文案不是稳定机器契约
 
 | 字段 | 内容 |

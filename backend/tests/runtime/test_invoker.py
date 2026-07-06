@@ -703,7 +703,11 @@ async def test_tool_search_records_discovered_tools_and_returns_deferred_schema(
             }
         ]
 
+    async def fake_deferred_tool_names(*_args, **_kwargs):
+        return ["firecrawl_fetch"]
+
     monkeypatch.setattr(invoker, "get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
+    monkeypatch.setattr(invoker, "_deferred_tool_names_for_query", fake_deferred_tool_names)
 
     result = await _resolve_tool_expansion(
         AgentInvocationRequest(
@@ -728,6 +732,12 @@ async def test_tool_search_records_discovered_tools_and_returns_deferred_schema(
     assert session.metadata["discovered_tools"] == ["firecrawl_fetch"]
     assert result.event_payload["type"] == "deferred_tools_delta"
     assert result.event_payload["discovered_tools"] == ["firecrawl_fetch"]
+    manifest = result.event_payload["tool_search_manifest"]
+    assert manifest["loaded_tool_schemas"] == [{"name": "firecrawl_fetch", "callable": True}]
+    assert manifest["skill_candidates"] == []
+    assert manifest["subagent_candidates"] == []
+    assert manifest["mcp_candidates"] == []
+    assert session.metadata["tool_search_manifests"][-1] == manifest
 
 
 @pytest.mark.asyncio
@@ -751,7 +761,11 @@ async def test_tool_search_records_compact_requested_tool_alias(monkeypatch):
             }
         ]
 
+    async def fake_deferred_tool_names(*_args, **_kwargs):
+        return ["firecrawl_fetch"]
+
     monkeypatch.setattr(invoker, "get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
+    monkeypatch.setattr(invoker, "_deferred_tool_names_for_query", fake_deferred_tool_names)
 
     result = await _resolve_tool_expansion(
         AgentInvocationRequest(

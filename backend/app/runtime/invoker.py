@@ -886,6 +886,17 @@ async def _resolve_tool_expansion(
             request.session_context = SessionContext()
         discovered = request.session_context.track_discovered_tools(expanded_tool_names)
         packs = _infer_active_tool_groups(expanded_tool_names)
+        from app.services.tool_search_manifest import build_tool_search_manifest
+
+        tool_search_manifest = build_tool_search_manifest(
+            query=query,
+            loaded_tool_names=expanded_tool_names,
+            skills=(),
+            subagents=(),
+        )
+        manifests = request.session_context.metadata.setdefault("tool_search_manifests", [])
+        if isinstance(manifests, list):
+            manifests.append(tool_search_manifest)
         return ToolExpansionResult(
             tools=tools,
             active_tool_groups=packs,
@@ -894,6 +905,7 @@ async def _resolve_tool_expansion(
                 "tool_groups": packs,
                 "discovered_tools": discovered,
                 "all_discovered_tools": list(request.session_context.discovered_tools),
+                "tool_search_manifest": tool_search_manifest,
                 "message": f"Discovered deferred tools: {', '.join(discovered or expanded_tool_names)}",
                 "status": "info",
                 "trigger_tool": tool_name,

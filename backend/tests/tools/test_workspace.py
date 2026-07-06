@@ -7,6 +7,34 @@ from uuid import uuid4
 import pytest
 
 
+@pytest.mark.asyncio
+async def test_tool_search_returns_structured_discovery_sections(monkeypatch, tmp_path):
+    import app.services.agent_tools as agent_tools
+    from app.services.agent_tool_domains.workspace import _tool_search
+
+    skill_dir = tmp_path / "skills" / "web-research"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: Web Research\ndescription: Web evidence workflow\ntools:\n  - web_search\n---\n# Web Research\n",
+        encoding="utf-8",
+    )
+
+    async def fake_discoverable_tool_names(_agent_id, _query):
+        return ["firecrawl_fetch", "mcp_github_issue_search"]
+
+    monkeypatch.setattr(agent_tools, "discoverable_tool_names_for_query", fake_discoverable_tool_names)
+
+    text = await _tool_search(tmp_path, "web", agent_id=uuid4())
+
+    assert "loaded_tool_schemas:" in text
+    assert "skill_candidates:" in text
+    assert "subagent_candidates:" in text
+    assert "mcp_candidates:" in text
+    assert "firecrawl_fetch" in text
+    assert "mcp_github_issue_search" in text
+    assert "Web Research" in text
+
+
 def test_tasks_json_protected_write_points_to_work_ledger(tmp_path):
     from app.services.agent_tool_domains.workspace import _write_file
 

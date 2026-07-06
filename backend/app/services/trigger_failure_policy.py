@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.runtime.failure_policy import build_runtime_failure_policy
+
 DEFAULT_FAILURE_BACKOFF_SECONDS = 60
 MAX_FAILURE_BACKOFF_SECONDS = 60 * 60
 
@@ -27,12 +29,19 @@ def apply_trigger_failure_policy(trigger: Any, *, error: str, now: datetime | No
         DEFAULT_FAILURE_BACKOFF_SECONDS * (2 ** max(failure_count - 1, 0)), MAX_FAILURE_BACKOFF_SECONDS
     )
     backoff_until = current + timedelta(seconds=backoff_seconds)
+    runtime_failure_policy = build_runtime_failure_policy(
+        failure_kind="trigger_preflight_skip",
+        message=str(error),
+        retryable=True,
+        safe_to_continue=True,
+    )
     config.update(
         {
             "failure_count": failure_count,
             "last_failure_at": current.isoformat(),
             "last_failure": str(error)[:1000],
             "backoff_until": backoff_until.isoformat(),
+            "last_runtime_failure_policy": runtime_failure_policy,
         }
     )
     trigger.config = config
@@ -40,6 +49,7 @@ def apply_trigger_failure_policy(trigger: Any, *, error: str, now: datetime | No
         "failure_count": failure_count,
         "backoff_seconds": backoff_seconds,
         "backoff_until": backoff_until.isoformat(),
+        "runtime_failure_policy": runtime_failure_policy,
     }
 
 

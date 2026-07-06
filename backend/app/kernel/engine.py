@@ -1575,6 +1575,7 @@ async def _execute_tool_with_hooks(
     The return tuple is unchanged (3 elements) so existing callers are intact.
     """
     from app.runtime.hooks import HookEvent, emit_hook
+    from app.runtime.failure_policy import build_runtime_failure_policy
 
     effective_args = dict(tool_args)
     pre_hook_metadata = {
@@ -1595,17 +1596,24 @@ async def _execute_tool_with_hooks(
         effective_args = hook_result.modified_args
     if hook_result and hook_result.block:
         blocked_result = "Blocked by hook: " + (hook_result.reason or "policy")
+        runtime_failure_policy = build_runtime_failure_policy(
+            failure_kind="hook_block",
+            message=blocked_result,
+            side_effect_risk="external_action_blocked",
+        )
         tool_result_ledger_entry = _record_tool_result_ledger_entry(
             request,
             tool_name=tool_name,
             tool_args=effective_args if isinstance(effective_args, dict) else {},
             result_text=blocked_result,
             status="blocked_by_hook",
+            side_effects={"runtime_failure_policy": runtime_failure_policy},
         )
         if record_span:
             span_metadata = {
                 "status": "blocked_by_hook",
                 "reason": hook_result.reason or "policy",
+                "runtime_failure_policy": runtime_failure_policy,
                 "tool_result_ledger_entry": tool_result_ledger_entry,
             }
             hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
@@ -1621,6 +1629,7 @@ async def _execute_tool_with_hooks(
             span_metadata = {
                 "status": "blocked_by_hook",
                 "reason": hook_result.reason or "policy",
+                "runtime_failure_policy": runtime_failure_policy,
                 "tool_result_ledger_entry": tool_result_ledger_entry,
             }
             hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
@@ -1662,15 +1671,24 @@ async def _execute_tool_with_hooks(
                 trace_metadata_sink=trace_metadata_sink,
             )
         except _KernelCancelledError:
+            runtime_failure_policy = build_runtime_failure_policy(
+                failure_kind="cancelled",
+                message="tool execution cancelled",
+            )
             tool_result_ledger_entry = _record_tool_result_ledger_entry(
                 request,
                 tool_name=tool_name,
                 tool_args=effective_args if isinstance(effective_args, dict) else {},
                 result_text="cancelled",
                 status="cancelled",
+                side_effects={"runtime_failure_policy": runtime_failure_policy},
             )
             if record_span:
-                span_metadata = {"status": "cancelled", "tool_result_ledger_entry": tool_result_ledger_entry}
+                span_metadata = {
+                    "status": "cancelled",
+                    "runtime_failure_policy": runtime_failure_policy,
+                    "tool_result_ledger_entry": tool_result_ledger_entry,
+                }
                 hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
                 if hook_records:
                     span_metadata["hook_lifecycle_records"] = hook_records
@@ -1681,7 +1699,11 @@ async def _execute_tool_with_hooks(
                     metadata=span_metadata,
                 )
             else:
-                span_metadata = {"status": "cancelled", "tool_result_ledger_entry": tool_result_ledger_entry}
+                span_metadata = {
+                    "status": "cancelled",
+                    "runtime_failure_policy": runtime_failure_policy,
+                    "tool_result_ledger_entry": tool_result_ledger_entry,
+                }
                 hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
                 if hook_records:
                     span_metadata["hook_lifecycle_records"] = hook_records
@@ -1695,18 +1717,25 @@ async def _execute_tool_with_hooks(
             raise
         except Exception as exc:
             err = f"[Tool execution error] {type(exc).__name__}: {str(exc)[:200]}"
+            runtime_failure_policy = build_runtime_failure_policy(
+                failure_kind="tool_failure",
+                message=err,
+                side_effect_risk="unknown",
+            )
             tool_result_ledger_entry = _record_tool_result_ledger_entry(
                 request,
                 tool_name=tool_name,
                 tool_args=effective_args if isinstance(effective_args, dict) else {},
                 result_text=err,
                 status="error",
+                side_effects={"runtime_failure_policy": runtime_failure_policy},
             )
             if record_span:
                 span_metadata = {
                     "status": "error",
                     "error_class": type(exc).__name__,
                     "error": str(exc)[:500],
+                    "runtime_failure_policy": runtime_failure_policy,
                     "tool_result_ledger_entry": tool_result_ledger_entry,
                 }
                 hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
@@ -1723,6 +1752,7 @@ async def _execute_tool_with_hooks(
                     "status": "error",
                     "error_class": type(exc).__name__,
                     "error": str(exc)[:500],
+                    "runtime_failure_policy": runtime_failure_policy,
                     "tool_result_ledger_entry": tool_result_ledger_entry,
                 }
                 hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)

@@ -1716,6 +1716,107 @@ async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_error(monkeypatch):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    session = SessionContext(session_id="session-failure-policy")
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "send"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=uuid4(),
+        session_context=session,
+        memory_session_id="session-failure-policy",
+    )
+    spans: list[dict] = []
+
+    async def fake_execute_tool(*_args, **_kwargs):
+        raise RuntimeError("network timeout")
+
+    async def record_span(**kwargs):
+        spans.append(kwargs)
+
+    async def emit_event(_event):
+        return None
+
+    result, _effective_args, executed = await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        tool_name="send_email",
+        tool_args={"to": "user@example.com"},
+        emit_event=emit_event,
+        record_span=record_span,
+    )
+
+    assert executed is False
+    assert result.startswith("[Tool execution error] RuntimeError: network timeout")
+    policy = spans[-1]["metadata"]["runtime_failure_policy"]
+    assert policy["failure_kind"] == "tool_failure"
+    assert policy["safe_to_continue"] is True
+    ledger_policy = session.metadata["tool_result_ledger"][-1]["side_effects"]["runtime_failure_policy"]
+    assert ledger_policy == policy
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_hook_block(monkeypatch):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.hooks import HookResult
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return HookResult(block=True, reason="external send requires confirmation")
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    session = SessionContext(session_id="session-hook-failure-policy")
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "send"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=uuid4(),
+        session_context=session,
+        memory_session_id="session-hook-failure-policy",
+    )
+    spans: list[dict] = []
+
+    async def fail_execute_tool(*_args, **_kwargs):
+        raise AssertionError("blocked tools must not execute")
+
+    async def record_span(**kwargs):
+        spans.append(kwargs)
+
+    async def emit_event(_event):
+        return None
+
+    result, _effective_args, executed = await _execute_tool_with_hooks(
+        execute_tool=fail_execute_tool,
+        request=request,
+        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        tool_name="send_email",
+        tool_args={"to": "user@example.com"},
+        emit_event=emit_event,
+        record_span=record_span,
+    )
+
+    assert executed is False
+    assert result == "Blocked by hook: external send requires confirmation"
+    policy = spans[-1]["metadata"]["runtime_failure_policy"]
+    assert policy["failure_kind"] == "hook_block"
+    assert policy["requires_user"] is True
+    assert policy["safe_to_continue"] is False
+    assert session.metadata["tool_result_ledger"][-1]["side_effects"]["runtime_failure_policy"] == policy
+
+
+@pytest.mark.asyncio
 async def test_agent_kernel_handles_tool_round_and_collects_parts():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig

@@ -328,6 +328,29 @@ Runtime activation routes memory candidates.
     assert knowledge[0].to_manifest()["value_pointer"]["source"] == "memory/knowledge/memory-runtime.md"
 
 
+def test_memory_retriever_gathers_explicit_overlay_candidates(data_root: Path, agent_id: uuid.UUID) -> None:
+    source_ref = "t0://session/s1/segment/seg-1#seq=1..2"
+    _write_overlay_entry(
+        data_root,
+        agent_id,
+        entry_id="ex-explicit",
+        content="User explicitly wants red tests before implementation.",
+        metadata={"category": "constraint", "target_hint": "worker", "source_refs": source_ref},
+    )
+    retriever = MemoryRetriever(data_root=data_root)
+
+    candidates = retriever.gather_explicit_overlay_candidates(agent_id, query="red tests")
+
+    assert len(candidates) == 1
+    manifest = candidates[0].to_manifest()
+    assert manifest["candidate_ref"]["candidate_id"] == "agent_memory:explicit_overlay:ex-explicit"
+    assert manifest["candidate_ref"]["source_type"] == "explicit_overlay"
+    assert manifest["key_features"]["category"] == ["constraint"]
+    assert manifest["value_pointer"]["loader"] == "explicit_overlay_entry"
+    assert manifest["surface"]["surface_kind"] == "memory_item"
+    assert manifest["source_refs"] == [source_ref]
+
+
 @pytest.mark.asyncio
 async def test_activation_context_suppresses_pl3_when_current_user_is_not_owner(
     data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever

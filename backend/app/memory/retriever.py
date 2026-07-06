@@ -145,6 +145,16 @@ class MemoryRetriever:
         )
         return [_memory_item_activation_candidate(item) for item in items]
 
+    def gather_explicit_overlay_candidates(
+        self,
+        agent_id: uuid.UUID,
+        *,
+        query: str = "",
+        limit: int = 8,
+    ) -> list[ActivationCandidate]:
+        items = self._retrieve_explicit_overlay(agent_id, query=query)
+        return [_memory_item_activation_candidate(item) for item in items[: max(1, int(limit or 8))]]
+
     def gather_t2_evidence_candidates(
         self,
         agent_id: uuid.UUID,

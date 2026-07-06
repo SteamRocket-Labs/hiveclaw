@@ -184,6 +184,44 @@ def test_runtime_assembly_state_mirrors_activation_query_candidates_and_router_o
     assert metadata_state["top_activation_candidates"] == [candidate.to_manifest()]
 
 
+def test_runtime_assembly_state_records_activation_router_output_object() -> None:
+    from app.runtime.activation_candidates import ActivationCandidate
+    from app.runtime.activation_router import ActivationRouterContext, route_activation_candidates
+    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
+
+    session = SessionContext(session_id="activation-router-object")
+    state = ensure_runtime_assembly_state(session)
+    principal_stack = PrincipalStack(
+        company=Principal(role=PrincipalRole.COMPANY, id="company-1"),
+        direct_owner=Principal(role=PrincipalRole.OWNER, id="owner-1"),
+        current_user=Principal(role=PrincipalRole.CURRENT_USER, id="user-2"),
+    )
+    allowed = ActivationCandidate(
+        candidate_kind="agent_memory",
+        candidate_ref={"candidate_id": "agent_memory:t3:v1/allowed", "kind": "agent_memory"},
+        metadata={"acl_scope": "company", "sensitivity": "PL1_public"},
+    )
+    denied = ActivationCandidate(
+        candidate_kind="agent_memory",
+        candidate_ref={"candidate_id": "agent_memory:t3:v1/denied", "kind": "agent_memory"},
+        metadata={"acl_scope": "owner", "sensitivity": "PL1_public"},
+    )
+    router_output = route_activation_candidates(
+        [allowed, denied],
+        context=ActivationRouterContext(principal_stack=principal_stack, query_id="aq:test"),
+    )
+
+    state.record_activation_router_output(router_output)
+
+    manifest = router_output.to_manifest()
+    metadata_state = session.metadata["runtime_assembly_state"]
+    assert session.metadata["activation_router_output"] == manifest
+    assert session.metadata["top_activation_candidates"] == manifest["top_activation_candidates"]
+    assert session.metadata["suppressed_activation_candidates"] == manifest["suppressed_activation_candidates"]
+    assert metadata_state["activation_router_output"] == manifest
+    assert metadata_state["top_activation_candidates"] == manifest["top_activation_candidates"]
+
+
 def test_tool_result_ledger_mirrors_into_runtime_assembly_state() -> None:
     from app.runtime.tool_result_ledger import append_tool_result_ledger_entry
 

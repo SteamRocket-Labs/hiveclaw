@@ -255,10 +255,11 @@ class RuntimeAssemblyState:
         self.activation_candidates = entries[-limit:]
         self.persist()
 
-    def record_activation_router_output(self, output: dict[str, Any]) -> None:
-        self.activation_router_output = dict(output)
-        self.top_activation_candidates = _dict_list_payload(output.get("top_activation_candidates"))
-        self.suppressed_activation_candidates = _dict_list_payload(output.get("suppressed_activation_candidates"))
+    def record_activation_router_output(self, output: Any) -> None:
+        manifest = _manifest_payload(output)
+        self.activation_router_output = manifest
+        self.top_activation_candidates = _dict_list_payload(manifest.get("top_activation_candidates"))
+        self.suppressed_activation_candidates = _dict_list_payload(manifest.get("suppressed_activation_candidates"))
         self.persist()
 
     def record_deferred_tools(self, candidates: list[Any] | tuple[Any, ...]) -> None:

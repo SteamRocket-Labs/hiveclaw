@@ -9,6 +9,7 @@ def _candidate(
     sensitivity: str = "PL1_public",
     acl_scope: str = "company",
     key_features: dict | None = None,
+    token_estimate: int = 1,
 ):
     from app.runtime.activation_candidates import ActivationCandidate, ActivationScore, ActivationSurface
 
@@ -17,7 +18,7 @@ def _candidate(
         candidate_ref={"candidate_id": f"{kind}:item:v1/hash", "kind": kind, "source_type": "test"},
         key_features=key_features or {"name": [kind]},
         value_pointer={"loader": "test_loader"},
-        surface=ActivationSurface(surface_kind="test", preview=f"{kind} preview"),
+        surface=ActivationSurface(surface_kind="test", preview=f"{kind} preview", token_estimate=token_estimate),
         score=ActivationScore(head_scores={"seed": 0.5}, total_score=0.5),
         metadata={"sensitivity": sensitivity, "acl_scope": acl_scope},
     )
@@ -150,3 +151,49 @@ def test_activation_router_scores_and_sorts_by_multi_head_query_match() -> None:
     assert head_scores["temporal"] == 1.0
     assert head_scores["profile"] == 1.0
     assert top[0]["score"]["scorer"] == "activation_router_multi_head"
+
+
+def test_activation_router_applies_budget_aware_top_k_and_token_pressure() -> None:
+    from app.runtime.activation_query import ActivationQuery
+    from app.runtime.activation_router import ActivationRouterContext, route_activation_candidates
+
+    query = ActivationQuery(
+        raw_prompt="Find Acme pricing policy.",
+        session_id="s1",
+        turn_id="t1",
+        intent_id="i1",
+        concepts=("pricing",),
+        entities=({"name": "Acme"},),
+        budget_policy={"max_candidates": 2, "max_surface_tokens": 12},
+    )
+    high = _candidate(
+        kind="agent_memory",
+        key_features={"concepts": ["pricing"], "entities": ["acme"]},
+        token_estimate=8,
+    )
+    medium = _candidate(
+        kind="knowledge_base",
+        key_features={"concepts": ["pricing"], "entities": ["acme"]},
+        token_estimate=8,
+    )
+    low = _candidate(
+        kind="skill",
+        key_features={"concepts": ["python"], "entities": ["backend"]},
+        token_estimate=1,
+    )
+
+    output = route_activation_candidates(
+        [low, high, medium],
+        context=ActivationRouterContext(
+            principal_stack=_principal_stack(current_is_owner=True),
+            activation_query=query,
+        ),
+    )
+    manifest = output.to_manifest()
+
+    assert [item["candidate_kind"] for item in manifest["top_activation_candidates"]] == ["agent_memory"]
+    suppressed = manifest["suppressed_activation_candidates"]
+    assert [item["hard_mask"]["reason"] for item in suppressed] == ["budget_exceeded", "budget_exceeded"]
+    assert {item["candidate_kind"] for item in suppressed} == {"knowledge_base", "skill"}
+    assert manifest["metadata"]["budget"]["selected_tokens"] == 8
+    assert manifest["metadata"]["budget"]["max_surface_tokens"] == 12

@@ -173,6 +173,77 @@ def _multi_head_score(candidate: ActivationCandidate, query: ActivationQuery) ->
     )
 
 
+def _int_policy(policy: Mapping[str, Any], key: str) -> int | None:
+    try:
+        value = int(policy.get(key) or 0)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _budget_exceeded_mask(candidate: ActivationCandidate, *, reason: str, details: Mapping[str, Any]) -> ActivationCandidate:
+    hard_mask = ActivationHardMask(
+        allowed=False,
+        reason="budget_exceeded",
+        judge="activation_router",
+        policy_ref=f"activation_router.budget.{reason}",
+        details=dict(details),
+    )
+    return _with_hard_mask(candidate, hard_mask)
+
+
+def _apply_budget(
+    candidates: tuple[ActivationCandidate, ...],
+    *,
+    query: ActivationQuery | None,
+) -> tuple[tuple[ActivationCandidate, ...], tuple[ActivationCandidate, ...], dict[str, Any]]:
+    if query is None:
+        return candidates, (), {}
+
+    policy = query.budget_policy
+    max_candidates = _int_policy(policy, "max_candidates")
+    max_surface_tokens = _int_policy(policy, "max_surface_tokens") or _int_policy(policy, "max_tokens")
+    if max_candidates is None and max_surface_tokens is None:
+        return candidates, (), {}
+
+    selected: list[ActivationCandidate] = []
+    suppressed: list[ActivationCandidate] = []
+    selected_tokens = 0
+    budget_closed = False
+    for rank, candidate in enumerate(candidates):
+        token_estimate = max(0, int(candidate.surface.token_estimate or 0))
+        details = {
+            "rank": rank,
+            "candidate_kind": candidate.candidate_kind,
+            "token_estimate": token_estimate,
+            "selected_tokens": selected_tokens,
+            "max_candidates": max_candidates,
+            "max_surface_tokens": max_surface_tokens,
+        }
+        if budget_closed:
+            suppressed.append(_budget_exceeded_mask(candidate, reason="surface_tokens", details=details))
+            continue
+        if max_candidates is not None and len(selected) >= max_candidates:
+            budget_closed = True
+            suppressed.append(_budget_exceeded_mask(candidate, reason="max_candidates", details=details))
+            continue
+        if max_surface_tokens is not None and selected_tokens + token_estimate > max_surface_tokens:
+            budget_closed = True
+            suppressed.append(_budget_exceeded_mask(candidate, reason="surface_tokens", details=details))
+            continue
+        selected.append(candidate)
+        selected_tokens += token_estimate
+
+    metadata = {
+        "max_candidates": max_candidates,
+        "max_surface_tokens": max_surface_tokens,
+        "selected_count": len(selected),
+        "suppressed_count": len(suppressed),
+        "selected_tokens": selected_tokens,
+    }
+    return tuple(selected), tuple(suppressed), metadata
+
+
 def _policy_mask(candidate: ActivationCandidate, context: ActivationRouterContext) -> ActivationHardMask | None:
     kind = _text(candidate.candidate_kind)
     if context.allowed_candidate_kinds and kind not in context.allowed_candidate_kinds:
@@ -249,19 +320,22 @@ def route_activation_candidates(
             top.append(_with_score(candidate, _multi_head_score(candidate, context.activation_query)))
         else:
             top.append(candidate)
-    if isinstance(context.activation_query, ActivationQuery):
+    query = context.activation_query if isinstance(context.activation_query, ActivationQuery) else None
+    if query is not None:
         top = sorted(
             enumerate(top),
             key=lambda item: item[1].score.total_score if item[1].score else 0.0,
             reverse=True,
         )
-        top_candidates = tuple(candidate for _index, candidate in top)
+        ranked_candidates = tuple(candidate for _index, candidate in top)
     else:
-        top_candidates = tuple(top)
+        ranked_candidates = tuple(top)
+    top_candidates, budget_suppressed, budget_metadata = _apply_budget(ranked_candidates, query=query)
     return ActivationRouterOutput(
         query_id=context.query_id,
         top_activation_candidates=top_candidates,
-        suppressed_activation_candidates=tuple(suppressed),
+        suppressed_activation_candidates=tuple(suppressed) + budget_suppressed,
+        metadata={"budget": budget_metadata} if budget_metadata else {},
     )
 
 

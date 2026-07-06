@@ -1662,6 +1662,56 @@ async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkey
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    session = SessionContext(session_id="session-ledger")
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "search"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=uuid4(),
+        session_context=session,
+        memory_session_id="session-ledger",
+    )
+    spans: list[dict] = []
+
+    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event, *, trace_metadata_sink=None):
+        trace_metadata_sink["evidence_refs"] = ["truth://search/result"]
+        return "result text"
+
+    async def record_span(**kwargs):
+        spans.append(kwargs)
+
+    async def emit_event(_event):
+        return None
+
+    result, _effective_args, executed = await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        tool_name="web_search",
+        tool_args={"query": "memory systems"},
+        emit_event=emit_event,
+        record_span=record_span,
+    )
+
+    assert result == "result text"
+    assert executed is True
+    ledger_entry = spans[-1]["metadata"]["tool_result_ledger_entry"]
+    assert ledger_entry["result_kind"] == "evidence"
+    assert ledger_entry["context_effect"] == "external_reference"
+    assert ledger_entry["source_refs"] == ["truth://search/result", "query:memory systems"]
+    assert session.metadata["tool_result_ledger"][-1] == ledger_entry
+
+
+@pytest.mark.asyncio
 async def test_agent_kernel_handles_tool_round_and_collects_parts():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig

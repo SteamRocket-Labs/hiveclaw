@@ -323,6 +323,7 @@ flowchart TD
 | 返回影响 | 工具结果无法系统性反哺召回强度、路径触发 skill、context usage |
 | 代码位置 | `backend/app/kernel/engine.py:1473`；`backend/app/tools/service.py`；`backend/app/runtime/hooks.py` |
 | 一轮修复 | `ToolResultLedger` 写入 session metadata / invocation spans：`result_kind`、`context_effect`、`source_refs`、`side_effects`、`followup_activation_events` |
+| 2026-07-06 落地证据 | 新增 `backend/app/runtime/tool_result_ledger.py`，生成 `hive.tool_result_ledger.v1`；`backend/app/kernel/engine.py::_execute_tool_with_hooks()` 在 success / `blocked_by_hook` / cancelled / error 分支写入 span metadata，并追加到 `session_context.metadata["tool_result_ledger"]`；success 分支复用 `trace_metadata_sink` 的 evidence refs 与 `ToolContentEnvelope` side-effect channel。验证：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_tool_result_ledger.py backend/tests/kernel/test_engine.py::test_execute_tool_with_hooks_records_tool_result_ledger backend/tests/kernel/test_engine.py::test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span backend/tests/kernel/test_engine.py::test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span -q && ruff check backend/app/runtime/tool_result_ledger.py backend/app/kernel/engine.py backend/tests/runtime/test_tool_result_ledger.py backend/tests/kernel/test_engine.py` -> `5 passed, 4 warnings`，`All checks passed!` |
 
 ### RTD-15：Context ordering 是手写拼接，不是候选选择
 

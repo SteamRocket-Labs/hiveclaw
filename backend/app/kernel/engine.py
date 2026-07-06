@@ -1448,6 +1448,32 @@ def _merge_trace_metadata_sink(span_metadata: dict[str, Any], trace_metadata_sin
             span_metadata[key] = value
 
 
+def _record_tool_result_ledger_entry(
+    request: InvocationRequest,
+    *,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    result_text: str,
+    status: str,
+    trace_metadata: dict[str, Any] | None = None,
+    side_effects: dict[str, Any] | None = None,
+    followup_activation_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    from app.runtime.tool_result_ledger import append_tool_result_ledger_entry, build_tool_result_ledger_entry
+
+    entry = build_tool_result_ledger_entry(
+        tool_name=tool_name,
+        tool_args=tool_args,
+        result_text=result_text,
+        status=status,
+        trace_metadata=trace_metadata,
+        side_effects=side_effects,
+        followup_activation_events=followup_activation_events,
+    )
+    append_tool_result_ledger_entry(request.session_context, entry)
+    return entry
+
+
 def _register_loaded_skill_for_session(request: InvocationRequest, tool_args: dict[str, Any]) -> None:
     session = request.session_context
     if session is None:
@@ -1568,8 +1594,20 @@ async def _execute_tool_with_hooks(
     if hook_result and hook_result.modified_args:
         effective_args = hook_result.modified_args
     if hook_result and hook_result.block:
+        blocked_result = "Blocked by hook: " + (hook_result.reason or "policy")
+        tool_result_ledger_entry = _record_tool_result_ledger_entry(
+            request,
+            tool_name=tool_name,
+            tool_args=effective_args if isinstance(effective_args, dict) else {},
+            result_text=blocked_result,
+            status="blocked_by_hook",
+        )
         if record_span:
-            span_metadata = {"status": "blocked_by_hook", "reason": hook_result.reason or "policy"}
+            span_metadata = {
+                "status": "blocked_by_hook",
+                "reason": hook_result.reason or "policy",
+                "tool_result_ledger_entry": tool_result_ledger_entry,
+            }
             hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
             if hook_records:
                 span_metadata["hook_lifecycle_records"] = hook_records
@@ -1580,7 +1618,11 @@ async def _execute_tool_with_hooks(
                 metadata=span_metadata,
             )
         else:
-            span_metadata = {"status": "blocked_by_hook", "reason": hook_result.reason or "policy"}
+            span_metadata = {
+                "status": "blocked_by_hook",
+                "reason": hook_result.reason or "policy",
+                "tool_result_ledger_entry": tool_result_ledger_entry,
+            }
             hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
             if hook_records:
                 span_metadata["hook_lifecycle_records"] = hook_records
@@ -1591,7 +1633,7 @@ async def _execute_tool_with_hooks(
                 started_at_ms=monotonic_ms(),
                 metadata=span_metadata,
             )
-        return "Blocked by hook: " + (hook_result.reason or "policy"), effective_args, False
+        return blocked_result, effective_args, False
 
     tool_started_ms = monotonic_ms()
     _record_pending_tool_frame_for_recovery(
@@ -1620,8 +1662,15 @@ async def _execute_tool_with_hooks(
                 trace_metadata_sink=trace_metadata_sink,
             )
         except _KernelCancelledError:
+            tool_result_ledger_entry = _record_tool_result_ledger_entry(
+                request,
+                tool_name=tool_name,
+                tool_args=effective_args if isinstance(effective_args, dict) else {},
+                result_text="cancelled",
+                status="cancelled",
+            )
             if record_span:
-                span_metadata = {"status": "cancelled"}
+                span_metadata = {"status": "cancelled", "tool_result_ledger_entry": tool_result_ledger_entry}
                 hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
                 if hook_records:
                     span_metadata["hook_lifecycle_records"] = hook_records
@@ -1632,7 +1681,7 @@ async def _execute_tool_with_hooks(
                     metadata=span_metadata,
                 )
             else:
-                span_metadata = {"status": "cancelled"}
+                span_metadata = {"status": "cancelled", "tool_result_ledger_entry": tool_result_ledger_entry}
                 hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
                 if hook_records:
                     span_metadata["hook_lifecycle_records"] = hook_records
@@ -1646,11 +1695,19 @@ async def _execute_tool_with_hooks(
             raise
         except Exception as exc:
             err = f"[Tool execution error] {type(exc).__name__}: {str(exc)[:200]}"
+            tool_result_ledger_entry = _record_tool_result_ledger_entry(
+                request,
+                tool_name=tool_name,
+                tool_args=effective_args if isinstance(effective_args, dict) else {},
+                result_text=err,
+                status="error",
+            )
             if record_span:
                 span_metadata = {
                     "status": "error",
                     "error_class": type(exc).__name__,
                     "error": str(exc)[:500],
+                    "tool_result_ledger_entry": tool_result_ledger_entry,
                 }
                 hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
                 if hook_records:
@@ -1666,6 +1723,7 @@ async def _execute_tool_with_hooks(
                     "status": "error",
                     "error_class": type(exc).__name__,
                     "error": str(exc)[:500],
+                    "tool_result_ledger_entry": tool_result_ledger_entry,
                 }
                 hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
                 if hook_records:
@@ -1767,11 +1825,23 @@ async def _execute_tool_with_hooks(
     if post_tool_hook_result and post_tool_hook_result.output_rewrite is not None:
         rewrite = post_tool_hook_result.output_rewrite
         result_str = rewrite if isinstance(rewrite, str) else json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
+    tool_result_side_effects = _extract_tool_side_effects(result) or {}
+    tool_result_ledger_entry = _record_tool_result_ledger_entry(
+        request,
+        tool_name=tool_name,
+        tool_args=effective_args if isinstance(effective_args, dict) else {},
+        result_text=result_str,
+        status="ok",
+        trace_metadata=trace_metadata_sink,
+        side_effects=tool_result_side_effects,
+        followup_activation_events=[],
+    )
     if record_span:
         span_metadata = {
             "status": "ok",
             "result_chars": len(result_str),
             "connector_source_count": registered_connector_source_count,
+            "tool_result_ledger_entry": tool_result_ledger_entry,
         }
         if code_execution_evidence is not None:
             span_metadata["code_execution_evidence"] = code_execution_evidence
@@ -1790,6 +1860,7 @@ async def _execute_tool_with_hooks(
             "status": "ok",
             "result_chars": len(result_str),
             "connector_source_count": registered_connector_source_count,
+            "tool_result_ledger_entry": tool_result_ledger_entry,
         }
         if code_execution_evidence is not None:
             span_metadata["code_execution_evidence"] = code_execution_evidence

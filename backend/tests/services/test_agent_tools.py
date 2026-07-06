@@ -104,6 +104,33 @@ def _make_agent_tool_assignment(*, tool_id, enabled: bool = True):
 
 
 @pytest.mark.asyncio
+async def test_deferred_tool_candidates_project_activation_keys(monkeypatch):
+    from app.services.agent_tools import available_deferred_tool_candidates_for_agent
+
+    async def fake_available_deferred_tool_names_for_agent(_agent_id, *, limit=80):
+        assert limit == 80
+        return ["team_create"]
+
+    monkeypatch.setattr(
+        "app.services.agent_tools.available_deferred_tool_names_for_agent",
+        fake_available_deferred_tool_names_for_agent,
+    )
+
+    candidates = await available_deferred_tool_candidates_for_agent(uuid4())
+
+    assert len(candidates) == 1
+    keys = candidates[0]["activation_keys"]
+    assert keys["schema_version"] == "runtime.metadata_activation_keys.20260705"
+    assert keys["candidate_kind"] == "tool"
+    assert keys["candidate_ref"]["kind"] == "tool_schema"
+    assert keys["key_features"]["name"] == ["team_create"]
+    assert keys["key_features"]["group"] == ["agent_team"]
+    assert keys["key_features"]["risk"] == ["side_effect_governed"]
+    assert keys["value_pointer"]["loader"] == "tool_search"
+    assert keys["value_pointer"]["selector"] == "select:team_create"
+
+
+@pytest.mark.asyncio
 async def test_execute_approved_tool_prefers_tool_registry_executor(monkeypatch):
     from app.services.agent_tools import execute_approved_tool
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest

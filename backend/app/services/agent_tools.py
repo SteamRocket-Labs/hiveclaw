@@ -41,6 +41,7 @@ from app.services.capability_group_policy_service import (
 from app.services.pack_policy_service import is_pack_enabled as _legacy_is_pack_enabled
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
+from app.runtime.context_candidates import build_metadata_activation_keys
 from app.runtime.deferred_tools import make_deferred_tool_candidate
 from app.tools import (
     ToolExecutionRegistry,
@@ -645,6 +646,33 @@ def _deferred_tool_risk_for_name(tool_name: str) -> str:
     return "governed_runtime"
 
 
+def _deferred_tool_activation_keys(candidate: dict[str, Any]) -> dict[str, Any]:
+    name = str(candidate.get("name") or "").strip()
+    selector = str(candidate.get("selector") or f"select:{name}").strip()
+    group = str(candidate.get("group") or _deferred_tool_group_for_name(name)).strip()
+    risk = str(candidate.get("risk") or _deferred_tool_risk_for_name(name)).strip()
+    return build_metadata_activation_keys(
+        candidate_kind="tool",
+        item_id=name,
+        source_type="deferred_tool_catalog",
+        key_features={
+            "name": [name],
+            "group": [group],
+            "risk": [risk],
+            "selector": [selector],
+            "reason": [str(candidate.get("reason") or "available_via_tool_search")],
+        },
+        value_pointer={
+            "loader": "tool_search",
+            "selector": selector,
+            "tool_name": name,
+        },
+        source_refs=[f"tool:{name}"],
+        ref_kind="tool_schema",
+        payload=candidate,
+    )
+
+
 async def available_deferred_tool_candidates_for_agent(agent_id: uuid.UUID, *, limit: int = 80) -> list[dict[str, Any]]:
     """Stable turn-1 deferred tool candidates with selector contract metadata."""
     names = await available_deferred_tool_names_for_agent(agent_id, limit=limit)
@@ -658,7 +686,9 @@ async def available_deferred_tool_candidates_for_agent(agent_id: uuid.UUID, *, l
             risk=_deferred_tool_risk_for_name(name),
         )
         if candidate is not None:
-            candidates.append(candidate.to_manifest())
+            manifest = candidate.to_manifest()
+            manifest["activation_keys"] = _deferred_tool_activation_keys(manifest)
+            candidates.append(manifest)
     return candidates
 
 

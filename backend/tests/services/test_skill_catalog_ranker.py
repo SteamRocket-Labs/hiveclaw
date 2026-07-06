@@ -83,3 +83,36 @@ def test_skill_catalog_ranker_returns_reasons_for_scenario_active_and_path_match
     assert "path_triggered" in by_name["python"].reasons
     assert "scenario_overlap:api,python,typed" in by_name["python"].reasons
     assert "active_in_session" in by_name["incident"].reasons
+
+
+def test_skill_ranking_decisions_project_activation_keys(tmp_path: Path) -> None:
+    from app.services.skill_catalog_ranker import rank_skills_for_prompt_with_reasons
+
+    skill = ParsedSkill(
+        metadata=SkillMetadata(
+            name="python-api",
+            description="Typed Python API boundary work",
+            declared_tools=("read_file", "edit_file"),
+            paths=("backend/app/**/*.py",),
+        ),
+        body="# python-api",
+        file_path=Path("skills/python-api/SKILL.md"),
+        relative_path="skills/python-api/SKILL.md",
+    )
+
+    decision = rank_skills_for_prompt_with_reasons(
+        tmp_path,
+        [skill],
+        scenario_text="Fix typed Python API boundary",
+        active_skill_names=("python-api",),
+    )[0]
+
+    keys = decision.activation_keys
+    assert keys["schema_version"] == "runtime.metadata_activation_keys.20260705"
+    assert keys["candidate_kind"] == "skill"
+    assert keys["candidate_ref"]["kind"] == "skill"
+    assert keys["key_features"]["name"] == ["python-api"]
+    assert "read_file" in keys["key_features"]["declared_tools"]
+    assert "backend/app/**/*.py" in keys["key_features"]["paths"]
+    assert keys["value_pointer"]["loader"] == "load_skill"
+    assert keys["source_refs"] == ["skills/python-api/SKILL.md"]

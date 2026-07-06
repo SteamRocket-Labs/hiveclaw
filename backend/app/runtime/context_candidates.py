@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import re
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 
 _REF_PART_RE = re.compile(r"[^a-z0-9_.-]+")
@@ -73,3 +73,52 @@ def build_context_candidate_ref(
         version=_normalize_ref_part(version, fallback="v1"),
         content_hash=_payload_hash(payload if payload is not None else item_id),
     )
+
+
+def _json_safe_payload(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_payload(child) for key, child in value.items()}
+    if isinstance(value, list | tuple | set | frozenset):
+        return [_json_safe_payload(child) for child in value]
+    return str(value)
+
+
+def _string_refs(values: Iterable[Any] | None) -> list[str]:
+    return [text for value in values or () if (text := str(value or "").strip())]
+
+
+def build_metadata_activation_keys(
+    *,
+    candidate_kind: str,
+    item_id: str,
+    source_type: str,
+    key_features: Mapping[str, Any] | None = None,
+    value_pointer: Mapping[str, Any] | None = None,
+    source_refs: Iterable[Any] | None = None,
+    ref_kind: str | None = None,
+    version: str = "metadata-v1",
+    payload: Any = None,
+) -> dict[str, Any]:
+    safe_key_features = _json_safe_payload(dict(key_features or {}))
+    safe_value_pointer = _json_safe_payload(dict(value_pointer or {}))
+    ref_payload = payload if payload is not None else {
+        "key_features": safe_key_features,
+        "value_pointer": safe_value_pointer,
+    }
+    candidate_ref = build_context_candidate_ref(
+        kind=ref_kind or candidate_kind,
+        item_id=item_id,
+        version=version,
+        payload=ref_payload,
+    ).to_manifest()
+    candidate_ref["source_type"] = str(source_type or "metadata")
+    return {
+        "schema_version": "runtime.metadata_activation_keys.20260705",
+        "candidate_kind": str(candidate_kind or "context"),
+        "candidate_ref": candidate_ref,
+        "key_features": safe_key_features,
+        "value_pointer": safe_value_pointer,
+        "source_refs": _string_refs(source_refs),
+    }

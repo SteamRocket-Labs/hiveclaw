@@ -10,6 +10,7 @@ from app.agents.subagent import (
     builtin_type_description,
 )
 from app.agents.subagent_definition import SCOPE_BUILTIN, list_subagent_definitions
+from app.runtime.context_candidates import build_metadata_activation_keys
 
 _BUILTIN_ORDER = PUBLIC_BUILTIN_SUBAGENT_TYPES
 
@@ -52,11 +53,59 @@ def _render_custom_definition_rows(
     return lines
 
 
+def _subagent_activation_keys_for_row(row: dict[str, Any]) -> dict[str, Any]:
+    name = str(row.get("name") or "").strip()
+    scope = str(row.get("scope") or "custom").strip()
+    worker_type = str(row.get("type") or "general-purpose").strip()
+    source_type = "subagent_builtin" if scope == SCOPE_BUILTIN else "subagent_definition"
+    allowed_tools = [str(tool) for tool in row.get("allowed_tools") or () if str(tool).strip()]
+    key_features = {
+        "name": [name],
+        "scope": [scope],
+        "type": [worker_type],
+        "description_terms": _subagent_terms(str(row.get("description") or "")),
+        "allowed_tools": allowed_tools,
+    }
+    value_pointer = {
+        "loader": "spawn_subagent",
+        "subagent_type": worker_type,
+    }
+    if scope != SCOPE_BUILTIN:
+        value_pointer["definition_name"] = name
+    return build_metadata_activation_keys(
+        candidate_kind="subagent",
+        item_id=name,
+        source_type=source_type,
+        key_features=key_features,
+        value_pointer=value_pointer,
+        source_refs=[f"subagent:{scope}:{name}"],
+        ref_kind="subagent",
+        payload=row,
+    )
+
+
+def _subagent_terms(value: str) -> list[str]:
+    import re
+
+    return sorted({token for token in re.findall(r"[a-zA-Z0-9][a-zA-Z0-9_-]{2,}", value.lower())})
+
+
+def build_subagent_activation_key_manifest(
+    *,
+    agent_id: Any | None = None,
+    tenant_id: Any | None = None,
+    agent_data_dir: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    rows = list_subagent_definitions(agent_id=agent_id, tenant_id=tenant_id, agent_data_dir=agent_data_dir)
+    return [_subagent_activation_keys_for_row(row) for row in rows]
+
+
 def build_subagent_listing_section(
     *,
     agent_id: Any | None = None,
     tenant_id: Any | None = None,
     agent_data_dir: Path | str | None = None,
+    activation_key_manifest: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render the always-visible session worker type list.
 
@@ -64,6 +113,12 @@ def build_subagent_listing_section(
     second execution path: every entry routes to the same ``spawn_subagent``
     tool, while real digital-employee collaboration remains on A2A tools.
     """
+    if activation_key_manifest is not None:
+        activation_key_manifest[:] = build_subagent_activation_key_manifest(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            agent_data_dir=agent_data_dir,
+        )
 
     lines = [
         "## Session Worker Types",

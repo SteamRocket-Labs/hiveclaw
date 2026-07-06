@@ -75,6 +75,42 @@ def test_subagent_listing_section_includes_custom_definitions_in_same_spawn_path
     assert "same `spawn_subagent` tool" in section
 
 
+def test_subagent_listing_projects_activation_keys_for_builtin_and_custom_definitions(tmp_path: Path) -> None:
+    from app.agents.subagent import SubagentSpec
+    from app.agents.subagent_definition import definition_store_for_agent
+    from app.runtime.prompt_sections.subagent_listing import build_subagent_listing_section
+
+    agent_id = "agent-keys"
+    definition_store_for_agent(agent_id, agent_data_dir=tmp_path).save(
+        SubagentSpec(
+            name="code-critic",
+            description="Use after non-trivial code changes to verify tests and risks.",
+            type="critic",
+            allowed_tools=("read_file", "grep_search"),
+            max_tool_rounds=4,
+            system_prompt="Verify implementation.",
+        )
+    )
+
+    manifest: list[dict] = []
+    build_subagent_listing_section(agent_id=agent_id, agent_data_dir=tmp_path, activation_key_manifest=manifest)
+
+    by_name = {entry["key_features"]["name"][0]: entry for entry in manifest}
+    builtin = by_name["critic"]
+    custom = by_name["code-critic"]
+
+    assert builtin["schema_version"] == "runtime.metadata_activation_keys.20260705"
+    assert builtin["candidate_kind"] == "subagent"
+    assert builtin["candidate_ref"]["source_type"] == "subagent_builtin"
+    assert builtin["value_pointer"]["loader"] == "spawn_subagent"
+    assert builtin["value_pointer"]["subagent_type"] == "critic"
+    assert custom["candidate_ref"]["source_type"] == "subagent_definition"
+    assert custom["key_features"]["scope"] == ["agent"]
+    assert custom["key_features"]["type"] == ["critic"]
+    assert "read_file" in custom["key_features"]["allowed_tools"]
+    assert custom["value_pointer"]["definition_name"] == "code-critic"
+
+
 def test_subagent_prompt_guidance_names_cc_trigger_scenarios() -> None:
     from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
 

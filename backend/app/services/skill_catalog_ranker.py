@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
+from app.runtime.context_candidates import build_metadata_activation_keys
 from app.services.skill_curator import STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE, load_skill_usage
 from app.skills.types import ParsedSkill
 
@@ -23,6 +24,42 @@ class SkillRankingDecision:
     reasons: tuple[str, ...]
     state: str
     use_count: int
+
+    @property
+    def activation_keys(self) -> dict[str, Any]:
+        metadata = self.skill.metadata
+        name = metadata.name
+        source_ref = self.skill.relative_path or str(self.skill.file_path)
+        terms = sorted(_tokens(f"{name} {metadata.description} {metadata.when_to_use} {metadata.context}"))
+        return build_metadata_activation_keys(
+            candidate_kind="skill",
+            item_id=name,
+            source_type="skill_catalog",
+            key_features={
+                "name": [name],
+                "description_terms": terms,
+                "declared_tools": list(metadata.declared_tools),
+                "declared_packs": list(metadata.declared_packs),
+                "allowed_tools": list(metadata.allowed_tools),
+                "paths": list(metadata.paths),
+                "state": [self.state],
+                "use_count": self.use_count,
+                "reasons": list(self.reasons),
+            },
+            value_pointer={
+                "loader": "load_skill",
+                "name": name,
+                "source": source_ref,
+            },
+            source_refs=[source_ref],
+            ref_kind="skill",
+            payload={
+                "name": name,
+                "description": metadata.description,
+                "source": source_ref,
+                "state": self.state,
+            },
+        )
 
 
 def _normalize_slug(value: str) -> str:

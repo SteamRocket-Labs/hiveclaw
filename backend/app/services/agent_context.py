@@ -157,6 +157,7 @@ def _load_skills_index(
                 "reasons": list(decision.reasons),
                 "state": decision.state,
                 "use_count": decision.use_count,
+                "activation_keys": decision.activation_keys,
             }
             for index, decision in enumerate(ranked, start=1)
         ]

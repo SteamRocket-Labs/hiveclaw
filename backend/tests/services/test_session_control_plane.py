@@ -498,6 +498,18 @@ async def test_session_workbench_projects_background_completion_wake_state(monke
     assert result["completion_wakes"][1]["subagent_decision_entry"]["schema"] == "hive.ccplus.subagent_decision_entry.v1"
     assert result["completion_wakes"][1]["required_user_action"] == "observe_result"
     assert result["completion_wakes"][2]["state"] == "running"
+    reminder_candidates = result["runtime_reminder_candidates"]
+    assert [candidate["kind"] for candidate in reminder_candidates] == [
+        "runtime_reminder",
+        "runtime_reminder",
+        "runtime_reminder",
+    ]
+    assert {candidate["source"] for candidate in reminder_candidates} == {"completion_wake"}
+    assert reminder_candidates[0]["ttl"] == "until_parent_observed"
+    assert reminder_candidates[0]["priority"] == 90
+    assert reminder_candidates[0]["consumed_at"] is None
+    assert reminder_candidates[0]["candidate_ref"]["candidate_id"].startswith("runtime_reminder:completion_wake:")
+    assert result["runtime_sections"]["notifications"]["items"][0]["runtime_reminder_candidate"] == reminder_candidates[0]
 
 
 @pytest.mark.asyncio

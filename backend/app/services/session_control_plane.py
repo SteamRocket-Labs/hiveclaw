@@ -28,6 +28,7 @@ from app.runtime.ccplus_contracts import (
     build_context_policy,
     build_permission_profile,
 )
+from app.runtime.runtime_reminder_candidate import build_runtime_reminder_candidate
 from app.runtime.subagent_decision_entry import subagent_decision_entry_from_metadata
 from app.runtime.subagent_return_contract import subagent_return_contract_from_metadata
 from app.runtime.turn_envelope import build_prompt_assembly_manifest, build_turn_envelope
@@ -627,6 +628,61 @@ def _completion_wake_summary(wakes: list[dict[str, Any]]) -> dict[str, int]:
         if wake.get("needs_parent_observation") is True:
             summary["needs_parent_observation"] += 1
     return summary
+
+
+def _completion_wake_runtime_reminder_text(wake: dict[str, Any]) -> str:
+    label = str(wake.get("label") or wake.get("kind") or "background work").strip()
+    state = str(wake.get("state") or "unknown").strip()
+    summary = str(wake.get("summary") or "").strip()
+    next_action = "Observe the completion wake before deciding whether to continue, retry, or ask the user."
+    if state not in {"completed", "failed"}:
+        next_action = "Keep this wake visible as background work; do not busy-poll."
+    parts = [f"{label} is {state}.", next_action]
+    if summary:
+        parts.append(f"Summary: {summary}")
+    return " ".join(parts)
+
+
+def _runtime_reminder_candidates_from_completion_wakes(wakes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for wake in wakes:
+        priority = 90 if wake.get("needs_parent_observation") is True else 60
+        candidate = build_runtime_reminder_candidate(
+            source="completion_wake",
+            item_id="completion_wake",
+            text=_completion_wake_runtime_reminder_text(wake),
+            ttl="until_parent_observed",
+            priority=priority,
+            consumed_at=None,
+            reason="completion wake must remain explainable as runtime reminder context",
+            payload={
+                "wake_id": wake.get("id"),
+                "wake_kind": wake.get("kind"),
+                "state": wake.get("state"),
+                "runtime_task_id": wake.get("runtime_task_id"),
+                "child_session_id": wake.get("child_session_id"),
+            },
+        )
+        wake["runtime_reminder_candidate"] = candidate
+        candidates.append(candidate)
+    return candidates
+
+
+def _prompt_manifest_with_runtime_reminders(
+    prompt_manifest: dict[str, Any],
+    runtime_reminder_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not runtime_reminder_candidates:
+        return prompt_manifest
+    manifest = dict(prompt_manifest)
+    existing_candidates = list(manifest.get("context_candidates") or [])
+    existing_refs = list(manifest.get("context_candidate_refs") or [])
+    manifest["context_candidates"] = existing_candidates + [dict(candidate) for candidate in runtime_reminder_candidates]
+    manifest["context_candidate_refs"] = existing_refs + [
+        dict(candidate["candidate_ref"]) for candidate in runtime_reminder_candidates if isinstance(candidate, dict)
+    ]
+    manifest["runtime_reminder_candidates"] = [dict(candidate) for candidate in runtime_reminder_candidates]
+    return manifest
 
 
 def _completion_wake_policy_payload() -> dict[str, Any]:
@@ -1574,6 +1630,7 @@ async def build_session_workbench(
     teams = await _list_teams(db, agent_id=agent.id, session_id=session.id)
     workflow_journals = await _list_workflow_journals(db, runtime_tasks=runtime_tasks)
     completion_wakes = _completion_wake_payloads(runtime_tasks=runtime_tasks, teams=teams)
+    runtime_reminder_candidates = _runtime_reminder_candidates_from_completion_wakes(completion_wakes)
     session_index = _session_index_with_resume_health(
         session_index=await read_session_index(db, agent_id=agent.id, session_id=session.id),
         active_run=active_run_projection,
@@ -1604,6 +1661,7 @@ async def build_session_workbench(
         session=session,
         turn_envelope=turn_envelope,
     )
+    prompt_manifest = _prompt_manifest_with_runtime_reminders(prompt_manifest, runtime_reminder_candidates)
     return {
         "schema": "hive.ccplus.session_workbench.v1",
         "agent_id": str(agent.id),
@@ -1648,6 +1706,7 @@ async def build_session_workbench(
         "completion_wake_policy": _completion_wake_policy_payload(),
         "completion_wake_summary": _completion_wake_summary(completion_wakes),
         "completion_wakes": completion_wakes,
+        "runtime_reminder_candidates": runtime_reminder_candidates,
         "runtime_sections": runtime_sections,
         "goals": [_goal_payload(goal) for goal in goals],
         "teams": teams,

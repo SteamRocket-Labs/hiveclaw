@@ -78,10 +78,20 @@ class ReminderSpec:
     observed_tools: frozenset[str] = frozenset()
     fire_once: bool = False
     mutex_group: str | None = None
+    ttl: str = "current_round"
+    priority: int = 50
 
     @property
     def group(self) -> str:
         return self.mutex_group or self.name
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeReminderInjection:
+    text: str
+    source: str
+    ttl: str = "current_round"
+    priority: int = 50
 
 
 class ReminderScheduler:
@@ -92,7 +102,7 @@ class ReminderScheduler:
         self._idle: dict[str, int] = {s.name: 0 for s in self._specs}
         self._since_group_injection: dict[str, int | None] = {s.group: None for s in self._specs}
         self._fired: set[str] = set()
-        self._queue: list[str] = []
+        self._queue: list[RuntimeReminderInjection] = []
 
     def observe(self, tool_names: Iterable[str]) -> None:
         """Feed one round's tool-call names; advances idle + cooldown clocks."""
@@ -106,14 +116,27 @@ class ReminderScheduler:
             if since is not None:
                 self._since_group_injection[group] = since + 1
 
-    def enqueue(self, text: str) -> None:
+    def enqueue(
+        self,
+        text: str,
+        *,
+        source: str = "queued_runtime_reminder",
+        ttl: str = "next_collect",
+        priority: int = 90,
+    ) -> None:
         """Event-driven channel (loop guard): inject on the next collect()."""
         if text:
-            self._queue.append(text)
+            self._queue.append(RuntimeReminderInjection(text=text, source=source, ttl=ttl, priority=priority))
 
-    def collect(self, session_context: Any, round_state: RoundState) -> list[str]:
+    def collect_with_metadata(self, session_context: Any, round_state: RoundState) -> list[RuntimeReminderInjection]:
         """Texts to inject into THIS round's LLM request (transient)."""
-        out: list[str] = list(dict.fromkeys(self._queue))  # dedupe, preserve order
+        out: list[RuntimeReminderInjection] = []
+        seen_texts: set[str] = set()
+        for queued in self._queue:
+            if queued.text in seen_texts:
+                continue
+            out.append(queued)
+            seen_texts.add(queued.text)
         self._queue.clear()
         claimed_groups: set[str] = set()
         for spec in self._specs:
@@ -131,11 +154,24 @@ class ReminderScheduler:
             text = spec.content(session_context, round_state)
             if not text:
                 continue
-            out.append(text)
+            if text in seen_texts:
+                continue
+            out.append(
+                RuntimeReminderInjection(
+                    text=text,
+                    source=spec.name,
+                    ttl=spec.ttl,
+                    priority=spec.priority,
+                )
+            )
+            seen_texts.add(text)
             claimed_groups.add(spec.group)
             self._since_group_injection[spec.group] = 0
             self._fired.add(spec.name)
         return out
+
+    def collect(self, session_context: Any, round_state: RoundState) -> list[str]:
+        return [item.text for item in self.collect_with_metadata(session_context, round_state)]
 
     def reset(self) -> None:
         """Compaction re-arm (M8): fire-once reminders re-send, clocks restart.
@@ -264,6 +300,7 @@ def build_default_reminder_specs() -> tuple[ReminderSpec, ...]:
             eligible=_plan_active,
             fire_once=True,
             mutex_group="plan_mode",
+            priority=100,
         ),
         ReminderSpec(
             name="plan_mode_sparse",
@@ -271,12 +308,14 @@ def build_default_reminder_specs() -> tuple[ReminderSpec, ...]:
             eligible=_plan_active,
             cooldown_rounds=_PLAN_SPARSE_COOLDOWN_ROUNDS,
             mutex_group="plan_mode",
+            priority=80,
         ),
         ReminderSpec(
             name="progress_ledger_replan",
             content=_progress_replan_content,
             eligible=_ledger_eligible,
             cooldown_rounds=2,
+            priority=85,
         ),
         ReminderSpec(
             name="work_ledger",
@@ -285,9 +324,11 @@ def build_default_reminder_specs() -> tuple[ReminderSpec, ...]:
             idle_rounds=_LEDGER_IDLE_ROUNDS,
             cooldown_rounds=_LEDGER_COOLDOWN_ROUNDS,
             observed_tools=_WORK_LEDGER_TOOLS,
+            priority=70,
         ),
         ReminderSpec(
             name="round_pressure",
             content=_round_pressure_content,
+            priority=90,
         ),
     )

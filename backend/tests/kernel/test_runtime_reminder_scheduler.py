@@ -87,6 +87,18 @@ def test_ledger_reminder_waits_for_idle_rounds():
     assert min(ledger_rounds) >= 10
 
 
+def test_scheduler_collects_runtime_reminder_metadata():
+    scheduler = _scheduler()
+    scheduler.enqueue("loop diagnostic", source="loop_guard", ttl="next_collect", priority=95)
+
+    injections = scheduler.collect_with_metadata(None, _round_state(round_i=3))
+
+    assert [item.text for item in injections] == ["loop diagnostic"]
+    assert injections[0].source == "loop_guard"
+    assert injections[0].ttl == "next_collect"
+    assert injections[0].priority == 95
+
+
 def test_tool_use_resets_ledger_idle_counter():
     """Using a ledger tool at round 5 restarts the idle window — no reminder
     before round 15."""
@@ -450,6 +462,13 @@ async def test_first_round_request_still_carries_full_reminder():
 
     first_messages = client.calls[0]["messages"]
     assert any(m.role == "system" and "Plan Mode is active" in (m.content or "") for m in first_messages)
+    candidates = sc.metadata["runtime_reminder_candidates"]
+    assert candidates[0]["kind"] == "runtime_reminder"
+    assert candidates[0]["source"] == "plan_mode_full"
+    assert candidates[0]["ttl"] == "current_round"
+    assert candidates[0]["priority"] == 100
+    assert candidates[0]["consumed_at"] == "round:0"
+    assert candidates[0]["candidate_ref"]["candidate_id"].startswith("runtime_reminder:plan_mode_full:")
 
 
 @pytest.mark.asyncio

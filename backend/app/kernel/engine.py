@@ -3779,7 +3779,7 @@ class AgentKernel:
                 # self-correction chance (CC §12.2 soft-constraints-first).
                 # T-G1: queued on the scheduler — injected transiently into the
                 # next round's request, never persisted into api_messages.
-                reminder_scheduler.enqueue(decision.message)
+                reminder_scheduler.enqueue(decision.message, source="loop_guard", ttl="next_collect", priority=95)
                 await _emit_event(
                     {
                         "type": "loop_guard",
@@ -4129,7 +4129,7 @@ class AgentKernel:
                         reminder_scheduler.observe(_round_tool_names)
                     _round_tool_names = []
                     _ctx_chars = sum(len(m.content or "") for m in api_messages)
-                    _transient_reminders = reminder_scheduler.collect(
+                    _transient_reminder_injections = reminder_scheduler.collect_with_metadata(
                         request.session_context,
                         {
                             "round_i": round_i,
@@ -4141,6 +4141,22 @@ class AgentKernel:
                             "work_ledger_progress_review_provider": _work_ledger_progress_review_provider,
                         },
                     )
+                    _transient_reminders = [item.text for item in _transient_reminder_injections]
+                    _runtime_reminder_candidates: list[dict[str, Any]] = []
+                    if _transient_reminder_injections:
+                        from app.runtime.runtime_reminder_candidate import append_runtime_reminder_candidate
+
+                        for _reminder in _transient_reminder_injections:
+                            _runtime_reminder_candidates.append(
+                                append_runtime_reminder_candidate(
+                                    request.session_context,
+                                    source=_reminder.source,
+                                    text=_reminder.text,
+                                    ttl=_reminder.ttl,
+                                    priority=_reminder.priority,
+                                    consumed_at=f"round:{round_i}",
+                                )
+                            )
                     if _transient_reminders:
                         # M6 observability: reminders no longer appear in the
                         # persisted transcript, so emit an event per injection.
@@ -4154,6 +4170,7 @@ class AgentKernel:
                                     "round": round_i,
                                     "count": len(_transient_reminders),
                                     "chars": sum(len(t) for t in _transient_reminders),
+                                    "context_candidates": _runtime_reminder_candidates,
                                 },
                             }
                         )

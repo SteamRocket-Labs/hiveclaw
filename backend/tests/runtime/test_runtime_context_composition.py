@@ -195,3 +195,28 @@ def test_runtime_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
     assert entry["schema"] == "hive.ccplus.runtime_decision.v1"
     assert session.metadata["runtime_decision_ledger"] == [entry]
     assert session.metadata["runtime_assembly_state"]["runtime_decision_ledger"] == [entry]
+
+
+def test_runtime_reminder_candidate_mirrors_into_runtime_assembly_state() -> None:
+    from app.runtime.runtime_reminder_candidate import append_runtime_reminder_candidate
+
+    session = SessionContext(session_id="runtime-reminder-ledger")
+
+    candidate = append_runtime_reminder_candidate(
+        session,
+        source="plan_mode_full",
+        text="Plan Mode is active. Do not execute the plan.",
+        ttl="current_round",
+        priority=100,
+        consumed_at="round:0",
+    )
+
+    assert candidate["schema"] == "hive.ccplus.context_candidate.v1"
+    assert candidate["kind"] == "runtime_reminder"
+    assert candidate["source"] == "plan_mode_full"
+    assert candidate["ttl"] == "current_round"
+    assert candidate["priority"] == 100
+    assert candidate["consumed_at"] == "round:0"
+    assert candidate["candidate_ref"]["candidate_id"].startswith("runtime_reminder:plan_mode_full:")
+    assert session.metadata["runtime_reminder_candidates"] == [candidate]
+    assert session.metadata["runtime_assembly_state"]["runtime_reminder_candidates"] == [candidate]

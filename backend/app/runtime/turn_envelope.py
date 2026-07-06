@@ -10,9 +10,12 @@ fallback for sessions without active runtime metadata.
 
 from __future__ import annotations
 
+import json
 import uuid
 import re
 from typing import Any
+
+from app.services.token_tracker import estimate_tokens_from_text
 
 _HOOK_LIFECYCLE_STATUS = {
     "active": "supported_active",
@@ -88,6 +91,7 @@ def build_turn_envelope(
     permission_profile = _dict(meta.get("permission_profile"))
     context_policy = _dict(meta.get("context_policy"))
     prompt_sections = _list(meta.get("prompt_sections"))
+    context_usage_ledger = _dict(meta.get("context_usage_ledger"))
     return {
         "schema": "hive.ccplus.turn_envelope.v1",
         "turn_id": _str_or_none(meta.get("turn_id") or (active_run or {}).get("turn_id")),
@@ -115,6 +119,7 @@ def build_turn_envelope(
         "a2a_collaborator_refs": _list(meta.get("a2a_collaborator_refs")),
         "hook_state": _hook_state(meta),
         "prompt_sections": prompt_sections,
+        "context_usage_ledger": context_usage_ledger,
         "output_cap": meta.get("output_cap"),
         "trace": {
             "trace_id": _str_or_none(meta.get("trace_id")),
@@ -148,6 +153,7 @@ def build_prompt_assembly_manifest(turn_envelope: dict[str, Any]) -> dict[str, A
             "attached": bool(turn_envelope.get("mcp_server_refs")),
         },
         "hook_added_context": turn_envelope.get("hook_state") or {},
+        "context_usage_ledger": turn_envelope.get("context_usage_ledger") or {},
         "redacted_prompt_preview": None,
     }
 
@@ -244,6 +250,121 @@ def _tool_names(tools_for_llm: list[dict[str, Any]] | None) -> list[str]:
     return names
 
 
+def _json_text(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(value or "")
+
+
+def _estimate_text_tokens(text: str) -> int:
+    text = str(text or "")
+    if not text.strip():
+        return 0
+    return int(estimate_tokens_from_text(text))
+
+
+def _tool_name(tool: dict[str, Any]) -> str:
+    function = tool.get("function") if isinstance(tool, dict) else None
+    name = function.get("name") if isinstance(function, dict) else None
+    return str(name or "").strip()
+
+
+def _is_mcp_tool_name(name: str) -> bool:
+    normalized = str(name or "").strip().lower()
+    return normalized.startswith("mcp_") or normalized.startswith(("list_mcp", "read_mcp", "import_mcp", "call_mcp"))
+
+
+def _split_tool_schemas(tools_for_llm: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    system_tools: list[dict[str, Any]] = []
+    mcp_tools: list[dict[str, Any]] = []
+    for tool in tools_for_llm or []:
+        if not isinstance(tool, dict):
+            continue
+        name = _tool_name(tool)
+        if _is_mcp_tool_name(name):
+            mcp_tools.append(tool)
+        else:
+            system_tools.append(tool)
+    return system_tools, mcp_tools
+
+
+def _usage_category(
+    name: str,
+    *,
+    text: str = "",
+    payload: Any = None,
+    item_count: int | None = None,
+) -> dict[str, Any]:
+    measured_text = text if text else (_json_text(payload) if payload is not None else "")
+    tokens = _estimate_text_tokens(measured_text)
+    return {
+        "name": name,
+        "tokens": tokens,
+        "chars": len(measured_text or ""),
+        "item_count": int(item_count or 0),
+    }
+
+
+def build_context_usage_ledger(
+    *,
+    provider_system_prompt: str,
+    tools_for_llm: list[dict[str, Any]] | None,
+    messages: list[Any] | tuple[Any, ...] | None,
+    model_window: int | None,
+    memory_snapshot: str = "",
+    retrieval_context: str = "",
+    skill_catalog: str = "",
+    active_skill_names: list[str] | tuple[str, ...] | None = None,
+    mcp_server_refs: list[Any] | None = None,
+    available_agent_types: list[Any] | tuple[Any, ...] | None = None,
+) -> dict[str, Any]:
+    """Build a CC /context-style usage ledger from the actual prompt inputs."""
+    system_tools, mcp_tools = _split_tool_schemas(tools_for_llm)
+    skill_payload = {
+        "catalog": skill_catalog or "",
+        "active_skill_names": list(active_skill_names or []),
+    }
+    mcp_payload = {
+        "tools": mcp_tools,
+        "server_refs": list(mcp_server_refs or []),
+    }
+    categories = [
+        _usage_category("system_prompt", text=provider_system_prompt or ""),
+        _usage_category("system_tools", payload=system_tools, item_count=len(system_tools)),
+        _usage_category(
+            "custom_agents",
+            payload=list(available_agent_types or []),
+            item_count=len(available_agent_types or []),
+        ),
+        _usage_category("memory_files", text="\n\n".join(part for part in (memory_snapshot, retrieval_context) if part)),
+        _usage_category(
+            "skills",
+            payload=skill_payload,
+            item_count=len(active_skill_names or []) or len(_skill_refs(skill_catalog, active_skill_names)),
+        ),
+        _usage_category("messages", payload=list(messages or []), item_count=len(messages or [])),
+        _usage_category("mcp_tools", payload=mcp_payload, item_count=len(mcp_tools) + len(mcp_server_refs or [])),
+    ]
+    used_tokens = sum(item["tokens"] for item in categories)
+    free_tokens = max(int(model_window) - used_tokens, 0) if model_window is not None else 0
+    categories.append(
+        {
+            "name": "free_space",
+            "tokens": free_tokens,
+            "chars": 0,
+            "item_count": 0,
+        }
+    )
+    return {
+        "schema": "hive.ccplus.context_usage_ledger.v1",
+        "model_window_tokens": model_window,
+        "used_tokens": used_tokens,
+        "free_space_tokens": free_tokens,
+        "categories": categories,
+    }
+
+
 def build_runtime_prompt_assembly_manifest(
     *,
     turn_id: str | None,
@@ -267,6 +388,8 @@ def build_runtime_prompt_assembly_manifest(
     system_prompt_suffix_sections: list[str] | tuple[str, ...] | None = None,
     mcp_server_refs: list[Any] | None = None,
     hook_added_context: list[str] | None = None,
+    available_agent_types: list[Any] | tuple[Any, ...] | None = None,
+    messages: list[Any] | tuple[Any, ...] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest from the actual prompt surface sent to the provider."""
     frozen_sections = _section_names_from_text(frozen_prefix)
@@ -282,6 +405,18 @@ def build_runtime_prompt_assembly_manifest(
         system_prompt_suffix=system_prompt_suffix,
         system_prompt_suffix_sections=system_prompt_suffix_sections,
     )
+    context_usage_ledger = build_context_usage_ledger(
+        provider_system_prompt=provider_system_prompt,
+        tools_for_llm=tools_for_llm,
+        messages=messages,
+        model_window=model_window,
+        memory_snapshot=memory_snapshot,
+        retrieval_context=retrieval_context,
+        skill_catalog=skill_catalog,
+        active_skill_names=active_skill_names,
+        mcp_server_refs=mcp_server_refs,
+        available_agent_types=available_agent_types,
+    )
     return {
         "schema": "hive.ccplus.prompt_assembly_manifest.v1",
         "source_of_truth": "runtime_prompt_assembly",
@@ -293,7 +428,7 @@ def build_runtime_prompt_assembly_manifest(
         "loaded_skills": _skill_refs(skill_catalog, active_skill_names),
         "active_tool_names": _tool_names(tools_for_llm),
         "available_deferred_tools": [str(name) for name in (available_deferred_tools or []) if str(name).strip()],
-        "available_agent_types": [],
+        "available_agent_types": list(available_agent_types or []),
         "mcp_instructions_delta": {
             "server_refs": list(mcp_server_refs or []),
             "attached": bool(mcp_server_refs),
@@ -302,6 +437,7 @@ def build_runtime_prompt_assembly_manifest(
         "actual_system_prompt_chars": len(provider_system_prompt or ""),
         "actual_dynamic_suffix_chars": len(dynamic_suffix or ""),
         "actual_dynamic_notice_chars": len(provider_dynamic_notice or ""),
+        "context_usage_ledger": context_usage_ledger,
         "prompt_sections": [
             *({"kind": "frozen", "name": name} for name in frozen_sections),
             *({"kind": "dynamic", "name": name} for name in dynamic_sections),

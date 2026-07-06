@@ -81,3 +81,61 @@ def test_build_turn_envelope_and_prompt_manifest_from_active_run_metadata():
     assert manifest["loaded_skills"] == ["skill:python"]
     assert manifest["mcp_instructions_delta"]["server_refs"] == ["mcp:linear"]
     assert manifest["context_budget"]["model_window"] == 128000
+
+
+def test_runtime_prompt_manifest_includes_context_usage_ledger():
+    from app.runtime.turn_envelope import build_runtime_prompt_assembly_manifest
+
+    manifest = build_runtime_prompt_assembly_manifest(
+        turn_id="turn-context",
+        session_id="session-context",
+        frozen_prefix="## Identity\nYou are Analyst.",
+        dynamic_suffix="## Dynamic\nRuntime metadata.",
+        provider_system_prompt="## Identity\nYou are Analyst.",
+        provider_dynamic_notice="## Memory\nRemember user preferences.",
+        context_budget={},
+        model_window=1000,
+        tools_for_llm=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read files.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "mcp_list_resources",
+                    "description": "List MCP resources.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ],
+        active_tool_groups=[{"name": "web", "tools": ["web_search"]}],
+        available_deferred_tools=["firecrawl_fetch"],
+        memory_snapshot="memory text",
+        retrieval_context="knowledge text",
+        skill_catalog="## Skills\n- python",
+        mcp_server_refs=["mcp:linear"],
+        available_agent_types=[{"type": "critic"}],
+        messages=[{"role": "user", "content": "请检查 context usage"}],
+    )
+
+    ledger = manifest["context_usage_ledger"]
+    categories = {item["name"]: item for item in ledger["categories"]}
+
+    assert ledger["schema"] == "hive.ccplus.context_usage_ledger.v1"
+    assert ledger["model_window_tokens"] == 1000
+    assert categories["system_prompt"]["tokens"] > 0
+    assert categories["system_tools"]["tokens"] > 0
+    assert categories["custom_agents"]["tokens"] > 0
+    assert categories["memory_files"]["tokens"] > 0
+    assert categories["skills"]["tokens"] > 0
+    assert categories["messages"]["tokens"] > 0
+    assert categories["mcp_tools"]["tokens"] > 0
+    assert categories["free_space"]["tokens"] >= 0
+    assert ledger["used_tokens"] == sum(
+        item["tokens"] for item in ledger["categories"] if item["name"] != "free_space"
+    )

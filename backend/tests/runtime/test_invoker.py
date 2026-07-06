@@ -1343,6 +1343,11 @@ async def test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt(m
     assert "runtime_metadata_context" in manifest["dynamic_sections"]
     assert "skill_catalog" in manifest["dynamic_sections"]
     assert "knowledge_context" in manifest["dynamic_sections"]
+    ledger = manifest["context_usage_ledger"]
+    categories = {item["name"]: item for item in ledger["categories"]}
+    assert ledger["schema"] == "hive.ccplus.context_usage_ledger.v1"
+    assert categories["messages"]["tokens"] > 0
+    assert categories["free_space"]["tokens"] >= 0
 
 
 @pytest.mark.asyncio

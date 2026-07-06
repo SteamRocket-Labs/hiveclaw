@@ -3284,8 +3284,11 @@ class AgentKernel:
                     system_prompt_suffix_sections=_system_prompt_suffix_sections(),
                     mcp_server_refs=list(session_ctx.metadata.get("mcp_server_refs") or []),
                     hook_added_context=hook_added_context,
+                    available_agent_types=list(session_ctx.metadata.get("available_agent_types") or []),
+                    messages=request.messages,
                 )
                 session_ctx.metadata["prompt_assembly_manifest"] = prompt_manifest
+                session_ctx.metadata["context_usage_ledger"] = dict(prompt_manifest.get("context_usage_ledger") or {})
                 session_ctx.metadata["prompt_sections"] = list(prompt_manifest.get("prompt_sections") or [])
                 session_ctx.metadata["active_tool_names"] = list(prompt_manifest.get("active_tool_names") or [])
                 session_ctx.metadata["deferred_tool_names"] = list(prompt_manifest.get("available_deferred_tools") or [])

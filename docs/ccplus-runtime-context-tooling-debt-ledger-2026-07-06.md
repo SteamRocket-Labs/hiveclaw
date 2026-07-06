@@ -191,6 +191,8 @@ flowchart TD
 | 代码位置 | `backend/app/runtime/turn_envelope.py:247`；`backend/app/kernel/engine.py:3024` 之后 prompt assembly |
 | 一轮修复 | 建 `ContextUsageLedger`，从 actual provider prompt、tools_for_llm、message list、manifest sections 统计 category tokens / chars / counts；暴露 debug API 或 session metadata |
 
+2026-07-06 落地证据：`backend/app/runtime/turn_envelope.py` 新增 `build_context_usage_ledger`，在 `prompt_assembly_manifest` 中写入 `context_usage_ledger`，覆盖 `system_prompt`、`system_tools`、`custom_agents`、`memory_files`、`skills`、`messages`、`mcp_tools`、`free_space`；`backend/app/kernel/engine.py` 在真实 prompt assembly 后把 ledger 同步到 `session_context.metadata["context_usage_ledger"]`。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_invoker.py::test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt backend/tests/services/test_session_control_plane.py -q` -> `20 passed, 4 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/runtime/turn_envelope.py backend/app/kernel/engine.py backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_invoker.py` -> `All checks passed!`。
+
 ### RTD-04：Prompt manifest 缺 selection reasons / source hashes
 
 | 字段 | 内容 |

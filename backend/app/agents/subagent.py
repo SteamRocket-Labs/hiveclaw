@@ -739,11 +739,12 @@ def _prepare_subagent_worktree(ctx: SubagentSpawnContext, spec: SubagentSpec, ch
 
 def _build_worktree_tool_executor(ctx: SubagentSpawnContext, worktree_path: Path):
     async def _execute(tool_name: str, arguments: dict, **kwargs: Any) -> Any:
-        from app.services.agent_tools import execute_tool
+        from importlib import import_module
 
         round_state = dict(kwargs.get("round_state") or {})
         round_state["subagent_worktree_path"] = str(worktree_path)
-        return await execute_tool(
+        agent_tools = import_module("app.services.agent_tools")
+        return await agent_tools.execute_tool(
             tool_name,
             arguments,
             agent_id=ctx.parent_agent_id,

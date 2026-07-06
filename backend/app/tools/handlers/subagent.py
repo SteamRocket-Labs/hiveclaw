@@ -223,7 +223,6 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         },
         "subagent_type": {
             "type": "string",
-            "enum": list(PUBLIC_BUILTIN_SUBAGENT_TYPES),
             "description": (
                 "Canonical AgentTool builtin worker type. Defaults to 'general-purpose'. Use 'explorer' for "
                 "read-only reconnaissance, 'critic' for independent verification. For custom active "

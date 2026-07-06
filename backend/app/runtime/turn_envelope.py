@@ -10,6 +10,7 @@ fallback for sessions without active runtime metadata.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 import re
@@ -306,6 +307,248 @@ def _usage_category(
     }
 
 
+def _source_hash(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _payload_present(*, text: str = "", payload: Any = None) -> bool:
+    if text:
+        return bool(str(text).strip())
+    if isinstance(payload, dict | list | tuple | set):
+        return bool(payload)
+    return payload is not None
+
+
+def _context_candidate(
+    *,
+    candidate_id: str,
+    kind: str,
+    name: str,
+    source_ref: str,
+    why_selected: str,
+    suppressed_reason: str,
+    text: str = "",
+    payload: Any = None,
+    budget_key: str | None = None,
+    budget_chars: int | None = None,
+    cacheability: str = "dynamic",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    measured_text = text if text else (_json_text(payload) if payload is not None else "")
+    selected = _payload_present(text=text, payload=payload)
+    chars = len(measured_text or "")
+    tokens = _estimate_text_tokens(measured_text)
+    candidate = {
+        "id": candidate_id,
+        "kind": kind,
+        "name": name,
+        "source_ref": source_ref,
+        "source_hash": _source_hash(measured_text),
+        "chars": chars,
+        "tokens": tokens,
+        "selected": selected,
+        "why_selected": why_selected if selected else "",
+        "suppressed_reason": "" if selected else suppressed_reason,
+        "score": 1.0 if selected else 0.0,
+        "cacheability": cacheability,
+        "budget_key": budget_key,
+        "budget_chars": budget_chars,
+    }
+    if budget_chars is None:
+        decision = "selected" if selected else "suppressed_empty"
+    elif not selected:
+        decision = "suppressed_empty"
+    elif chars <= budget_chars:
+        decision = "selected_within_budget"
+    else:
+        decision = "selected_over_budget"
+    budget_decision = {
+        "candidate_id": candidate_id,
+        "budget_key": budget_key,
+        "budget_chars": budget_chars,
+        "actual_chars": chars,
+        "actual_tokens": tokens,
+        "decision": decision,
+        "reason": candidate["why_selected"] or candidate["suppressed_reason"],
+    }
+    return candidate, budget_decision
+
+
+def build_context_selection_manifest(
+    *,
+    frozen_prefix: str,
+    runtime_metadata_context: str,
+    permissions_context: str,
+    memory_snapshot: str,
+    retrieval_context: str,
+    skill_catalog: str,
+    active_skill_names: list[str] | tuple[str, ...] | None,
+    system_prompt_suffix: str,
+    system_prompt_suffix_sections: list[str] | tuple[str, ...] | None,
+    active_tool_groups: list[dict[str, Any]] | None,
+    available_deferred_tools: list[str] | tuple[str, ...] | None,
+    mcp_server_refs: list[Any] | None,
+    hook_added_context: list[str] | None,
+    available_agent_types: list[Any] | tuple[Any, ...] | None,
+    messages: list[Any] | tuple[Any, ...] | None,
+    context_budget: Any,
+    model_window: int | None,
+) -> dict[str, Any]:
+    budget = _budget_manifest(context_budget, model_window)
+    suffix_payload = {
+        "suffix": system_prompt_suffix or "",
+        "sections": list(system_prompt_suffix_sections or []),
+    }
+    skill_payload = {
+        "catalog": skill_catalog or "",
+        "active_skill_names": list(active_skill_names or []),
+    }
+    candidate_specs = [
+        {
+            "candidate_id": "ctx:system:frozen_prefix",
+            "kind": "system_prompt",
+            "name": "frozen_prefix",
+            "source_ref": "provider.system_prompt",
+            "why_selected": "frozen_prefix_rendered",
+            "suppressed_reason": "frozen_prefix_empty",
+            "text": frozen_prefix or "",
+            "budget_key": "system_prompt_budget_chars",
+            "cacheability": "prompt_cache_frozen",
+        },
+        {
+            "candidate_id": "ctx:runtime:runtime_metadata",
+            "kind": "runtime_metadata",
+            "name": "runtime_metadata_context",
+            "source_ref": "runtime.context_engine.runtime_metadata",
+            "why_selected": "runtime_metadata_context_present",
+            "suppressed_reason": "runtime_metadata_context_empty",
+            "text": runtime_metadata_context or "",
+            "budget_key": "runtime_triggers_budget_chars",
+        },
+        {
+            "candidate_id": "ctx:permissions:permissions_context",
+            "kind": "permissions",
+            "name": "permissions_context",
+            "source_ref": "runtime.context_engine.permissions",
+            "why_selected": "permissions_context_present",
+            "suppressed_reason": "permissions_context_empty",
+            "text": permissions_context or "",
+        },
+        {
+            "candidate_id": "ctx:memory:memory_files",
+            "kind": "memory",
+            "name": "memory_files",
+            "source_ref": "memory.activation_and_retrieval",
+            "why_selected": "memory_snapshot_or_retrieval_context_present",
+            "suppressed_reason": "memory_snapshot_and_retrieval_context_empty",
+            "text": "\n\n".join(part for part in (memory_snapshot, retrieval_context) if part),
+            "budget_key": "memory_budget_chars",
+        },
+        {
+            "candidate_id": "ctx:skill:skill_catalog",
+            "kind": "skills",
+            "name": "skill_catalog",
+            "source_ref": "skills.catalog",
+            "why_selected": "skill_catalog_or_active_skills_present",
+            "suppressed_reason": "skill_catalog_and_active_skills_empty",
+            "payload": skill_payload,
+            "budget_key": "skill_catalog_budget_chars",
+        },
+        {
+            "candidate_id": "ctx:tools:active_tool_groups",
+            "kind": "tools",
+            "name": "active_tool_groups",
+            "source_ref": "runtime.active_tool_groups",
+            "why_selected": "active_tool_groups_present",
+            "suppressed_reason": "active_tool_groups_empty",
+            "payload": list(active_tool_groups or []),
+            "budget_key": "active_tool_groups_budget_chars",
+        },
+        {
+            "candidate_id": "ctx:tools:available_deferred_tools",
+            "kind": "tools",
+            "name": "available_deferred_tools",
+            "source_ref": "runtime.deferred_tool_discovery",
+            "why_selected": "available_deferred_tools_present",
+            "suppressed_reason": "available_deferred_tools_empty",
+            "payload": list(available_deferred_tools or []),
+            "budget_key": "active_tool_groups_budget_chars",
+        },
+        {
+            "candidate_id": "ctx:suffix:system_prompt_suffix",
+            "kind": "system_prompt_suffix",
+            "name": "system_prompt_suffix",
+            "source_ref": "runtime.system_prompt_suffix",
+            "why_selected": "system_prompt_suffix_present",
+            "suppressed_reason": "system_prompt_suffix_empty",
+            "payload": suffix_payload,
+        },
+        {
+            "candidate_id": "ctx:mcp:server_refs",
+            "kind": "mcp",
+            "name": "mcp_server_refs",
+            "source_ref": "mcp.registry",
+            "why_selected": "mcp_server_refs_present",
+            "suppressed_reason": "mcp_server_refs_empty",
+            "payload": list(mcp_server_refs or []),
+        },
+        {
+            "candidate_id": "ctx:hook:additional_context",
+            "kind": "hook",
+            "name": "hook_added_context",
+            "source_ref": "runtime.hooks",
+            "why_selected": "hook_added_context_present",
+            "suppressed_reason": "hook_added_context_empty",
+            "payload": list(hook_added_context or []),
+        },
+        {
+            "candidate_id": "ctx:agent:available_agent_types",
+            "kind": "custom_agents",
+            "name": "available_agent_types",
+            "source_ref": "runtime.subagent_registry",
+            "why_selected": "available_agent_types_present",
+            "suppressed_reason": "available_agent_types_empty",
+            "payload": list(available_agent_types or []),
+        },
+        {
+            "candidate_id": "ctx:messages:conversation",
+            "kind": "messages",
+            "name": "conversation_messages",
+            "source_ref": "session.messages",
+            "why_selected": "conversation_messages_present",
+            "suppressed_reason": "conversation_messages_empty",
+            "payload": list(messages or []),
+        },
+    ]
+    candidates: list[dict[str, Any]] = []
+    budget_decisions: list[dict[str, Any]] = []
+    for spec in candidate_specs:
+        budget_key = spec.get("budget_key")
+        candidate, decision = _context_candidate(
+            candidate_id=str(spec["candidate_id"]),
+            kind=str(spec["kind"]),
+            name=str(spec["name"]),
+            source_ref=str(spec["source_ref"]),
+            why_selected=str(spec["why_selected"]),
+            suppressed_reason=str(spec["suppressed_reason"]),
+            text=str(spec.get("text") or ""),
+            payload=spec.get("payload"),
+            budget_key=str(budget_key) if budget_key else None,
+            budget_chars=budget.get(str(budget_key)) if budget_key else None,
+            cacheability=str(spec.get("cacheability") or "dynamic"),
+        )
+        candidates.append(candidate)
+        budget_decisions.append(decision)
+    selected_contexts = [candidate for candidate in candidates if candidate["selected"]]
+    suppressed_contexts = [candidate for candidate in candidates if not candidate["selected"]]
+    return {
+        "context_candidates": candidates,
+        "selected_contexts": selected_contexts,
+        "suppressed_contexts": suppressed_contexts,
+        "source_hashes": {candidate["id"]: candidate["source_hash"] for candidate in candidates},
+        "budget_decisions": budget_decisions,
+    }
+
+
 def build_context_usage_ledger(
     *,
     provider_system_prompt: str,
@@ -417,6 +660,25 @@ def build_runtime_prompt_assembly_manifest(
         mcp_server_refs=mcp_server_refs,
         available_agent_types=available_agent_types,
     )
+    selection_manifest = build_context_selection_manifest(
+        frozen_prefix=frozen_prefix,
+        runtime_metadata_context=runtime_metadata_context,
+        permissions_context=permissions_context,
+        memory_snapshot=memory_snapshot,
+        retrieval_context=retrieval_context,
+        skill_catalog=skill_catalog,
+        active_skill_names=active_skill_names,
+        system_prompt_suffix=system_prompt_suffix,
+        system_prompt_suffix_sections=system_prompt_suffix_sections,
+        active_tool_groups=active_tool_groups,
+        available_deferred_tools=available_deferred_tools,
+        mcp_server_refs=mcp_server_refs,
+        hook_added_context=hook_added_context,
+        available_agent_types=available_agent_types,
+        messages=messages,
+        context_budget=context_budget,
+        model_window=model_window,
+    )
     return {
         "schema": "hive.ccplus.prompt_assembly_manifest.v1",
         "source_of_truth": "runtime_prompt_assembly",
@@ -438,6 +700,7 @@ def build_runtime_prompt_assembly_manifest(
         "actual_dynamic_suffix_chars": len(dynamic_suffix or ""),
         "actual_dynamic_notice_chars": len(provider_dynamic_notice or ""),
         "context_usage_ledger": context_usage_ledger,
+        **selection_manifest,
         "prompt_sections": [
             *({"kind": "frozen", "name": name} for name in frozen_sections),
             *({"kind": "dynamic", "name": name} for name in dynamic_sections),

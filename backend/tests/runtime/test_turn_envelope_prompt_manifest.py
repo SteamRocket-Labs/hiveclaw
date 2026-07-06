@@ -139,3 +139,38 @@ def test_runtime_prompt_manifest_includes_context_usage_ledger():
     assert ledger["used_tokens"] == sum(
         item["tokens"] for item in ledger["categories"] if item["name"] != "free_space"
     )
+
+
+def test_runtime_prompt_manifest_records_selection_reasons_source_hashes_and_budget_decisions():
+    from app.runtime.turn_envelope import build_runtime_prompt_assembly_manifest
+
+    manifest = build_runtime_prompt_assembly_manifest(
+        turn_id="turn-selection",
+        session_id="session-selection",
+        frozen_prefix="## Identity\nAnalyst.",
+        dynamic_suffix="## Memory\nmemory text\n\n## Knowledge\nknowledge text",
+        provider_system_prompt="## Identity\nAnalyst.",
+        provider_dynamic_notice="## Memory\nmemory text",
+        context_budget={"memory_budget_chars": 120, "retrieval_budget_chars": 90, "skill_catalog_budget_chars": 80},
+        model_window=1000,
+        tools_for_llm=[],
+        memory_snapshot="memory text",
+        permissions_context="",
+        retrieval_context="knowledge text",
+        skill_catalog="## Skills\n- python",
+        active_skill_names=["python"],
+    )
+
+    candidates = {item["id"]: item for item in manifest["context_candidates"]}
+    selected_ids = {item["id"] for item in manifest["selected_contexts"]}
+    suppressed_ids = {item["id"] for item in manifest["suppressed_contexts"]}
+    budget_decisions = {item["candidate_id"]: item for item in manifest["budget_decisions"]}
+
+    assert candidates["ctx:memory:memory_files"]["selected"] is True
+    assert candidates["ctx:memory:memory_files"]["why_selected"] == "memory_snapshot_or_retrieval_context_present"
+    assert candidates["ctx:memory:memory_files"]["source_hash"]
+    assert candidates["ctx:skill:skill_catalog"]["source_hash"] == manifest["source_hashes"]["ctx:skill:skill_catalog"]
+    assert "ctx:memory:memory_files" in selected_ids
+    assert "ctx:permissions:permissions_context" in suppressed_ids
+    assert budget_decisions["ctx:memory:memory_files"]["budget_key"] == "memory_budget_chars"
+    assert budget_decisions["ctx:skill:skill_catalog"]["budget_chars"] == 80

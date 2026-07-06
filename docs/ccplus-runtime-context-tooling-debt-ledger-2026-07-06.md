@@ -203,6 +203,8 @@ flowchart TD
 | 代码位置 | `backend/app/runtime/turn_envelope.py:247` |
 | 一轮修复 | Manifest 加 `context_candidates`、`selected_contexts`、`suppressed_contexts`、`source_hashes`、`budget_decisions` |
 
+2026-07-06 落地证据：`backend/app/runtime/turn_envelope.py` 新增 `build_context_selection_manifest`，`prompt_assembly_manifest` 现在包含 `context_candidates`、`selected_contexts`、`suppressed_contexts`、`source_hashes`、`budget_decisions`；每个候选有稳定 `id`、`kind`、`source_ref`、`source_hash`、`why_selected` / `suppressed_reason`、`budget_key`、`budget_chars`、实际 chars/tokens 与 cacheability。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_invoker.py::test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt backend/tests/services/test_session_control_plane.py -q` -> `21 passed, 4 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/runtime/turn_envelope.py backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_invoker.py backend/tests/services/test_session_control_plane.py` -> `All checks passed!`。
+
 ### RTD-05：ContextEngine artifacts 只覆盖部分动态上下文
 
 | 字段 | 内容 |

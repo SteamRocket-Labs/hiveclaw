@@ -197,3 +197,26 @@ def test_activation_router_applies_budget_aware_top_k_and_token_pressure() -> No
     assert {item["candidate_kind"] for item in suppressed} == {"knowledge_base", "skill"}
     assert manifest["metadata"]["budget"]["selected_tokens"] == 8
     assert manifest["metadata"]["budget"]["max_surface_tokens"] == 12
+
+
+def test_activation_router_manifest_summarizes_suppression_reasons() -> None:
+    from app.runtime.activation_router import ActivationRouterContext, route_activation_candidates
+
+    output = route_activation_candidates(
+        [
+            _candidate(kind="agent_memory", acl_scope="owner"),
+            _candidate(kind="knowledge_base", sensitivity="PL3_sensitive"),
+            _candidate(kind="tool"),
+        ],
+        context=ActivationRouterContext(
+            principal_stack=_principal_stack(current_is_owner=False),
+            denied_candidate_kinds=("tool",),
+        ),
+    )
+    manifest = output.to_manifest()
+
+    reasons = {item["reason"]: item for item in manifest["suppression_reasons"]}
+    assert reasons["acl_denied"]["count"] == 1
+    assert reasons["sensitivity_denied"]["policy_refs"] == ["activation_router.sensitivity"]
+    assert reasons["policy_denied"]["candidate_kinds"] == ["tool"]
+    assert all(item["candidate_ids"] for item in reasons.values())

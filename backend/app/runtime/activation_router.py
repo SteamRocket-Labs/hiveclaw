@@ -71,6 +71,38 @@ def _candidate_field(candidate: ActivationCandidate, key: str, *, fallback: str 
     return _first_feature(candidate.key_features.get(key)) or fallback
 
 
+def _suppression_reasons(candidates: Iterable[ActivationCandidate]) -> list[dict[str, Any]]:
+    by_reason: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        mask = candidate.hard_mask
+        reason = _text(mask.reason, fallback="suppressed")
+        item = by_reason.setdefault(
+            reason,
+            {
+                "reason": reason,
+                "count": 0,
+                "candidate_ids": [],
+                "candidate_kinds": set(),
+                "policy_refs": set(),
+            },
+        )
+        item["count"] += 1
+        item["candidate_ids"].append(candidate.candidate_id)
+        item["candidate_kinds"].add(candidate.candidate_kind)
+        if mask.policy_ref:
+            item["policy_refs"].add(mask.policy_ref)
+    return [
+        {
+            "reason": item["reason"],
+            "count": item["count"],
+            "candidate_ids": list(item["candidate_ids"]),
+            "candidate_kinds": sorted(item["candidate_kinds"]),
+            "policy_refs": sorted(item["policy_refs"]),
+        }
+        for item in by_reason.values()
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class ActivationRouterContext:
     principal_stack: PrincipalStack | None = None
@@ -105,6 +137,7 @@ class ActivationRouterOutput:
             "suppressed_activation_candidates": [
                 candidate.to_manifest() for candidate in self.suppressed_activation_candidates
             ],
+            "suppression_reasons": _suppression_reasons(self.suppressed_activation_candidates),
             "metadata": dict(self.metadata),
         }
 

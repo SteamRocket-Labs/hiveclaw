@@ -495,6 +495,8 @@ async def test_session_workbench_projects_background_completion_wake_state(monke
     assert result["completion_wakes"][1]["label"] == "critic"
     assert result["completion_wakes"][1]["return_contract"] == "background_completion_wake"
     assert result["completion_wakes"][1]["subagent_return_contract"]["normal_wait_path"] == "completion_wake"
+    assert result["completion_wakes"][1]["subagent_decision_entry"]["schema"] == "hive.ccplus.subagent_decision_entry.v1"
+    assert result["completion_wakes"][1]["required_user_action"] == "observe_result"
     assert result["completion_wakes"][2]["state"] == "running"
 
 
@@ -679,6 +681,8 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
     assert sections["subagents"]["items"][0]["label"] == "critic"
     assert sections["subagents"]["items"][0]["return_contract"] == "background_completion_wake"
     assert sections["subagents"]["items"][0]["subagent_return_contract"]["fallback_tool"] == "check_subagent"
+    assert sections["subagents"]["items"][0]["subagent_decision_entry"]["status"] == "completed"
+    assert sections["subagents"]["items"][0]["safe_to_retry"] is True
     assert sections["background"]["items"][0]["label"] == "nightly sweep"
     workflow = sections["workflows"]["items"][0]
     assert workflow["label"] == "ABS deep research"

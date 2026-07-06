@@ -59,6 +59,7 @@ from app.services.subagent_run_service import (
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.runtime.context_budget import build_tool_execution_shape_decision, execution_shape_from_round_state
+from app.runtime.subagent_decision_entry import subagent_decision_entry_from_metadata
 from app.runtime.subagent_return_contract import build_subagent_return_contract, subagent_return_contract_from_metadata
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
@@ -874,6 +875,14 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
             child_session_id=child_session_id,
             parent_session_id=record.get("parent_session_id"),
         )
+        decision_entry = subagent_decision_entry_from_metadata(
+            metadata,
+            status=status,
+            run_id=run_id,
+            child_session_id=child_session_id,
+            parent_session_id=record.get("parent_session_id"),
+            summary=result,
+        )
         return _json(
             {
                 "ok": True,
@@ -884,6 +893,9 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
                 "child_session_id": child_session_id,
                 "return_contract": return_contract["return_contract"],
                 "subagent_return_contract": return_contract,
+                "subagent_decision_entry": decision_entry,
+                "safe_to_retry": decision_entry["safe_to_retry"],
+                "required_user_action": decision_entry["required_user_action"],
                 "session_state": {
                     "status": status,
                     "active_run_id": run_id if status in {"pending", "running", "in_progress"} else None,

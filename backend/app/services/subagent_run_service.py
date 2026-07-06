@@ -30,6 +30,7 @@ from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
+from app.runtime.subagent_decision_entry import build_subagent_decision_entry, subagent_decision_entry_from_metadata
 from app.runtime.subagent_return_contract import build_subagent_return_contract, subagent_return_contract_from_metadata
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
@@ -423,12 +424,24 @@ def make_run_completer(run_id: str):
     async def _complete(result: SubagentResult) -> None:
         status = "completed" if result.ok else "failed"
         summary = (result.content or result.error or "")[:8000]
+        decision_entry = build_subagent_decision_entry(
+            run_id=run_id,
+            status=status,
+            subagent_name=result.name,
+            subagent_type=result.type,
+            replay_mode="completed" if status == "completed" else "terminal_failure",
+            safe_to_retry=status == "completed",
+            retry_available=False,
+            required_user_action="observe_result" if status == "completed" else "inspect_failure_and_decide_retry",
+            summary=summary,
+        )
         await update_runtime_task_record(
             run_id,
             status=status,
             result_summary=summary,
             token_usage={"total_tokens": result.tokens_used},
             metadata_json={
+                "subagent_decision_entry": decision_entry,
                 "completion_journal": [
                     build_completion_journal_entry(
                         task_type=SUBAGENT_RUN_TASK_TYPE,
@@ -493,9 +506,8 @@ async def update_subagent_child_session_state_for_run(
     record = await get_runtime_task_record(run_id)
     if record is None:
         return
-    child_session_id = str(
-        record.get("child_session_id") or (record.get("metadata") or {}).get("child_session_id") or ""
-    ).strip()
+    record_metadata = dict(record.get("metadata") or {})
+    child_session_id = str(record.get("child_session_id") or record_metadata.get("child_session_id") or "").strip()
     child_session_uuid = _uuid_or_none(child_session_id)
     parent_agent_uuid = _uuid_or_none(record.get("parent_agent_id"))
     if child_session_uuid is None or parent_agent_uuid is None:
@@ -514,6 +526,15 @@ async def update_subagent_child_session_state_for_run(
         metadata["session_state"] = status
         metadata["last_run_id"] = run_id
         metadata["last_result_summary"] = summary
+        decision_entry = subagent_decision_entry_from_metadata(
+            record_metadata,
+            run_id=run_id,
+            status=status,
+            child_session_id=child_session_uuid,
+            parent_session_id=session.parent_session_id,
+            summary=summary,
+        )
+        metadata["subagent_decision_entry"] = decision_entry
         session.transcript_metadata_json = metadata
         await append_session_event(
             db=db,
@@ -549,6 +570,7 @@ async def update_subagent_child_session_state_for_run(
                 "parent_session_id": str(parent_session_id),
                 "root_session_id": str(root_session_id),
                 "reason": "subagent_task_completed" if status == "completed" else "subagent_task_failed",
+                "subagent_decision_entry": decision_entry,
             }
             parent_event = build_session_native_event(parent_event_payload)
             await append_session_event(
@@ -584,6 +606,7 @@ async def update_subagent_child_session_state_for_run(
                 "child_session_id": child_session_uuid,
                 "status": status,
                 "summary": summary,
+                "subagent_decision_entry": decision_entry,
             }
             if budget_run_id is not None:
                 wake_kwargs["budget_run_id"] = budget_run_id
@@ -660,6 +683,7 @@ async def _wake_parent_session_from_subagent_completion(
     child_session_id: uuid.UUID,
     status: str,
     summary: str,
+    subagent_decision_entry: dict[str, Any] | None = None,
     budget_run_id: uuid.UUID | str | None = None,
 ) -> None:
     try:
@@ -694,6 +718,7 @@ async def _wake_parent_session_from_subagent_completion(
                 metadata={
                     "subagent_session_state": status,
                     "parent_agent_id": str(parent_agent_id),
+                    **({"subagent_decision_entry": subagent_decision_entry} if subagent_decision_entry else {}),
                     **({"budget_run_id": str(budget_run_id)} if budget_run_id else {}),
                 },
             )
@@ -1090,6 +1115,25 @@ async def _mark_subagent_run_needs_reconciliation(
     )
     reconciliation_metadata["return_contract"] = return_contract["return_contract"]
     reconciliation_metadata["subagent_return_contract"] = return_contract
+    decision_entry = build_subagent_decision_entry(
+        run_id=run_id,
+        status="needs_reconciliation",
+        subagent_name=metadata.get("subagent_name"),
+        subagent_type=metadata.get("subagent_type"),
+        replay_mode="blocked",
+        blocker=blocker,
+        safe_to_retry=False,
+        retry_available=bool(reconciliation_metadata.get("reconciliation_retry_allowed")),
+        required_user_action=(
+            "approve_reconciliation_retry"
+            if reconciliation_metadata.get("reconciliation_retry_allowed")
+            else "manual_reconcile_or_abandon"
+        ),
+        child_session_id=metadata.get("child_session_id"),
+        parent_session_id=metadata.get("parent_session_id") or session_id,
+        summary=summary,
+    )
+    reconciliation_metadata["subagent_decision_entry"] = decision_entry
     await update_runtime_task_record(
         run_id,
         status="needs_reconciliation",
@@ -1525,6 +1569,14 @@ async def list_subagent_runs(parent_agent_id: uuid.UUID, *, limit: int = 20) -> 
             child_session_id=child_session_id,
             parent_session_id=r.parent_session_id,
         )
+        decision_entry = subagent_decision_entry_from_metadata(
+            metadata,
+            run_id=str(r.id),
+            status=r.status,
+            child_session_id=child_session_id,
+            parent_session_id=r.parent_session_id,
+            summary=r.result_summary,
+        )
         payloads.append(
             {
                 "run_id": str(r.id),
@@ -1535,6 +1587,9 @@ async def list_subagent_runs(parent_agent_id: uuid.UUID, *, limit: int = 20) -> 
                 "child_session_id": child_session_id,
                 "return_contract": return_contract["return_contract"],
                 "subagent_return_contract": return_contract,
+                "subagent_decision_entry": decision_entry,
+                "safe_to_retry": decision_entry["safe_to_retry"],
+                "required_user_action": decision_entry["required_user_action"],
                 "session_state": {
                     "status": r.status,
                     "active_run_id": str(r.id) if r.status in {"pending", "running", "in_progress"} else None,

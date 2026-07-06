@@ -687,7 +687,12 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
             "parent_agent_id": str(parent_agent_id),
             "child_session_id": str(child_session_id),
             "parent_session_id": str(parent_session_id),
-            "metadata": {"child_session_id": str(child_session_id)},
+            "metadata": {
+                "child_session_id": str(child_session_id),
+                "subagent_name": "critic",
+                "subagent_type": "critic",
+                "restart_resume_mode": "transcript",
+            },
         }
 
     async def fake_resolve_tenant_for_agent(_agent_id):
@@ -718,6 +723,9 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
     parent_event = next(event for event in captured_events if event["session_id"] == parent_session_id)
     assert parent_event["event_type"] == "child_session"
     assert parent_event["role"] == "system"
+    assert parent_event["metadata"]["subagent_decision_entry"]["schema"] == "hive.ccplus.subagent_decision_entry.v1"
+    assert parent_event["metadata"]["subagent_decision_entry"]["status"] == "completed"
+    assert parent_event["metadata"]["subagent_decision_entry"]["safe_to_retry"] is True
     assert parent_event["parts"] == [{
         "type": "event",
         "event_type": "child_session",
@@ -740,6 +748,7 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
             "child_session_id": child_session_id,
             "status": "completed",
             "summary": "done",
+            "subagent_decision_entry": parent_event["metadata"]["subagent_decision_entry"],
         }
     ]
 
@@ -1557,6 +1566,13 @@ async def test_resume_persisted_subagent_runs_reconciles_general_purpose_without
     assert calls["updates"][-1][1]["status"] == "needs_reconciliation"
     assert calls["updates"][-1][1]["metadata_json"]["needs_reconciliation"] is True
     assert calls["updates"][-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_subagent_type"
+    decision = calls["updates"][-1][1]["metadata_json"]["subagent_decision_entry"]
+    assert decision["schema"] == "hive.ccplus.subagent_decision_entry.v1"
+    assert decision["replay_mode"] == "blocked"
+    assert decision["blocker"] == "non_idempotent_subagent_type"
+    assert decision["safe_to_retry"] is False
+    assert decision["retry_available"] is True
+    assert decision["required_user_action"] == "approve_reconciliation_retry"
     assert calls["updates"][-1][1]["metadata_json"]["reconciliation_retry_allowed"] is True
     assert calls["updates"][-1][1]["metadata_json"]["reconciliation_retry_contract"] == {
         "schema": "runtime_reconciliation_retry_contract.v1",
@@ -1833,6 +1849,13 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_child_pending_
     assert updates[-1][0] == run_id
     assert updates[-1][1]["status"] == "needs_reconciliation"
     assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "child_pending_tool_frame_not_replay_safe"
+    decision = updates[-1][1]["metadata_json"]["subagent_decision_entry"]
+    assert decision["schema"] == "hive.ccplus.subagent_decision_entry.v1"
+    assert decision["replay_mode"] == "blocked"
+    assert decision["blocker"] == "child_pending_tool_frame_not_replay_safe"
+    assert decision["safe_to_retry"] is False
+    assert decision["retry_available"] is False
+    assert decision["required_user_action"] == "manual_reconcile_or_abandon"
     assert updates[-1][1]["metadata_json"].get("reconciliation_retry_allowed") is not True
     assert "reconciliation_retry_contract" not in updates[-1][1]["metadata_json"]
     assert updates[-1][1]["metadata_json"]["child_pending_tool_frame"]["tool_name"] == "write_file"

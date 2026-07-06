@@ -28,6 +28,7 @@ from app.runtime.ccplus_contracts import (
     build_context_policy,
     build_permission_profile,
 )
+from app.runtime.subagent_decision_entry import subagent_decision_entry_from_metadata
 from app.runtime.subagent_return_contract import subagent_return_contract_from_metadata
 from app.runtime.turn_envelope import build_prompt_assembly_manifest, build_turn_envelope
 from app.services.agent_team_contract import teammate_creation_discovery
@@ -277,6 +278,17 @@ def _runtime_task_payload(task: RuntimeTask) -> dict[str, Any]:
         )
         payload["return_contract"] = return_contract["return_contract"]
         payload["subagent_return_contract"] = return_contract
+        decision_entry = subagent_decision_entry_from_metadata(
+            metadata,
+            status=getattr(task, "status", None),
+            run_id=getattr(task, "id", None),
+            child_session_id=getattr(task, "child_session_id", None),
+            parent_session_id=getattr(task, "parent_session_id", None),
+            summary=getattr(task, "result_summary", None),
+        )
+        payload["subagent_decision_entry"] = decision_entry
+        payload["safe_to_retry"] = decision_entry["safe_to_retry"]
+        payload["required_user_action"] = decision_entry["required_user_action"]
     return payload
 
 
@@ -322,6 +334,17 @@ def _runtime_task_runtime_row(task: RuntimeTask, *, runtime_kind: str | None = N
         )
         row["return_contract"] = return_contract["return_contract"]
         row["subagent_return_contract"] = return_contract
+        decision_entry = subagent_decision_entry_from_metadata(
+            metadata,
+            status=getattr(task, "status", None),
+            run_id=getattr(task, "id", None),
+            child_session_id=child_session_id,
+            parent_session_id=getattr(task, "parent_session_id", None),
+            summary=getattr(task, "result_summary", None),
+        )
+        row["subagent_decision_entry"] = decision_entry
+        row["safe_to_retry"] = decision_entry["safe_to_retry"]
+        row["required_user_action"] = decision_entry["required_user_action"]
         row["inspectable"] = bool(child_session_id)
         row["continuable"] = bool(child_session_id)
     return row
@@ -496,6 +519,17 @@ def _runtime_completion_wake_payload(task: RuntimeTask) -> dict[str, Any] | None
         )
         payload["return_contract"] = return_contract["return_contract"]
         payload["subagent_return_contract"] = return_contract
+        decision_entry = subagent_decision_entry_from_metadata(
+            metadata,
+            status=getattr(task, "status", None),
+            run_id=getattr(task, "id", None),
+            child_session_id=getattr(task, "child_session_id", None),
+            parent_session_id=getattr(task, "parent_session_id", None),
+            summary=getattr(task, "result_summary", None),
+        )
+        payload["subagent_decision_entry"] = decision_entry
+        payload["safe_to_retry"] = decision_entry["safe_to_retry"]
+        payload["required_user_action"] = decision_entry["required_user_action"]
     return payload
 
 

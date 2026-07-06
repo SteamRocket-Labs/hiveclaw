@@ -1477,7 +1477,7 @@ class ToolRuntimeService:
             principal=str(agent_id),
             policy="plan_gate",
             result="requires_confirmation",
-            reason=decision.reason or "requires_confirmation",
+            reason=str(getattr(decision, "reason", "") or "requires_confirmation"),
             model_visible_message=payload.get("summary"),
             source="plan_gate",
         )

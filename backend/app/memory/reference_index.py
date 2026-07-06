@@ -26,6 +26,7 @@ from pathlib import Path
 
 from app.memory.explicit_overlay import build_explicit_overlay_activation_keys, load_explicit_overlay_entries
 from app.memory.md_store import extract_t3_xml_blocks, parse_t3_xml_block
+from app.memory.plane_read import list_knowledge_pages, list_profile_entries
 
 logger = logging.getLogger(__name__)
 
@@ -565,6 +566,8 @@ _ACTIVATION_AXIS_ALIASES = {
     "statuses": "status",
     "names": "name",
     "risk_flags": "risk_flag",
+    "aliases": "alias",
+    "tags": "tag",
 }
 
 
@@ -576,6 +579,7 @@ def _activation_key_rows(
 ) -> list[tuple[str, str, str, str, str, str, float, str]]:
     rows: list[tuple[str, str, str, str, str, str, float, str]] = []
     rows.extend(_legacy_t2_activation_key_rows(label_rows or []))
+    rows.extend(_t3_activation_key_rows(root, agent_id))
     for entry in load_explicit_overlay_entries(root, agent_id):
         if entry.status != "active":
             continue
@@ -608,7 +612,65 @@ def _legacy_t2_activation_key_rows(
     return rows
 
 
-def _flatten_activation_keys(keys: dict) -> list[tuple[str, str, str, str, str, str, float, str]]:
+def _t3_activation_key_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str, str, str, str, str, str, float, str]]:
+    rows: list[tuple[str, str, str, str, str, str, float, str]] = []
+    for entry in list_profile_entries(root, agent_id):
+        entry_id = str(entry.get("id") or "").strip()
+        if not entry_id:
+            continue
+        source = str(entry.get("source") or "").strip()
+        rows.extend(
+            _flatten_activation_keys(
+                {
+                    "candidate_kind": "agent_memory",
+                    "candidate_ref": {
+                        "candidate_id": f"agent_memory:t3_profile:{entry_id}",
+                        "kind": "agent_memory",
+                        "source_type": "t3_profile",
+                    },
+                    "key_features": {
+                        "entry_id": [entry_id],
+                        "heading": [str(entry.get("heading") or "").strip()],
+                        "aliases": entry.get("aliases") or [],
+                        "tags": entry.get("tags") or [],
+                        "lifecycle": [str(entry.get("lifecycle") or "active").strip()],
+                    },
+                    "source_refs": [source],
+                },
+                confidence=0.7,
+            )
+        )
+    for page in list_knowledge_pages(root, agent_id):
+        page_id = str(page.get("id") or "").strip()
+        if not page_id:
+            continue
+        source = str(page.get("source") or "").strip()
+        scope = "t3_milestone" if page.get("kind") == "milestone" else "t3_knowledge"
+        rows.extend(
+            _flatten_activation_keys(
+                {
+                    "candidate_kind": "agent_memory",
+                    "candidate_ref": {
+                        "candidate_id": f"agent_memory:{scope}:{page_id}",
+                        "kind": "agent_memory",
+                        "source_type": scope,
+                    },
+                    "key_features": {
+                        "page_id": [page_id],
+                        "title": [str(page.get("title") or page_id).strip()],
+                        "aliases": page.get("aliases") or [],
+                        "tags": page.get("tags") or [],
+                        "lifecycle": [str(page.get("lifecycle") or "active").strip()],
+                    },
+                    "source_refs": [source],
+                },
+                confidence=0.7,
+            )
+        )
+    return rows
+
+
+def _flatten_activation_keys(keys: dict, *, confidence: float = 1.0) -> list[tuple[str, str, str, str, str, str, float, str]]:
     candidate_ref = keys.get("candidate_ref") if isinstance(keys.get("candidate_ref"), dict) else {}
     candidate_id = str(candidate_ref.get("candidate_id") or "").strip()
     candidate_kind = str(keys.get("candidate_kind") or candidate_ref.get("kind") or "").strip()
@@ -626,7 +688,7 @@ def _flatten_activation_keys(keys: dict) -> list[tuple[str, str, str, str, str, 
             continue
         for value in _activation_values(raw_values):
             for source_ref in source_refs:
-                rows.append((candidate_id, candidate_kind, scope, axis, value, source_ref, 1.0, created_at))
+                rows.append((candidate_id, candidate_kind, scope, axis, value, source_ref, confidence, created_at))
     return rows
 
 

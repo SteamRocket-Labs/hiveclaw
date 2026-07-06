@@ -210,6 +210,49 @@ def test_legacy_t2_labels_backfill_activation_keys(tmp_path: Path) -> None:
     assert indexed == (f"agent_memory:t2_package:{short_ref}", short_ref, 0.55)
 
 
+def test_legacy_t3_profile_and_knowledge_backfill_activation_keys(tmp_path: Path) -> None:
+    from app.memory.reference_index import rebuild_reference_index
+
+    agent_id = uuid4()
+    mem = _mem_dir(tmp_path, agent_id)
+    (mem / "profiles").mkdir(parents=True, exist_ok=True)
+    (mem / "profiles" / "owner.md").write_text(
+        """## 偏好
+
+### 写作风格
+<!-- id: usr-writing-style -->
+- aliases: [tone, voice]
+- tags: [writing, taste]
+- lifecycle: active
+用户偏好直接、证据优先的中文说明。
+""",
+        encoding="utf-8",
+    )
+    (mem / "knowledge").mkdir(parents=True, exist_ok=True)
+    (mem / "knowledge" / "attention-router.md").write_text(
+        """---
+title: Attention Router
+aliases: [QKV Runtime, Runtime Attention]
+tags: [memory, runtime]
+lifecycle: active
+---
+## Current Claim
+外部 Attention Router 负责召回排序。
+""",
+        encoding="utf-8",
+    )
+
+    rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
+
+    rows = _activation_key_rows(tmp_path, agent_id)
+    assert ("agent_memory", "t3_profile", "alias", "tone") in rows
+    assert ("agent_memory", "t3_profile", "tag", "writing") in rows
+    assert ("agent_memory", "t3_profile", "lifecycle", "active") in rows
+    assert ("agent_memory", "t3_knowledge", "title", "Attention Router") in rows
+    assert ("agent_memory", "t3_knowledge", "alias", "QKV Runtime") in rows
+    assert ("agent_memory", "t3_knowledge", "tag", "memory") in rows
+
+
 def test_minimal_labels_produce_only_present_axes(tmp_path: Path) -> None:
     """Missing axes stay absent — no guessed rows (evidence gap discipline)."""
     from app.memory.reference_index import rebuild_reference_index

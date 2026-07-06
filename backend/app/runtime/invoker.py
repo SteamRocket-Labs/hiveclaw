@@ -299,6 +299,41 @@ def _skill_catalog_ranking_inputs(request: AgentInvocationRequest) -> dict[str, 
     }
 
 
+def _build_activation_query_for_request(request: AgentInvocationRequest) -> dict[str, Any]:
+    from app.runtime.activation_query import ActivationQuery
+
+    metadata = _ensure_turn_metadata(request)
+    owner_context = {
+        key: metadata[key]
+        for key in (
+            "tenant_id",
+            "owner_id",
+            "owner_user_id",
+            "company_id",
+            "principal_id",
+            "runtime_task_id",
+            "task_id",
+        )
+        if metadata.get(key)
+    }
+    activation_query = ActivationQuery(
+        raw_prompt=_latest_user_prompt(request.messages),
+        session_id=request.memory_session_id
+        or (request.session_context.session_id if request.session_context and request.session_context.session_id else ""),
+        turn_id=str(metadata.get("turn_id") or ""),
+        intent_id=str(metadata.get("intent_id") or ""),
+        agent_id=str(request.agent_id or ""),
+        agent_role=request.role_description or request.agent_name,
+        owner_context=owner_context,
+        candidate_lanes=("memory", "knowledge", "skill", "tool"),
+        parse_trace=[
+            {"source": "runtime_invoker", "field": "raw_prompt", "method": "latest_user_message"},
+            {"source": "runtime_invoker", "field": "candidate_lanes", "method": "default_runtime_lanes"},
+        ],
+    )
+    return activation_query.to_manifest()
+
+
 def _format_hook_additional_contexts(contexts: list[str]) -> str:
     cleaned = [str(item).strip() for item in contexts if str(item).strip()]
     if not cleaned:
@@ -1453,6 +1488,18 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
                 )
     except Exception as _prompt_err:
         logging.getLogger(__name__).debug("[Invoker] USER_PROMPT_SUBMIT hook failed (non-fatal): %s", _prompt_err)
+
+    # ── Runtime ActivationQuery ──
+    # Native runtime resolver: plugin hooks may add context, but Q construction
+    # is an internal pre-kernel contract and must not depend on hook availability.
+    try:
+        if request.session_context is not None:
+            from app.runtime.context import ensure_runtime_assembly_state
+
+            activation_query = _build_activation_query_for_request(request)
+            ensure_runtime_assembly_state(request.session_context).record_activation_query(activation_query)
+    except Exception as _activation_err:
+        logging.getLogger(__name__).debug("[Invoker] ActivationQuery build failed (non-fatal): %s", _activation_err)
 
     # ── SESSION_START hook ──
     try:

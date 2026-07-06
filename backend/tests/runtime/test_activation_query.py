@@ -162,6 +162,67 @@ def test_invoker_activation_query_embeds_mechanical_parser_features() -> None:
     assert ("risk_level", "parse_mechanical_activation_features") in trace_fields
 
 
+@pytest.mark.asyncio
+async def test_lightweight_llm_query_parser_enriches_high_risk_mechanical_query() -> None:
+    from app.runtime.activation_query import (
+        maybe_parse_activation_query_with_llm,
+        parse_mechanical_activation_features,
+    )
+
+    mechanical = parse_mechanical_activation_features("请检查是否可以删除生产 secret。")
+
+    async def fake_parser(payload):
+        assert payload["mechanical_features"]["risk_level"] == "high"
+        return json.dumps(
+            {
+                "intent": "review_sensitive_change",
+                "concepts": ["production_secret"],
+                "memory_need": "required",
+            }
+        )
+
+    result = await maybe_parse_activation_query_with_llm(
+        raw_prompt="请检查是否可以删除生产 secret。",
+        mechanical_features=mechanical,
+        parser=fake_parser,
+        timeout_seconds=0.5,
+    )
+
+    assert result["used"] is True
+    assert result["features"]["intent"] == "review_sensitive_change"
+    assert result["features"]["concepts"] == ["production_secret"]
+    assert result["features"]["memory_need"] == "required"
+    assert result["trace"]["fallback"] is False
+
+
+@pytest.mark.asyncio
+async def test_lightweight_llm_query_parser_falls_back_on_timeout() -> None:
+    import asyncio
+
+    from app.runtime.activation_query import (
+        maybe_parse_activation_query_with_llm,
+        parse_mechanical_activation_features,
+    )
+
+    mechanical = parse_mechanical_activation_features("请删除生产数据。")
+
+    async def slow_parser(_payload):
+        await asyncio.sleep(0.05)
+        return {"intent": "too_late"}
+
+    result = await maybe_parse_activation_query_with_llm(
+        raw_prompt="请删除生产数据。",
+        mechanical_features=mechanical,
+        parser=slow_parser,
+        timeout_seconds=0.001,
+    )
+
+    assert result["used"] is False
+    assert result["features"] == {}
+    assert result["trace"]["fallback"] is True
+    assert result["trace"]["reason"] == "timeout"
+
+
 def test_activation_query_from_manifest_rejects_wrong_schema() -> None:
     from app.runtime.activation_query import ActivationQuery
 

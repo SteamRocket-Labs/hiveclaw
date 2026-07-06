@@ -6,7 +6,9 @@ tool activation. It is a runtime data contract, not prompt text.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import inspect
 import json
 import re
 from dataclasses import dataclass, field
@@ -152,6 +154,101 @@ def parse_mechanical_activation_features(text: str) -> dict[str, Any]:
     }
 
 
+def should_use_lightweight_query_parser(
+    *,
+    raw_prompt: str,
+    mechanical_features: Mapping[str, Any],
+    force: bool = False,
+) -> bool:
+    if force:
+        return True
+    if mechanical_features.get("risk_level") == "high":
+        return True
+    if len(_list_payload_for_parser(mechanical_features.get("entities"))) >= 3:
+        return True
+    temporal_values = {
+        _text(item.get("value")).lower()
+        for item in _list_payload_for_parser(mechanical_features.get("temporal_hints"))
+        if isinstance(item, Mapping)
+    }
+    if temporal_values & {"上次", "之前", "previous", "last time"}:
+        return True
+    return len(str(raw_prompt or "")) > 500
+
+
+def _list_payload_for_parser(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list | tuple) else []
+
+
+async def maybe_parse_activation_query_with_llm(
+    *,
+    raw_prompt: str,
+    mechanical_features: Mapping[str, Any],
+    parser: Any | None = None,
+    timeout_seconds: float = 1.2,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Conditionally enrich Q through an injected lightweight parser.
+
+    The parser seam is intentionally dependency-injected: this module defines
+    timeout/fallback semantics, while runtime wiring decides whether a cheap LLM
+    parser is available for a specific deployment.
+    """
+
+    if parser is None:
+        return _llm_parse_fallback(reason="no_parser")
+    if not should_use_lightweight_query_parser(
+        raw_prompt=raw_prompt,
+        mechanical_features=mechanical_features,
+        force=force,
+    ):
+        return _llm_parse_fallback(reason="not_triggered")
+    payload = {
+        "raw_prompt": raw_prompt,
+        "mechanical_features": _json_safe(mechanical_features),
+        "required_format": "strict_json_object",
+    }
+    try:
+        parsed = parser(payload)
+        if inspect.isawaitable(parsed):
+            parsed = await asyncio.wait_for(parsed, timeout=timeout_seconds)
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+        if not isinstance(parsed, Mapping):
+            raise ValueError("lightweight parser returned non-object payload")
+        return {
+            "schema": "hive.ccplus.activation_llm_parse_result.v1",
+            "used": True,
+            "features": _dict_payload(parsed),
+            "trace": {
+                "parser": "injected_lightweight_parser",
+                "fallback": False,
+                "reason": "parsed",
+                "timeout_seconds": timeout_seconds,
+            },
+        }
+    except TimeoutError:
+        return _llm_parse_fallback(reason="timeout", timeout_seconds=timeout_seconds)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return _llm_parse_fallback(reason="parser_error", timeout_seconds=timeout_seconds)
+
+
+def _llm_parse_fallback(*, reason: str, timeout_seconds: float | None = None) -> dict[str, Any]:
+    trace: dict[str, Any] = {
+        "parser": "injected_lightweight_parser",
+        "fallback": True,
+        "reason": reason,
+    }
+    if timeout_seconds is not None:
+        trace["timeout_seconds"] = timeout_seconds
+    return {
+        "schema": "hive.ccplus.activation_llm_parse_result.v1",
+        "used": False,
+        "features": {},
+        "trace": trace,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class ActivationQuery:
     """Versioned structured Q for per-turn activation.
@@ -293,6 +390,8 @@ __all__ = [
     "ActivationQuery",
     "activation_query_hash",
     "build_activation_query_ref",
+    "maybe_parse_activation_query_with_llm",
     "parse_mechanical_activation_features",
+    "should_use_lightweight_query_parser",
     "task_profile_to_activation_payload",
 ]

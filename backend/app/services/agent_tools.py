@@ -38,6 +38,7 @@ from app.services.capability_group_policy_service import (
     is_capability_group_enabled,
     policy_capability_group_names_for_tool,
 )
+from app.services.pack_policy_service import is_pack_enabled as _legacy_is_pack_enabled
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
 from app.runtime.deferred_tools import make_deferred_tool_candidate
@@ -73,6 +74,18 @@ _TOOL_EXECUTION_REGISTRY_INITIALIZED = False
 _TOOL_RUNTIME_SERVICE: ToolRuntimeService | None = None
 _COLLECTED_TOOLS = None  # Lazy-initialized by _ensure_tool_execution_registry
 _REGISTRY_LOCK = threading.Lock()  # M-09: protect concurrent registry init
+
+
+def is_pack_enabled(pack_policies: dict[str, bool], pack_name: str) -> bool:
+    """Compatibility shim for legacy pack-policy tests and callers.
+
+    Runtime tool visibility now uses capability-group policy as the primary
+    surface. Keep this thin re-export so older MCP/tool discovery tests can
+    monkeypatch the historical module attribute without resurrecting Pack as a
+    first-class runtime context concept.
+    """
+
+    return _legacy_is_pack_enabled(pack_policies, pack_name)
 
 
 def _is_relative_workspace_path(raw_path: str) -> tuple[PurePosixPath | None, str | None]:

@@ -167,7 +167,7 @@ flowchart TD
 | 返回影响 | 模型看到过期概念，设计上把 Skill / Capability / Tool Group 混在一起 |
 | 代码位置 | `backend/app/runtime/context_budget.py:25`、`:281`；`backend/app/runtime/prompt_builder.py:510`；`backend/app/runtime/invoker.py:816` |
 | 一轮修复 | Runtime 公共名改为 `capability_group` / `deferred_tool_group`；数据库和旧 manifest 可保留 compatibility adapter，但 prompt 和新事件不得再出现 `pack` |
-| 落地证据 | 2026-07-06：`TaskProfile` 新增 `suggested_deferred_tool_group_names`，旧 `suggested_pack_names` 仅兼容；dynamic prompt 渲染 `web` / `mcp_admin` 这类 deferred tool group label，不再渲染 `web_pack`。验证：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_context_budget.py backend/tests/runtime/test_prompt_builder.py -q` -> `64 passed, 4 warnings` |
+| 2026-07-06 落地证据 | `TaskProfile` 新增 `suggested_deferred_tool_group_names`，旧 `suggested_pack_names` 仅兼容；dynamic prompt 渲染 `web` / `mcp_admin` 这类 deferred tool group label，不再渲染 `web_pack`。验证：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_context_budget.py backend/tests/runtime/test_prompt_builder.py -q` -> `64 passed, 4 warnings` |
 
 ### RTD-02：Pack policy 仍承担 L2 capability policy 的入口名
 

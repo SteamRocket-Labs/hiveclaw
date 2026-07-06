@@ -56,6 +56,7 @@ class RuntimeAssemblyState:
     cache_decision_ledger: list[dict[str, Any]] = field(default_factory=list)
     runtime_decision_ledger: list[dict[str, Any]] = field(default_factory=list)
     runtime_reminder_candidates: list[dict[str, Any]] = field(default_factory=list)
+    codex_optimization_ledger: dict[str, Any] = field(default_factory=dict)
     available_deferred_tool_candidates: list[Any] = field(default_factory=list)
     available_deferred_tools: list[str] = field(default_factory=list)
     skill_catalog_ranking: list[dict[str, Any]] = field(default_factory=list)
@@ -80,6 +81,7 @@ class RuntimeAssemblyState:
             runtime_reminder_candidates=[
                 dict(item) for item in _list_payload(payload.get("runtime_reminder_candidates"))
             ],
+            codex_optimization_ledger=_dict_payload(payload.get("codex_optimization_ledger")),
             available_deferred_tool_candidates=_list_payload(payload.get("available_deferred_tool_candidates")),
             available_deferred_tools=[
                 str(item) for item in _list_payload(payload.get("available_deferred_tools")) if str(item).strip()
@@ -98,6 +100,7 @@ class RuntimeAssemblyState:
             "cache_decision_ledger": [dict(item) for item in self.cache_decision_ledger],
             "runtime_decision_ledger": [dict(item) for item in self.runtime_decision_ledger],
             "runtime_reminder_candidates": [dict(item) for item in self.runtime_reminder_candidates],
+            "codex_optimization_ledger": dict(self.codex_optimization_ledger),
             "available_deferred_tool_candidates": list(self.available_deferred_tool_candidates),
             "available_deferred_tools": list(self.available_deferred_tools),
             "skill_catalog_ranking": [dict(item) for item in self.skill_catalog_ranking],
@@ -123,6 +126,8 @@ class RuntimeAssemblyState:
             metadata["runtime_decision_ledger"] = [dict(item) for item in self.runtime_decision_ledger]
         if self.runtime_reminder_candidates:
             metadata["runtime_reminder_candidates"] = [dict(item) for item in self.runtime_reminder_candidates]
+        if self.codex_optimization_ledger:
+            metadata["codex_optimization_ledger"] = dict(self.codex_optimization_ledger)
         if self.available_deferred_tool_candidates:
             metadata["available_deferred_tool_candidates"] = list(self.available_deferred_tool_candidates)
         if self.available_deferred_tools:
@@ -168,6 +173,10 @@ class RuntimeAssemblyState:
         self.runtime_reminder_candidates.append(dict(candidate))
         if len(self.runtime_reminder_candidates) > limit:
             del self.runtime_reminder_candidates[: len(self.runtime_reminder_candidates) - limit]
+        self.persist()
+
+    def record_codex_optimization_ledger(self, ledger: dict[str, Any]) -> None:
+        self.codex_optimization_ledger = dict(ledger)
         self.persist()
 
     def record_deferred_tools(self, candidates: list[Any] | tuple[Any, ...]) -> None:
@@ -222,6 +231,8 @@ def ensure_runtime_assembly_state(session: SessionContext | None) -> RuntimeAsse
         state.runtime_reminder_candidates = [
             dict(item) for item in _list_payload(session.metadata.get("runtime_reminder_candidates"))
         ]
+    if not state.codex_optimization_ledger:
+        state.codex_optimization_ledger = _dict_payload(session.metadata.get("codex_optimization_ledger"))
     if not state.available_deferred_tool_candidates:
         state.available_deferred_tool_candidates = _list_payload(
             session.metadata.get("available_deferred_tool_candidates")

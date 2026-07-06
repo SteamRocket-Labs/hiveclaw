@@ -297,6 +297,9 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
     assert result["prompt_manifest"]["turn_id"] == "turn-1"
     assert result["prompt_manifest"]["context_budget"]["model_window"] == 128000
     assert result["prompt_manifest"]["actual_system_prompt_chars"] == 123
+    assert result["codex_optimization_ledger"]["schema"] == "hive.ccplus.codex_optimization_ledger.v1"
+    assert result["codex_optimization_ledger"]["semantic_baseline"] == "freecode_cc"
+    assert result["codex_optimization_ledger"]["codex_role"] == "additive_control_plane"
     assert result["controls"]["can_start_turn"] is False
     assert result["controls"]["can_stop_active_run"] is True
     assert result["controls"]["expected_turn_id"] == "turn-1"

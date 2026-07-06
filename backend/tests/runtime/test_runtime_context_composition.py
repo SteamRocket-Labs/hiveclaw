@@ -220,3 +220,16 @@ def test_runtime_reminder_candidate_mirrors_into_runtime_assembly_state() -> Non
     assert candidate["candidate_ref"]["candidate_id"].startswith("runtime_reminder:plan_mode_full:")
     assert session.metadata["runtime_reminder_candidates"] == [candidate]
     assert session.metadata["runtime_assembly_state"]["runtime_reminder_candidates"] == [candidate]
+
+
+def test_codex_optimization_ledger_mirrors_into_runtime_assembly_state() -> None:
+    from app.runtime.codex_optimization_ledger import append_codex_optimization_ledger
+
+    session = SessionContext(session_id="codex-optimization-ledger")
+
+    ledger = append_codex_optimization_ledger(session)
+
+    assert ledger["schema"] == "hive.ccplus.codex_optimization_ledger.v1"
+    assert ledger["semantic_baseline"] == "freecode_cc"
+    assert session.metadata["codex_optimization_ledger"] == ledger
+    assert session.metadata["runtime_assembly_state"]["codex_optimization_ledger"] == ledger

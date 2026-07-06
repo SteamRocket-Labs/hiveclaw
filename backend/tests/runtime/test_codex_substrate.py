@@ -164,6 +164,30 @@ def test_permissions_prompt_is_derived_from_effective_policy() -> None:
     assert "request_permission_tool_enabled: true" in text
 
 
+def test_codex_optimization_ledger_keeps_codex_as_additive_control_plane() -> None:
+    from app.runtime.codex_optimization_ledger import (
+        build_codex_optimization_ledger,
+        codex_delta_can_override_semantics,
+    )
+
+    ledger = build_codex_optimization_ledger()
+
+    assert ledger["schema"] == "hive.ccplus.codex_optimization_ledger.v1"
+    assert ledger["semantic_baseline"] == "freecode_cc"
+    assert ledger["codex_role"] == "additive_control_plane"
+    capabilities = {entry["capability"] for entry in ledger["adoptable_control_plane"]}
+    assert {
+        "approval_sandbox_decision_enum",
+        "compaction_lifecycle_hooks",
+        "turn_thread_telemetry",
+        "resume_reconciliation",
+        "memory_consolidation_worker",
+    } <= capabilities
+    assert "skill_progressive_disclosure" in ledger["forbidden_semantic_overrides"]
+    assert codex_delta_can_override_semantics("skill_progressive_disclosure") is False
+    assert codex_delta_can_override_semantics("approval_sandbox_decision_enum") is False
+
+
 @pytest.mark.asyncio
 async def test_compaction_wrapper_records_attempt_completion_and_checkpoint() -> None:
     from app.kernel.engine import _compress_messages_with_trace

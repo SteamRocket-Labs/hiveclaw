@@ -227,6 +227,8 @@ flowchart TD
 | 代码位置 | `backend/app/kernel/engine.py:2044`、`:2085`；`backend/app/services/agent_context.py`；`backend/app/runtime/prompt_sections/subagent_listing.py` |
 | 一轮修复 | 二选一：把 volatile DB / subagent / A2A section 移到 dynamic suffix；或把其 version/hash 纳入 prompt cache key。优先前者 |
 
+2026-07-06 落地证据：`backend/app/kernel/engine.py` 将 frozen prompt cache schema bump 到 `frozen-v4`；`_build_frozen_prompt_cache_key()` 现在纳入 `standalone_system_prompt_hash`、allowed/excluded tools、`core_tools_only`、`session_context.metadata` 中的 `frozen_context_signature` / channel / company / org / A2A / subagent listing signatures，并把 tenant `enterprise_info_<tenant_id>/org_structure.md` 纳入 workspace signature。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/kernel/test_prompt_cache_integration.py -q` -> `12 passed, 3 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/kernel/engine.py backend/tests/kernel/test_prompt_cache_integration.py` -> `All checks passed!`。
+
 ### RTD-07：Subagent definition 不参与缓存失效
 
 | 字段 | 内容 |

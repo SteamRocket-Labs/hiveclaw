@@ -2040,7 +2040,7 @@ def _fingerprint_prompt(prompt_prefix: str) -> str:
     return hashlib.sha256(prompt_prefix.encode("utf-8")).hexdigest()
 
 
-_FROZEN_PROMPT_CACHE_VERSION = "frozen-v3"  # P1-1a: removed user_name + context_window_tokens
+_FROZEN_PROMPT_CACHE_VERSION = "frozen-v4"  # RTD-06: add volatile frozen-context signatures
 _FROZEN_PROMPT_FILE_PATHS = ("soul.md",)
 _FROZEN_PROMPT_DIRS = ("skills",)
 _PROMPT_CACHE_KEY_FIELD = "prompt_cache_key"
@@ -2082,7 +2082,7 @@ def _safe_file_stat_entry(root_label: str, root: Path, path: Path) -> list[Any] 
     return [root_label, rel, stat.st_mtime_ns, stat.st_size]
 
 
-def _frozen_prompt_workspace_signature(agent_id: Any | None) -> str:
+def _frozen_prompt_workspace_signature(agent_id: Any | None, *, tenant_id: Any | None = None) -> str:
     """Fingerprint workspace files that are rendered into the frozen prompt prefix.
 
     This keeps prompt-prefix reuse high while preventing stale cache hits after
@@ -2094,16 +2094,22 @@ def _frozen_prompt_workspace_signature(agent_id: Any | None) -> str:
     try:
         from app.config import get_settings
 
+        settings = get_settings()
         roots = [
             ("tool", Path("/tmp/hive_workspaces") / str(agent_id)),
-            ("persistent", Path(get_settings().AGENT_DATA_DIR) / str(agent_id)),
+            ("persistent", Path(settings.AGENT_DATA_DIR) / str(agent_id)),
         ]
+        if tenant_id:
+            roots.append(("tenant", Path(settings.AGENT_DATA_DIR) / f"enterprise_info_{tenant_id}"))
     except Exception:
         roots = [("tool", Path("/tmp/hive_workspaces") / str(agent_id))]
 
     entries: list[list[Any]] = []
     for root_label, root in roots:
-        for rel_path in _FROZEN_PROMPT_FILE_PATHS:
+        rel_paths = _FROZEN_PROMPT_FILE_PATHS
+        if root_label == "tenant":
+            rel_paths = ("org_structure.md",)
+        for rel_path in rel_paths:
             entry = _safe_file_stat_entry(root_label, root, root / rel_path)
             if entry:
                 entries.append(entry)
@@ -2122,6 +2128,33 @@ def _frozen_prompt_workspace_signature(agent_id: Any | None) -> str:
 
     payload = json.dumps(entries, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _frozen_prompt_runtime_signature(request: InvocationRequest) -> dict[str, Any]:
+    metadata = request.session_context.metadata if request.session_context is not None else {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    visible_signatures = {
+        key: metadata.get(key)
+        for key in (
+            "frozen_context_signature",
+            "configured_channel_signature",
+            "company_context_signature",
+            "org_structure_signature",
+            "a2a_collaborator_signature",
+            "subagent_listing_signature",
+        )
+        if metadata.get(key) is not None
+    }
+    standalone_prompt = str(request.standalone_system_prompt or "")
+    return {
+        "standalone_system_prompt_hash": hashlib.sha256(standalone_prompt.encode("utf-8")).hexdigest()
+        if standalone_prompt
+        else "",
+        "allowed_tool_names": sorted(str(name) for name in (request.allowed_tool_names or ())),
+        "excluded_tool_names": sorted(str(name) for name in (request.excluded_tool_names or ())),
+        "core_tools_only": bool(request.core_tools_only),
+        "visible_context_signatures": visible_signatures,
+    }
 
 
 def _build_frozen_prompt_cache_key(
@@ -2155,7 +2188,11 @@ def _build_frozen_prompt_cache_key(
         "execution_mode": request.invocation_scope or "conversation",
         "model_provider": str(getattr(request.model, "provider", "") or ""),
         "model_name": str(getattr(request.model, "model", "") or ""),
-        "workspace_signature": _frozen_prompt_workspace_signature(request.agent_id),
+        "workspace_signature": _frozen_prompt_workspace_signature(
+            request.agent_id,
+            tenant_id=runtime_config.tenant_id,
+        ),
+        "runtime_signature": _frozen_prompt_runtime_signature(request),
     }
     encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

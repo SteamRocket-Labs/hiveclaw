@@ -533,9 +533,52 @@ def test_cache_key_changes_on_model_swap():
     assert key_a != key_b, "model swap must invalidate cache (different provider/name)"
 
 
-def test_cache_key_version_bumped_for_p1_1a():
+def test_cache_key_changes_on_standalone_system_prompt_change():
+    from app.kernel.contracts import RuntimeConfig
+    from app.kernel.engine import _build_frozen_prompt_cache_key
+
+    cfg = RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
+    req_a = _base_request(user_id=uuid4())
+    req_b = _base_request(user_id=req_a.user_id)
+    req_b.agent_id = req_a.agent_id
+    req_b.session_context = req_a.session_context
+    req_a.standalone_system_prompt = "You are a read-only reviewer."
+    req_b.standalone_system_prompt = "You are a code execution worker."
+
+    key_a = _build_frozen_prompt_cache_key(req_a, cfg, current_user_name="x")
+    key_b = _build_frozen_prompt_cache_key(req_b, cfg, current_user_name="x")
+
+    assert key_a != key_b
+
+
+def test_cache_key_changes_on_runtime_frozen_context_signature_change():
+    from app.kernel.contracts import RuntimeConfig
+    from app.kernel.engine import _build_frozen_prompt_cache_key
+
+    cfg = RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
+    req = _base_request(user_id=uuid4())
+
+    req.session_context.metadata["frozen_context_signature"] = {
+        "company": "company-v1",
+        "org": "org-v1",
+        "a2a": "a2a-v1",
+        "configured_channels": ["feishu"],
+    }
+    key_v1 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x")
+    req.session_context.metadata["frozen_context_signature"] = {
+        "company": "company-v2",
+        "org": "org-v1",
+        "a2a": "a2a-v1",
+        "configured_channels": ["feishu"],
+    }
+    key_v2 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x")
+
+    assert key_v1 != key_v2
+
+
+def test_cache_key_version_bumped_for_rtd_06():
     """Sanity check that the version constant reflects the schema change so
     persisted prefixes from older deployments invalidate cleanly on rollout."""
     from app.kernel.engine import _FROZEN_PROMPT_CACHE_VERSION
 
-    assert _FROZEN_PROMPT_CACHE_VERSION == "frozen-v3"
+    assert _FROZEN_PROMPT_CACHE_VERSION == "frozen-v4"

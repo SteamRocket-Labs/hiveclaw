@@ -753,7 +753,7 @@ T3 claim
 | I-04 | activation events 不污染 T0/T2/T3 truth surface | `activation_events.py`、memory tests | truth surface invariant tests | 已完成：本提交；Red：`pytest tests/runtime/test_activation_events.py::test_activation_events_are_control_sidecar_not_truth_surface -q` 先失败于无法导入 `activation_event_truth_surface_policy`；Green targeted：`pytest tests/runtime/test_activation_events.py::test_activation_events_are_control_sidecar_not_truth_surface tests/services/test_session_feedback.py::test_record_session_feedback_writes_activation_heat_decay_sidecar -q` -> 2 passed；周边回归：`pytest tests/runtime/test_activation_events.py tests/services/test_session_feedback.py -q` -> 10 passed；Lint：`ruff check app/runtime/activation_events.py tests/runtime/test_activation_events.py tests/services/test_session_feedback.py` -> All checks passed |
 | J-01 | Runtime 全链路 E2E | `tests/runtime/*activation*` | runtime suite | 已完成：本提交；验收：`pytest tests/runtime/test_activation_query.py tests/runtime/test_activation_candidates.py tests/runtime/test_activation_router.py tests/runtime/test_activation_events.py tests/runtime/test_activation_hints_section.py tests/runtime/test_prompt_builder.py tests/runtime/test_prompt_sections.py tests/runtime/test_runtime_context_composition.py tests/runtime/test_turn_envelope_prompt_manifest.py -q` -> 163 passed, 4 third-party warnings |
 | J-02 | Backend 全量 + lint | backend test suite | `pytest tests -q` / `ruff check` | 已完成：本提交；首轮全量验收暴露 6 个历史测试快照偏移：T0 session fixture 缺少 schema 必需 `turn_id` / `intent_id`，hook integration 仍按 17 个 handler 计数；修正后 targeted regression：`pytest tests/services/test_session_command_runtime.py::test_session_commands_resume_prefers_t0_jsonl_truth_over_db_projection tests/services/test_session_command_runtime.py::test_session_export_uses_t0_jsonl_truth_and_db_as_read_model tests/test_memory_integration.py::TestHooksIntegration::test_hooks_setup_registers_18_handlers tests/test_memory_integration.py::TestHooksIntegration::test_hooks_setup_declares_registration_specs tests/test_memory_integration.py::TestHooksIntegration::test_hooks_setup_exports_structured_memory_hook_plan tests/test_memory_integration.py::TestHooksIntegration::test_register_memory_hooks_is_idempotent -q` -> 6 passed, 3 warnings；全量：`pytest tests -q` -> 5405 passed, 206 skipped, 4 warnings；Lint：`ruff check app tests` -> All checks passed |
-| J-03 | 最终大召回与文档证据 | 本文档、技术债文档 | 48/48 证据计数 +断点复查 | 待执行 |
+| J-03 | 最终大召回与文档证据 | 本文档、技术债文档 | 48/48 证据计数 +断点复查 | 已完成：本提交；最终账本：`python -m app.scripts.validate_qkv_landing_ledger ../docs/ccplus-transformer-style-memory-runtime-upgrade-plan-2026-07-05.md` -> ok, plan_count=4, atomic_count=48, unique_atomic_count=48, first_id=A-01, last_id=J-03, evidence_cells=48；断点扫描：对未完成标记、分期/MVP 标记、旧 Pack 债务标记执行 `rg` 检索，结果仅命中文档中“不拆 V1/V2/V3”说明与四张施工图命名，无未完成原子项；关键接线路径扫描：`rg -n "ActivationQuery|ActivationRouter|activation_router_output|activation_qkv_trace|selected_memory_value_count|activation_feedback_summary|Activation Hints|record_activation_event|activation_event_truth_surface_policy" backend/app backend/tests -g '*.py'` -> 覆盖 Q 生成、Router 输出、dynamic suffix、manifest trace、usage ledger、tool feedback、turn-stop summary、truth-surface policy；codebase-memory MCP double check 尝试 `index_status` 仍返回 `Transport closed`，本轮以当前 checkout 的命令证据兜底 |
 
 #### 7.A.3 执行规则
 
@@ -765,6 +765,36 @@ T3 claim
 6. 不允许把 `activation_events` 写回 T0/T2/T3 truth surface；它只能进入 sidecar / control ledger。
 7. 不允许通过 Router 绕过 `ToolRuntimeService`、ActionPreflight、Plan Gate、ACL 或 capability policy。
 8. 48 项全部完成后，必须再跑一次大逻辑召回，确认没有路径不统一、旧 Pack 术语回流、schema disclosure 冲突、权限绕过或 manifest 不可解释。
+
+#### 7.A.4 最终大逻辑召回结论
+
+本轮 48 个原子项落地后，Memory Runtime 的类 Transformer 路径已经闭环：Q 不进入主模型 CoT 自行猜测，而是在 `USER_PROMPT_SUBMIT` 后由 runtime 生成 `ActivationQuery`；K 来自 T0/T2/T3、explicit overlay、Skill、Tool、Subagent、Personal/Company KB 等统一候选面；Router 先做 ACL / sensitivity / policy hard mask，再做 multi-head score 和 budget-aware top-k；V 只加载被选中的 memory values，并通过 dynamic suffix 的 `Activation Hints` 注入；manifest 和 usage ledger 记录 Q/K/V trace 与 selected V 成本；tool success/failure、turn stop summary、user feedback 进入 control sidecar，不污染 T0/T2/T3 truth surface。
+
+```mermaid
+flowchart TD
+  A["USER_PROMPT_SUBMIT"] --> B["Runtime builds ActivationQuery"]
+  B --> C["Gather K candidates: T0/T2/T3, overlay, Skill, Tool, Subagent, KB"]
+  C --> D["Router hard masks: ACL, sensitivity, policy"]
+  D --> E["Router scores: semantic, entity, temporal, profile, recency, confidence"]
+  E --> F["Budget-aware top-k"]
+  F --> G["Load selected V only"]
+  G --> H["Dynamic suffix: Activation Hints"]
+  H --> I["Kernel provider call"]
+  I --> J["Manifest: activation_qkv_trace and usage ledger"]
+  I --> K["Tool loop records ActivationEvents"]
+  K --> L["TURN_STOP activation_feedback_summary"]
+  L --> M["Control sidecar heat/decay"]
+  M --> C
+```
+
+断点复查结论：
+
+1. 上下文入口没有新增第 4 个产品面；persona/profile/taste 仍然归属 Personal Knowledge 内部 plane。
+2. QKV 没有塞进主模型隐式 CoT；Q、candidate、router output、activation events 都是 runtime 可审计对象。
+3. Router 没有绕过 ToolRuntimeService、ActionPreflight、Plan Gate、ACL 或 capability policy；权限仍先于排序。
+4. T0/T2/T3 仍是 truth surface；activation events、feedback summary、heat/decay 只作为 control sidecar 和 manifest/ledger 证据。
+5. 旧 `Package / Pack` 一线术语没有回流为新的能力单位；合法保留的是 T2 Segment Package 这类 memory 层语义，以及兼容/文档说明语义。
+6. prompt/cache/KV 边界没有假装修改模型内部 KV cache；本轮只优化 runtime 可控的 prompt assembly、usage ledger、manifest trace 和 selected value 注入。
 
 ### 7.0 同轮必须清掉的 Runtime 底座债
 

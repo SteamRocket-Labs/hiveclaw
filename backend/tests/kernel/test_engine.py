@@ -1027,6 +1027,10 @@ async def test_execute_tool_with_hooks_tracks_filesystem_facade_events(monkeypat
     assert session.prompt_prefix is None
     assert "prompt_cache_key" not in session.metadata
     assert session.metadata["prompt_cache_invalidated_reason"] == "fs_write:soul.md"
+    cache_decisions = session.metadata["cache_decision_ledger"]
+    assert cache_decisions[-1]["cache_surface"] == "prompt_prefix"
+    assert cache_decisions[-1]["decision"] == "invalidated"
+    assert cache_decisions[-1]["invalidation_reason"] == "fs_write:soul.md"
 
 
 @pytest.mark.asyncio

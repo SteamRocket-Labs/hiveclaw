@@ -155,3 +155,23 @@ def test_tool_result_ledger_mirrors_into_runtime_assembly_state() -> None:
     assert session.metadata["tool_result_ledger"] == [entry]
     assert state.to_metadata()["tool_result_ledger"] == [entry]
     assert session.metadata["runtime_assembly_state"]["tool_result_ledger"] == [entry]
+
+
+def test_cache_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
+    from app.runtime.cache_decision_ledger import append_cache_decision_entry, build_cache_decision_entry
+
+    session = SessionContext(session_id="cache-ledger")
+    entry = build_cache_decision_entry(
+        cache_surface="prompt_prefix",
+        cache_key="raw-cache-key",
+        decision="hit",
+        invalidation_reason="",
+        shared_with_parent=False,
+    )
+
+    append_cache_decision_entry(session, entry)
+
+    assert entry["cache_key_hash"]
+    assert entry["cache_key"] == "[redacted]"
+    assert session.metadata["cache_decision_ledger"] == [entry]
+    assert session.metadata["runtime_assembly_state"]["cache_decision_ledger"] == [entry]

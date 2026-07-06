@@ -2187,6 +2187,20 @@ def _is_frozen_prompt_workspace_path(path: str) -> bool:
 def _invalidate_prompt_prefix_cache(session_context: SessionContext | None, *, reason: str) -> None:
     if session_context is None:
         return
+    cache_key = str(session_context.metadata.get(_PROMPT_CACHE_KEY_FIELD) or "")
+    if cache_key:
+        from app.runtime.cache_decision_ledger import append_cache_decision_entry, build_cache_decision_entry
+
+        append_cache_decision_entry(
+            session_context,
+            build_cache_decision_entry(
+                cache_surface="prompt_prefix",
+                cache_key=cache_key,
+                decision="invalidated",
+                invalidation_reason=reason,
+                shared_with_parent=False,
+            ),
+        )
     session_context.prompt_prefix = None
     session_context.prompt_fingerprint = None
     session_context.metadata.pop(_PROMPT_CACHE_KEY_FIELD, None)
@@ -3351,6 +3365,19 @@ class AgentKernel:
                 request.agent_id,
                 extra={"metric": "prompt_cache", "cache_hit": _cache_valid},
             )
+            if session_ctx is not None:
+                from app.runtime.cache_decision_ledger import append_cache_decision_entry, build_cache_decision_entry
+
+                append_cache_decision_entry(
+                    session_ctx,
+                    build_cache_decision_entry(
+                        cache_surface="prompt_prefix",
+                        cache_key=_prompt_cache_key,
+                        decision="hit" if _cache_valid else "miss",
+                        invalidation_reason=str(session_ctx.metadata.get("prompt_cache_invalidated_reason") or ""),
+                        shared_with_parent=bool(getattr(request, "parent_session_id", None)),
+                    ),
+                )
 
             dynamic_context_section_ledger: list[dict[str, Any]] = []
             if _cache_valid and _cached_prefix:

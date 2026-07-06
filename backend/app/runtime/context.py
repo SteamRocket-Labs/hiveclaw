@@ -53,6 +53,7 @@ class RuntimeAssemblyState:
     context_usage_ledger: dict[str, Any] = field(default_factory=dict)
     dynamic_context_section_ledger: dict[str, Any] = field(default_factory=dict)
     tool_result_ledger: list[dict[str, Any]] = field(default_factory=list)
+    cache_decision_ledger: list[dict[str, Any]] = field(default_factory=list)
     available_deferred_tool_candidates: list[Any] = field(default_factory=list)
     available_deferred_tools: list[str] = field(default_factory=list)
     skill_catalog_ranking: list[dict[str, Any]] = field(default_factory=list)
@@ -72,6 +73,7 @@ class RuntimeAssemblyState:
             context_usage_ledger=_dict_payload(payload.get("context_usage_ledger")),
             dynamic_context_section_ledger=_dict_payload(payload.get("dynamic_context_section_ledger")),
             tool_result_ledger=[dict(item) for item in _list_payload(payload.get("tool_result_ledger"))],
+            cache_decision_ledger=[dict(item) for item in _list_payload(payload.get("cache_decision_ledger"))],
             available_deferred_tool_candidates=_list_payload(payload.get("available_deferred_tool_candidates")),
             available_deferred_tools=[
                 str(item) for item in _list_payload(payload.get("available_deferred_tools")) if str(item).strip()
@@ -87,6 +89,7 @@ class RuntimeAssemblyState:
             "context_usage_ledger": dict(self.context_usage_ledger),
             "dynamic_context_section_ledger": dict(self.dynamic_context_section_ledger),
             "tool_result_ledger": [dict(item) for item in self.tool_result_ledger],
+            "cache_decision_ledger": [dict(item) for item in self.cache_decision_ledger],
             "available_deferred_tool_candidates": list(self.available_deferred_tool_candidates),
             "available_deferred_tools": list(self.available_deferred_tools),
             "skill_catalog_ranking": [dict(item) for item in self.skill_catalog_ranking],
@@ -106,6 +109,8 @@ class RuntimeAssemblyState:
             metadata["dynamic_context_section_ledger"] = dict(self.dynamic_context_section_ledger)
         if self.tool_result_ledger:
             metadata["tool_result_ledger"] = [dict(item) for item in self.tool_result_ledger]
+        if self.cache_decision_ledger:
+            metadata["cache_decision_ledger"] = [dict(item) for item in self.cache_decision_ledger]
         if self.available_deferred_tool_candidates:
             metadata["available_deferred_tool_candidates"] = list(self.available_deferred_tool_candidates)
         if self.available_deferred_tools:
@@ -133,6 +138,12 @@ class RuntimeAssemblyState:
         self.tool_result_ledger.append(dict(entry))
         if len(self.tool_result_ledger) > limit:
             del self.tool_result_ledger[: len(self.tool_result_ledger) - limit]
+        self.persist()
+
+    def record_cache_decision(self, entry: dict[str, Any], *, limit: int = 50) -> None:
+        self.cache_decision_ledger.append(dict(entry))
+        if len(self.cache_decision_ledger) > limit:
+            del self.cache_decision_ledger[: len(self.cache_decision_ledger) - limit]
         self.persist()
 
     def record_deferred_tools(self, candidates: list[Any] | tuple[Any, ...]) -> None:
@@ -175,6 +186,10 @@ def ensure_runtime_assembly_state(session: SessionContext | None) -> RuntimeAsse
         state.dynamic_context_section_ledger = _dict_payload(session.metadata.get("dynamic_context_section_ledger"))
     if not state.tool_result_ledger:
         state.tool_result_ledger = [dict(item) for item in _list_payload(session.metadata.get("tool_result_ledger"))]
+    if not state.cache_decision_ledger:
+        state.cache_decision_ledger = [
+            dict(item) for item in _list_payload(session.metadata.get("cache_decision_ledger"))
+        ]
     if not state.available_deferred_tool_candidates:
         state.available_deferred_tool_candidates = _list_payload(
             session.metadata.get("available_deferred_tool_candidates")

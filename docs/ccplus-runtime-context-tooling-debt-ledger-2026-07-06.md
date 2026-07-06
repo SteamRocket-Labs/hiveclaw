@@ -264,6 +264,8 @@ flowchart TD
 | 代码位置 | `backend/app/skills/loader.py`；`backend/app/services/agent_context.py::_load_skills_index`；`backend/app/services/agent_tool_domains/workspace.py::_build_skill_registry` |
 | 一轮修复 | 在 agent workspace 内支持 scoped skill dirs；路径触发后纳入 dynamic skills，必须经过同一 SkillGuard / path boundary |
 
+2026-07-06 落地证据：`WorkspaceSkillLoader.load_from_workspace()` 保留根 `skills/` 优先，同时在 workspace 边界内发现 nested `*/skills/`，跳过常见构建/依赖目录并拒绝 workspace 外 symlink 逃逸；`list_resources()` / `read_resource()` 通过同一解析结果支持 nested folder skill，但仍只允许 `references/scripts/templates/assets/evals` 资源目录；`load_skill` 支持按名称加载 nested scoped skill 与按 workspace-relative 显式路径读取，并把 `_is_skill_instruction_file()` 扩展到任意 workspace 内 `*/skills/<slug>/SKILL.md` / `*/skills/<slug>.md`，保证 nested SKILL.md 读取仍执行 managed credential guidance sanitization。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/skills/test_parser_v2.py backend/tests/services/test_skill_registry.py backend/tests/services/test_skill_loading.py backend/tests/kernel/test_conditional_skill_paths.py -q` -> `26 passed, 4 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/skills/loader.py backend/app/services/agent_tool_domains/workspace.py backend/tests/skills/test_parser_v2.py backend/tests/services/test_skill_loading.py` -> `All checks passed!`。
+
 ### RTD-10：Skill capsule resource dirs 与文档能力不一致
 
 | 字段 | 内容 |

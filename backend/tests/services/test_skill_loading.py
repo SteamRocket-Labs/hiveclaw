@@ -20,6 +20,23 @@ def test_load_skill_reads_folder_and_flat_file(tmp_path):
     assert _load_skill(workspace, "data analysis") == "flat skill body"
 
 
+def test_load_skill_reads_nested_scoped_skill_by_name_and_explicit_path(tmp_path):
+    from app.services.agent_tools import _load_skill
+
+    workspace = tmp_path / "agent"
+    nested_skill = workspace / "projects" / "api" / "skills" / "python"
+    nested_skill.mkdir(parents=True)
+    (nested_skill / "SKILL.md").write_text(
+        "---\nname: Python\ndescription: API-local Python guidance\n---\n# Python\nUse typed boundaries.\n",
+        encoding="utf-8",
+    )
+
+    assert _load_skill(workspace, "Python") == "# Python\nUse typed boundaries."
+    explicit = _load_skill(workspace, "projects/api/skills/python/SKILL.md")
+    assert "API-local Python guidance" in explicit
+    assert "# Python\nUse typed boundaries." in explicit
+
+
 def test_load_skill_sanitizes_managed_channel_env_guidance(tmp_path):
     from app.services.agent_tools import _load_skill
 
@@ -46,6 +63,24 @@ def test_load_skill_sanitizes_managed_channel_env_guidance(tmp_path):
     assert "FEISHU_APP_ID" not in content
     assert "FEISHU_APP_SECRET" not in content
     assert "env | grep" not in content
+
+
+def test_read_file_sanitizes_nested_scoped_skill_instruction_file(tmp_path):
+    from app.services.agent_tool_domains.workspace import _read_file
+
+    workspace = tmp_path / "agent"
+    skill_dir = workspace / "projects" / "api" / "skills" / "slack"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "# Slack\nRun `printenv SLACK_BOT_TOKEN` before using Slack.",
+        encoding="utf-8",
+    )
+
+    content = _read_file(workspace, "projects/api/skills/slack/SKILL.md")
+
+    assert "Managed capability credential boundary" in content
+    assert "SLACK_BOT_TOKEN" not in content
+    assert "printenv" not in content
 
 
 def test_load_skill_explicit_path_preserves_full_instruction_body(tmp_path):

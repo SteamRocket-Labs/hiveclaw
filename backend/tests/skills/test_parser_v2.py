@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pytest
+
 from app.skills.loader import WorkspaceSkillLoader
 from app.skills.parser import SkillParser
 from app.skills.registry import SkillRegistry
@@ -232,6 +234,34 @@ def test_loader_lists_and_reads_folder_skill_resources(tmp_path):
     )
     assert loader.read_resource(workspace, "Research", "references/sources.md") == "Source notes"
     assert loader.read_resource(workspace, "Research", "templates/memo.md") == "# Memo\n"
+
+
+def test_loader_discovers_nested_scoped_skill_dirs_and_keeps_resource_boundary(tmp_path):
+    workspace = tmp_path / "agent"
+    root_skill = workspace / "skills" / "general"
+    nested_skill = workspace / "projects" / "api" / "skills" / "python"
+    root_skill.mkdir(parents=True)
+    (nested_skill / "references").mkdir(parents=True)
+    (root_skill / "SKILL.md").write_text(
+        "---\nname: General\ndescription: Root guidance\n---\n# General\n",
+        encoding="utf-8",
+    )
+    (nested_skill / "SKILL.md").write_text(
+        "---\nname: Python\ndescription: API-local Python guidance\n---\n# Python\n",
+        encoding="utf-8",
+    )
+    (nested_skill / "references" / "tips.md").write_text("Prefer typed boundaries.", encoding="utf-8")
+
+    loader = WorkspaceSkillLoader()
+    registry = SkillRegistry()
+    registry.register_many(loader.load_from_workspace(workspace))
+
+    assert sorted(registry.names()) == ["General", "Python"]
+    assert registry.resolve("Python").relative_path == "projects/api/skills/python/SKILL.md"
+    assert loader.list_resources(workspace, "Python") == ("references/tips.md",)
+    assert loader.read_resource(workspace, "Python", "references/tips.md") == "Prefer typed boundaries."
+    with pytest.raises(PermissionError):
+        loader.read_resource(workspace, "Python", "../general/SKILL.md")
 
 
 def test_registry_loads_required_skill_bodies_before_primary(tmp_path):

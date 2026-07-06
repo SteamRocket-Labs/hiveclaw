@@ -198,10 +198,18 @@ def _read_file(
 
 def _is_skill_instruction_file(ws: Path, file_path: Path) -> bool:
     try:
-        rel = file_path.resolve().relative_to((ws / "skills").resolve()).as_posix()
+        rel = file_path.resolve().relative_to(ws.resolve()).as_posix()
     except ValueError:
         return False
-    return rel.endswith("SKILL.md") or ("/" not in rel and rel.endswith(".md"))
+    parts = Path(rel).parts
+    for idx, part in enumerate(parts):
+        if part != "skills" or idx + 1 >= len(parts):
+            continue
+        skill_parts = parts[idx + 1 :]
+        return (len(skill_parts) == 1 and skill_parts[0].endswith(".md")) or (
+            len(skill_parts) == 2 and skill_parts[1] in {"SKILL.md", "skill.md"}
+        )
+    return False
 
 
 def _skill_scope_guidance(metadata) -> str:
@@ -230,12 +238,11 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
     if not requested:
         return _workspace_error(tool_name, "bad_arguments", "Skill name cannot be empty.")
 
+    workspace_root = ws.resolve()
     skills_dir = (ws / "skills").resolve()
-    if not skills_dir.exists():
-        return _workspace_error(tool_name, "not_found", "Skill not found: skills directory does not exist.")
 
     def _read_skill_file(path: Path) -> str:
-        if not _is_within_path(path, skills_dir):
+        if not _is_within_path(path, workspace_root) or not _is_skill_instruction_file(ws, path):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
@@ -244,21 +251,26 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
             return _workspace_error(tool_name, "operation_failed", f"Read failed: {e}")
 
     requested_path = requested
+    explicit_paths: list[Path]
     if requested_path.startswith("skills/"):
-        requested_path = requested_path[len("skills/") :]
-    explicit_path = (skills_dir / requested_path).resolve()
-    if explicit_path.is_file():
-        body = _read_skill_file(explicit_path)
-        try:
-            rel = explicit_path.relative_to(ws).as_posix()
-            slug = _skill_slug_from_relative_path(rel)
-            if slug:
-                from app.services.skill_curator import bump_skill_use
+        explicit_paths = [(workspace_root / requested_path).resolve()]
+    elif "/" in requested_path or requested_path.endswith(".md"):
+        explicit_paths = [(workspace_root / requested_path).resolve(), (skills_dir / requested_path).resolve()]
+    else:
+        explicit_paths = [(skills_dir / requested_path).resolve()]
+    for explicit_path in explicit_paths:
+        if explicit_path.is_file():
+            body = _read_skill_file(explicit_path)
+            try:
+                rel = explicit_path.relative_to(ws).as_posix()
+                slug = _skill_slug_from_relative_path(rel)
+                if slug:
+                    from app.services.skill_curator import bump_skill_use
 
-                bump_skill_use(ws, slug, kind="use")
-        except Exception as exc:  # pragma: no cover - telemetry must never break load
-            logger.debug("[workspace] curator use bump (explicit) failed: %s", exc)
-        return body
+                    bump_skill_use(ws, slug, kind="use")
+            except Exception as exc:  # pragma: no cover - telemetry must never break load
+                logger.debug("[workspace] curator use bump (explicit) failed: %s", exc)
+            return body
 
     registry = _build_skill_registry(ws)
     try:
@@ -306,15 +318,17 @@ def _build_skill_registry(ws: Path) -> SkillRegistry:
 
 def _skill_slug_from_relative_path(relative_path: str) -> str | None:
     """Map a skill ``relative_path`` to its curator slug (the dir/file name
-    directly under ``skills/``). Returns None for anything not under skills/."""
+    directly under a ``skills/`` directory). Returns None for anything not under skills/."""
     parts = Path(relative_path).parts
-    if len(parts) < 2 or parts[0] != "skills":
-        return None
-    second = parts[1]
-    # Flat layout: skills/<slug>.md → slug is the stem.
-    if second.endswith(".md") and len(parts) == 2:
-        return second[: -len(".md")]
-    return second
+    for idx, part in enumerate(parts):
+        if part != "skills" or idx + 1 >= len(parts):
+            continue
+        second = parts[idx + 1]
+        # Flat layout: */skills/<slug>.md → slug is the stem.
+        if second.endswith(".md") and len(parts) == idx + 2:
+            return second[: -len(".md")]
+        return second
+    return None
 
 
 def _curator_bump_use(ws: Path, skill_name: str) -> None:

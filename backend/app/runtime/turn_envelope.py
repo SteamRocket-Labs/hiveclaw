@@ -14,7 +14,7 @@ import hashlib
 import json
 import uuid
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from app.runtime.context_candidates import build_context_candidate_ref
 from app.runtime.deferred_tools import deferred_tool_candidate_payload
@@ -258,6 +258,126 @@ def _json_text(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:
         return str(value or "")
+
+
+def _manifest_payload(value: Any) -> dict[str, Any]:
+    if hasattr(value, "to_manifest"):
+        value = value.to_manifest()
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _candidate_ref(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    ref = candidate.get("candidate_ref")
+    if isinstance(ref, Mapping):
+        return dict(ref)
+    candidate_id = _str_or_none(candidate.get("candidate_id"))
+    kind = _str_or_none(candidate.get("candidate_kind") or candidate.get("kind"))
+    return {key: value for key, value in {"candidate_id": candidate_id, "kind": kind}.items() if value}
+
+
+def _candidate_refs(candidates: Any) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for candidate in _list(candidates):
+        manifest = _manifest_payload(candidate)
+        ref = _candidate_ref(manifest)
+        if ref:
+            refs.append(ref)
+    return refs
+
+
+def _activation_query_trace(query: Any) -> dict[str, Any]:
+    manifest = _manifest_payload(query)
+    if not manifest:
+        return {}
+    try:
+        from app.runtime.activation_query import build_activation_query_ref
+
+        query_ref = build_activation_query_ref(manifest)
+    except Exception:
+        query_ref = {
+            "kind": "activation_query",
+            "query_id": _str_or_none(manifest.get("query_id")),
+        }
+    return {
+        "query_id": _str_or_none(manifest.get("query_id")),
+        "query_ref": query_ref,
+        "turn_id": _str_or_none(manifest.get("turn_id")),
+        "session_id": _str_or_none(manifest.get("session_id")),
+        "intent_id": _str_or_none(manifest.get("intent_id")),
+        "intent": _str_or_none(manifest.get("intent")),
+        "candidate_lanes": _list(manifest.get("candidate_lanes")),
+        "concepts": _list(manifest.get("concepts")),
+        "entities": _list(manifest.get("entities")),
+        "temporal_hints": _list(manifest.get("temporal_hints")),
+        "budget_policy": _dict(manifest.get("budget_policy")),
+        "parse_trace": _list(manifest.get("parse_trace")),
+    }
+
+
+def _memory_value_trace(item: Any) -> dict[str, Any]:
+    if isinstance(item, Mapping):
+        content = str(item.get("content") or "")
+        metadata = _dict(item.get("metadata"))
+        kind = _str_or_none(item.get("kind"))
+        source = _str_or_none(item.get("source"))
+        score = item.get("score")
+    else:
+        content = str(getattr(item, "content", "") or "")
+        metadata = _dict(getattr(item, "metadata", None))
+        raw_kind = getattr(item, "kind", None)
+        kind = _str_or_none(getattr(raw_kind, "value", None) or raw_kind)
+        source = _str_or_none(getattr(item, "source", None))
+        score = getattr(item, "score", None)
+    return {
+        "kind": kind,
+        "source": source,
+        "score": score,
+        "candidate_ref": _dict(metadata.get("candidate_ref")),
+        "value_pointer": _dict(metadata.get("value_pointer")),
+        "content_hash": _source_hash(content),
+        "content_tokens": _estimate_text_tokens(content),
+    }
+
+
+def build_activation_qkv_trace(
+    *,
+    activation_query: Any = None,
+    activation_router_output: Any = None,
+    loaded_memory_values: list[Any] | tuple[Any, ...] | None = None,
+    loaded_skill_names: list[str] | tuple[str, ...] | None = None,
+    skill_candidate_refs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    active_tool_names: list[str] | tuple[str, ...] | None = None,
+    tool_candidate_refs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+) -> dict[str, Any]:
+    """Explain external-attention Q/K/V without embedding loaded value bodies."""
+    router = _manifest_payload(activation_router_output)
+    top_candidates = _list(router.get("top_activation_candidates"))
+    suppressed_candidates = _list(router.get("suppressed_activation_candidates"))
+    return {
+        "schema": "hive.ccplus.activation_qkv_trace.v1",
+        "query": _activation_query_trace(activation_query),
+        "keys": {
+            "query_id": _str_or_none(router.get("query_id")),
+            "top_candidate_refs": _candidate_refs(top_candidates),
+            "suppressed_candidate_refs": _candidate_refs(suppressed_candidates),
+            "suppression_reasons": _dict(router.get("suppression_reasons")),
+        },
+        "values": {
+            "loaded_memory_values": [_memory_value_trace(item) for item in list(loaded_memory_values or [])],
+            "loaded_skills": [
+                {"name": name, "candidate_ref": dict(ref)}
+                for name, ref in zip(list(loaded_skill_names or []), list(skill_candidate_refs or []), strict=False)
+            ],
+            "loaded_tool_schemas": [
+                {"name": name, "candidate_ref": dict(ref)}
+                for name, ref in zip(list(active_tool_names or []), list(tool_candidate_refs or []), strict=False)
+            ],
+        },
+        "router": {
+            "schema": _str_or_none(router.get("schema")),
+            "metadata": _dict(router.get("metadata")),
+        },
+    }
 
 
 def _estimate_text_tokens(text: str) -> int:
@@ -663,6 +783,9 @@ def build_runtime_prompt_assembly_manifest(
     hook_added_context: list[str] | None = None,
     available_agent_types: list[Any] | tuple[Any, ...] | None = None,
     messages: list[Any] | tuple[Any, ...] | None = None,
+    activation_query: Any = None,
+    activation_router_output: Any = None,
+    loaded_memory_values: list[Any] | tuple[Any, ...] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest from the actual prompt surface sent to the provider."""
     deferred_tool_candidates = deferred_tool_candidate_payload(available_deferred_tools)
@@ -689,6 +812,15 @@ def build_runtime_prompt_assembly_manifest(
         for tool in tools_for_llm or []
         if _tool_name(tool)
     ]
+    activation_qkv_trace = build_activation_qkv_trace(
+        activation_query=activation_query,
+        activation_router_output=activation_router_output,
+        loaded_memory_values=loaded_memory_values,
+        loaded_skill_names=loaded_skill_names,
+        skill_candidate_refs=skill_candidate_refs,
+        active_tool_names=active_tool_names,
+        tool_candidate_refs=tool_candidate_refs,
+    )
     frozen_sections = _section_names_from_text(frozen_prefix)
     dynamic_sections = _dynamic_input_sections(
         dynamic_suffix=dynamic_suffix,
@@ -760,6 +892,7 @@ def build_runtime_prompt_assembly_manifest(
         "actual_dynamic_suffix_chars": len(dynamic_suffix or ""),
         "actual_dynamic_notice_chars": len(provider_dynamic_notice or ""),
         "context_usage_ledger": context_usage_ledger,
+        "activation_qkv_trace": activation_qkv_trace,
         **selection_manifest,
         "prompt_sections": [
             *({"kind": "frozen", "name": name} for name in frozen_sections),

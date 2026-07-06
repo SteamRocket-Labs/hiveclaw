@@ -3388,6 +3388,17 @@ class AgentKernel:
                     *_build_runtime_attachment_sections(request.agent_id, session_ctx),
                 ]
 
+            _activation_query = (
+                session_ctx.metadata.get("activation_query")
+                if session_ctx is not None and isinstance(session_ctx.metadata, dict)
+                else None
+            )
+            _activation_router_output = (
+                session_ctx.metadata.get("activation_router_output")
+                if session_ctx is not None and isinstance(session_ctx.metadata, dict)
+                else None
+            )
+
             # P0.4 Observability: prompt cache hit/miss
             logger.info(
                 "[Kernel] Prompt prefix cache %s (agent=%s)",
@@ -3429,6 +3440,7 @@ class AgentKernel:
                     channel=session_ctx.channel if session_ctx else "",
                     source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
                     agent_name=request.agent_name,
+                    activation_router_output=_activation_router_output,
                     context_section_ledger=dynamic_context_section_ledger,
                 )
                 combined_prompt = assemble_runtime_prompt(
@@ -3468,6 +3480,7 @@ class AgentKernel:
                     channel=session_ctx.channel if session_ctx else "",
                     source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
                     agent_name=request.agent_name,
+                    activation_router_output=_activation_router_output,
                     context_section_ledger=dynamic_context_section_ledger,
                 )
                 combined_prompt = assemble_runtime_prompt(
@@ -3529,6 +3542,8 @@ class AgentKernel:
                     hook_added_context=hook_added_context,
                     available_agent_types=list(session_ctx.metadata.get("available_agent_types") or []),
                     messages=request.messages,
+                    activation_query=_activation_query,
+                    activation_router_output=_activation_router_output,
                 )
                 prompt_manifest["dynamic_context_section_ledger"] = {
                     "schema": "hive.ccplus.dynamic_context_section_ledger.v1",
@@ -4346,6 +4361,7 @@ class AgentKernel:
                                             channel=session_ctx.channel if session_ctx else "",
                                             source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
                                             agent_name=request.agent_name,
+                                            activation_router_output=_activation_router_output,
                                         )
                                         _ptl_prefix = (
                                             session_ctx.prompt_prefix if session_ctx else None
@@ -4445,6 +4461,7 @@ class AgentKernel:
                                             channel=session_ctx.channel if session_ctx else "",
                                             source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
                                             agent_name=request.agent_name,
+                                            activation_router_output=_activation_router_output,
                                         )
                                         _ptl_prefix = (
                                             session_ctx.prompt_prefix if session_ctx else None
@@ -4538,6 +4555,7 @@ class AgentKernel:
                                                 if session_ctx
                                                 else "",
                                                 agent_name=request.agent_name,
+                                                activation_router_output=_activation_router_output,
                                             )
                                             _ptl_prefix = (
                                                 session_ctx.prompt_prefix if session_ctx else None
@@ -5309,6 +5327,7 @@ class AgentKernel:
                                                     channel=session_context.channel,
                                                     source=getattr(session_context, "source", "") or "",
                                                     agent_name=request.agent_name,
+                                                    activation_router_output=_activation_router_output,
                                                 ),
                                                 context_window_tokens=_ctx_window,
                                                 budget_profile=budget_profile,

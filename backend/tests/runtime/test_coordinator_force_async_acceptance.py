@@ -29,7 +29,8 @@ def test_coordinator_agenttool_surface_is_session_worker_variant() -> None:
     assert "delegate_to_agent" in description
     assert "prompt" in parameters["properties"]
     assert "subagent_type" in parameters["properties"]
-    assert "general-purpose" in parameters["properties"]["subagent_type"]["enum"]
+    assert "enum" not in parameters["properties"]["subagent_type"]
+    assert "general-purpose" in parameters["properties"]["subagent_type"]["description"]
 
 
 def test_coordinator_session_worker_tools_are_coordinator_and_core_visible() -> None:

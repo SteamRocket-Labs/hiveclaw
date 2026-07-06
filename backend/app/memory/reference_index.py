@@ -90,7 +90,7 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
 
     label_rows = _label_axis_rows(packages)
     debt_rows = _debt_history_rows(root, agent_id)
-    activation_key_rows = _activation_key_rows(root, agent_id)
+    activation_key_rows = _activation_key_rows(root, agent_id, label_rows=label_rows)
 
     resolution_rows: list[tuple[str, str, str, str]] = []
     for package in packages:
@@ -568,12 +568,43 @@ _ACTIVATION_AXIS_ALIASES = {
 }
 
 
-def _activation_key_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str, str, str, str, str, str, float, str]]:
+def _activation_key_rows(
+    root: Path,
+    agent_id: uuid.UUID | str,
+    *,
+    label_rows: list[tuple[str, str, str, str, str]] | None = None,
+) -> list[tuple[str, str, str, str, str, str, float, str]]:
     rows: list[tuple[str, str, str, str, str, str, float, str]] = []
+    rows.extend(_legacy_t2_activation_key_rows(label_rows or []))
     for entry in load_explicit_overlay_entries(root, agent_id):
         if entry.status != "active":
             continue
         rows.extend(_flatten_activation_keys(build_explicit_overlay_activation_keys(entry)))
+    return rows
+
+
+def _legacy_t2_activation_key_rows(
+    label_rows: list[tuple[str, str, str, str, str]],
+) -> list[tuple[str, str, str, str, str, str, float, str]]:
+    rows: list[tuple[str, str, str, str, str, str, float, str]] = []
+    for package_ref, _session_id, axis, value, created_at in label_rows:
+        cleaned_ref = str(package_ref or "").strip()
+        cleaned_axis = str(axis or "").strip()
+        cleaned_value = str(value or "").strip()
+        if not cleaned_ref or not cleaned_axis or not cleaned_value:
+            continue
+        rows.append(
+            (
+                f"agent_memory:t2_package:{cleaned_ref}",
+                "agent_memory",
+                "t2_package",
+                cleaned_axis,
+                cleaned_value,
+                cleaned_ref,
+                0.55,
+                str(created_at or ""),
+            )
+        )
     return rows
 
 

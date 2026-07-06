@@ -184,6 +184,32 @@ def test_rebuild_populates_activation_keys_from_explicit_overlay(tmp_path: Path)
     assert source_refs == {"t0://session/s1/segment/seg-1#seq=1..2"}
 
 
+def test_legacy_t2_labels_backfill_activation_keys(tmp_path: Path) -> None:
+    from app.memory.reference_index import rebuild_reference_index
+
+    agent_id = uuid4()
+    package_id = _write_labeled_package(tmp_path, agent_id, package_id="t2pkg-legacy-keys")
+
+    report = rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
+
+    rows = _activation_key_rows(tmp_path, agent_id)
+    short_ref = package_id.replace("t2pkg-", "t2-")
+    assert report.activation_key_rows >= 4
+    assert ("agent_memory", "t2_package", "continuity_state", "standalone") in rows
+    assert ("agent_memory", "t2_package", "risk_flag", "privacy_sensitive") in rows
+    assert ("agent_memory", "t2_package", "system", "memory") in rows
+    assert ("agent_memory", "t2_package", "memory_domain", "decision") in rows
+
+    from app.memory.reference_index import index_db_path
+
+    with sqlite3.connect(index_db_path(tmp_path, agent_id)) as conn:
+        indexed = conn.execute(
+            "SELECT candidate_ref, source_ref, confidence FROM activation_keys "
+            "WHERE scope = 't2_package' AND key_axis = 'risk_flag' AND key_value = 'privacy_sensitive'"
+        ).fetchone()
+    assert indexed == (f"agent_memory:t2_package:{short_ref}", short_ref, 0.55)
+
+
 def test_minimal_labels_produce_only_present_axes(tmp_path: Path) -> None:
     """Missing axes stay absent — no guessed rows (evidence gap discipline)."""
     from app.memory.reference_index import rebuild_reference_index

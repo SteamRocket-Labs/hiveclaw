@@ -706,8 +706,8 @@ T3 claim
 
 | ID | 原子项 | 主要触点 | 测试门 | 提交证据 |
 | --- | --- | --- | --- | --- |
-| A-01 | 将本文状态提升为落地施工账本 | `docs/ccplus-transformer-style-memory-runtime-upgrade-plan-2026-07-05.md` | 文档计数脚本 | 待执行 |
-| A-02 | 建立 atomic ledger 更新规则 | 同上 | 校验 48 项存在且 ID 唯一 | 待执行 |
+| A-01 | 将本文状态提升为落地施工账本 | `docs/ccplus-transformer-style-memory-runtime-upgrade-plan-2026-07-05.md` | 文档计数脚本 | 已完成：`59fb839d3`；验证：4 个计划 / 48 个唯一原子项 |
+| A-02 | 建立 atomic ledger 更新规则 | `backend/app/scripts/validate_qkv_landing_ledger.py`、`backend/tests/scripts/test_validate_qkv_landing_ledger.py`、本文档 | `pytest tests/scripts/test_validate_qkv_landing_ledger.py -q`、`python -m app.scripts.validate_qkv_landing_ledger ../docs/ccplus-transformer-style-memory-runtime-upgrade-plan-2026-07-05.md`、`ruff check app/scripts/validate_qkv_landing_ledger.py tests/scripts/test_validate_qkv_landing_ledger.py` | 已完成：本提交；验证 48 项唯一且证据单元齐全 |
 | B-01 | 定义 `ActivationQuery` schema | `backend/app/runtime/activation_query.py` | `tests/runtime/test_activation_query.py` | 待执行 |
 | B-02 | 定义 `ActivationCandidate` / score / hard mask schema | `backend/app/runtime/activation_candidates.py` | `tests/runtime/test_activation_candidates.py` | 待执行 |
 | B-03 | 定义 `ActivationEvent` / feedback schema | `backend/app/runtime/activation_events.py` | `tests/runtime/test_activation_events.py` | 待执行 |

@@ -961,6 +961,14 @@ def test_spawn_subagent_tool_result_builds_runtime_action_started_event():
                     "child_session_id": "child-session-1",
                     "subagent": "scout",
                     "status": "running",
+                    "return_contract": "background_completion_wake",
+                    "subagent_return_contract": {
+                        "schema": "hive.ccplus.subagent_return_contract.v1",
+                        "return_contract": "background_completion_wake",
+                        "normal_wait_path": "completion_wake",
+                        "fallback_tool": "check_subagent",
+                        "busy_poll_allowed": False,
+                    },
                 },
                 ensure_ascii=False,
             ),
@@ -981,6 +989,14 @@ def test_spawn_subagent_tool_result_builds_runtime_action_started_event():
         "session_id": "child-session-1",
         "parent_session_id": "parent-1",
         "notification_source": "subagent",
+        "return_contract": "background_completion_wake",
+        "subagent_return_contract": {
+            "schema": "hive.ccplus.subagent_return_contract.v1",
+            "return_contract": "background_completion_wake",
+            "normal_wait_path": "completion_wake",
+            "fallback_tool": "check_subagent",
+            "busy_poll_allowed": False,
+        },
     }
 
 

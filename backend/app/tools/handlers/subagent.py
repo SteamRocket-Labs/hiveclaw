@@ -59,6 +59,7 @@ from app.services.subagent_run_service import (
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.runtime.context_budget import build_tool_execution_shape_decision, execution_shape_from_round_state
+from app.runtime.subagent_return_contract import build_subagent_return_contract, subagent_return_contract_from_metadata
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
 
@@ -235,9 +236,7 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         },
         "task": {
             "type": "string",
-            "description": (
-                "Compatibility alias for prompt. Prefer prompt for new calls."
-            ),
+            "description": ("Compatibility alias for prompt. Prefer prompt for new calls."),
         },
         "type": {
             "type": "string",
@@ -706,12 +705,21 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         ctx.subagent_run_id = run_id
         ctx.child_session_id = started.child_session_id
         child_session_id = started.child_session_id
+        return_contract = build_subagent_return_contract(
+            "background_completion_wake",
+            run_id=run_id,
+            child_session_id=child_session_id,
+            parent_session_id=request.context.session_id,
+            status="queued",
+        )
         return _json(
             {
                 "ok": True,
                 "mode": "background",
                 "run_id": run_id,
                 "child_session_id": child_session_id,
+                "return_contract": return_contract["return_contract"],
+                "subagent_return_contract": return_contract,
                 "subagent": spec.name,
                 "type": spec.type,
                 "definition_scope": definition_scope,
@@ -764,19 +772,31 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
 
     handle = await spawn_subagent(ctx, spec, task, fork=spec.isolation, ledger_todo_id=ledger_todo_id)
     result = handle.result
+    foreground_status = result.status if result else "failed"
     if child_session_id:
         await update_subagent_child_session_state(
             child_session_id=child_session_id,
             parent_agent_id=agent_id,
-            status=result.status if result else "failed",
-            summary=(result.content or result.error or "spawn produced no result")[:8000] if result else "spawn produced no result",
+            status=foreground_status,
+            summary=(result.content or result.error or "spawn produced no result")[:8000]
+            if result
+            else "spawn produced no result",
             run_id=foreground_run_id,
         )
+    return_contract = build_subagent_return_contract(
+        "inline_result",
+        run_id=foreground_run_id,
+        child_session_id=child_session_id,
+        parent_session_id=request.context.session_id,
+        status=foreground_status,
+    )
     return _json(
         {
             "ok": bool(result and result.ok),
             "mode": "foreground",
             "child_session_id": child_session_id,
+            "return_contract": return_contract["return_contract"],
+            "subagent_return_contract": return_contract,
             "subagent": spec.name,
             "type": spec.type,
             "definition_scope": definition_scope,
@@ -847,6 +867,13 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
         )
         status = record.get("status")
         result = record.get("result") or record.get("result_summary") or ""
+        return_contract = subagent_return_contract_from_metadata(
+            metadata,
+            status=status,
+            run_id=run_id,
+            child_session_id=child_session_id,
+            parent_session_id=record.get("parent_session_id"),
+        )
         return _json(
             {
                 "ok": True,
@@ -855,6 +882,8 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
                 "status": status,
                 "result": result,
                 "child_session_id": child_session_id,
+                "return_contract": return_contract["return_contract"],
+                "subagent_return_contract": return_contract,
                 "session_state": {
                     "status": status,
                     "active_run_id": run_id if status in {"pending", "running", "in_progress"} else None,

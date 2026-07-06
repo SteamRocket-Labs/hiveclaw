@@ -347,7 +347,18 @@ async def test_session_workbench_projects_background_completion_wake_state(monke
         completed_at=now,
         result_summary="critic finished review",
         token_usage={"total": 42},
-        metadata_json={"subagent_name": "critic", "subagent_type": "critic"},
+        metadata_json={
+            "subagent_name": "critic",
+            "subagent_type": "critic",
+            "return_contract": "background_completion_wake",
+            "subagent_return_contract": {
+                "schema": "hive.ccplus.subagent_return_contract.v1",
+                "return_contract": "background_completion_wake",
+                "normal_wait_path": "completion_wake",
+                "fallback_tool": "check_subagent",
+                "busy_poll_allowed": False,
+            },
+        },
     )
     workflow_task = SimpleNamespace(
         id=uuid4(),
@@ -482,6 +493,8 @@ async def test_session_workbench_projects_background_completion_wake_state(monke
     assert team_wake["artifacts"] == [{"path": "workspace/release-review.md"}]
     assert team_wake["t0_refs"] == ["session#event-1"]
     assert result["completion_wakes"][1]["label"] == "critic"
+    assert result["completion_wakes"][1]["return_contract"] == "background_completion_wake"
+    assert result["completion_wakes"][1]["subagent_return_contract"]["normal_wait_path"] == "completion_wake"
     assert result["completion_wakes"][2]["state"] == "running"
 
 
@@ -527,7 +540,18 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
         completed_at=now,
         result_summary="subagent done",
         token_usage={"total": 10},
-        metadata_json={"subagent_name": "critic", "subagent_type": "critic"},
+        metadata_json={
+            "subagent_name": "critic",
+            "subagent_type": "critic",
+            "return_contract": "background_completion_wake",
+            "subagent_return_contract": {
+                "schema": "hive.ccplus.subagent_return_contract.v1",
+                "return_contract": "background_completion_wake",
+                "normal_wait_path": "completion_wake",
+                "fallback_tool": "check_subagent",
+                "busy_poll_allowed": False,
+            },
+        },
     )
     background_task = SimpleNamespace(
         id=uuid4(),
@@ -653,6 +677,8 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
     assert sections["agent_teams"]["items"][0]["lead_required_actions"] == ["wait_for_members"]
     assert sections["agent_teams"]["items"][0]["members"][0]["runtime_kind"] == "team_member"
     assert sections["subagents"]["items"][0]["label"] == "critic"
+    assert sections["subagents"]["items"][0]["return_contract"] == "background_completion_wake"
+    assert sections["subagents"]["items"][0]["subagent_return_contract"]["fallback_tool"] == "check_subagent"
     assert sections["background"]["items"][0]["label"] == "nightly sweep"
     workflow = sections["workflows"]["items"][0]
     assert workflow["label"] == "ABS deep research"

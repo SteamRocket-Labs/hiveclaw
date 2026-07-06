@@ -715,11 +715,13 @@ def _runtime_action_event_from_tool_result(data: dict[str, Any]) -> dict[str, An
         }
 
     if tool_name == "spawn_subagent":
-        runtime_task_id = str(payload.get("runtime_task_id") or payload.get("run_id") or payload.get("task_id") or "").strip()
+        runtime_task_id = str(
+            payload.get("runtime_task_id") or payload.get("run_id") or payload.get("task_id") or ""
+        ).strip()
         if not runtime_task_id and not child_session_id:
             return None
         subagent_name = str(payload.get("subagent") or args.get("name") or args.get("type") or "subagent").strip()
-        return {
+        event = {
             "type": "runtime_action_started",
             "message": f"Subagent {subagent_name} is running in the background.",
             "status": str(payload.get("status") or "running"),
@@ -732,6 +734,13 @@ def _runtime_action_event_from_tool_result(data: dict[str, Any]) -> dict[str, An
             "parent_session_id": data.get("parent_session_id"),
             "notification_source": "subagent",
         }
+        contract = payload.get("subagent_return_contract")
+        if isinstance(contract, dict):
+            event["return_contract"] = str(payload.get("return_contract") or contract.get("return_contract") or "")
+            event["subagent_return_contract"] = contract
+        elif payload.get("return_contract"):
+            event["return_contract"] = str(payload.get("return_contract") or "")
+        return event
 
     return None
 

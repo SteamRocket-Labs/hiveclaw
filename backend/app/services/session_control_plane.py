@@ -28,6 +28,7 @@ from app.runtime.ccplus_contracts import (
     build_context_policy,
     build_permission_profile,
 )
+from app.runtime.subagent_return_contract import subagent_return_contract_from_metadata
 from app.runtime.turn_envelope import build_prompt_assembly_manifest, build_turn_envelope
 from app.services.agent_team_contract import teammate_creation_discovery
 from app.services.agent_team_runtime_service import build_agent_team_decision_entry
@@ -249,7 +250,7 @@ def _compact_workbench_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _runtime_task_payload(task: RuntimeTask) -> dict[str, Any]:
     metadata = task.metadata_json or {}
-    return {
+    payload = {
         "id": str(task.id),
         "task_type": task.task_type,
         "status": task.status,
@@ -266,6 +267,17 @@ def _runtime_task_payload(task: RuntimeTask) -> dict[str, Any]:
         "metadata": _compact_runtime_task_metadata(metadata),
         "terminal_reason": metadata.get("terminal_reason"),
     }
+    if str(getattr(task, "task_type", "") or "") == "subagent" or metadata.get("subagent_return_contract"):
+        return_contract = subagent_return_contract_from_metadata(
+            metadata,
+            status=getattr(task, "status", None),
+            run_id=getattr(task, "id", None),
+            child_session_id=getattr(task, "child_session_id", None),
+            parent_session_id=getattr(task, "parent_session_id", None),
+        )
+        payload["return_contract"] = return_contract["return_contract"]
+        payload["subagent_return_contract"] = return_contract
+    return payload
 
 
 def _runtime_task_label(task: RuntimeTask, metadata: dict[str, Any]) -> str:
@@ -301,6 +313,15 @@ def _runtime_task_runtime_row(task: RuntimeTask, *, runtime_kind: str | None = N
     if metadata.get("subagent_type"):
         row["subagent_type"] = metadata.get("subagent_type")
     if is_subagent_row:
+        return_contract = subagent_return_contract_from_metadata(
+            metadata,
+            status=getattr(task, "status", None),
+            run_id=getattr(task, "id", None),
+            child_session_id=child_session_id,
+            parent_session_id=getattr(task, "parent_session_id", None),
+        )
+        row["return_contract"] = return_contract["return_contract"]
+        row["subagent_return_contract"] = return_contract
         row["inspectable"] = bool(child_session_id)
         row["continuable"] = bool(child_session_id)
     return row
@@ -443,7 +464,7 @@ def _runtime_completion_wake_payload(task: RuntimeTask) -> dict[str, Any] | None
     metadata = _mapping(getattr(task, "metadata_json", None))
     state = _completion_state(getattr(task, "status", None))
     terminal = state in {"completed", "failed"}
-    return {
+    payload = {
         "schema": "hive.ccplus.completion_wake.v1",
         "id": f"runtime_task:{task.id}",
         "kind": task_type,
@@ -465,6 +486,17 @@ def _runtime_completion_wake_payload(task: RuntimeTask) -> dict[str, Any] | None
         "artifacts": metadata.get("artifacts") or metadata.get("artifact_paths") or [],
         "t0_refs": metadata.get("t0_refs") or metadata.get("transcript_refs") or [],
     }
+    if task_type == "subagent" or metadata.get("subagent_return_contract"):
+        return_contract = subagent_return_contract_from_metadata(
+            metadata,
+            status=getattr(task, "status", None),
+            run_id=getattr(task, "id", None),
+            child_session_id=getattr(task, "child_session_id", None),
+            parent_session_id=getattr(task, "parent_session_id", None),
+        )
+        payload["return_contract"] = return_contract["return_contract"]
+        payload["subagent_return_contract"] = return_contract
+    return payload
 
 
 def _team_completion_wake_payload(team: dict[str, Any], member: dict[str, Any]) -> dict[str, Any] | None:

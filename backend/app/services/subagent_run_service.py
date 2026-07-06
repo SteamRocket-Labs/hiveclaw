@@ -30,6 +30,7 @@ from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
+from app.runtime.subagent_return_contract import build_subagent_return_contract, subagent_return_contract_from_metadata
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.runtime_task_service import (
@@ -315,10 +316,20 @@ async def start_subagent_run(
         )
     replay_safe = _subagent_type_restart_replay_safe(spec_type)
     side_effect_risk = "read_only" if replay_safe else "mutating"
+    return_contract = build_subagent_return_contract(
+        "background_completion_wake",
+        run_id=run_id,
+        child_session_id=child_session_id,
+        parent_session_id=parent_session_id,
+        status="pending",
+    )
     metadata: dict[str, Any] = {
         "subagent_type": spec_type,
         "subagent_name": spec_name,
         "child_session_id": child_session_id,
+        "parent_session_id": parent_session_id,
+        "return_contract": return_contract["return_contract"],
+        "subagent_return_contract": return_contract,
         "context_mode": context_mode,
         "session_contract": _build_subagent_session_contract(
             run_id=run_id,
@@ -1061,19 +1072,29 @@ async def _mark_subagent_run_needs_reconciliation(
     trace_id: str | None,
     session_id: str | None,
 ) -> None:
+    return_contract = build_subagent_return_contract(
+        "needs_reconciliation",
+        run_id=run_id,
+        child_session_id=metadata.get("child_session_id"),
+        parent_session_id=metadata.get("parent_session_id") or session_id,
+        status="needs_reconciliation",
+    )
+    reconciliation_metadata = build_restart_reconciliation_metadata(
+        metadata,
+        task_type=SUBAGENT_RUN_TASK_TYPE,
+        task_id=run_id,
+        blocker=blocker,
+        summary=summary,
+        trace_id=str(trace_id or ""),
+        session_id=str(session_id or ""),
+    )
+    reconciliation_metadata["return_contract"] = return_contract["return_contract"]
+    reconciliation_metadata["subagent_return_contract"] = return_contract
     await update_runtime_task_record(
         run_id,
         status="needs_reconciliation",
         result_summary=summary,
-        metadata_json=build_restart_reconciliation_metadata(
-            metadata,
-            task_type=SUBAGENT_RUN_TASK_TYPE,
-            task_id=run_id,
-            blocker=blocker,
-            summary=summary,
-            trace_id=str(trace_id or ""),
-            session_id=str(session_id or ""),
-        ),
+        metadata_json=reconciliation_metadata,
     )
     try:
         await update_subagent_child_session_state_for_run(
@@ -1493,26 +1514,39 @@ async def list_subagent_runs(parent_agent_id: uuid.UUID, *, limit: int = 20) -> 
             .scalars()
             .all()
         )
-    return [
-        {
-            "run_id": str(r.id),
-            "name": r.child_agent_name,
-            "type": (r.metadata_json or {}).get("subagent_type"),
-            "status": r.status,
-            "result_summary": r.result_summary,
-            "child_session_id": r.child_session_id or (r.metadata_json or {}).get("child_session_id"),
-            "session_state": {
+    payloads: list[dict[str, Any]] = []
+    for r in rows:
+        metadata = r.metadata_json or {}
+        child_session_id = r.child_session_id or metadata.get("child_session_id")
+        return_contract = subagent_return_contract_from_metadata(
+            metadata,
+            status=r.status,
+            run_id=str(r.id),
+            child_session_id=child_session_id,
+            parent_session_id=r.parent_session_id,
+        )
+        payloads.append(
+            {
+                "run_id": str(r.id),
+                "name": r.child_agent_name,
+                "type": metadata.get("subagent_type"),
                 "status": r.status,
-                "active_run_id": str(r.id) if r.status in {"pending", "running", "in_progress"} else None,
-                "child_session_id": r.child_session_id or (r.metadata_json or {}).get("child_session_id"),
-                "parent_session_id": r.parent_session_id,
-            },
-            "transcript_refs": {
-                "session_id": r.child_session_id or (r.metadata_json or {}).get("child_session_id"),
-                "parent_session_id": r.parent_session_id,
-                "trace_id": r.trace_id,
-            },
-            "orphaned_by_restart": bool((r.metadata_json or {}).get("orphaned_by_restart")),
-        }
-        for r in rows
-    ]
+                "result_summary": r.result_summary,
+                "child_session_id": child_session_id,
+                "return_contract": return_contract["return_contract"],
+                "subagent_return_contract": return_contract,
+                "session_state": {
+                    "status": r.status,
+                    "active_run_id": str(r.id) if r.status in {"pending", "running", "in_progress"} else None,
+                    "child_session_id": child_session_id,
+                    "parent_session_id": r.parent_session_id,
+                },
+                "transcript_refs": {
+                    "session_id": child_session_id,
+                    "parent_session_id": r.parent_session_id,
+                    "trace_id": r.trace_id,
+                },
+                "orphaned_by_restart": bool(metadata.get("orphaned_by_restart")),
+            }
+        )
+    return payloads

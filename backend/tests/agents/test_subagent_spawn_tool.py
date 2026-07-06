@@ -242,6 +242,11 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
     assert data["ok"] is True
     assert data["mode"] == "foreground"
     assert data["child_session_id"] == "child-session"
+    assert data["return_contract"] == "inline_result"
+    assert data["subagent_return_contract"]["schema"] == "hive.ccplus.subagent_return_contract.v1"
+    assert data["subagent_return_contract"]["return_contract"] == "inline_result"
+    assert data["subagent_return_contract"]["result_visibility"] == "current_tool_result"
+    assert data["subagent_return_contract"]["busy_poll_allowed"] is False
     assert data["continuation"]["address"] == "child-session"
     assert data["continuation"]["tool"] == "send_agent_session_message"
     assert data["transcript_refs"]["session_id"] == "child-session"
@@ -784,6 +789,12 @@ async def test_spawn_tool_background_returns_child_session_and_wake_first_contra
     assert data["mode"] == "background"
     assert data["run_id"] == "run-1"
     assert data["child_session_id"] == "child-session"
+    assert data["return_contract"] == "background_completion_wake"
+    assert data["subagent_return_contract"]["schema"] == "hive.ccplus.subagent_return_contract.v1"
+    assert data["subagent_return_contract"]["return_contract"] == "background_completion_wake"
+    assert data["subagent_return_contract"]["normal_wait_path"] == "completion_wake"
+    assert data["subagent_return_contract"]["fallback_tool"] == "check_subagent"
+    assert data["subagent_return_contract"]["busy_poll_allowed"] is False
     assert data["status"] == "queued"
     assert data["session_state"] == "queued"
     assert data["continuation"]["address"] == "child-session"
@@ -832,6 +843,10 @@ async def test_check_subagent_returns_child_session_refs_and_fallback_language(m
     assert data["ok"] is True
     assert data["run_id"] == "run-1"
     assert data["child_session_id"] == "child-session"
+    assert data["return_contract"] == "background_completion_wake"
+    assert data["subagent_return_contract"]["schema"] == "hive.ccplus.subagent_return_contract.v1"
+    assert data["subagent_return_contract"]["return_contract"] == "background_completion_wake"
+    assert data["subagent_return_contract"]["normal_wait_path"] == "completion_wake"
     assert data["session_state"]["status"] == "completed"
     assert data["transcript_refs"]["session_id"] == "child-session"
     assert data["continuation"]["address"] == "child-session"

@@ -76,6 +76,53 @@ async def test_record_useful_session_feedback_persists_event_audit_and_t3(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_record_session_feedback_writes_activation_heat_decay_sidecar(tmp_path) -> None:
+    from types import SimpleNamespace as T3AppendResult
+    from app.services.session_feedback import record_session_feedback
+
+    db = _FakeDB()
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+
+    async def fake_append_memory(*_args, **_kwargs):
+        return T3AppendResult(
+            status="overlay",
+            category="feedback",
+            entry_id="explicit-feedback-heat",
+            path="memory/explicit/entries/explicit-feedback-heat.md",
+        )
+
+    result = await record_session_feedback(
+        db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        session=SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, source_channel="web"),
+        current_user=SimpleNamespace(id=user_id),
+        label="misleading",
+        reason="The recalled deployment fact was stale.",
+        data_root=tmp_path,
+        append_memory=fake_append_memory,
+    )
+
+    calibration = result["calibration_result"]
+    sidecar = calibration["heat_decay_sidecar"]
+    activation_event = calibration["activation_event"]
+    sidecar_path = tmp_path / str(agent_id) / sidecar["path"]
+
+    assert activation_event["schema"] == "hive.ccplus.activation_event.v1"
+    assert activation_event["event_type"] == "owner_feedback_misleading"
+    assert activation_event["candidate_ref"]["candidate_id"] == "feedback_overlay:explicit-feedback-heat"
+    assert activation_event["feedback"]["signal"] == "owner_feedback"
+    assert activation_event["feedback"]["credit"] < 0
+    assert sidecar["schema"] == "hive.ccplus.activation_feedback_sidecar.v1"
+    assert sidecar["heat_delta"] < 0
+    assert sidecar["decay_signal"] == "decay"
+    assert sidecar_path.exists()
+    assert "owner_feedback_misleading" in sidecar_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
 async def test_record_session_feedback_links_to_verified_decision_trace(tmp_path) -> None:
     from types import SimpleNamespace as T3AppendResult
     from app.models.session_feedback import SessionFeedbackEvent

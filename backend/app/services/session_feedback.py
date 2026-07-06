@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -19,6 +21,7 @@ from app.services.decision_trace import DecisionTraceStore, decision_id_from_ref
 AppendMemory = Callable[..., Awaitable[Any]]
 
 _LABELS = {"useful", "misleading"}
+_ACTIVATION_FEEDBACK_SIDECAR = Path("memory/control/activation_feedback.jsonl")
 
 
 def _normalize_label(label: str) -> str:
@@ -110,6 +113,109 @@ def _result_payload(result: Any) -> dict[str, Any]:
     return payload
 
 
+def _feedback_candidate_ref(calibration_result: dict[str, Any]) -> dict[str, Any]:
+    entry_id = str(calibration_result.get("entry_id") or "").strip()
+    path = str(calibration_result.get("path") or "").strip()
+    if entry_id:
+        return {
+            "candidate_id": f"feedback_overlay:{entry_id}",
+            "kind": "feedback_overlay",
+            "source": path,
+        }
+    return {
+        "candidate_id": "feedback_overlay:session_feedback",
+        "kind": "feedback_overlay",
+        "source": path,
+    }
+
+
+def _feedback_credit(label: str) -> float:
+    return 0.5 if label == "useful" else -0.5
+
+
+def _feedback_heat_delta(label: str) -> float:
+    return 1.0 if label == "useful" else -1.0
+
+
+def _feedback_decay_signal(label: str) -> str:
+    return "reinforce" if label == "useful" else "decay"
+
+
+def _build_owner_feedback_activation_event(
+    *,
+    agent: Agent,
+    session: ChatSession,
+    label: str,
+    reason: str,
+    calibration_result: dict[str, Any],
+) -> dict[str, Any]:
+    from app.runtime.activation_events import ActivationEvent, ActivationFeedback
+
+    candidate_ref = _feedback_candidate_ref(calibration_result)
+    event = ActivationEvent(
+        event_type=f"owner_feedback_{label}",
+        session_id=str(session.id),
+        turn_id="",
+        intent_id="",
+        query_id="",
+        candidate_id=str(candidate_ref.get("candidate_id") or ""),
+        candidate_ref=candidate_ref,
+        feedback=ActivationFeedback(
+            signal="owner_feedback",
+            outcome=label,
+            credit=_feedback_credit(label),
+            reason=(reason or "").strip(),
+            details={
+                "agent_id": str(agent.id),
+                "tenant_id": str(agent.tenant_id),
+                "session_id": str(session.id),
+            },
+        ),
+        created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        source="session_feedback",
+        metadata={
+            "label": label,
+            "category": calibration_result.get("category", ""),
+            "entry_id": calibration_result.get("entry_id", ""),
+        },
+    )
+    return event.to_manifest()
+
+
+def _write_feedback_activation_sidecar(
+    *,
+    data_root: Path,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    label: str,
+    source_refs: list[str],
+    activation_event: dict[str, Any],
+) -> dict[str, Any]:
+    relative = _ACTIVATION_FEEDBACK_SIDECAR
+    path = Path(data_root) / str(agent_id) / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": "hive.ccplus.activation_feedback_sidecar.v1",
+        "agent_id": str(agent_id),
+        "session_id": str(session_id),
+        "label": label,
+        "heat_delta": _feedback_heat_delta(label),
+        "decay_signal": _feedback_decay_signal(label),
+        "source_refs": list(source_refs),
+        "activation_event": activation_event,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    return {
+        "schema": "hive.ccplus.activation_feedback_sidecar.v1",
+        "path": str(relative),
+        "heat_delta": payload["heat_delta"],
+        "decay_signal": payload["decay_signal"],
+        "event_id": activation_event.get("event_id", ""),
+    }
+
+
 async def record_session_feedback(
     db: AsyncSession,
     *,
@@ -168,6 +274,22 @@ async def record_session_feedback(
         data_root=data_root,
     )
     calibration_result = _result_payload(memory_result)
+    activation_event = _build_owner_feedback_activation_event(
+        agent=agent,
+        session=session,
+        label=normalized_label,
+        reason=reason,
+        calibration_result=calibration_result,
+    )
+    calibration_result["activation_event"] = activation_event
+    calibration_result["heat_decay_sidecar"] = _write_feedback_activation_sidecar(
+        data_root=data_root,
+        agent_id=agent.id,
+        session_id=session.id,
+        label=normalized_label,
+        source_refs=source_refs,
+        activation_event=activation_event,
+    )
     attribution = {
         "session_id": str(session.id),
         "message_id": str(message_id) if message_id else "",

@@ -9,7 +9,7 @@ from .parser import SkillParser
 from .retired import RETIRED_BUILTIN_SKILL_FOLDERS
 from .types import ParsedSkill
 
-RESOURCE_DIRS = frozenset({"references", "scripts", "templates", "assets", "evals"})
+RESOURCE_DIRS = frozenset({"references", "scripts", "templates", "assets", "evals", "workflows", "subagents"})
 _SKILLS_DIR_NAME = "skills"
 _DISCOVERY_PRUNE_DIRS = frozenset(
     {

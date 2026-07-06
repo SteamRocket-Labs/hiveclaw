@@ -214,6 +214,8 @@ def test_loader_lists_and_reads_folder_skill_resources(tmp_path):
     (skill_dir / "scripts").mkdir()
     (skill_dir / "templates").mkdir()
     (skill_dir / "evals").mkdir()
+    (skill_dir / "workflows").mkdir()
+    (skill_dir / "subagents").mkdir()
     (skill_dir / "SKILL.md").write_text(
         "---\nname: Research\ndescription: Research analysis\n---\n# Research\n",
         encoding="utf-8",
@@ -222,6 +224,8 @@ def test_loader_lists_and_reads_folder_skill_resources(tmp_path):
     (skill_dir / "scripts" / "compile.py").write_text("print('ok')\n", encoding="utf-8")
     (skill_dir / "templates" / "memo.md").write_text("# Memo\n", encoding="utf-8")
     (skill_dir / "evals" / "eval.yaml").write_text("cases: []\n", encoding="utf-8")
+    (skill_dir / "workflows" / "publish.yaml").write_text("steps: []\n", encoding="utf-8")
+    (skill_dir / "subagents" / "reviewer.md").write_text("# Reviewer\n", encoding="utf-8")
 
     loader = WorkspaceSkillLoader()
 
@@ -230,10 +234,14 @@ def test_loader_lists_and_reads_folder_skill_resources(tmp_path):
         "evals/eval.yaml",
         "references/sources.md",
         "scripts/compile.py",
+        "subagents/reviewer.md",
         "templates/memo.md",
+        "workflows/publish.yaml",
     )
     assert loader.read_resource(workspace, "Research", "references/sources.md") == "Source notes"
     assert loader.read_resource(workspace, "Research", "templates/memo.md") == "# Memo\n"
+    assert loader.read_resource(workspace, "Research", "workflows/publish.yaml") == "steps: []\n"
+    assert loader.read_resource(workspace, "Research", "subagents/reviewer.md") == "# Reviewer\n"
 
 
 def test_loader_discovers_nested_scoped_skill_dirs_and_keeps_resource_boundary(tmp_path):

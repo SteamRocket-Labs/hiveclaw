@@ -87,6 +87,19 @@ class TestCatalogBudgetControl:
         result = reg.render_catalog()
         assert "Short desc" in result
 
+    def test_catalog_names_workflow_and_subagent_resource_dirs_with_governed_runtime_boundary(self) -> None:
+        reg = SkillRegistry()
+        reg.register(_make_skill("automation", "Automation guidance"))
+
+        result = reg.render_catalog()
+
+        assert "`workflows/`" in result
+        assert "`subagents/`" in result
+        assert "preview_workflow" in result
+        assert "start_workflow" in result
+        assert "spawn_subagent" in result
+        assert "delegate_to_agent" in result
+
     def test_skill_access_catalog_filters_hidden_and_model_disabled_skills(self) -> None:
         reg = SkillRegistry()
         reg.register(_make_skill("visible", "Visible to the model"))

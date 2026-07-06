@@ -276,6 +276,8 @@ flowchart TD
 | 代码位置 | `backend/app/skills/loader.py:11`；`backend/app/skills/registry.py` catalog 文案 |
 | 一轮修复 | 明确允许 `workflows/`、`subagents/` 作为资源目录，但执行仍走 `preview_workflow/start_workflow` 和 `spawn_subagent/delegate_to_agent` |
 
+2026-07-06 落地证据：`backend/app/skills/loader.py` 的 `RESOURCE_DIRS` 纳入 `workflows` 与 `subagents`，`list_resources()` / `read_resource()` 可枚举和读取 skill capsule 内的 workflow/subagent 定义文件，但仍受 skill 根目录与资源目录 allowlist 约束；`backend/app/skills/registry.py` 的 catalog footer 显式列出 `workflows/`、`subagents/`，并声明读取组件文件不会执行，执行必须走 `preview_workflow` / `start_workflow`、`spawn_subagent` / `delegate_to_agent` 或 approved sandbox/code execution。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/skills/test_parser_v2.py backend/tests/skills/test_registry.py backend/tests/services/test_skill_registry.py backend/tests/services/test_prompt_contracts.py::test_core_tool_descriptions_define_when_not_to_use_and_fallbacks -q` -> `23 passed, 4 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/skills/loader.py backend/app/skills/registry.py backend/tests/skills/test_parser_v2.py backend/tests/skills/test_registry.py` -> `All checks passed!`。
+
 ### RTD-11：Skill catalog ranking 没吃当前 query / scenario
 
 | 字段 | 内容 |

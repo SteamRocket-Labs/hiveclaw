@@ -125,8 +125,9 @@ class SkillRegistry:
             "Load only the skill that matches the current task.\n"
             "Do NOT speculatively load multiple skills before deciding which one is relevant.\n"
             "Do NOT guess what the skill contains — always read it first.\n"
-            "Folder-based skills may contain auxiliary files. "
-            "Use `read_file` on the skill folder when needed.\n"
+            "Folder-based skills may contain auxiliary files under `references/`, `templates/`, `scripts/`, "
+            "`assets/`, `evals/`, `workflows/`, and `subagents/`. "
+            "Use `read_file` on the skill folder when needed; reading component files does not execute them.\n"
             "If no skill matches the current task, use your tools directly without loading a skill."
         )
         table_header = "\n| Skill | Description | File |\n|-------|-------------|------|\n"

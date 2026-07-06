@@ -72,6 +72,41 @@ def test_loop_guard_abort_decisions_keep_severity_abort() -> None:
     assert abort is not None and abort.severity == "abort"
 
 
+def test_loop_guard_total_tool_budget_abort_has_runtime_outcome() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard(total_tool_threshold=1)
+
+    guard.observe_tool_call("list_files", {"path": "a"})
+    warn = guard.observe_tool_call("list_files", {"path": "b"})
+    assert warn is not None and warn.severity == "warn"
+    abort = guard.observe_tool_call("list_files", {"path": "c"})
+
+    assert abort is not None
+    assert abort.outcome.status == "budget_limited"
+    assert abort.outcome.terminal_reason == "tool_budget"
+    assert abort.outcome.next_action == "ask_user_to_continue"
+    assert abort.trace_event["runtime_outcome"]["status"] == "budget_limited"
+
+
+def test_loop_guard_non_progress_abort_has_blocked_runtime_outcome() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard(repeated_failure_threshold=2)
+    args = {"q": "deploy"}
+    err = "[Tool execution error] timeout"
+
+    guard.observe_tool_result("web_search", args, err)
+    guard.observe_tool_result("web_search", args, err)
+    abort = guard.observe_tool_result("web_search", args, err)
+
+    assert abort is not None
+    assert abort.outcome.status == "blocked"
+    assert abort.outcome.terminal_reason == "loop_guard"
+    assert abort.outcome.next_action == "stop_and_report_non_progress"
+    assert abort.trace_event["runtime_outcome"]["terminal_reason"] == "loop_guard"
+
+
 def test_loop_guard_detects_repeated_tool_failures() -> None:
     from app.kernel.loop_guard import LoopGuard
 

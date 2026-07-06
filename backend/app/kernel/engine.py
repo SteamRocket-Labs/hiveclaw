@@ -3663,7 +3663,17 @@ class AgentKernel:
                     delivered_chunk_count += 1
 
             async def _abort_for_loop_guard(decision: LoopGuardDecision) -> InvocationResult:
-                if decision.reason == "total_tool_calls":
+                outcome = decision.outcome
+                terminal_reason = (
+                    TerminalReason(outcome.terminal_reason)
+                    if outcome is not None and outcome.terminal_reason
+                    else (
+                        TerminalReason.TOOL_BUDGET
+                        if decision.reason == "total_tool_calls"
+                        else TerminalReason.LOOP_GUARD
+                    )
+                )
+                if terminal_reason == TerminalReason.TOOL_BUDGET:
                     message = (
                         "[Tool Budget] 本次已达到工具调用预算，我已保留当前进度。"
                         "请回复“继续”，我会从最近的上下文接着处理；如果任务很大，也可以让我分批处理。"
@@ -3691,11 +3701,7 @@ class AgentKernel:
                     tokens_used=accumulated_tokens,
                     final_tools=tools_for_llm,
                     parts=collected_parts + [{"type": "text", "text": message}],
-                    terminal_reason=(
-                        TerminalReason.TOOL_BUDGET
-                        if decision.reason == "total_tool_calls"
-                        else TerminalReason.LOOP_GUARD
-                    ),
+                    terminal_reason=terminal_reason,
                 )
 
             async def _pause_for_user_clarification() -> InvocationResult:

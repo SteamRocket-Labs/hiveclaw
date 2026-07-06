@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
+from app.runtime.outcome import RuntimeOutcome
 
 _ABORT_MULTIPLIER = 1.5  # abort threshold = ceil(warn threshold × 1.5)
 
@@ -27,6 +28,7 @@ class LoopGuardDecision:
     message: str
     trace_event: dict[str, Any]
     severity: str = "abort"  # "warn" | "abort"
+    outcome: RuntimeOutcome | None = None
 
 
 def _canonical_args(args: dict[str, Any] | None) -> str:
@@ -212,8 +214,61 @@ class LoopGuard:
         if extra_trace:
             trace_event.update(extra_trace)
 
+        outcome = _runtime_outcome_for_loop_guard(
+            reason=check.reason,
+            severity=severity,
+            count=check.count,
+            warn_threshold=check.warn_threshold,
+        )
+        trace_event["runtime_outcome"] = outcome.to_event()
+
         if severity == "warn":
             message = f"[Loop Guard Warning] Possible non-progress loop: {check.detail}.\n{_WARN_GUIDANCE}"
         else:
             message = check.detail
-        return LoopGuardDecision(reason=check.reason, message=message, trace_event=trace_event, severity=severity)
+        return LoopGuardDecision(
+            reason=check.reason,
+            message=message,
+            trace_event=trace_event,
+            severity=severity,
+            outcome=outcome,
+        )
+
+
+def _runtime_outcome_for_loop_guard(
+    *,
+    reason: str,
+    severity: str,
+    count: int,
+    warn_threshold: int,
+) -> RuntimeOutcome:
+    details = {
+        "loop_guard_reason": reason,
+        "severity": severity,
+        "count": count,
+        "warn_threshold": warn_threshold,
+        "abort_threshold": _abort_threshold(warn_threshold),
+    }
+    if severity == "warn":
+        return RuntimeOutcome(
+            status="paused",
+            terminal_reason=None,
+            next_action="self_correct_and_continue",
+            reason=reason,
+            details=details,
+        )
+    if reason == "total_tool_calls":
+        return RuntimeOutcome(
+            status="budget_limited",
+            terminal_reason="tool_budget",
+            next_action="ask_user_to_continue",
+            reason=reason,
+            details=details,
+        )
+    return RuntimeOutcome(
+        status="blocked",
+        terminal_reason="loop_guard",
+        next_action="stop_and_report_non_progress",
+        reason=reason,
+        details=details,
+    )

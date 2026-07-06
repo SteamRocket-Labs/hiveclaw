@@ -29,6 +29,7 @@ from app.runtime.ccplus_contracts import (
     build_permission_profile,
 )
 from app.runtime.codex_optimization_ledger import build_codex_optimization_ledger
+from app.runtime.decision_ledger import build_agent_cycle_decision_matrix
 from app.runtime.runtime_reminder_candidate import build_runtime_reminder_candidate
 from app.runtime.subagent_decision_entry import subagent_decision_entry_from_metadata
 from app.runtime.subagent_return_contract import subagent_return_contract_from_metadata
@@ -1685,6 +1686,7 @@ async def build_session_workbench(
         "permission_profile": permission_profile,
         "context_policy": context_policy,
         "codex_optimization_ledger": build_codex_optimization_ledger(),
+        "agent_cycle_decision_matrix": build_agent_cycle_decision_matrix(),
         "turn_envelope": turn_envelope,
         "prompt_manifest": prompt_manifest,
         "turn": {

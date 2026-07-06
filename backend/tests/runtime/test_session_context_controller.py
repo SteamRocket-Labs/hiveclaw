@@ -115,6 +115,15 @@ async def test_prepare_session_context_records_tool_result_budget_runtime_decisi
     assert runtime_decision["trigger"] == "tool_result_budget"
     assert runtime_decision["status"] == "completed"
     assert runtime_decision["next_action"] == "recalculate_context_window"
+    agent_cycle = runtime_decision["agent_cycle_decision_entry"]
+    assert agent_cycle["schema"] == "hive.ccplus.agent_cycle_decision.v1"
+    assert agent_cycle["trigger"] == "tool_result_budget"
+    assert agent_cycle["judge"] == "compaction_controller"
+    assert agent_cycle["decision"] == "completed"
+    assert agent_cycle["outcome"] == "completed"
+    assert agent_cycle["model_interaction"] == "runtime_control"
+    assert agent_cycle["permission_result"] == "unchanged"
+    assert agent_cycle["budget_result"] == "tool_result_trimmed"
     assert runtime_decision["details"]["tool_result_trimmed"] is True
     assert runtime_decision["details"]["trimmed_tool_call_ids"] == ["call-1"]
     assert runtime_decision["details"]["trimmed_context_effects"][0]["tool_call_id"] == "call-1"

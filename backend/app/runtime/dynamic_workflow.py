@@ -12,6 +12,8 @@ import json
 import uuid
 from typing import Any
 
+from app.runtime.decision_ledger import build_agent_cycle_decision_entry
+
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow, normalize_workflow_args
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
@@ -178,6 +180,8 @@ def build_workflow_decision_entry(
         or dynamic.get("promotion_eligible")
         or (outcome_payload.get("status") == "completed" and not repair_payload.get("repairable"))
     )
+    status = str(outcome_payload.get("status") or ("previewed" if not run_id else "running"))
+    repairable = bool(repair_payload.get("repairable"))
     return {
         "schema": "hive.ccplus.workflow_decision.v1",
         "proposal_id": dynamic.get("proposal_id"),
@@ -189,6 +193,23 @@ def build_workflow_decision_entry(
         "outcome": outcome_payload,
         "repair_plan": repair_payload,
         "promotion_eligible": promotion_eligible,
+        "agent_cycle_decision_entry": build_agent_cycle_decision_entry(
+            subsystem="workflow",
+            trigger="dynamic_workflow",
+            judge="dynamic_workflow.build_workflow_decision_entry",
+            decision="repair" if repairable else ("promote" if promotion_eligible else "run_or_preview"),
+            outcome=status,
+            next_action="apply_repair_plan" if repairable else ("promote_candidate" if promotion_eligible else "continue"),
+            model_interaction="completion_wake" if run_id else "preview_manifest",
+            user_visible=True,
+            permission_result="governed_runtime",
+            budget_result=str(outcome_payload.get("budget_result") or "workflow_quota"),
+            details={
+                "proposal_id": dynamic.get("proposal_id"),
+                "candidate_id": dynamic.get("candidate_id"),
+                "run_id": run_id or dynamic.get("run_id"),
+            },
+        ),
     }
 
 

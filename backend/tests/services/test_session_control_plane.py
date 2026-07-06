@@ -300,6 +300,13 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
     assert result["codex_optimization_ledger"]["schema"] == "hive.ccplus.codex_optimization_ledger.v1"
     assert result["codex_optimization_ledger"]["semantic_baseline"] == "freecode_cc"
     assert result["codex_optimization_ledger"]["codex_role"] == "additive_control_plane"
+    assert result["agent_cycle_decision_matrix"]["schema"] == "hive.ccplus.agent_cycle_decision_matrix.v1"
+    assert {item["subsystem"] for item in result["agent_cycle_decision_matrix"]["subsystems"]} >= {
+        "compaction",
+        "goal",
+        "workflow",
+        "subagent",
+    }
     assert result["controls"]["can_start_turn"] is False
     assert result["controls"]["can_stop_active_run"] is True
     assert result["controls"]["expected_turn_id"] == "turn-1"

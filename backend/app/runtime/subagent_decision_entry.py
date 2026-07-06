@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.runtime.decision_ledger import build_agent_cycle_decision_entry
+
 SUBAGENT_DECISION_ENTRY_SCHEMA = "hive.ccplus.subagent_decision_entry.v1"
 
 
@@ -56,6 +58,7 @@ def build_subagent_decision_entry(
         blocker=normalized_blocker,
         retry_available=retry_available_value,
     )
+    next_action = "continue_parent" if normalized_status in {"completed", "succeeded", "success"} else action
     return {
         "schema": SUBAGENT_DECISION_ENTRY_SCHEMA,
         "run_id": _text(run_id),
@@ -71,6 +74,24 @@ def build_subagent_decision_entry(
         "parent_session_id": _text(parent_session_id),
         "summary": _text(summary),
         "source": source,
+        "agent_cycle_decision_entry": build_agent_cycle_decision_entry(
+            subsystem="subagent",
+            trigger=str(source or "subagent_runtime"),
+            judge="subagent_decision_entry.build_subagent_decision_entry",
+            decision="observe" if normalized_status in {"completed", "succeeded", "success"} else action,
+            outcome=normalized_status,
+            next_action=next_action,
+            model_interaction="completion_wake",
+            user_visible=True,
+            permission_result="inherits_parent_runtime",
+            budget_result="subagent_budget",
+            details={
+                "run_id": _text(run_id),
+                "blocker": normalized_blocker,
+                "safe_to_retry": bool(safe_to_retry),
+                "retry_available": retry_available_value,
+            },
+        ),
     }
 
 

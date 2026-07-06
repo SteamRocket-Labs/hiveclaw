@@ -7,9 +7,12 @@ from the retired organization-level objective subsystem and from Work Ledger.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.runtime.decision_ledger import build_agent_cycle_decision_entry
 
 
 class GoalStatus(StrEnum):
@@ -55,6 +58,7 @@ class GoalDecisionEntry(BaseModel):
     stop_reason: str | None = None
     status_transition: dict[str, str | None]
     user_visible_next_action: str
+    agent_cycle_decision_entry: dict[str, Any] = Field(default_factory=dict)
 
 
 def _previous_terminal_decision(previous_terminal_reason: str | None) -> GoalContinuationDecision | None:
@@ -118,13 +122,33 @@ def build_goal_decision_entry(
     progress_evidence: list[str] | None = None,
 ) -> GoalDecisionEntry:
     next_status = decision.next_status or goal.status
+    user_visible_next_action = _user_visible_next_action(decision)
     return GoalDecisionEntry(
         previous_terminal_reason=previous_terminal_reason,
         progress_evidence=list(progress_evidence or []),
         continue_reason=decision.reason if decision.continue_goal else None,
         stop_reason=None if decision.continue_goal else decision.reason,
         status_transition={"from": goal.status.value, "to": next_status.value},
-        user_visible_next_action=_user_visible_next_action(decision),
+        user_visible_next_action=user_visible_next_action,
+        agent_cycle_decision_entry=build_agent_cycle_decision_entry(
+            subsystem="goal",
+            trigger=decision.trigger,
+            judge="session_goal_runtime.should_continue_goal",
+            decision="continue" if decision.continue_goal else "stop",
+            outcome=next_status.value,
+            next_action=user_visible_next_action,
+            model_interaction="start_goal_continuation_run" if decision.continue_goal else "none",
+            user_visible=user_visible_next_action != "no_action",
+            permission_result="inherits_web_chat_runtime",
+            budget_result="limited"
+            if next_status in {GoalStatus.BUDGET_LIMITED, GoalStatus.USAGE_LIMITED}
+            else "within_budget",
+            details={
+                "previous_terminal_reason": previous_terminal_reason,
+                "progress_evidence": list(progress_evidence or []),
+                "reason": decision.reason,
+            },
+        ),
     )
 
 

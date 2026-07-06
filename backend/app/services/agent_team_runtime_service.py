@@ -20,6 +20,7 @@ from app.models.agent import Agent
 from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
 from app.models.chat_session import ChatSession
 from app.models.user import User
+from app.runtime.decision_ledger import build_agent_cycle_decision_entry
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_team_contract import teammate_creation_discovery
 from app.services.agent_session_continuation import (
@@ -189,6 +190,7 @@ def build_agent_team_decision_entry(
         lead_required_actions.append("resolve_open_tasks")
     if team_outcome == "idle" and not lead_required_actions:
         lead_required_actions.append("close_or_continue_team")
+    next_action = lead_required_actions[0] if lead_required_actions else "observe_team"
 
     return {
         "schema": "hive.ccplus.agent_team_decision.v1",
@@ -199,6 +201,23 @@ def build_agent_team_decision_entry(
         "lead_required_actions": lead_required_actions,
         "team_outcome": team_outcome,
         "close_summary_ref": close_summary_ref or team_metadata.get("close_summary_ref"),
+        "agent_cycle_decision_entry": build_agent_cycle_decision_entry(
+            subsystem="agent_team",
+            trigger="team_state_projection",
+            judge="agent_team_runtime_service.build_agent_team_decision_entry",
+            decision=next_action,
+            outcome=team_outcome,
+            next_action=next_action,
+            model_interaction="team_completion_wake" if team_outcome in {"idle", "failed", "closed"} else "none",
+            user_visible=True,
+            permission_result="member_runtime_inherited",
+            budget_result="team_member_budget",
+            details={
+                "team_id": str(_object_field(team, "id", "")),
+                "member_count": len(member_statuses),
+                "open_task_count": len(open_tasks),
+            },
+        ),
     }
 
 

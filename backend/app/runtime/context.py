@@ -55,6 +55,7 @@ class RuntimeAssemblyState:
     tool_result_ledger: list[dict[str, Any]] = field(default_factory=list)
     cache_decision_ledger: list[dict[str, Any]] = field(default_factory=list)
     runtime_decision_ledger: list[dict[str, Any]] = field(default_factory=list)
+    agent_cycle_decision_ledger: list[dict[str, Any]] = field(default_factory=list)
     runtime_reminder_candidates: list[dict[str, Any]] = field(default_factory=list)
     codex_optimization_ledger: dict[str, Any] = field(default_factory=dict)
     available_deferred_tool_candidates: list[Any] = field(default_factory=list)
@@ -78,6 +79,9 @@ class RuntimeAssemblyState:
             tool_result_ledger=[dict(item) for item in _list_payload(payload.get("tool_result_ledger"))],
             cache_decision_ledger=[dict(item) for item in _list_payload(payload.get("cache_decision_ledger"))],
             runtime_decision_ledger=[dict(item) for item in _list_payload(payload.get("runtime_decision_ledger"))],
+            agent_cycle_decision_ledger=[
+                dict(item) for item in _list_payload(payload.get("agent_cycle_decision_ledger"))
+            ],
             runtime_reminder_candidates=[
                 dict(item) for item in _list_payload(payload.get("runtime_reminder_candidates"))
             ],
@@ -99,6 +103,7 @@ class RuntimeAssemblyState:
             "tool_result_ledger": [dict(item) for item in self.tool_result_ledger],
             "cache_decision_ledger": [dict(item) for item in self.cache_decision_ledger],
             "runtime_decision_ledger": [dict(item) for item in self.runtime_decision_ledger],
+            "agent_cycle_decision_ledger": [dict(item) for item in self.agent_cycle_decision_ledger],
             "runtime_reminder_candidates": [dict(item) for item in self.runtime_reminder_candidates],
             "codex_optimization_ledger": dict(self.codex_optimization_ledger),
             "available_deferred_tool_candidates": list(self.available_deferred_tool_candidates),
@@ -124,6 +129,8 @@ class RuntimeAssemblyState:
             metadata["cache_decision_ledger"] = [dict(item) for item in self.cache_decision_ledger]
         if self.runtime_decision_ledger:
             metadata["runtime_decision_ledger"] = [dict(item) for item in self.runtime_decision_ledger]
+        if self.agent_cycle_decision_ledger:
+            metadata["agent_cycle_decision_ledger"] = [dict(item) for item in self.agent_cycle_decision_ledger]
         if self.runtime_reminder_candidates:
             metadata["runtime_reminder_candidates"] = [dict(item) for item in self.runtime_reminder_candidates]
         if self.codex_optimization_ledger:
@@ -167,6 +174,12 @@ class RuntimeAssemblyState:
         self.runtime_decision_ledger.append(dict(entry))
         if len(self.runtime_decision_ledger) > limit:
             del self.runtime_decision_ledger[: len(self.runtime_decision_ledger) - limit]
+        self.persist()
+
+    def record_agent_cycle_decision(self, entry: dict[str, Any], *, limit: int = 100) -> None:
+        self.agent_cycle_decision_ledger.append(dict(entry))
+        if len(self.agent_cycle_decision_ledger) > limit:
+            del self.agent_cycle_decision_ledger[: len(self.agent_cycle_decision_ledger) - limit]
         self.persist()
 
     def record_runtime_reminder_candidate(self, candidate: dict[str, Any], *, limit: int = 50) -> None:
@@ -226,6 +239,10 @@ def ensure_runtime_assembly_state(session: SessionContext | None) -> RuntimeAsse
     if not state.runtime_decision_ledger:
         state.runtime_decision_ledger = [
             dict(item) for item in _list_payload(session.metadata.get("runtime_decision_ledger"))
+        ]
+    if not state.agent_cycle_decision_ledger:
+        state.agent_cycle_decision_ledger = [
+            dict(item) for item in _list_payload(session.metadata.get("agent_cycle_decision_ledger"))
         ]
     if not state.runtime_reminder_candidates:
         state.runtime_reminder_candidates = [

@@ -28,6 +28,7 @@ class SkillMetadata:
     context: str = ""
     agent: str = ""
     hooks: tuple[str, ...] = ()
+    paths: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

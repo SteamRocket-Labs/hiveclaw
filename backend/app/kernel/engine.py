@@ -1470,6 +1470,61 @@ def _register_loaded_skill_for_session(request: InvocationRequest, tool_args: di
         logger.debug("[Kernel] skill hook registration failed for %s: %s", skill, exc)
 
 
+def _activate_conditional_skills_for_paths(
+    request: InvocationRequest,
+    paths: list[str] | tuple[str, ...],
+    *,
+    workspace: Path | None = None,
+) -> list[str]:
+    session = request.session_context
+    if session is None or not paths:
+        return []
+    if workspace is None:
+        if not request.agent_id:
+            return []
+        workspace = _agent_workspace_root(request.agent_id)
+    try:
+        from app.skills.loader import WorkspaceSkillLoader
+        from app.skills.registry import SkillRegistry, _skill_path_matches
+
+        loader = WorkspaceSkillLoader()
+        registry = SkillRegistry()
+        registry.register_many(loader.load_from_workspace(workspace))
+        matched_skills = registry.skills_for_paths(tuple(str(path) for path in paths))
+    except Exception as exc:
+        logger.debug("[Kernel] conditional skill path activation unavailable: %s", exc)
+        return []
+
+    activated: list[str] = []
+    activation_records = session.metadata.setdefault("conditional_skill_activations", [])
+    if not isinstance(activation_records, list):
+        activation_records = []
+        session.metadata["conditional_skill_activations"] = activation_records
+    for skill in matched_skills:
+        skill_name = skill.metadata.name
+        if skill_name in session.active_skills:
+            continue
+        matched_path = next(
+            (
+                str(path)
+                for path in paths
+                if any(_skill_path_matches(str(path), pattern) for pattern in skill.metadata.paths)
+            ),
+            "",
+        )
+        session.track_skill_loaded(skill_name)
+        activated.append(skill_name)
+        activation_records.append(
+            {
+                "skill_name": skill_name,
+                "matched_path": matched_path,
+                "patterns": list(skill.metadata.paths),
+                "source": skill.relative_path,
+            }
+        )
+    return activated
+
+
 async def _execute_tool_with_hooks(
     *,
     execute_tool: ExecuteTool,
@@ -1759,6 +1814,7 @@ async def _execute_tool_with_hooks(
             if _path:
                 _snapshot = _snapshot_session_file(request.agent_id, _path) if request.agent_id else None
                 _session.track_file_read(_path, snapshot=_snapshot)
+                _activate_conditional_skills_for_paths(request, [_path])
         elif tool_name == "fs_list":
             _path = _args_dict.get("path", "")
             _session.track_tool_outcome(tool_name, "Listed " + (_path or "workspace root"))
@@ -1768,6 +1824,7 @@ async def _execute_tool_with_hooks(
             for _path in _write_paths:
                 _snapshot = _snapshot_session_file(request.agent_id, _path) if request.agent_id else None
                 _session.track_file_write(_path, snapshot=_snapshot)
+                _activate_conditional_skills_for_paths(request, [_path])
                 _session.track_tool_outcome(tool_name, "Wrote " + _path)
                 if _is_frozen_prompt_workspace_path(_path):
                     _invalidate_prompt_prefix_cache(_session, reason=f"{tool_name}:{_path}")

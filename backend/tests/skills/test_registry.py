@@ -16,6 +16,7 @@ def _make_skill(
     disable_model_invocation: bool = False,
     user_invocable: bool = True,
     hidden: bool = False,
+    paths: tuple[str, ...] = (),
 ) -> ParsedSkill:
     return ParsedSkill(
         metadata=SkillMetadata(
@@ -25,6 +26,7 @@ def _make_skill(
             disable_model_invocation=disable_model_invocation,
             user_invocable=user_invocable,
             hidden=hidden,
+            paths=paths,
         ),
         body="# " + name,
         file_path=Path("skills/" + name + ".md"),
@@ -105,3 +107,13 @@ class TestCatalogBudgetControl:
 
         assert "B" * 250 in result
         assert "B" * 300 not in result
+
+    def test_skills_for_paths_matches_declared_path_globs(self) -> None:
+        reg = SkillRegistry()
+        reg.register(_make_skill("python", "Python work", paths=("backend/**/*.py",)))
+        reg.register(_make_skill("reports", "Report work", paths=("workspace/reports/",)))
+        reg.register(_make_skill("web", "Web work", paths=("frontend/**/*.tsx",)))
+
+        matches = reg.skills_for_paths(["backend/app/main.py", "workspace/reports/q1.md"])
+
+        assert [skill.metadata.name for skill in matches] == ["python", "reports"]

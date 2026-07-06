@@ -119,6 +119,7 @@ class SkillParser:
                 context=self._string_value(frontmatter_value("context")),
                 agent=self._string_value(frontmatter_value("agent")),
                 hooks=self._string_tuple(frontmatter_value("hooks")),
+                paths=self._string_tuple(frontmatter_value("paths", "path")),
             ),
             body=body,
             file_path=path,

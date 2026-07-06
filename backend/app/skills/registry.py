@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import fnmatch
 from collections import OrderedDict
+from pathlib import PurePosixPath
 
 from .types import ParsedSkill
 
@@ -18,6 +20,25 @@ def _catalog_description(skill: ParsedSkill, *, max_chars: int = _CATALOG_DESCRI
     if len(description) <= max_chars:
         return description
     return description[:max_chars].rstrip() + "..."
+
+
+def _normalize_match_path(path: str) -> str:
+    return str(path or "").strip().replace("\\", "/").lstrip("/")
+
+
+def _skill_path_matches(path: str, pattern: str) -> bool:
+    normalized_path = _normalize_match_path(path)
+    normalized_pattern = _normalize_match_path(pattern)
+    if not normalized_path or not normalized_pattern:
+        return False
+    has_glob = any(token in normalized_pattern for token in ("*", "?", "["))
+    if not has_glob:
+        prefix = normalized_pattern.rstrip("/")
+        return normalized_path == prefix or normalized_path.startswith(prefix + "/")
+    return PurePosixPath(normalized_path).match(normalized_pattern) or fnmatch.fnmatch(
+        normalized_path,
+        normalized_pattern,
+    )
 
 
 class SkillRegistry:
@@ -144,6 +165,22 @@ class SkillRegistry:
         # Level 3: names-only for non-system
         user_rows = [f"| {s.metadata.name} | — | {s.relative_path} |" for s in user_skills]
         return header + table_header + "\n".join(system_rows + user_rows) + footer
+
+    def skills_for_paths(self, paths: list[str] | tuple[str, ...]) -> list[ParsedSkill]:
+        """Return model-visible skills whose declared path globs match any path."""
+        normalized_paths = [_normalize_match_path(path) for path in paths if _normalize_match_path(path)]
+        if not normalized_paths:
+            return []
+        matches: list[ParsedSkill] = []
+        for skill in self._skills.values():
+            if not _model_catalog_visible(skill):
+                continue
+            patterns = tuple(skill.metadata.paths or ())
+            if not patterns:
+                continue
+            if any(_skill_path_matches(path, pattern) for path in normalized_paths for pattern in patterns):
+                matches.append(skill)
+        return matches
 
     @staticmethod
     def _normalize(name: str) -> str:

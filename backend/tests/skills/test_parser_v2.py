@@ -22,6 +22,9 @@ allowed-tools: web_search web_fetch firecrawl_fetch
 tools:
   - web_search
   - firecrawl_fetch
+paths:
+  - reports/**/*.md
+  - data/*.csv
 packs:
   - web_pack
 metadata:
@@ -57,6 +60,7 @@ Use primary sources first.
         "firecrawl_fetch",
     )
     assert parsed.metadata.declared_tools == ("web_search", "firecrawl_fetch")
+    assert parsed.metadata.paths == ("reports/**/*.md", "data/*.csv")
     assert parsed.metadata.declared_packs == ("web_pack",)
     assert parsed.metadata.pack == "web_pack"
     assert parsed.metadata.requires_skills == ("industry-research", "source-ledger-audit")

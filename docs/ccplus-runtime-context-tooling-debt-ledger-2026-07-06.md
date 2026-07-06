@@ -252,6 +252,8 @@ flowchart TD
 | 代码位置 | `backend/app/skills/parser.py:31`；`backend/app/skills/types.py`；`backend/app/kernel/engine.py:1473` 的 file read/write tracking |
 | 一轮修复 | `SkillMetadata.paths`；路径 matcher；在 `_execute_tool_with_hooks()` 的 read/write tracking 后触发 conditional skill activation，并刷新 dynamic skill catalog / manifest |
 
+2026-07-06 落地证据：`SkillMetadata` 新增 `paths`；`SkillParser` 解析 `paths` / `path` / `hive.paths`；`SkillRegistry.skills_for_paths()` 支持 POSIX glob 与目录前缀匹配；`backend/app/kernel/engine.py` 新增 `_activate_conditional_skills_for_paths()`，在 `read_file` / `fs_read` 与写路径 tracking 后按访问路径自动激活匹配 skill，并在 `session_context.metadata["conditional_skill_activations"]` 记录 skill、matched_path、patterns、source。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/skills/test_parser_v2.py backend/tests/skills/test_registry.py backend/tests/services/test_skill_registry.py backend/tests/runtime/test_session_skill_lifecycle.py backend/tests/kernel/test_conditional_skill_paths.py -q` -> `35 passed, 4 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/skills/types.py backend/app/skills/parser.py backend/app/skills/registry.py backend/app/kernel/engine.py backend/tests/skills/test_parser_v2.py backend/tests/skills/test_registry.py backend/tests/kernel/test_conditional_skill_paths.py` -> `All checks passed!`。
+
 ### RTD-09：Nested skill discovery / additional skill directories 不完整
 
 | 字段 | 内容 |

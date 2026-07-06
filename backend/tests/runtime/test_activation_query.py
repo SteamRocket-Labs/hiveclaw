@@ -90,6 +90,32 @@ def test_invoker_activation_query_records_turn_and_intent_metadata_source() -> N
     assert ("intent_id", "_ensure_turn_metadata") in trace_fields
 
 
+def test_invoker_activation_query_embeds_task_profile_payload() -> None:
+    from types import SimpleNamespace
+
+    from app.runtime.invoker import AgentInvocationRequest, _build_activation_query_for_request
+    from app.runtime.session import SessionContext
+
+    manifest = _build_activation_query_for_request(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "请研究最新行业资料，带来源链接，并调用 web 搜索。"}],
+            agent_name="Agent",
+            role_description="Researcher",
+            session_context=SessionContext(session_id="session-task-profile", metadata={"request_id": "task-profile"}),
+        )
+    )
+
+    assert manifest["task_profile"] == {
+        "name": "research",
+        "complexity": "medium",
+        "execution_shape": "direct",
+        "suggested_deferred_tool_group_names": ["web"],
+    }
+    trace_fields = {(item["field"], item["source"]) for item in manifest["parse_trace"]}
+    assert ("task_profile", "infer_task_profile") in trace_fields
+
+
 def test_activation_query_from_manifest_rejects_wrong_schema() -> None:
     from app.runtime.activation_query import ActivationQuery
 

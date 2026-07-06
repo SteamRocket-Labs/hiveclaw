@@ -57,6 +57,27 @@ def activation_query_hash(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def task_profile_to_activation_payload(profile: Any) -> dict[str, Any]:
+    """Serialize a ContextBudget TaskProfile into the ActivationQuery shape."""
+
+    if isinstance(profile, Mapping):
+        name = profile.get("name")
+        complexity = profile.get("complexity")
+        execution_shape = profile.get("execution_shape")
+        groups = profile.get("suggested_deferred_tool_group_names")
+    else:
+        name = getattr(profile, "name", "")
+        complexity = getattr(profile, "complexity", "")
+        execution_shape = getattr(profile, "execution_shape", "")
+        groups = getattr(profile, "suggested_deferred_tool_group_names", ())
+    return {
+        "name": _text(name, fallback="general"),
+        "complexity": _text(complexity, fallback="low"),
+        "execution_shape": _text(execution_shape, fallback="direct"),
+        "suggested_deferred_tool_group_names": list(_string_tuple(groups)),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class ActivationQuery:
     """Versioned structured Q for per-turn activation.
@@ -198,4 +219,5 @@ __all__ = [
     "ActivationQuery",
     "activation_query_hash",
     "build_activation_query_ref",
+    "task_profile_to_activation_payload",
 ]

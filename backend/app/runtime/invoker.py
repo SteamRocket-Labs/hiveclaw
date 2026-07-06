@@ -37,6 +37,7 @@ from app.runtime.context_budget import (
     ContextBudget,
     _is_simple_turn_candidate,
     compute_context_budget,
+    infer_task_profile,
     resolve_turn_model_route,
 )
 from app.runtime.context_engine import DefaultContextEngine
@@ -300,9 +301,11 @@ def _skill_catalog_ranking_inputs(request: AgentInvocationRequest) -> dict[str, 
 
 
 def _build_activation_query_for_request(request: AgentInvocationRequest) -> dict[str, Any]:
-    from app.runtime.activation_query import ActivationQuery
+    from app.runtime.activation_query import ActivationQuery, task_profile_to_activation_payload
 
     metadata = _ensure_turn_metadata(request)
+    prompt_text = _latest_user_prompt(request.messages)
+    task_profile = infer_task_profile(prompt_text, messages=request.messages)
     owner_context = {
         key: metadata[key]
         for key in (
@@ -317,7 +320,7 @@ def _build_activation_query_for_request(request: AgentInvocationRequest) -> dict
         if metadata.get(key)
     }
     activation_query = ActivationQuery(
-        raw_prompt=_latest_user_prompt(request.messages),
+        raw_prompt=prompt_text,
         session_id=request.memory_session_id
         or (request.session_context.session_id if request.session_context and request.session_context.session_id else ""),
         turn_id=str(metadata.get("turn_id") or ""),
@@ -325,11 +328,13 @@ def _build_activation_query_for_request(request: AgentInvocationRequest) -> dict
         agent_id=str(request.agent_id or ""),
         agent_role=request.role_description or request.agent_name,
         owner_context=owner_context,
+        task_profile=task_profile_to_activation_payload(task_profile),
         candidate_lanes=("memory", "knowledge", "skill", "tool"),
         parse_trace=[
             {"source": "runtime_invoker", "field": "raw_prompt", "method": "latest_user_message"},
             {"source": "_ensure_turn_metadata", "field": "turn_id", "method": "session_metadata"},
             {"source": "_ensure_turn_metadata", "field": "intent_id", "method": "session_metadata"},
+            {"source": "infer_task_profile", "field": "task_profile", "method": "context_budget"},
             {"source": "runtime_invoker", "field": "candidate_lanes", "method": "default_runtime_lanes"},
         ],
     )

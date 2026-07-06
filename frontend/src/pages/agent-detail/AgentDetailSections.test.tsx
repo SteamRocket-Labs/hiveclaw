@@ -249,6 +249,19 @@ vi.mock('@tanstack/react-query', () => ({
         refetch: vi.fn(),
       };
     }
+    if (key === 'agent-permissions') {
+      return {
+        data: {
+          scope_type: 'user',
+          scope_ids: [],
+          access_level: 'manage',
+          is_owner: true,
+        },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      };
+    }
     if (key === 'local-bridge-connections') {
       return {
         data: {
@@ -2026,7 +2039,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('welcomeMessage');
     expect(markup).not.toContain('value="deny" selected=""');
     expect(markup).not.toContain('value="L2"');
-    expect(markup).not.toContain('Access Permissions');
+    expect(markup).toContain('Access Permissions');
+    expect(markup).toContain('Private to me');
+    expect(markup).toContain('Company shared');
     expect(markup).toContain('Channel Config Mock');
     expect(markup).not.toContain('deleteAgent');
   });
@@ -2051,8 +2066,8 @@ describe('AgentDetail extracted sections', () => {
   it('treats Local Agent as a real agent with a local runtime label and focused detail tabs', () => {
     expect(isLocalAgentRuntimeType({ agent_type: 'local_agent' })).toBe(true);
     expect(isLocalAgentRuntimeType({ agent_type: 'native' })).toBe(false);
-    expect(getVisibleAgentDetailTabs({ agent_type: 'local_agent' })).toEqual(['chat', 'workspace']);
-    expect(Array.from(AGENT_DETAIL_TABS)).toEqual(expect.arrayContaining(['chat', 'workspace']));
+    expect(getVisibleAgentDetailTabs({ agent_type: 'local_agent' })).toEqual(['chat', 'workspace', 'settings']);
+    expect(Array.from(AGENT_DETAIL_TABS)).toEqual(expect.arrayContaining(['chat', 'workspace', 'settings']));
   });
 
   it('builds a bound Plan Mode opt-out recommendation for patrol saves', () => {
@@ -2073,7 +2088,7 @@ describe('AgentDetail extracted sections', () => {
     });
   });
 
-  it('does not render Agent access permissions inside detail settings', () => {
+  it('renders Agent access permissions inside detail settings', () => {
     const markup = renderToStaticMarkup(
       <AgentSettingsSection
         agentId="agent-1"
@@ -2115,9 +2130,9 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).not.toContain('Access Permissions');
-    expect(markup).not.toContain('Default Access Level');
-    expect(markup).not.toMatch(/name="perm_scope"/);
+    expect(markup).toContain('Access Permissions');
+    expect(markup).toContain('Default Access Level');
+    expect(markup).toMatch(/name="perm_scope"/);
     expect(markup).not.toContain('Delete Agent');
   });
 

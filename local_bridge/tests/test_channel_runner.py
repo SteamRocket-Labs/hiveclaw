@@ -118,6 +118,11 @@ class _StreamingAdapter:
         return WorkResult(result="stream done", metadata={"runtime": "stream-test"})
 
 
+class _FailingAdapter:
+    def handle(self, message):
+        raise RuntimeError("adapter exploded")
+
+
 def test_channel_runner_processes_one_websocket_message() -> None:
     client = _FakeClient()
     connection = _FakeConnection()
@@ -259,6 +264,46 @@ def test_channel_runner_streams_command_adapter_output_before_result() -> None:
     assert "".join(str(payload["payload"]["text"]) for payload in deltas).startswith("alpha")
     assert connection.sent[-1]["type"] == "result"
     assert "beta" in connection.sent[-1]["output"]
+
+
+def test_channel_runner_reports_failed_result_when_adapter_raises() -> None:
+    connection = _FakeConnection()
+    runner = HiveBridgeChannelRunner(
+        client=_FakeClient(),
+        adapter=_FailingAdapter(),
+        connection_factory=lambda _url: connection,
+        runtime_kind="codex",
+    )
+
+    assert runner.run_once() == 1
+    assert {"type": "ack", "message_id": "message-1"} in connection.sent
+    error_events = [payload for payload in connection.sent if payload["type"] == "event" and payload["event_type"] == "error"]
+    assert error_events == [
+        {
+            "type": "event",
+            "session_id": "session-1",
+            "message_id": "message-1",
+            "event_type": "error",
+            "payload": {
+                "error": "adapter exploded",
+                "error_type": "RuntimeError",
+                "runtime_kind": "codex",
+            },
+        }
+    ]
+    assert connection.sent[-1] == {
+        "type": "result",
+        "session_id": "session-1",
+        "message_id": "message-1",
+        "status": "failed",
+        "output": "Local runtime failed: adapter exploded",
+        "artifacts": [],
+        "metadata": {
+            "error": "adapter exploded",
+            "error_type": "RuntimeError",
+            "runtime_kind": "codex",
+        },
+    }
 
 
 def test_channel_runner_foreground_loop_retries_after_transient_disconnect() -> None:

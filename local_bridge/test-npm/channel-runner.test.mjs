@@ -180,4 +180,73 @@ describe('npm hive-bridge channel runner', () => {
     assert.equal(sent.at(-1).type, 'result');
     assert.match(sent.at(-1).output, /beta/);
   });
+
+  it('reports a failed channel result when local message handling throws', async () => {
+    const sent = [];
+    class OneMessageWebSocket extends EventEmitter {
+      constructor(url) {
+        super();
+        this.url = url;
+        queueMicrotask(() => {
+          this.emit('message', Buffer.from(JSON.stringify({ type: 'hello' })));
+          this.emit('message', Buffer.from(JSON.stringify({ type: 'ready_ack', status: 'online' })));
+          this.emit('message', Buffer.from(JSON.stringify({
+            type: 'message',
+            message: { id: 'message-1', session_id: 'session-1', content: 'boom', attachments: [] },
+          })));
+        });
+      }
+
+      send(payload) {
+        const parsed = JSON.parse(payload);
+        sent.push(parsed);
+        if (parsed.type === 'result') this.emit('close');
+      }
+
+      close() {
+        this.emit('close');
+      }
+    }
+
+    const runner = new HiveBridgeChannelRunner({
+      client: new FakeClient(),
+      runtime: 'noop',
+      webSocketClass: OneMessageWebSocket,
+      reconnectDelayMs: 0,
+    });
+    runner.prepareMessage = async () => {
+      throw new Error('prepare exploded');
+    };
+
+    assert.equal(await runner.runSession({ maxMessages: 1 }), 1);
+    assert.deepEqual(sent.filter((payload) => payload.type === 'ack'), [
+      { type: 'ack', message_id: 'message-1' },
+    ]);
+    assert.deepEqual(sent.filter((payload) => payload.type === 'event' && payload.event_type === 'error'), [
+      {
+        type: 'event',
+        session_id: 'session-1',
+        message_id: 'message-1',
+        event_type: 'error',
+        payload: {
+          error: 'prepare exploded',
+          error_type: 'Error',
+          runtime_kind: 'noop',
+        },
+      },
+    ]);
+    assert.deepEqual(sent.at(-1), {
+      type: 'result',
+      session_id: 'session-1',
+      message_id: 'message-1',
+      status: 'failed',
+      output: 'Local runtime failed: prepare exploded',
+      artifacts: [],
+      metadata: {
+        error: 'prepare exploded',
+        error_type: 'Error',
+        runtime_kind: 'noop',
+      },
+    });
+  });
 });

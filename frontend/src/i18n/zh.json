@@ -1466,6 +1466,20 @@
       "save": "保存",
       "saving": "保存中...",
       "saved": "已保存",
+      "access": {
+        "title": "访问权限",
+        "description": "控制此员工仅自己可见，还是对整个公司可见。",
+        "privateTitle": "仅自己可见",
+        "privateDesc": "只有你和管理员可以管理这个员工。",
+        "companyTitle": "公司共享",
+        "companyDesc": "公司内所有人都可以使用这个员工；只有 owner 和管理员能修改设置。",
+        "defaultAccessLevel": "默认访问级别",
+        "privateAccessLevel": "owner 可管理",
+        "companyAccessLevel": "公司成员可使用",
+        "saving": "正在保存权限...",
+        "saved": "权限已保存",
+        "saveError": "保存访问权限失败"
+      },
       "autonomy": {
         "title": "自主权限",
         "description": "控制此员工各类操作的独立程度",

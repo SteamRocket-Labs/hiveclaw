@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import ChannelConfig from '../../components/ChannelConfig';
-import { agentApi } from '../../api/domains/agents';
+import { agentApi, type AgentPermissions } from '../../api/domains/agents';
 import { planApi, type PlanRecommendationCreateInput } from '../../api/domains/plans';
 import { triggerApi } from '../../api/domains/triggers';
 import './AgentSettingsSection.css';
@@ -37,6 +37,8 @@ type PatrolFormState = {
   activeStart: string;
   activeEnd: string;
 };
+
+type AgentAccessVisibility = 'private' | 'company';
 
 const clampPatrolInterval = (value: number) => Math.max(15, Math.min(1440, Math.round(value) || DEFAULT_PATROL_INTERVAL_MINUTES));
 const normalizeActiveHours = (value: string) => value.trim().replace(/\s+/g, '');
@@ -83,6 +85,10 @@ const derivePatrolForm = (trigger?: AgentTriggerSummary | null): PatrolFormState
     ...activeHours,
   };
 };
+
+export const agentAccessVisibilityFromPermissions = (
+  permissions?: AgentPermissions | null,
+): AgentAccessVisibility => (permissions?.scope_type === 'company' ? 'company' : 'private');
 
 interface AgentSettingsSectionProps {
   agentId: string;
@@ -144,6 +150,15 @@ export default function AgentSettingsSection({
   const [patrolSaving, setPatrolSaving] = React.useState(false);
   const [patrolSaved, setPatrolSaved] = React.useState(false);
   const [patrolError, setPatrolError] = React.useState('');
+  const [permissionSaving, setPermissionSaving] = React.useState(false);
+  const [permissionSaved, setPermissionSaved] = React.useState(false);
+  const [permissionError, setPermissionError] = React.useState('');
+  const { data: permissionData, isLoading: permissionsLoading } = useQuery({
+    queryKey: ['agent-permissions', agentId],
+    queryFn: () => agentApi.getPermissions(agentId),
+    enabled: !!agentId,
+  });
+  const accessVisibility = agentAccessVisibilityFromPermissions(permissionData as AgentPermissions | undefined);
 
   React.useEffect(() => {
     setPatrolForm(persistedPatrolForm);
@@ -200,6 +215,33 @@ export default function AgentSettingsSection({
       onSetSettingsError(e?.message || 'Failed to save');
     } finally {
       onSetSettingsSaving(false);
+    }
+  };
+
+  const handleSaveAccessVisibility = async (visibility: AgentAccessVisibility) => {
+    if (!canManage || permissionSaving || visibility === accessVisibility) return;
+    setPermissionSaving(true);
+    setPermissionSaved(false);
+    setPermissionError('');
+    try {
+      await agentApi.updatePermissions(
+        agentId,
+        visibility === 'company'
+          ? { scope_type: 'company', scope_ids: [], access_level: 'use' }
+          : { scope_type: 'user', scope_ids: [], access_level: 'manage' },
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] }),
+        queryClient.invalidateQueries({ queryKey: ['agent', agentId] }),
+        queryClient.invalidateQueries({ queryKey: ['agents'] }),
+        queryClient.invalidateQueries({ queryKey: ['a2a-collaborators'] }),
+      ]);
+      setPermissionSaved(true);
+      setTimeout(() => setPermissionSaved(false), 2000);
+    } catch (e: any) {
+      setPermissionError(e?.message || t('agent.settings.access.saveError', 'Failed to save access permissions'));
+    } finally {
+      setPermissionSaving(false);
     }
   };
 
@@ -311,6 +353,68 @@ export default function AgentSettingsSection({
             {settingsSaving ? t('agent.settings.saving', 'Saving...') : t('agent.settings.save', 'Save')}
           </button>
         </div>
+      </div>
+
+      <div className="card agent-settings-card">
+        <div className="agent-settings-card-head">
+          <div>
+            <h4 className="agent-settings-card-title-flush">
+              {t('agent.settings.access.title', 'Access Permissions')}
+            </h4>
+            <p className="agent-settings-card-desc agent-settings-card-desc-flush">
+              {t('agent.settings.access.description', 'Control whether this employee is private to you or visible to the whole company.')}
+            </p>
+          </div>
+          <div className="agent-settings-access-status">
+            {permissionSaving && (
+              <span className="agent-settings-status">
+                {t('agent.settings.access.saving', 'Saving access...')}
+              </span>
+            )}
+            {permissionSaved && (
+              <span className="agent-settings-status is-success">
+                {t('agent.settings.access.saved', 'Access saved')}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="agent-settings-access-options" role="radiogroup" aria-label={t('agent.settings.access.title', 'Access Permissions')}>
+          <label className={`agent-settings-access-option${accessVisibility === 'private' ? ' is-selected' : ''}${!canManage ? ' is-disabled' : ''}`}>
+            <input
+              type="radio"
+              name="perm_scope"
+              value="private"
+              checked={accessVisibility === 'private'}
+              disabled={!canManage || permissionsLoading || permissionSaving}
+              onChange={() => handleSaveAccessVisibility('private')}
+            />
+            <span>
+              <strong>{t('agent.settings.access.privateTitle', 'Private to me')}</strong>
+              <small>{t('agent.settings.access.privateDesc', 'Only you and admins can manage this employee.')}</small>
+            </span>
+          </label>
+          <label className={`agent-settings-access-option${accessVisibility === 'company' ? ' is-selected' : ''}${!canManage ? ' is-disabled' : ''}`}>
+            <input
+              type="radio"
+              name="perm_scope"
+              value="company"
+              checked={accessVisibility === 'company'}
+              disabled={!canManage || permissionsLoading || permissionSaving}
+              onChange={() => handleSaveAccessVisibility('company')}
+            />
+            <span>
+              <strong>{t('agent.settings.access.companyTitle', 'Company shared')}</strong>
+              <small>{t('agent.settings.access.companyDesc', 'Everyone in the company can use this employee; only owners and admins can change settings.')}</small>
+            </span>
+          </label>
+        </div>
+        <div className="agent-settings-hint">
+          {t('agent.settings.access.defaultAccessLevel', 'Default Access Level')}: {' '}
+          {accessVisibility === 'company'
+            ? t('agent.settings.access.companyAccessLevel', 'company users can use')
+            : t('agent.settings.access.privateAccessLevel', 'owner manage')}
+        </div>
+        {permissionError && <div className="agent-settings-hint agent-settings-hint-error">{permissionError}</div>}
       </div>
 
       <div className="card agent-settings-card">

@@ -119,18 +119,39 @@ class HiveBridgeChannelRunner:
     def _handle_message(self, connection: JsonConnection, message: dict[str, Any]) -> None:
         message_id = str(message["id"])
         session_id = str(message["session_id"])
-        prepared_message = self._prepare_message_for_adapter(message_id=message_id, message=message)
         connection.send_json({"type": "ack", "message_id": message_id})
-        self._send_event(connection, session_id, message_id, "typing", {"status": "running"})
 
         def emit_event(event_type: str, payload: dict[str, Any] | None = None) -> None:
             self._send_event(connection, session_id, message_id, event_type, payload or {})
 
-        stream_handler = getattr(self.adapter, "handle_stream", None)
-        if callable(stream_handler):
-            result = coerce_work_result(stream_handler(prepared_message, emit_event))
-        else:
-            result = coerce_work_result(self.adapter.handle(prepared_message))
+        try:
+            prepared_message = self._prepare_message_for_adapter(message_id=message_id, message=message)
+            self._send_event(connection, session_id, message_id, "typing", {"status": "running"})
+            stream_handler = getattr(self.adapter, "handle_stream", None)
+            if callable(stream_handler):
+                result = coerce_work_result(stream_handler(prepared_message, emit_event))
+            else:
+                result = coerce_work_result(self.adapter.handle(prepared_message))
+        except Exception as exc:
+            error_text = str(exc) or type(exc).__name__
+            error_metadata = {
+                "error": error_text,
+                "error_type": type(exc).__name__,
+                "runtime_kind": self.runtime_kind,
+            }
+            self._send_event(connection, session_id, message_id, "error", error_metadata)
+            connection.send_json(
+                {
+                    "type": "result",
+                    "session_id": session_id,
+                    "message_id": message_id,
+                    "status": "failed",
+                    "output": f"Local runtime failed: {error_text}",
+                    "artifacts": [],
+                    "metadata": error_metadata,
+                }
+            )
+            return
         connection.send_json(
             {
                 "type": "result",

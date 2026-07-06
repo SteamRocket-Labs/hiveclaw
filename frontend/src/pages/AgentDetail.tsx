@@ -365,7 +365,7 @@ export const AGENT_WORKBENCH_AREAS: Array<{
 function isAgentDetailTabVisible(agent: any, tab: AgentDetailTab): boolean {
     if (agent?.access_level === 'use' && (tab === 'settings' || tab === 'approvals')) return false;
     if (agent?.agent_type === 'local_agent') {
-        return ['chat', 'workspace'].includes(tab);
+        return ['chat', 'workspace', 'settings'].includes(tab);
     }
     return true;
 }
@@ -377,7 +377,7 @@ export function isLocalAgentRuntimeType(agent: any): boolean {
 
 export function getVisibleAgentDetailTabs(agent: any): AgentDetailTab[] {
     if (agent?.agent_type === 'local_agent') {
-        return ['chat', 'workspace'];
+        return ['chat', 'workspace', 'settings'];
     }
     return AGENT_DETAIL_TABS.filter((tab) => isAgentDetailTabVisible(agent, tab));
 }
@@ -2689,7 +2689,7 @@ function AgentDetailInner() {
                                     key={area.id}
                                     type="button"
                                     className={`agent-workbench-area ${activeWorkbenchArea?.id === area.id ? 'active' : ''}`}
-                                    onClick={() => selectDetailTab(area.primaryTab)}
+                                    onClick={() => selectDetailTab(area.tabs.includes(area.primaryTab) ? area.primaryTab : area.tabs[0])}
                                 >
                                     {t(area.labelKey, area.fallback)}
                                 </button>

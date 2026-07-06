@@ -1463,6 +1463,20 @@
       "save": "Save",
       "saving": "Saving...",
       "saved": "Saved",
+      "access": {
+        "title": "Access Permissions",
+        "description": "Control whether this employee is private to you or visible to the whole company.",
+        "privateTitle": "Private to me",
+        "privateDesc": "Only you and admins can manage this employee.",
+        "companyTitle": "Company shared",
+        "companyDesc": "Everyone in the company can use this employee; only owners and admins can change settings.",
+        "defaultAccessLevel": "Default Access Level",
+        "privateAccessLevel": "owner manage",
+        "companyAccessLevel": "company users can use",
+        "saving": "Saving access...",
+        "saved": "Access saved",
+        "saveError": "Failed to save access permissions"
+      },
       "autonomy": {
         "title": "Autonomy Policy",
         "description": "Control how independently this employee acts for each type of action",

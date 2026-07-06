@@ -24,8 +24,9 @@ import {
   type LocalAgentChannelEvent,
   type LocalAgentChannelSession,
   type LocalAgentWorkspaceUpload,
+  type LocalBridgeConnection,
 } from '../../api/domains/localBridge';
-import { browserChannelWsUrl, mergeChannelEvents } from '../LocalAgents';
+import { browserChannelWsUrl, connectionPresenceStatus, isOnlineConnection, mergeChannelEvents } from '../LocalAgents';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import type { AgentChatMessage, ChatArtifactPart } from './chatRuntime';
 import type { SessionWorkbenchHeaderModel } from '../session-workbench/timelineModel';
@@ -46,6 +47,18 @@ type LocalComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
 function routeSessionIdFromSearch(search: string): string | null {
   const params = new URLSearchParams(search);
   return params.get('session_id') || params.get('session') || null;
+}
+
+export function localAgentRuntimeResumeHealth(
+  connections: LocalBridgeConnection[] | null | undefined,
+  loadingOrUnavailable = false,
+): 'online' | 'offline' | 'unknown' {
+  if (loadingOrUnavailable || !connections) return 'unknown';
+  const activeConnections = connections.filter((connection) => connection.status === 'active');
+  if (activeConnections.some(isOnlineConnection)) return 'online';
+  if (activeConnections.length === 0) return 'offline';
+  if (activeConnections.some((connection) => connectionPresenceStatus(connection) === 'unknown')) return 'unknown';
+  return 'offline';
 }
 
 function localAgentEventText(event: LocalAgentChannelEvent): string {
@@ -359,6 +372,13 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
     refetchInterval: 5000,
   });
 
+  const connectionsQuery = useQuery({
+    queryKey: ['local-agent-detail-connections', agentId],
+    queryFn: () => localBridgeApi.listAgentConnections(agentId),
+    enabled: Boolean(agentId),
+    refetchInterval: 10000,
+  });
+
   useEffect(() => {
     if (!activeSession) return;
     const canonicalSessionId = activeSession.chat_session_id || activeSession.id;
@@ -426,7 +446,10 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
     status: sending ? 'running' : 'idle',
     modelLabel: t('nav.localBadge', 'Local'),
     providerLabel: 'Hive Connect',
-    resumeHealth: wsConnected ? 'online' : 'unknown',
+    resumeHealth: localAgentRuntimeResumeHealth(
+      connectionsQuery.data?.connections,
+      connectionsQuery.isLoading || connectionsQuery.isError,
+    ),
     permissionMode: null,
     governanceLabel: null,
     activeProjection: null,

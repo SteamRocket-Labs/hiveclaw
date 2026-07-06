@@ -103,23 +103,42 @@ export class HiveBridgeChannelRunner {
     const messageId = String(message.id);
     const sessionId = String(message.session_id);
     ws.send(JSON.stringify({ type: 'ack', message_id: messageId }));
-    const prepared = await this.prepareMessage(message);
-    this.sendEvent(ws, sessionId, messageId, 'typing', { status: 'running' });
-    const result = this.runtime === 'command' && this.command
-      ? await commandResult(this.command, prepared.content || '', {
-        cwd: this.workDir,
-        onEvent: (eventType, payload) => this.sendEvent(ws, sessionId, messageId, eventType, payload),
-      })
-      : await noopResult(prepared);
-    ws.send(JSON.stringify({
-      type: 'result',
-      session_id: sessionId,
-      message_id: messageId,
-      status: 'completed',
-      output: String(result.result || ''),
-      artifacts: result.attachments || [],
-      metadata: result.metadata || {},
-    }));
+    try {
+      const prepared = await this.prepareMessage(message);
+      this.sendEvent(ws, sessionId, messageId, 'typing', { status: 'running' });
+      const result = this.runtime === 'command' && this.command
+        ? await commandResult(this.command, prepared.content || '', {
+          cwd: this.workDir,
+          onEvent: (eventType, payload) => this.sendEvent(ws, sessionId, messageId, eventType, payload),
+        })
+        : await noopResult(prepared);
+      ws.send(JSON.stringify({
+        type: 'result',
+        session_id: sessionId,
+        message_id: messageId,
+        status: 'completed',
+        output: String(result.result || ''),
+        artifacts: result.attachments || [],
+        metadata: result.metadata || {},
+      }));
+    } catch (error) {
+      const errorText = String(error?.message || error?.name || error || 'Unknown local runtime error');
+      const metadata = {
+        error: errorText,
+        error_type: String(error?.name || 'Error'),
+        runtime_kind: this.runtime,
+      };
+      this.sendEvent(ws, sessionId, messageId, 'error', metadata);
+      ws.send(JSON.stringify({
+        type: 'result',
+        session_id: sessionId,
+        message_id: messageId,
+        status: 'failed',
+        output: `Local runtime failed: ${errorText}`,
+        artifacts: [],
+        metadata,
+      }));
+    }
   }
 
   async runSession({ maxMessages = Number.POSITIVE_INFINITY } = {}) {

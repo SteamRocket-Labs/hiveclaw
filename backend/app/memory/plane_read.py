@@ -13,7 +13,9 @@ import logging
 import re
 import uuid
 from pathlib import Path
+from typing import Any
 
+from app.memory.types import MemoryItem, MemoryKind
 from app.memory.t3_platform_gate import LEGACY_T3_FILES, PROFILE_PLANE_TARGETS
 
 logger = logging.getLogger(__name__)
@@ -221,6 +223,167 @@ def load_plane_entries(data_root: Path | str, agent_id: uuid.UUID | str, ids: li
                 }
             )
     return loaded
+
+
+def load_selected_memory_values(
+    data_root: Path | str,
+    agent_id: uuid.UUID | str,
+    router_output: Any,
+    *,
+    limit: int = 20,
+) -> list[MemoryItem]:
+    """Load memory values only for router-selected activation candidates."""
+    root = Path(data_root)
+    items: list[MemoryItem] = []
+    for manifest in _router_top_candidate_manifests(router_output)[: max(1, int(limit or 20))]:
+        if str(manifest.get("candidate_kind") or "") != "agent_memory":
+            continue
+        item = _load_memory_value_pointer(root, agent_id, manifest)
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def _router_top_candidate_manifests(router_output: Any) -> list[dict[str, Any]]:
+    if hasattr(router_output, "to_manifest"):
+        router_output = router_output.to_manifest()
+    if isinstance(router_output, dict):
+        raw_candidates = router_output.get("top_activation_candidates") or []
+    elif isinstance(router_output, list | tuple):
+        raw_candidates = router_output
+    else:
+        raw_candidates = []
+    manifests: list[dict[str, Any]] = []
+    for candidate in raw_candidates:
+        if hasattr(candidate, "to_manifest"):
+            candidate = candidate.to_manifest()
+        if isinstance(candidate, dict):
+            manifests.append(dict(candidate))
+    return manifests
+
+
+def _load_memory_value_pointer(root: Path, agent_id: uuid.UUID | str, manifest: dict[str, Any]) -> MemoryItem | None:
+    value_pointer = manifest.get("value_pointer") if isinstance(manifest.get("value_pointer"), dict) else {}
+    loader = str(value_pointer.get("loader") or "").strip()
+    if loader == "knowledge_page":
+        return _load_memory_file_pointer(root, agent_id, manifest, kind=MemoryKind.SEMANTIC)
+    if loader == "profile_entry":
+        return _load_profile_entry_pointer(root, agent_id, manifest)
+    if loader == "explicit_overlay_entry":
+        return _load_memory_file_pointer(root, agent_id, manifest, kind=MemoryKind.SEMANTIC)
+    if loader == "t2_package":
+        return _load_t2_package_pointer(root, agent_id, manifest)
+    return None
+
+
+def _safe_agent_relative_path(root: Path, agent_id: uuid.UUID | str, source: str) -> Path | None:
+    clean = str(source or "").strip().replace("\\", "/")
+    if not clean:
+        return None
+    rel = Path(clean)
+    if rel.is_absolute() or any(part == ".." for part in rel.parts):
+        return None
+    path = root / str(agent_id) / rel
+    try:
+        path.resolve().relative_to((root / str(agent_id)).resolve())
+    except (OSError, ValueError):
+        return None
+    return path
+
+
+def _candidate_score(manifest: dict[str, Any]) -> float:
+    score = manifest.get("score") if isinstance(manifest.get("score"), dict) else {}
+    try:
+        return float(score.get("total_score") or 0.5)
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _load_memory_file_pointer(
+    root: Path,
+    agent_id: uuid.UUID | str,
+    manifest: dict[str, Any],
+    *,
+    kind: MemoryKind,
+) -> MemoryItem | None:
+    value_pointer = manifest.get("value_pointer") if isinstance(manifest.get("value_pointer"), dict) else {}
+    source = str(value_pointer.get("source") or value_pointer.get("path") or "").strip()
+    path = _safe_agent_relative_path(root, agent_id, source)
+    if path is None or not path.exists() or not path.is_file():
+        return None
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("Memory value load failed for %s: %s", path, exc)
+        return None
+    return MemoryItem(
+        kind=kind,
+        content=content,
+        score=_candidate_score(manifest),
+        source=source,
+        metadata={
+            "source_type": value_pointer.get("loader") or "",
+            "value_pointer": dict(value_pointer),
+            "candidate_ref": dict(manifest.get("candidate_ref") or {}),
+        },
+    )
+
+
+def _load_profile_entry_pointer(root: Path, agent_id: uuid.UUID | str, manifest: dict[str, Any]) -> MemoryItem | None:
+    value_pointer = manifest.get("value_pointer") if isinstance(manifest.get("value_pointer"), dict) else {}
+    source = str(value_pointer.get("source") or "").strip()
+    entry_id = str(value_pointer.get("id") or value_pointer.get("entry_id") or "").strip()
+    path = _safe_agent_relative_path(root, agent_id, source)
+    if path is None or not path.exists() or not path.is_file():
+        return None
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("Profile value load failed for %s: %s", path, exc)
+        return None
+    for entry in _parse_entries(content, source=source):
+        if entry["id"] == entry_id:
+            return MemoryItem(
+                kind=MemoryKind.SEMANTIC,
+                content=entry["content"],
+                score=_candidate_score(manifest),
+                source=source,
+                metadata={
+                    "source_type": "profile_entry",
+                    "entry_id": entry["id"],
+                    "heading": entry["heading"],
+                    "value_pointer": dict(value_pointer),
+                    "candidate_ref": dict(manifest.get("candidate_ref") or {}),
+                },
+            )
+    return None
+
+
+def _load_t2_package_pointer(root: Path, agent_id: uuid.UUID | str, manifest: dict[str, Any]) -> MemoryItem | None:
+    value_pointer = manifest.get("value_pointer") if isinstance(manifest.get("value_pointer"), dict) else {}
+    source = str(value_pointer.get("path") or "").strip()
+    path = _safe_agent_relative_path(root, agent_id, source)
+    if path is None:
+        return None
+    target = path / "summary.md" if path.is_dir() else path
+    if not target.exists() or not target.is_file():
+        return None
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("T2 value load failed for %s: %s", target, exc)
+        return None
+    return MemoryItem(
+        kind=MemoryKind.EPISODIC,
+        content=content,
+        score=_candidate_score(manifest),
+        source=source,
+        metadata={
+            "source_type": "t2_package",
+            "value_pointer": dict(value_pointer),
+            "candidate_ref": dict(manifest.get("candidate_ref") or {}),
+        },
+    )
 
 
 def _has_two_plane_documents(data_root: Path | str, agent_id: uuid.UUID | str) -> bool:

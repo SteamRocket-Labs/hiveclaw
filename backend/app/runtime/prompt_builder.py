@@ -9,6 +9,7 @@ Three-layer prompt architecture:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import re
 from typing import Any
 
@@ -88,6 +89,93 @@ class FrozenPrefixSection:
     name: str
     chars: int
     tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class ContextSectionCandidate:
+    candidate_id: str
+    kind: str
+    name: str
+    content: str
+    render_order: int
+    score: float = 1.0
+    budget_key: str | None = None
+    budget_chars: int | None = None
+    enforce_budget: bool = False
+
+
+def _context_section_source_hash(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _append_context_section_decision(
+    ledger: list[dict[str, Any]] | None,
+    *,
+    candidate: ContextSectionCandidate,
+    rendered_content: str,
+    decision: str,
+) -> None:
+    if ledger is None:
+        return
+    source_chars = len(candidate.content or "")
+    rendered_chars = len(rendered_content or "")
+    ledger.append(
+        {
+            "schema": "hive.ccplus.context_section_candidate.v1",
+            "candidate_id": candidate.candidate_id,
+            "kind": candidate.kind,
+            "name": candidate.name,
+            "render_order": candidate.render_order,
+            "score": candidate.score,
+            "selected": bool(rendered_content),
+            "decision": decision,
+            "budget_key": candidate.budget_key,
+            "budget_chars": candidate.budget_chars,
+            "budget_enforced": candidate.enforce_budget,
+            "source_chars": source_chars,
+            "source_tokens": estimate_tokens_from_text(candidate.content or ""),
+            "rendered_chars": rendered_chars,
+            "rendered_tokens": estimate_tokens_from_text(rendered_content or ""),
+            "source_hash": _context_section_source_hash(candidate.content or ""),
+        }
+    )
+
+
+def _select_context_section_candidates(
+    candidates: list[ContextSectionCandidate],
+    *,
+    context_section_ledger: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    selected: list[tuple[int, str]] = []
+    for candidate in sorted(candidates, key=lambda item: (-item.score, item.render_order)):
+        content = (candidate.content or "").strip()
+        if not content:
+            _append_context_section_decision(
+                context_section_ledger,
+                candidate=candidate,
+                rendered_content="",
+                decision="suppressed_empty",
+            )
+            continue
+
+        rendered_content = content
+        decision = "selected_within_budget"
+        if candidate.budget_chars is not None and candidate.budget_chars > 0 and len(content) > candidate.budget_chars:
+            if candidate.enforce_budget:
+                rendered_content = _trim_block(content, budget_chars=candidate.budget_chars)
+                decision = "selected_trimmed"
+            else:
+                decision = "selected_over_budget"
+
+        selected.append((candidate.render_order, rendered_content))
+        _append_context_section_decision(
+            context_section_ledger,
+            candidate=candidate,
+            rendered_content=rendered_content,
+            decision=decision,
+        )
+
+    return [content for _, content in sorted(selected, key=lambda item: item[0])]
 
 
 # C3: cuts must stay observable — say a block was budget-trimmed, not a bare ellipsis.
@@ -526,6 +614,7 @@ def build_dynamic_prompt_suffix(
     channel: str = "",
     agent_name: str = "",
     source: str = "",
+    context_section_ledger: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the per-round dynamic suffix.
 
@@ -547,11 +636,41 @@ def build_dynamic_prompt_suffix(
         build_scenario_section,
     )
 
-    parts: list[str] = []
+    section_candidates: list[ContextSectionCandidate] = []
+
+    def add_candidate(
+        *,
+        candidate_id: str,
+        kind: str,
+        name: str,
+        content: str,
+        budget_key: str | None = None,
+        budget_chars: int | None = None,
+        enforce_budget: bool = False,
+        score: float = 1.0,
+    ) -> None:
+        section_candidates.append(
+            ContextSectionCandidate(
+                candidate_id=candidate_id,
+                kind=kind,
+                name=name,
+                content=content,
+                render_order=len(section_candidates),
+                score=score,
+                budget_key=budget_key,
+                budget_chars=budget_chars,
+                enforce_budget=enforce_budget,
+            )
+        )
 
     # § Autonomous Work — unified semantics for unattended runs (B4)
     if source in _AUTONOMOUS_SOURCES:
-        parts.append(_AUTONOMOUS_WORK_SECTION.format(source=source))
+        add_candidate(
+            candidate_id="dynamic:runtime:autonomous_work",
+            kind="runtime_guidance",
+            name="autonomous_work",
+            content=_AUTONOMOUS_WORK_SECTION.format(source=source),
+        )
 
     # § When to Suggest Planning First (A) — interactive surfaces only. The agent
     # may suggest Plan Mode in its reply; it never auto-enters (entry is the user's).
@@ -561,7 +680,12 @@ def build_dynamic_prompt_suffix(
     )
 
     if should_show_plan_mode_guidance(source, channel):
-        parts.append(build_plan_mode_guidance_section())
+        add_candidate(
+            candidate_id="dynamic:runtime:plan_mode_guidance",
+            kind="runtime_guidance",
+            name="plan_mode_guidance",
+            content=build_plan_mode_guidance_section(),
+        )
 
     memory_budget_chars = getattr(budget_profile, "memory_budget_chars", _DEFAULT_MEMORY_SNAPSHOT_BUDGET)
 
@@ -570,12 +694,25 @@ def build_dynamic_prompt_suffix(
     # layer uses the same cap only as a hard safety guard for rogue callers.
     if memory_snapshot:
         snapshot_cap = max(int(memory_budget_chars), 1500)
-        parts.append(build_memory_section(memory_snapshot, budget_chars=snapshot_cap))
+        add_candidate(
+            candidate_id="dynamic:memory:memory_snapshot",
+            kind="memory",
+            name="memory_snapshot",
+            content=build_memory_section(memory_snapshot, budget_chars=snapshot_cap),
+            budget_key="memory_budget_chars",
+            budget_chars=memory_budget_chars,
+        )
 
     if session_learning_projection:
         learning_block = _trim_block(session_learning_projection, budget_chars=1200)
-        if learning_block:
-            parts.append(learning_block)
+        add_candidate(
+            candidate_id="dynamic:memory:session_learning_projection",
+            kind="memory",
+            name="session_learning_projection",
+            content=learning_block,
+            budget_key="session_learning_projection_chars",
+            budget_chars=1200,
+        )
 
     continuity_budget = min(
         max((memory_budget_chars // 3) if budget_profile else _CONTINUITY_CHAR_BUDGET, 800),
@@ -583,19 +720,36 @@ def build_dynamic_prompt_suffix(
     )
     if continuity_context:
         continuity_block = _trim_block(continuity_context, budget_chars=continuity_budget)
-        if continuity_block:
-            parts.append(f"## Session Continuity\n{continuity_block}")
+        add_candidate(
+            candidate_id="dynamic:session:continuity",
+            kind="session_continuity",
+            name="continuity_context",
+            content=f"## Session Continuity\n{continuity_block}" if continuity_block else "",
+            budget_key="continuity_context_chars",
+            budget_chars=continuity_budget,
+        )
 
     runtime_budget = getattr(budget_profile, "runtime_triggers_budget_chars", 3000)
-    if runtime_metadata_context:
-        runtime_block = _trim_block(runtime_metadata_context, budget_chars=runtime_budget)
-        if runtime_block:
-            parts.append(runtime_block)
+    runtime_block = _trim_block(runtime_metadata_context, budget_chars=runtime_budget) if runtime_metadata_context else ""
+    add_candidate(
+        candidate_id="dynamic:runtime:runtime_metadata",
+        kind="runtime_metadata",
+        name="runtime_metadata_context",
+        content=runtime_block,
+        budget_key="runtime_triggers_budget_chars",
+        budget_chars=runtime_budget,
+    )
 
-    if permissions_context:
-        permissions_block = _trim_block(permissions_context, budget_chars=min(runtime_budget, 2400))
-        if permissions_block:
-            parts.append(permissions_block)
+    permissions_budget = min(runtime_budget, 2400)
+    permissions_block = _trim_block(permissions_context, budget_chars=permissions_budget) if permissions_context else ""
+    add_candidate(
+        candidate_id="dynamic:permissions:permissions_context",
+        kind="permissions",
+        name="permissions_context",
+        content=permissions_block,
+        budget_key="permissions_context_chars",
+        budget_chars=permissions_budget,
+    )
 
     tool_groups_budget = (
         budget_profile.active_tool_groups_budget_chars if budget_profile else _ACTIVE_TOOL_GROUPS_CHAR_BUDGET
@@ -605,42 +759,74 @@ def build_dynamic_prompt_suffix(
         budget_profile.task_profile if budget_profile else None,
         query=latest_user_query,
     )
-    if scenario_section:
-        parts.append(scenario_section)
+    add_candidate(
+        candidate_id="dynamic:scenario:task_profile",
+        kind="scenario",
+        name="task_profile",
+        content=scenario_section,
+    )
 
     tool_groups_section = _render_active_tool_groups(active_tool_groups or [], budget_chars=tool_groups_budget)
-    if tool_groups_section:
-        parts.append(tool_groups_section)
+    add_candidate(
+        candidate_id="dynamic:tools:active_tool_groups",
+        kind="tools",
+        name="active_tool_groups",
+        content=tool_groups_section,
+        budget_key="active_tool_groups_budget_chars",
+        budget_chars=tool_groups_budget,
+    )
 
+    deferred_tools_section = ""
     if available_deferred_tools:
         from app.runtime.deferred_tools import coerce_deferred_tool_candidates
 
-        candidates = coerce_deferred_tool_candidates(available_deferred_tools)
-        if candidates:
+        deferred_candidates = coerce_deferred_tool_candidates(available_deferred_tools)
+        if deferred_candidates:
             lines = [
                 "## Available Deferred Tools",
                 "These tools are not loaded yet. To load exactly one schema, call `tool_search` with `select:<tool_name>`.",
             ]
-            for candidate in candidates[:40]:
+            for candidate in deferred_candidates[:40]:
                 details = (
                     f"group={candidate.group}; risk={candidate.risk}; "
                     f"schema_tokens={candidate.schema_token_cost}; reason={candidate.reason}"
                 )
                 lines.append(f"- {candidate.name} — `{candidate.selector}` ({details})")
-            if len(candidates) > 40:
-                lines.append(f"- ...(+{len(candidates) - 40} more)")
-            parts.append(_trim_block("\n".join(lines), budget_chars=min(tool_groups_budget, 1600)))
+            if len(deferred_candidates) > 40:
+                lines.append(f"- ...(+{len(deferred_candidates) - 40} more)")
+            deferred_tools_section = _trim_block("\n".join(lines), budget_chars=min(tool_groups_budget, 1600))
+    add_candidate(
+        candidate_id="dynamic:tools:available_deferred_tools",
+        kind="tools",
+        name="available_deferred_tools",
+        content=deferred_tools_section,
+        budget_key="active_tool_groups_budget_chars",
+        budget_chars=min(tool_groups_budget, 1600),
+    )
 
     # § Skills catalog (Step 9 — CC parity): progressive-disclosure index lives
     # in the dynamic suffix, next to the active tool groups it complements, so
     # adding/distilling a skill never busts the frozen prompt-cache boundary.
-    if skill_catalog:
-        parts.append(skill_catalog)
+    skill_catalog_budget = getattr(budget_profile, "skill_catalog_budget_chars", None) if budget_profile else None
+    add_candidate(
+        candidate_id="dynamic:skill:skill_catalog",
+        kind="skills",
+        name="skill_catalog",
+        content=skill_catalog,
+        budget_key="skill_catalog_budget_chars",
+        budget_chars=skill_catalog_budget,
+        enforce_budget=True,
+    )
 
-    if retrieval_context:
-        knowledge = build_knowledge_section(retrieval_context, budget_chars=retrieval_budget)
-        if knowledge:
-            parts.append(knowledge)
+    knowledge = build_knowledge_section(retrieval_context, budget_chars=retrieval_budget) if retrieval_context else ""
+    add_candidate(
+        candidate_id="dynamic:knowledge:retrieval_context",
+        kind="knowledge",
+        name="retrieval_context",
+        content=knowledge,
+        budget_key="retrieval_budget_chars",
+        budget_chars=retrieval_budget,
+    )
 
     suggested_deferred_tool_groups = (
         getattr(budget_profile.task_profile, "suggested_deferred_tool_group_names", ())
@@ -655,7 +841,14 @@ def build_dynamic_prompt_suffix(
         ]
         for group_name in suggested_deferred_tool_groups:
             hint_lines.append(f"- {group_name}")
-        parts.append(_trim_block("\n".join(hint_lines), budget_chars=tool_groups_budget))
+        add_candidate(
+            candidate_id="dynamic:tools:suggested_deferred_tool_groups",
+            kind="tools",
+            name="suggested_deferred_tool_groups",
+            content=_trim_block("\n".join(hint_lines), budget_chars=tool_groups_budget),
+            budget_key="active_tool_groups_budget_chars",
+            budget_chars=tool_groups_budget,
+        )
 
     # § Environment (user, channel, time)
     env_section = build_environment_section(
@@ -664,19 +857,31 @@ def build_dynamic_prompt_suffix(
         agent_name=agent_name,
         include_time="## Current Time" not in runtime_metadata_context,
     )
-    if env_section:
-        parts.append(env_section)
+    add_candidate(
+        candidate_id="dynamic:environment:current",
+        kind="environment",
+        name="environment",
+        content=env_section,
+    )
 
     suffix_sections: list[str] = []
     if system_prompt_suffix:
         suffix_sections.append(system_prompt_suffix)
     suffix_sections.extend(section for section in (system_prompt_suffix_sections or []) if section)
-    for suffix_section in suffix_sections:
+    for idx, suffix_section in enumerate(suffix_sections):
         # P1-W2-2/A6: cap each request-specific suffix independently. Runtime
         # callers may inject multiple critical suffixes (for example delegation
         # handoff + coordinator mode); one large section must not erase another.
-        parts.append(_trim_block(suffix_section, budget_chars=_SYSTEM_PROMPT_SUFFIX_CHAR_CAP))
+        add_candidate(
+            candidate_id=f"dynamic:suffix:system_prompt_suffix:{idx}",
+            kind="system_prompt_suffix",
+            name="system_prompt_suffix",
+            content=_trim_block(suffix_section, budget_chars=_SYSTEM_PROMPT_SUFFIX_CHAR_CAP),
+            budget_key="system_prompt_suffix_chars",
+            budget_chars=_SYSTEM_PROMPT_SUFFIX_CHAR_CAP,
+        )
 
+    parts = _select_context_section_candidates(section_candidates, context_section_ledger=context_section_ledger)
     return "\n\n".join(parts)
 
 

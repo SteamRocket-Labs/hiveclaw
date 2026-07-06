@@ -1362,6 +1362,12 @@ async def test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt(m
     assert ledger["schema"] == "hive.ccplus.context_usage_ledger.v1"
     assert categories["messages"]["tokens"] > 0
     assert categories["free_space"]["tokens"] >= 0
+    dynamic_section_ledger = manifest["dynamic_context_section_ledger"]
+    assert dynamic_section_ledger["schema"] == "hive.ccplus.dynamic_context_section_ledger.v1"
+    section_decisions = {item["candidate_id"]: item for item in dynamic_section_ledger["sections"]}
+    assert section_decisions["dynamic:runtime:runtime_metadata"]["selected"] is True
+    assert section_decisions["dynamic:skill:skill_catalog"]["budget_key"] == "skill_catalog_budget_chars"
+    assert session_context.metadata["dynamic_context_section_ledger"] == dynamic_section_ledger
     artifacts = session_context.metadata["context_artifacts"]
     artifact_kinds = {item["kind"] for item in artifacts}
     assert {"frozen_prefix", "skill_catalog"} <= artifact_kinds

@@ -106,6 +106,49 @@ def test_dynamic_suffix_renders_available_deferred_tools():
     assert "schema_tokens=42" in suffix
 
 
+def test_dynamic_suffix_records_context_candidate_selection_ledger():
+    from app.runtime.context_budget import TaskProfile
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    budget_profile = type(
+        "Budget",
+        (),
+        {
+            "memory_budget_chars": 8000,
+            "active_tool_groups_budget_chars": 120,
+            "retrieval_budget_chars": 3000,
+            "runtime_triggers_budget_chars": 90,
+            "skill_catalog_budget_chars": 1200,
+            "task_profile": TaskProfile(name="research", complexity="medium"),
+        },
+    )()
+    ledger: list[dict] = []
+
+    suffix = build_dynamic_prompt_suffix(
+        memory_snapshot="important memory\n" * 20,
+        runtime_metadata_context="",
+        skill_catalog="## Skills\n- load_skill",
+        retrieval_context="retrieved evidence\n" * 20,
+        budget_profile=budget_profile,
+        context_section_ledger=ledger,
+    )
+
+    decisions = {item["candidate_id"]: item for item in ledger}
+
+    assert "## Your Memory System" in suffix
+    assert "## Knowledge" in suffix
+    assert "## Skills" in suffix
+    assert decisions["dynamic:memory:memory_snapshot"]["selected"] is True
+    assert decisions["dynamic:memory:memory_snapshot"]["decision"].startswith("selected")
+    assert decisions["dynamic:runtime:runtime_metadata"]["decision"] == "suppressed_empty"
+    assert decisions["dynamic:knowledge:retrieval_context"]["selected"] is True
+    assert decisions["dynamic:knowledge:retrieval_context"]["decision"].startswith("selected")
+    assert decisions["dynamic:skill:skill_catalog"]["budget_key"] == "skill_catalog_budget_chars"
+    assert decisions["dynamic:memory:memory_snapshot"]["render_order"] < decisions["dynamic:skill:skill_catalog"][
+        "render_order"
+    ]
+
+
 def test_dynamic_suffix_renders_effective_permissions_context():
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 

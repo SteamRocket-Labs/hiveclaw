@@ -3356,6 +3356,7 @@ class AgentKernel:
                 extra={"metric": "prompt_cache", "cache_hit": _cache_valid},
             )
 
+            dynamic_context_section_ledger: list[dict[str, Any]] = []
             if _cache_valid and _cached_prefix:
                 # Session has a valid frozen prefix — only rebuild dynamic suffix
                 frozen_prefix_for_manifest = _cached_prefix
@@ -3375,6 +3376,7 @@ class AgentKernel:
                     channel=session_ctx.channel if session_ctx else "",
                     source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
                     agent_name=request.agent_name,
+                    context_section_ledger=dynamic_context_section_ledger,
                 )
                 combined_prompt = assemble_runtime_prompt(
                     _cached_prefix,
@@ -3413,6 +3415,7 @@ class AgentKernel:
                     channel=session_ctx.channel if session_ctx else "",
                     source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
                     agent_name=request.agent_name,
+                    context_section_ledger=dynamic_context_section_ledger,
                 )
                 combined_prompt = assemble_runtime_prompt(
                     prompt_prefix,
@@ -3473,8 +3476,15 @@ class AgentKernel:
                     available_agent_types=list(session_ctx.metadata.get("available_agent_types") or []),
                     messages=request.messages,
                 )
+                prompt_manifest["dynamic_context_section_ledger"] = {
+                    "schema": "hive.ccplus.dynamic_context_section_ledger.v1",
+                    "sections": list(dynamic_context_section_ledger),
+                }
                 record_prompt_manifest_context_artifacts(session_ctx, prompt_manifest)
                 session_ctx.metadata["prompt_assembly_manifest"] = prompt_manifest
+                session_ctx.metadata["dynamic_context_section_ledger"] = dict(
+                    prompt_manifest["dynamic_context_section_ledger"]
+                )
                 session_ctx.metadata["context_usage_ledger"] = dict(prompt_manifest.get("context_usage_ledger") or {})
                 session_ctx.metadata["prompt_sections"] = list(prompt_manifest.get("prompt_sections") or [])
                 session_ctx.metadata["active_tool_names"] = list(prompt_manifest.get("active_tool_names") or [])

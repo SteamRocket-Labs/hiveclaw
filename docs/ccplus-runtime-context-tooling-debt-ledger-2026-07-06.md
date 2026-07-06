@@ -334,6 +334,7 @@ flowchart TD
 | 返回影响 | 大上下文下无法知道为什么某块被截断或优先 |
 | 代码位置 | `backend/app/runtime/prompt_builder.py:510` |
 | 一轮修复 | 清债阶段先建立 `ContextSectionCandidate` 和预算 ledger；Transformer 升级阶段由 Activation Router 接管 score |
+| 2026-07-06 落地证据 | `backend/app/runtime/prompt_builder.py` 新增 `ContextSectionCandidate`、`_select_context_section_candidates()` 和 `hive.ccplus.context_section_candidate.v1` 决策记录；`build_dynamic_prompt_suffix()` 改为先收集 memory / runtime / permissions / tools / skills / knowledge / suffix / environment 候选，再由选择器输出最终 suffix，保留原有渲染顺序。`backend/app/kernel/engine.py` 在 cache-hit/cache-cold 两条主 provider-call 路径传入 `dynamic_context_section_ledger`，并写入 `prompt_assembly_manifest["dynamic_context_section_ledger"]` 与 `session_context.metadata["dynamic_context_section_ledger"]`。验证：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_prompt_builder.py::test_dynamic_suffix_records_context_candidate_selection_ledger backend/tests/runtime/test_invoker.py::test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt backend/tests/runtime/test_prompt_builder.py -q` -> `51 passed, 4 warnings`；`ruff check backend/app/runtime/prompt_builder.py backend/app/kernel/engine.py backend/tests/runtime/test_prompt_builder.py backend/tests/runtime/test_invoker.py` -> `All checks passed!` |
 
 ### RTD-16：`RuntimeContext` 还不是真实汇流点
 

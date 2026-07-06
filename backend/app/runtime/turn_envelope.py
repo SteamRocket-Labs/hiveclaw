@@ -339,6 +339,12 @@ def _memory_value_trace(item: Any) -> dict[str, Any]:
     }
 
 
+def _memory_value_content(item: Any) -> str:
+    if isinstance(item, Mapping):
+        return str(item.get("content") or "")
+    return str(getattr(item, "content", "") or "")
+
+
 def build_activation_qkv_trace(
     *,
     activation_query: Any = None,
@@ -698,10 +704,17 @@ def build_context_usage_ledger(
     mcp_server_refs: list[Any] | None = None,
     available_agent_types: list[Any] | tuple[Any, ...] | None = None,
     available_deferred_tools: list[str] | tuple[str, ...] | None = None,
+    loaded_memory_values: list[Any] | tuple[Any, ...] | None = None,
 ) -> dict[str, Any]:
     """Build a CC /context-style usage ledger from the actual prompt inputs."""
     system_tools, mcp_tools = _split_tool_schemas(tools_for_llm)
     deferred_tool_candidates = deferred_tool_candidate_payload(available_deferred_tools)
+    selected_memory_value_text = "\n\n".join(
+        content for item in list(loaded_memory_values or []) if (content := _memory_value_content(item).strip())
+    )
+    selected_memory_value_tokens = _estimate_text_tokens(selected_memory_value_text)
+    rendered_memory_text = "\n\n".join(part for part in (memory_snapshot, retrieval_context) if part)
+    memory_usage_text = rendered_memory_text or selected_memory_value_text
     skill_payload = {
         "catalog": skill_catalog or "",
         "active_skill_names": list(active_skill_names or []),
@@ -719,7 +732,7 @@ def build_context_usage_ledger(
             payload=list(available_agent_types or []),
             item_count=len(available_agent_types or []),
         ),
-        _usage_category("memory_files", text="\n\n".join(part for part in (memory_snapshot, retrieval_context) if part)),
+        _usage_category("memory_files", text=memory_usage_text, item_count=len(loaded_memory_values or [])),
         _usage_category(
             "skills",
             payload=skill_payload,
@@ -751,6 +764,8 @@ def build_context_usage_ledger(
         "model_window_tokens": model_window,
         "used_tokens": used_tokens,
         "free_space_tokens": free_tokens,
+        "selected_memory_value_count": len(loaded_memory_values or []),
+        "selected_memory_value_tokens": selected_memory_value_tokens,
         "deferred_tool_index_tokens": deferred_tool_index_tokens,
         "loaded_tool_schema_tokens": loaded_tool_schema_tokens,
         "categories": categories,
@@ -847,6 +862,7 @@ def build_runtime_prompt_assembly_manifest(
         mcp_server_refs=mcp_server_refs,
         available_agent_types=available_agent_types,
         available_deferred_tools=available_deferred_tools,
+        loaded_memory_values=loaded_memory_values,
     )
     selection_manifest = build_context_selection_manifest(
         frozen_prefix=frozen_prefix,

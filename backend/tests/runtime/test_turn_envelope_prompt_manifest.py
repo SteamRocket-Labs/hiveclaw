@@ -154,6 +154,61 @@ def test_runtime_prompt_manifest_includes_context_usage_ledger():
     )
 
 
+def test_context_usage_ledger_accounts_selected_memory_values_without_double_counting() -> None:
+    from app.memory.types import MemoryItem, MemoryKind
+    from app.runtime.turn_envelope import build_runtime_prompt_assembly_manifest
+
+    selected_value = MemoryItem(
+        kind=MemoryKind.SEMANTIC,
+        content="Selected value body for memory accounting.",
+        score=0.8,
+        source="memory/knowledge/accounting.md",
+    )
+
+    fallback_manifest = build_runtime_prompt_assembly_manifest(
+        turn_id="turn-selected-v",
+        session_id="session-selected-v",
+        frozen_prefix="## Identity\nAgent.",
+        dynamic_suffix="## Activation Hints\nUse memory.",
+        provider_system_prompt="## Identity\nAgent.",
+        provider_dynamic_notice="",
+        context_budget={},
+        model_window=1000,
+        tools_for_llm=[],
+        loaded_memory_values=[selected_value],
+    )
+    fallback_ledger = fallback_manifest["context_usage_ledger"]
+    fallback_categories = {item["name"]: item for item in fallback_ledger["categories"]}
+
+    assert fallback_ledger["selected_memory_value_count"] == 1
+    assert fallback_ledger["selected_memory_value_tokens"] > 0
+    assert fallback_categories["memory_files"]["item_count"] == 1
+    assert fallback_categories["memory_files"]["tokens"] == fallback_ledger["selected_memory_value_tokens"]
+
+    prompt_manifest = build_runtime_prompt_assembly_manifest(
+        turn_id="turn-selected-v",
+        session_id="session-selected-v",
+        frozen_prefix="## Identity\nAgent.",
+        dynamic_suffix="## Memory\nRendered prompt memory.",
+        provider_system_prompt="## Identity\nAgent.",
+        provider_dynamic_notice="## Memory\nRendered prompt memory.",
+        context_budget={},
+        model_window=1000,
+        tools_for_llm=[],
+        memory_snapshot="Rendered prompt memory.",
+        loaded_memory_values=[selected_value],
+    )
+    prompt_ledger = prompt_manifest["context_usage_ledger"]
+    prompt_categories = {item["name"]: item for item in prompt_ledger["categories"]}
+
+    assert prompt_ledger["selected_memory_value_count"] == 1
+    assert prompt_ledger["selected_memory_value_tokens"] > 0
+    assert prompt_categories["memory_files"]["item_count"] == 1
+    assert prompt_categories["memory_files"]["tokens"] < (
+        prompt_ledger["selected_memory_value_tokens"] + fallback_categories["memory_files"]["tokens"]
+    )
+
+
 def test_runtime_prompt_manifest_records_selection_reasons_source_hashes_and_budget_decisions():
     from app.runtime.turn_envelope import build_runtime_prompt_assembly_manifest
 

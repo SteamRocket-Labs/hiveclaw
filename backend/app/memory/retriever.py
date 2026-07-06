@@ -10,11 +10,14 @@ import logging
 import re as _re
 import uuid
 from pathlib import Path
+from typing import Any
 
 from app.memory.activation import ActivationContext, ActivationScorer
 from app.memory.explicit_overlay import search_explicit_overlay_entries
 from app.memory.types import MemoryItem, MemoryKind
+from app.runtime.activation_candidates import ActivationCandidate, ActivationScore, ActivationSurface
 from app.runtime.context_budget import ContextBudget
+from app.runtime.context_candidates import build_context_candidate_ref
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +120,30 @@ class MemoryRetriever:
         if activation_context:
             return self._apply_activation(items, activation_context, agent_id=agent_id)
         return items
+
+    async def retrieve_candidates(
+        self,
+        agent_id: uuid.UUID,
+        query: str,
+        session_id: str | None,
+        tenant_id: str | None,
+        *,
+        limit: int = 50,
+        rerank_model_config: dict | None = None,
+        retrieval_profile: ContextBudget | None = None,
+        activation_context: ActivationContext | None = None,
+    ) -> list[ActivationCandidate]:
+        items = await self.retrieve(
+            agent_id,
+            query,
+            session_id,
+            tenant_id,
+            limit=limit,
+            rerank_model_config=rerank_model_config,
+            retrieval_profile=retrieval_profile,
+            activation_context=activation_context,
+        )
+        return [_memory_item_activation_candidate(item) for item in items]
 
     def _retrieve_knowledge_pages(self, agent_id: uuid.UUID, *, query: str = "", limit: int = 5) -> list[MemoryItem]:
         """Knowledge plane retrieval (spec §4.2): PPR top-k over knowledge/milestones.
@@ -366,6 +393,98 @@ def _parse_session_uuid(session_id: str | None) -> uuid.UUID | None:
     except (ValueError, TypeError) as exc:
         logger.debug("Invalid session UUID %s: %s", session_id, exc)
         return None
+
+
+def _memory_item_activation_candidate(item: MemoryItem) -> ActivationCandidate:
+    activation_keys = item.metadata.get("activation_keys") if isinstance(item.metadata, dict) else None
+    if isinstance(activation_keys, dict):
+        candidate_ref = _dict_payload(activation_keys.get("candidate_ref"))
+        key_features = _dict_payload(activation_keys.get("key_features"))
+        value_pointer = _dict_payload(activation_keys.get("value_pointer"))
+        source_refs = _string_list(activation_keys.get("source_refs")) or _item_source_refs(item)
+    else:
+        source_type = str(item.metadata.get("source_type") or item.kind.value)
+        item_id = str(
+            item.metadata.get("entry_id")
+            or item.metadata.get("page_id")
+            or item.metadata.get("session_id")
+            or item.source
+            or item.kind.value
+        )
+        candidate_ref = build_context_candidate_ref(
+            kind="agent_memory",
+            item_id=item_id,
+            version=source_type,
+            payload={"source": item.source, "content": item.content, "metadata": item.metadata},
+        ).to_manifest()
+        candidate_ref["source_type"] = source_type
+        key_features = {
+            "source_type": [source_type],
+            "memory_kind": [item.kind.value],
+            "category": [str(item.metadata.get("category"))] if item.metadata.get("category") else [],
+        }
+        value_pointer = {
+            "loader": "memory_item",
+            "source": item.source,
+            "entry_id": item.metadata.get("entry_id") or "",
+        }
+        source_refs = _item_source_refs(item)
+
+    preview = _candidate_preview(item.content)
+    reasons = _string_list(item.metadata.get("activation_reasons")) or ("retrieval_score",)
+    return ActivationCandidate(
+        candidate_kind="agent_memory",
+        candidate_ref=candidate_ref,
+        key_features=key_features,
+        value_pointer=value_pointer,
+        surface=ActivationSurface(
+            surface_kind="memory_item",
+            preview=preview,
+            token_estimate=max(1, len(preview) // 4),
+            source_refs=tuple(source_refs),
+        ),
+        source_refs=tuple(source_refs),
+        score=ActivationScore(
+            head_scores={"retrieval": item.score},
+            total_score=item.score,
+            reasons=tuple(reasons),
+            scorer="memory_retriever",
+        ),
+        metadata={
+            **item.metadata,
+            "memory_kind": item.kind.value,
+            "source": item.source,
+        },
+    )
+
+
+def _item_source_refs(item: MemoryItem) -> list[str]:
+    refs = _string_list(item.metadata.get("source_refs"))
+    if refs:
+        return list(refs)
+    source_ref = str(item.metadata.get("source_ref") or "").strip()
+    if source_ref:
+        return [source_ref]
+    return [item.source] if item.source else []
+
+
+def _dict_payload(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _string_list(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list | tuple | set | frozenset):
+        values = list(value)
+    else:
+        values = []
+    return tuple(text for item in values if (text := str(item or "").strip()))
+
+
+def _candidate_preview(content: str, *, max_chars: int = 240) -> str:
+    compact = " ".join(str(content or "").split())
+    return compact if len(compact) <= max_chars else compact[: max(40, max_chars - 3)].rstrip() + "..."
 
 
 def _activation_current_user_id(activation_context: ActivationContext | None) -> str | None:

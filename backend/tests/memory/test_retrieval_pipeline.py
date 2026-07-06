@@ -199,6 +199,32 @@ async def test_rerank_config_is_ignored_reads_run_zero_llm(
 
 
 @pytest.mark.asyncio
+async def test_memory_retriever_projects_agent_memory_activation_candidates(
+    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever
+) -> None:
+    source_ref = "t0://session/s1/segment/seg-1#seq=1..2"
+    _write_overlay_entry(
+        data_root,
+        agent_id,
+        entry_id="ex-candidate",
+        content="Salary planning must be handled with owner-first evidence.",
+        metadata={"category": "constraint", "target_hint": "worker", "source_refs": source_ref},
+    )
+
+    candidates = await retriever.retrieve_candidates(agent_id, "salary planning", session_id=None, tenant_id=None)
+
+    assert len(candidates) == 1
+    manifest = candidates[0].to_manifest()
+    assert manifest["candidate_kind"] == "agent_memory"
+    assert manifest["candidate_ref"]["source_type"] == "explicit_overlay"
+    assert manifest["key_features"]["category"] == ["constraint"]
+    assert manifest["value_pointer"]["loader"] == "explicit_overlay_entry"
+    assert manifest["surface"]["surface_kind"] == "memory_item"
+    assert source_ref in manifest["source_refs"]
+    assert manifest["score"]["head_scores"]["retrieval"] == 0.98
+
+
+@pytest.mark.asyncio
 async def test_activation_context_suppresses_pl3_when_current_user_is_not_owner(
     data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever
 ) -> None:

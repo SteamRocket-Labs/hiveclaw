@@ -77,6 +77,12 @@ async def test_continue_session_goal_starts_goal_continuation_run(monkeypatch):
     assert calls[0]["append_user_message"] is False
     assert calls[0]["extra_metadata"]["goal_id"] == str(goal.id)
     assert "Finish the parity implementation." in calls[0]["content"]
+    decision_entry = goal.metadata_json["goal_decision_ledger"][-1]
+    assert decision_entry["previous_terminal_reason"] is None
+    assert decision_entry["continue_reason"] == "active goal may continue"
+    assert decision_entry["stop_reason"] is None
+    assert decision_entry["status_transition"] == {"from": "active", "to": "active"}
+    assert decision_entry["user_visible_next_action"] == "continuation_scheduled"
     assert db.flushes == 1
 
 
@@ -112,6 +118,51 @@ async def test_continue_session_goal_marks_budget_limited_without_starting_run(m
     assert result["ok"] is False
     assert result["decision"]["next_status"] == "budget_limited"
     assert goal.status == "budget_limited"
+    decision_entry = goal.metadata_json["goal_decision_ledger"][-1]
+    assert decision_entry["stop_reason"] == "token budget exhausted"
+    assert decision_entry["user_visible_next_action"] == "show_budget_limit_prompt"
+    assert db.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_continue_session_goal_records_previous_tool_budget_as_usage_limited(monkeypatch):
+    import app.services.goal_continuation_service as service
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    goal = AgentSessionGoal(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        agent_id=uuid4(),
+        chat_session_id=uuid4(),
+        objective="Continue only when the prior turn made progress.",
+        status="active",
+    )
+    db = _FakeDB()
+
+    async def fail_start_web_chat_run(**_kwargs):
+        raise AssertionError("tool-budget-limited turns must wait for the user")
+
+    monkeypatch.setattr(service, "start_web_chat_run", fail_start_web_chat_run)
+
+    result = await service.continue_session_goal(
+        db=db,
+        agent=SimpleNamespace(id=goal.agent_id, name="Agent", tenant_id=goal.tenant_id),
+        user=SimpleNamespace(id=uuid4()),
+        session=SimpleNamespace(id=goal.chat_session_id),
+        goal=goal,
+        previous_terminal_reason="tool_budget",
+        progress_evidence=["terminal_reason:tool_budget"],
+    )
+
+    assert result["ok"] is False
+    assert result["decision"]["next_status"] == "usage_limited"
+    assert goal.status == "usage_limited"
+    decision_entry = goal.metadata_json["goal_decision_ledger"][-1]
+    assert decision_entry["previous_terminal_reason"] == "tool_budget"
+    assert decision_entry["progress_evidence"] == ["terminal_reason:tool_budget"]
+    assert decision_entry["stop_reason"] == "previous turn reached tool budget"
+    assert decision_entry["status_transition"] == {"from": "active", "to": "usage_limited"}
+    assert decision_entry["user_visible_next_action"] == "ask_user_to_continue"
     assert db.flushes == 1
 
 
@@ -152,7 +203,7 @@ async def test_maybe_continue_session_goal_after_turn_dispatches_active_goal(mon
         user_id=user_id,
         completed_task_type="web_chat_turn",
         completed_status="completed",
-        metadata_json={"ephemeral": False},
+        metadata_json={"ephemeral": False, "terminal_reason": "turn_stop", "artifact_ids": ["artifact-1"]},
     )
 
     assert result["ok"] is True
@@ -165,6 +216,8 @@ async def test_maybe_continue_session_goal_after_turn_dispatches_active_goal(mon
     assert calls[0]["active_run_exists"] is False
     assert calls[0]["pending_user_input"] is False
     assert calls[0]["plan_mode"] is False
+    assert calls[0]["previous_terminal_reason"] == "turn_stop"
+    assert calls[0]["progress_evidence"] == ["terminal_reason:turn_stop", "artifact:artifact-1"]
 
 
 @pytest.mark.asyncio

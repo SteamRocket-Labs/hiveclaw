@@ -18,7 +18,7 @@ from app.models.agent_session_goal import AgentSessionGoal
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.runtime.prompts.goals import ThreadGoalPromptState, budget_limit_prompt, continuation_prompt
-from app.services.session_goal_runtime import GoalStatus, SessionGoal, should_continue_goal
+from app.services.session_goal_runtime import GoalStatus, SessionGoal, build_goal_decision_entry, should_continue_goal
 from app.services.web_chat_runtime import start_web_chat_run
 
 
@@ -51,6 +51,35 @@ def _continuation_prompt(goal: AgentSessionGoal) -> str:
     )
 
 
+def _progress_evidence_from_metadata(metadata: dict[str, Any]) -> list[str]:
+    evidence: list[str] = []
+    terminal_reason = str(metadata.get("terminal_reason") or "").strip()
+    if terminal_reason:
+        evidence.append(f"terminal_reason:{terminal_reason}")
+    for key, prefix in (
+        ("artifact_ids", "artifact"),
+        ("artifact_paths", "artifact_path"),
+        ("file_change_paths", "file_change"),
+        ("declared_artifact_paths", "declared_artifact"),
+    ):
+        value = metadata.get(key)
+        if isinstance(value, list | tuple):
+            evidence.extend(f"{prefix}:{item}" for item in value if str(item).strip())
+    interactive_pause = str(metadata.get("interactive_pause") or "").strip()
+    if interactive_pause:
+        evidence.append(f"interactive_pause:{interactive_pause}")
+    return evidence
+
+
+def _append_goal_decision_entry(metadata: dict[str, Any], entry: dict[str, Any], *, limit: int = 100) -> None:
+    ledger = [dict(item) for item in metadata.get("goal_decision_ledger", []) if isinstance(item, dict)]
+    ledger.append(dict(entry))
+    if len(ledger) > limit:
+        del ledger[: len(ledger) - limit]
+    metadata["goal_decision_ledger"] = ledger
+    metadata["last_goal_decision_entry"] = dict(entry)
+
+
 async def continue_session_goal(
     *,
     db: AsyncSession,
@@ -62,6 +91,8 @@ async def continue_session_goal(
     pending_user_input: bool = False,
     active_run_exists: bool = False,
     ephemeral: bool = False,
+    previous_terminal_reason: str | None = None,
+    progress_evidence: list[str] | None = None,
 ) -> dict[str, Any]:
     runtime_goal = _goal_to_runtime_model(goal)
     decision = should_continue_goal(
@@ -70,9 +101,17 @@ async def continue_session_goal(
         pending_user_input=pending_user_input,
         active_run_exists=active_run_exists,
         ephemeral=ephemeral,
+        previous_terminal_reason=previous_terminal_reason,
     )
     decision_payload = decision.model_dump(mode="json")
     metadata = dict(goal.metadata_json or {})
+    goal_decision_entry = build_goal_decision_entry(
+        runtime_goal,
+        decision,
+        previous_terminal_reason=previous_terminal_reason,
+        progress_evidence=progress_evidence,
+    ).model_dump(mode="json", by_alias=True)
+    _append_goal_decision_entry(metadata, goal_decision_entry)
     metadata["last_continuation_decision"] = {
         **decision_payload,
         "decided_at": datetime.now(timezone.utc).isoformat(),
@@ -190,4 +229,6 @@ async def maybe_continue_session_goal_after_turn(
         pending_user_input=bool(metadata.get("pending_user_input") or metadata.get("awaiting_user_input")),
         active_run_exists=False,
         ephemeral=bool(metadata.get("ephemeral") or metadata.get("is_ephemeral")),
+        previous_terminal_reason=str(metadata.get("terminal_reason") or "") or None,
+        progress_evidence=_progress_evidence_from_metadata(metadata),
     )

@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GoalStatus(StrEnum):
@@ -45,6 +45,89 @@ class GoalContinuationDecision(BaseModel):
     next_status: GoalStatus | None = None
 
 
+class GoalDecisionEntry(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_: str = Field(default="hive.ccplus.goal_decision.v1", alias="schema")
+    previous_terminal_reason: str | None = None
+    progress_evidence: list[str] = Field(default_factory=list)
+    continue_reason: str | None = None
+    stop_reason: str | None = None
+    status_transition: dict[str, str | None]
+    user_visible_next_action: str
+
+
+def _previous_terminal_decision(previous_terminal_reason: str | None) -> GoalContinuationDecision | None:
+    reason = str(previous_terminal_reason or "").strip()
+    if not reason or reason == "turn_stop":
+        return None
+    if reason == "tool_budget":
+        return GoalContinuationDecision(
+            continue_goal=False,
+            reason="previous turn reached tool budget",
+            next_status=GoalStatus.USAGE_LIMITED,
+        )
+    if reason == "loop_guard":
+        return GoalContinuationDecision(
+            continue_goal=False,
+            reason="previous turn was blocked by loop guard",
+            next_status=GoalStatus.BLOCKED,
+        )
+    if reason == "clarification_required":
+        return GoalContinuationDecision(
+            continue_goal=False,
+            reason="previous turn requires user clarification",
+            next_status=GoalStatus.PAUSED,
+        )
+    if reason == "user_cancel":
+        return GoalContinuationDecision(
+            continue_goal=False,
+            reason="previous turn was cancelled by user",
+            next_status=GoalStatus.CANCELLED,
+        )
+    if reason in {"provider_error", "turn_abort", "persistence_error"}:
+        return GoalContinuationDecision(
+            continue_goal=False,
+            reason=f"previous turn ended with {reason}",
+            next_status=GoalStatus.BLOCKED,
+        )
+    return None
+
+
+def _user_visible_next_action(decision: GoalContinuationDecision) -> str:
+    if decision.continue_goal:
+        return "continuation_scheduled"
+    if decision.next_status == GoalStatus.BUDGET_LIMITED:
+        return "show_budget_limit_prompt"
+    if decision.next_status == GoalStatus.USAGE_LIMITED:
+        return "ask_user_to_continue"
+    if decision.next_status == GoalStatus.BLOCKED:
+        return "show_blocked_reason"
+    if decision.next_status == GoalStatus.PAUSED:
+        return "wait_for_user_input"
+    if decision.next_status == GoalStatus.CANCELLED:
+        return "stopped_by_user"
+    return "no_action"
+
+
+def build_goal_decision_entry(
+    goal: SessionGoal,
+    decision: GoalContinuationDecision,
+    *,
+    previous_terminal_reason: str | None = None,
+    progress_evidence: list[str] | None = None,
+) -> GoalDecisionEntry:
+    next_status = decision.next_status or goal.status
+    return GoalDecisionEntry(
+        previous_terminal_reason=previous_terminal_reason,
+        progress_evidence=list(progress_evidence or []),
+        continue_reason=decision.reason if decision.continue_goal else None,
+        stop_reason=None if decision.continue_goal else decision.reason,
+        status_transition={"from": goal.status.value, "to": next_status.value},
+        user_visible_next_action=_user_visible_next_action(decision),
+    )
+
+
 def should_continue_goal(
     goal: SessionGoal,
     *,
@@ -52,7 +135,11 @@ def should_continue_goal(
     pending_user_input: bool,
     active_run_exists: bool,
     ephemeral: bool = False,
+    previous_terminal_reason: str | None = None,
 ) -> GoalContinuationDecision:
+    previous_decision = _previous_terminal_decision(previous_terminal_reason)
+    if previous_decision is not None:
+        return previous_decision
     if goal.status != GoalStatus.ACTIVE:
         return GoalContinuationDecision(continue_goal=False, reason=f"goal status is {goal.status}")
     if plan_mode:

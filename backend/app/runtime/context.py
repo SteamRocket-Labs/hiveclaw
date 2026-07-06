@@ -39,6 +39,20 @@ def _list_payload(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list | tuple) else []
 
 
+def _dict_list_payload(value: Any) -> list[dict[str, Any]]:
+    return [dict(item) for item in _list_payload(value) if isinstance(item, dict)]
+
+
+def _string_list_payload(value: Any) -> list[str]:
+    return [text for item in _list_payload(value) if (text := str(item or "").strip())]
+
+
+def _manifest_payload(value: Any) -> dict[str, Any]:
+    if hasattr(value, "to_manifest"):
+        value = value.to_manifest()
+    return _dict_payload(value)
+
+
 @dataclass(slots=True)
 class RuntimeAssemblyState:
     """Serializable runtime assembly ledger for one invocation/session.
@@ -58,6 +72,13 @@ class RuntimeAssemblyState:
     agent_cycle_decision_ledger: list[dict[str, Any]] = field(default_factory=list)
     runtime_reminder_candidates: list[dict[str, Any]] = field(default_factory=list)
     codex_optimization_ledger: dict[str, Any] = field(default_factory=dict)
+    activation_query: dict[str, Any] = field(default_factory=dict)
+    activation_lanes: list[str] = field(default_factory=list)
+    activation_parse_trace: list[dict[str, Any]] = field(default_factory=list)
+    activation_candidates: list[dict[str, Any]] = field(default_factory=list)
+    activation_router_output: dict[str, Any] = field(default_factory=dict)
+    top_activation_candidates: list[dict[str, Any]] = field(default_factory=list)
+    suppressed_activation_candidates: list[dict[str, Any]] = field(default_factory=list)
     available_deferred_tool_candidates: list[Any] = field(default_factory=list)
     available_deferred_tools: list[str] = field(default_factory=list)
     skill_catalog_ranking: list[dict[str, Any]] = field(default_factory=list)
@@ -86,6 +107,13 @@ class RuntimeAssemblyState:
                 dict(item) for item in _list_payload(payload.get("runtime_reminder_candidates"))
             ],
             codex_optimization_ledger=_dict_payload(payload.get("codex_optimization_ledger")),
+            activation_query=_dict_payload(payload.get("activation_query")),
+            activation_lanes=_string_list_payload(payload.get("activation_lanes")),
+            activation_parse_trace=_dict_list_payload(payload.get("activation_parse_trace")),
+            activation_candidates=_dict_list_payload(payload.get("activation_candidates")),
+            activation_router_output=_dict_payload(payload.get("activation_router_output")),
+            top_activation_candidates=_dict_list_payload(payload.get("top_activation_candidates")),
+            suppressed_activation_candidates=_dict_list_payload(payload.get("suppressed_activation_candidates")),
             available_deferred_tool_candidates=_list_payload(payload.get("available_deferred_tool_candidates")),
             available_deferred_tools=[
                 str(item) for item in _list_payload(payload.get("available_deferred_tools")) if str(item).strip()
@@ -106,6 +134,13 @@ class RuntimeAssemblyState:
             "agent_cycle_decision_ledger": [dict(item) for item in self.agent_cycle_decision_ledger],
             "runtime_reminder_candidates": [dict(item) for item in self.runtime_reminder_candidates],
             "codex_optimization_ledger": dict(self.codex_optimization_ledger),
+            "activation_query": dict(self.activation_query),
+            "activation_lanes": list(self.activation_lanes),
+            "activation_parse_trace": [dict(item) for item in self.activation_parse_trace],
+            "activation_candidates": [dict(item) for item in self.activation_candidates],
+            "activation_router_output": dict(self.activation_router_output),
+            "top_activation_candidates": [dict(item) for item in self.top_activation_candidates],
+            "suppressed_activation_candidates": [dict(item) for item in self.suppressed_activation_candidates],
             "available_deferred_tool_candidates": list(self.available_deferred_tool_candidates),
             "available_deferred_tools": list(self.available_deferred_tools),
             "skill_catalog_ranking": [dict(item) for item in self.skill_catalog_ranking],
@@ -135,6 +170,22 @@ class RuntimeAssemblyState:
             metadata["runtime_reminder_candidates"] = [dict(item) for item in self.runtime_reminder_candidates]
         if self.codex_optimization_ledger:
             metadata["codex_optimization_ledger"] = dict(self.codex_optimization_ledger)
+        if self.activation_query:
+            metadata["activation_query"] = dict(self.activation_query)
+        if self.activation_lanes:
+            metadata["activation_lanes"] = list(self.activation_lanes)
+        if self.activation_parse_trace:
+            metadata["activation_parse_trace"] = [dict(item) for item in self.activation_parse_trace]
+        if self.activation_candidates:
+            metadata["activation_candidates"] = [dict(item) for item in self.activation_candidates]
+        if self.activation_router_output:
+            metadata["activation_router_output"] = dict(self.activation_router_output)
+        if self.top_activation_candidates:
+            metadata["top_activation_candidates"] = [dict(item) for item in self.top_activation_candidates]
+        if self.suppressed_activation_candidates:
+            metadata["suppressed_activation_candidates"] = [
+                dict(item) for item in self.suppressed_activation_candidates
+            ]
         if self.available_deferred_tool_candidates:
             metadata["available_deferred_tool_candidates"] = list(self.available_deferred_tool_candidates)
         if self.available_deferred_tools:
@@ -190,6 +241,24 @@ class RuntimeAssemblyState:
 
     def record_codex_optimization_ledger(self, ledger: dict[str, Any]) -> None:
         self.codex_optimization_ledger = dict(ledger)
+        self.persist()
+
+    def record_activation_query(self, query: Any) -> None:
+        manifest = _manifest_payload(query)
+        self.activation_query = manifest
+        self.activation_lanes = _string_list_payload(manifest.get("candidate_lanes"))
+        self.activation_parse_trace = _dict_list_payload(manifest.get("parse_trace"))
+        self.persist()
+
+    def record_activation_candidates(self, candidates: list[Any] | tuple[Any, ...], *, limit: int = 200) -> None:
+        entries = [_manifest_payload(candidate) for candidate in candidates]
+        self.activation_candidates = entries[-limit:]
+        self.persist()
+
+    def record_activation_router_output(self, output: dict[str, Any]) -> None:
+        self.activation_router_output = dict(output)
+        self.top_activation_candidates = _dict_list_payload(output.get("top_activation_candidates"))
+        self.suppressed_activation_candidates = _dict_list_payload(output.get("suppressed_activation_candidates"))
         self.persist()
 
     def record_deferred_tools(self, candidates: list[Any] | tuple[Any, ...]) -> None:
@@ -250,6 +319,22 @@ def ensure_runtime_assembly_state(session: SessionContext | None) -> RuntimeAsse
         ]
     if not state.codex_optimization_ledger:
         state.codex_optimization_ledger = _dict_payload(session.metadata.get("codex_optimization_ledger"))
+    if not state.activation_query:
+        state.activation_query = _dict_payload(session.metadata.get("activation_query"))
+    if not state.activation_lanes:
+        state.activation_lanes = _string_list_payload(session.metadata.get("activation_lanes"))
+    if not state.activation_parse_trace:
+        state.activation_parse_trace = _dict_list_payload(session.metadata.get("activation_parse_trace"))
+    if not state.activation_candidates:
+        state.activation_candidates = _dict_list_payload(session.metadata.get("activation_candidates"))
+    if not state.activation_router_output:
+        state.activation_router_output = _dict_payload(session.metadata.get("activation_router_output"))
+    if not state.top_activation_candidates:
+        state.top_activation_candidates = _dict_list_payload(session.metadata.get("top_activation_candidates"))
+    if not state.suppressed_activation_candidates:
+        state.suppressed_activation_candidates = _dict_list_payload(
+            session.metadata.get("suppressed_activation_candidates")
+        )
     if not state.available_deferred_tool_candidates:
         state.available_deferred_tool_candidates = _list_payload(
             session.metadata.get("available_deferred_tool_candidates")

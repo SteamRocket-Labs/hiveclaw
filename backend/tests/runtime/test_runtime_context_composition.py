@@ -143,6 +143,47 @@ def test_runtime_context_attaches_runtime_assembly_state() -> None:
     assert session.metadata["dynamic_context_section_ledger"] == {"schema": "sections", "sections": []}
 
 
+def test_runtime_assembly_state_mirrors_activation_query_candidates_and_router_output() -> None:
+    from app.runtime.activation_candidates import ActivationCandidate, ActivationScore
+    from app.runtime.activation_query import ActivationQuery
+
+    session = SessionContext(session_id="activation-assembly")
+    state = ensure_runtime_assembly_state(session)
+    query = ActivationQuery(
+        raw_prompt="Recall runtime memory decisions.",
+        session_id="activation-assembly",
+        turn_id="turn-1",
+        intent_id="intent-1",
+        candidate_lanes=("memory", "skill"),
+        parse_trace=[{"source": "mechanical", "field": "candidate_lanes"}],
+    )
+    candidate = ActivationCandidate(
+        candidate_kind="agent_memory",
+        candidate_ref={"candidate_id": "agent_memory:t3:v1/abcdef", "kind": "agent_memory"},
+        score=ActivationScore(head_scores={"semantic": 0.9}, reasons=("semantic_match",)),
+    )
+    router_output = {
+        "schema": "hive.ccplus.activation_router_output.v1",
+        "query_id": query.query_id,
+        "top_activation_candidates": [candidate.to_manifest()],
+        "suppressed_activation_candidates": [],
+    }
+
+    state.record_activation_query(query)
+    state.record_activation_candidates([candidate.to_manifest()])
+    state.record_activation_router_output(router_output)
+
+    metadata_state = session.metadata["runtime_assembly_state"]
+    assert session.metadata["activation_query"] == query.to_manifest()
+    assert session.metadata["activation_lanes"] == ["memory", "skill"]
+    assert session.metadata["activation_parse_trace"] == [{"source": "mechanical", "field": "candidate_lanes"}]
+    assert session.metadata["activation_candidates"] == [candidate.to_manifest()]
+    assert session.metadata["activation_router_output"] == router_output
+    assert metadata_state["activation_query"] == query.to_manifest()
+    assert metadata_state["activation_candidates"] == [candidate.to_manifest()]
+    assert metadata_state["top_activation_candidates"] == [candidate.to_manifest()]
+
+
 def test_tool_result_ledger_mirrors_into_runtime_assembly_state() -> None:
     from app.runtime.tool_result_ledger import append_tool_result_ledger_entry
 

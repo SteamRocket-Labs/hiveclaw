@@ -50,6 +50,44 @@ class _SequenceCompletionDB(_DB):
         return _ScalarOne(self.values.pop(0))
 
 
+def test_agent_team_decision_entry_summarizes_members_and_lead_actions():
+    from app.services.agent_team_runtime_service import build_agent_team_decision_entry
+
+    team_id = uuid4()
+    team = SimpleNamespace(
+        id=team_id,
+        name="Research Team",
+        status="active",
+        metadata_json={"open_tasks": [{"id": "todo-1", "title": "Merge findings"}]},
+    )
+    members = [
+        SimpleNamespace(
+            id=uuid4(),
+            member_name="researcher",
+            status="idle",
+            runtime_task_id=uuid4(),
+            metadata_json={"last_turn_status": "completed", "summary": "report ready"},
+        ),
+        SimpleNamespace(
+            id=uuid4(),
+            member_name="critic",
+            status="idle",
+            runtime_task_id=uuid4(),
+            metadata_json={"last_turn_status": "failed", "summary": "verification failed"},
+        ),
+    ]
+
+    entry = build_agent_team_decision_entry(team, members)
+
+    assert entry["schema"] == "hive.ccplus.agent_team_decision.v1"
+    assert entry["team_id"] == str(team_id)
+    assert entry["team_outcome"] == "failed"
+    assert entry["open_tasks"] == [{"id": "todo-1", "title": "Merge findings"}]
+    assert "review_failed_members" in entry["lead_required_actions"]
+    assert [member["member_name"] for member in entry["member_statuses"]] == ["researcher", "critic"]
+    assert entry["member_statuses"][1]["last_turn_status"] == "failed"
+
+
 @pytest.mark.asyncio
 async def test_team_create_runtime_persists_container_without_teammate_sessions(monkeypatch):
     from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
@@ -352,6 +390,8 @@ async def test_team_member_completion_projects_to_member_metadata_and_event():
     idle_event = next(item for item in db.added if isinstance(item, AgentTeamEvent) and item.event_type == "member_idle")
     assert idle_event.receiver_member_id == member.id
     assert idle_event.payload_json["summary"] == "review passed"
+    assert payload["agent_team_decision_entry"]["team_outcome"] == "idle"
+    assert payload["agent_team_decision_entry"]["member_statuses"][0]["member_name"] == "critic"
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ from app.models.user import User
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_team_contract import teammate_creation_discovery
 from app.services.agent_team_runtime_service import (
+    build_agent_team_decision_entry,
     create_agent_team_runtime,
     message_agent_team_members_runtime,
 )
@@ -84,6 +85,7 @@ def _member_payload(member: AgentTeamMember) -> dict:
 
 
 def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict:
+    decision_entry = build_agent_team_decision_entry(team, list(members))
     return {
         "id": str(team.id),
         "name": team.name,
@@ -92,6 +94,9 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict:
         "lead_agent_id": str(team.lead_agent_id),
         "parent_session_id": str(team.parent_session_id),
         "members": [_member_payload(member) for member in members],
+        "agent_team_decision_entry": decision_entry,
+        "team_outcome": decision_entry["team_outcome"],
+        "lead_required_actions": decision_entry["lead_required_actions"],
         **teammate_creation_discovery(team.name),
     }
 
@@ -537,7 +542,22 @@ async def close_agent_team(
     for member in members:
         member.status = "closed"
         member.closed_at = now
-    db.add(AgentTeamEvent(team_id=team.id, event_type="team_closed", payload_json={"closed_at": now.isoformat()}))
+    close_summary_ref = f"agent_team_close:{team.id}"
+    team_metadata = dict(team.metadata_json or {})
+    team_metadata["close_summary_ref"] = close_summary_ref
+    decision_entry = build_agent_team_decision_entry(team, members, close_summary_ref=close_summary_ref)
+    team_metadata["agent_team_decision_entry"] = decision_entry
+    team.metadata_json = team_metadata
+    db.add(
+        AgentTeamEvent(
+            team_id=team.id,
+            event_type="team_closed",
+            payload_json={
+                "closed_at": now.isoformat(),
+                "agent_team_decision_entry": decision_entry,
+            },
+        )
+    )
     await emit_hook(
         HookEvent.TEAM_CLOSED,
         agent_id=agent_id,
@@ -601,6 +621,7 @@ async def close_agent_team(
             "team_name": team.name,
             "member_outputs": member_outputs,
             "consolidation_plan": consolidation_plan,
+            "agent_team_decision_entry": decision_entry,
         },
     )
     await db.flush()

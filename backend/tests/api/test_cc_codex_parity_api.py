@@ -1392,6 +1392,8 @@ async def test_agent_teams_api_lists_enters_and_closes_team(monkeypatch):
     assert member.status == "closed"
     assert closed["consolidation_plan"]["merge_mode"] == "summary_with_t0_refs"
     assert closed["consolidation_plan"]["member_summaries"][0]["t0_refs"] == ["t0://critic/1"]
+    assert closed["agent_team_decision_entry"]["team_outcome"] == "closed"
+    assert closed["agent_team_decision_entry"]["close_summary_ref"] == f"agent_team_close:{team_id}"
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,7 @@ from app.runtime.ccplus_contracts import (
 )
 from app.runtime.turn_envelope import build_prompt_assembly_manifest, build_turn_envelope
 from app.services.agent_team_contract import teammate_creation_discovery
+from app.services.agent_team_runtime_service import build_agent_team_decision_entry
 from app.services.enterprise_approval_visibility import is_visible_enterprise_approval
 from app.services.session_command_runtime import _checkpoint_payloads, _event_payload, _load_events
 from app.services.session_index import read_session_index
@@ -342,6 +343,7 @@ def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:
 
 
 def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict[str, Any]:
+    decision_entry = build_agent_team_decision_entry(team, list(members))
     return {
         "id": str(team.id),
         "name": team.name,
@@ -351,6 +353,9 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict[str, 
         "parent_session_id": str(team.parent_session_id),
         "member_count": len(members),
         "members": [_team_member_payload(member) for member in members],
+        "agent_team_decision_entry": decision_entry,
+        "team_outcome": decision_entry["team_outcome"],
+        "lead_required_actions": decision_entry["lead_required_actions"],
         "created_at": _iso(team.created_at),
         "closed_at": _iso(team.closed_at),
         **teammate_creation_discovery(team.name),
@@ -369,6 +374,12 @@ def _agent_team_section_item(team: dict[str, Any]) -> dict[str, Any]:
         member_item["runtime_kind"] = "team_member"
         member_item["enterable"] = bool(member_item.get("chat_session_id"))
         item["members"].append(member_item)
+    decision_entry = item.get("agent_team_decision_entry")
+    if not isinstance(decision_entry, dict):
+        decision_entry = build_agent_team_decision_entry(item, list(item["members"]))
+    item["agent_team_decision_entry"] = decision_entry
+    item["team_outcome"] = decision_entry["team_outcome"]
+    item["lead_required_actions"] = decision_entry["lead_required_actions"]
     item["running_count"] = sum(1 for member in item["members"] if _completion_state(member.get("status")) == "running")
     item["terminal_count"] = sum(
         1 for member in item["members"] if _completion_state(member.get("status")) in {"completed", "failed"}

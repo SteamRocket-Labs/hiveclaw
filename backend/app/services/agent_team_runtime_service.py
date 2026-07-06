@@ -113,7 +113,97 @@ def _teammate_lifecycle_payload() -> dict[str, Any]:
     }
 
 
+def _object_field(value: Any, key: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _metadata_dict(value: Any) -> dict[str, Any]:
+    metadata = _object_field(value, "metadata_json", {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _list_value(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _effective_member_turn_status(member: Any) -> str:
+    metadata = _metadata_dict(member)
+    return str(metadata.get("last_turn_status") or metadata.get("status") or _object_field(member, "status", "")).lower()
+
+
+def build_agent_team_decision_entry(
+    team: Any,
+    members: list[Any],
+    *,
+    close_summary_ref: str | None = None,
+) -> dict[str, Any]:
+    team_metadata = _metadata_dict(team)
+    member_statuses: list[dict[str, Any]] = []
+    open_tasks = list(_list_value(team_metadata.get("open_tasks")))
+    has_running = False
+    has_failed = False
+    all_idle_or_done = bool(members)
+    for member in members:
+        metadata = _metadata_dict(member)
+        runtime_status = str(_object_field(member, "status", "") or "").lower()
+        last_turn_status = _effective_member_turn_status(member)
+        effective_status = last_turn_status or runtime_status
+        if runtime_status in {"running", "queued", "started"} or effective_status in {"running", "queued", "started"}:
+            has_running = True
+        if effective_status in {"failed", "killed", "cancelled", "canceled"}:
+            has_failed = True
+        if runtime_status not in {"idle", "completed", "closed"} and effective_status not in {"completed", "closed"}:
+            all_idle_or_done = False
+        open_tasks.extend(_list_value(metadata.get("open_tasks")))
+        member_statuses.append(
+            {
+                "member_id": str(_object_field(member, "id", "")),
+                "member_name": str(_object_field(member, "member_name", "")),
+                "runtime_task_id": str(_object_field(member, "runtime_task_id", "") or "") or None,
+                "runtime_status": runtime_status or None,
+                "last_turn_status": last_turn_status or None,
+                "summary": str(metadata.get("summary") or ""),
+            }
+        )
+
+    team_status = str(_object_field(team, "status", "") or "active").lower()
+    if team_status == "closed":
+        team_outcome = "closed"
+    elif has_failed:
+        team_outcome = "failed"
+    elif has_running:
+        team_outcome = "running"
+    elif all_idle_or_done:
+        team_outcome = "idle"
+    else:
+        team_outcome = team_status or "active"
+
+    lead_required_actions: list[str] = []
+    if team_outcome == "running":
+        lead_required_actions.append("wait_for_members")
+    if team_outcome == "failed":
+        lead_required_actions.append("review_failed_members")
+    if open_tasks:
+        lead_required_actions.append("resolve_open_tasks")
+    if team_outcome == "idle" and not lead_required_actions:
+        lead_required_actions.append("close_or_continue_team")
+
+    return {
+        "schema": "hive.ccplus.agent_team_decision.v1",
+        "team_id": str(_object_field(team, "id", "")),
+        "team_name": str(_object_field(team, "name", "")),
+        "member_statuses": member_statuses,
+        "open_tasks": open_tasks,
+        "lead_required_actions": lead_required_actions,
+        "team_outcome": team_outcome,
+        "close_summary_ref": close_summary_ref or team_metadata.get("close_summary_ref"),
+    }
+
+
 def team_payload(team: AgentTeam, members: list[AgentTeamMember], *, requires_api_persist: bool = False) -> dict[str, Any]:
+    decision_entry = build_agent_team_decision_entry(team, list(members))
     return {
         "requires_api_persist": requires_api_persist,
         "id": str(team.id),
@@ -123,6 +213,9 @@ def team_payload(team: AgentTeam, members: list[AgentTeamMember], *, requires_ap
         "lead_agent_id": str(team.lead_agent_id),
         "parent_session_id": str(team.parent_session_id),
         "members": [_team_member_payload(member) for member in members],
+        "agent_team_decision_entry": decision_entry,
+        "team_outcome": decision_entry["team_outcome"],
+        "lead_required_actions": decision_entry["lead_required_actions"],
         "team_task_list": _team_task_list_payload(team.name),
         "teammate_lifecycle": _teammate_lifecycle_payload(),
         **teammate_creation_discovery(team.name),
@@ -523,6 +616,7 @@ async def _wake_parent_session_from_team_member_completion(
             "member_name": member.member_name,
             "runtime_task_id": task_id,
             "runtime_task_type": "team_member",
+            "agent_team_decision_entry": metadata.get("agent_team_decision_entry"),
         },
     )
 
@@ -577,6 +671,12 @@ async def project_agent_team_member_completion(
     metadata["t0_refs"] = t0_refs
     member.status = "idle"
     member.metadata_json = metadata
+    decision_entry = build_agent_team_decision_entry(
+        {"id": member.team_id, "name": "", "status": "active", "metadata_json": {}},
+        [member],
+    )
+    metadata["agent_team_decision_entry"] = decision_entry
+    member.metadata_json = metadata
 
     payload = {
         "status": terminal_status,
@@ -586,6 +686,7 @@ async def project_agent_team_member_completion(
         "artifact_paths": artifact_paths,
         "artifacts": artifacts,
         "t0_refs": t0_refs,
+        "agent_team_decision_entry": decision_entry,
     }
     db.add(
         AgentTeamEvent(

@@ -649,6 +649,8 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
         "raw",
     ]
     assert sections["agent_teams"]["items"][0]["name"] == "ABS Team"
+    assert sections["agent_teams"]["items"][0]["team_outcome"] == "running"
+    assert sections["agent_teams"]["items"][0]["lead_required_actions"] == ["wait_for_members"]
     assert sections["agent_teams"]["items"][0]["members"][0]["runtime_kind"] == "team_member"
     assert sections["subagents"]["items"][0]["label"] == "critic"
     assert sections["background"]["items"][0]["label"] == "nightly sweep"

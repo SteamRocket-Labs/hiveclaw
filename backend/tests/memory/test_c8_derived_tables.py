@@ -253,6 +253,38 @@ lifecycle: active
     assert ("agent_memory", "t3_knowledge", "tag", "memory") in rows
 
 
+def test_activation_key_query_helpers_return_candidate_refs(tmp_path: Path) -> None:
+    from app.memory.reference_index import candidate_refs_for_keys, query_activation_keys, rebuild_reference_index
+
+    agent_id = uuid4()
+    package_id = _write_labeled_package(tmp_path, agent_id, package_id="t2pkg-query-keys")
+    short_ref = package_id.replace("t2pkg-", "t2-")
+    rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
+
+    rows = query_activation_keys(
+        agent_id=agent_id,
+        data_root=tmp_path,
+        scope="t2_package",
+        key_axis="risk_flag",
+        key_value="privacy_sensitive",
+    )
+
+    assert rows
+    assert rows[0]["candidate_ref"] == f"agent_memory:t2_package:{short_ref}"
+    assert rows[0]["candidate_kind"] == "agent_memory"
+    assert rows[0]["source_ref"] == short_ref
+    assert rows[0]["confidence"] == 0.55
+
+    refs = candidate_refs_for_keys(
+        agent_id=agent_id,
+        data_root=tmp_path,
+        scope="t2_package",
+        keys={"risk_flag": ["privacy_sensitive"], "system": ["memory"]},
+    )
+
+    assert refs == [f"agent_memory:t2_package:{short_ref}"]
+
+
 def test_minimal_labels_produce_only_present_axes(tmp_path: Path) -> None:
     """Missing axes stay absent — no guessed rows (evidence gap discipline)."""
     from app.memory.reference_index import rebuild_reference_index

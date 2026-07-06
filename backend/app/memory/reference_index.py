@@ -23,6 +23,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from app.memory.explicit_overlay import build_explicit_overlay_activation_keys, load_explicit_overlay_entries
 from app.memory.md_store import extract_t3_xml_blocks, parse_t3_xml_block
@@ -179,6 +180,103 @@ def reference_counts(*, agent_id: uuid.UUID | str, data_root: Path | str) -> dic
     return {str(ref): int(count) for ref, count in rows}
 
 
+def query_activation_keys(
+    *,
+    agent_id: uuid.UUID | str,
+    data_root: Path | str,
+    candidate_kind: str | None = None,
+    scope: str | None = None,
+    key_axis: str | None = None,
+    key_value: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    db_path = _ensure_index(agent_id=agent_id, data_root=data_root)
+    columns = "candidate_ref, candidate_kind, scope, key_axis, key_value, source_ref, confidence, created_at"
+    clauses: list[str] = []
+    params: list[Any] = []
+    for column, value in (
+        ("candidate_kind", candidate_kind),
+        ("scope", scope),
+        ("key_axis", key_axis),
+        ("key_value", key_value),
+    ):
+        cleaned = str(value or "").strip()
+        if cleaned:
+            clauses.append(f"{column} = ?")
+            params.append(cleaned)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    sql = (
+        f"SELECT {columns} FROM activation_keys{where} "
+        "ORDER BY confidence DESC, created_at DESC, candidate_ref ASC LIMIT ?"
+    )
+    params.append(max(1, int(limit or 100)))
+    try:
+        with sqlite3.connect(db_path) as conn:
+            if not _table_exists(conn, "activation_keys"):
+                raise sqlite3.OperationalError("no such table: activation_keys")
+            rows = conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "activation_keys" not in str(exc):
+            raise
+        rebuild_reference_index(agent_id=agent_id, data_root=data_root)
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "candidate_ref": str(row[0]),
+            "candidate_kind": str(row[1]),
+            "scope": str(row[2]),
+            "key_axis": str(row[3]),
+            "key_value": str(row[4]),
+            "source_ref": str(row[5]),
+            "confidence": float(row[6]),
+            "created_at": str(row[7] or ""),
+        }
+        for row in rows
+    ]
+
+
+def candidate_refs_for_keys(
+    *,
+    agent_id: uuid.UUID | str,
+    data_root: Path | str,
+    keys: dict[str, str | list[str] | tuple[str, ...] | set[str] | frozenset[str]],
+    scope: str | None = None,
+    candidate_kind: str | None = None,
+    limit: int = 50,
+) -> list[str]:
+    groups: list[tuple[str, set[str]]] = []
+    for axis, raw_values in keys.items():
+        if isinstance(raw_values, str):
+            values = {raw_values.strip()} if raw_values.strip() else set()
+        else:
+            values = {str(value).strip() for value in raw_values if str(value).strip()}
+        cleaned_axis = str(axis or "").strip()
+        if cleaned_axis and values:
+            groups.append((cleaned_axis, values))
+    if not groups:
+        return []
+    rows = query_activation_keys(
+        agent_id=agent_id,
+        data_root=data_root,
+        candidate_kind=candidate_kind,
+        scope=scope,
+        limit=max(1000, int(limit or 50) * 20),
+    )
+    matched_groups: dict[str, set[int]] = {}
+    confidence: dict[str, float] = {}
+    for row in rows:
+        for index, (axis, values) in enumerate(groups):
+            if row["key_axis"] == axis and row["key_value"] in values:
+                ref = row["candidate_ref"]
+                matched_groups.setdefault(ref, set()).add(index)
+                confidence[ref] = max(confidence.get(ref, 0.0), float(row["confidence"]))
+    required = len(groups)
+    refs = [ref for ref, indexes in matched_groups.items() if len(indexes) == required]
+    refs.sort(key=lambda ref: (-confidence.get(ref, 0.0), ref))
+    return refs[: max(1, int(limit or 50))]
+
+
 def resolve_ref(*, agent_id: uuid.UUID | str, data_root: Path | str, ref: str) -> ResolvedRef | None:
     db_path = _ensure_index(agent_id=agent_id, data_root=data_root)
     with sqlite3.connect(db_path) as conn:
@@ -307,6 +405,11 @@ def _ensure_index(*, agent_id: uuid.UUID | str, data_root: Path | str) -> Path:
     if not db_path.exists():
         rebuild_reference_index(agent_id=agent_id, data_root=data_root)
     return db_path
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)).fetchone()
+    return row is not None
 
 
 def _scan_packages(root: Path, agent_id: uuid.UUID | str) -> list[dict]:

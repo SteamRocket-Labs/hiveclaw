@@ -61,6 +61,11 @@ def list_knowledge_pages(data_root: Path | str, agent_id: uuid.UUID | str) -> li
                     "source": f"memory/{subdir}/{path.name}",
                     "title": _frontmatter_field(content, "title") or path.stem,
                     "status": _frontmatter_field(content, "status") or "active",
+                    "aliases": _frontmatter_list(content, "aliases"),
+                    "tags": _frontmatter_list(content, "tags"),
+                    "lifecycle": _frontmatter_field(content, "lifecycle")
+                    or _frontmatter_field(content, "status")
+                    or "active",
                     "content": content,
                     "preview": _preview(content),
                 }
@@ -334,7 +339,18 @@ def _parse_entries(content: str, *, source: str) -> list[dict]:
         boundary = stripped.startswith("## ") or header is not None or index == len(lines)
         if boundary and current_heading is not None and current_id:
             body = "\n".join(lines[current_start:index]).strip()
-            entries.append({"id": current_id, "heading": current_heading, "content": body, "source": source})
+            entry_metadata = _entry_activation_metadata(body)
+            entries.append(
+                {
+                    "id": current_id,
+                    "heading": current_heading,
+                    "content": body,
+                    "source": source,
+                    "aliases": entry_metadata["aliases"],
+                    "tags": entry_metadata["tags"],
+                    "lifecycle": entry_metadata["lifecycle"],
+                }
+            )
             current_heading, current_start, current_id = None, None, None
         if header is not None:
             current_heading = header.group("heading").strip()
@@ -353,6 +369,32 @@ def _frontmatter_field(content: str, field: str) -> str:
     frontmatter = content.split("---", 2)[1]
     match = re.search(rf"^{re.escape(field)}:\s*(?P<value>.+)$", frontmatter, re.MULTILINE)
     return match.group("value").strip() if match else ""
+
+
+def _frontmatter_list(content: str, field: str) -> list[str]:
+    return _parse_list_value(_frontmatter_field(content, field))
+
+
+def _entry_activation_metadata(body: str) -> dict[str, object]:
+    fields: dict[str, str] = {}
+    for line in (body or "").splitlines():
+        match = re.match(r"^\s*-?\s*(aliases|tags|lifecycle):\s*(?P<value>.+?)\s*$", line)
+        if match:
+            fields[match.group(1)] = match.group("value")
+    return {
+        "aliases": _parse_list_value(fields.get("aliases", "")),
+        "tags": _parse_list_value(fields.get("tags", "")),
+        "lifecycle": (fields.get("lifecycle") or "active").strip() or "active",
+    }
+
+
+def _parse_list_value(value: str) -> list[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    return [item for part in raw.split(",") if (item := part.strip().strip("\"'"))]
 
 
 def _preview(content: str) -> str:

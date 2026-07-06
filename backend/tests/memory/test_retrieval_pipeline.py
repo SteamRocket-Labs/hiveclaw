@@ -122,6 +122,52 @@ def test_plane_read_legacy_t3_fallback_is_observable(data_root: Path, agent_id: 
     assert loaded[0]["metadata"]["migration_required"] is True
 
 
+def test_plane_read_parses_profile_and_knowledge_activation_metadata(data_root: Path, agent_id: uuid.UUID) -> None:
+    from app.memory.plane_read import list_knowledge_pages, list_profile_entries
+
+    profile_dir = data_root / str(agent_id) / "memory" / "profiles"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "owner.md").write_text(
+        """# Owner Profile
+
+### Writing Taste
+<!-- id: owner-writing-taste -->
+aliases: [tone, voice]
+tags: [writing, taste]
+lifecycle: active
+- Prefers concise architecture explanations.
+""",
+        encoding="utf-8",
+    )
+    knowledge_dir = data_root / str(agent_id) / "memory" / "knowledge"
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    (knowledge_dir / "memory-runtime.md").write_text(
+        """---
+title: Memory Runtime
+status: active
+aliases: [Attention Router, QKV Runtime]
+tags: [memory, runtime]
+lifecycle: active
+---
+## Claim
+Runtime activation routes memory candidates.
+## Relations
+- references [[k:Agent Memory]]
+""",
+        encoding="utf-8",
+    )
+
+    profile_entry = list_profile_entries(data_root, agent_id)[0]
+    knowledge_page = list_knowledge_pages(data_root, agent_id)[0]
+
+    assert profile_entry["aliases"] == ["tone", "voice"]
+    assert profile_entry["tags"] == ["writing", "taste"]
+    assert profile_entry["lifecycle"] == "active"
+    assert knowledge_page["aliases"] == ["Attention Router", "QKV Runtime"]
+    assert knowledge_page["tags"] == ["memory", "runtime"]
+    assert knowledge_page["lifecycle"] == "active"
+
+
 @pytest.mark.asyncio
 async def test_retrieve_no_files(data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever) -> None:
     items = await retriever.retrieve(agent_id, "anything", session_id=None, tenant_id=None)

@@ -299,6 +299,76 @@ def _json_ready(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
+def _metadata_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _metadata_list(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list | tuple) else []
+
+
+def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
+    metadata = _metadata_dict(getattr(session, "transcript_metadata_json", None))
+    assembly_state = _metadata_dict(metadata.get("runtime_assembly_state"))
+    prompt_manifest = _metadata_dict(
+        metadata.get("prompt_assembly_manifest") or assembly_state.get("prompt_assembly_manifest")
+    )
+    context_usage_ledger = _metadata_dict(
+        metadata.get("context_usage_ledger")
+        or prompt_manifest.get("context_usage_ledger")
+        or assembly_state.get("context_usage_ledger")
+    )
+    dynamic_context_section_ledger = _metadata_dict(
+        metadata.get("dynamic_context_section_ledger")
+        or prompt_manifest.get("dynamic_context_section_ledger")
+        or assembly_state.get("dynamic_context_section_ledger")
+    )
+    categories = _metadata_list(context_usage_ledger.get("categories"))
+    context_candidates = _metadata_list(prompt_manifest.get("context_candidates"))
+    selected_contexts = _metadata_list(prompt_manifest.get("selected_contexts"))
+    suppressed_contexts = _metadata_list(prompt_manifest.get("suppressed_contexts"))
+    dynamic_context_sections = _metadata_list(dynamic_context_section_ledger.get("sections"))
+    active_tools = _metadata_list(prompt_manifest.get("active_tool_names") or metadata.get("active_tool_names"))
+    deferred_tools = _metadata_list(
+        prompt_manifest.get("available_deferred_tools")
+        or metadata.get("deferred_tool_names")
+        or assembly_state.get("available_deferred_tools")
+    )
+    loaded_skills = _metadata_list(prompt_manifest.get("loaded_skills") or metadata.get("skill_catalog_refs"))
+    payload = {
+        "schema": "hive.ccplus.session_context_usage.v1",
+        "session_id": str(getattr(session, "id", "")),
+        "agent_id": str(getattr(session, "agent_id", "")),
+        "model_window_tokens": context_usage_ledger.get("model_window_tokens"),
+        "used_tokens": context_usage_ledger.get("used_tokens"),
+        "free_space_tokens": context_usage_ledger.get("free_space_tokens"),
+        "categories": categories,
+        "context_candidates": context_candidates,
+        "selected_contexts": selected_contexts,
+        "suppressed_contexts": suppressed_contexts,
+        "dynamic_context_sections": dynamic_context_sections,
+        "tool_result_ledger": _metadata_list(
+            metadata.get("tool_result_ledger") or assembly_state.get("tool_result_ledger")
+        ),
+        "active_tool_names": active_tools,
+        "deferred_tool_names": deferred_tools,
+        "loaded_skills": loaded_skills,
+        "prompt_manifest_schema": prompt_manifest.get("schema"),
+        "runtime_assembly_state_schema": assembly_state.get("schema"),
+        "counts": {
+            "categories": len(categories),
+            "context_candidates": len(context_candidates),
+            "selected_contexts": len(selected_contexts),
+            "suppressed_contexts": len(suppressed_contexts),
+            "dynamic_context_sections": len(dynamic_context_sections),
+            "tools": len(active_tools),
+            "deferred_tools": len(deferred_tools),
+            "skills": len(loaded_skills),
+        },
+    }
+    return _json_ready(payload)
+
+
 def _string_tuple(value: Any) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple, set)):
         return ()
@@ -1717,6 +1787,22 @@ async def get_session_index(
     if index is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
     return index
+
+
+@router.get("/{agent_id}/sessions/{session_id}/context-usage")
+async def get_session_context_usage(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session, _agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    return _session_context_usage_payload(session)
 
 
 @router.get("/{agent_id}/sessions/{session_id}/workbench")

@@ -367,6 +367,7 @@ flowchart TD
 | 返回影响 | context debt 会继续隐形 |
 | 代码位置 | `backend/app/api/chat_sessions.py` 或 runtime debug API；`frontend/src/pages/agent-detail` 右侧 runtime console |
 | 一轮修复 | 后端提供 `GET /api/chat-sessions/{id}/context-usage` 或 session event；前端可先只显示调试面板 |
+| 2026-07-06 落地证据 | `backend/app/api/chat_sessions.py` 新增 `GET /agents/{agent_id}/sessions/{session_id}/context-usage`，权限复用 `_get_run_session_and_agent()`；返回 `hive.ccplus.session_context_usage.v1`，包含 `categories`、token/free-space、context candidates、selected/suppressed contexts、dynamic context sections、tool result ledger、active/deferred tools、loaded skills 与 counts。数据读取面为 `ChatSession.transcript_metadata_json["runtime_assembly_state"]` / `prompt_assembly_manifest` / `context_usage_ledger` 的持久化 read model。验证：`source backend/.venv/bin/activate && pytest backend/tests/api/test_chat_sessions_permissions.py::test_get_session_context_usage_returns_context_diagnostics backend/tests/api/test_chat_sessions_permissions.py::test_get_session_messages_allows_manage_access_for_non_owner backend/tests/api/test_chat_sessions_permissions.py::test_get_session_transcript_returns_replayable_events -q` -> `3 passed, 3 warnings`；`ruff check backend/app/api/chat_sessions.py backend/tests/api/test_chat_sessions_permissions.py` -> `All checks passed!` |
 
 ### RTD-19：on-demand MCP / deferred tools 的 token 语义不够清楚
 

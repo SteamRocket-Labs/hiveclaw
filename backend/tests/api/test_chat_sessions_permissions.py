@@ -600,6 +600,88 @@ async def test_get_session_messages_enriches_artifact_agent_names(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    owner_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    prompt_manifest = {
+        "schema": "hive.ccplus.prompt_assembly_manifest.v1",
+        "context_usage_ledger": {
+            "schema": "hive.ccplus.context_usage_ledger.v1",
+            "model_window_tokens": 1000,
+            "used_tokens": 120,
+            "free_space_tokens": 880,
+            "categories": [
+                {"name": "system_prompt", "tokens": 20, "chars": 80, "item_count": 1},
+                {"name": "skills", "tokens": 10, "chars": 40, "item_count": 2},
+            ],
+        },
+        "context_candidates": [{"id": "ctx:memory:memory_files", "selected": True}],
+        "selected_contexts": [{"id": "ctx:memory:memory_files", "selected": True}],
+        "suppressed_contexts": [{"id": "ctx:permissions:permissions_context", "selected": False}],
+        "loaded_skills": ["research"],
+        "active_tool_names": ["read_file"],
+        "available_deferred_tools": ["web_search"],
+    }
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        peer_agent_id=None,
+        user_id=owner_id,
+        source_channel="web",
+        transcript_metadata_json={
+            "runtime_assembly_state": {
+                "schema": "hive.ccplus.runtime_assembly_state.v1",
+                "prompt_assembly_manifest": prompt_manifest,
+                "dynamic_context_section_ledger": {
+                    "schema": "hive.ccplus.dynamic_context_section_ledger.v1",
+                    "sections": [{"candidate_id": "dynamic:skill:skill_catalog", "selected": True}],
+                },
+                "tool_result_ledger": [{"tool_name": "read_file", "result_kind": "evidence"}],
+            }
+        },
+    )
+    current_user = SimpleNamespace(id=owner_id, role="member")
+    db = _QueryAwareDB(agent=agent, sessions=[session])
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+
+    result = await chat_sessions_api.get_session_context_usage(
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result["schema"] == "hive.ccplus.session_context_usage.v1"
+    assert result["session_id"] == str(session_id)
+    assert result["model_window_tokens"] == 1000
+    assert result["used_tokens"] == 120
+    assert result["free_space_tokens"] == 880
+    assert result["categories"][1]["name"] == "skills"
+    assert result["selected_contexts"][0]["id"] == "ctx:memory:memory_files"
+    assert result["suppressed_contexts"][0]["id"] == "ctx:permissions:permissions_context"
+    assert result["dynamic_context_sections"][0]["candidate_id"] == "dynamic:skill:skill_catalog"
+    assert result["tool_result_ledger"][0]["tool_name"] == "read_file"
+    assert result["counts"] == {
+        "categories": 2,
+        "context_candidates": 1,
+        "selected_contexts": 1,
+        "suppressed_contexts": 1,
+        "dynamic_context_sections": 1,
+        "tools": 1,
+        "deferred_tools": 1,
+        "skills": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_delete_session_removes_transcript_before_messages(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 

@@ -215,6 +215,8 @@ flowchart TD
 | 代码位置 | `backend/app/runtime/context_engine.py`；`backend/app/runtime/invoker.py` resolvers；`backend/app/runtime/prompt_builder.py:510` |
 | 一轮修复 | 所有进入 prompt 的 section 都走 `ContextArtifact` 或等价 builder，不允许裸字符串绕过 manifest |
 
+2026-07-06 落地证据：`backend/app/runtime/context_engine.py` 新增 `record_prompt_manifest_context_artifacts()`，把 `prompt_assembly_manifest.selected_contexts` 回写到现有 `session_context.metadata["context_artifacts"]` 轨道，记录 `candidate_id`、`source`、`content_hash`、chars/tokens、`selection_reason`、cacheability，且不保存原文；`backend/app/kernel/engine.py` 在真实 prompt assembly 后调用该函数，因此 frozen prefix、skill catalog、active/deferred tool groups、MCP refs、hook context、messages 等手工拼接 section 也拥有 artifact provenance。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_context_engine.py backend/tests/runtime/test_runtime_context_composition.py backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_invoker.py::test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt backend/tests/services/test_session_control_plane.py -q` -> `32 passed, 4 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/runtime/context_engine.py backend/app/kernel/engine.py backend/tests/runtime/test_context_engine.py backend/tests/runtime/test_invoker.py` -> `All checks passed!`。
+
 ### RTD-06：Frozen prefix 缓存签名覆盖不完整
 
 | 字段 | 内容 |

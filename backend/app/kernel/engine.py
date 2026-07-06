@@ -3258,6 +3258,8 @@ class AgentKernel:
             )
 
             if session_ctx is not None:
+                from app.runtime.context_engine import record_prompt_manifest_context_artifacts
+
                 dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix)
                 hook_added_context = []
                 if "## Hook Additional Context" in _system_prompt_suffix:
@@ -3287,6 +3289,7 @@ class AgentKernel:
                     available_agent_types=list(session_ctx.metadata.get("available_agent_types") or []),
                     messages=request.messages,
                 )
+                record_prompt_manifest_context_artifacts(session_ctx, prompt_manifest)
                 session_ctx.metadata["prompt_assembly_manifest"] = prompt_manifest
                 session_ctx.metadata["context_usage_ledger"] = dict(prompt_manifest.get("context_usage_ledger") or {})
                 session_ctx.metadata["prompt_sections"] = list(prompt_manifest.get("prompt_sections") or [])

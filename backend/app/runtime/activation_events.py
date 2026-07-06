@@ -14,6 +14,7 @@ from typing import Any, Mapping
 ACTIVATION_EVENT_SCHEMA = "hive.ccplus.activation_event.v1"
 ACTIVATION_FEEDBACK_SCHEMA = "hive.ccplus.activation_feedback.v1"
 ACTIVATION_EVENT_REF_SCHEMA = "hive.ccplus.activation_event_ref.v1"
+ACTIVATION_EVENT_TRUTH_SURFACE_POLICY_SCHEMA = "hive.ccplus.activation_event_truth_surface_policy.v1"
 
 
 def _text(value: Any, *, fallback: str = "") -> str:
@@ -176,12 +177,31 @@ def build_activation_event_ref(event: ActivationEvent | Mapping[str, Any]) -> di
     }
 
 
+def activation_event_truth_surface_policy() -> dict[str, Any]:
+    """Declare that activation telemetry is a control sidecar, not memory truth."""
+    return {
+        "schema": ACTIVATION_EVENT_TRUTH_SURFACE_POLICY_SCHEMA,
+        "durable_truth_mutation": False,
+        "allowed_sidecar_roots": ["memory/control/"],
+        "forbidden_truth_surfaces": [
+            "memory/t0/",
+            "memory/t2/",
+            "memory/t3/",
+            "memory/knowledge/",
+            "memory/profiles/",
+            "soul.md",
+        ],
+    }
+
+
 __all__ = [
     "ACTIVATION_EVENT_REF_SCHEMA",
     "ACTIVATION_EVENT_SCHEMA",
     "ACTIVATION_FEEDBACK_SCHEMA",
+    "ACTIVATION_EVENT_TRUTH_SURFACE_POLICY_SCHEMA",
     "ActivationEvent",
     "ActivationFeedback",
+    "activation_event_truth_surface_policy",
     "activation_event_hash",
     "build_activation_event_ref",
 ]

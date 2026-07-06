@@ -120,6 +120,9 @@ async def test_record_session_feedback_writes_activation_heat_decay_sidecar(tmp_
     assert sidecar["decay_signal"] == "decay"
     assert sidecar_path.exists()
     assert "owner_feedback_misleading" in sidecar_path.read_text(encoding="utf-8")
+    assert not (tmp_path / str(agent_id) / "memory" / "t0").exists()
+    assert not (tmp_path / str(agent_id) / "memory" / "t2").exists()
+    assert not (tmp_path / str(agent_id) / "memory" / "t3").exists()
 
 
 @pytest.mark.asyncio

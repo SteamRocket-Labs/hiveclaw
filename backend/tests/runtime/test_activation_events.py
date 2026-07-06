@@ -64,3 +64,16 @@ def test_activation_event_from_manifest_rejects_wrong_schema() -> None:
 
     with pytest.raises(ValueError, match="activation event schema"):
         ActivationEvent.from_manifest({"schema": "wrong"})
+
+
+def test_activation_events_are_control_sidecar_not_truth_surface() -> None:
+    from app.runtime.activation_events import activation_event_truth_surface_policy
+
+    policy = activation_event_truth_surface_policy()
+
+    assert policy["schema"] == "hive.ccplus.activation_event_truth_surface_policy.v1"
+    assert policy["durable_truth_mutation"] is False
+    assert "memory/control/" in policy["allowed_sidecar_roots"]
+    assert "memory/t0/" in policy["forbidden_truth_surfaces"]
+    assert "memory/t2/" in policy["forbidden_truth_surfaces"]
+    assert "memory/t3/" in policy["forbidden_truth_surfaces"]

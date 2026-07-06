@@ -79,6 +79,7 @@ class RuntimeAssemblyState:
     activation_router_output: dict[str, Any] = field(default_factory=dict)
     top_activation_candidates: list[dict[str, Any]] = field(default_factory=list)
     suppressed_activation_candidates: list[dict[str, Any]] = field(default_factory=list)
+    activation_events: list[dict[str, Any]] = field(default_factory=list)
     available_deferred_tool_candidates: list[Any] = field(default_factory=list)
     available_deferred_tools: list[str] = field(default_factory=list)
     skill_catalog_ranking: list[dict[str, Any]] = field(default_factory=list)
@@ -114,6 +115,7 @@ class RuntimeAssemblyState:
             activation_router_output=_dict_payload(payload.get("activation_router_output")),
             top_activation_candidates=_dict_list_payload(payload.get("top_activation_candidates")),
             suppressed_activation_candidates=_dict_list_payload(payload.get("suppressed_activation_candidates")),
+            activation_events=_dict_list_payload(payload.get("activation_events")),
             available_deferred_tool_candidates=_list_payload(payload.get("available_deferred_tool_candidates")),
             available_deferred_tools=[
                 str(item) for item in _list_payload(payload.get("available_deferred_tools")) if str(item).strip()
@@ -141,6 +143,7 @@ class RuntimeAssemblyState:
             "activation_router_output": dict(self.activation_router_output),
             "top_activation_candidates": [dict(item) for item in self.top_activation_candidates],
             "suppressed_activation_candidates": [dict(item) for item in self.suppressed_activation_candidates],
+            "activation_events": [dict(item) for item in self.activation_events],
             "available_deferred_tool_candidates": list(self.available_deferred_tool_candidates),
             "available_deferred_tools": list(self.available_deferred_tools),
             "skill_catalog_ranking": [dict(item) for item in self.skill_catalog_ranking],
@@ -186,6 +189,8 @@ class RuntimeAssemblyState:
             metadata["suppressed_activation_candidates"] = [
                 dict(item) for item in self.suppressed_activation_candidates
             ]
+        if self.activation_events:
+            metadata["activation_events"] = [dict(item) for item in self.activation_events]
         if self.available_deferred_tool_candidates:
             metadata["available_deferred_tool_candidates"] = list(self.available_deferred_tool_candidates)
         if self.available_deferred_tools:
@@ -262,6 +267,13 @@ class RuntimeAssemblyState:
         self.suppressed_activation_candidates = _dict_list_payload(manifest.get("suppressed_activation_candidates"))
         self.persist()
 
+    def record_activation_event(self, event: Any, *, limit: int = 200) -> None:
+        manifest = _manifest_payload(event)
+        self.activation_events.append(manifest)
+        if len(self.activation_events) > limit:
+            del self.activation_events[: len(self.activation_events) - limit]
+        self.persist()
+
     def record_deferred_tools(self, candidates: list[Any] | tuple[Any, ...]) -> None:
         candidate_list = list(candidates or [])
         names: list[str] = []
@@ -336,6 +348,8 @@ def ensure_runtime_assembly_state(session: SessionContext | None) -> RuntimeAsse
         state.suppressed_activation_candidates = _dict_list_payload(
             session.metadata.get("suppressed_activation_candidates")
         )
+    if not state.activation_events:
+        state.activation_events = _dict_list_payload(session.metadata.get("activation_events"))
     if not state.available_deferred_tool_candidates:
         state.available_deferred_tool_candidates = _list_payload(
             session.metadata.get("available_deferred_tool_candidates")

@@ -9,6 +9,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine, cast
 
@@ -1474,6 +1475,116 @@ def _record_tool_result_ledger_entry(
     return entry
 
 
+def _tool_activation_context(request: InvocationRequest) -> dict[str, str]:
+    session = request.session_context
+    metadata = session.metadata if session is not None and isinstance(session.metadata, dict) else {}
+    activation_query = metadata.get("activation_query") if isinstance(metadata.get("activation_query"), dict) else {}
+    return {
+        "session_id": str(request.memory_session_id or getattr(session, "session_id", "") or ""),
+        "turn_id": str(activation_query.get("turn_id") or metadata.get("turn_id") or ""),
+        "intent_id": str(activation_query.get("intent_id") or metadata.get("intent_id") or ""),
+        "query_id": str(activation_query.get("query_id") or ""),
+    }
+
+
+def _tool_candidate_name(candidate: dict[str, Any]) -> str:
+    name = str(candidate.get("name") or "").strip()
+    if name:
+        return name
+    pointer = candidate.get("value_pointer") if isinstance(candidate.get("value_pointer"), dict) else {}
+    name = str(pointer.get("tool_name") or "").strip()
+    if name:
+        return name
+    features = candidate.get("key_features") if isinstance(candidate.get("key_features"), dict) else {}
+    feature_name = features.get("name")
+    if isinstance(feature_name, str):
+        return feature_name.strip()
+    if isinstance(feature_name, list | tuple):
+        for item in feature_name:
+            if text := str(item or "").strip():
+                return text
+    return ""
+
+
+def _tool_activation_candidate_ref(request: InvocationRequest, tool_name: str) -> dict[str, Any]:
+    session = request.session_context
+    metadata = session.metadata if session is not None and isinstance(session.metadata, dict) else {}
+    pools: list[Any] = [
+        metadata.get("available_deferred_tool_candidates"),
+        metadata.get("top_activation_candidates"),
+        metadata.get("activation_candidates"),
+    ]
+    router_output = metadata.get("activation_router_output") if isinstance(metadata.get("activation_router_output"), dict) else {}
+    pools.extend([router_output.get("top_activation_candidates"), router_output.get("suppressed_activation_candidates")])
+    for pool in pools:
+        if not isinstance(pool, list | tuple):
+            continue
+        for item in pool:
+            if not isinstance(item, dict):
+                continue
+            if _tool_candidate_name(item) != tool_name:
+                continue
+            ref = item.get("candidate_ref")
+            if isinstance(ref, dict):
+                return dict(ref)
+    from app.runtime.context_candidates import build_context_candidate_ref
+
+    legacy_id = f"tool_schema:{tool_name}:runtime"
+    return build_context_candidate_ref(
+        kind="tool_schema",
+        item_id=tool_name,
+        version="runtime",
+        payload={"tool_name": tool_name},
+    ).to_manifest(legacy_id=legacy_id)
+
+
+def _record_tool_activation_event(
+    request: InvocationRequest,
+    *,
+    tool_name: str,
+    status: str,
+    result_text: str,
+    event_type: str,
+    source: str,
+    reason: str,
+) -> dict[str, Any] | None:
+    if request.session_context is None:
+        return None
+    from app.runtime.activation_events import ActivationEvent, ActivationFeedback
+    from app.runtime.context import ensure_runtime_assembly_state
+
+    context = _tool_activation_context(request)
+    candidate_ref = _tool_activation_candidate_ref(request, tool_name)
+    feedback_signal = "tool_success" if event_type == "tool_success" else "tool_failure"
+    feedback = ActivationFeedback(
+        signal=feedback_signal,
+        outcome="accepted" if event_type == "tool_success" else status,
+        credit=0.6 if event_type == "tool_success" else -0.6,
+        reason=reason,
+        details={"tool_name": tool_name, "status": status},
+    )
+    event = ActivationEvent(
+        event_type=event_type,
+        session_id=context["session_id"],
+        turn_id=context["turn_id"],
+        intent_id=context["intent_id"],
+        query_id=context["query_id"],
+        candidate_id=str(candidate_ref.get("candidate_id") or ""),
+        candidate_ref=candidate_ref,
+        feedback=feedback,
+        created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        source=source,
+        metadata={
+            "tool_name": tool_name,
+            "status": status,
+            "result_chars": len(str(result_text or "")),
+        },
+    )
+    manifest = event.to_manifest()
+    ensure_runtime_assembly_state(request.session_context).record_activation_event(manifest)
+    return manifest
+
+
 def _register_loaded_skill_for_session(request: InvocationRequest, tool_args: dict[str, Any]) -> None:
     session = request.session_context
     if session is None:
@@ -1601,6 +1712,15 @@ async def _execute_tool_with_hooks(
             message=blocked_result,
             side_effect_risk="external_action_blocked",
         )
+        activation_event = _record_tool_activation_event(
+            request,
+            tool_name=tool_name,
+            status="blocked_by_hook",
+            result_text=blocked_result,
+            event_type="tool_failure",
+            source="pre_tool_use_block",
+            reason=hook_result.reason or "policy",
+        )
         tool_result_ledger_entry = _record_tool_result_ledger_entry(
             request,
             tool_name=tool_name,
@@ -1608,6 +1728,7 @@ async def _execute_tool_with_hooks(
             result_text=blocked_result,
             status="blocked_by_hook",
             side_effects={"runtime_failure_policy": runtime_failure_policy},
+            followup_activation_events=[activation_event] if activation_event else [],
         )
         if record_span:
             span_metadata = {
@@ -1675,6 +1796,15 @@ async def _execute_tool_with_hooks(
                 failure_kind="cancelled",
                 message="tool execution cancelled",
             )
+            activation_event = _record_tool_activation_event(
+                request,
+                tool_name=tool_name,
+                status="cancelled",
+                result_text="cancelled",
+                event_type="tool_failure",
+                source="post_tool_failure",
+                reason="tool execution cancelled",
+            )
             tool_result_ledger_entry = _record_tool_result_ledger_entry(
                 request,
                 tool_name=tool_name,
@@ -1682,6 +1812,7 @@ async def _execute_tool_with_hooks(
                 result_text="cancelled",
                 status="cancelled",
                 side_effects={"runtime_failure_policy": runtime_failure_policy},
+                followup_activation_events=[activation_event] if activation_event else [],
             )
             if record_span:
                 span_metadata = {
@@ -1722,6 +1853,15 @@ async def _execute_tool_with_hooks(
                 message=err,
                 side_effect_risk="unknown",
             )
+            activation_event = _record_tool_activation_event(
+                request,
+                tool_name=tool_name,
+                status="error",
+                result_text=err,
+                event_type="tool_failure",
+                source="post_tool_failure",
+                reason=type(exc).__name__,
+            )
             tool_result_ledger_entry = _record_tool_result_ledger_entry(
                 request,
                 tool_name=tool_name,
@@ -1729,6 +1869,7 @@ async def _execute_tool_with_hooks(
                 result_text=err,
                 status="error",
                 side_effects={"runtime_failure_policy": runtime_failure_policy},
+                followup_activation_events=[activation_event] if activation_event else [],
             )
             if record_span:
                 span_metadata = {
@@ -1856,6 +1997,15 @@ async def _execute_tool_with_hooks(
         rewrite = post_tool_hook_result.output_rewrite
         result_str = rewrite if isinstance(rewrite, str) else json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
     tool_result_side_effects = _extract_tool_side_effects(result) or {}
+    activation_event = _record_tool_activation_event(
+        request,
+        tool_name=tool_name,
+        status="ok",
+        result_text=result_str,
+        event_type="tool_success",
+        source="post_tool_use",
+        reason="tool call succeeded",
+    )
     tool_result_ledger_entry = _record_tool_result_ledger_entry(
         request,
         tool_name=tool_name,
@@ -1864,7 +2014,7 @@ async def _execute_tool_with_hooks(
         status="ok",
         trace_metadata=trace_metadata_sink,
         side_effects=tool_result_side_effects,
-        followup_activation_events=[],
+        followup_activation_events=[activation_event] if activation_event else [],
     )
     if record_span:
         span_metadata = {

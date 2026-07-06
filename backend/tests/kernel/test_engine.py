@@ -1676,6 +1676,18 @@ async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
     session = SessionContext(session_id="session-ledger")
+    session.metadata["activation_query"] = {
+        "schema": "hive.ccplus.activation_query.v1",
+        "query_id": "aq:tool-success",
+        "turn_id": "turn-tool-success",
+        "intent_id": "intent-tool-success",
+    }
+    session.metadata["available_deferred_tool_candidates"] = [
+        {
+            "name": "web_search",
+            "candidate_ref": {"candidate_id": "tool_schema:web_search:v1/test", "kind": "tool_schema"},
+        }
+    ]
     request = InvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1"),
         messages=[{"role": "user", "content": "search"}],
@@ -1713,6 +1725,16 @@ async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
     assert ledger_entry["context_effect"] == "external_reference"
     assert ledger_entry["source_refs"] == ["truth://search/result", "query:memory systems"]
     assert session.metadata["tool_result_ledger"][-1] == ledger_entry
+    activation_event = ledger_entry["followup_activation_events"][0]
+    assert activation_event["event_type"] == "tool_success"
+    assert activation_event["query_id"] == "aq:tool-success"
+    assert activation_event["turn_id"] == "turn-tool-success"
+    assert activation_event["intent_id"] == "intent-tool-success"
+    assert activation_event["candidate_ref"]["candidate_id"] == "tool_schema:web_search:v1/test"
+    assert activation_event["feedback"]["signal"] == "tool_success"
+    assert activation_event["feedback"]["credit"] > 0
+    assert session.metadata["activation_events"][-1] == activation_event
+    assert session.metadata["runtime_assembly_state"]["activation_events"][-1] == activation_event
 
 
 @pytest.mark.asyncio
@@ -1726,6 +1748,12 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_error(m
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
     session = SessionContext(session_id="session-failure-policy")
+    session.metadata["activation_query"] = {
+        "schema": "hive.ccplus.activation_query.v1",
+        "query_id": "aq:tool-failure",
+        "turn_id": "turn-tool-failure",
+        "intent_id": "intent-tool-failure",
+    }
     request = InvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1"),
         messages=[{"role": "user", "content": "send"}],
@@ -1763,6 +1791,13 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_error(m
     assert policy["safe_to_continue"] is True
     ledger_policy = session.metadata["tool_result_ledger"][-1]["side_effects"]["runtime_failure_policy"]
     assert ledger_policy == policy
+    activation_event = session.metadata["tool_result_ledger"][-1]["followup_activation_events"][0]
+    assert activation_event["event_type"] == "tool_failure"
+    assert activation_event["query_id"] == "aq:tool-failure"
+    assert activation_event["candidate_ref"]["candidate_id"].startswith("tool_schema:send_email:")
+    assert activation_event["feedback"]["signal"] == "tool_failure"
+    assert activation_event["feedback"]["credit"] < 0
+    assert session.metadata["activation_events"][-1] == activation_event
 
 
 @pytest.mark.asyncio

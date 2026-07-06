@@ -302,7 +302,7 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     assert manifest["source_refs"][0].startswith(f"t0://session/{session_id}/segment/{first.segment_id}#seq=1..")
     assert manifest["files"]["summary.md"]["sha256"]
     assert manifest["prompts"]["summary_prompt_version"] == "t2.summary_agent.v1"
-    assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.v3"
+    assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.activation_20260705"
     assert manifest["review_mode"] == "independent_gate"
     assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v1"
 
@@ -1372,12 +1372,30 @@ def test_labels_prompt_teaches_failure_signals_for_growth_report() -> None:
     recurred/avoided outcomes tied to known self.md failure-mode ids."""
     from app.memory.t2.prompts import LABELS_PROMPT_VERSION, LEARNING_BRAIN_LABELS_PROMPT
 
-    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.v3"
+    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.activation_20260705"
     assert "<failure_signals>" in LEARNING_BRAIN_LABELS_PROMPT
     assert "recurred" in LEARNING_BRAIN_LABELS_PROMPT
     assert "avoided" in LEARNING_BRAIN_LABELS_PROMPT
     assert "known_failure_modes" in LEARNING_BRAIN_LABELS_PROMPT
     assert "<rework" in LEARNING_BRAIN_LABELS_PROMPT
+
+
+def test_labels_prompt_teaches_activation_keys_for_qkv_router() -> None:
+    from app.memory.t2.prompts import LABELS_PROMPT_VERSION, LEARNING_BRAIN_LABELS_PROMPT
+
+    assert LABELS_PROMPT_VERSION == "t2.learning_brain_labels.activation_20260705"
+    assert '<activation_keys schema_version="t2.activation_keys.20260705">' in LEARNING_BRAIN_LABELS_PROMPT
+    for marker in (
+        "<task_intent>",
+        "<scenario>",
+        "<entity",
+        "<temporal_hint",
+        "<decision",
+        "<open_loop>",
+        "<relation_seed",
+        "<risk_flag>",
+    ):
+        assert marker in LEARNING_BRAIN_LABELS_PROMPT
 
 
 def test_source_bundle_includes_known_failure_modes(tmp_path) -> None:

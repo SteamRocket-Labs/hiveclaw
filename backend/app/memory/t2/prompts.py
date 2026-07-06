@@ -1,7 +1,7 @@
 """Versioned prompt contracts for canonical T0 -> T2 distillation."""
 
 SUMMARY_PROMPT_VERSION = "t2.summary_agent.v1"
-LABELS_PROMPT_VERSION = "t2.learning_brain_labels.v3"
+LABELS_PROMPT_VERSION = "t2.learning_brain_labels.activation_20260705"
 REVIEW_PROMPT_VERSION = "t2.memory_gate_review.v1"
 EPISODE_STITCHER_PROMPT_VERSION = "t2.episode_stitcher.v1"
 EPISODE_GATE_REVIEW_PROMPT_VERSION = "t2.episode_gate_review.v1"
@@ -106,11 +106,22 @@ rewrite summary.md, decide final promotion, write T3, or write soul.md.
    clear. Only reference listed ids; never invent new fm- ids here (new failure
    modes are self-plane curation, not labels). Most segments touch NO known
    mode; emit an empty <failure_signals/> then.
-6. Emit <rework present="true"> ONLY when this segment redoes or corrects work
+6. Emit <activation_keys schema_version="t2.activation_keys.20260705"> for QKV
+   routing. Keep keys thin, source-backed, and enum-like; do NOT summarize:
+   <task_intent>architecture_design|coding|research|operations|memory_recall|self_evolution|general</task_intent>
+   <scenario>short stable scenario cue</scenario>
+   <entity type="doc|file|person|org|concept|tool|skill">name</entity>
+   <temporal_hint kind="explicit|relative|continuation">phrase</temporal_hint>
+   <decision status="accepted|rejected|superseded|open">source-backed decision</decision>
+   <open_loop>unresolved follow-up or carryover</open_loop>
+   <relation_seed rel="depends_on|blocks|related_to|contradicts">target</relation_seed>
+   <risk_flag>architecture_drift|privacy_sensitive|security_relevant|production_impact|policy_conflict|evidence_gap</risk_flag>
+   Emit empty child nodes when absent rather than inventing keys.
+7. Emit <rework present="true"> ONLY when this segment redoes or corrects work
    a previous segment already delivered (owner asked for rework, output was
    scrapped and rebuilt). Routine iteration inside one task is NOT rework.
-7. Use controlled enums only.
-8. Evidence gaps must become missing_refs/evidence_gap, not guessed labels.
+8. Use controlled enums only.
+9. Evidence gaps must become missing_refs/evidence_gap, not guessed labels.
 </task_steps>
 
 <rubric>
@@ -135,6 +146,7 @@ continuity_state maps summary continuity into a controlled engineering label.
 Return Markdown with exactly one <t2_labels schema_version="t2.labels.v1"> block.
 The block must include <continuity_state>. Include <four_plane_signals> with
 <self_signal>, <nutrients>, and (only when a criterion fires) <milestone_signal>.
+Include exactly one <activation_keys schema_version="t2.activation_keys.20260705"> block.
 </output_schema>
 """.strip()
 

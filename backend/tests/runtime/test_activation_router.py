@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 
-def _candidate(*, kind: str = "agent_memory", sensitivity: str = "PL1_public", acl_scope: str = "company"):
+def _candidate(
+    *,
+    kind: str = "agent_memory",
+    sensitivity: str = "PL1_public",
+    acl_scope: str = "company",
+    key_features: dict | None = None,
+):
     from app.runtime.activation_candidates import ActivationCandidate, ActivationScore, ActivationSurface
 
     return ActivationCandidate(
         candidate_kind=kind,
         candidate_ref={"candidate_id": f"{kind}:item:v1/hash", "kind": kind, "source_type": "test"},
-        key_features={"name": [kind]},
+        key_features=key_features or {"name": [kind]},
         value_pointer={"loader": "test_loader"},
         surface=ActivationSurface(surface_kind="test", preview=f"{kind} preview"),
         score=ActivationScore(head_scores={"seed": 0.5}, total_score=0.5),
@@ -92,3 +98,55 @@ def test_activation_router_keeps_allowed_candidates_in_input_order() -> None:
 
     assert [item["candidate_kind"] for item in manifest["top_activation_candidates"]] == ["agent_memory", "skill"]
     assert manifest["suppressed_activation_candidates"] == []
+
+
+def test_activation_router_scores_and_sorts_by_multi_head_query_match() -> None:
+    from app.runtime.activation_query import ActivationQuery
+    from app.runtime.activation_router import ActivationRouterContext, route_activation_candidates
+
+    query = ActivationQuery(
+        raw_prompt="Find Acme pricing policy for a concise investor update this week.",
+        session_id="s1",
+        turn_id="t1",
+        intent_id="i1",
+        concepts=("pricing", "policy"),
+        entities=({"name": "Acme", "type": "org"},),
+        temporal_hints=({"kind": "recent", "value": "this_week"},),
+        owner_context={"profile_terms": ["concise", "investor"]},
+    )
+    weak = _candidate(
+        kind="skill",
+        key_features={
+            "concepts": ["python"],
+            "entities": ["backend"],
+            "temporal_hints": ["evergreen"],
+            "profile_terms": ["verbose"],
+        },
+    )
+    strong = _candidate(
+        kind="agent_memory",
+        key_features={
+            "concepts": ["pricing", "policy"],
+            "entities": ["acme"],
+            "temporal_hints": ["recent", "this_week"],
+            "profile_terms": ["concise", "investor"],
+        },
+    )
+
+    output = route_activation_candidates(
+        [weak, strong],
+        context=ActivationRouterContext(
+            principal_stack=_principal_stack(current_is_owner=True),
+            activation_query=query,
+        ),
+    )
+    manifest = output.to_manifest()
+    top = manifest["top_activation_candidates"]
+
+    assert [item["candidate_kind"] for item in top] == ["agent_memory", "skill"]
+    head_scores = top[0]["score"]["head_scores"]
+    assert head_scores["semantic"] == 1.0
+    assert head_scores["entity"] == 1.0
+    assert head_scores["temporal"] == 1.0
+    assert head_scores["profile"] == 1.0
+    assert top[0]["score"]["scorer"] == "activation_router_multi_head"

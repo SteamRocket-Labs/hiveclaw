@@ -186,6 +186,47 @@ def test_dynamic_suffix_records_context_candidate_selection_ledger():
     ]
 
 
+def test_dynamic_suffix_injects_activation_hints_and_records_ledger() -> None:
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    ledger: list[dict] = []
+    suffix = build_dynamic_prompt_suffix(
+        activation_router_output={
+            "top_activation_candidates": [
+                {
+                    "candidate_kind": "skill",
+                    "key_features": {"name": ["python-api"]},
+                    "value_pointer": {"loader": "load_skill", "name": "python-api"},
+                },
+                {
+                    "candidate_kind": "tool",
+                    "key_features": {"name": ["team_create"]},
+                    "value_pointer": {
+                        "loader": "tool_search",
+                        "selector": "select:team_create",
+                        "tool_name": "team_create",
+                    },
+                },
+                {
+                    "candidate_kind": "agent_memory",
+                    "key_features": {"name": ["private-memory"]},
+                    "value_pointer": {"loader": "knowledge_page", "source": "memory/private.md"},
+                },
+            ]
+        },
+        context_section_ledger=ledger,
+    )
+    decisions = {item["candidate_id"]: item for item in ledger}
+
+    assert "## Activation Hints" in suffix
+    assert "`load_skill` with `python-api`" in suffix
+    assert "`tool_search` with `select:team_create`" in suffix
+    assert "private-memory" not in suffix
+    assert decisions["dynamic:activation:hints"]["selected"] is True
+    assert decisions["dynamic:activation:hints"]["kind"] == "activation_hints"
+    assert decisions["dynamic:activation:hints"]["source_ref"] == "runtime.activation_router"
+
+
 def test_hook_additional_context_is_recorded_as_hook_context_candidate() -> None:
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 

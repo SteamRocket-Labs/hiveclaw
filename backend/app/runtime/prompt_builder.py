@@ -661,6 +661,7 @@ def build_dynamic_prompt_suffix(
     channel: str = "",
     agent_name: str = "",
     source: str = "",
+    activation_router_output: Any = None,
     context_section_ledger: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the per-round dynamic suffix.
@@ -677,6 +678,7 @@ def build_dynamic_prompt_suffix(
     reason).
     """
     from app.runtime.prompt_sections import (
+        build_activation_hints_section,
         build_environment_section,
         build_knowledge_section,
         build_memory_section,
@@ -858,6 +860,18 @@ def build_dynamic_prompt_suffix(
         budget_key="skill_catalog_budget_chars",
         budget_chars=skill_catalog_budget,
         enforce_budget=True,
+    )
+
+    add_candidate(
+        candidate_id="dynamic:activation:hints",
+        kind="activation_hints",
+        name="activation_hints",
+        content=build_activation_hints_section(activation_router_output),
+        budget_key="activation_hints_chars",
+        budget_chars=min(tool_groups_budget, 1200),
+        enforce_budget=True,
+        source_ref="runtime.activation_router",
+        reason="activation_router_selected_actionable_candidates",
     )
 
     knowledge = build_knowledge_section(retrieval_context, budget_chars=retrieval_budget) if retrieval_context else ""

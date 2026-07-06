@@ -63,6 +63,33 @@ def test_activation_query_ref_is_stable_after_manifest_roundtrip() -> None:
     assert build_activation_query_ref(query)["kind"] == "activation_query"
 
 
+def test_invoker_activation_query_records_turn_and_intent_metadata_source() -> None:
+    from types import SimpleNamespace
+
+    from app.runtime.invoker import AgentInvocationRequest, _build_activation_query_for_request
+    from app.runtime.session import SessionContext
+
+    session = SessionContext(
+        session_id="session-turn",
+        metadata={"turn_id": "turn-existing", "intent_id": "intent-existing"},
+    )
+    manifest = _build_activation_query_for_request(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "继续这个 memory runtime 任务"}],
+            agent_name="Agent",
+            role_description="Runtime engineer",
+            session_context=session,
+        )
+    )
+
+    assert manifest["turn_id"] == "turn-existing"
+    assert manifest["intent_id"] == "intent-existing"
+    trace_fields = {(item["field"], item["source"]) for item in manifest["parse_trace"]}
+    assert ("turn_id", "_ensure_turn_metadata") in trace_fields
+    assert ("intent_id", "_ensure_turn_metadata") in trace_fields
+
+
 def test_activation_query_from_manifest_rejects_wrong_schema() -> None:
     from app.runtime.activation_query import ActivationQuery
 

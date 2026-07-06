@@ -328,6 +328,8 @@ def _build_activation_query_for_request(request: AgentInvocationRequest) -> dict
         candidate_lanes=("memory", "knowledge", "skill", "tool"),
         parse_trace=[
             {"source": "runtime_invoker", "field": "raw_prompt", "method": "latest_user_message"},
+            {"source": "_ensure_turn_metadata", "field": "turn_id", "method": "session_metadata"},
+            {"source": "_ensure_turn_metadata", "field": "intent_id", "method": "session_metadata"},
             {"source": "runtime_invoker", "field": "candidate_lanes", "method": "default_runtime_lanes"},
         ],
     )

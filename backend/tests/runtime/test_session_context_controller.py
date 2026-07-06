@@ -76,6 +76,39 @@ def test_tool_result_budget_pass_compacts_oldest_non_exempt_tool_results() -> No
 
 
 @pytest.mark.asyncio
+async def test_prepare_session_context_records_tool_result_budget_runtime_decision() -> None:
+    from app.runtime.ccplus_contracts import ContextPolicyV1
+    from app.runtime.session_context_controller import prepare_session_context_for_request
+
+    decisions: list[dict] = []
+
+    async def fake_compress(messages, **_kwargs):
+        raise AssertionError("tool-result budget pass should not force semantic compression")
+
+    await prepare_session_context_for_request(
+        messages=[
+            _msg("user", "inspect"),
+            _msg("assistant", "", tool_calls=[{"id": "call-1", "function": {"name": "run_command"}}]),
+            _msg("tool", "A" * 120, tool_call_id="call-1"),
+        ],
+        policy=ContextPolicyV1(model_window=256_000, round_tool_result_budget=60, tool_result_inline_limit=50),
+        estimate_tokens=lambda _msgs: 100,
+        compress_messages=fake_compress,
+        on_decision=decisions.append,
+    )
+
+    budget_event = decisions[0]
+    runtime_decision = budget_event["runtime_decision_entry"]
+    assert budget_event["event_type"] == "tool_result_budget_pass"
+    assert runtime_decision["kind"] == "compaction"
+    assert runtime_decision["trigger"] == "tool_result_budget"
+    assert runtime_decision["status"] == "completed"
+    assert runtime_decision["next_action"] == "recalculate_context_window"
+    assert runtime_decision["details"]["tool_result_trimmed"] is True
+    assert runtime_decision["details"]["trimmed_tool_call_ids"] == ["call-1"]
+
+
+@pytest.mark.asyncio
 async def test_prepare_session_context_emits_skipped_reason_when_below_threshold() -> None:
     from app.runtime.ccplus_contracts import ContextPolicyV1
     from app.runtime.session_context_controller import prepare_session_context_for_request
@@ -99,6 +132,11 @@ async def test_prepare_session_context_emits_skipped_reason_when_below_threshold
     assert [item["event_type"] for item in decisions] == ["context_window_status", "compaction_skipped"]
     assert decisions[-1]["reason"] == "below_autocompact_threshold"
     assert decisions[-1]["cumulative_run_tokens"] == 1_000_000
+    runtime_decision = decisions[-1]["runtime_decision_entry"]
+    assert runtime_decision["kind"] == "compaction"
+    assert runtime_decision["status"] == "skipped"
+    assert runtime_decision["next_action"] == "continue"
+    assert runtime_decision["details"]["threshold"] == result.token_status.auto_compact_scope_limit
 
 
 @pytest.mark.asyncio
@@ -146,3 +184,9 @@ async def test_prepare_session_context_compresses_when_cc_threshold_reached() ->
     assert lifecycle["trigger"] == "request_preflight"
     assert lifecycle["before_message_count"] == 3
     assert lifecycle["after_message_count"] == 2
+    runtime_decisions = [item["runtime_decision_entry"] for item in decisions if item.get("runtime_decision_entry")]
+    assert runtime_decisions[-1]["kind"] == "compaction"
+    assert runtime_decisions[-1]["status"] == "completed"
+    assert runtime_decisions[-1]["next_action"] == "continue"
+    assert runtime_decisions[-1]["details"]["before_tokens"] == 224_000
+    assert runtime_decisions[-1]["details"]["after_tokens"] <= 224_000

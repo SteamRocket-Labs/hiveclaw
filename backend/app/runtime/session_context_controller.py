@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from app.runtime.ccplus_contracts import CompactionLifecycleV1, ContextPolicyV1
+from app.runtime.runtime_decision_ledger import build_runtime_decision_entry
 from app.services.llm_client import LLMMessage
 
 CC_AUTOCOMPACT_BUFFER_TOKENS = 13_000
@@ -131,6 +132,59 @@ def _assistant_tool_name_by_call_id(messages: Iterable[LLMMessage]) -> dict[str,
 
 def _compact_tool_result_content(original: str, *, tool_call_id: str, reason: str) -> str:
     return f"{TOOL_RESULT_COMPACTED_MARKER} {reason}; {tool_call_id}; {len(original)}]"
+
+
+def _tool_result_budget_runtime_decision(policy: ContextPolicyV1, budget_pass: ToolResultBudgetPass) -> dict[str, Any]:
+    return build_runtime_decision_entry(
+        kind="compaction",
+        trigger="tool_result_budget",
+        status="completed",
+        reason=budget_pass.reason,
+        next_action="recalculate_context_window",
+        details={
+            "threshold": int(policy.round_tool_result_budget or 0),
+            "inline_char_limit": int(policy.tool_result_inline_limit or 0),
+            "before_chars": budget_pass.before_chars,
+            "after_chars": budget_pass.after_chars,
+            "trimmed_count": budget_pass.trimmed_count,
+            "tool_result_trimmed": budget_pass.changed,
+            "trimmed_tool_call_ids": list(budget_pass.trimmed_tool_call_ids),
+        },
+    )
+
+
+def _compaction_runtime_decision(
+    *,
+    token_status: RuntimeTokenStatus,
+    trigger: str,
+    status: str,
+    reason: str,
+    next_action: str,
+    before_tokens: int | None = None,
+    after_tokens: int | None = None,
+    tool_result_budget: ToolResultBudgetPass | None = None,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "threshold": token_status.auto_compact_scope_limit,
+        "active_context_tokens": token_status.active_context_tokens,
+        "auto_compact_scope_tokens": token_status.auto_compact_scope_tokens,
+        "full_context_window_limit": token_status.full_context_window_limit,
+        "cumulative_run_tokens": token_status.cumulative_run_tokens,
+        "tool_result_trimmed": bool(tool_result_budget and tool_result_budget.changed),
+        "trimmed_tool_call_ids": list(tool_result_budget.trimmed_tool_call_ids if tool_result_budget else ()),
+    }
+    if before_tokens is not None:
+        details["before_tokens"] = before_tokens
+    if after_tokens is not None:
+        details["after_tokens"] = after_tokens
+    return build_runtime_decision_entry(
+        kind="compaction",
+        trigger=trigger,
+        status=status,
+        reason=reason,
+        next_action=next_action,
+        details=details,
+    )
 
 
 def apply_tool_result_budget(
@@ -277,7 +331,14 @@ async def prepare_session_context_for_request(
     if budget_pass.changed:
         working = budget_pass.messages
         changed = True
-        await _emit_decision(on_decision, decisions, budget_pass.to_event())
+        await _emit_decision(
+            on_decision,
+            decisions,
+            {
+                **budget_pass.to_event(),
+                "runtime_decision_entry": _tool_result_budget_runtime_decision(policy, budget_pass),
+            },
+        )
 
     token_status = calculate_runtime_token_status(
         active_context_tokens=estimate_tokens(working),
@@ -294,6 +355,16 @@ async def prepare_session_context_for_request(
                 **token_status.to_event(),
                 "event_type": "compaction_skipped",
                 "reason": "below_autocompact_threshold",
+                "runtime_decision_entry": _compaction_runtime_decision(
+                    token_status=token_status,
+                    trigger=compaction_trigger,
+                    status="skipped",
+                    reason="below_autocompact_threshold",
+                    next_action="continue",
+                    before_tokens=token_status.active_context_tokens,
+                    after_tokens=token_status.active_context_tokens,
+                    tool_result_budget=budget_pass,
+                ),
             },
         )
         return PreparedSessionContext(
@@ -316,6 +387,15 @@ async def prepare_session_context_for_request(
             **token_status.to_event(),
             "event_type": "compaction_started",
             "reason": "cc_autocompact_threshold",
+            "runtime_decision_entry": _compaction_runtime_decision(
+                token_status=token_status,
+                trigger=compaction_trigger,
+                status="started",
+                reason="cc_autocompact_threshold",
+                next_action="compact",
+                before_tokens=before_token_estimate,
+                tool_result_budget=budget_pass,
+            ),
         },
     )
 
@@ -352,6 +432,16 @@ async def prepare_session_context_for_request(
                 **token_status.to_event(),
                 "event_type": "compaction_completed",
                 "reason": "cc_autocompact_threshold",
+                "runtime_decision_entry": _compaction_runtime_decision(
+                    token_status=token_status,
+                    trigger=compaction_trigger,
+                    status="completed",
+                    reason="cc_autocompact_threshold",
+                    next_action="continue",
+                    before_tokens=before_token_estimate,
+                    after_tokens=token_status.active_context_tokens,
+                    tool_result_budget=budget_pass,
+                ),
             },
         )
         lifecycle = CompactionLifecycleV1(
@@ -394,6 +484,16 @@ async def prepare_session_context_for_request(
                 **token_status.to_event(),
                 "event_type": "compaction_skipped",
                 "reason": "compressor_returned_unmodified_history",
+                "runtime_decision_entry": _compaction_runtime_decision(
+                    token_status=token_status,
+                    trigger=compaction_trigger,
+                    status="skipped",
+                    reason="compressor_returned_unmodified_history",
+                    next_action="continue",
+                    before_tokens=before_token_estimate,
+                    after_tokens=token_status.active_context_tokens,
+                    tool_result_budget=budget_pass,
+                ),
             },
         )
         await _emit_decision(

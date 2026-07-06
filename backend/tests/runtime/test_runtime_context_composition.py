@@ -175,3 +175,23 @@ def test_cache_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
     assert entry["cache_key"] == "[redacted]"
     assert session.metadata["cache_decision_ledger"] == [entry]
     assert session.metadata["runtime_assembly_state"]["cache_decision_ledger"] == [entry]
+
+
+def test_runtime_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
+    from app.runtime.runtime_decision_ledger import append_runtime_decision_entry, build_runtime_decision_entry
+
+    session = SessionContext(session_id="runtime-decision-ledger")
+    entry = build_runtime_decision_entry(
+        kind="compaction",
+        trigger="request_preflight",
+        status="completed",
+        reason="cc_autocompact_threshold",
+        next_action="continue",
+        details={"before_tokens": 224_000, "after_tokens": 120_000},
+    )
+
+    append_runtime_decision_entry(session, entry)
+
+    assert entry["schema"] == "hive.ccplus.runtime_decision.v1"
+    assert session.metadata["runtime_decision_ledger"] == [entry]
+    assert session.metadata["runtime_assembly_state"]["runtime_decision_ledger"] == [entry]

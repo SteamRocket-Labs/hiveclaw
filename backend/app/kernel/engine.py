@@ -3799,6 +3799,11 @@ class AgentKernel:
 
             async def _emit_context_decision_event(data: dict[str, Any]) -> None:
                 event_type = str(data.get("event_type") or "context_window_status")
+                runtime_decision_entry = data.get("runtime_decision_entry")
+                if request.session_context is not None and isinstance(runtime_decision_entry, dict):
+                    from app.runtime.runtime_decision_ledger import append_runtime_decision_entry
+
+                    append_runtime_decision_entry(request.session_context, runtime_decision_entry)
                 if (
                     event_type == "compaction_lifecycle"
                     and request.session_context is not None

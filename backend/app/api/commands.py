@@ -24,6 +24,7 @@ from app.models.chat_session import ChatSession
 from app.models.trigger import AgentTrigger
 from app.models.user import User
 from app.runtime.hooks import HookEvent, emit_hook
+from app.runtime.schedule_decision_ledger import build_schedule_decision_entry, confirmed_plan_ref_from_args
 from app.services.agent_team_contract import teammate_creation_discovery
 from app.services.agent_tools import execute_tool
 from app.services.chat_message_parts import build_session_native_event
@@ -489,7 +490,7 @@ async def _execute_schedule_command(
     )
     if instruction and not has_structured_shape:
         kind_label = "recurring scheduled task" if command_name == "schedule_create" else "one-time scheduled task"
-        return _chat_prompt_payload(
+        payload = _chat_prompt_payload(
             command_name=command_name,
             content=(
                 f"Draft a {kind_label} for this request and confirm the schedule with me before enabling it: "
@@ -498,6 +499,13 @@ async def _execute_schedule_command(
             display_content=f"/{'schedule' if command_name == 'schedule_create' else 'once'} {instruction}",
             message="Handing the schedule draft to the agent.",
         )
+        payload["schedule_decision_entry"] = build_schedule_decision_entry(
+            command_origin=f"/{'schedule' if command_name == 'schedule_create' else 'once'}",
+            natural_vs_structured="natural",
+            plan_gate_decision={"allowed": False, "reason": "draft_with_agent_before_enable"},
+            confirmed_plan_ref={},
+        )
+        return payload
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
     if not instruction:
@@ -543,6 +551,12 @@ async def _execute_schedule_command(
             confirmed_plan_version=arguments.get("confirmed_plan_version"),
             confirmed_plan_hash=arguments.get("confirmed_plan_hash"),
         )
+    if not is_enabled:
+        plan_gate_decision = {"allowed": True, "reason": "disabled_draft"}
+    elif user_declined_plan_mode:
+        plan_gate_decision = {"allowed": True, "reason": "trusted_decline"}
+    else:
+        plan_gate_decision = {"allowed": True, "reason": "confirmed_plan_handoff"}
 
     delivery_target_json = arguments.get("delivery_target_json")
     if delivery_target_json is not None and not isinstance(delivery_target_json, dict):
@@ -575,6 +589,19 @@ async def _execute_schedule_command(
     db.add(trigger)
     await db.flush()
     event_type = "schedule" if command_name == "schedule_create" else "once"
+    payload = _schedule_command_payload(trigger)
+    schedule_decision_entry = build_schedule_decision_entry(
+        command_origin=f"/{'schedule' if command_name == 'schedule_create' else 'once'}",
+        natural_vs_structured="structured",
+        plan_gate_decision=plan_gate_decision,
+        confirmed_plan_ref=confirmed_plan_ref_from_args(arguments),
+        trigger_id=str(trigger.id),
+        next_fire=payload.get("next_run_at"),
+    )
+    config = dict(trigger.config or {})
+    config["schedule_decision_entry"] = schedule_decision_entry
+    trigger.config = config
+    payload["schedule_decision_entry"] = schedule_decision_entry
     await _append_command_session_event(
         db=db,
         agent=agent,
@@ -593,9 +620,10 @@ async def _execute_schedule_command(
             "cron_expr": config.get("expr"),
             "at": config.get("at"),
             "is_enabled": trigger.is_enabled,
+            "schedule_decision_entry": schedule_decision_entry,
         },
     )
-    return {"ok": True, "command": command_name, **_schedule_command_payload(trigger)}
+    return {"ok": True, "command": command_name, **payload}
 
 
 def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:

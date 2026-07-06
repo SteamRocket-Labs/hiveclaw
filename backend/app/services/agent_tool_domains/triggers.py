@@ -13,6 +13,7 @@ from app.services.plan_mode_core import (
     stamp_confirmed_plan_provenance,
     stamp_user_declined_plan_exemption,
 )
+from app.runtime.schedule_decision_ledger import build_schedule_decision_entry, confirmed_plan_ref_from_args
 from app.services.plan_mode_runtime_context import (
     trusted_plan_mode_user_decline_metadata,
     trusted_plan_mode_user_declined,
@@ -48,6 +49,24 @@ def trigger_bucket(trigger_type: str) -> str:
     if trigger_type == "once":
         return TRIGGER_BUCKET_ONCE
     return TRIGGER_BUCKET_CRON
+
+
+def _trigger_next_fire_hint(trigger_type: str, config: dict) -> str | None:
+    if trigger_type == "once":
+        return str(config.get("at") or "") or None
+    return None
+
+
+def _set_trigger_schedule_decision_entry(arguments: dict, *, trigger_id: object | None, trigger_type: str) -> dict:
+    config = arguments.get("config") if isinstance(arguments.get("config"), dict) else {}
+    return build_schedule_decision_entry(
+        command_origin="set_trigger",
+        natural_vs_structured="structured",
+        plan_gate_decision={"allowed": True, "reason": "tool_confirmed_or_exempt"},
+        confirmed_plan_ref=confirmed_plan_ref_from_args(arguments),
+        trigger_id=str(trigger_id or "") or None,
+        next_fire=_trigger_next_fire_hint(trigger_type, config),
+    )
 
 
 def _capture_reply_context() -> dict | None:
@@ -420,7 +439,14 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                         "reply_to_current_sender requires a live channel conversation with a persisted reply target.",
                     )
                 existing.type = ttype
-                existing.config = config
+                existing.config = {
+                    **config,
+                    "schedule_decision_entry": _set_trigger_schedule_decision_entry(
+                        arguments,
+                        trigger_id=existing.id,
+                        trigger_type=ttype,
+                    ),
+                }
                 existing.reason = reason
                 existing.is_enabled = True
                 existing.max_fires = _coerce_int(arguments.get("max_fires") or config.get("max_fires"))
@@ -463,6 +489,15 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 reply_context=reply_ctx or None,
             )
             db.add(trigger)
+            await db.flush()
+            trigger.config = {
+                **config,
+                "schedule_decision_entry": _set_trigger_schedule_decision_entry(
+                    arguments,
+                    trigger_id=trigger.id,
+                    trigger_type=ttype,
+                ),
+            }
             await db.commit()
 
         # Activity log

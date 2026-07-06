@@ -9,6 +9,7 @@ and event sinks.
 from __future__ import annotations
 
 import inspect
+import json
 import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass, field
@@ -20,6 +21,7 @@ from app.services.llm_client import LLMMessage
 
 CC_AUTOCOMPACT_BUFFER_TOKENS = 13_000
 TOOL_RESULT_COMPACTED_MARKER = "[Tool result compacted before next model request:"
+TOOL_RESULT_PREVIEW_CHARS = 240
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +52,7 @@ class ToolResultBudgetPass:
     trimmed_count: int
     reason: str = "tool_result_budget"
     trimmed_tool_call_ids: tuple[str, ...] = field(default_factory=tuple)
+    trimmed_context_effects: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
     def to_event(self) -> dict[str, Any]:
         return {
@@ -60,6 +63,7 @@ class ToolResultBudgetPass:
             "trimmed_count": self.trimmed_count,
             "reason": self.reason,
             "trimmed_tool_call_ids": list(self.trimmed_tool_call_ids),
+            "trimmed_context_effects": [dict(item) for item in self.trimmed_context_effects],
         }
 
 
@@ -116,8 +120,20 @@ def calculate_runtime_token_status(
     )
 
 
-def _assistant_tool_name_by_call_id(messages: Iterable[LLMMessage]) -> dict[str, str]:
-    names: dict[str, str] = {}
+def _parse_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
+    if isinstance(raw_arguments, dict):
+        return dict(raw_arguments)
+    if isinstance(raw_arguments, str) and raw_arguments.strip():
+        try:
+            parsed = json.loads(raw_arguments)
+        except (TypeError, json.JSONDecodeError):
+            return {"raw": raw_arguments}
+        return dict(parsed) if isinstance(parsed, dict) else {"raw": parsed}
+    return {}
+
+
+def _assistant_tool_metadata_by_call_id(messages: Iterable[LLMMessage]) -> dict[str, dict[str, Any]]:
+    metadata: dict[str, dict[str, Any]] = {}
     for msg in messages:
         if msg.role != "assistant":
             continue
@@ -126,12 +142,53 @@ def _assistant_tool_name_by_call_id(messages: Iterable[LLMMessage]) -> dict[str,
             if not call_id:
                 continue
             function = tool_call.get("function") or {}
-            names[call_id] = str(function.get("name") or "")
-    return names
+            metadata[call_id] = {
+                "tool_name": str(function.get("name") or ""),
+                "tool_args": _parse_tool_arguments(function.get("arguments")),
+            }
+    return metadata
 
 
 def _compact_tool_result_content(original: str, *, tool_call_id: str, reason: str) -> str:
     return f"{TOOL_RESULT_COMPACTED_MARKER} {reason}; {tool_call_id}; {len(original)}]"
+
+
+def _trimmed_context_effect(
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    original_content: str,
+    compacted_content: str,
+    reason: str,
+    message_index: int,
+) -> dict[str, Any]:
+    from app.runtime.tool_result_ledger import build_tool_result_ledger_entry
+
+    ledger_entry = build_tool_result_ledger_entry(
+        tool_name=tool_name,
+        tool_args=tool_args,
+        result_text=original_content,
+        status="ok",
+    )
+    return {
+        "schema": "hive.tool_result_budget_context_effect.v1",
+        "tool_call_id": tool_call_id,
+        "tool_name": tool_name,
+        "trim_reason": reason,
+        "before_chars": len(original_content),
+        "after_chars": len(compacted_content),
+        "result_kind": ledger_entry["result_kind"],
+        "context_effect": ledger_entry["context_effect"],
+        "source_refs": list(ledger_entry.get("source_refs") or []),
+        "preview": original_content[:TOOL_RESULT_PREVIEW_CHARS],
+        "preview_truncated": len(original_content) > TOOL_RESULT_PREVIEW_CHARS,
+        "reload_pointer": {
+            "kind": "conversation_tool_result",
+            "message_index": message_index,
+            "tool_call_id": tool_call_id,
+        },
+    }
 
 
 def _tool_result_budget_runtime_decision(policy: ContextPolicyV1, budget_pass: ToolResultBudgetPass) -> dict[str, Any]:
@@ -149,6 +206,7 @@ def _tool_result_budget_runtime_decision(policy: ContextPolicyV1, budget_pass: T
             "trimmed_count": budget_pass.trimmed_count,
             "tool_result_trimmed": budget_pass.changed,
             "trimmed_tool_call_ids": list(budget_pass.trimmed_tool_call_ids),
+            "trimmed_context_effects": [dict(item) for item in budget_pass.trimmed_context_effects],
         },
     )
 
@@ -202,47 +260,74 @@ def apply_tool_result_budget(
     """
 
     exempt = exempt_tool_names or set()
-    tool_name_by_call_id = _assistant_tool_name_by_call_id(messages)
+    tool_metadata_by_call_id = _assistant_tool_metadata_by_call_id(messages)
     before_chars = sum(len(m.content or "") for m in messages if m.role == "tool")
     copied = [m.model_copy(deep=True) if hasattr(m, "model_copy") else LLMMessage(**m.__dict__) for m in messages]
 
     trimmed_ids: list[str] = []
-    for msg in copied:
+    trimmed_effects: list[dict[str, Any]] = []
+    for index, msg in enumerate(copied):
         if msg.role != "tool":
             continue
         content = msg.content or ""
         tool_call_id = msg.tool_call_id or ""
-        tool_name = tool_name_by_call_id.get(tool_call_id, "")
+        tool_metadata = tool_metadata_by_call_id.get(tool_call_id, {})
+        tool_name = str(tool_metadata.get("tool_name") or "")
         if tool_name in exempt:
             continue
         if len(content) > inline_char_limit:
-            msg.content = _compact_tool_result_content(
+            compacted = _compact_tool_result_content(
                 content,
                 tool_call_id=tool_call_id,
                 reason="inline_char_limit",
             )
+            msg.content = compacted
             trimmed_ids.append(tool_call_id)
+            trimmed_effects.append(
+                _trimmed_context_effect(
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    tool_args=tool_metadata.get("tool_args") if isinstance(tool_metadata.get("tool_args"), dict) else {},
+                    original_content=content,
+                    compacted_content=compacted,
+                    reason="inline_char_limit",
+                    message_index=index,
+                )
+            )
 
     after_chars = sum(len(m.content or "") for m in copied if m.role == "tool")
     if aggregate_char_budget > 0 and after_chars > aggregate_char_budget:
-        for msg in copied:
+        for index, msg in enumerate(copied):
             if after_chars <= aggregate_char_budget:
                 break
             if msg.role != "tool":
                 continue
             content = msg.content or ""
             tool_call_id = msg.tool_call_id or ""
-            tool_name = tool_name_by_call_id.get(tool_call_id, "")
+            tool_metadata = tool_metadata_by_call_id.get(tool_call_id, {})
+            tool_name = str(tool_metadata.get("tool_name") or "")
             if tool_name in exempt:
                 continue
             if content.startswith(TOOL_RESULT_COMPACTED_MARKER):
                 continue
-            msg.content = _compact_tool_result_content(
+            compacted = _compact_tool_result_content(
                 content,
                 tool_call_id=tool_call_id,
                 reason="round_tool_result_budget",
             )
+            msg.content = compacted
             trimmed_ids.append(tool_call_id)
+            trimmed_effects.append(
+                _trimmed_context_effect(
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    tool_args=tool_metadata.get("tool_args") if isinstance(tool_metadata.get("tool_args"), dict) else {},
+                    original_content=content,
+                    compacted_content=compacted,
+                    reason="round_tool_result_budget",
+                    message_index=index,
+                )
+            )
             after_chars = sum(len(m.content or "") for m in copied if m.role == "tool")
 
     return ToolResultBudgetPass(
@@ -252,6 +337,7 @@ def apply_tool_result_budget(
         after_chars=after_chars,
         trimmed_count=len(trimmed_ids),
         trimmed_tool_call_ids=tuple(trimmed_ids),
+        trimmed_context_effects=tuple(trimmed_effects),
     )
 
 

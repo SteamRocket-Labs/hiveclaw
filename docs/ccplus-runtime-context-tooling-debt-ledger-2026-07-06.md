@@ -438,6 +438,7 @@ flowchart TD
 | 返回影响 | 主模型可能丢失关键证据；用户也看不到裁剪影响 |
 | 代码位置 | `backend/app/runtime/session_context_controller.py::apply_tool_result_budget`；`backend/app/kernel/engine.py` 的 `tool_result_exempt_names` |
 | 一轮修复 | 与 `ToolResultLedger` 合并：裁剪前先分类 result_kind/context_effect/source_refs；裁剪后保留可追溯 preview 和 reload pointer |
+| 2026-07-06 落地证据 | `ToolResultBudgetPass` 增加 `trimmed_context_effects`，每条被裁剪工具结果先从 assistant `tool_calls` 恢复 `tool_name/tool_args`，再复用 `ToolResultLedger` 的 `build_tool_result_ledger_entry()` 分类出 `result_kind`、`context_effect`、`source_refs`。裁剪事件和 RTD-22 的 `RuntimeDecisionEntry.details` 都带 `trimmed_context_effects`，包含 `preview`、`preview_truncated`、`reload_pointer={kind=conversation_tool_result,message_index,tool_call_id}`、before/after chars。Red：`pytest backend/tests/runtime/test_session_context_controller.py::test_tool_result_budget_pass_compacts_oldest_non_exempt_tool_results backend/tests/runtime/test_session_context_controller.py::test_prepare_session_context_records_tool_result_budget_runtime_decision -q` -> `2 failed`，失败原因为 `ToolResultBudgetPass` 无 `trimmed_context_effects` 且 runtime decision details 缺失该字段。Green：同命令 -> `2 passed, 4 warnings`。回归：`pytest backend/tests/runtime/test_session_context_controller.py backend/tests/kernel/test_session_context_controller_integration.py -q` -> `8 passed, 4 warnings`；`ruff check backend/app/runtime/session_context_controller.py backend/tests/runtime/test_session_context_controller.py` -> `All checks passed!` |
 
 ### RTD-24：LoopGuard 缺统一胜负判定矩阵
 

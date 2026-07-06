@@ -52,7 +52,7 @@ def test_tool_result_budget_pass_compacts_oldest_non_exempt_tool_results() -> No
             tool_calls=[
                 {"id": "a", "function": {"name": "run_command"}},
                 {"id": "b", "function": {"name": "read_file"}},
-                {"id": "c", "function": {"name": "run_command"}},
+                {"id": "c", "function": {"name": "web_fetch", "arguments": '{"url":"https://example.com/a"}'}},
             ],
         ),
         _msg("tool", "A" * 80, tool_call_id="a"),
@@ -73,6 +73,17 @@ def test_tool_result_budget_pass_compacts_oldest_non_exempt_tool_results() -> No
     assert result.messages[3].content == "B" * 80
     assert result.messages[4].content.startswith("[Tool result compacted before next model request:")
     assert result.after_chars < result.before_chars
+    assert [item["tool_call_id"] for item in result.trimmed_context_effects] == ["a", "c"]
+    assert result.trimmed_context_effects[0]["tool_name"] == "run_command"
+    assert result.trimmed_context_effects[0]["reload_pointer"] == {
+        "kind": "conversation_tool_result",
+        "message_index": 2,
+        "tool_call_id": "a",
+    }
+    assert result.trimmed_context_effects[1]["result_kind"] == "evidence"
+    assert result.trimmed_context_effects[1]["context_effect"] == "external_reference"
+    assert result.trimmed_context_effects[1]["source_refs"] == ["url:https://example.com/a"]
+    assert result.trimmed_context_effects[1]["preview"] == "C" * 80
 
 
 @pytest.mark.asyncio
@@ -106,6 +117,8 @@ async def test_prepare_session_context_records_tool_result_budget_runtime_decisi
     assert runtime_decision["next_action"] == "recalculate_context_window"
     assert runtime_decision["details"]["tool_result_trimmed"] is True
     assert runtime_decision["details"]["trimmed_tool_call_ids"] == ["call-1"]
+    assert runtime_decision["details"]["trimmed_context_effects"][0]["tool_call_id"] == "call-1"
+    assert budget_event["trimmed_context_effects"][0]["preview"] == "A" * 120
 
 
 @pytest.mark.asyncio

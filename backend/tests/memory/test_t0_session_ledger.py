@@ -91,6 +91,41 @@ def test_append_user_and_assistant_messages_to_unified_session_ledger(tmp_path: 
     assert events[1].prev_event_hash == records[0]["event_hash"]
 
 
+def test_t0_event_promotes_runtime_metadata_to_mechanical_record_and_projection(tmp_path: Path) -> None:
+    agent_id = uuid4()
+    session_id = uuid4()
+
+    result = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        event_type="user_message",
+        role="user",
+        content="runtime metadata discipline",
+        runtime_task_id="runtime-1",
+        source="web_chat",
+        metadata={"turn_id": "turn-1", "intent_id": "intent-1", "request_id": "request-1"},
+        data_root=tmp_path,
+    )
+
+    record = json.loads(result.jsonl_path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["sequence"] == 1
+    assert record["source"] == "web_chat"
+    assert record["runtime_task_id"] == "runtime-1"
+    assert record["turn_id"] == "turn-1"
+    assert record["intent_id"] == "intent-1"
+
+    projection = result.path.read_text(encoding="utf-8")
+    assert 'turn_id="turn-1"' in projection
+    assert 'intent_id="intent-1"' in projection
+    assert 'runtime_task_id="runtime-1"' in projection
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert events[0].turn_id == "turn-1"
+    assert events[0].intent_id == "intent-1"
+    assert events[0].runtime_task_id == "runtime-1"
+    assert events[0].source == "web_chat"
+    assert events[0].sequence == 1
+
+
 def test_jsonl_append_uses_o_append_and_single_write(monkeypatch, tmp_path: Path) -> None:
     import app.memory.t0.ledger as ledger
 

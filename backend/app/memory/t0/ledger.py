@@ -79,6 +79,8 @@ class T0SessionEvent:
     message_id: str | None
     actor_id: str | None
     runtime_task_id: str | None
+    turn_id: str | None
+    intent_id: str | None
     source: str
     sensitivity: str
     metadata: dict[str, Any]
@@ -572,6 +574,7 @@ def _build_event_record(
     metadata: dict[str, Any],
     prev_event_hash: str,
 ) -> dict[str, Any]:
+    runtime_task_id_value = _id_value(runtime_task_id) or _metadata_text(metadata, "runtime_task_id") or None
     record: dict[str, Any] = {
         "schema_version": EVENT_RECORD_SCHEMA_VERSION,
         "agent_id": str(agent_id),
@@ -586,7 +589,9 @@ def _build_event_record(
         "message_id": _id_value(message_id) or None,
         "actor_id": _id_value(actor_id) or None,
         "tenant_id": _id_value(tenant_id) or None,
-        "runtime_task_id": _id_value(runtime_task_id) or None,
+        "runtime_task_id": runtime_task_id_value,
+        "turn_id": _metadata_text(metadata, "turn_id") or None,
+        "intent_id": _metadata_text(metadata, "intent_id") or None,
         "source": source,
         "sensitivity": sensitivity,
         "metadata": metadata,
@@ -718,7 +723,9 @@ def _render_event_block(
         "message_id": _id_value(message_id),
         "actor_id": _id_value(actor_id),
         "tenant_id": _id_value(tenant_id),
-        "runtime_task_id": _id_value(runtime_task_id),
+        "runtime_task_id": _id_value(runtime_task_id) or _metadata_text(metadata, "runtime_task_id"),
+        "turn_id": _metadata_text(metadata, "turn_id"),
+        "intent_id": _metadata_text(metadata, "intent_id"),
         "source": source,
         "sensitivity": sensitivity,
     }
@@ -759,6 +766,8 @@ def _parse_events_from_source(*, path: Path, segment_id: str) -> list[T0SessionE
                 message_id=attrs.get("message_id") or None,
                 actor_id=attrs.get("actor_id") or None,
                 runtime_task_id=attrs.get("runtime_task_id") or None,
+                turn_id=attrs.get("turn_id") or None,
+                intent_id=attrs.get("intent_id") or None,
                 source=attrs.get("source", ""),
                 sensitivity=attrs.get("sensitivity", ""),
                 metadata=metadata,
@@ -831,6 +840,10 @@ def _event_from_record(
         message_id=str(record.get("message_id")) if record.get("message_id") else None,
         actor_id=str(record.get("actor_id")) if record.get("actor_id") else None,
         runtime_task_id=str(record.get("runtime_task_id")) if record.get("runtime_task_id") else None,
+        turn_id=str(record.get("turn_id") or metadata.get("turn_id")) if record.get("turn_id") or metadata.get("turn_id") else None,
+        intent_id=str(record.get("intent_id") or metadata.get("intent_id"))
+        if record.get("intent_id") or metadata.get("intent_id")
+        else None,
         source=str(record.get("source") or ""),
         sensitivity=str(record.get("sensitivity") or ""),
         metadata=metadata,
@@ -881,6 +894,11 @@ def _clean_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
         else:
             cleaned[str(key)] = str(value)
     return cleaned
+
+
+def _metadata_text(metadata: dict[str, Any], key: str) -> str:
+    value = metadata.get(key)
+    return "" if value in (None, "") else str(value)
 
 
 def _record_turn_start_metadata(

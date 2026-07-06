@@ -8,11 +8,46 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Mapping
 
 ACTIVATION_QUERY_SCHEMA = "hive.ccplus.activation_query.v1"
 ACTIVATION_QUERY_REF_SCHEMA = "hive.ccplus.activation_query_ref.v1"
+_URL_RE = re.compile(r"https?://[^\s<>\]\)）}，。；;]+")
+_FILE_REF_RE = re.compile(
+    r"(?<![\w/.-])(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+"
+    r"\.(?:md|py|ts|tsx|js|jsx|json|ya?ml|toml|sql|txt|csv|pdf|docx|xlsx|png|jpe?g)"
+)
+_TEMPORAL_TERMS = (
+    "今天",
+    "明天",
+    "昨天",
+    "刚刚",
+    "现在",
+    "上次",
+    "之前",
+    "today",
+    "tomorrow",
+    "yesterday",
+    "now",
+    "previous",
+    "last time",
+)
+_HIGH_RISK_TERMS = (
+    "delete",
+    "drop",
+    "rm -rf",
+    "secret",
+    "credential",
+    "production",
+    "prod",
+    "泄漏",
+    "删除",
+    "生产",
+    "密钥",
+    "凭证",
+)
 
 
 def _text(value: Any, *, fallback: str = "") -> str:
@@ -75,6 +110,45 @@ def task_profile_to_activation_payload(profile: Any) -> dict[str, Any]:
         "complexity": _text(complexity, fallback="low"),
         "execution_shape": _text(execution_shape, fallback="direct"),
         "suggested_deferred_tool_group_names": list(_string_tuple(groups)),
+    }
+
+
+def _unique_ordered(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def parse_mechanical_activation_features(text: str) -> dict[str, Any]:
+    """Extract zero-LLM Q features from the current prompt text."""
+
+    prompt = str(text or "")
+    urls = _unique_ordered([match.group(0).rstrip(".,;，。；") for match in _URL_RE.finditer(prompt)])
+    files = _unique_ordered([match.group(0).rstrip(".,;，。；") for match in _FILE_REF_RE.finditer(prompt)])
+    entities = [{"kind": "file", "value": value} for value in files]
+    entities.extend({"kind": "url", "value": value} for value in urls)
+    lowered = prompt.lower()
+    temporal_hints = [
+        {"kind": "relative", "value": term}
+        for term in _TEMPORAL_TERMS
+        if (term in prompt if any("\u4e00" <= char <= "\u9fff" for char in term) else term in lowered)
+    ]
+    risk_signals = [
+        term for term in _HIGH_RISK_TERMS if (term in prompt if any("\u4e00" <= char <= "\u9fff" for char in term) else term in lowered)
+    ]
+    return {
+        "entities": entities,
+        "referenced_files": files,
+        "temporal_hints": temporal_hints,
+        "concepts": [],
+        "risk_level": "high" if risk_signals else "low",
+        "risk_signals": risk_signals,
     }
 
 
@@ -219,5 +293,6 @@ __all__ = [
     "ActivationQuery",
     "activation_query_hash",
     "build_activation_query_ref",
+    "parse_mechanical_activation_features",
     "task_profile_to_activation_payload",
 ]

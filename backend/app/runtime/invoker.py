@@ -301,11 +301,16 @@ def _skill_catalog_ranking_inputs(request: AgentInvocationRequest) -> dict[str, 
 
 
 def _build_activation_query_for_request(request: AgentInvocationRequest) -> dict[str, Any]:
-    from app.runtime.activation_query import ActivationQuery, task_profile_to_activation_payload
+    from app.runtime.activation_query import (
+        ActivationQuery,
+        parse_mechanical_activation_features,
+        task_profile_to_activation_payload,
+    )
 
     metadata = _ensure_turn_metadata(request)
     prompt_text = _latest_user_prompt(request.messages)
     task_profile = infer_task_profile(prompt_text, messages=request.messages)
+    mechanical_features = parse_mechanical_activation_features(prompt_text)
     owner_context = {
         key: metadata[key]
         for key in (
@@ -329,12 +334,21 @@ def _build_activation_query_for_request(request: AgentInvocationRequest) -> dict
         agent_role=request.role_description or request.agent_name,
         owner_context=owner_context,
         task_profile=task_profile_to_activation_payload(task_profile),
+        entities=mechanical_features["entities"],
+        concepts=mechanical_features["concepts"],
+        temporal_hints=mechanical_features["temporal_hints"],
+        referenced_files=mechanical_features["referenced_files"],
+        risk_level=mechanical_features["risk_level"],
         candidate_lanes=("memory", "knowledge", "skill", "tool"),
         parse_trace=[
             {"source": "runtime_invoker", "field": "raw_prompt", "method": "latest_user_message"},
             {"source": "_ensure_turn_metadata", "field": "turn_id", "method": "session_metadata"},
             {"source": "_ensure_turn_metadata", "field": "intent_id", "method": "session_metadata"},
             {"source": "infer_task_profile", "field": "task_profile", "method": "context_budget"},
+            {"source": "parse_mechanical_activation_features", "field": "entities", "method": "regex"},
+            {"source": "parse_mechanical_activation_features", "field": "referenced_files", "method": "regex"},
+            {"source": "parse_mechanical_activation_features", "field": "temporal_hints", "method": "keyword"},
+            {"source": "parse_mechanical_activation_features", "field": "risk_level", "method": "keyword"},
             {"source": "runtime_invoker", "field": "candidate_lanes", "method": "default_runtime_lanes"},
         ],
     )

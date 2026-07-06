@@ -116,6 +116,52 @@ def test_invoker_activation_query_embeds_task_profile_payload() -> None:
     assert ("task_profile", "infer_task_profile") in trace_fields
 
 
+def test_mechanical_activation_parser_extracts_urls_files_time_and_risk() -> None:
+    from app.runtime.activation_query import parse_mechanical_activation_features
+
+    features = parse_mechanical_activation_features(
+        "明天请检查 docs/memory-system-spec.md 和 https://example.com/report，注意不要删除生产数据。"
+    )
+
+    assert {"kind": "file", "value": "docs/memory-system-spec.md"} in features["entities"]
+    assert {"kind": "url", "value": "https://example.com/report"} in features["entities"]
+    assert features["referenced_files"] == ["docs/memory-system-spec.md"]
+    assert {"kind": "relative", "value": "明天"} in features["temporal_hints"]
+    assert features["risk_level"] == "high"
+    assert "删除" in features["risk_signals"]
+    assert "生产" in features["risk_signals"]
+
+
+def test_invoker_activation_query_embeds_mechanical_parser_features() -> None:
+    from types import SimpleNamespace
+
+    from app.runtime.invoker import AgentInvocationRequest, _build_activation_query_for_request
+    from app.runtime.session import SessionContext
+
+    manifest = _build_activation_query_for_request(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[
+                {
+                    "role": "user",
+                    "content": "今天看 backend/app/runtime/invoker.py，确认不要泄漏 secret。",
+                }
+            ],
+            agent_name="Agent",
+            role_description="Runtime engineer",
+            session_context=SessionContext(session_id="session-mechanical", metadata={"request_id": "mechanical"}),
+        )
+    )
+
+    assert {"kind": "file", "value": "backend/app/runtime/invoker.py"} in manifest["entities"]
+    assert manifest["referenced_files"] == ["backend/app/runtime/invoker.py"]
+    assert {"kind": "relative", "value": "今天"} in manifest["temporal_hints"]
+    assert manifest["risk_level"] == "high"
+    trace_fields = {(item["field"], item["source"]) for item in manifest["parse_trace"]}
+    assert ("entities", "parse_mechanical_activation_features") in trace_fields
+    assert ("risk_level", "parse_mechanical_activation_features") in trace_fields
+
+
 def test_activation_query_from_manifest_rejects_wrong_schema() -> None:
     from app.runtime.activation_query import ActivationQuery
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import re
 import uuid
@@ -249,6 +250,53 @@ def _latest_user_prompt(messages: list[dict] | tuple[dict, ...] | None) -> str:
             return content
         return str(content or "")
     return ""
+
+
+_SKILL_CATALOG_SCENARIO_METADATA_KEYS = (
+    "task_profile",
+    "current_task",
+    "task_context",
+    "goal",
+    "objective",
+)
+
+
+def _stringify_skill_catalog_scenario_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _skill_catalog_ranking_inputs(request: AgentInvocationRequest) -> dict[str, Any]:
+    metadata = request.session_context.metadata if request.session_context is not None else {}
+    scenario_parts = [_latest_user_prompt(request.messages)]
+    for key in _SKILL_CATALOG_SCENARIO_METADATA_KEYS:
+        text = _stringify_skill_catalog_scenario_value(metadata.get(key))
+        if text:
+            scenario_parts.append(text)
+    plan_mode = metadata.get("plan_mode")
+    if isinstance(plan_mode, dict):
+        for key in ("original_request", "intent_type", "action_kind", "tool_name"):
+            text = _stringify_skill_catalog_scenario_value(plan_mode.get(key))
+            if text:
+                scenario_parts.append(text)
+    path_triggered_skill_names: list[str] = []
+    for item in metadata.get("conditional_skill_activations") or []:
+        if not isinstance(item, dict):
+            continue
+        skill_name = str(item.get("skill_name") or "").strip()
+        if skill_name and skill_name not in path_triggered_skill_names:
+            path_triggered_skill_names.append(skill_name)
+    return {
+        "scenario_text": "\n".join(part for part in scenario_parts if part),
+        "active_skill_names": tuple(request.session_context.active_skills if request.session_context else ()),
+        "path_triggered_skill_names": tuple(path_triggered_skill_names),
+    }
 
 
 def _format_hook_additional_contexts(contexts: list[str]) -> str:
@@ -1286,11 +1334,24 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
     # dynamic suffix (InvocationRequest.skill_catalog → kernel → dynamic suffix),
     # NOT the frozen prefix. Standalone subagents carry no host catalog.
     skill_catalog_text = ""
+    skill_catalog_ranking: list[dict[str, Any]] = []
     if request.agent_id is not None and not (request.standalone_system_prompt or "").strip():
+        ranking_inputs = _skill_catalog_ranking_inputs(request)
         skill_catalog_text = build_skill_catalog_section_for_agent(
             request.agent_id,
             budget_profile=_resolve_context_budget(request),
+            scenario_text=ranking_inputs["scenario_text"],
+            active_skill_names=ranking_inputs["active_skill_names"],
+            path_triggered_skill_names=ranking_inputs["path_triggered_skill_names"],
+            ranking_manifest=skill_catalog_ranking,
         )
+        if request.session_context is not None:
+            request.session_context.metadata["skill_catalog_ranking"] = list(skill_catalog_ranking)
+            request.session_context.metadata["skill_catalog_ranking_inputs"] = {
+                "scenario_text_present": bool(ranking_inputs["scenario_text"]),
+                "active_skill_names": list(ranking_inputs["active_skill_names"]),
+                "path_triggered_skill_names": list(ranking_inputs["path_triggered_skill_names"]),
+            }
 
     kernel_request = InvocationRequest(
         model=effective_model,

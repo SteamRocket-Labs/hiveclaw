@@ -61,3 +61,25 @@ def test_skill_catalog_ranker_can_force_relevant_cold_skill_for_scenario(tmp_pat
     )
 
     assert [skill.metadata.name for skill in ranked] == ["cold-skill", "hot-skill"]
+
+
+def test_skill_catalog_ranker_returns_reasons_for_scenario_active_and_path_matches(tmp_path: Path) -> None:
+    from app.services.skill_catalog_ranker import rank_skills_for_prompt_with_reasons
+
+    ranked = rank_skills_for_prompt_with_reasons(
+        tmp_path,
+        [
+            _skill("general", description="Generic work"),
+            _skill("python", description="Typed Python API work"),
+            _skill("incident", description="Incident response"),
+        ],
+        scenario_text="Fix the typed Python API boundary",
+        active_skill_names=("incident",),
+        path_triggered_skill_names=("python",),
+    )
+
+    assert [item.skill.metadata.name for item in ranked] == ["python", "incident", "general"]
+    by_name = {item.skill.metadata.name: item for item in ranked}
+    assert "path_triggered" in by_name["python"].reasons
+    assert "scenario_overlap:api,python,typed" in by_name["python"].reasons
+    assert "active_in_session" in by_name["incident"].reasons

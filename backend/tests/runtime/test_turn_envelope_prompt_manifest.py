@@ -159,6 +159,9 @@ def test_runtime_prompt_manifest_records_selection_reasons_source_hashes_and_bud
         retrieval_context="knowledge text",
         skill_catalog="## Skills\n- python",
         active_skill_names=["python"],
+        skill_ranking=[
+            {"skill_name": "python", "rank": 1, "score": 300, "reasons": ["scenario_overlap:python"]}
+        ],
     )
 
     candidates = {item["id"]: item for item in manifest["context_candidates"]}
@@ -170,6 +173,8 @@ def test_runtime_prompt_manifest_records_selection_reasons_source_hashes_and_bud
     assert candidates["ctx:memory:memory_files"]["why_selected"] == "memory_snapshot_or_retrieval_context_present"
     assert candidates["ctx:memory:memory_files"]["source_hash"]
     assert candidates["ctx:skill:skill_catalog"]["source_hash"] == manifest["source_hashes"]["ctx:skill:skill_catalog"]
+    assert candidates["ctx:skill:skill_catalog"]["payload"]["ranking"][0]["skill_name"] == "python"
+    assert candidates["ctx:skill:skill_catalog"]["payload"]["ranking"][0]["reasons"] == ["scenario_overlap:python"]
     assert "ctx:memory:memory_files" in selected_ids
     assert "ctx:permissions:permissions_context" in suppressed_ids
     assert budget_decisions["ctx:memory:memory_files"]["budget_key"] == "memory_budget_chars"

@@ -353,6 +353,8 @@ def _context_candidate(
         "budget_key": budget_key,
         "budget_chars": budget_chars,
     }
+    if payload is not None:
+        candidate["payload"] = payload
     if budget_chars is None:
         decision = "selected" if selected else "suppressed_empty"
     elif not selected:
@@ -392,6 +394,7 @@ def build_context_selection_manifest(
     messages: list[Any] | tuple[Any, ...] | None,
     context_budget: Any,
     model_window: int | None,
+    skill_ranking: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> dict[str, Any]:
     budget = _budget_manifest(context_budget, model_window)
     suffix_payload = {
@@ -401,6 +404,7 @@ def build_context_selection_manifest(
     skill_payload = {
         "catalog": skill_catalog or "",
         "active_skill_names": list(active_skill_names or []),
+        "ranking": list(skill_ranking or []),
     }
     candidate_specs = [
         {
@@ -559,6 +563,7 @@ def build_context_usage_ledger(
     retrieval_context: str = "",
     skill_catalog: str = "",
     active_skill_names: list[str] | tuple[str, ...] | None = None,
+    skill_ranking: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     mcp_server_refs: list[Any] | None = None,
     available_agent_types: list[Any] | tuple[Any, ...] | None = None,
 ) -> dict[str, Any]:
@@ -567,6 +572,7 @@ def build_context_usage_ledger(
     skill_payload = {
         "catalog": skill_catalog or "",
         "active_skill_names": list(active_skill_names or []),
+        "ranking": list(skill_ranking or []),
     }
     mcp_payload = {
         "tools": mcp_tools,
@@ -627,6 +633,7 @@ def build_runtime_prompt_assembly_manifest(
     retrieval_context: str = "",
     skill_catalog: str = "",
     active_skill_names: list[str] | tuple[str, ...] | None = None,
+    skill_ranking: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     system_prompt_suffix: str = "",
     system_prompt_suffix_sections: list[str] | tuple[str, ...] | None = None,
     mcp_server_refs: list[Any] | None = None,
@@ -657,6 +664,7 @@ def build_runtime_prompt_assembly_manifest(
         retrieval_context=retrieval_context,
         skill_catalog=skill_catalog,
         active_skill_names=active_skill_names,
+        skill_ranking=skill_ranking,
         mcp_server_refs=mcp_server_refs,
         available_agent_types=available_agent_types,
     )
@@ -668,6 +676,7 @@ def build_runtime_prompt_assembly_manifest(
         retrieval_context=retrieval_context,
         skill_catalog=skill_catalog,
         active_skill_names=active_skill_names,
+        skill_ranking=skill_ranking,
         system_prompt_suffix=system_prompt_suffix,
         system_prompt_suffix_sections=system_prompt_suffix_sections,
         active_tool_groups=active_tool_groups,

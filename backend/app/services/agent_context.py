@@ -13,7 +13,7 @@ from loguru import logger
 from app.config import get_settings
 from app.runtime.context_budget import ContextBudget
 from app.services.agent_team_context import build_prompt_facing_team_context
-from app.services.skill_catalog_ranker import rank_skills_for_prompt
+from app.services.skill_catalog_ranker import rank_skills_for_prompt_with_reasons
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 
 settings = get_settings()
@@ -110,7 +110,15 @@ def _strip_primary_heading(content: str) -> str:
     return content
 
 
-def _load_skills_index(agent_id: uuid.UUID, *, budget_chars: int = 8000) -> str:
+def _load_skills_index(
+    agent_id: uuid.UUID,
+    *,
+    budget_chars: int = 8000,
+    scenario_text: str | None = None,
+    active_skill_names: tuple[str, ...] = (),
+    path_triggered_skill_names: tuple[str, ...] = (),
+    ranking_manifest: list[dict] | None = None,
+) -> str:
     """Load skill index (name + description) from skills/ directory.
 
     Supports the canonical folder format plus legacy flat-file compatibility:
@@ -131,7 +139,27 @@ def _load_skills_index(agent_id: uuid.UUID, *, budget_chars: int = 8000) -> str:
     rank_workspace = PERSISTENT_DATA / str(agent_id)
     if not rank_workspace.exists():
         rank_workspace = TOOL_WORKSPACE / str(agent_id)
-    registry.register_many(rank_skills_for_prompt(rank_workspace, loaded_skills))
+    ranked = rank_skills_for_prompt_with_reasons(
+        rank_workspace,
+        loaded_skills,
+        scenario_text=scenario_text,
+        active_skill_names=active_skill_names,
+        path_triggered_skill_names=path_triggered_skill_names,
+    )
+    registry.register_many([decision.skill for decision in ranked])
+    if ranking_manifest is not None:
+        ranking_manifest[:] = [
+            {
+                "rank": index,
+                "skill_name": decision.skill.metadata.name,
+                "source": decision.skill.relative_path,
+                "score": decision.score,
+                "reasons": list(decision.reasons),
+                "state": decision.state,
+                "use_count": decision.use_count,
+            }
+            for index, decision in enumerate(ranked, start=1)
+        ]
 
     return registry.render_catalog(budget_chars=budget_chars)
 
@@ -140,6 +168,10 @@ def build_skill_catalog_section_for_agent(
     agent_id: uuid.UUID | None,
     *,
     budget_profile: ContextBudget | None = None,
+    scenario_text: str | None = None,
+    active_skill_names: tuple[str, ...] = (),
+    path_triggered_skill_names: tuple[str, ...] = (),
+    ranking_manifest: list[dict] | None = None,
 ) -> str:
     """Render the ## Skills catalog section for an agent's workspace.
 
@@ -155,7 +187,14 @@ def build_skill_catalog_section_for_agent(
     from app.runtime.prompt_sections import build_skills_catalog_section
 
     skill_budget = budget_profile.skill_catalog_budget_chars if budget_profile else 4000
-    skills_text = _load_skills_index(agent_id, budget_chars=max(skill_budget, 800))
+    skills_text = _load_skills_index(
+        agent_id,
+        budget_chars=max(skill_budget, 800),
+        scenario_text=scenario_text,
+        active_skill_names=active_skill_names,
+        path_triggered_skill_names=path_triggered_skill_names,
+        ranking_manifest=ranking_manifest,
+    )
     if len(skills_text) > skill_budget:
         skills_text = (
             skills_text[:skill_budget] + "\n\n...(skill catalog truncated — use `load_skill` to see full details)"

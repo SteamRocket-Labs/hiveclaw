@@ -2438,6 +2438,32 @@ def test_turn_route_enables_work_ledger_for_complex_multistep_turn():
     assert request.session_context.metadata["work_ledger_enabled"] is True
 
 
+def test_skill_catalog_ranking_inputs_include_prompt_session_active_and_path_triggers() -> None:
+    from app.runtime.invoker import AgentInvocationRequest, _skill_catalog_ranking_inputs
+
+    session = SessionContext(session_id="session-skill-ranking")
+    session.active_skills = ["incident"]
+    session.metadata["task_profile"] = {"domain": "backend", "objective": "stabilize API boundary"}
+    session.metadata["conditional_skill_activations"] = [
+        {"skill_name": "python", "matched_path": "projects/api/app.py"},
+        {"skill_name": "", "matched_path": "ignored"},
+    ]
+    request = AgentInvocationRequest(
+        model=SimpleNamespace(name="test-model"),
+        messages=[{"role": "user", "content": "Fix the typed Python handler"}],
+        agent_name="Engineer",
+        role_description="Runtime engineer",
+        session_context=session,
+    )
+
+    inputs = _skill_catalog_ranking_inputs(request)
+
+    assert "Fix the typed Python handler" in inputs["scenario_text"]
+    assert "stabilize API boundary" in inputs["scenario_text"]
+    assert inputs["active_skill_names"] == ("incident",)
+    assert inputs["path_triggered_skill_names"] == ("python",)
+
+
 @pytest.mark.asyncio
 async def test_kernel_get_tools_reinjects_discovered_tool_schemas(monkeypatch):
     """R3 (closure plan §7): deferred tools made callable by tool_search in an

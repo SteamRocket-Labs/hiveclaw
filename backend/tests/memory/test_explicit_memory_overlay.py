@@ -75,6 +75,45 @@ async def test_search_and_load_memory_include_active_explicit_overlay(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_explicit_overlay_projects_activation_keys_for_router(tmp_path: Path) -> None:
+    from app.memory.explicit_overlay import search_explicit_overlay_entries
+    from app.memory.retriever import MemoryRetriever
+    from app.tools.handlers.memory import save_memory
+
+    agent_id = uuid.uuid4()
+    source_ref = "t0://session/s1/segment/seg-1#seq=1..2"
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        await save_memory(
+            agent_id,
+            {
+                "content": "用户要求所有整改用红灯测试先锁边界，并且先更新文档证据",
+                "category": "constraint",
+                "source_refs": [source_ref],
+            },
+        )
+
+    search_hits = search_explicit_overlay_entries(tmp_path, agent_id, "红灯测试", limit=1)
+
+    assert len(search_hits) == 1
+    activation_keys = search_hits[0]["metadata"]["activation_keys"]
+    assert activation_keys["schema_version"] == "explicit_overlay.activation_keys.20260705"
+    assert activation_keys["candidate_kind"] == "agent_memory"
+    assert activation_keys["candidate_ref"]["source_type"] == "explicit_overlay"
+    assert activation_keys["key_features"]["category"] == ["constraint"]
+    assert activation_keys["key_features"]["target_hint"] == ["worker"]
+    assert activation_keys["key_features"]["status"] == ["active"]
+    assert "红灯" in activation_keys["key_features"]["concepts"]
+    assert activation_keys["value_pointer"]["loader"] == "explicit_overlay_entry"
+    assert source_ref in activation_keys["source_refs"]
+
+    retrieved = MemoryRetriever(data_root=tmp_path)._retrieve_explicit_overlay(agent_id, query="红灯测试")
+
+    assert retrieved[0].metadata["activation_keys"] == activation_keys
+
+
+@pytest.mark.asyncio
 async def test_explicit_overlay_uses_write_gate_and_refuses_pl4(tmp_path: Path) -> None:
     from app.tools.handlers.memory import save_memory
 

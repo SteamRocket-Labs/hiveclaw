@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from xml.sax.saxutils import escape
 
 from app.memory.md_store import MEMORY_DEDUP_THRESHOLD, jaccard_similarity
@@ -236,10 +237,50 @@ def search_explicit_overlay_entries(
             "source_type": "explicit_overlay",
             "timestamp": entry.created_at,
             "sensitivity": entry.sensitivity,
-            "metadata": dict(entry.metadata),
+            "metadata": _entry_metadata_with_activation_keys(entry),
         }
         for entry in entries[:limit]
     ]
+
+
+def build_explicit_overlay_activation_keys(entry: ExplicitMemoryOverlayEntry) -> dict[str, Any]:
+    source = f"memory/explicit/entries/{entry.entry_id}.md"
+    concepts = sorted(_term_set(f"{entry.category} {entry.target_hint} {entry.content}"))[:64]
+    source_refs = list(entry.source_refs) or [source]
+    return {
+        "schema_version": "explicit_overlay.activation_keys.20260705",
+        "candidate_kind": "agent_memory",
+        "candidate_ref": {
+            "schema": "hive.ccplus.context_candidate_ref.v1",
+            "candidate_id": f"agent_memory:explicit_overlay:{entry.entry_id}",
+            "kind": "agent_memory",
+            "source_type": "explicit_overlay",
+            "item_id": entry.entry_id,
+            "source": source,
+        },
+        "key_features": {
+            "category": [entry.category],
+            "target_hint": [entry.target_hint],
+            "status": [entry.status],
+            "concepts": concepts,
+            "sensitivity": entry.sensitivity,
+            "created_at": entry.created_at,
+        },
+        "value_pointer": {
+            "loader": "explicit_overlay_entry",
+            "entry_id": entry.entry_id,
+            "path": source,
+            "target_hint": entry.target_hint,
+        },
+        "source_refs": source_refs,
+    }
+
+
+def _entry_metadata_with_activation_keys(entry: ExplicitMemoryOverlayEntry) -> dict[str, Any]:
+    return {
+        **entry.metadata,
+        "activation_keys": build_explicit_overlay_activation_keys(entry),
+    }
 
 
 def update_explicit_overlay_status(

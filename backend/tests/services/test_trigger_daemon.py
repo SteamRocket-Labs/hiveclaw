@@ -627,7 +627,10 @@ async def test_tick_marks_once_trigger_inflight_without_disabling_before_ack(mon
         return True
 
     def fake_create_task(coro, *args, **kwargs):
-        coro.close()
+        inner = coro.cr_frame.f_locals.get("awaitable", coro)
+        inner.close()
+        if inner is not coro:
+            coro.close()
         return SimpleNamespace()
 
     monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)

@@ -89,13 +89,17 @@ Hive is an open-source **multi-agent collaboration platform** — enterprise "di
 - **Stack:** FastAPI (Python 3.12) + React 19 (TypeScript 5) + PostgreSQL 15 + Redis 7
 - **Deployment:** Docker / Railway
 
-## Railway Deployment Rule — Production Only, Archive-Root Path
+## Railway Deployment Rule — Production Only, Three Services
 
-For Hive production/product deployments, **always deploy backend and frontend with the archive-root shape below**. Railway services are configured with `rootDirectory=backend` and `rootDirectory=frontend`, so the uploaded archive must preserve a top-level `backend/` or `frontend/` directory.
+For Hive production/product deployments, **always deploy all three Railway services**: `backend`, `backend-api`, and `frontend`. A deploy is incomplete if any one of the three services is still on an older deployment.
 
 The retired Railway eval environment is not a default deploy target. Eval now reads production evidence and keeps deterministic gates in CI; see `docs/eval-system-spec.md`.
 
-Do **not** deploy from a package-root path for this repo. Commands that upload `backend` or `frontend` as the root can make Railway read `/railway.json` while still looking for `snapshot-target-unpack/backend` or `snapshot-target-unpack/frontend`, causing build failures.
+Railway source layout differs by service:
+
+- `backend`: service is configured with `rootDirectory=backend`; upload an archive that preserves a top-level `backend/` directory.
+- `backend-api`: service is configured with no root directory and `configFile=/railway.json`; upload from the backend package root itself.
+- `frontend`: service is configured with `rootDirectory=frontend`; upload an archive that preserves a top-level `frontend/` directory.
 
 Use this exact pattern from the repo root:
 
@@ -109,15 +113,19 @@ git archive --format=tar HEAD frontend | tar -xf - -C "$tmp_root/frontend-root"
 cd "$tmp_root/backend-root"
 railway up --service backend --environment production --project "$PROJECT_ID" --detach -m "deploy latest backend production archive-root"
 
+cd "$tmp_root/backend-root/backend"
+railway up --service backend-api --environment production --project "$PROJECT_ID" --detach -m "deploy latest backend-api production backend-root"
+
 cd "$tmp_root/frontend-root"
 railway up --service frontend --environment production --project "$PROJECT_ID" --detach -m "deploy latest frontend production archive-root"
 ```
 
-After submit, poll production deployment status until each target is `SUCCESS`, and then verify public health:
+After submit, poll production deployment status until all three targets are `SUCCESS`. `backend-api` is not publicly exposed, so the public backend health URL does not prove `backend-api` freshness by itself; Railway deployment status is the required proof for that service.
 
 ```bash
-railway deployment list --service backend --environment production --limit 1 --json
-railway deployment list --service frontend --environment production --limit 1 --json
+railway deployment list --service backend --environment production --project "$PROJECT_ID" --limit 1 --json
+railway deployment list --service backend-api --environment production --project "$PROJECT_ID" --limit 1 --json
+railway deployment list --service frontend --environment production --project "$PROJECT_ID" --limit 1 --json
 
 curl -fsS https://backend-production-326d.up.railway.app/api/health
 curl -I -fsS https://frontend-production-0346.up.railway.app/

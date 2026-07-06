@@ -223,10 +223,11 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         },
         "subagent_type": {
             "type": "string",
+            "enum": list(PUBLIC_BUILTIN_SUBAGENT_TYPES),
             "description": (
-                "Canonical AgentTool worker type or custom active subagent definition name. Defaults to "
-                "'general-purpose'. Use 'explorer' for read-only reconnaissance, 'critic' for independent "
-                "verification, or pass the exact name of an active agent/tenant subagent definition."
+                "Canonical AgentTool builtin worker type. Defaults to 'general-purpose'. Use 'explorer' for "
+                "read-only reconnaissance, 'critic' for independent verification. For custom active "
+                "agent/tenant subagent definitions, pass definition_name."
             ),
         },
         "model": {

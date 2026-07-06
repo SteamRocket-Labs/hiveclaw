@@ -51,7 +51,7 @@ _SCENARIO_SPECS: dict[str, _ScenarioSpec] = {
         prompt_checks=("system_trust_boundaries", "knowledge_trust_framing"),
         scenario_checks=(("research", "research_sources"), ("research", "research_dates")),
         expected_task_profile="research",
-        benchmark_expectations=("## Task Playbook", "primary sources", "Likely Deferred Tool Groups", "web_pack"),
+        benchmark_expectations=("## Task Playbook", "primary sources", "Likely Deferred Tool Groups", "- web"),
         benchmark_cases=(
             _BenchmarkCase(
                 query="find the latest official release notes and cite primary sources",

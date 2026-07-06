@@ -506,12 +506,13 @@ def build_context_selection_manifest(
         },
         {
             "candidate_id": "ctx:hook:additional_context",
-            "kind": "hook",
+            "kind": "hook_context",
             "name": "hook_added_context",
             "source_ref": "runtime.hooks",
             "why_selected": "hook_added_context_present",
             "suppressed_reason": "hook_added_context_empty",
             "payload": list(hook_added_context or []),
+            "budget_key": "hook_context_chars",
         },
         {
             "candidate_id": "ctx:agent:available_agent_types",

@@ -100,6 +100,8 @@ class ContextSectionCandidate:
     content: str
     render_order: int
     score: float = 1.0
+    source_ref: str = "runtime.prompt_builder"
+    reason: str = "context_section_present"
     budget_key: str | None = None
     budget_chars: int | None = None
     enforce_budget: bool = False
@@ -135,6 +137,8 @@ def _append_context_section_decision(
             "name": candidate.name,
             "render_order": candidate.render_order,
             "score": candidate.score,
+            "source_ref": candidate.source_ref,
+            "reason": candidate.reason,
             "selected": bool(rendered_content),
             "decision": decision,
             "budget_key": candidate.budget_key,
@@ -691,6 +695,8 @@ def build_dynamic_prompt_suffix(
         budget_chars: int | None = None,
         enforce_budget: bool = False,
         score: float = 1.0,
+        source_ref: str = "runtime.prompt_builder",
+        reason: str = "context_section_present",
     ) -> None:
         section_candidates.append(
             ContextSectionCandidate(
@@ -700,6 +706,8 @@ def build_dynamic_prompt_suffix(
                 content=content,
                 render_order=len(section_candidates),
                 score=score,
+                source_ref=source_ref,
+                reason=reason,
                 budget_key=budget_key,
                 budget_chars=budget_chars,
                 enforce_budget=enforce_budget,
@@ -906,13 +914,20 @@ def build_dynamic_prompt_suffix(
         # P1-W2-2/A6: cap each request-specific suffix independently. Runtime
         # callers may inject multiple critical suffixes (for example delegation
         # handoff + coordinator mode); one large section must not erase another.
+        is_hook_context = suffix_section.lstrip().startswith("## Hook Additional Context")
         add_candidate(
-            candidate_id=f"dynamic:suffix:system_prompt_suffix:{idx}",
-            kind="system_prompt_suffix",
-            name="system_prompt_suffix",
+            candidate_id=(
+                f"dynamic:hook:user_prompt_submit:{idx}"
+                if is_hook_context
+                else f"dynamic:suffix:system_prompt_suffix:{idx}"
+            ),
+            kind="hook_context" if is_hook_context else "system_prompt_suffix",
+            name="user_prompt_submit" if is_hook_context else "system_prompt_suffix",
             content=_trim_block(suffix_section, budget_chars=_SYSTEM_PROMPT_SUFFIX_CHAR_CAP),
-            budget_key="system_prompt_suffix_chars",
+            budget_key="hook_context_chars" if is_hook_context else "system_prompt_suffix_chars",
             budget_chars=_SYSTEM_PROMPT_SUFFIX_CHAR_CAP,
+            source_ref="hook:user_prompt_submit" if is_hook_context else "runtime.system_prompt_suffix",
+            reason="hook_additional_context" if is_hook_context else "system_prompt_suffix_present",
         )
 
     parts = _select_context_section_candidates(section_candidates, context_section_ledger=context_section_ledger)

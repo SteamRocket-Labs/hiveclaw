@@ -186,6 +186,24 @@ def test_dynamic_suffix_records_context_candidate_selection_ledger():
     ]
 
 
+def test_hook_additional_context_is_recorded_as_hook_context_candidate() -> None:
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    ledger: list[dict] = []
+    suffix = build_dynamic_prompt_suffix(
+        system_prompt_suffix="## Hook Additional Context\nPolicy hint from hook.",
+        context_section_ledger=ledger,
+    )
+    hook_entries = [item for item in ledger if item["kind"] == "hook_context"]
+
+    assert "Policy hint from hook." in suffix
+    assert len(hook_entries) == 1
+    assert hook_entries[0]["candidate_id"].startswith("dynamic:hook:user_prompt_submit")
+    assert hook_entries[0]["source_ref"] == "hook:user_prompt_submit"
+    assert hook_entries[0]["reason"] == "hook_additional_context"
+    assert hook_entries[0]["budget_key"] == "hook_context_chars"
+
+
 def test_dynamic_suffix_renders_effective_permissions_context():
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 

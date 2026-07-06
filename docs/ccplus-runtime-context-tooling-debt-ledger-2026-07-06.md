@@ -389,6 +389,7 @@ flowchart TD
 | 返回影响 | hook context 可能挤掉更重要的上下文，或者理由不可见 |
 | 代码位置 | `backend/app/runtime/invoker.py:1220`；`backend/app/runtime/prompt_builder.py:510` |
 | 一轮修复 | Hook contexts 进入 `ContextSectionCandidate(kind=hook_context)`，有 priority、source、budget cap、manifest reason |
+| 2026-07-06 落地证据 | `backend/app/runtime/prompt_builder.py` 的 `ContextSectionCandidate` 增加 `source_ref` 与 `reason`；当 `system_prompt_suffix` 以 `## Hook Additional Context` 开头时，动态 suffix 不再把它记作普通 suffix，而是记录为 `kind=hook_context`、`source_ref=hook:user_prompt_submit`、`reason=hook_additional_context`、`budget_key=hook_context_chars` 的候选，最终 prompt 文本保持兼容。`backend/app/runtime/turn_envelope.py` 中 `ctx:hook:additional_context` 的 manifest kind 同步为 `hook_context` 并携带 `hook_context_chars` budget key。验证：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_prompt_builder.py backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_invoker_cc_hooks.py -q` -> `58 passed, 4 warnings`；`ruff check backend/app/runtime/prompt_builder.py backend/app/runtime/turn_envelope.py backend/tests/runtime/test_prompt_builder.py backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_invoker_cc_hooks.py` -> `All checks passed!` |
 
 ## 4A. Agent 周期补充技术债清单
 

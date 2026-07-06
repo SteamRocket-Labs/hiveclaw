@@ -10,6 +10,7 @@ from app.agents.subagent import (
     builtin_type_description,
 )
 from app.agents.subagent_definition import SCOPE_BUILTIN, list_subagent_definitions
+from app.runtime.activation_candidates import ActivationCandidate, ActivationScore, ActivationSurface
 from app.runtime.context_candidates import build_metadata_activation_keys
 
 _BUILTIN_ORDER = PUBLIC_BUILTIN_SUBAGENT_TYPES
@@ -98,6 +99,57 @@ def build_subagent_activation_key_manifest(
 ) -> list[dict[str, Any]]:
     rows = list_subagent_definitions(agent_id=agent_id, tenant_id=tenant_id, agent_data_dir=agent_data_dir)
     return [_subagent_activation_keys_for_row(row) for row in rows]
+
+
+def gather_subagent_candidates(
+    *,
+    agent_id: Any | None = None,
+    tenant_id: Any | None = None,
+    agent_data_dir: Path | str | None = None,
+    limit: int = 20,
+) -> list[ActivationCandidate]:
+    manifests = build_subagent_activation_key_manifest(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        agent_data_dir=agent_data_dir,
+    )
+    candidates: list[ActivationCandidate] = []
+    for index, manifest in enumerate(manifests[: max(1, int(limit or 20))]):
+        key_features = dict(manifest.get("key_features") or {})
+        value_pointer = dict(manifest.get("value_pointer") or {})
+        name = next(iter(key_features.get("name") or ()), "")
+        worker_type = next(iter(key_features.get("type") or ()), "")
+        scope = next(iter(key_features.get("scope") or ()), "")
+        preview = f"{name} ({scope}, type={worker_type})".strip()
+        source_refs = tuple(str(ref) for ref in manifest.get("source_refs") or () if str(ref).strip())
+        score = max(0.1, 1.0 - (index * 0.01))
+        candidates.append(
+            ActivationCandidate(
+                candidate_kind="subagent",
+                candidate_ref=dict(manifest["candidate_ref"]),
+                key_features=key_features,
+                value_pointer=value_pointer,
+                surface=ActivationSurface(
+                    surface_kind="subagent_listing",
+                    preview=preview,
+                    token_estimate=max(1, len(preview) // 4),
+                    source_refs=source_refs,
+                ),
+                source_refs=source_refs,
+                score=ActivationScore(
+                    head_scores={"subagent_rank": score},
+                    total_score=score,
+                    reasons=("available_session_worker",),
+                    scorer="subagent_listing_gatherer",
+                ),
+                metadata={
+                    "name": name,
+                    "scope": scope,
+                    "type": worker_type,
+                },
+            )
+        )
+    return candidates
 
 
 def build_subagent_listing_section(

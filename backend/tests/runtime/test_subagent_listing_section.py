@@ -111,6 +111,39 @@ def test_subagent_listing_projects_activation_keys_for_builtin_and_custom_defini
     assert custom["value_pointer"]["definition_name"] == "code-critic"
 
 
+def test_subagent_gatherer_outputs_activation_candidates_for_builtin_and_custom(tmp_path: Path) -> None:
+    from app.agents.subagent import SubagentSpec
+    from app.agents.subagent_definition import definition_store_for_agent
+    from app.runtime.prompt_sections.subagent_listing import gather_subagent_candidates
+
+    agent_id = "agent-candidates"
+    definition_store_for_agent(agent_id, agent_data_dir=tmp_path).save(
+        SubagentSpec(
+            name="code-critic",
+            description="Use after non-trivial code changes to verify tests and risks.",
+            type="critic",
+            allowed_tools=("read_file", "grep_search"),
+            max_tool_rounds=4,
+            system_prompt="Verify implementation.",
+        )
+    )
+
+    candidates = gather_subagent_candidates(agent_id=agent_id, agent_data_dir=tmp_path)
+    manifests = {candidate.to_manifest()["key_features"]["name"][0]: candidate.to_manifest() for candidate in candidates}
+
+    builtin = manifests["critic"]
+    custom = manifests["code-critic"]
+
+    assert builtin["candidate_kind"] == "subagent"
+    assert builtin["candidate_ref"]["source_type"] == "subagent_builtin"
+    assert builtin["value_pointer"]["loader"] == "spawn_subagent"
+    assert builtin["value_pointer"]["subagent_type"] == "critic"
+    assert builtin["surface"]["surface_kind"] == "subagent_listing"
+    assert custom["candidate_ref"]["source_type"] == "subagent_definition"
+    assert custom["value_pointer"]["definition_name"] == "code-critic"
+    assert custom["source_refs"] == ["subagent:agent:code-critic"]
+
+
 def test_subagent_prompt_guidance_names_cc_trigger_scenarios() -> None:
     from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
 

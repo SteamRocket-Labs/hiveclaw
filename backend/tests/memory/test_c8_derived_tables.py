@@ -97,6 +97,18 @@ def _axis_rows(tmp_path: Path, agent_id) -> set[tuple[str, str, str]]:
         return {(row[0], row[1], row[2]) for row in conn.execute("SELECT package_ref, axis, value FROM t2_label_axes")}
 
 
+def _activation_key_rows(tmp_path: Path, agent_id) -> set[tuple[str, str, str, str]]:
+    from app.memory.reference_index import index_db_path
+
+    with sqlite3.connect(index_db_path(tmp_path, agent_id)) as conn:
+        return {
+            (row[0], row[1], row[2], row[3])
+            for row in conn.execute(
+                "SELECT candidate_kind, scope, key_axis, key_value FROM activation_keys ORDER BY key_axis, key_value"
+            )
+        }
+
+
 def test_rebuild_populates_label_axes_from_t2_labels(tmp_path: Path) -> None:
     from app.memory.reference_index import rebuild_reference_index
 
@@ -123,6 +135,53 @@ def test_rebuild_populates_label_axes_from_t2_labels(tmp_path: Path) -> None:
     assert (ref, "nutrient_plane", "knowledge") in rows
     assert (ref, "self_signal", "true") in rows
     assert (ref, "milestone_criteria", "first_success") in rows
+
+
+def test_rebuild_populates_activation_keys_from_explicit_overlay(tmp_path: Path) -> None:
+    from app.memory.reference_index import index_db_path, rebuild_reference_index
+
+    agent_id = uuid4()
+    overlay = _mem_dir(tmp_path, agent_id) / "explicit"
+    (overlay / "entries").mkdir(parents=True, exist_ok=True)
+    (overlay / "manifest.jsonl").write_text(
+        json.dumps(
+            {
+                "id": "ex-red-test",
+                "status": "active",
+                "category": "constraint",
+                "target_hint": "worker",
+                "sensitivity": "PL1_public",
+                "created_at": NOW.isoformat(),
+                "source_refs": "t0://session/s1/segment/seg-1#seq=1..2",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (overlay / "entries" / "ex-red-test.md").write_text(
+        "<normalized_memory>用户要求整改必须先跑红灯测试。</normalized_memory>",
+        encoding="utf-8",
+    )
+
+    report = rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
+
+    assert report.activation_key_rows >= 4
+    rows = _activation_key_rows(tmp_path, agent_id)
+    assert ("agent_memory", "explicit_overlay", "category", "constraint") in rows
+    assert ("agent_memory", "explicit_overlay", "target_hint", "worker") in rows
+    assert ("agent_memory", "explicit_overlay", "status", "active") in rows
+    assert ("agent_memory", "explicit_overlay", "concept", "红灯") in rows
+    with sqlite3.connect(index_db_path(tmp_path, agent_id)) as conn:
+        source_refs = {
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT source_ref FROM activation_keys WHERE candidate_ref = ?",
+                ("agent_memory:explicit_overlay:ex-red-test",),
+            )
+        }
+    assert source_refs == {"t0://session/s1/segment/seg-1#seq=1..2"}
 
 
 def test_minimal_labels_produce_only_present_axes(tmp_path: Path) -> None:

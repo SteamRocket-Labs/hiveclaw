@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.memory.explicit_overlay import load_explicit_overlay_entries
+from app.memory.explicit_overlay import build_explicit_overlay_activation_keys, load_explicit_overlay_entries
 from app.memory.md_store import extract_t3_xml_blocks, parse_t3_xml_block
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,7 @@ class ReferenceIndexRebuildReport:
     packages: int
     label_axis_rows: int = 0
     debt_history_rows: int = 0
+    activation_key_rows: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,7 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
 
     label_rows = _label_axis_rows(packages)
     debt_rows = _debt_history_rows(root, agent_id)
+    activation_key_rows = _activation_key_rows(root, agent_id)
 
     resolution_rows: list[tuple[str, str, str, str]] = []
     for package in packages:
@@ -109,6 +111,7 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
         conn.execute("DROP TABLE IF EXISTS tombstones")
         conn.execute("DROP TABLE IF EXISTS t2_label_axes")
         conn.execute("DROP TABLE IF EXISTS consolidation_debt_history")
+        conn.execute("DROP TABLE IF EXISTS activation_keys")
         conn.execute(
             "CREATE TABLE refs (source_ref TEXT NOT NULL, referrer TEXT NOT NULL, referrer_kind TEXT NOT NULL,"
             " PRIMARY KEY (source_ref, referrer))"
@@ -130,6 +133,12 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
             " active_explicit_entries INTEGER NOT NULL, oldest_explicit_age_hours REAL,"
             " stalled INTEGER NOT NULL, stall_reasons TEXT NOT NULL)"
         )
+        conn.execute(
+            "CREATE TABLE activation_keys (candidate_ref TEXT NOT NULL, candidate_kind TEXT NOT NULL,"
+            " scope TEXT NOT NULL, key_axis TEXT NOT NULL, key_value TEXT NOT NULL,"
+            " source_ref TEXT NOT NULL, confidence REAL NOT NULL, created_at TEXT NOT NULL,"
+            " PRIMARY KEY (candidate_ref, key_axis, key_value, source_ref))"
+        )
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         conn.executemany("INSERT OR IGNORE INTO refs VALUES (?, ?, ?)", rows)
         conn.executemany("INSERT OR REPLACE INTO id_resolution VALUES (?, ?, ?, ?)", resolution_rows)
@@ -139,6 +148,7 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
             "INSERT OR REPLACE INTO consolidation_debt_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             debt_rows,
         )
+        conn.executemany("INSERT OR IGNORE INTO activation_keys VALUES (?, ?, ?, ?, ?, ?, ?, ?)", activation_key_rows)
         conn.execute(
             "INSERT OR REPLACE INTO meta VALUES ('rebuilt_at', ?)",
             (datetime.now(UTC).isoformat(),),
@@ -150,6 +160,7 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
         packages=len(packages),
         label_axis_rows=len(label_rows),
         debt_history_rows=len(debt_rows),
+        activation_key_rows=len(activation_key_rows),
     )
 
 
@@ -545,6 +556,70 @@ def _debt_history_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple]:
             )
         )
     return rows
+
+
+_ACTIVATION_AXIS_ALIASES = {
+    "categories": "category",
+    "concepts": "concept",
+    "target_hints": "target_hint",
+    "statuses": "status",
+    "names": "name",
+    "risk_flags": "risk_flag",
+}
+
+
+def _activation_key_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str, str, str, str, str, str, float, str]]:
+    rows: list[tuple[str, str, str, str, str, str, float, str]] = []
+    for entry in load_explicit_overlay_entries(root, agent_id):
+        if entry.status != "active":
+            continue
+        rows.extend(_flatten_activation_keys(build_explicit_overlay_activation_keys(entry)))
+    return rows
+
+
+def _flatten_activation_keys(keys: dict) -> list[tuple[str, str, str, str, str, str, float, str]]:
+    candidate_ref = keys.get("candidate_ref") if isinstance(keys.get("candidate_ref"), dict) else {}
+    candidate_id = str(candidate_ref.get("candidate_id") or "").strip()
+    candidate_kind = str(keys.get("candidate_kind") or candidate_ref.get("kind") or "").strip()
+    scope = str(candidate_ref.get("source_type") or candidate_ref.get("kind") or "").strip()
+    if not candidate_id or not candidate_kind or not scope:
+        return []
+
+    key_features = keys.get("key_features") if isinstance(keys.get("key_features"), dict) else {}
+    created_at = str(key_features.get("created_at") or keys.get("created_at") or "").strip()
+    source_refs = [str(ref).strip() for ref in keys.get("source_refs") or () if str(ref).strip()] or [""]
+    rows: list[tuple[str, str, str, str, str, str, float, str]] = []
+    for raw_axis, raw_values in key_features.items():
+        axis = _activation_axis(raw_axis)
+        if axis in {"created_at"}:
+            continue
+        for value in _activation_values(raw_values):
+            for source_ref in source_refs:
+                rows.append((candidate_id, candidate_kind, scope, axis, value, source_ref, 1.0, created_at))
+    return rows
+
+
+def _activation_axis(raw_axis: object) -> str:
+    axis = str(raw_axis or "").strip()
+    return _ACTIVATION_AXIS_ALIASES.get(axis, axis)
+
+
+def _activation_values(raw_values: object) -> list[str]:
+    if raw_values is None:
+        return []
+    if isinstance(raw_values, list | tuple | set | frozenset):
+        values = list(raw_values)
+    else:
+        values = [raw_values]
+    result: list[str] = []
+    for value in values:
+        if isinstance(value, dict):
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        else:
+            text = str(value or "").strip()
+        if text:
+            result.append(text)
+    return result
 
 
 def _explicit_reference_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str, str, str]]:

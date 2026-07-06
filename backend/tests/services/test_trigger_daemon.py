@@ -574,6 +574,11 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     assert created[0]["budget_run_id"] == budget_run_id
     assert created[0]["budget_admission_status"] == "root"
     assert created[0]["metadata_json"]["budget_run_id"] == str(budget_run_id)
+    wake_candidate = created[0]["metadata_json"]["trigger_wake_context_candidate"]
+    assert wake_candidate["context_candidate_ref"]["kind"] == "trigger_wake"
+    assert wake_candidate["trigger_ids"] == [str(trigger.id)]
+    assert wake_candidate["budget_run_id"] == str(budget_run_id)
+    assert created[0]["metadata_json"]["context_candidate_refs"] == [wake_candidate["context_candidate_ref"]]
     assert budget_payloads[0].tenant_id == tenant_id
     assert budget_payloads[0].root_run_kind == "trigger_fire"
     assert budget_payloads[0].root_runtime_task_id.hex == created[0]["task_id"]
@@ -943,6 +948,37 @@ def test_build_trigger_context_frames_scheduled_run():
     ctx, names = _build_trigger_context([_ctx_trigger(type="cron", name="daily")])
     assert "Scheduled trigger: daily (cron)" in ctx
     assert names == ["daily"]
+
+
+def test_build_trigger_wake_context_candidate_records_budget_and_plan_refs():
+    from app.services.trigger_daemon import _build_trigger_wake_context_candidate
+
+    trigger = _ctx_trigger(
+        id="trigger-1",
+        type="cron",
+        name="daily",
+        config={
+            "trigger_class": "scheduled_job",
+            "plan_id": "plan-1",
+            "plan_version": 3,
+            "plan_hash": "hash-1",
+        },
+    )
+
+    candidate = _build_trigger_wake_context_candidate(
+        [trigger],
+        runtime_task_id="run-1",
+        budget_run_id="budget-1",
+        preflight_decision={"dedup": "acquired", "rate_limit": "admitted"},
+    )
+
+    assert candidate["schema"] == "hive.ccplus.trigger_wake_context_candidate.v1"
+    assert candidate["context_candidate_ref"]["kind"] == "trigger_wake"
+    assert candidate["trigger_ids"] == ["trigger-1"]
+    assert candidate["trigger_classes"] == ["scheduled_job"]
+    assert candidate["budget_run_id"] == "budget-1"
+    assert candidate["confirmed_plan_ref"] == {"plan_id": "plan-1", "plan_version": 3, "plan_hash": "hash-1"}
+    assert candidate["preflight_decision"] == {"dedup": "acquired", "rate_limit": "admitted"}
 
 
 def test_build_trigger_context_frames_event_driven_with_poll_change():

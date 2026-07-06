@@ -24,6 +24,7 @@ from croniter import croniter
 from loguru import logger
 from sqlalchemy import select
 
+from app.runtime.context_candidates import build_context_candidate_ref
 from app.services.daemon_concurrency import run_bounded
 from app.core.events import get_redis
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
@@ -71,6 +72,55 @@ def _runtime_task_uuid_or_none(value: str | uuid.UUID | None) -> uuid.UUID | Non
         return uuid.UUID(str(value))
     except (TypeError, ValueError, AttributeError):
         return None
+
+
+def _confirmed_plan_ref_from_trigger(trigger: AgentTrigger) -> dict[str, Any]:
+    config = getattr(trigger, "config", None) or {}
+    plan_id = config.get("plan_id")
+    if not plan_id:
+        return {}
+    return {
+        "plan_id": str(plan_id),
+        "plan_version": config.get("plan_version"),
+        "plan_hash": config.get("plan_hash"),
+    }
+
+
+def _build_trigger_wake_context_candidate(
+    triggers: list[AgentTrigger],
+    *,
+    runtime_task_id: str | None = None,
+    budget_run_id: str | None = None,
+    preflight_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    trigger_ids = [str(getattr(trigger, "id", "")) for trigger in triggers if str(getattr(trigger, "id", "")).strip()]
+    trigger_classes = [
+        str((getattr(trigger, "config", None) or {}).get("trigger_class") or "")
+        for trigger in triggers
+        if (getattr(trigger, "config", None) or {}).get("trigger_class")
+    ]
+    confirmed_plan_ref = next(
+        (ref for ref in (_confirmed_plan_ref_from_trigger(trigger) for trigger in triggers) if ref),
+        {},
+    )
+    payload = {
+        "trigger_ids": trigger_ids,
+        "trigger_classes": trigger_classes,
+        "runtime_task_id": runtime_task_id,
+        "budget_run_id": budget_run_id,
+        "confirmed_plan_ref": confirmed_plan_ref,
+        "preflight_decision": dict(preflight_decision or {}),
+    }
+    ref = build_context_candidate_ref(
+        kind="trigger_wake",
+        item_id="+".join(trigger_ids) or "+".join(str(getattr(trigger, "name", "")) for trigger in triggers),
+        payload=payload,
+    ).to_manifest()
+    return {
+        "schema": "hive.ccplus.trigger_wake_context_candidate.v1",
+        "context_candidate_ref": ref,
+        **payload,
+    }
 
 
 async def _create_trigger_runtime_task(
@@ -177,6 +227,14 @@ async def _create_trigger_runtime_task(
         )
         if budget_run is not None:
             metadata["budget_run_id"] = str(budget_run.id)
+        trigger_wake_candidate = _build_trigger_wake_context_candidate(
+            triggers,
+            runtime_task_id=task_id,
+            budget_run_id=metadata.get("budget_run_id"),
+            preflight_decision=metadata_json or {},
+        )
+        metadata["trigger_wake_context_candidate"] = trigger_wake_candidate
+        metadata.setdefault("context_candidate_refs", []).append(trigger_wake_candidate["context_candidate_ref"])
         metadata = merge_restart_replay_journal(
             metadata,
             build_restart_replay_journal_entry(
@@ -1507,6 +1565,13 @@ async def _invoke_agent_for_triggers(
                 "trace_id": f"trigger:{runtime_task_id}" if runtime_task_id else None,
                 "semantic_memory_eligible": True,
             }
+            trigger_wake_candidate = _build_trigger_wake_context_candidate(
+                triggers,
+                runtime_task_id=runtime_task_id,
+                preflight_decision={"session_started": True},
+            )
+            trigger_metadata["trigger_wake_context_candidate"] = trigger_wake_candidate
+            trigger_metadata["context_candidate_refs"] = [trigger_wake_candidate["context_candidate_ref"]]
             await append_session_event(
                 db=db,
                 agent_id=agent_id,

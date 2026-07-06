@@ -3297,15 +3297,11 @@ class AgentKernel:
             if request.agent_id:
                 try:
                     from app.services.agent_tools import available_deferred_tool_candidates_for_agent
+                    from app.runtime.context import ensure_runtime_assembly_state
 
                     available_deferred_tools = await available_deferred_tool_candidates_for_agent(request.agent_id)
                     if session_ctx is not None:
-                        session_ctx.metadata["available_deferred_tool_candidates"] = list(available_deferred_tools)
-                        session_ctx.metadata["available_deferred_tools"] = [
-                            str(candidate.get("name"))
-                            for candidate in available_deferred_tools
-                            if str(candidate.get("name") or "").strip()
-                        ]
+                        ensure_runtime_assembly_state(session_ctx).record_deferred_tools(available_deferred_tools)
                 except Exception as exc:
                     logger.debug("[Kernel] available deferred tool list unavailable: %s", exc)
             # Prompt cache: reuse frozen prefix if available and still matches
@@ -3444,6 +3440,7 @@ class AgentKernel:
             )
 
             if session_ctx is not None:
+                from app.runtime.context import ensure_runtime_assembly_state
                 from app.runtime.context_engine import record_prompt_manifest_context_artifacts
 
                 dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix)
@@ -3481,11 +3478,7 @@ class AgentKernel:
                     "sections": list(dynamic_context_section_ledger),
                 }
                 record_prompt_manifest_context_artifacts(session_ctx, prompt_manifest)
-                session_ctx.metadata["prompt_assembly_manifest"] = prompt_manifest
-                session_ctx.metadata["dynamic_context_section_ledger"] = dict(
-                    prompt_manifest["dynamic_context_section_ledger"]
-                )
-                session_ctx.metadata["context_usage_ledger"] = dict(prompt_manifest.get("context_usage_ledger") or {})
+                ensure_runtime_assembly_state(session_ctx).record_prompt_manifest(prompt_manifest)
                 session_ctx.metadata["prompt_sections"] = list(prompt_manifest.get("prompt_sections") or [])
                 session_ctx.metadata["active_tool_names"] = list(prompt_manifest.get("active_tool_names") or [])
                 session_ctx.metadata["deferred_tool_names"] = list(prompt_manifest.get("available_deferred_tools") or [])

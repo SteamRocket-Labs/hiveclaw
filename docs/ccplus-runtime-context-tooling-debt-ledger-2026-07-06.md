@@ -345,6 +345,7 @@ flowchart TD
 | 返回影响 | 插入 QKV / context ledger 时会继续散落 |
 | 代码位置 | `backend/app/runtime/context.py`；`backend/app/runtime/invoker.py`；`backend/app/kernel/engine.py` |
 | 一轮修复 | 不大改调用栈，但在现有 request/session 上挂一个 `RuntimeAssemblyState`，成为 context/tool/skill/retrieval 的单一账本对象 |
+| 2026-07-06 落地证据 | `backend/app/runtime/context.py` 新增 `RuntimeAssemblyState` 与 `ensure_runtime_assembly_state()`，schema 为 `hive.ccplus.runtime_assembly_state.v1`；`SessionContext` 增加 runtime-only `runtime_assembly_state` 引用，metadata 只保存可序列化 read model。`backend/app/runtime/tool_result_ledger.py` 的工具结果写入、`backend/app/kernel/engine.py` 的 deferred tool candidates / prompt manifest 写入、`backend/app/runtime/invoker.py` 的 skill catalog ranking 写入均通过该汇流点同步，同时保留旧顶层 metadata 镜像。验证：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_runtime_context_composition.py backend/tests/runtime/test_tool_result_ledger.py backend/tests/runtime/test_invoker.py::test_skill_catalog_ranking_inputs_include_prompt_session_active_and_path_triggers -q` -> `13 passed, 4 warnings`；`ruff check backend/app/runtime/context.py backend/app/runtime/session.py backend/app/runtime/tool_result_ledger.py backend/app/kernel/engine.py backend/app/runtime/invoker.py backend/tests/runtime/test_runtime_context_composition.py backend/tests/runtime/test_invoker.py backend/tests/kernel/test_engine.py` -> `All checks passed!` |
 
 ### RTD-17：Memory / Retrieval / Tool / Skill 候选没有统一 ID 空间
 

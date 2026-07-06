@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 
-from app.runtime.context import RuntimeContext
+from app.runtime.context import RuntimeContext, ensure_runtime_assembly_state
 from app.runtime.context_budget import ContextBudget, TaskProfile
 from app.runtime.context_engine import DefaultContextEngine
 from app.runtime.session import SessionContext
@@ -113,3 +113,45 @@ def test_factory_with_no_args_creates_independent_session_per_call() -> None:
     b = RuntimeContext.for_invocation()
     assert a.session is not b.session
     assert a.metadata is not b.metadata
+
+
+def test_runtime_context_attaches_runtime_assembly_state() -> None:
+    session = SessionContext(session_id="assembly-session")
+    ctx = RuntimeContext.for_invocation(session=session)
+
+    ctx.assembly_state.record_deferred_tools(
+        [{"name": "web_search", "group": "web", "selector": "select:web_search"}]
+    )
+    ctx.assembly_state.record_skill_catalog_ranking(
+        ranking=[{"skill_name": "research", "score": 0.9}],
+        inputs={"scenario_text_present": True},
+    )
+    ctx.assembly_state.record_prompt_manifest(
+        {
+            "schema": "hive.ccplus.prompt_assembly_manifest.v1",
+            "context_usage_ledger": {"schema": "usage"},
+            "dynamic_context_section_ledger": {"schema": "sections", "sections": []},
+        }
+    )
+
+    state = session.metadata["runtime_assembly_state"]
+    assert state["schema"] == "hive.ccplus.runtime_assembly_state.v1"
+    assert state["available_deferred_tools"] == ["web_search"]
+    assert state["skill_catalog_ranking"] == [{"skill_name": "research", "score": 0.9}]
+    assert state["prompt_assembly_manifest"]["schema"] == "hive.ccplus.prompt_assembly_manifest.v1"
+    assert session.metadata["prompt_assembly_manifest"] == state["prompt_assembly_manifest"]
+    assert session.metadata["dynamic_context_section_ledger"] == {"schema": "sections", "sections": []}
+
+
+def test_tool_result_ledger_mirrors_into_runtime_assembly_state() -> None:
+    from app.runtime.tool_result_ledger import append_tool_result_ledger_entry
+
+    session = SessionContext(session_id="tool-ledger")
+    state = ensure_runtime_assembly_state(session)
+    entry = {"schema": "hive.tool_result_ledger.v1", "tool_name": "web_search", "status": "ok"}
+
+    append_tool_result_ledger_entry(session, entry)
+
+    assert session.metadata["tool_result_ledger"] == [entry]
+    assert state.to_metadata()["tool_result_ledger"] == [entry]
+    assert session.metadata["runtime_assembly_state"]["tool_result_ledger"] == [entry]

@@ -28,6 +28,170 @@ if TYPE_CHECKING:  # avoid circular imports at runtime
     from app.runtime.context_engine import ContextEngine
 
 
+_ASSEMBLY_STATE_KEY = "runtime_assembly_state"
+
+
+def _dict_payload(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _list_payload(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list | tuple) else []
+
+
+@dataclass(slots=True)
+class RuntimeAssemblyState:
+    """Serializable runtime assembly ledger for one invocation/session.
+
+    This is the convergence point for context/tool/skill/retrieval assembly
+    artifacts. Top-level session metadata keys remain as compatibility mirrors,
+    but this object owns the canonical runtime read model.
+    """
+
+    session: SessionContext | None = field(default=None, repr=False, compare=False)
+    prompt_assembly_manifest: dict[str, Any] = field(default_factory=dict)
+    context_usage_ledger: dict[str, Any] = field(default_factory=dict)
+    dynamic_context_section_ledger: dict[str, Any] = field(default_factory=dict)
+    tool_result_ledger: list[dict[str, Any]] = field(default_factory=list)
+    available_deferred_tool_candidates: list[Any] = field(default_factory=list)
+    available_deferred_tools: list[str] = field(default_factory=list)
+    skill_catalog_ranking: list[dict[str, Any]] = field(default_factory=list)
+    skill_catalog_ranking_inputs: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_metadata(
+        cls,
+        data: Any,
+        *,
+        session: SessionContext | None = None,
+    ) -> "RuntimeAssemblyState":
+        payload = _dict_payload(data)
+        return cls(
+            session=session,
+            prompt_assembly_manifest=_dict_payload(payload.get("prompt_assembly_manifest")),
+            context_usage_ledger=_dict_payload(payload.get("context_usage_ledger")),
+            dynamic_context_section_ledger=_dict_payload(payload.get("dynamic_context_section_ledger")),
+            tool_result_ledger=[dict(item) for item in _list_payload(payload.get("tool_result_ledger"))],
+            available_deferred_tool_candidates=_list_payload(payload.get("available_deferred_tool_candidates")),
+            available_deferred_tools=[
+                str(item) for item in _list_payload(payload.get("available_deferred_tools")) if str(item).strip()
+            ],
+            skill_catalog_ranking=[dict(item) for item in _list_payload(payload.get("skill_catalog_ranking"))],
+            skill_catalog_ranking_inputs=_dict_payload(payload.get("skill_catalog_ranking_inputs")),
+        )
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "schema": "hive.ccplus.runtime_assembly_state.v1",
+            "prompt_assembly_manifest": dict(self.prompt_assembly_manifest),
+            "context_usage_ledger": dict(self.context_usage_ledger),
+            "dynamic_context_section_ledger": dict(self.dynamic_context_section_ledger),
+            "tool_result_ledger": [dict(item) for item in self.tool_result_ledger],
+            "available_deferred_tool_candidates": list(self.available_deferred_tool_candidates),
+            "available_deferred_tools": list(self.available_deferred_tools),
+            "skill_catalog_ranking": [dict(item) for item in self.skill_catalog_ranking],
+            "skill_catalog_ranking_inputs": dict(self.skill_catalog_ranking_inputs),
+        }
+
+    def persist(self) -> None:
+        if self.session is None:
+            return
+        metadata = self.session.metadata
+        metadata[_ASSEMBLY_STATE_KEY] = self.to_metadata()
+        if self.prompt_assembly_manifest:
+            metadata["prompt_assembly_manifest"] = dict(self.prompt_assembly_manifest)
+        if self.context_usage_ledger:
+            metadata["context_usage_ledger"] = dict(self.context_usage_ledger)
+        if self.dynamic_context_section_ledger:
+            metadata["dynamic_context_section_ledger"] = dict(self.dynamic_context_section_ledger)
+        if self.tool_result_ledger:
+            metadata["tool_result_ledger"] = [dict(item) for item in self.tool_result_ledger]
+        if self.available_deferred_tool_candidates:
+            metadata["available_deferred_tool_candidates"] = list(self.available_deferred_tool_candidates)
+        if self.available_deferred_tools:
+            metadata["available_deferred_tools"] = list(self.available_deferred_tools)
+        if self.skill_catalog_ranking:
+            metadata["skill_catalog_ranking"] = [dict(item) for item in self.skill_catalog_ranking]
+        if self.skill_catalog_ranking_inputs:
+            metadata["skill_catalog_ranking_inputs"] = dict(self.skill_catalog_ranking_inputs)
+
+    def record_prompt_manifest(self, manifest: dict[str, Any]) -> None:
+        self.prompt_assembly_manifest = dict(manifest)
+        self.context_usage_ledger = _dict_payload(manifest.get("context_usage_ledger"))
+        self.dynamic_context_section_ledger = _dict_payload(manifest.get("dynamic_context_section_ledger"))
+        self.persist()
+
+    def record_context_usage_ledger(self, ledger: dict[str, Any]) -> None:
+        self.context_usage_ledger = dict(ledger)
+        self.persist()
+
+    def record_dynamic_context_section_ledger(self, ledger: dict[str, Any]) -> None:
+        self.dynamic_context_section_ledger = dict(ledger)
+        self.persist()
+
+    def record_tool_result(self, entry: dict[str, Any], *, limit: int = 50) -> None:
+        self.tool_result_ledger.append(dict(entry))
+        if len(self.tool_result_ledger) > limit:
+            del self.tool_result_ledger[: len(self.tool_result_ledger) - limit]
+        self.persist()
+
+    def record_deferred_tools(self, candidates: list[Any] | tuple[Any, ...]) -> None:
+        candidate_list = list(candidates or [])
+        names: list[str] = []
+        for candidate in candidate_list:
+            if isinstance(candidate, dict):
+                name = str(candidate.get("name") or "").strip()
+            else:
+                name = str(candidate or "").strip()
+            if name:
+                names.append(name)
+        self.available_deferred_tool_candidates = candidate_list
+        self.available_deferred_tools = names
+        self.persist()
+
+    def record_skill_catalog_ranking(
+        self,
+        *,
+        ranking: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        inputs: dict[str, Any],
+    ) -> None:
+        self.skill_catalog_ranking = [dict(item) for item in ranking]
+        self.skill_catalog_ranking_inputs = dict(inputs)
+        self.persist()
+
+
+def ensure_runtime_assembly_state(session: SessionContext | None) -> RuntimeAssemblyState:
+    if session is None:
+        return RuntimeAssemblyState()
+    existing = getattr(session, "runtime_assembly_state", None)
+    if isinstance(existing, RuntimeAssemblyState):
+        return existing
+    state = RuntimeAssemblyState.from_metadata(session.metadata.get(_ASSEMBLY_STATE_KEY), session=session)
+    if not state.prompt_assembly_manifest:
+        state.prompt_assembly_manifest = _dict_payload(session.metadata.get("prompt_assembly_manifest"))
+    if not state.context_usage_ledger:
+        state.context_usage_ledger = _dict_payload(session.metadata.get("context_usage_ledger"))
+    if not state.dynamic_context_section_ledger:
+        state.dynamic_context_section_ledger = _dict_payload(session.metadata.get("dynamic_context_section_ledger"))
+    if not state.tool_result_ledger:
+        state.tool_result_ledger = [dict(item) for item in _list_payload(session.metadata.get("tool_result_ledger"))]
+    if not state.available_deferred_tool_candidates:
+        state.available_deferred_tool_candidates = _list_payload(
+            session.metadata.get("available_deferred_tool_candidates")
+        )
+    if not state.available_deferred_tools:
+        state.available_deferred_tools = [
+            str(item) for item in _list_payload(session.metadata.get("available_deferred_tools")) if str(item).strip()
+        ]
+    if not state.skill_catalog_ranking:
+        state.skill_catalog_ranking = [dict(item) for item in _list_payload(session.metadata.get("skill_catalog_ranking"))]
+    if not state.skill_catalog_ranking_inputs:
+        state.skill_catalog_ranking_inputs = _dict_payload(session.metadata.get("skill_catalog_ranking_inputs"))
+    session.runtime_assembly_state = state
+    state.persist()
+    return state
+
+
 @dataclass(slots=True)
 class RuntimeContext:
     """Normalized runtime context for a single agent invocation.
@@ -46,6 +210,7 @@ class RuntimeContext:
     # explicit values via `for_invocation` (or the field directly).
     engine: "ContextEngine | None" = None
     budget: "ContextBudget | None" = None
+    assembly_state: RuntimeAssemblyState = field(default_factory=RuntimeAssemblyState)
 
     @classmethod
     def for_invocation(
@@ -69,11 +234,13 @@ class RuntimeContext:
             from app.runtime.context_engine import DefaultContextEngine
 
             engine = DefaultContextEngine()
+        resolved_session = session if session is not None else SessionContext()
         return cls(
-            session=session if session is not None else SessionContext(),
+            session=resolved_session,
             execution_identity=execution_identity,
             tenant_id=tenant_id,
             metadata=metadata if metadata is not None else {},
             engine=engine,
             budget=budget,
+            assembly_state=ensure_runtime_assembly_state(resolved_session),
         )

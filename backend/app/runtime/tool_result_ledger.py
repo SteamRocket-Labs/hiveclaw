@@ -97,13 +97,6 @@ def build_tool_result_ledger_entry(
 def append_tool_result_ledger_entry(session_context: Any | None, entry: dict[str, Any], *, limit: int = 50) -> None:
     if session_context is None:
         return
-    metadata = getattr(session_context, "metadata", None)
-    if not isinstance(metadata, dict):
-        return
-    ledger = metadata.setdefault("tool_result_ledger", [])
-    if not isinstance(ledger, list):
-        ledger = []
-        metadata["tool_result_ledger"] = ledger
-    ledger.append(dict(entry))
-    if len(ledger) > limit:
-        del ledger[: len(ledger) - limit]
+    from app.runtime.context import ensure_runtime_assembly_state
+
+    ensure_runtime_assembly_state(session_context).record_tool_result(entry, limit=limit)

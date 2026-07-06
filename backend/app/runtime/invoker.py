@@ -1358,12 +1358,16 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             ranking_manifest=skill_catalog_ranking,
         )
         if request.session_context is not None:
-            request.session_context.metadata["skill_catalog_ranking"] = list(skill_catalog_ranking)
-            request.session_context.metadata["skill_catalog_ranking_inputs"] = {
-                "scenario_text_present": bool(ranking_inputs["scenario_text"]),
-                "active_skill_names": list(ranking_inputs["active_skill_names"]),
-                "path_triggered_skill_names": list(ranking_inputs["path_triggered_skill_names"]),
-            }
+            from app.runtime.context import ensure_runtime_assembly_state
+
+            ensure_runtime_assembly_state(request.session_context).record_skill_catalog_ranking(
+                ranking=skill_catalog_ranking,
+                inputs={
+                    "scenario_text_present": bool(ranking_inputs["scenario_text"]),
+                    "active_skill_names": list(ranking_inputs["active_skill_names"]),
+                    "path_triggered_skill_names": list(ranking_inputs["path_triggered_skill_names"]),
+                },
+            )
 
     kernel_request = InvocationRequest(
         model=effective_model,

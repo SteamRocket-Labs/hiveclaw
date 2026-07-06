@@ -148,6 +148,9 @@ class SessionContext:
     recent_tool_outcomes: list[dict[str, str]] = field(default_factory=list)  # [{tool, summary}]
     recent_external_refs: list[str] = field(default_factory=list)  # URLs/resources fetched
     pending_items: list[str] = field(default_factory=list)  # unfinished work items
+    # Runtime-only convergence object for prompt/tool/skill/retrieval assembly ledgers.
+    # The serializable mirror lives in metadata["runtime_assembly_state"].
+    runtime_assembly_state: Any | None = None
 
     def __post_init__(self) -> None:
         mirrored = self.metadata.get("discovered_tools")

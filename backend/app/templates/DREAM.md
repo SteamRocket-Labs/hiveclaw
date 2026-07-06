@@ -33,6 +33,7 @@ consolidation lane.
 
 <hard_boundaries>
 - Do not write accepted T3 files directly.
+- Do not write `memory/t3/**` directly.
 - Do not write `memory/explicit/**` directly.
 - Do not create accepted-T3 indexes or topic folders such as `index.md`,
   `relations.md`, `contradictions.md`, `chapters/**`, or ad hoc topic folders.

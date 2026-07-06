@@ -1269,13 +1269,15 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
                 return "❌ runtime budget id is invalid"
 
         if str(args.get("execution_target") or "cloud_agent").strip() == "local_agent":
-            queued = await _delegate_to_local_agent_channel(
-                source_agent=source_agent,
-                target_agent=target,
-                message_text=message_text,
-                args=args,
-                budget_run_id=budget_run_id,
-            )
+            local_delegate_kwargs = {
+                "source_agent": source_agent,
+                "target_agent": target,
+                "message_text": message_text,
+                "args": args,
+            }
+            if budget_run_id is not None:
+                local_delegate_kwargs["budget_run_id"] = budget_run_id
+            queued = await _delegate_to_local_agent_channel(**local_delegate_kwargs)
             return json.dumps(queued, ensure_ascii=False, default=str)
 
         assert target_model is not None

@@ -320,7 +320,7 @@ async def test_requested_discovered_tool_does_not_bypass_disabled_pack_policy(mo
     async def no_feishu_cli_access():
         return False
 
-    async def disabled_web_pack(*_args, **_kwargs):
+    async def disabled_web_capability_group(*_args, **_kwargs):
         return {"web_pack": False}
 
     async def no_mcp_gating(*_args, **_kwargs):
@@ -329,7 +329,7 @@ async def test_requested_discovered_tool_does_not_bypass_disabled_pack_policy(mo
     _patch_fake_tenant_session(monkeypatch, fake_async_session, tenant_id=tenant_id)
     monkeypatch.setattr(agent_tools_module, "_agent_has_feishu", no_feishu_channel)
     monkeypatch.setattr(agent_tools_module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
-    monkeypatch.setattr(agent_tools_module, "get_agent_pack_policies", disabled_web_pack)
+    monkeypatch.setattr(agent_tools_module, "get_agent_capability_group_policies", disabled_web_capability_group)
     monkeypatch.setattr(agent_tools_module, "_resolve_agent_mcp_gating", no_mcp_gating)
 
     tools = await agent_tools_module.get_agent_tools_for_llm(

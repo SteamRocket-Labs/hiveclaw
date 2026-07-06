@@ -31,9 +31,9 @@ from app.services.chat_transcript import append_session_event
 from app.services.coding_pack_manifest import CODING_PACK_COMMAND_NAMES, coding_pack_command_manifest
 from app.services.command_registry import build_default_command_registry
 from app.services.command_registry import CommandDefinition
+from app.services.capability_group_policy_service import get_agent_capability_group_policies
 from app.services.diagnostic_command_runtime import DIAGNOSTIC_COMMAND_NAMES, execute_diagnostic_command
 from app.services.mcp_server_service import get_agent_extensions
-from app.services.pack_policy_service import get_agent_pack_policies
 from app.services.plan_mode_core import (
     plan_mode_user_declined,
     stamp_confirmed_plan_provenance,
@@ -91,7 +91,7 @@ _SLASH_COMMAND_NAME_RE = re.compile(r"^[A-Za-z0-9_:-]+$")
 
 async def _coding_pack_enabled(db: AsyncSession, agent: Any) -> bool:
     try:
-        policies = await get_agent_pack_policies(
+        policies = await get_agent_capability_group_policies(
             db,
             getattr(agent, "tenant_id", None),
             getattr(agent, "id", None),

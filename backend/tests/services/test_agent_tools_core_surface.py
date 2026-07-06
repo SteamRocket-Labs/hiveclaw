@@ -344,7 +344,7 @@ async def test_explicit_agent_team_discovers_team_create_without_command_pack(mo
     async def fake_resolve_tenant(_agent_id):
         return uuid4()
 
-    async def fake_get_agent_pack_policies(_db, _tenant_id, _agent_id):
+    async def fake_get_agent_capability_group_policies(_db, _tenant_id, _agent_id):
         return {}
 
     async def fake_mcp(_agent_id, _query):
@@ -352,7 +352,7 @@ async def test_explicit_agent_team_discovers_team_create_without_command_pack(mo
 
     monkeypatch.setattr(agent_tools, "resolve_tenant_for_agent", fake_resolve_tenant)
     monkeypatch.setattr(agent_tools, "tenant_scoped_session", lambda _tenant_id: _TenantSession())
-    monkeypatch.setattr(agent_tools, "get_agent_pack_policies", fake_get_agent_pack_policies)
+    monkeypatch.setattr(agent_tools, "get_agent_capability_group_policies", fake_get_agent_capability_group_policies)
     monkeypatch.setattr(agent_tools, "list_agent_mcp_deferred_tools", fake_mcp)
 
     assert "team_create" in await agent_tools.available_deferred_tool_names_for_agent(uuid4())
@@ -363,20 +363,20 @@ def test_command_pack_no_longer_owns_agent_team_runtime_discovery():
     """The historical command_pack may remain a slash-command facade, but it
     must not own the model-visible Agent Team creation path."""
     from app.services.governance_capability_taxonomy import iter_runtime_l2_capabilities
-    from app.services.pack_policy_service import policy_pack_names_for_tool
+    from app.services.capability_group_policy_service import policy_capability_group_names_for_tool
     from app.tools.collector import collect_tools
 
     command_pack = next((descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack"), None)
 
     assert command_pack is None or "team_create" not in command_pack.tools
     assert "team_create" not in collect_tools().pack_tool_groups.get("command_pack", [])
-    assert policy_pack_names_for_tool("team_create") == ()
+    assert policy_capability_group_names_for_tool("team_create") == ()
 
 
 def test_command_pack_task_wrappers_do_not_duplicate_work_ledger_runtime_surface():
     from app.services.agent_tools import CORE_TOOL_NAMES
     from app.services.governance_capability_taxonomy import capability_descriptor_for_tool, iter_runtime_l2_capabilities
-    from app.services.pack_policy_service import policy_pack_names_for_tool
+    from app.services.capability_group_policy_service import policy_capability_group_names_for_tool
     from app.tools.collector import collect_tools
 
     command_pack = next((descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack"), None)
@@ -389,7 +389,7 @@ def test_command_pack_task_wrappers_do_not_duplicate_work_ledger_runtime_surface
         descriptor = capability_descriptor_for_tool(tool_name)
         assert descriptor is not None
         assert descriptor.name == "agent_base"
-        assert policy_pack_names_for_tool(tool_name) == ()
+        assert policy_capability_group_names_for_tool(tool_name) == ()
 
 
 def test_all_pack_manifests_root_backend_consistent():

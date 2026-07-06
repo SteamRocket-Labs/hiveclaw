@@ -94,13 +94,13 @@ async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
         assert requested_agent_id == agent_id
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "use"
 
-    async def fake_pack_policies(_db, requested_tenant_id, requested_agent_id):
+    async def fake_capability_group_policies(_db, requested_tenant_id, requested_agent_id):
         assert requested_tenant_id == tenant_id
         assert requested_agent_id == agent_id
         return {"coding_pack": True}
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(commands_api, "get_agent_pack_policies", fake_pack_policies)
+    monkeypatch.setattr(commands_api, "get_agent_capability_group_policies", fake_capability_group_policies)
 
     index = await commands_api.list_agent_commands(agent_id=agent_id, current_user=current_user, db=db)
     assert any(item["name"] == "goal_start" for item in index)
@@ -256,11 +256,11 @@ async def test_commands_api_hides_optional_coding_pack_without_policy(monkeypatc
         assert requested_agent_id == agent_id
         return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "use"
 
-    async def fake_pack_policies(*_args, **_kwargs):
+    async def fake_capability_group_policies(*_args, **_kwargs):
         return {}
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(commands_api, "get_agent_pack_policies", fake_pack_policies)
+    monkeypatch.setattr(commands_api, "get_agent_capability_group_policies", fake_capability_group_policies)
 
     index = await commands_api.list_agent_commands(
         agent_id=agent_id,
@@ -286,13 +286,13 @@ async def test_coding_pack_command_execute_returns_local_bridge_contract(monkeyp
         assert requested_agent_id == agent_id
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "use"
 
-    async def fake_pack_policies(_db, requested_tenant_id, requested_agent_id):
+    async def fake_capability_group_policies(_db, requested_tenant_id, requested_agent_id):
         assert requested_tenant_id == tenant_id
         assert requested_agent_id == agent_id
         return {"coding_pack": True}
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(commands_api, "get_agent_pack_policies", fake_pack_policies)
+    monkeypatch.setattr(commands_api, "get_agent_capability_group_policies", fake_capability_group_policies)
 
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
@@ -1152,11 +1152,11 @@ async def test_commands_api_enforces_bridge_and_remote_safety(monkeypatch):
         assert requested_agent_id == agent_id
         return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "manage"
 
-    async def fake_pack_policies(*_args, **_kwargs):
+    async def fake_capability_group_policies(*_args, **_kwargs):
         return {"coding_pack": True}
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(commands_api, "get_agent_pack_policies", fake_pack_policies)
+    monkeypatch.setattr(commands_api, "get_agent_capability_group_policies", fake_capability_group_policies)
 
     with pytest.raises(HTTPException) as bridge_exc:
         await commands_api.execute_agent_command(

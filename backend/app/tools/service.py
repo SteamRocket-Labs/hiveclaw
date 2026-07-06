@@ -32,7 +32,11 @@ from app.runtime.ccplus_contracts import ToolCallLifecycleV1, ToolExecutionFrame
 from app.services.plan_mode_gate import PlanModeGate, get_plan_mode_gate
 from app.services.privacy_layer import PrivacyLayer
 from app.services.governance_capability_taxonomy import capability_descriptor_for_tool, is_l2_tool
-from app.services.pack_policy_service import get_agent_pack_policies, is_pack_enabled, policy_pack_names_for_tool
+from app.services.capability_group_policy_service import (
+    get_agent_capability_group_policies,
+    is_capability_group_enabled,
+    policy_capability_group_names_for_tool,
+)
 from app.tools.governance import EventCallback, GovernanceDependencies, ToolGovernanceContext
 from app.tools.plan_gate_registry import hard_gated_action_kind
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
@@ -424,6 +428,7 @@ class ToolRuntimeService:
     coordination_runtime: CoordinationRuntime | None = None
     coordination_gateway: CoordinationGateway | None = None
     truth_search_service: Any | None = None
+    capability_group_policy_loader: Callable[[ToolExecutionContext], Awaitable[dict[str, bool]] | dict[str, bool]] | None = None
     pack_policy_loader: Callable[[ToolExecutionContext], Awaitable[dict[str, bool]] | dict[str, bool]] | None = None
     preflight_enabled: bool = True
     # Confirmation gate. The gate is read-only and stateless; the session factory
@@ -462,9 +467,10 @@ class ToolRuntimeService:
 
             self.plan_mode_service = get_plan_mode_service()
 
-    async def _load_pack_policies(self, runtime_context: ToolExecutionContext) -> dict[str, bool]:
-        if self.pack_policy_loader is not None:
-            loaded = self.pack_policy_loader(runtime_context)
+    async def _load_capability_group_policies(self, runtime_context: ToolExecutionContext) -> dict[str, bool]:
+        policy_loader = self.capability_group_policy_loader or self.pack_policy_loader
+        if policy_loader is not None:
+            loaded = policy_loader(runtime_context)
             if inspect.isawaitable(loaded):
                 loaded = await loaded
             return dict(loaded or {})
@@ -477,13 +483,13 @@ class ToolRuntimeService:
         except (TypeError, ValueError):
             return {}
         async with tenant_scoped_session(tenant_id) as db:
-            return await get_agent_pack_policies(db, tenant_id, runtime_context.agent_id)
+            return await get_agent_capability_group_policies(db, tenant_id, runtime_context.agent_id)
 
     async def _l2_extension_policy_block(self, tool_name: str, runtime_context: ToolExecutionContext) -> str | None:
         if not is_l2_tool(tool_name):
             return None
-        pack_names = policy_pack_names_for_tool(tool_name)
-        if not pack_names:
+        capability_group_names = policy_capability_group_names_for_tool(tool_name)
+        if not capability_group_names:
             return None
         if not runtime_context.tenant_id:
             return render_tool_error(
@@ -494,18 +500,25 @@ class ToolRuntimeService:
                 retryable=False,
                 actionable_hint="Retry from a normal agent session so tenant and agent extension policies can be checked.",
             )
-        pack_policies = await self._load_pack_policies(runtime_context)
-        disabled_packs = tuple(pack_name for pack_name in pack_names if not is_pack_enabled(pack_policies, pack_name))
-        if not disabled_packs:
+        capability_group_policies = await self._load_capability_group_policies(runtime_context)
+        disabled_capability_groups = tuple(
+            capability_group_name
+            for capability_group_name in capability_group_names
+            if not is_capability_group_enabled(capability_group_policies, capability_group_name)
+        )
+        if not disabled_capability_groups:
             return None
-        pack_list = ", ".join(disabled_packs)
+        capability_group_list = ", ".join(disabled_capability_groups)
         return render_tool_error(
             tool_name=tool_name,
             error_class="extension_disabled",
-            message=f"{tool_name} belongs to disabled L2 extension pack(s): {pack_list}.",
+            message=f"{tool_name} belongs to disabled L2 extension capability group(s): {capability_group_list}.",
             provider="ccplus_l2_gate",
             retryable=False,
-            actionable_hint=f"Enable the extension pack(s) for this agent before calling {tool_name}: {pack_list}.",
+            actionable_hint=(
+                f"Enable the extension capability group(s) for this agent before calling {tool_name}: "
+                f"{capability_group_list}."
+            ),
         )
 
     async def execute(

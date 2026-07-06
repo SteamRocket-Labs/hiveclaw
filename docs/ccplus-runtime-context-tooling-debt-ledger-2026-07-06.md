@@ -179,6 +179,8 @@ flowchart TD
 | 代码位置 | `backend/app/services/pack_policy_service.py`、`backend/app/services/pack_service.py`、`backend/app/tools/runtime_tool_groups.py`、`backend/app/services/governance_capability_taxonomy.py` |
 | 一轮修复 | 新增 `capability_group_policy` 语义层，旧 pack storage 仅作为 migration-compatible backing；prompt/API 返回新词 |
 
+2026-07-06 落地证据：新增 `backend/app/services/capability_group_policy_service.py` 作为 Runtime facade；`agent_tools`、`ToolRuntimeService`、`commands.py` 均改为调用 `get_agent_capability_group_policies` / `policy_capability_group_names_for_tool` / `is_capability_group_enabled`；`governance_capability_taxonomy.py` 新增 `taxonomy_policy_capability_group_names_for_tool`，旧 `pack_policy_service` 仅保留为 SystemSetting / plugin 安装存量 backing。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/services/test_capability_group_policy_service.py backend/tests/services/test_pack_policy_service.py backend/tests/tools/test_service.py backend/tests/services/test_agent_tools_core_surface.py backend/tests/services/test_agent_tools.py backend/tests/api/test_cc_codex_parity_api.py -q` -> `97 passed, 4 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/services/capability_group_policy_service.py backend/app/services/agent_tools.py backend/app/tools/service.py backend/app/api/commands.py backend/app/services/governance_capability_taxonomy.py backend/app/services/pack_policy_service.py backend/tests/services/test_capability_group_policy_service.py backend/tests/services/test_agent_tools_core_surface.py backend/tests/services/test_agent_tools.py backend/tests/api/test_cc_codex_parity_api.py` -> `All checks passed!`。
+
 ### RTD-03：没有 CC `/context` 等价的 context usage ledger
 
 | 字段 | 内容 |

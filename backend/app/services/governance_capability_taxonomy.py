@@ -530,22 +530,22 @@ def is_l2_tool(tool_name: str) -> bool:
     return bool(descriptor and descriptor.l2_visible)
 
 
-_POLICY_PACK_NAMES_BY_TOOL: dict[str, tuple[str, ...]] | None = None
+_POLICY_CAPABILITY_GROUP_NAMES_BY_TOOL: dict[str, tuple[str, ...]] | None = None
 
 
-def taxonomy_policy_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
-    """Return L2 policy pack names for a runtime tool.
+def taxonomy_policy_capability_group_names_for_tool(tool_name: str) -> tuple[str, ...]:
+    """Return L2 policy capability-group names for a runtime tool.
 
     This is the taxonomy-owned facade for call-time L2 policy. It intentionally
     excludes agent_base tools even when an old manifest or ToolMeta row still
-    mentions a pack, so CORE cannot become disableable through stale metadata.
+    mentions a group, so CORE cannot become disableable through stale metadata.
     """
-    global _POLICY_PACK_NAMES_BY_TOOL
+    global _POLICY_CAPABILITY_GROUP_NAMES_BY_TOOL
     name = str(tool_name or "").strip()
     if not name or name in CORE_TOOL_NAMES:
         return ()
 
-    if _POLICY_PACK_NAMES_BY_TOOL is None:
+    if _POLICY_CAPABILITY_GROUP_NAMES_BY_TOOL is None:
         by_tool: dict[str, set[str]] = {}
         for descriptor in iter_runtime_l2_capabilities():
             for candidate in descriptor.tools:
@@ -567,6 +567,14 @@ def taxonomy_policy_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
             # failures must not make CORE tools policy-controlled.
             pass
 
-        _POLICY_PACK_NAMES_BY_TOOL = {candidate: tuple(sorted(pack_names)) for candidate, pack_names in by_tool.items()}
+        _POLICY_CAPABILITY_GROUP_NAMES_BY_TOOL = {
+            candidate: tuple(sorted(capability_group_names))
+            for candidate, capability_group_names in by_tool.items()
+        }
 
-    return _POLICY_PACK_NAMES_BY_TOOL.get(name, ())
+    return _POLICY_CAPABILITY_GROUP_NAMES_BY_TOOL.get(name, ())
+
+
+def taxonomy_policy_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
+    """Compatibility alias for legacy pack-policy storage callers."""
+    return taxonomy_policy_capability_group_names_for_tool(tool_name)

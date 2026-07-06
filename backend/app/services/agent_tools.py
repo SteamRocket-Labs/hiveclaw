@@ -33,7 +33,11 @@ from app.services.governance_capability_taxonomy import (
     iter_runtime_l2_capabilities,
     iter_runtime_l2_capabilities_for_query,
 )
-from app.services.pack_policy_service import get_agent_pack_policies, is_pack_enabled, policy_pack_names_for_tool
+from app.services.capability_group_policy_service import (
+    get_agent_capability_group_policies,
+    is_capability_group_enabled,
+    policy_capability_group_names_for_tool,
+)
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
 from app.tools import (
@@ -544,22 +548,25 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
         select_target = raw_query.split(":", 1)[1].strip()
         normalized = select_target.lower()
     compact = normalize_tool_query(normalized)
-    pack_policies: dict[str, bool] | None = None
-    pack_policy_available = True
+    capability_group_policies: dict[str, bool] | None = None
+    capability_group_policy_available = True
     try:
         tenant_id = await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tenant_id) as db:
-            pack_policies = await get_agent_pack_policies(db, tenant_id, agent_id)
+            capability_group_policies = await get_agent_capability_group_policies(db, tenant_id, agent_id)
     except Exception as exc:
-        logger.warning("[Tools] pack policy lookup failed for discovery; failing L2 discovery closed: %s", exc)
-        pack_policy_available = False
+        logger.warning(
+            "[Tools] capability group policy lookup failed for discovery; failing L2 discovery closed: %s",
+            exc,
+        )
+        capability_group_policy_available = False
 
-    def _pack_enabled(pack_name: str) -> bool:
-        if not pack_policy_available:
+    def _capability_group_enabled(capability_group_name: str) -> bool:
+        if not capability_group_policy_available:
             return False
-        if pack_policies is None:
+        if capability_group_policies is None:
             return False
-        return is_pack_enabled(pack_policies, pack_name)
+        return is_capability_group_enabled(capability_group_policies, capability_group_name)
 
     def _direct_tool_match(tool_name: str) -> bool:
         return bool(normalized) and (tool_name.lower() == normalized or normalize_tool_query(tool_name) == compact)
@@ -575,15 +582,15 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
 
     if normalized:
         for pack in iter_runtime_l2_capabilities():
-            if not _pack_enabled(pack.name) and pack_policy_available:
+            if not _capability_group_enabled(pack.name) and capability_group_policy_available:
                 continue
             for tool_name in pack.tools:
                 if _direct_tool_match(tool_name) and tool_name not in CORE_TOOL_NAMES:
                     return [tool_name]
-            if not pack_policy_available:
+            if not capability_group_policy_available:
                 continue
     for pack in iter_runtime_l2_capabilities_for_query(query):
-        if not _pack_enabled(pack.name):
+        if not _capability_group_enabled(pack.name):
             continue
         for tool_name in pack.tools:
             if tool_name in CORE_TOOL_NAMES or tool_name in seen:
@@ -724,7 +731,11 @@ async def get_agent_tools_for_llm(
                 )
                 + (_get_hr_tools() if hr_agent else [])
             )
-            pack_policies = await get_agent_pack_policies(db, getattr(agent, "tenant_id", None), agent_id)
+            capability_group_policies = await get_agent_capability_group_policies(
+                db,
+                getattr(agent, "tenant_id", None),
+                agent_id,
+            )
 
             # Get globally enabled tools visible to this agent's tenant.
             all_tools_r = await db.execute(select(Tool).where(Tool.enabled, _tool_tenant_predicate(Tool, agent)))
@@ -781,8 +792,11 @@ async def get_agent_tools_for_llm(
                 # MCP tools are gated by assignment reachability (above), not by a
                 # pack policy — the mcp_server:* pseudo-pack was retired in Step 6.
                 # Non-MCP tools still respect their static pack policy.
-                static_packs = set(policy_pack_names_for_tool(t.name))
-                if static_packs and not any(is_pack_enabled(pack_policies, pack_name) for pack_name in static_packs):
+                static_capability_groups = set(policy_capability_group_names_for_tool(t.name))
+                if static_capability_groups and not any(
+                    is_capability_group_enabled(capability_group_policies, capability_group_name)
+                    for capability_group_name in static_capability_groups
+                ):
                     continue
 
                 # Build OpenAI function-calling format

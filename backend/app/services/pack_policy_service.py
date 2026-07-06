@@ -1,4 +1,9 @@
-"""Tenant pack policy storage and filtering."""
+"""Legacy tenant pack policy storage and filtering.
+
+Runtime callers should use ``capability_group_policy_service``. This module
+remains the migration-compatible backing store for existing SystemSetting keys
+and installed plugin rows.
+"""
 
 from __future__ import annotations
 

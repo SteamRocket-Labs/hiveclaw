@@ -1582,6 +1582,9 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             if request.session_context
             else [],
             "last_successful_step": result.content[:300],
+            "activation_events": list((request.session_context.metadata or {}).get("activation_events") or [])
+            if request.session_context
+            else [],
         }
         await emit_hook(
             HookEvent.SESSION_END,

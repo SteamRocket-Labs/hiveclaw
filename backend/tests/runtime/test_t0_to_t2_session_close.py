@@ -10,6 +10,7 @@ import pytest
 from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_events
 from app.runtime.hooks import HookContext, HookEvent
 from app.runtime.hooks_setup import (
+    _summarize_activation_feedback_on_turn_stop,
     _t0_delegation_end,
     _t0_dream_end,
     _t0_heartbeat_tick_end,
@@ -483,6 +484,14 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
     assert turn_stop == [
         {
             "event": HookEvent.TURN_STOP.value,
+            "handler_name": "summarize_activation_feedback_on_turn_stop",
+            "key": "activation.turn_stop.feedback_summary",
+            "profile_name": None,
+            "has_matcher": False,
+            "matcher_spec": None,
+        },
+        {
+            "event": HookEvent.TURN_STOP.value,
             "handler_name": "t0_turn_stop",
             "key": "memory.turn_stop.t0",
             "profile_name": None,
@@ -500,6 +509,41 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
             "matcher_spec": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_turn_stop_summarizes_activation_feedback_before_t0_seal() -> None:
+    ctx = HookContext(
+        event=HookEvent.TURN_STOP,
+        session_id="session-summary",
+        metadata={
+            "activation_events": [
+                {
+                    "event_type": "tool_success",
+                    "query_id": "aq:summary",
+                    "candidate_id": "tool_schema:web_search:v1/test",
+                    "feedback": {"signal": "tool_success", "credit": 0.6},
+                },
+                {
+                    "event_type": "tool_failure",
+                    "query_id": "aq:summary",
+                    "candidate_id": "tool_schema:send_email:runtime",
+                    "feedback": {"signal": "tool_failure", "credit": -0.6},
+                },
+            ]
+        },
+    )
+
+    await _summarize_activation_feedback_on_turn_stop(ctx)
+
+    summary = ctx.metadata["activation_feedback_summary"]
+    assert summary["schema"] == "hive.ccplus.activation_feedback_summary.v1"
+    assert summary["event_count"] == 2
+    assert summary["tool_success_count"] == 1
+    assert summary["tool_failure_count"] == 1
+    assert summary["credit_total"] == pytest.approx(0.0)
+    assert summary["candidate_ids"] == ["tool_schema:web_search:v1/test", "tool_schema:send_email:runtime"]
+    assert summary["query_ids"] == ["aq:summary"]
 
 
 @pytest.mark.asyncio

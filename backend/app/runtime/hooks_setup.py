@@ -745,6 +745,45 @@ async def _t0_dream_end(ctx: HookContext) -> None:
     _reset_heartbeat_session(agent_id)
 
 
+def _unique_text(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+async def _summarize_activation_feedback_on_turn_stop(ctx: HookContext) -> None:
+    """TURN_STOP → summarize activation feedback before T0 sealing."""
+    raw_events = ctx.metadata.get("activation_events")
+    events = [dict(item) for item in raw_events if isinstance(item, dict)] if isinstance(raw_events, list | tuple) else []
+    if not events:
+        return
+    success_count = sum(1 for event in events if event.get("event_type") == "tool_success")
+    failure_count = sum(1 for event in events if event.get("event_type") == "tool_failure")
+    credits: list[float] = []
+    for event in events:
+        feedback = event.get("feedback") if isinstance(event.get("feedback"), dict) else {}
+        try:
+            credits.append(float(feedback.get("credit") or 0.0))
+        except (TypeError, ValueError):
+            credits.append(0.0)
+    ctx.metadata["activation_feedback_summary"] = {
+        "schema": "hive.ccplus.activation_feedback_summary.v1",
+        "event_count": len(events),
+        "tool_success_count": success_count,
+        "tool_failure_count": failure_count,
+        "credit_total": round(sum(credits), 6),
+        "candidate_ids": _unique_text([str(event.get("candidate_id") or "") for event in events]),
+        "query_ids": _unique_text([str(event.get("query_id") or "") for event in events]),
+        "event_ids": _unique_text([str(event.get("event_id") or "") for event in events]),
+    }
+
+
 async def _capture_pending_reply(ctx: HookContext) -> None:
     """POST_TOOL_USE → auto-capture pending reply context for outbound messages."""
     agent_id = _parse_agent_id(ctx)
@@ -873,6 +912,7 @@ _MEMORY_HOOK_HANDLERS = {
     "t0_heartbeat_tick_end": _t0_heartbeat_tick_end,
     "evolution_maintenance_on_heartbeat": _evolution_maintenance_on_heartbeat,
     "t0_dream_end": _t0_dream_end,
+    "summarize_activation_feedback_on_turn_stop": _summarize_activation_feedback_on_turn_stop,
     "capture_pending_reply": _capture_pending_reply,
 }
 
@@ -907,6 +947,11 @@ _MEMORY_HOOK_CONFIGURATION = [
         "event": HookEvent.PRE_COMPACTION.value,
         "handler": "project_on_pre_compaction",
         "key": "memory.pre_compaction.t0_checkpoint",
+    },
+    {
+        "event": HookEvent.TURN_STOP.value,
+        "handler": "summarize_activation_feedback_on_turn_stop",
+        "key": "activation.turn_stop.feedback_summary",
     },
     {"event": HookEvent.TURN_STOP.value, "handler": "t0_turn_stop", "key": "memory.turn_stop.t0"},
     {"event": HookEvent.TURN_ABORT.value, "handler": "t0_turn_abort", "key": "memory.turn_abort.t0"},

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from app.runtime.activation_candidates import ActivationCandidate, ActivationScore, ActivationSurface
 from app.runtime.context_candidates import build_metadata_activation_keys
 from app.services.skill_curator import STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE, load_skill_usage
 from app.skills.types import ParsedSkill
@@ -198,3 +199,54 @@ def rank_skills_for_prompt(
             path_triggered_skill_names=path_triggered_skill_names,
         )
     ]
+
+
+def gather_skill_candidates_for_prompt(
+    workspace: Path,
+    skills: Iterable[ParsedSkill],
+    *,
+    scenario_text: str | None = None,
+    active_skill_names: Iterable[str] | None = None,
+    path_triggered_skill_names: Iterable[str] | None = None,
+    limit: int = 20,
+) -> list[ActivationCandidate]:
+    decisions = rank_skills_for_prompt_with_reasons(
+        workspace,
+        skills,
+        scenario_text=scenario_text,
+        active_skill_names=active_skill_names,
+        path_triggered_skill_names=path_triggered_skill_names,
+    )
+    candidates: list[ActivationCandidate] = []
+    for decision in decisions[: max(1, int(limit or 20))]:
+        keys = decision.activation_keys
+        preview = f"{decision.skill.metadata.name}: {decision.skill.metadata.description}".strip()
+        rank_score = min(1.0, max(0.1, decision.score / 1000 if decision.score else 0.1))
+        source_refs = tuple(str(ref) for ref in keys.get("source_refs") or () if str(ref).strip())
+        candidates.append(
+            ActivationCandidate(
+                candidate_kind="skill",
+                candidate_ref=dict(keys["candidate_ref"]),
+                key_features=dict(keys["key_features"]),
+                value_pointer=dict(keys["value_pointer"]),
+                surface=ActivationSurface(
+                    surface_kind="skill_catalog",
+                    preview=preview,
+                    token_estimate=max(1, len(preview) // 4),
+                    source_refs=source_refs,
+                ),
+                source_refs=source_refs,
+                score=ActivationScore(
+                    head_scores={"skill_rank": rank_score},
+                    total_score=rank_score,
+                    reasons=decision.reasons,
+                    scorer="skill_catalog_gatherer",
+                ),
+                metadata={
+                    "state": decision.state,
+                    "use_count": decision.use_count,
+                    "score": decision.score,
+                },
+            )
+        )
+    return candidates

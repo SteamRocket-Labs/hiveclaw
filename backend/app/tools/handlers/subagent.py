@@ -58,6 +58,7 @@ from app.services.subagent_run_service import (
     update_subagent_child_session_state,
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.runtime.context_budget import build_tool_execution_shape_decision, execution_shape_from_round_state
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
 
@@ -480,6 +481,10 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     task = str(normalized_args.get("task") or "").strip()
     if not task:
         return _json({"ok": False, "error": "prompt or task is required"})
+    execution_shape_decision = build_tool_execution_shape_decision(
+        "spawn_subagent",
+        execution_shape_from_round_state(request.context.round_state),
+    )
 
     from app.services.plan_mode_runtime_context import interactive_plan_mode_active
     from app.tools.plan_mode_policy import is_plan_mode_tool_allowed
@@ -713,6 +718,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                 "team_name": normalized_args.get("team_name") or None,
                 "status": "queued",
                 "session_state": "queued",
+                "execution_shape_decision": execution_shape_decision,
                 "continuation": {
                     "address": child_session_id,
                     "tool": "send_agent_session_message",
@@ -779,6 +785,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             "content": result.content if result else "",
             "error": result.error if result else "spawn produced no result",
             "tokens_used": result.tokens_used if result else 0,
+            "execution_shape_decision": execution_shape_decision,
             "continuation": {
                 "address": child_session_id,
                 "tool": "send_agent_session_message",

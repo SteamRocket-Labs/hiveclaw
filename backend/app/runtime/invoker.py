@@ -350,6 +350,10 @@ def _tool_frame_kwargs_from_session_context(session_context: SessionContext | No
     if isinstance(t0_refs, str):
         t0_refs = (t0_refs,)
     round_state = dict(metadata.get("round_state") if isinstance(metadata.get("round_state"), dict) else {})
+    turn_route = metadata.get("turn_route") if isinstance(metadata.get("turn_route"), dict) else {}
+    execution_shape = str(turn_route.get("execution_shape") or metadata.get("execution_shape") or "").strip()
+    if execution_shape and "execution_shape" not in round_state:
+        round_state["execution_shape"] = execution_shape
     execution_contract = _execution_contract_from_session_context(session_context)
     if execution_contract and not isinstance(round_state.get("execution_contract"), dict):
         round_state["execution_contract"] = execution_contract
@@ -1254,6 +1258,7 @@ def _resolve_effective_turn_route(
         "reason": route.reason,
         "task_profile": route.task_profile.name,
         "complexity": route.task_profile.complexity,
+        "execution_shape": route.task_profile.execution_shape,
         "config_source": route.config_source,
     }
     if request.session_context is not None:

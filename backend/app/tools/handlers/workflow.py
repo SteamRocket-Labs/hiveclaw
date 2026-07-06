@@ -18,6 +18,7 @@ from app.runtime.dynamic_workflow import (
     mapping,
     validate_dynamic_workflow_proposal,
 )
+from app.runtime.context_budget import build_tool_execution_shape_decision, execution_shape_from_round_state
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow, normalize_workflow_args
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
@@ -288,6 +289,10 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
 async def start_workflow(request: ToolExecutionRequest) -> str:
     agent_id = request.context.agent_id
     session_id = request.context.session_id
+    execution_shape_decision = build_tool_execution_shape_decision(
+        "start_workflow",
+        execution_shape_from_round_state(request.context.round_state),
+    )
     if not session_id:
         return json.dumps(
             {
@@ -353,6 +358,9 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
             args_hash=compute_definition_hash(args),
             candidate=dynamic_candidate,
         )
+        if run_metadata is None:
+            run_metadata = {}
+        run_metadata["execution_shape_decision"] = execution_shape_decision
         handle = await start_ephemeral_workflow_for_agent(
             agent_id=agent_id,
             definition=definition,
@@ -375,6 +383,7 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
             "run_id": str(handle.run_id),
             "status": handle.outcome.status,
             "reason": handle.outcome.reason,
+            "execution_shape_decision": execution_shape_decision,
         },
         ensure_ascii=False,
     )

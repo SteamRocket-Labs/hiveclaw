@@ -55,6 +55,18 @@ def test_infer_task_profile_recognizes_self_evolution_requests():
     assert profile.name == "self_evolution"
 
 
+def test_infer_task_profile_records_execution_shape():
+    from app.runtime.context_budget import infer_task_profile
+
+    parallel = infer_task_profile("请并行派三个独立 worker 分别研究 API、Runtime、前端，然后汇总。")
+    approval = infer_task_profile("这个流程必须固定顺序执行，中间需要人工审批 gate，通过后继续。")
+    recurrent = infer_task_profile("每天早上 9 点重复运行这个检查，并在有变化时继续处理。")
+
+    assert parallel.execution_shape == "one_off_parallel"
+    assert approval.execution_shape == "approval_gate"
+    assert recurrent.execution_shape == "recurrent"
+
+
 def test_compute_context_budget_256k_research_is_more_aggressive():
     from app.runtime.context_budget import compute_context_budget
 

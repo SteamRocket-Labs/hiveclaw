@@ -39,6 +39,7 @@ def compute_system_prompt_budget(context_window_tokens: int | None) -> int:
 class TaskProfile:
     name: str
     complexity: str
+    execution_shape: str = "direct"
     suggested_deferred_tool_group_names: tuple[str, ...] = ()
 
     def __init__(
@@ -46,6 +47,7 @@ class TaskProfile:
         name: str,
         complexity: str,
         suggested_deferred_tool_group_names: tuple[str, ...] = (),
+        execution_shape: str = "direct",
         *,
         suggested_pack_names: tuple[str, ...] | None = None,
     ) -> None:
@@ -57,6 +59,7 @@ class TaskProfile:
         )
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "complexity", complexity)
+        object.__setattr__(self, "execution_shape", normalize_execution_shape(execution_shape))
         object.__setattr__(self, "suggested_deferred_tool_group_names", groups)
 
     @property
@@ -165,6 +168,85 @@ _SELF_EVOLUTION_HINTS = (
     "重复成功",
     "工作流",
 )
+_EXECUTION_SHAPES = {
+    "direct",
+    "one_off_parallel",
+    "fixed_sequence",
+    "approval_gate",
+    "long_running",
+    "recurrent",
+}
+_ONE_OFF_PARALLEL_HINTS = (
+    "parallel",
+    "fan out",
+    "fanout",
+    "independent",
+    "separable",
+    "worker",
+    "workers",
+    "session worker",
+    "并行",
+    "独立",
+    "多个方向",
+    "分别研究",
+    "分别检查",
+    "多路",
+)
+_FIXED_SEQUENCE_HINTS = (
+    "fixed sequence",
+    "strict order",
+    "ordered steps",
+    "must not drift",
+    "step order",
+    "workflow",
+    "固定顺序",
+    "严格顺序",
+    "流程",
+    "步骤顺序",
+    "不能漂移",
+)
+_APPROVAL_GATE_HINTS = (
+    "approval",
+    "approval gate",
+    "confirm before",
+    "human review",
+    "manual approval",
+    "gate",
+    "审批",
+    "人工审批",
+    "确认后",
+    "批准后",
+    "审核通过",
+)
+_LONG_RUNNING_HINTS = (
+    "long-running",
+    "long running",
+    "background",
+    "resume later",
+    "overnight",
+    "wait and continue",
+    "长任务",
+    "长时间",
+    "后台",
+    "稍后恢复",
+    "等待后继续",
+)
+_RECURRENT_HINTS = (
+    "recurring",
+    "recurrent",
+    "repeat",
+    "scheduled",
+    "daily",
+    "weekly",
+    "hourly",
+    "cron",
+    "每天",
+    "每周",
+    "每小时",
+    "定时",
+    "周期",
+    "重复运行",
+)
 _MCP_EXTENSION_HINTS = (
     "mcp",
     "import_mcp_server",
@@ -222,6 +304,79 @@ def _contains_keyword(haystack: str, keyword: str) -> bool:
 
 def _keyword_score(haystack: str, keywords: tuple[str, ...]) -> int:
     return sum(1 for keyword in keywords if _contains_keyword(haystack, keyword))
+
+
+def normalize_execution_shape(value: object) -> str:
+    shape = str(value or "").strip().lower()
+    return shape if shape in _EXECUTION_SHAPES else "direct"
+
+
+def infer_execution_shape(query: str, messages: list[dict] | None = None) -> str:
+    haystack = " ".join(
+        part
+        for part in [
+            query.strip(),
+            " ".join(
+                str(msg.get("content", ""))
+                for msg in messages or []
+                if msg.get("role") == "user" and isinstance(msg.get("content"), str)
+            ),
+        ]
+        if part
+    ).lower()
+    if _keyword_score(haystack, _APPROVAL_GATE_HINTS) >= 1:
+        return "approval_gate"
+    if _keyword_score(haystack, _RECURRENT_HINTS) >= 1:
+        return "recurrent"
+    if _keyword_score(haystack, _FIXED_SEQUENCE_HINTS) >= 1:
+        return "fixed_sequence"
+    if _keyword_score(haystack, _LONG_RUNNING_HINTS) >= 1:
+        return "long_running"
+    if _keyword_score(haystack, _ONE_OFF_PARALLEL_HINTS) >= 1:
+        return "one_off_parallel"
+    return "direct"
+
+
+def execution_shape_from_round_state(round_state: dict | None) -> str:
+    if not isinstance(round_state, dict):
+        return "direct"
+    return normalize_execution_shape(round_state.get("execution_shape"))
+
+
+def build_tool_execution_shape_decision(tool_name: str, execution_shape: str) -> dict[str, object]:
+    shape = normalize_execution_shape(execution_shape)
+    recommendation = "continue"
+    severity = "info"
+    warning = ""
+    if tool_name in {"propose_dynamic_workflow", "preview_workflow", "start_workflow"}:
+        if shape == "one_off_parallel":
+            recommendation = "use_spawn_subagent"
+            severity = "warning"
+            warning = "One-off independent fan-out usually belongs to spawn_subagent, not Dynamic Workflow."
+        elif shape in {"fixed_sequence", "approval_gate", "long_running", "recurrent"}:
+            recommendation = "use_dynamic_workflow"
+            severity = "ok"
+    elif tool_name == "spawn_subagent":
+        if shape in {"fixed_sequence", "approval_gate", "recurrent"}:
+            recommendation = "use_dynamic_workflow"
+            severity = "warning"
+            warning = "Fixed sequence, approval gate, or recurrent work should usually be a workflow."
+        elif shape == "long_running":
+            recommendation = "use_dynamic_workflow_or_background_subagent"
+            severity = "warning"
+            warning = "Long-running work needs an explicit durable continuation contract."
+        elif shape == "one_off_parallel":
+            recommendation = "use_spawn_subagent"
+            severity = "ok"
+    return {
+        "schema": "hive.ccplus.execution_shape_admission.v1",
+        "tool_name": tool_name,
+        "execution_shape": shape,
+        "allowed": True,
+        "severity": severity,
+        "recommendation": recommendation,
+        "warning": warning,
+    }
 
 
 def _model_descriptor(model: object | None) -> str:
@@ -369,10 +524,13 @@ def infer_task_profile(query: str, messages: list[dict] | None = None) -> TaskPr
     elif name == "research":
         suggested_deferred_tool_groups = ("web",)
 
+    execution_shape = infer_execution_shape(query, messages=messages)
+
     return TaskProfile(
         name=name,
         complexity=complexity,
         suggested_deferred_tool_group_names=suggested_deferred_tool_groups,
+        execution_shape=execution_shape,
     )
 
 

@@ -596,6 +596,57 @@ async def test_execute_tool_receives_session_frame_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_receives_execution_shape_in_round_state(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request
+    from app.runtime.session import SessionContext
+
+    seen: dict[str, object] = {}
+
+    async def fake_execute_tool(
+        tool_name,
+        args,
+        *,
+        agent_id,
+        user_id,
+        round_state=None,
+        **_kwargs,
+    ):
+        seen.update(
+            {
+                "tool_name": tool_name,
+                "args": args,
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "round_state": round_state,
+            }
+        )
+        return "tool-ok"
+
+    async def emit_event(_payload):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.execute_tool", fake_execute_tool)
+    session = SessionContext(
+        session_id="session-1",
+        metadata={"turn_route": {"execution_shape": "one_off_parallel"}},
+    )
+    request = AgentInvocationRequest(
+        model=object(),
+        messages=[{"role": "user", "content": "parallelize research"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_context=session,
+    )
+
+    result = await _execute_tool_with_request("spawn_subagent", {"task": "work"}, request, emit_event)
+
+    assert result == "tool-ok"
+    assert seen["round_state"] == {"execution_shape": "one_off_parallel"}
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_receives_plan_execution_contract_in_round_state(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request
     from app.runtime.session import PlanModeState, SessionContext
@@ -1969,6 +2020,7 @@ async def test_invoke_agent_keeps_primary_for_simple_turn_without_explicit_smart
         "reason": "primary_model",
         "task_profile": "general",
         "complexity": "low",
+        "execution_shape": "direct",
         "config_source": "runtime_default",
     }
 
@@ -2033,6 +2085,7 @@ async def test_invoke_agent_routes_simple_turn_only_when_smart_routing_enabled(m
         "reason": "simple_turn_cheap_model",
         "task_profile": "general",
         "complexity": "low",
+        "execution_shape": "direct",
         "config_source": "agent_config",
     }
 
@@ -2097,6 +2150,7 @@ async def test_invoke_agent_keeps_primary_model_for_task_execution(monkeypatch):
         "reason": "primary_model",
         "task_profile": "general",
         "complexity": "low",
+        "execution_shape": "direct",
         "config_source": "runtime_default",
     }
 
@@ -2160,6 +2214,7 @@ async def test_invoke_agent_respects_explicit_disabled_smart_model_routing(monke
         "reason": "primary_model",
         "task_profile": "general",
         "complexity": "low",
+        "execution_shape": "direct",
         "config_source": "agent_config",
     }
 

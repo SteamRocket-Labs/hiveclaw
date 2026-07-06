@@ -48,6 +48,7 @@ def _tool_request(
     *,
     session_id: str | None = "sess-1",
     tenant_id: str | None = None,
+    round_state: dict | None = None,
 ) -> ToolExecutionRequest:
     context = ToolExecutionContext(
         agent_id=uuid.uuid4(),
@@ -55,6 +56,7 @@ def _tool_request(
         tenant_id=tenant_id,
         workspace=Path("/tmp"),
         session_id=session_id,
+        round_state=round_state,
     )
     return ToolExecutionRequest(tool_name="spawn_subagent", arguments=arguments, context=context)
 
@@ -149,6 +151,40 @@ async def test_spawn_tool_resolves_model_and_spawns(monkeypatch):
     assert captured["spec"].max_tool_rounds == 5
     assert captured["ctx"].parent_session_id == "sess-1"
     assert captured["ctx"].parent_agent_name == "HR"
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_returns_execution_shape_recommendation(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+
+    async def fake_resolve(agent_id):
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type="explorer", status="completed", content="digest", tokens_used=7),
+        )
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    out = await handler_mod.spawn_subagent_tool(
+        _tool_request({"task": "run fixed ordered steps", "name": "scout"}, round_state={"execution_shape": "fixed_sequence"})
+    )
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["execution_shape_decision"]["tool_name"] == "spawn_subagent"
+    assert data["execution_shape_decision"]["execution_shape"] == "fixed_sequence"
+    assert data["execution_shape_decision"]["recommendation"] == "use_dynamic_workflow"
+    assert data["execution_shape_decision"]["severity"] == "warning"
 
 
 @pytest.mark.asyncio

@@ -110,6 +110,7 @@ def _start_request(
     *,
     session_id: str = "session-workflow",
     budget_run_id: str | None = None,
+    round_state: dict | None = None,
 ) -> ToolExecutionRequest:
     return ToolExecutionRequest(
         tool_name="start_workflow",
@@ -121,6 +122,7 @@ def _start_request(
             workspace=Path("/tmp/hive-workflow-test"),
             session_id=session_id,
             budget_run_id=budget_run_id,
+            round_state=round_state,
         ),
     )
 
@@ -377,6 +379,41 @@ async def test_start_workflow_low_risk_launches(monkeypatch):
     assert captured["definition"]["name"] == "read-probe"
     assert captured["parent_session_id"] == "session-workflow"
     assert captured["enqueue_only"] is True
+
+
+async def test_start_workflow_returns_execution_shape_admission_warning(monkeypatch):
+    from app.tools.handlers import workflow as workflow_handlers
+
+    async def fake_launch(**_kwargs):
+        from app.runtime.workflow_engine import WorkflowRunOutcome
+        from app.services.workflow_runtime_service import WorkflowRunHandle
+
+        return WorkflowRunHandle(run_id=uuid.uuid4(), outcome=WorkflowRunOutcome(status="completed"))
+
+    monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
+
+    agent_id = uuid.uuid4()
+    preview = json.loads(
+        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+    )
+    result = await workflow_handlers.start_workflow(
+        _start_request(
+            agent_id,
+            {
+                "definition": _low_risk_definition(),
+                "args": {},
+                "preview_id": preview["preview_id"],
+            },
+            round_state={"execution_shape": "one_off_parallel"},
+        )
+    )
+    payload = json.loads(result)
+
+    assert payload["ok"] is True
+    assert payload["execution_shape_decision"]["tool_name"] == "start_workflow"
+    assert payload["execution_shape_decision"]["execution_shape"] == "one_off_parallel"
+    assert payload["execution_shape_decision"]["recommendation"] == "use_spawn_subagent"
+    assert payload["execution_shape_decision"]["severity"] == "warning"
 
 
 async def test_start_workflow_persists_dynamic_proposal_binding(monkeypatch):

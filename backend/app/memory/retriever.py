@@ -219,6 +219,86 @@ class MemoryRetriever:
             )
         return candidates
 
+    def gather_t3_plane_candidates(
+        self,
+        agent_id: uuid.UUID,
+        *,
+        keys: dict[str, str | list[str] | tuple[str, ...] | set[str] | frozenset[str]],
+        scopes: tuple[str, ...] = ("t3_profile", "t3_knowledge", "t3_milestone"),
+        limit: int = 20,
+    ) -> list[ActivationCandidate]:
+        from app.memory.reference_index import candidate_refs_for_keys, query_activation_keys
+
+        candidates: list[ActivationCandidate] = []
+        for scope in scopes:
+            refs = candidate_refs_for_keys(
+                agent_id=agent_id,
+                data_root=self.data_root,
+                scope=scope,
+                keys=keys,
+                limit=limit,
+            )
+            if not refs:
+                continue
+            rows = query_activation_keys(
+                agent_id=agent_id,
+                data_root=self.data_root,
+                scope=scope,
+                limit=max(1000, limit * 20),
+            )
+            rows_by_ref: dict[str, list[dict[str, Any]]] = {ref: [] for ref in refs}
+            for row in rows:
+                if row["candidate_ref"] in rows_by_ref:
+                    rows_by_ref[row["candidate_ref"]].append(row)
+            for candidate_ref in refs:
+                rows_for_ref = rows_by_ref.get(candidate_ref) or []
+                source_ref = str(rows_for_ref[0]["source_ref"] if rows_for_ref else "").strip()
+                key_features: dict[str, list[str]] = {}
+                for row in rows_for_ref:
+                    key_features.setdefault(row["key_axis"], [])
+                    if row["key_value"] not in key_features[row["key_axis"]]:
+                        key_features[row["key_axis"]].append(row["key_value"])
+                confidence = max((float(row["confidence"]) for row in rows_for_ref), default=0.7)
+                item_id = candidate_ref.rsplit(":", 1)[-1]
+                loader = {
+                    "t3_profile": "profile_entry",
+                    "t3_knowledge": "knowledge_page",
+                    "t3_milestone": "milestone_page",
+                }.get(scope, "plane_entry")
+                candidates.append(
+                    ActivationCandidate(
+                        candidate_kind="agent_memory",
+                        candidate_ref={
+                            "schema": "hive.ccplus.context_candidate_ref.v1",
+                            "candidate_id": candidate_ref,
+                            "kind": "agent_memory",
+                            "source_type": scope,
+                            "item_id": item_id,
+                        },
+                        key_features=key_features,
+                        value_pointer={
+                            "loader": loader,
+                            "id": item_id,
+                            "source": source_ref,
+                        },
+                        surface=ActivationSurface(
+                            surface_kind="plane_pointer",
+                            preview=f"{scope} candidate {item_id}",
+                            token_estimate=8,
+                            source_refs=(source_ref,) if source_ref else (),
+                        ),
+                        source_refs=(source_ref,) if source_ref else (),
+                        score=ActivationScore(
+                            head_scores={"key_match": confidence},
+                            total_score=confidence,
+                            reasons=("activation_key_match", scope),
+                            scorer="memory_t3_gatherer",
+                        ),
+                        metadata={"scope": scope, "source_ref": source_ref},
+                    )
+                )
+        return candidates[: max(1, int(limit or 20))]
+
     def _retrieve_knowledge_pages(self, agent_id: uuid.UUID, *, query: str = "", limit: int = 5) -> list[MemoryItem]:
         """Knowledge plane retrieval (spec §4.2): PPR top-k over knowledge/milestones.
 

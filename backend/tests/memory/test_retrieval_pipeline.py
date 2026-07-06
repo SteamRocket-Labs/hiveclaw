@@ -280,6 +280,54 @@ def test_memory_retriever_gathers_t2_evidence_candidates(data_root: Path, agent_
     assert manifest["source_refs"] == [short_ref]
 
 
+def test_memory_retriever_gathers_t3_profile_and_knowledge_candidates(
+    data_root: Path, agent_id: uuid.UUID
+) -> None:
+    from app.memory.reference_index import rebuild_reference_index
+
+    profile_dir = data_root / str(agent_id) / "memory" / "profiles"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "owner.md").write_text(
+        """## Preferences
+
+### Writing Taste
+<!-- id: owner-writing-taste -->
+aliases: [tone, voice]
+tags: [writing, taste]
+lifecycle: active
+- Prefers concise architecture explanations.
+""",
+        encoding="utf-8",
+    )
+    knowledge_dir = data_root / str(agent_id) / "memory" / "knowledge"
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    (knowledge_dir / "memory-runtime.md").write_text(
+        """---
+title: Memory Runtime
+status: active
+aliases: [Attention Router, QKV Runtime]
+tags: [memory, runtime]
+lifecycle: active
+---
+## Claim
+Runtime activation routes memory candidates.
+""",
+        encoding="utf-8",
+    )
+    rebuild_reference_index(agent_id=agent_id, data_root=data_root)
+    retriever = MemoryRetriever(data_root=data_root)
+
+    profile = retriever.gather_t3_plane_candidates(agent_id, keys={"alias": ["tone"]}, scopes=("t3_profile",))
+    knowledge = retriever.gather_t3_plane_candidates(agent_id, keys={"tag": ["memory"]}, scopes=("t3_knowledge",))
+
+    assert profile[0].to_manifest()["candidate_ref"]["candidate_id"] == "agent_memory:t3_profile:owner-writing-taste"
+    assert profile[0].to_manifest()["value_pointer"]["loader"] == "profile_entry"
+    assert profile[0].to_manifest()["value_pointer"]["source"] == "memory/profiles/owner.md"
+    assert knowledge[0].to_manifest()["candidate_ref"]["candidate_id"] == "agent_memory:t3_knowledge:memory-runtime"
+    assert knowledge[0].to_manifest()["value_pointer"]["loader"] == "knowledge_page"
+    assert knowledge[0].to_manifest()["value_pointer"]["source"] == "memory/knowledge/memory-runtime.md"
+
+
 @pytest.mark.asyncio
 async def test_activation_context_suppresses_pl3_when_current_user_is_not_owner(
     data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever

@@ -16,6 +16,7 @@ import uuid
 import re
 from typing import Any
 
+from app.runtime.context_candidates import build_context_candidate_ref
 from app.runtime.deferred_tools import deferred_tool_candidate_payload
 from app.services.token_tracker import estimate_tokens_from_text
 
@@ -338,8 +339,15 @@ def _context_candidate(
     selected = _payload_present(text=text, payload=payload)
     chars = len(measured_text or "")
     tokens = _estimate_text_tokens(measured_text)
+    candidate_ref = build_context_candidate_ref(
+        kind=kind,
+        item_id=name,
+        version=cacheability,
+        payload=payload if payload is not None else measured_text,
+    ).to_manifest(legacy_id=candidate_id)
     candidate = {
         "id": candidate_id,
+        "candidate_ref": candidate_ref,
         "kind": kind,
         "name": name,
         "source_ref": source_ref,
@@ -547,6 +555,7 @@ def build_context_selection_manifest(
     suppressed_contexts = [candidate for candidate in candidates if not candidate["selected"]]
     return {
         "context_candidates": candidates,
+        "context_candidate_refs": [candidate["candidate_ref"] for candidate in candidates],
         "selected_contexts": selected_contexts,
         "suppressed_contexts": suppressed_contexts,
         "source_hashes": {candidate["id"]: candidate["source_hash"] for candidate in candidates},
@@ -644,6 +653,29 @@ def build_runtime_prompt_assembly_manifest(
 ) -> dict[str, Any]:
     """Build the manifest from the actual prompt surface sent to the provider."""
     deferred_tool_candidates = deferred_tool_candidate_payload(available_deferred_tools)
+    for candidate in deferred_tool_candidates:
+        candidate["candidate_ref"] = build_context_candidate_ref(
+            kind="tool_schema",
+            item_id=str(candidate.get("name") or "deferred_tool"),
+            version="deferred",
+            payload=candidate,
+        ).to_manifest()
+    loaded_skill_names = _skill_refs(skill_catalog, active_skill_names)
+    active_tool_names = _tool_names(tools_for_llm)
+    skill_candidate_refs = [
+        build_context_candidate_ref(kind="skill", item_id=name, version="catalog", payload=name).to_manifest()
+        for name in loaded_skill_names
+    ]
+    tool_candidate_refs = [
+        build_context_candidate_ref(
+            kind="tool_schema",
+            item_id=_tool_name(tool) or "tool",
+            version="provider_schema",
+            payload=tool,
+        ).to_manifest()
+        for tool in tools_for_llm or []
+        if _tool_name(tool)
+    ]
     frozen_sections = _section_names_from_text(frozen_prefix)
     dynamic_sections = _dynamic_input_sections(
         dynamic_suffix=dynamic_suffix,
@@ -698,8 +730,10 @@ def build_runtime_prompt_assembly_manifest(
         "frozen_sections": frozen_sections,
         "dynamic_sections": dynamic_sections,
         "context_budget": _budget_manifest(context_budget, model_window),
-        "loaded_skills": _skill_refs(skill_catalog, active_skill_names),
-        "active_tool_names": _tool_names(tools_for_llm),
+        "loaded_skills": loaded_skill_names,
+        "skill_candidate_refs": skill_candidate_refs,
+        "active_tool_names": active_tool_names,
+        "tool_candidate_refs": tool_candidate_refs,
         "available_deferred_tools": [str(item["name"]) for item in deferred_tool_candidates],
         "available_deferred_tool_candidates": deferred_tool_candidates,
         "available_agent_types": list(available_agent_types or []),

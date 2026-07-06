@@ -15,6 +15,7 @@ from typing import Any
 
 from app.memory.metrics import record_frozen_prefix_metering
 from app.runtime.context_budget import ContextBudget, compute_system_prompt_budget
+from app.runtime.context_candidates import build_context_candidate_ref
 from app.services.prompt_cache import PROMPT_CACHE_BOUNDARY  # noqa: F401
 from app.services.token_tracker import estimate_tokens_from_text
 
@@ -119,10 +120,17 @@ def _append_context_section_decision(
         return
     source_chars = len(candidate.content or "")
     rendered_chars = len(rendered_content or "")
+    candidate_ref = build_context_candidate_ref(
+        kind=candidate.kind,
+        item_id=candidate.name,
+        version="dynamic_section",
+        payload=candidate.content,
+    ).to_manifest(legacy_id=candidate.candidate_id)
     ledger.append(
         {
             "schema": "hive.ccplus.context_section_candidate.v1",
             "candidate_id": candidate.candidate_id,
+            "candidate_ref": candidate_ref,
             "kind": candidate.kind,
             "name": candidate.name,
             "render_order": candidate.render_order,

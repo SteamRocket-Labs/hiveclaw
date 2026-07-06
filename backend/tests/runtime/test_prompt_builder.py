@@ -144,6 +144,7 @@ def test_dynamic_suffix_records_context_candidate_selection_ledger():
     assert decisions["dynamic:knowledge:retrieval_context"]["selected"] is True
     assert decisions["dynamic:knowledge:retrieval_context"]["decision"].startswith("selected")
     assert decisions["dynamic:skill:skill_catalog"]["budget_key"] == "skill_catalog_budget_chars"
+    assert decisions["dynamic:skill:skill_catalog"]["candidate_ref"]["candidate_id"].startswith("skill:skill_catalog:")
     assert decisions["dynamic:memory:memory_snapshot"]["render_order"] < decisions["dynamic:skill:skill_catalog"][
         "render_order"
     ]

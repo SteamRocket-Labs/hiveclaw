@@ -356,6 +356,7 @@ flowchart TD
 | 返回影响 | 无法做跨层排序、反馈归因、回放 |
 | 代码位置 | `memory/retriever.py`、`memory/wiki_retrieval.py`、`runtime/invoker.py`、`services/agent_tools.py`、`skills/registry.py` |
 | 一轮修复 | `ContextCandidateRef`：`kind:id:version/hash`，先用于 manifest，不改变存储真相 |
+| 2026-07-06 落地证据 | 新增 `backend/app/runtime/context_candidates.py`，提供 `ContextCandidateRef` 与 `build_context_candidate_ref()`，统一生成 `hive.ccplus.context_candidate_ref.v1`。`backend/app/runtime/turn_envelope.py` 在 prompt manifest 中为 `context_candidates` 增加 `candidate_ref`，并新增 `context_candidate_refs`、`skill_candidate_refs`、`tool_candidate_refs`；`available_deferred_tool_candidates` 每项也携带 `candidate_ref`。`backend/app/runtime/prompt_builder.py` 的动态 section ledger 同步携带统一 ref，旧 `id` / `candidate_id` 均保留为兼容字段。验证：`source backend/.venv/bin/activate && pytest backend/tests/runtime/test_context_candidate_ref.py backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_prompt_builder.py::test_dynamic_suffix_records_context_candidate_selection_ledger backend/tests/runtime/test_invoker.py::test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt -q` -> `8 passed, 4 warnings`；`ruff check backend/app/runtime/context_candidates.py backend/app/runtime/turn_envelope.py backend/app/runtime/prompt_builder.py backend/tests/runtime/test_context_candidate_ref.py backend/tests/runtime/test_prompt_builder.py backend/tests/runtime/test_turn_envelope_prompt_manifest.py backend/tests/runtime/test_invoker.py` -> `All checks passed!` |
 
 ### RTD-18：没有 CC `/context` 式用户可见诊断入口
 

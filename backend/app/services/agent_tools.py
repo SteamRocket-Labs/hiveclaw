@@ -41,6 +41,7 @@ from app.services.capability_group_policy_service import (
 from app.services.pack_policy_service import is_pack_enabled as _legacy_is_pack_enabled
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
+from app.runtime.activation_candidates import ActivationCandidate, ActivationScore, ActivationSurface
 from app.runtime.context_candidates import build_metadata_activation_keys
 from app.runtime.deferred_tools import make_deferred_tool_candidate
 from app.tools import (
@@ -689,6 +690,51 @@ async def available_deferred_tool_candidates_for_agent(agent_id: uuid.UUID, *, l
             manifest = candidate.to_manifest()
             manifest["activation_keys"] = _deferred_tool_activation_keys(manifest)
             candidates.append(manifest)
+    return candidates
+
+
+async def gather_deferred_tool_candidates_for_agent(agent_id: uuid.UUID, *, limit: int = 80) -> list[ActivationCandidate]:
+    """Project discoverable deferred tools into the shared activation candidate contract."""
+    manifests = await available_deferred_tool_candidates_for_agent(agent_id, limit=limit)
+    candidates: list[ActivationCandidate] = []
+    for index, manifest in enumerate(manifests):
+        keys = _deferred_tool_activation_keys(manifest)
+        name = str(manifest.get("name") or "").strip()
+        group = str(manifest.get("group") or "deferred").strip() or "deferred"
+        reason = str(manifest.get("reason") or "available_via_tool_search").strip()
+        risk = str(manifest.get("risk") or "governed_runtime").strip()
+        selector = str(manifest.get("selector") or f"select:{name}").strip()
+        preview = f"{name} ({group}): {reason}".strip()
+        score = max(0.1, 1.0 - (index * 0.01))
+        source_refs = tuple(str(ref) for ref in keys.get("source_refs") or () if str(ref).strip())
+        candidates.append(
+            ActivationCandidate(
+                candidate_kind="tool",
+                candidate_ref=dict(keys["candidate_ref"]),
+                key_features=dict(keys["key_features"]),
+                value_pointer=dict(keys["value_pointer"]),
+                surface=ActivationSurface(
+                    surface_kind="deferred_tool_catalog",
+                    preview=preview,
+                    token_estimate=max(1, len(preview) // 4),
+                    source_refs=source_refs,
+                ),
+                source_refs=source_refs,
+                score=ActivationScore(
+                    head_scores={"tool_rank": score},
+                    total_score=score,
+                    reasons=(reason,),
+                    scorer="deferred_tool_gatherer",
+                ),
+                metadata={
+                    "name": name,
+                    "group": group,
+                    "risk": risk,
+                    "selector": selector,
+                    "schema_token_cost": int(manifest.get("schema_token_cost") or 0),
+                },
+            )
+        )
     return candidates
 
 

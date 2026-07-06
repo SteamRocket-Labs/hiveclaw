@@ -3660,6 +3660,7 @@ class AgentKernel:
                         "allowed_source_count": len(check.allowed_sources),
                         "forbidden_source_count": len(check.forbidden_sources),
                         "forbidden_sources": list(check.forbidden_sources),
+                        "authorization_decision_entry": check.authorization_decision_entry,
                     },
                 )
                 if check.allowed:

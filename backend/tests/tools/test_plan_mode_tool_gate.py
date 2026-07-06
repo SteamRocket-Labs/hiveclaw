@@ -167,6 +167,12 @@ async def test_execute_blocks_tagged_tool_without_confirmed_plan():
     assert payload["status"] == "requires_confirmation"
     assert payload["requires_confirmation"] is True
     assert payload["ok"] is False
+    assert payload["authorization_decision_entry"]["schema"] == "hive.ccplus.authorization_decision.v1"
+    assert payload["authorization_decision_entry"]["policy"] == "plan_gate"
+    assert payload["authorization_decision_entry"]["resource"] == "tool:set_trigger"
+    assert payload["authorization_decision_entry"]["action"] == "create_enabled_trigger"
+    assert payload["authorization_decision_entry"]["result"] == "requires_confirmation"
+    assert payload["authorization_decision_entry"]["reason"] == "no_confirmed_plan"
     assert payload["next_action"]
     assert "activate_interactive_plan" not in payload
     assert "interactive_plan_seed" not in payload

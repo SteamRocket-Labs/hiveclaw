@@ -114,9 +114,16 @@ async def test_kernel_blocks_forbidden_connector_source_before_streaming() -> No
     assert result.content.startswith("[Permission Check]")
     assert chunks == []
     assert session.metadata["generated_source_permission_checks"][-1]["allowed"] is False
+    authz = session.metadata["generated_source_permission_checks"][-1]["authorization_decision_entry"]
+    assert authz["schema"] == "hive.ccplus.authorization_decision.v1"
+    assert authz["policy"] == "generated_source_acl"
+    assert authz["resource"] == hidden_source
+    assert authz["result"] == "blocked"
+    assert authz["reason"] == "forbidden_connector_source"
     permission_span = next(span for span in spans if span["name"] == "generated_source_permission_check")
     assert permission_span["metadata"]["status"] == "blocked"
     assert permission_span["metadata"]["forbidden_source_count"] == 1
+    assert permission_span["metadata"]["authorization_decision_entry"]["resource"] == hidden_source
 
 
 @pytest.mark.asyncio

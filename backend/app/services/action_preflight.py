@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from app.runtime.authorization_decision import build_authorization_decision_entry
 from app.runtime.ccplus_contracts import TruthEvidencePackV1
 from app.services.privacy_layer import SensitivityLevel
 
@@ -70,6 +71,28 @@ class ActionPreflightResult:
         if self.evidence_trace:
             payload["truth_evidence"] = json.dumps(self.evidence_trace, ensure_ascii=False, sort_keys=True)
         return payload
+
+    def as_authorization_decision_entry(
+        self,
+        request: ActionPreflightInput,
+        *,
+        resource: str,
+        principal: str | None = None,
+        company: str | None = None,
+        model_visible_message: str | None = None,
+    ) -> dict[str, Any]:
+        return build_authorization_decision_entry(
+            resource=resource,
+            action=request.action,
+            principal=principal,
+            company=company,
+            sensitivity=request.sensitivity.value,
+            policy="action_preflight",
+            result=self.decision.value,
+            reason=self.reasons,
+            model_visible_message=model_visible_message,
+            source="action_preflight",
+        )
 
 
 _AXIS_FIELDS = (

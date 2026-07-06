@@ -19,6 +19,8 @@ from typing import Any, Awaitable, Callable
 from app.agents.coordination import CoordinationRuntime, coordination_runtime
 from app.agents.coordination_gateway import CoordinationGateway, InProcessCoordinationGateway
 from app.agents.coordination_wiring import gateway_scope
+from app.runtime.authorization_decision import build_authorization_decision_entry
+from app.runtime.ccplus_contracts import ToolCallLifecycleV1, ToolExecutionFrameV1
 from app.services.action_preflight import (
     ActionPreflightInput,
     ActionPreflightResult,
@@ -28,7 +30,6 @@ from app.services.action_preflight import (
     PreflightDecision,
 )
 from app.services.decision_trace import TenantScopedSqlDecisionTraceStore
-from app.runtime.ccplus_contracts import ToolCallLifecycleV1, ToolExecutionFrameV1
 from app.services.plan_mode_gate import PlanModeGate, get_plan_mode_gate
 from app.services.privacy_layer import PrivacyLayer
 from app.services.governance_capability_taxonomy import capability_descriptor_for_tool, is_l2_tool
@@ -1470,6 +1471,16 @@ class ToolRuntimeService:
 
         _ = (plan_mode_interactive_available, plan_mode_unattended_available, action_artifact)
         payload = _confirmation_required_payload(decision.needs_plan_payload)
+        payload["authorization_decision_entry"] = build_authorization_decision_entry(
+            resource=f"tool:{tool_name}",
+            action=action_kind,
+            principal=str(agent_id),
+            policy="plan_gate",
+            result="requires_confirmation",
+            reason=decision.reason or "requires_confirmation",
+            model_visible_message=payload.get("summary"),
+            source="plan_gate",
+        )
         return _json.dumps(payload, ensure_ascii=False, default=str)
 
     async def _preflight_tool_execution(
@@ -1504,6 +1515,15 @@ class ToolRuntimeService:
         )
         preflight = self.preflight_service.evaluate(preflight_input)
         evidence_refs, evidence_payloads = _truth_evidence_trace_payload(truth_evidence)
+        authorization_decision_entry = preflight.as_authorization_decision_entry(
+            preflight_input,
+            resource=f"tool:{tool_name}",
+            principal=str(runtime_context.user_id) if runtime_context.user_id else None,
+            company=str(runtime_context.tenant_id) if runtime_context.tenant_id else None,
+            model_visible_message=(
+                f"{tool_name} was not executed. reasons={','.join(preflight.reasons) or 'unspecified'}"
+            ),
+        )
         if trace_metadata_sink is not None:
             if evidence_refs:
                 trace_metadata_sink["evidence_refs"] = evidence_refs
@@ -1511,6 +1531,7 @@ class ToolRuntimeService:
             if evidence_payloads:
                 trace_metadata_sink["truth_evidence"] = evidence_payloads
             trace_metadata_sink["preflight"] = preflight.as_decision_trace_preflight()
+            trace_metadata_sink["authorization_decision_entry"] = authorization_decision_entry
         if preflight.decision == PreflightDecision.DO:
             if preflight.requires_audit:
                 await self._log_preflight_decision(tool_name, runtime_context, preflight)
@@ -1560,7 +1581,13 @@ class ToolRuntimeService:
             decision_ref = f"decision/{decision.id}"
 
         await self._log_preflight_decision(tool_name, runtime_context, preflight)
-        return _render_preflight_block(tool_name, preflight, checkpoint_id=checkpoint_id, decision_ref=decision_ref)
+        return _render_preflight_block(
+            tool_name,
+            preflight,
+            checkpoint_id=checkpoint_id,
+            decision_ref=decision_ref,
+            authorization_decision_entry=authorization_decision_entry,
+        )
 
     async def _log_preflight_decision(
         self,
@@ -1642,6 +1669,7 @@ def _render_preflight_block(
     *,
     checkpoint_id: str = "",
     decision_ref: str = "",
+    authorization_decision_entry: dict[str, Any] | None = None,
 ) -> str:
     reason_text = ",".join(preflight.reasons) if preflight.reasons else "unspecified"
     suffix = ""
@@ -1653,4 +1681,11 @@ def _render_preflight_block(
         suffix += f" decision={decision_ref}"
     if preflight.evidence_refs:
         suffix += " evidence=" + ",".join(preflight.evidence_refs)
-    return f"[Preflight:{preflight.decision.value}] {tool_name} was not executed. reasons={reason_text}{suffix}"
+    rendered = f"[Preflight:{preflight.decision.value}] {tool_name} was not executed. reasons={reason_text}{suffix}"
+    if authorization_decision_entry:
+        rendered += "\n<authorization_decision>" + _json.dumps(
+            authorization_decision_entry,
+            ensure_ascii=False,
+            default=str,
+        ) + "</authorization_decision>"
+    return rendered

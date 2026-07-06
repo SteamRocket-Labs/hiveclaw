@@ -14,6 +14,8 @@ import re
 import uuid
 from typing import Any
 
+from app.runtime.authorization_decision import build_authorization_decision_entry
+
 CONNECTOR_SOURCE_ITEMS_METADATA_KEY = "connector_source_items"
 GENERATED_SOURCE_PERMISSION_CHECKS_METADATA_KEY = "generated_source_permission_checks"
 _MAX_REGISTERED_SOURCE_ITEMS = 200
@@ -46,6 +48,7 @@ class GeneratedSourcePermissionCheck:
     allowed: bool
     allowed_sources: list[str]
     forbidden_sources: list[str]
+    authorization_decision_entry: dict[str, Any] | None = None
 
 
 def _string(value: Any) -> str:
@@ -508,6 +511,7 @@ def record_generated_source_permission_check(
             "allowed_sources": list(check.allowed_sources),
             "forbidden_sources": list(check.forbidden_sources),
             "forbidden_source_count": len(check.forbidden_sources),
+            "authorization_decision_entry": check.authorization_decision_entry,
         }
     )
     if len(checks) > 50:
@@ -638,8 +642,25 @@ def validate_generated_source_permissions(
                 allowed_sources.append(source)
         elif source not in forbidden_sources:
             forbidden_sources.append(source)
+    resource = forbidden_sources[0] if forbidden_sources else (allowed_sources[0] if allowed_sources else "generated_source")
+    authorization_decision_entry = build_authorization_decision_entry(
+        resource=resource,
+        action="render_generated_connector_source",
+        principal=current_user_id,
+        company=tenant_id,
+        policy="generated_source_acl",
+        result="allowed" if not forbidden_sources else "blocked",
+        reason="allowed_connector_source" if not forbidden_sources else "forbidden_connector_source",
+        model_visible_message=(
+            "Generated response referenced only accessible governed connector sources."
+            if not forbidden_sources
+            else "Generated response referenced an inaccessible governed connector source."
+        ),
+        source="generated_source_acl",
+    )
     return GeneratedSourcePermissionCheck(
         allowed=not forbidden_sources,
         allowed_sources=allowed_sources,
         forbidden_sources=forbidden_sources,
+        authorization_decision_entry=authorization_decision_entry,
     )

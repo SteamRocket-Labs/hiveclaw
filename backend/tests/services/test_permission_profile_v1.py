@@ -299,6 +299,10 @@ async def test_permission_profile_dont_ask_blocks_mapped_no_policy_capability() 
     assert audit_calls == []
     assert events and events[-1]["status"] == "permission_denied"
     assert events[-1]["tool_name"] == "write_file"
+    assert events[-1]["authorization_decision_entry"]["schema"] == "hive.ccplus.authorization_decision.v1"
+    assert events[-1]["authorization_decision_entry"]["policy"] == "permission_profile"
+    assert events[-1]["authorization_decision_entry"]["resource"] == "tool:write_file"
+    assert events[-1]["authorization_decision_entry"]["result"] == "denied"
 
 
 @pytest.mark.asyncio

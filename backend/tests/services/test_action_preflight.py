@@ -82,6 +82,21 @@ def test_never_do_or_runtime_denied_refuses() -> None:
     assert "charter_never_do" in never_do.reasons
     assert runtime_denied.decision == PreflightDecision.REFUSE
     assert "runtime_permission_denied" in runtime_denied.reasons
+    authz = runtime_denied.as_authorization_decision_entry(
+        _low_risk_input(runtime_permission_allowed=False),
+        resource="tool:send_email",
+        principal="user-1",
+        company="tenant-1",
+        model_visible_message="Runtime permission denied.",
+    )
+    assert authz["schema"] == "hive.ccplus.authorization_decision.v1"
+    assert authz["resource"] == "tool:send_email"
+    assert authz["policy"] == "action_preflight"
+    assert authz["result"] == "refuse"
+    assert authz["reason"] == "runtime_permission_denied"
+    assert authz["principal"] == "user-1"
+    assert authz["company"] == "tenant-1"
+    assert authz["model_visible_message"] == "Runtime permission denied."
 
 
 def test_pl4_credential_action_refuses_even_with_full_authority() -> None:

@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
+from app.runtime.authorization_decision import build_authorization_decision_entry
 from app.runtime.ccplus_contracts import (
     PendingToolFrameV1,
     PermissionMode,
@@ -457,6 +458,20 @@ async def _emit_session_no_policy_result(
             "destructive": True,
         }
     if action == "deny":
+        authorization_decision_entry = build_authorization_decision_entry(
+            resource=f"tool:{context.tool_name}",
+            action=context.tool_name,
+            principal=context.user_id,
+            company=context.tenant_id,
+            policy="permission_profile",
+            result="denied",
+            reason=f"permission_mode:{mode.value}",
+            model_visible_message=(
+                f"Permission mode '{mode.value}' denies {context.tool_name} because no enterprise capability "
+                "policy is configured for it."
+            ),
+            source="tool_governance",
+        )
         message = _teaching_block_message(
             context.tool_name,
             reason=(
@@ -476,6 +491,7 @@ async def _emit_session_no_policy_result(
             reason=message,
             capability=request_capability,
             mode=mode.value,
+            authorization_decision_entry=authorization_decision_entry,
         )
         await _emit_event(
             event_callback,
@@ -486,6 +502,7 @@ async def _emit_session_no_policy_result(
                 "message": message,
                 "capability": request_capability,
                 "permission_mode": mode.value,
+                "authorization_decision_entry": authorization_decision_entry,
                 **risk_metadata,
             },
         )
@@ -678,6 +695,7 @@ async def _emit_permission_denied_hook(
     reason: str,
     capability: str | None,
     mode: str,
+    authorization_decision_entry: dict[str, Any] | None = None,
 ) -> None:
     from app.runtime.hooks import HookEvent, emit_hook
 
@@ -694,6 +712,7 @@ async def _emit_permission_denied_hook(
             "capability": capability,
             "permission_mode": mode,
             "reason": reason,
+            "authorization_decision_entry": authorization_decision_entry,
         },
     )
 

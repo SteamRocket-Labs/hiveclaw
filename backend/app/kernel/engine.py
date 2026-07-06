@@ -2130,9 +2130,10 @@ def _frozen_prompt_workspace_signature(agent_id: Any | None, *, tenant_id: Any |
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _frozen_prompt_runtime_signature(request: InvocationRequest) -> dict[str, Any]:
+def _frozen_prompt_runtime_signature(request: InvocationRequest, *, tenant_id: Any | None = None) -> dict[str, Any]:
     metadata = request.session_context.metadata if request.session_context is not None else {}
     metadata = metadata if isinstance(metadata, dict) else {}
+    agent_data_dir = metadata.get("agent_data_dir")
     visible_signatures = {
         key: metadata.get(key)
         for key in (
@@ -2146,6 +2147,17 @@ def _frozen_prompt_runtime_signature(request: InvocationRequest) -> dict[str, An
         if metadata.get(key) is not None
     }
     standalone_prompt = str(request.standalone_system_prompt or "")
+    subagent_definition_sig = ""
+    try:
+        from app.agents.subagent_definition import subagent_definition_signature
+
+        subagent_definition_sig = subagent_definition_signature(
+            agent_id=request.agent_id,
+            tenant_id=tenant_id,
+            agent_data_dir=str(agent_data_dir) if agent_data_dir else None,
+        )
+    except Exception as exc:
+        logger.debug("[Engine] subagent definition signature unavailable: %s", exc)
     return {
         "standalone_system_prompt_hash": hashlib.sha256(standalone_prompt.encode("utf-8")).hexdigest()
         if standalone_prompt
@@ -2153,6 +2165,7 @@ def _frozen_prompt_runtime_signature(request: InvocationRequest) -> dict[str, An
         "allowed_tool_names": sorted(str(name) for name in (request.allowed_tool_names or ())),
         "excluded_tool_names": sorted(str(name) for name in (request.excluded_tool_names or ())),
         "core_tools_only": bool(request.core_tools_only),
+        "subagent_definition_signature": subagent_definition_sig,
         "visible_context_signatures": visible_signatures,
     }
 
@@ -2192,7 +2205,7 @@ def _build_frozen_prompt_cache_key(
             request.agent_id,
             tenant_id=runtime_config.tenant_id,
         ),
-        "runtime_signature": _frozen_prompt_runtime_signature(request),
+        "runtime_signature": _frozen_prompt_runtime_signature(request, tenant_id=runtime_config.tenant_id),
     }
     encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

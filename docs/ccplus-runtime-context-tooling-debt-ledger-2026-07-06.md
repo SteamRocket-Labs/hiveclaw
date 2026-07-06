@@ -239,6 +239,8 @@ flowchart TD
 | 代码位置 | `backend/app/agents/subagent_definition.py`；`backend/app/runtime/prompt_sections/subagent_listing.py`；`backend/app/kernel/engine.py:2044` |
 | 一轮修复 | Subagent listing 进入 dynamic artifact，或显式加 agent + tenant definition version hash |
 
+2026-07-06 落地证据：`backend/app/agents/subagent_definition.py` 新增 `subagent_definition_signature()`，对 agent-level 与 tenant-level definition `.md` 文件做文件级 hash/stat 签名，并包含 builtin 类型列表；`backend/app/kernel/engine.py` 将该 signature 纳入 `_frozen_prompt_runtime_signature()`，支持通过 `session_context.metadata["agent_data_dir"]` 指向测试/运行时数据根。验证命令：`source backend/.venv/bin/activate && pytest backend/tests/kernel/test_prompt_cache_integration.py backend/tests/agents/test_subagent_definition.py backend/tests/agents/test_subagent_scope_resolution.py -q` -> `44 passed, 4 warnings`；`source backend/.venv/bin/activate && ruff check backend/app/kernel/engine.py backend/app/agents/subagent_definition.py backend/tests/kernel/test_prompt_cache_integration.py` -> `All checks passed!`。
+
 ### RTD-08：Skill 缺 `paths` 条件激活
 
 | 字段 | 内容 |

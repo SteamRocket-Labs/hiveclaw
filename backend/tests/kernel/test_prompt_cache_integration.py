@@ -576,6 +576,26 @@ def test_cache_key_changes_on_runtime_frozen_context_signature_change():
     assert key_v1 != key_v2
 
 
+def test_cache_key_changes_on_subagent_definition_change(tmp_path):
+    from app.agents.subagent import SubagentSpec
+    from app.agents.subagent_definition import definition_store_for_agent
+    from app.kernel.contracts import RuntimeConfig
+    from app.kernel.engine import _build_frozen_prompt_cache_key
+
+    cfg = RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
+    req = _base_request(user_id=uuid4())
+    req.session_context.metadata["agent_data_dir"] = str(tmp_path)
+    store = definition_store_for_agent(req.agent_id, agent_data_dir=tmp_path)
+
+    store.save(SubagentSpec(name="scout", description="Research scout", system_prompt="Find sources."))
+    key_v1 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x")
+
+    store.save(SubagentSpec(name="scout", description="Senior research scout", system_prompt="Find primary sources."))
+    key_v2 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x")
+
+    assert key_v1 != key_v2
+
+
 def test_cache_key_version_bumped_for_rtd_06():
     """Sanity check that the version constant reflects the schema change so
     persisted prefixes from older deployments invalidate cleanly on rollout."""

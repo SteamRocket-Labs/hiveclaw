@@ -17,6 +17,8 @@ same renderer, same name guard, zero new formats.
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -445,3 +447,46 @@ def list_subagent_definitions(
         }
 
     return sorted(rows.values(), key=lambda row: row["name"])
+
+
+def subagent_definition_signature(
+    *,
+    agent_id: object | None,
+    tenant_id: object | None,
+    agent_data_dir: Path | str | None = None,
+) -> str:
+    """Return a stable file-level signature for prompt-visible subagent definitions."""
+    entries: list[dict[str, object]] = []
+
+    def _collect(store: SubagentDefinitionStore, scope: str) -> None:
+        if not store.base_dir.exists():
+            return
+        for path in sorted(store.base_dir.glob("*.md")):
+            try:
+                stat = path.stat()
+                content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError as exc:
+                logger.debug("[Subagent] failed to hash definition %s in %s scope: %s", path, scope, exc)
+                continue
+            entries.append(
+                {
+                    "scope": scope,
+                    "name": path.stem,
+                    "mtime_ns": stat.st_mtime_ns,
+                    "size": stat.st_size,
+                    "content_hash": content_hash,
+                }
+            )
+
+    if agent_id is not None:
+        _collect(definition_store_for_agent(agent_id, agent_data_dir=agent_data_dir), SCOPE_AGENT)
+    if tenant_id is not None:
+        _collect(definition_store_for_tenant(tenant_id, agent_data_dir=agent_data_dir), SCOPE_TENANT)
+    entries.append(
+        {
+            "scope": SCOPE_BUILTIN,
+            "names": list(PUBLIC_BUILTIN_SUBAGENT_TYPES),
+        }
+    )
+    payload = json.dumps(entries, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

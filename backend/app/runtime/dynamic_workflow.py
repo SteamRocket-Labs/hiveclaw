@@ -146,19 +146,72 @@ def build_dynamic_workflow_run_metadata(
     if not proposal_id and not candidate_id:
         return None
     candidate = candidate or {}
-    return {
-        "dynamic_workflow": {
-            "proposal_id": proposal_id,
-            "candidate_id": candidate_id,
-            "preview_id": preview_id,
-            "definition_hash": definition_hash,
-            "args_hash": args_hash,
-            "pattern_mix": string_list(candidate.get("pattern_mix")),
-            "success_criteria": string_list(candidate.get("success_criteria")),
-            "failure_policy": mapping(candidate.get("failure_policy")),
-            "budget": mapping(candidate.get("budget")),
-        }
+    dynamic = {
+        "proposal_id": proposal_id,
+        "candidate_id": candidate_id,
+        "preview_id": preview_id,
+        "definition_hash": definition_hash,
+        "args_hash": args_hash,
+        "pattern_mix": string_list(candidate.get("pattern_mix")),
+        "success_criteria": string_list(candidate.get("success_criteria")),
+        "failure_policy": mapping(candidate.get("failure_policy")),
+        "budget": mapping(candidate.get("budget")),
     }
+    dynamic["workflow_decision_entry"] = build_workflow_decision_entry(dynamic_workflow=dynamic)
+    return {
+        "dynamic_workflow": dynamic
+    }
+
+
+def build_workflow_decision_entry(
+    *,
+    dynamic_workflow: dict[str, Any],
+    run_id: str | None = None,
+    outcome: dict[str, Any] | None = None,
+    repair_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    dynamic = mapping(dynamic_workflow)
+    outcome_payload = mapping(outcome)
+    repair_payload = mapping(repair_plan)
+    promotion_eligible = bool(
+        outcome_payload.get("promotion_eligible")
+        or dynamic.get("promotion_eligible")
+        or (outcome_payload.get("status") == "completed" and not repair_payload.get("repairable"))
+    )
+    return {
+        "schema": "hive.ccplus.workflow_decision.v1",
+        "proposal_id": dynamic.get("proposal_id"),
+        "candidate_id": dynamic.get("candidate_id"),
+        "preview_id": dynamic.get("preview_id"),
+        "run_id": run_id or dynamic.get("run_id"),
+        "hash": dynamic.get("definition_hash") or dynamic.get("preview_hash"),
+        "failure_policy": mapping(dynamic.get("failure_policy")),
+        "outcome": outcome_payload,
+        "repair_plan": repair_payload,
+        "promotion_eligible": promotion_eligible,
+    }
+
+
+def attach_workflow_decision_outcome(
+    *,
+    dynamic_workflow: dict[str, Any],
+    run_id: str,
+    outcome_evidence: dict[str, Any],
+    repair_plan: dict[str, Any] | None,
+) -> dict[str, Any]:
+    dynamic = dict(mapping(dynamic_workflow))
+    outcome_payload = mapping(outcome_evidence)
+    repair_payload = mapping(repair_plan)
+    dynamic["run_id"] = str(run_id)
+    dynamic["outcome_evidence"] = outcome_payload
+    dynamic["repair_plan"] = repair_payload
+    dynamic["workflow_decision_entry"] = build_workflow_decision_entry(
+        dynamic_workflow=dynamic,
+        run_id=str(run_id),
+        outcome=outcome_payload,
+        repair_plan=repair_payload,
+    )
+    return dynamic
 
 
 def _status_count(rows: list[Any], status: str) -> int:

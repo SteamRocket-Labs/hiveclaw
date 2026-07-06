@@ -3,8 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.runtime.dynamic_workflow import (
+    attach_workflow_decision_outcome,
     build_dynamic_workflow_repair_plan,
     build_dynamic_workflow_run_metadata,
+    build_workflow_decision_entry,
     summarize_dynamic_workflow_outcome,
     validate_dynamic_workflow_proposal,
 )
@@ -145,3 +147,55 @@ def test_dynamic_outcome_summary_and_repair_plan_are_leaf_level():
     assert repair["repairable"] is True
     assert repair["strategy"] == "resume_failed_leaves"
     assert repair["failed_leaves"][0]["leaf_id"] == "item-1"
+
+
+def test_workflow_decision_entry_links_candidate_preview_run_outcome_and_repair():
+    entry = build_workflow_decision_entry(
+        dynamic_workflow={
+            "proposal_id": "proposal-1",
+            "candidate_id": "candidate-1",
+            "preview_id": "preview-1",
+            "definition_hash": "hash-1",
+            "failure_policy": {"repair_rounds": 1},
+        },
+        run_id="run-1",
+        outcome={"status": "failed", "promotion_eligible": False},
+        repair_plan={"repairable": True, "strategy": "resume_failed_leaves"},
+    )
+
+    assert entry["schema"] == "hive.ccplus.workflow_decision.v1"
+    assert entry["proposal_id"] == "proposal-1"
+    assert entry["candidate_id"] == "candidate-1"
+    assert entry["preview_id"] == "preview-1"
+    assert entry["run_id"] == "run-1"
+    assert entry["hash"] == "hash-1"
+    assert entry["failure_policy"] == {"repair_rounds": 1}
+    assert entry["outcome"]["status"] == "failed"
+    assert entry["repair_plan"]["strategy"] == "resume_failed_leaves"
+    assert entry["promotion_eligible"] is False
+
+
+def test_attach_workflow_decision_outcome_preserves_single_decision_chain():
+    dynamic = {
+        "proposal_id": "proposal-1",
+        "candidate_id": "candidate-1",
+        "preview_id": "preview-1",
+        "definition_hash": "hash-1",
+        "failure_policy": {"repair_rounds": 1},
+    }
+
+    updated = attach_workflow_decision_outcome(
+        dynamic_workflow=dynamic,
+        run_id="run-1",
+        outcome_evidence={"status": "failed", "leaf_failed": 1, "promotion_eligible": False},
+        repair_plan={"repairable": True, "strategy": "resume_failed_leaves"},
+    )
+
+    assert updated["run_id"] == "run-1"
+    assert updated["outcome_evidence"]["leaf_failed"] == 1
+    assert updated["repair_plan"]["strategy"] == "resume_failed_leaves"
+    entry = updated["workflow_decision_entry"]
+    assert entry["run_id"] == "run-1"
+    assert entry["outcome"]["status"] == "failed"
+    assert entry["repair_plan"]["repairable"] is True
+    assert entry["promotion_eligible"] is False

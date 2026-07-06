@@ -14,6 +14,8 @@ from sqlalchemy import select
 from app.database import tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
+from app.runtime.dynamic_workflow import build_dynamic_workflow_run_metadata
+from app.runtime.workflow_definition import compute_definition_hash
 from app.runtime.workflow_engine import LeafOutcome, LeafRequest
 from app.services.workflow_runtime_service import WorkflowRuntimeService
 import app.services.workflow_runtime_service as workflow_runtime
@@ -116,6 +118,51 @@ async def test_start_run_completes_and_journals(service, tenant_id, owner_sessio
     assert task.metadata_json["tenant_id"] == str(tenant_id)
     assert {s.step_id: s.status for s in steps} == {"scan": "done", "report": "done"}
     assert quota.allocated_tokens == 50_000
+
+
+async def test_dynamic_workflow_run_updates_decision_entry_with_outcome_and_repair(
+    service, tenant_id, owner_sessionmaker
+):
+    async def flaky_leaf(request: LeafRequest) -> LeafOutcome:
+        if request.step_id == "report":
+            return LeafOutcome(ok=False, error="report failed")
+        return LeafOutcome(ok=True, output={"echo": request.task})
+
+    run_metadata = build_dynamic_workflow_run_metadata(
+        proposal_id="proposal-1",
+        candidate_id="candidate-1",
+        preview_id="preview-1",
+        definition_hash=compute_definition_hash(_definition()),
+        args_hash=compute_definition_hash({"target": "acme"}),
+        candidate={"failure_policy": {"repair_rounds": 1}},
+    )
+
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=flaky_leaf,
+        definition_source="dynamic_workflow",
+        run_metadata=run_metadata,
+    )
+
+    assert handle.outcome.status == "failed"
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+
+    dynamic = task.metadata_json["dynamic_workflow"]
+    entry = dynamic["workflow_decision_entry"]
+    assert entry["schema"] == "hive.ccplus.workflow_decision.v1"
+    assert entry["proposal_id"] == "proposal-1"
+    assert entry["candidate_id"] == "candidate-1"
+    assert entry["preview_id"] == "preview-1"
+    assert entry["run_id"] == str(handle.run_id)
+    assert entry["outcome"]["status"] == "failed"
+    assert entry["outcome"]["leaf_failed"] == 1
+    assert entry["repair_plan"]["repairable"] is True
+    assert entry["repair_plan"]["strategy"] == "resume_failed_leaves"
+    assert entry["promotion_eligible"] is False
 
 
 async def test_start_run_projects_workflow_progress_into_parent_session(service, tenant_id, monkeypatch):

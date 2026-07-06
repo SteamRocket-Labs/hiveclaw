@@ -32,7 +32,11 @@ from app.config import get_settings
 from app.database import enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
-from app.runtime.dynamic_workflow import build_dynamic_workflow_repair_plan, summarize_dynamic_workflow_outcome
+from app.runtime.dynamic_workflow import (
+    attach_workflow_decision_outcome,
+    build_dynamic_workflow_repair_plan,
+    summarize_dynamic_workflow_outcome,
+)
 from app.services.channel_delivery_service import ChannelDeliveryService
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
@@ -1755,15 +1759,21 @@ class WorkflowRuntimeService:
                 dynamic = dict(task_metadata.get("dynamic_workflow") or {})
                 task_for_summary = task
                 task_for_summary.metadata_json = task_metadata
-                dynamic["outcome_evidence"] = summarize_dynamic_workflow_outcome(
+                outcome_evidence = summarize_dynamic_workflow_outcome(
                     task=task_for_summary,
                     steps=list(steps),
                     leaf_calls=list(leaf_calls),
                 )
-                dynamic["repair_plan"] = build_dynamic_workflow_repair_plan(
+                repair_plan = build_dynamic_workflow_repair_plan(
                     task=task_for_summary,
                     steps=list(steps),
                     leaf_calls=list(leaf_calls),
+                )
+                dynamic = attach_workflow_decision_outcome(
+                    dynamic_workflow=dynamic,
+                    run_id=str(run_id),
+                    outcome_evidence=outcome_evidence,
+                    repair_plan=repair_plan,
                 )
                 task_metadata["dynamic_workflow"] = dynamic
                 task.metadata_json = task_metadata

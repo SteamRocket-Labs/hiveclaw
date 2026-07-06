@@ -23,6 +23,7 @@ DYNAMIC SUFFIX (per-round):
 """
 
 from .active_tool_groups import build_active_tool_groups_section
+from .activation_hints import build_activation_hints_section
 from .a2a_collaborators import build_a2a_collaborators_section
 from .environment import build_environment_section
 from .executing_actions import build_executing_actions_section
@@ -51,6 +52,7 @@ __all__ = [
     "build_subagent_listing_section",
     "build_a2a_collaborators_section",
     # Dynamic suffix
+    "build_activation_hints_section",
     "build_memory_section",
     "build_plan_mode_guidance_section",
     "build_scenario_section",

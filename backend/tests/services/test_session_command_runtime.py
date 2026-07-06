@@ -121,6 +121,8 @@ def _t0_event(
         message_id=f"msg-{sequence}",
         actor_id=str(session.agent_id),
         runtime_task_id=None,
+        turn_id=f"turn-{sequence}",
+        intent_id=f"intent-{sequence}",
         source="web",
         sensitivity="PL1_public",
         metadata={"role": resolved_role, "transcript_event_id": transcript_event_id or str(uuid4())},

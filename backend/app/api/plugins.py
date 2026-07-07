@@ -1,9 +1,9 @@
-"""Tenant plugin install/management APIs (Step 5).
+"""Legacy tenant plugin projection APIs.
 
-Enterprise-admin routes to install / list / uninstall capability packs (pack.yaml
-manifests) for a tenant, mirroring the MCP server-first surface. Install is
-fail-closed (validated manifest + builtin/local source only). Backfill installs
-all default-active packs so existing tenants keep their current capabilities.
+Enterprise-admin compatibility routes for installed plugin projections backed by
+legacy pack manifests. New external capability installs must enter the External
+Capability Trust Gate and Catalog flow first. This surface remains fail-closed
+for legacy builtin/local projections and migration backfill.
 
 The service layer owns its own ``tenant_scoped_session`` (RLS-bound writes), so
 these handlers do not take a ``get_db`` dependency.
@@ -43,7 +43,7 @@ class AgentPluginAssignmentIn(BaseModel):
 
 @router.get("/enterprise/plugins")
 async def list_enterprise_plugins(current_user: User = Depends(get_current_admin)):
-    """List capability packs installed for the tenant."""
+    """List legacy plugin projections installed for the tenant."""
     if not current_user.tenant_id:
         return []
     return await list_installed_plugins(current_user.tenant_id)
@@ -51,7 +51,7 @@ async def list_enterprise_plugins(current_user: User = Depends(get_current_admin
 
 @router.post("/enterprise/plugins/install")
 async def install_enterprise_plugin(data: PluginInstallIn, current_user: User = Depends(get_current_admin)):
-    """Install (or idempotently re-install) a capability pack for the tenant."""
+    """Install or idempotently re-install a legacy builtin/local plugin projection."""
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant assigned")
     try:
@@ -67,7 +67,7 @@ async def install_enterprise_plugin(data: PluginInstallIn, current_user: User = 
 
 @router.post("/enterprise/plugins/uninstall")
 async def uninstall_enterprise_plugin(data: PluginUninstallIn, current_user: User = Depends(get_current_admin)):
-    """Uninstall a capability pack from the tenant (CASCADE removes assignments/hooks)."""
+    """Uninstall a legacy plugin projection from the tenant."""
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant assigned")
     try:

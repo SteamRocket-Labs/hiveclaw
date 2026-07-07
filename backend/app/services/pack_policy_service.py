@@ -31,11 +31,11 @@ async def get_tenant_pack_policies(db: AsyncSession, tenant_id: uuid.UUID | None
     policies = value.get("packs", value)
     explicit = dict(policies) if isinstance(policies, dict) else {}
 
-    # Step 5: an installed plugin (TenantInstalledPlugin, status=enabled) is enabled
-    # unless the tenant explicitly overrode it. This is how a pack.yaml install
-    # actually changes the runtime tool surface (e.g. installing mcp_admin_pack —
-    # default_state=inactive — makes its tools turn-1 visible). An uninstalled pack
-    # falls back to its manifest default, so no tenant is silently grayed out.
+    # Step 5 compatibility: an installed plugin projection
+    # (TenantInstalledPlugin, status=enabled) is enabled unless the tenant
+    # explicitly overrode it. This is how a legacy builtin/local projection can
+    # still affect the runtime tool surface during migration. New external
+    # capabilities must use the Trust Gate catalog/activation path.
     #
     # Read on a DEDICATED tenant-scoped session so this merge never perturbs the
     # caller's session/transaction (and unit tests that mock the caller db keep

@@ -1,10 +1,12 @@
-"""Tenant plugin install service (Step 5).
+"""Legacy tenant plugin projection service.
 
-Installs a capability pack (pack.yaml manifest) into a tenant: validates the
-manifest fail-closed, enforces source policy (builtin/local installable; remote
-fail-closed), pins a dependency lockfile, and persists a ``TenantInstalledPlugin``
-(+ declarative ``PluginHookRegistration`` rows) through ``tenant_scoped_session``
-so RLS binds every write. Generalizes the MCPServer install primitive to any pack.
+Installs a builtin/local legacy manifest projection into a tenant: validates the
+manifest fail-closed, enforces source policy, pins a dependency lockfile, and
+persists a ``TenantInstalledPlugin`` (+ declarative ``PluginHookRegistration``
+rows) through ``tenant_scoped_session`` so RLS binds every write.
+
+New external capability installs must use the External Capability Trust Gate,
+approved catalog entry, and agent activation flow before reaching runtime.
 """
 
 from __future__ import annotations

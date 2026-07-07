@@ -45,7 +45,7 @@ export default function AgentCreate() {
           <p className="page-subtitle">
             {t(
               'agentCreate.subtitle',
-              'Hive creates employees through the HR Agent. It clarifies role, authority, capability packs, memory boundaries, and the first working session before creation is finalized.',
+              'Hive creates employees through the HR Agent. It clarifies role, authority, extension catalog access, memory boundaries, and the first working session before creation is finalized.',
             )}
           </p>
         </div>

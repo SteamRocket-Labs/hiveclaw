@@ -437,7 +437,7 @@ _CODING_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
     l2_visible=True,
     enterprise_toggleable=True,
     source=CODING_PACK_SOURCE,
-    notes="Local coding-only capability pack. Cloud core sees descriptors only; execution requires Local Bridge.",
+    notes="Local coding-only capability group. Cloud core sees descriptors only; execution requires Local Bridge.",
     requires_local_bridge=True,
 )
 

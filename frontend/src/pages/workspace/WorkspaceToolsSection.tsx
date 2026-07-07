@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import { customApiConnectorsApi, type CustomApiConnector } from '../../api/domains/customApiConnectors';
 import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from '../../api/domains/enterprise';
-import { extensionsApi, type InstalledPlugin, type McpServerRecord } from '../../api/domains/extensions';
+import { extensionsApi, type McpServerRecord } from '../../api/domains/extensions';
 import { toolsApi } from '../../api/domains/tools';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import ToolIcon from '../../components/ToolIcon';
@@ -340,15 +340,11 @@ export default function WorkspaceToolsSection({
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
   const [editingConfig, setEditingConfig] = useState<Record<string, any>>({});
   const [configCategory, setConfigCategory] = useState<string | null>(null);
-  const [toolsView, setToolsView] = useState<'global' | 'mcp-servers' | 'custom-api' | 'plugins' | 'agent-installed'>('global');
+  const [toolsView, setToolsView] = useState<'global' | 'mcp-servers' | 'custom-api' | 'agent-installed'>('global');
   const [agentInstalledTools, setAgentInstalledTools] = useState<any[]>([]);
   const [collapsedServers, setCollapsedServers] = useState<Set<string>>(new Set());
   const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
   const [mcpServersLoaded, setMcpServersLoaded] = useState(false);
-  const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
-  const [pluginsLoaded, setPluginsLoaded] = useState(false);
-  const [pluginKeyInput, setPluginKeyInput] = useState('');
-  const [pluginBusy, setPluginBusy] = useState<string | null>(null);
   const [customApis, setCustomApis] = useState<CustomApiConnector[]>([]);
   const [customApisLoaded, setCustomApisLoaded] = useState(false);
   const [customApiBusy, setCustomApiBusy] = useState<string | null>(null);
@@ -380,16 +376,6 @@ export default function WorkspaceToolsSection({
       setMcpServers([]);
     }
     setMcpServersLoaded(true);
-  };
-
-  const loadPlugins = async () => {
-    try {
-      const data = await extensionsApi.listEnterprisePlugins();
-      setPlugins(data);
-    } catch {
-      setPlugins([]);
-    }
-    setPluginsLoaded(true);
   };
 
   const loadCustomApis = async () => {
@@ -488,7 +474,6 @@ export default function WorkspaceToolsSection({
           ['global', t('enterprise.tools.extensionsAddons', 'Extensions & Add-ons')],
           ['mcp-servers', t('agent.extensions.mcpServers', 'MCP Servers')],
           ['custom-api', t('enterprise.tools.customApis', 'Custom APIs')],
-          ['plugins', t('agent.extensions.plugins', 'Plugins')],
           ['agent-installed', t('enterprise.tools.agentInstalled', 'Agent Installed')],
         ] as const).map(([key, label]) => (
           <button
@@ -499,8 +484,6 @@ export default function WorkspaceToolsSection({
                 loadAgentInstalledTools();
               } else if (key === 'mcp-servers') {
                 loadMcpServers();
-              } else if (key === 'plugins') {
-                loadPlugins();
               } else if (key === 'custom-api') {
                 loadCustomApis();
               }
@@ -616,103 +599,6 @@ export default function WorkspaceToolsSection({
                       ))}
                     </div>
                   ) : null}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : null}
-
-      {toolsView === 'plugins' ? (
-        <div>
-          <p className="ws-tools-hint">
-            {t('enterprise.tools.pluginsHint', 'Tenant-installed plugins compose tools, skills, MCP servers, agents, hooks, and dependencies. Agent visibility is controlled per agent.')}
-          </p>
-          <div className="card ws-tools-plugin-form">
-            <input
-              className="form-input ws-tools-input-grow"
-              value={pluginKeyInput}
-              onChange={(event) => setPluginKeyInput(event.target.value)}
-              placeholder={t('enterprise.tools.pluginKeyPlaceholder', 'plugin key, e.g. web_pack')}
-            />
-            <button
-              className="btn btn-primary"
-              disabled={!pluginKeyInput.trim() || pluginBusy === 'install'}
-              onClick={async () => {
-                const key = pluginKeyInput.trim();
-                if (!key) return;
-                setPluginBusy('install');
-                try {
-                  await extensionsApi.installEnterprisePlugin({ plugin_key: key });
-                  setPluginKeyInput('');
-                  await loadPlugins();
-                } finally {
-                  setPluginBusy(null);
-                }
-              }}
-            >
-              {t('enterprise.tools.installPlugin', 'Install')}
-            </button>
-            <button
-              className="btn btn-ghost"
-              disabled={pluginBusy === 'backfill'}
-              onClick={async () => {
-                setPluginBusy('backfill');
-                try {
-                  await extensionsApi.backfillEnterprisePlugins();
-                  await loadPlugins();
-                } finally {
-                  setPluginBusy(null);
-                }
-              }}
-            >
-              {t('enterprise.tools.backfillPlugins', 'Backfill')}
-            </button>
-          </div>
-          {!pluginsLoaded ? (
-            <div className="ws-tools-empty">{t('common.loading', 'Loading...')}</div>
-          ) : plugins.length === 0 ? (
-            <div className="ws-tools-empty">
-              {t('enterprise.tools.noPlugins', 'No plugins installed')}
-            </div>
-          ) : (
-            <div className="ws-tools-list">
-              {plugins.map((plugin) => (
-                <div key={plugin.id} className="card ws-tools-plugin-card">
-                  <div className="ws-tools-min0">
-                    <div className="ws-tools-row-8">
-                      <span className="ws-tools-title-13">{plugin.plugin_key}</span>
-                      <span className="ws-tools-tag ws-tools-tag-mcp">
-                        {plugin.source_kind}
-                      </span>
-                      <span className="ws-tools-tiny-muted">{plugin.status}</span>
-                    </div>
-                    <div className="ws-tools-sub">
-                      {plugin.version}
-                    </div>
-                  </div>
-                  <button
-                    className="btn btn-ghost ws-tools-danger-text"
-                    disabled={pluginBusy === plugin.plugin_key}
-                    onClick={async () => {
-                      const confirmed = await requestAppConfirm({
-                        title: t('enterprise.tools.uninstallPlugin', 'Uninstall plugin'),
-                        message: t('enterprise.tools.uninstallPluginConfirm', { name: plugin.plugin_key, defaultValue: `Uninstall ${plugin.plugin_key}?` }),
-                        confirmLabel: t('common.delete', 'Delete'),
-                        danger: true,
-                      });
-                      if (!confirmed) return;
-                      setPluginBusy(plugin.plugin_key);
-                      try {
-                        await extensionsApi.uninstallEnterprisePlugin({ plugin_key: plugin.plugin_key });
-                        await loadPlugins();
-                      } finally {
-                        setPluginBusy(null);
-                      }
-                    }}
-                  >
-                    {t('enterprise.tools.uninstallPlugin', 'Uninstall')}
-                  </button>
                 </div>
               ))}
             </div>

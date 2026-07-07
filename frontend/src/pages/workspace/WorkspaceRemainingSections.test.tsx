@@ -143,7 +143,8 @@ describe('Workspace remaining sections', () => {
     expect(quotasMarkup).not.toContain('minHeartbeatInterval');
     expect(quotasMarkup).toContain('defaultMaxTriggers');
     expect(toolsMarkup).toContain('Extensions &amp; Add-ons');
-    expect(toolsMarkup).toContain('Plugins');
+    expect(toolsMarkup).toContain('MCP Servers');
+    expect(toolsMarkup).not.toContain('Plugins');
     expect(toolsMarkup).not.toContain('Feishu Runtime Status');
   });
 

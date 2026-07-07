@@ -35,8 +35,8 @@ External Capability Trust Gate
 
 当前代码现实必须分清：
 
-- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging。
-- 未完成：`external_extension_catalog_entries` / `external_extension_activations`、materializer sandbox、Codex adapter、MCP / Plugin direct import bypass 收口、approved snapshot -> existing runtime projection、Agent Detail / Workspace Settings 的最终统一 IA。
+- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging、standalone MCP import 的 Trust Gate staging。
+- 未完成：`external_extension_catalog_entries` / `external_extension_activations`、materializer sandbox、Codex adapter、approved snapshot -> existing runtime projection、Agent Detail / Workspace Settings 的最终统一 IA。
 - 因此本文档是目标计划和落地契约，不得把规划中的 Trust Gate 误读为当前已经全量上线的代码事实。
 
 核心原则：
@@ -2083,6 +2083,46 @@ cd backend && source .venv/bin/activate && ruff check \
 # All checks passed!
 
 rg -n "install_mcp_prompt_as_skill|Installed ClawHub skill|downloaded_to_agent|hr_clawhub|agent_clawhub|SkillGuard blocked sandbox-installed skill|MCP Prompt Skill Installed" backend/app backend/tests
+# no matches
+```
+
+Round 2 standalone MCP import 收口证据（2026-07-07）：
+
+- 新增 `backend/app/services/external_capabilities/mcp_source_adapter.py`：
+  - standalone MCP import 被归一化为 one-component `mcp_server` bundle。
+  - 复用 `mcp_authz`：禁止 URL userinfo、OAuth/user token query、local-only transport。
+  - `api_key` / `apiKey` 只转为 credential requirement，不进入 normalized manifest。
+- 修改 `backend/app/api/mcp_servers.py`：
+  - `POST /enterprise/mcp-servers/import` 不再调用 `import_and_register()` 直接创建 `TenantMCPServer`。
+  - 入口改为 `stage_external_mcp_server_review()`，返回 `review_required` / `blocked`。
+  - 既有 MCP runtime、assignment、tool policy API 保持不变；approved snapshot activation 后再投影到这些现有 surface。
+- legacy plugin install 现状：
+  - `backend/app/services/plugin_install_service.py` 已有 source policy fail-closed：remote source 不能作为 legacy pack 直接安装。
+  - 因此本轮没有把 legacy pack install 改成 CC plugin runtime；它只保留 migration-compatible projection。
+- 验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/api/test_mcp_servers_api.py::test_import_route_stages_trust_gate_review \
+  tests/api/test_mcp_servers_api.py::test_import_route_maps_value_error_to_400 \
+  tests/services/test_external_mcp_source_adapter.py -q
+# 4 passed in 0.29s
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_mcp_server_service.py::test_import_and_register_rejects_local_only_transport_before_db_query \
+  tests/services/test_mcp_server_service.py::test_get_agent_extensions_has_both_keys \
+  tests/services/test_mcp_server_service.py::test_get_agent_extensions_includes_installed_skill_records \
+  tests/services/test_mcp_server_service.py::test_get_agent_extensions_includes_agent_plugin_assignments -q
+# 4 passed in 0.15s
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/external_capabilities/mcp_source_adapter.py \
+  app/api/mcp_servers.py \
+  tests/api/test_mcp_servers_api.py \
+  tests/services/test_external_mcp_source_adapter.py
+# All checks passed!
+
+rg -n "import_and_register" backend/app/api/mcp_servers.py backend/tests/api/test_mcp_servers_api.py
 # no matches
 ```
 

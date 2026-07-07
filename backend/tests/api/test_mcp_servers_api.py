@@ -119,34 +119,40 @@ def test_enterprise_list_is_admin_and_server_first(monkeypatch):
     assert body[0]["server_key"] == "github"
 
 
-def test_import_route_delegates_to_import_and_register(monkeypatch):
+def test_import_route_stages_trust_gate_review(monkeypatch):
     client, fake_db, current_user = _build_client(role="platform_admin")
     captured = {}
 
-    async def fake_import(db_session, tenant_id, *, server_id, mcp_url, server_name, config):
+    async def fake_stage(db_session, tenant_id, *, created_by_user_id, server_id, mcp_url, server_name, config):
         captured.update(
-            tenant_id=tenant_id, server_id=server_id, mcp_url=mcp_url, server_name=server_name, config=config
+            tenant_id=tenant_id,
+            created_by_user_id=created_by_user_id,
+            server_id=server_id,
+            mcp_url=mcp_url,
+            server_name=server_name,
+            config=config,
         )
-        return {"message": "ok", "server": {"id": str(uuid4()), "server_key": "github"}}
+        return {"status": "review_required", "review_id": str(uuid4()), "normalized_name": "github"}
 
-    monkeypatch.setattr(mcp_mod, "import_and_register", fake_import)
+    monkeypatch.setattr(mcp_mod, "stage_external_mcp_server_review", fake_stage)
 
     resp = client.post("/enterprise/mcp-servers/import", json={"mcp_url": "https://gh/sse", "server_name": "GitHub"})
 
     assert resp.status_code == 200
     assert captured["tenant_id"] == current_user.tenant_id
+    assert captured["created_by_user_id"] == current_user.id
     assert captured["mcp_url"] == "https://gh/sse"
     assert captured["server_name"] == "GitHub"
-    assert "pack_name" not in resp.json()["server"]
+    assert resp.json()["status"] == "review_required"
 
 
 def test_import_route_maps_value_error_to_400(monkeypatch):
     client, _fake_db, _current_user = _build_client(role="platform_admin")
 
-    async def fake_import(db_session, tenant_id, **kwargs):
+    async def fake_stage(db_session, tenant_id, **kwargs):
         raise ValueError("server_id or mcp_url is required")
 
-    monkeypatch.setattr(mcp_mod, "import_and_register", fake_import)
+    monkeypatch.setattr(mcp_mod, "stage_external_mcp_server_review", fake_stage)
 
     resp = client.post("/enterprise/mcp-servers/import", json={})
 

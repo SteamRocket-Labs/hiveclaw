@@ -22,11 +22,11 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 from app.models.user import User
+from app.services.external_capabilities.mcp_source_adapter import stage_external_mcp_server_review
 from app.services.mcp_server_service import (
     delete_tenant_server,
     get_agent_extensions,
     get_agent_mcp_servers,
-    import_and_register,
     list_agent_mcp_server_tools,
     list_tenant_servers,
     set_agent_mcp_assignment,
@@ -86,9 +86,10 @@ async def import_enterprise_mcp_server(
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant assigned")
     try:
-        return await import_and_register(
+        return await stage_external_mcp_server_review(
             db,
             current_user.tenant_id,
+            created_by_user_id=current_user.id,
             server_id=data.server_id,
             mcp_url=data.mcp_url,
             server_name=data.server_name,

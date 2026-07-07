@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.services.code_execution.contracts import CodeExecutionResult, render_command_result
 from app.services.code_execution.service import execute_agent_command
+from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review_for_agent_workspace
 from app.services.subprocess_env import build_agent_subprocess_env
 from app.tools.result_envelope import ToolContentEnvelope
 
@@ -239,38 +240,35 @@ async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
         stdout_str = result.stdout[:10000]
         stderr_str = result.stderr[:5000]
 
-        # Post-exec: install skills produced by `npx skills add` from sandbox HOME
-        # through the same guard/audit path as every other active Skill write.
+        # Post-exec: stage skills produced by `npx skills add` from sandbox HOME.
+        # Third-party skill artifacts must pass Trust Gate before activation.
         sandbox_skills = Path(safe_env["HOME"]) / ".agents" / "skills"
         if sandbox_skills.exists():
-            from app.services.skill_installation import collect_skill_package_files, install_active_skill_package
+            from app.services.skill_installation import collect_skill_package_files
 
-            installed = []
-            blocked = []
+            staged = []
             for skill_dir in sandbox_skills.iterdir():
                 if skill_dir.is_dir():
                     if not (skill_dir / "SKILL.md").is_file():
                         continue
-                    try:
-                        install_result = install_active_skill_package(
-                            workspace=ws,
-                            folder_name=skill_dir.name,
-                            files=collect_skill_package_files(skill_dir),
-                            source="execute_code:sandbox_home",
-                            overwrite=True,
-                        )
-                        installed.append(install_result["folder_name"])
-                    except ValueError as exc:
-                        blocked.append(f"{skill_dir.name}: {exc}")
+                    review_result = await stage_external_skill_package_review_for_agent_workspace(
+                        workspace=ws,
+                        source_uri="execute_code:sandbox_home",
+                        folder_name=skill_dir.name,
+                        files=collect_skill_package_files(skill_dir),
+                        source_format="execute_code_sandbox",
+                    )
+                    staged.append(review_result)
             shutil.rmtree(sandbox_skills, ignore_errors=True)
-            if blocked:
+            if staged:
                 return _with_code_execution_evidence(
-                    "❌ SkillGuard blocked sandbox-installed skill before activation:\n"
-                    + "\n".join(f"- {item}" for item in blocked),
+                    "External skill from sandbox requires Trust Gate review before activation:\n"
+                    + "\n".join(
+                        f"- {item['folder_name']}: {item['status']} review_id={item.get('review_id')}"
+                        for item in staged
+                    ),
                     result,
                 )
-            if installed:
-                logger.info("[exec] Installed %d skills from sandbox into workspace: %s", len(installed), installed)
 
         result_parts = []
         if stdout_str.strip():

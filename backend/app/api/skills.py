@@ -17,6 +17,7 @@ from app.database import get_db, tenant_scoped_session
 from app.models.skill import Skill, SkillFile
 from app.core.security import require_role, get_current_user
 from app.models.user import User
+from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review_for_tenant
 from app.services.skill_guard import SkillGuardReport, scan_skill_files
 
 logger = logging.getLogger(__name__)
@@ -533,8 +534,6 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
     if not files:
         raise HTTPException(404, "No files found in the skill directory")
 
-    guard_report = _guard_skill_files_or_raise(files, source=f"clawhub:{slug}")
-
     # 4. Extract name/description from SKILL.md
     skill_md = next((f for f in files if f["path"].upper() == "SKILL.MD"), None)
     if not skill_md:
@@ -544,30 +543,27 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
     name = frontmatter.get("name", skill_info.get("displayName", slug))
     description = frontmatter.get("description", skill_info.get("summary", ""))
 
-    # 5. Classify portability tier
+    # 5. Classify portability tier for the review report payload.
     tier = classify_portability(skill_md["content"])
-    tier_labels = {1: "clawhub-tier1", 2: "clawhub-tier2", 3: "clawhub-tier3"}
     has_scripts = any("/" in f["path"] for f in files if f["path"] != "SKILL.md")
 
-    # 6. Save to DB
-    result = await _save_skill_to_db(
+    # 6. Stage review; external ClawHub content must not directly enter the company registry.
+    result = await stage_external_skill_package_review_for_tenant(
+        tenant_id=current_user.tenant_id,
+        created_by_user_id=current_user.id,
+        source_uri=f"clawhub:{slug}",
         folder_name=slug,
-        name=name,
-        description=description,
-        category=tier_labels.get(tier, "clawhub"),
-        icon="",
         files=files,
-        source_url=f"https://clawhub.ai/skills/{slug}",
-        tenant_id=tenant_id,
-        on_conflict="return_existing",
+        source_format="clawhub_skill",
     )
 
     result["tier"] = tier
+    result["name"] = name
+    result["description"] = description
     result["is_suspicious"] = is_suspicious
     result["moderation_summary"] = moderation_summary
     result["has_scripts"] = has_scripts
     result["file_count"] = len(files)
-    result["skill_guard"] = guard_report.to_dict()
     result["source"] = "clawhub"
     return result
 
@@ -592,8 +588,6 @@ async def import_from_url(body: UrlImportIn, current_user: User = Depends(get_cu
     if not files:
         raise HTTPException(404, "No files found at the specified path")
 
-    guard_report = _guard_skill_files_or_raise(files, source=body.url)
-
     # Validate SKILL.md exists
     skill_md = next((f for f in files if f["path"].upper() == "SKILL.MD"), None)
     if not skill_md:
@@ -617,23 +611,20 @@ async def import_from_url(body: UrlImportIn, current_user: User = Depends(get_cu
         }
 
     tier = classify_portability(skill_md["content"])
-    tier_labels = {1: "url-import-tier1", 2: "url-import-tier2", 3: "url-import-tier3"}
 
-    result = await _save_skill_to_db(
+    result = await stage_external_skill_package_review_for_tenant(
+        tenant_id=current_user.tenant_id,
+        created_by_user_id=current_user.id,
+        source_uri=body.url,
         folder_name=folder_name,
-        name=name,
-        description=description,
-        category=tier_labels.get(tier, "url-import"),
-        icon="",
         files=files,
-        source_url=body.url,
-        tenant_id=tenant_id,
-        on_conflict="return_existing",
+        source_format="external_skill_url",
     )
 
     result["tier"] = tier
+    result["name"] = name
+    result["description"] = description
     result["file_count"] = len(files)
-    result["skill_guard"] = guard_report.to_dict()
     result["source"] = "url"
     return result
 

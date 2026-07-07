@@ -21,6 +21,7 @@ from app.services.file_download_tokens import (
     NotChannelFileDownloadToken,
     verify_channel_file_download_token,
 )
+from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -874,26 +875,21 @@ async def agent_import_from_clawhub(
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     token = await _get_github_token(tenant_id)
     files = await _fetch_github_directory("openclaw", "skills", github_path, "main", token)
-    from app.services.skill_installation import install_active_skill_package
-
-    try:
-        install_result = install_active_skill_package(
-            workspace=base,
-            folder_name=folder_name,
-            files=files,
-            source=f"agent_clawhub:{slug}",
-            overwrite=False,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant associated")
+    review_result = await stage_external_skill_package_review(
+        db,
+        tenant_id=current_user.tenant_id,
+        created_by_user_id=current_user.id,
+        source_uri=f"clawhub:{slug}",
+        folder_name=folder_name,
+        files=files,
+        source_format="clawhub_skill",
+    )
 
     return {
-        "status": "ok",
+        **review_result,
         "skill_name": skill_info.get("displayName", slug),
-        "folder_name": folder_name,
-        "files_written": install_result["files_written"],
-        "files": install_result["files"],
-        "skill_guard": install_result["skill_guard"],
     }
 
 
@@ -931,23 +927,14 @@ async def agent_import_from_url(
     files = await _fetch_github_directory(owner, repo, path, branch, token)
     if not files:
         raise HTTPException(404, "No files found")
-    from app.services.skill_installation import install_active_skill_package
-
-    try:
-        install_result = install_active_skill_package(
-            workspace=base,
-            folder_name=folder_name,
-            files=files,
-            source=body.url,
-            overwrite=False,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    return {
-        "status": "ok",
-        "folder_name": folder_name,
-        "files_written": install_result["files_written"],
-        "files": install_result["files"],
-        "skill_guard": install_result["skill_guard"],
-    }
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant associated")
+    return await stage_external_skill_package_review(
+        db,
+        tenant_id=current_user.tenant_id,
+        created_by_user_id=current_user.id,
+        source_uri=body.url,
+        folder_name=folder_name,
+        files=files,
+        source_format="external_skill_url",
+    )

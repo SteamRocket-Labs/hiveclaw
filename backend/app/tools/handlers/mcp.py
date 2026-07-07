@@ -720,7 +720,7 @@ async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict) -> str:
 )
 async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.mcp_client import MCPClient
-    from app.services.mcp_prompt_trust import install_mcp_prompt_as_skill, render_mcp_prompt_context
+    from app.services.mcp_prompt_trust import render_mcp_prompt_context, stage_mcp_prompt_as_skill_review
 
     prompt_name = str(arguments.get("prompt_name") or arguments.get("name") or "").strip()
     if not prompt_name:
@@ -752,7 +752,7 @@ async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict) -> str:
             return prompt_text
         if bool(arguments.get("import_as_skill")):
             try:
-                installed = install_mcp_prompt_as_skill(
+                staged = await stage_mcp_prompt_as_skill_review(
                     workspace=Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
                     agent_id=agent_id,
                     server_name=server_name,
@@ -776,11 +776,13 @@ async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict) -> str:
                 )
             return "\n".join(
                 [
-                    "## MCP Prompt Skill Installed",
+                    "## MCP Prompt Skill Review Required",
                     f"- server: {server_name}",
                     f"- prompt: {prompt_name}",
-                    f"- skill: {installed['folder_name']}",
-                    f"- skill_guard: {installed.get('skill_guard', {}).get('risk_level', 'unknown')}",
+                    f"- skill: {staged['folder_name']}",
+                    f"- status: {staged['status']}",
+                    f"- review_id: {staged.get('review_id')}",
+                    f"- skill_guard: {staged.get('skill_guard', {}).get('risk_level', 'unknown')}",
                 ]
             )
         return render_mcp_prompt_context(server_name=server_name, prompt_name=prompt_name, prompt_text=prompt_text)

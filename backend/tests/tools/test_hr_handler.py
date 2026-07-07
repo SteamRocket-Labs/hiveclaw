@@ -471,17 +471,12 @@ def test_append_hr_creation_t0_event_records_source_attributed_creation_case(tmp
 
 
 @pytest.mark.asyncio
-async def test_install_external_skill_from_url_writes_skill_into_agent_workspace(tmp_path, monkeypatch) -> None:
+async def test_install_external_skill_from_url_stages_review_without_active_install(tmp_path, monkeypatch) -> None:
     import app.tools.handlers.hr as hr_mod
 
     agent_id = uuid4()
-    tenant_id = uuid4()
+    expected_tenant_id = uuid4()
 
-    monkeypatch.setattr(
-        hr_mod,
-        "get_settings",
-        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-    )
     monkeypatch.setattr(
         hr_mod,
         "_parse_github_url",
@@ -506,36 +501,49 @@ async def test_install_external_skill_from_url_writes_skill_into_agent_workspace
     async def fake_reuse(**_kwargs):
         return None
 
+    async def fake_stage_for_tenant(*, tenant_id, created_by_user_id, source_uri, folder_name, files, source_format):
+        assert tenant_id == expected_tenant_id
+        assert created_by_user_id is None
+        assert source_uri == "https://github.com/acme/design-skills/tree/main/frontend-design-pro"
+        assert folder_name == "frontend-design-pro"
+        assert files[0]["path"] == "SKILL.md"
+        assert source_format == "external_skill_url"
+        return {
+            "status": "review_required",
+            "folder_name": folder_name,
+            "files_written": 0,
+            "files": [],
+            "review_id": "review-hr-url",
+            "skill_guard": {"allowed": True},
+            "source_uri": source_uri,
+        }
+
     monkeypatch.setattr(hr_mod, "_fetch_github_directory", fake_fetch)
     monkeypatch.setattr(hr_mod, "_get_github_token", fake_token)
     monkeypatch.setattr(hr_mod, "reuse_existing_skill_for_agent", fake_reuse)
+    monkeypatch.setattr(hr_mod, "stage_external_skill_package_review_for_tenant", fake_stage_for_tenant)
 
     result = await hr_mod._install_external_skill_from_url(
         agent_id=agent_id,
-        tenant_id=tenant_id,
+        tenant_id=expected_tenant_id,
         url="https://github.com/acme/design-skills/tree/main/frontend-design-pro",
     )
 
-    assert result["status"] == "installed"
+    assert result["status"] == "review_required"
     assert result["folder_name"] == "frontend-design-pro"
-    assert result["files_written"] == 2
-    assert (tmp_path / str(agent_id) / "skills" / "frontend-design-pro" / "SKILL.md").exists()
+    assert result["files_written"] == 0
+    assert result["review_id"] == "review-hr-url"
+    assert not (tmp_path / str(agent_id) / "skills" / "frontend-design-pro" / "SKILL.md").exists()
 
 
 @pytest.mark.asyncio
-async def test_install_external_skill_from_skills_ref_copies_cli_installed_skill(tmp_path, monkeypatch) -> None:
+async def test_install_external_skill_from_skills_ref_stages_review_without_active_install(tmp_path, monkeypatch) -> None:
     from pathlib import Path
 
     import app.tools.handlers.hr as hr_mod
     from app.services.code_execution.contracts import CodeExecutionResult
 
     agent_id = uuid4()
-    monkeypatch.setattr(
-        hr_mod,
-        "get_settings",
-        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-    )
-
     def fake_mkdtemp(prefix):
         target = tmp_path / ("skill-work" if "work" in prefix else "exec-home")
         target.mkdir(parents=True, exist_ok=True)
@@ -556,14 +564,34 @@ async def test_install_external_skill_from_skills_ref_copies_cli_installed_skill
 
     monkeypatch.setattr(hr_mod, "execute_agent_command", fake_execute_agent_command)
 
+    async def fake_stage_for_tenant(*, tenant_id, created_by_user_id, source_uri, folder_name, files, source_format):
+        assert tenant_id is None
+        assert created_by_user_id is None
+        assert source_uri == "skills_ref:patricio0312rev/skills@design-to-component-translator"
+        assert folder_name == "design-to-component-translator"
+        assert files[0]["path"] == "SKILL.md"
+        assert source_format == "skills_ref"
+        return {
+            "status": "review_required",
+            "folder_name": folder_name,
+            "files_written": 0,
+            "files": [],
+            "review_id": "review-hr-skills-ref",
+            "skill_guard": {"allowed": True},
+            "source_uri": source_uri,
+        }
+
+    monkeypatch.setattr(hr_mod, "stage_external_skill_package_review_for_tenant", fake_stage_for_tenant)
+
     result = await hr_mod._install_external_skill_from_skills_ref(
         agent_id=agent_id,
         ref="patricio0312rev/skills@design-to-component-translator",
     )
 
-    assert result["status"] == "installed"
+    assert result["status"] == "review_required"
     assert result["folder_name"] == "design-to-component-translator"
-    assert (tmp_path / str(agent_id) / "skills" / "design-to-component-translator" / "SKILL.md").exists()
+    assert result["review_id"] == "review-hr-skills-ref"
+    assert not (tmp_path / str(agent_id) / "skills" / "design-to-component-translator" / "SKILL.md").exists()
     assert calls
     assert calls[0]["env"]["HOME"] == str(tmp_path / "exec-home")
     assert calls[0]["runtime"] == "node24"
@@ -576,12 +604,6 @@ async def test_install_external_skill_from_skills_ref_fails_closed_without_sandb
     from app.services.code_execution.contracts import CodeExecutionResult
 
     agent_id = uuid4()
-    monkeypatch.setattr(
-        hr_mod,
-        "get_settings",
-        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-    )
-
     def fake_mkdtemp(prefix):
         target = tmp_path / ("skill-work" if "work" in prefix else "exec-home")
         target.mkdir(parents=True, exist_ok=True)

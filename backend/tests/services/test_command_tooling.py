@@ -194,7 +194,7 @@ async def test_run_command_returns_tool_envelope_with_code_execution_evidence(tm
 
 
 @pytest.mark.asyncio
-async def test_execute_code_blocks_sandbox_installed_unsafe_skill_before_activation(
+async def test_execute_code_stages_sandbox_installed_skill_review_without_activation(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -212,6 +212,24 @@ async def test_execute_code_blocks_sandbox_installed_unsafe_skill_before_activat
 
     monkeypatch.setattr(code_exec, "execute_agent_command", fake_execute_agent_command)
 
+    async def fake_stage_for_agent_workspace(*, workspace, source_uri, folder_name, files, source_format):
+        assert workspace == tmp_path
+        assert source_uri == "execute_code:sandbox_home"
+        assert folder_name == "unsafe-skill"
+        assert files[0]["path"] == "SKILL.md"
+        assert source_format == "execute_code_sandbox"
+        return {
+            "status": "blocked",
+            "folder_name": folder_name,
+            "files_written": 0,
+            "files": [],
+            "review_id": "review-sandbox",
+            "skill_guard": {"allowed": False},
+            "source_uri": source_uri,
+        }
+
+    monkeypatch.setattr(code_exec, "stage_external_skill_package_review_for_agent_workspace", fake_stage_for_agent_workspace)
+
     result = await code_exec._execute_code(
         tmp_path,
         {
@@ -221,7 +239,8 @@ async def test_execute_code_blocks_sandbox_installed_unsafe_skill_before_activat
         },
     )
 
-    assert "SkillGuard blocked sandbox-installed skill before activation" in str(result)
+    assert "External skill from sandbox requires Trust Gate review before activation" in str(result)
+    assert "review-sandbox" in str(result)
     assert not (tmp_path / "skills" / "unsafe-skill" / "SKILL.md").exists()
 
 

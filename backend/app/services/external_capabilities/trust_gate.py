@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.external_capability import ExternalCapabilityReview, ExternalCapabilitySnapshot
 from app.services.external_capabilities.types import NormalizedExternalPluginBundle
 
-_BLOCKING_NOTE_CODES = {"component_path_escape"}
+_BLOCKING_NOTE_CODES = {"component_path_escape", "missing_skill_md", "skill_guard_blocked"}
 
 
 async def stage_external_capability_review(
@@ -209,4 +209,3 @@ def _snapshot_to_dict(row: ExternalCapabilitySnapshot) -> dict[str, Any]:
         "governance_projection": row.governance_projection_json or {},
         "component_manifest": row.component_manifest_json or {},
     }
-

@@ -1,8 +1,7 @@
 """Trust boundary helpers for MCP prompts.
 
 MCP prompts are external content. They can be read as context, but becoming an
-active Skill package must pass through the same SkillGuard installer used by
-other imported skills.
+active Skill package must pass through the external capability Trust Gate.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from app.services.skill_installation import install_active_skill_package
+from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review_for_agent_workspace
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +80,7 @@ def build_mcp_prompt_skill_package(*, server_name: str, prompt_name: str, prompt
     return MCPPromptSkillPackage(folder_name=folder_name, files=({"path": "SKILL.md", "content": content},))
 
 
-def install_mcp_prompt_as_skill(
+async def stage_mcp_prompt_as_skill_review(
     *,
     workspace: Path,
     agent_id: uuid.UUID,
@@ -91,7 +90,7 @@ def install_mcp_prompt_as_skill(
     overwrite: bool = False,
     folder_name: str | None = None,
 ) -> dict[str, Any]:
-    """Install an MCP prompt as an active Skill only through SkillGuard."""
+    """Stage an MCP prompt-derived Skill for Trust Gate review."""
 
     package = build_mcp_prompt_skill_package(
         server_name=server_name,
@@ -99,16 +98,17 @@ def install_mcp_prompt_as_skill(
         prompt_text=prompt_text,
     )
     target_folder = folder_name or package.folder_name
-    result = install_active_skill_package(
+    result = await stage_external_skill_package_review_for_agent_workspace(
         workspace=workspace,
+        source_uri=f"mcp_prompt:{server_name}:{prompt_name}:agent:{agent_id}",
         folder_name=target_folder,
         files=package.files,
-        source=f"mcp_prompt:{server_name}:{prompt_name}:agent:{agent_id}",
-        overwrite=overwrite,
+        source_format="mcp_prompt",
     )
     return {
         **result,
         "source": "mcp_prompt",
         "server_name": server_name,
         "prompt_name": prompt_name,
+        "overwrite_requested": overwrite,
     }

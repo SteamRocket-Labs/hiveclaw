@@ -35,8 +35,8 @@ External Capability Trust Gate
 
 当前代码现实必须分清：
 
-- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve API。
-- 未完成：`external_extension_catalog_entries` / `external_extension_activations`、materializer sandbox、Codex adapter、Skill/MCP/direct import bypass 收口、approved snapshot -> existing runtime projection、Agent Detail / Workspace Settings 的最终统一 IA。
+- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging。
+- 未完成：`external_extension_catalog_entries` / `external_extension_activations`、materializer sandbox、Codex adapter、MCP / Plugin direct import bypass 收口、approved snapshot -> existing runtime projection、Agent Detail / Workspace Settings 的最终统一 IA。
 - 因此本文档是目标计划和落地契约，不得把规划中的 Trust Gate 误读为当前已经全量上线的代码事实。
 
 核心原则：
@@ -2039,6 +2039,51 @@ cd backend && source .venv/bin/activate && ruff check \
 
 cd backend && source .venv/bin/activate && alembic heads
 # external_capability_trust_gate_0707 (head)
+```
+
+Round 2 external Skill entrypoint 收口证据（2026-07-07）：
+
+- 新增 `backend/app/services/external_capabilities/skill_source_adapter.py`：
+  - 把 external Skill package 归一化为 one-component `NormalizedExternalPluginBundle`。
+  - 继续复用 `SkillGuard`，但扫描结果进入 Trust Gate `admission_report_json`。
+  - `skill_guard_blocked` / `missing_skill_md` 会映射为 `admission_class=blocked`，不会写 active workspace。
+- 收口入口：
+  - `backend/app/api/files.py`：agent 级 GitHub URL / ClawHub import 改为 `stage_external_skill_package_review()`。
+  - `backend/app/api/skills.py`：company/global registry 的 URL / ClawHub import 改为 Trust Gate review，不再直接 `_save_skill_to_db`。
+  - `backend/app/tools/handlers/hr.py`：HR external skill URL、skills.sh ref、ClawHub post-commit install 改为 review_required / blocked 状态记录。
+  - `backend/app/services/agent_tool_domains/code_exec.py`：sandbox HOME 里的 `.agents/skills` 只 stage review，不再 promote 到 active `skills/`。
+  - `backend/app/services/mcp_prompt_trust.py` + `backend/app/tools/handlers/mcp.py`：MCP prompt `import_as_skill` 改为 review_required。
+- 保留的 `install_active_skill_package()` 调用经扫描确认属于内部路径：
+  - registry skill copy：`backend/app/api/files.py`、`backend/app/api/agents.py`、`backend/app/tools/handlers/hr.py`。
+  - platform seeding / agent manager / reuse / skill distiller：`agent_seeder.py`、`skill_seeder.py`、`agent_manager.py`、`capability_reuse_service.py`、`skill_distiller.py`。
+  - 这些路径不是新的外部 source bypass；后续 activation layer 会让 approved snapshot 也投影到同一 existing skill loader。
+- 验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/api/test_files_import_idempotency.py \
+  tests/api/test_skills_skill_guard.py \
+  tests/tools/test_hr_handler.py::test_append_hr_creation_t0_event_records_source_attributed_creation_case \
+  tests/tools/test_hr_handler.py::test_install_external_skill_from_url_stages_review_without_active_install \
+  tests/tools/test_hr_handler.py::test_install_external_skill_from_skills_ref_stages_review_without_active_install \
+  tests/tools/test_hr_handler.py::test_install_external_skill_from_skills_ref_fails_closed_without_sandbox \
+  tests/services/test_command_tooling.py::test_execute_code_stages_sandbox_installed_skill_review_without_activation \
+  tests/services/test_mcp_prompt_trust.py \
+  tests/services/test_external_capability_trust_gate.py -q
+# 15 passed, 3 warnings in 1.76s
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/external_capabilities/skill_source_adapter.py \
+  app/services/external_capabilities/trust_gate.py \
+  app/api/files.py app/api/skills.py app/tools/handlers/hr.py \
+  app/services/agent_tool_domains/code_exec.py app/services/mcp_prompt_trust.py app/tools/handlers/mcp.py \
+  tests/api/test_files_import_idempotency.py tests/api/test_skills_skill_guard.py \
+  tests/tools/test_hr_handler.py tests/services/test_command_tooling.py \
+  tests/services/test_mcp_prompt_trust.py tests/services/test_external_capability_trust_gate.py
+# All checks passed!
+
+rg -n "install_mcp_prompt_as_skill|Installed ClawHub skill|downloaded_to_agent|hr_clawhub|agent_clawhub|SkillGuard blocked sandbox-installed skill|MCP Prompt Skill Installed" backend/app backend/tests
+# no matches
 ```
 
 ### Round 3：Agent runtime visibility / activation layer 与 Agent Detail 前端收敛

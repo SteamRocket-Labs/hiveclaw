@@ -16,8 +16,8 @@ from typing import Any
 from app.services.archetype import apply_archetype_defaults
 
 from app.api.skills import _fetch_github_directory, _get_github_token, _parse_github_url
-from app.config import get_settings
 from app.services.capability_reuse_service import reuse_existing_skill_for_agent
+from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review_for_tenant
 from app.services import plan_mode_core
 from app.services.subprocess_env import build_agent_subprocess_env
 from app.services.code_execution.service import execute_agent_command
@@ -1088,36 +1088,27 @@ async def _install_external_skill_from_url(
     files = await _fetch_github_directory(owner, repo, path, branch, token=token)
     if not files:
         raise ValueError("No files found at the provided GitHub URL")
-    agent_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
-    from app.services.skill_installation import install_active_skill_package
-
-    install_result = install_active_skill_package(
-        workspace=agent_dir,
+    review_result = await stage_external_skill_package_review_for_tenant(
+        tenant_id=tenant_id,
+        created_by_user_id=None,
+        source_uri=url,
         folder_name=folder_name,
         files=files,
-        source=url,
-        overwrite=False,
+        source_format="external_skill_url",
     )
-
-    return {
-        "status": "installed",
-        "folder_name": folder_name,
-        "files_written": install_result["files_written"],
-        "files": install_result["files"],
-        "skill_guard": install_result["skill_guard"],
-        "source_url": url,
-    }
+    review_result["source_url"] = url
+    return review_result
 
 
 async def _install_external_skill_from_skills_ref(
     *,
     agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = None,
     ref: str,
 ) -> dict:
     if not _SKILLS_REF_RE.match(ref):
         raise ValueError("Invalid skills.sh ref")
 
-    agent_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
     # Isolated empty work_dir for the npx process; skill artifacts land under
     # $HOME/.agents/skills, which the execution provider syncs back to exec_home
     # (local: bwrap HOME; vercel: remote HOME tarred back).
@@ -1146,30 +1137,32 @@ async def _install_external_skill_from_skills_ref(
         if not sandbox_skills.exists():
             raise RuntimeError("skills.sh install completed but no skill files were produced")
 
-        from app.services.skill_installation import collect_skill_package_files, install_active_skill_package
+        from app.services.skill_installation import collect_skill_package_files
 
         installed: list[dict] = []
         for skill_path in sandbox_skills.iterdir():
             if skill_path.is_dir():
                 installed.append(
-                    install_active_skill_package(
-                        workspace=agent_dir,
+                    await stage_external_skill_package_review_for_tenant(
+                        tenant_id=tenant_id,
+                        created_by_user_id=None,
+                        source_uri=f"skills_ref:{ref}",
                         folder_name=skill_path.name,
                         files=collect_skill_package_files(skill_path),
-                        source=f"skills_ref:{ref}",
-                        overwrite=True,
+                        source_format="skills_ref",
                     )
                 )
             elif skill_path.is_file() and skill_path.suffix.lower() == ".md":
                 installed.append(
-                    install_active_skill_package(
-                        workspace=agent_dir,
+                    await stage_external_skill_package_review_for_tenant(
+                        tenant_id=tenant_id,
+                        created_by_user_id=None,
+                        source_uri=f"skills_ref:{ref}",
                         folder_name=skill_path.stem,
                         files=[
                             {"path": "SKILL.md", "content": skill_path.read_text(encoding="utf-8", errors="replace")}
                         ],
-                        source=f"skills_ref:{ref}",
-                        overwrite=True,
+                        source_format="skills_ref",
                     )
                 )
 
@@ -1181,10 +1174,11 @@ async def _install_external_skill_from_skills_ref(
         primary = installed_by_name.get(expected_folder) or installed[0]
 
         return {
-            "status": "installed",
+            "status": primary["status"],
             "folder_name": primary["folder_name"],
             "files_written": sum(int(item.get("files_written") or 0) for item in installed),
             "skill_guard": primary["skill_guard"],
+            "review_id": primary.get("review_id"),
             "source_ref": ref,
         }
     finally:
@@ -1201,7 +1195,7 @@ async def _install_external_skill_ref(
     if _parse_github_url(ref):
         return await _install_external_skill_from_url(agent_id=agent_id, tenant_id=tenant_id, url=ref)
     if _SKILLS_REF_RE.match(ref):
-        return await _install_external_skill_from_skills_ref(agent_id=agent_id, ref=ref)
+        return await _install_external_skill_from_skills_ref(agent_id=agent_id, tenant_id=tenant_id, ref=ref)
     raise ValueError("Unsupported external skill reference")
 
 
@@ -2212,12 +2206,8 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             clawhub_results = []
             if clawhub_slugs:
                 import httpx
-                from pathlib import Path as _Path
                 from app.api.skills import CLAWHUB_BASE, _fetch_github_directory, _get_github_token
-                from app.config import get_settings as _get_settings
-                from app.services.skill_installation import install_active_skill_package
 
-                agent_dir = _Path(_get_settings().AGENT_DATA_DIR) / str(agent.id)
                 ch_tenant = str(effective_tenant_id) if effective_tenant_id else None
                 ch_token = await _get_github_token(ch_tenant)
                 for slug in clawhub_slugs:
@@ -2292,27 +2282,29 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             continue
                         github_path = f"skills/{handle}/{slug}"
                         files = await _fetch_github_directory("openclaw", "skills", github_path, "main", ch_token)
-                        install_result = install_active_skill_package(
-                            workspace=agent_dir,
+                        review_result = await stage_external_skill_package_review_for_tenant(
+                            tenant_id=effective_tenant_id,
+                            created_by_user_id=None,
+                            source_uri=f"clawhub:{slug}",
                             folder_name=slug,
                             files=files,
-                            source=f"hr_clawhub:{slug}",
-                            overwrite=True,
+                            source_format="clawhub_skill",
                         )
-                        clawhub_results.append(f"✅ {slug}")
+                        clawhub_results.append(f"{slug}: {review_result['status']}")
                         await record_capability_install(
                             agent_id=agent.id,
                             kind="clawhub_skill",
                             source_key=slug,
-                            status="installed",
+                            status=review_result["status"],
                             installed_via="hr_agent",
                             metadata_json={
-                                "phase": "downloaded_to_agent",
-                                "skill_guard": install_result.get("skill_guard"),
-                                "files_written": install_result.get("files_written"),
+                                "phase": "trust_gate_review",
+                                "review_id": review_result.get("review_id"),
+                                "skill_guard": review_result.get("skill_guard"),
+                                "files_written": 0,
                             },
                         )
-                        logger.info(f"[HR] Installed ClawHub skill {slug} for agent {agent.id}")
+                        logger.info("[HR] Staged ClawHub skill %s for Trust Gate review on agent %s", slug, agent.id)
                     except Exception as ch_err:
                         clawhub_results.append(f"⚠️ {slug}: {ch_err}")
                         warnings.append(f"ClawHub install failed: {slug}")
@@ -2340,18 +2332,20 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             ref=ref,
                         )
                         external_skill_results.append(
-                            f"✅ {result['folder_name']}"
-                            if result["status"] == "installed"
-                            else f"⏭️ {result['folder_name']}: reused"
+                            f"{result['folder_name']}: {result['status']}"
                         )
                         await record_capability_install(
                             agent_id=agent.id,
                             kind="external_skill_url",
                             source_key=ref,
-                            status="installed",
+                            status=result["status"],
                             installed_via="hr_agent",
                             display_name=result["folder_name"],
-                            metadata_json={"phase": "downloaded_to_agent", "files_written": result["files_written"]},
+                            metadata_json={
+                                "phase": "trust_gate_review",
+                                "files_written": result["files_written"],
+                                "review_id": result.get("review_id"),
+                            },
                         )
                     except Exception as ext_err:
                         external_skill_results.append(f"⚠️ {ref}: {ext_err}")

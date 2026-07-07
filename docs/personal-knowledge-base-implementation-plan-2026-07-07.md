@@ -758,3 +758,27 @@ ruff check app/models/knowledge.py app/db_bootstrap.py \
 alembic heads
 # personal_knowledge_core_0707 (head)
 ```
+
+### 14.2 Ingest / Search 服务层
+
+已落地：
+
+1. `backend/app/services/personal_knowledge_service.py` 新增 `PersonalKnowledgeService`。
+2. `personal_knowledge_artifact_path()` 固定 person-scope artifact 路径：
+   `AGENT_DATA_DIR/persons/<owner_user_id>/kb/documents/<sha-prefix>/<source_sha256>.md`。
+3. `segment_markdown()` 使用稳定切片规则，保留 heading path、segment hash 和 rough token count。
+4. `ingest_markdown()` 写 canonical Markdown artifact，按 `tenant_id + scope_type + scope_id + source_sha256` upsert `knowledge_documents`，重建 `knowledge_segments`，写 `knowledge_index_jobs`，并刷新 `KnowledgeSegment.tsv = to_tsvector('simple', content)`。
+5. `build_personal_knowledge_search_statement()` 使用 person scope、`agent_searchable`、`status=ready`、PostgreSQL FTS 和 grant ACL。Owner 自己的查询不要求 grant；非 owner 的 user/agent 必须命中 `knowledge_grants` 的 scope/document 授权。
+6. `search_personal()` 返回 `KnowledgeSearchHit`，包含 `document_id`、`segment_id`、`snippet`、`source_ref`、`score`、`heading_path` 和 metadata。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_personal_knowledge_service.py -q
+# 6 passed in 0.13s
+
+ruff check app/services/personal_knowledge_service.py tests/services/test_personal_knowledge_service.py
+# All checks passed!
+```

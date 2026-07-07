@@ -13,11 +13,11 @@ to a user decision.
 ## Fetch Escalation
 
 1. `web_search` to discover current candidate sources with built-in basic search.
-2. `tool_search` for `exa_search` / `tavily_search` when basic results are weak, sparse, or stale.
+2. `advanced_web_search` when basic results are weak, sparse, stale, vertical, or need result content.
 3. `web_fetch` for known URLs or top results.
-4. `tool_search` for crawler tools when direct fetch is incomplete.
-5. `firecrawl_fetch` when pages are JS-heavy, PDF-like, or incomplete.
-6. `xcrawl_scrape` for difficult pages when available.
+4. `advanced_web_fetch` when direct fetch is incomplete, blocked, JS-heavy, or needs alternate extraction.
+5. Provider-specific override only when a route is clear: `firecrawl_search`, `firecrawl_fetch`, `tavily_extract`, `exa_fetch`, or `anysearch_extract`.
+6. `xcrawl_scrape` for difficult pages only when configured. XCrawl only when configured.
 
 ## Citation Rules
 

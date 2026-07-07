@@ -974,3 +974,45 @@ cd backend && source .venv/bin/activate && ruff check app/services/agent_tool_do
 ```text
 All checks passed!
 ```
+
+### 11.2 Skill / Prompt 对齐
+
+完成时间：2026-07-07
+
+已落地：
+
+- `backend/app/templates/system_skills/web-research/SKILL.md`
+  - frontmatter tool list 加入 `advanced_web_search`、`advanced_web_fetch`、`firecrawl_search`、`tavily_extract`、`exa_fetch`。
+  - 新增默认升级心智模型：`web_search` / `web_fetch` -> `advanced_web_search` / `advanced_web_fetch` -> provider-specific override。
+  - AnySearch、Exa、Tavily、Firecrawl 明确 no-key by default；XCrawl 明确 keyed-only。
+  - workflow、examples、anti-patterns、success criteria 均改为 router-first。
+- `backend/app/templates/system_skills/web-research/references/source-quality.md`
+  - source-quality escalation 顺序改为 advanced router first，XCrawl only when configured。
+- `backend/app/runtime/prompt_sections/tools.py`
+  - runtime tools prompt 明确 core first、advanced router second、provider-specific override last。
+- `backend/tests/services/test_prompt_contracts.py`
+  - 增加 advanced router skill/prompt contract。
+
+验证命令：
+
+```bash
+source backend/.venv/bin/activate && pytest backend/tests/services/test_prompt_contracts.py -q
+```
+
+结果：
+
+```text
+27 passed, 3 warnings
+```
+
+验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && ruff check app/runtime/prompt_sections/tools.py tests/services/test_prompt_contracts.py
+```
+
+结果：
+
+```text
+All checks passed!
+```

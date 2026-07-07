@@ -4,12 +4,17 @@ description: "Use when core web_search/web_fetch is insufficient and the task ne
 tools:
   - web_search
   - web_fetch
+  - advanced_web_search
+  - advanced_web_fetch
   - anysearch_get_sub_domains
   - anysearch_search
   - anysearch_batch_search
   - anysearch_extract
   - exa_search
+  - exa_fetch
   - tavily_search
+  - tavily_extract
+  - firecrawl_search
   - firecrawl_fetch
   - xcrawl_scrape
 is_system: true
@@ -27,7 +32,7 @@ skill.
 
 <when_to_use>
 - Core `web_search` returned weak, sparse, contradictory, or stale results.
-- The task needs AnySearch vertical routing, Exa/Tavily source discovery, or crawler extraction.
+- The task needs advanced router selection, AnySearch vertical routing, Exa/Tavily source discovery, Firecrawl search/scrape, or crawler extraction.
 - The user wants market research, competitor analysis, KOL/influencer lists, funding rounds, or other multi-source synthesis.
 - The task requires explicit source-quality checks, contradiction handling, or exact date handling.
 </when_to_use>
@@ -43,8 +48,25 @@ skill.
 ## Credential Boundary
 
 - Web/search provider credentials are managed by tool config or platform config.
+- AnySearch, Exa, Tavily, and Firecrawl are no-key by default in Hive; configured keys upgrade rate limits, production control, or direct API paths.
+- XCrawl remains keyed-only. Use it only when it is visible/configured or an explicit `advanced_web_fetch(provider="xcrawl")` call is appropriate after configuration.
 - Do not inspect environment variables or use `run_command` to look for Exa, Tavily, Firecrawl, XCrawl, Google, or API key values.
 - If a web tool reports auth/config failure, report the configuration gap and use another available public-source path; do not switch to shell/env probing.
+
+## Default Escalation Model
+
+Default escalation model:
+
+```text
+normal lookup -> web_search
+known URL -> web_fetch
+core insufficient -> advanced_web_search / advanced_web_fetch
+provider-specific override -> AnySearch / Exa / Tavily / Firecrawl / XCrawl tools
+```
+
+Use `advanced_web_search` as the default L2 search router. Use provider-specific search tools only when the provider choice itself matters: AnySearch for vertical/domain schemas, Exa for semantic/category retrieval, Tavily for current/news/finance retrieval, and Firecrawl Search when result body content is needed with search.
+
+Use `advanced_web_fetch` as the default L2 known-URL router after `web_fetch` is weak, empty, blocked, or likely JS-rendered. It tries no-key readers first and uses XCrawl only when configured.
 
 ## Tool Reference
 
@@ -54,13 +76,18 @@ skill.
 |------|----------|------------------|
 | `web_search` | Basic public web search using Hive's built-in basic provider chain: SearXNG when configured, with legacy HTML fallback only for manual/debug use. **Start here for normal lookup.** | Level 1 |
 | `web_fetch` | Read full content from a specific URL. Use this first when you already have the link. | Level 1 |
+| `advanced_web_search` | Advanced web search router. Routes to no-key-capable providers by default: AnySearch for vertical data, Exa for semantic/category retrieval, Tavily for current/news/finance retrieval, and Firecrawl Search when result body content is needed. | Level 2 |
+| `advanced_web_fetch` | Advanced web fetch router for known URLs. Tries direct `web_fetch`, Firecrawl, Tavily Extract, Exa Fetch, AnySearch Extract, and XCrawl only when configured. | Level 2 |
 | `anysearch_get_sub_domains` | AnySearch search/discovery surface schema directory. Call before vertical `anysearch_search` to discover valid sub-domain routes and required sub-domain parameters. | Level 2 |
 | `anysearch_search` | AnySearch search/discovery surface for vertical or general search. Use for precise finance, social media, academic, legal, health, business, security, code, energy, environment, agriculture, travel, film, and gaming sources when basic search is too broad. | Level 2 |
 | `anysearch_batch_search` | AnySearch search/discovery surface for parallel 2-5 query search. Use for hybrid general + vertical coverage or multi-domain intersections. | Level 2 |
 | `anysearch_extract` | AnySearch read/extract surface for known URLs. It extracts full page Markdown from a URL returned by search. Prefer `web_fetch` for ordinary known URLs. | Level 2 |
-| `exa_search` | Exa AI-native search for LLM agents. Use when you need search type control, category verticals (company, research paper, news, personal site, financial report, people), semantic/source discovery, or dense extracted result text. | Level 2 |
-| `tavily_search` | Tavily real-time web access layer for AI agents/RAG. Use when you need current factual retrieval, topic routing (`general`/`news`/`finance`), freshness filters, provider answers, or RAG-friendly content/chunks. | Level 2 |
-| `firecrawl_fetch` | Firecrawl `/scrape` for a known URL when you need single-page extraction into LLM-ready markdown or richer formats. Use `onlyMainContent`, clean-content, tags, and wait options to reduce page chrome or handle slow rendering. Discover with `tool_search` if not visible. Do not use crawler fetch tools for keyword search. | Level 2 |
+| `exa_search` | Exa AI-native search for LLM agents. Use when you need search type control, category verticals (company, research paper, news, personal site, financial report, people), semantic/source discovery, or dense extracted result text. No API key is required in default Exa MCP mode; configured keys upgrade the direct API path. | Level 2 |
+| `exa_fetch` | Exa Fetch for a known URL through Exa MCP. No API key is required by default; configured keys upgrade limits/control. | Level 2 |
+| `tavily_search` | Tavily real-time web access layer for AI agents/RAG. Use when you need current factual retrieval, topic routing (`general`/`news`/`finance`), freshness filters, provider answers, or RAG-friendly content/chunks. No API key is required by default; configured keys upgrade limits. | Level 2 |
+| `tavily_extract` | Tavily Extract for a known URL. Use when you want Tavily's cleaned extracted content or when `advanced_web_fetch` selects it. No API key is required by default. | Level 2 |
+| `firecrawl_search` | Firecrawl `/search` for keyword search with optional result content scraping. Use when search should return scraped LLM-ready content. No API key is required by default. | Level 2 |
+| `firecrawl_fetch` | Firecrawl `/scrape` for a known URL when you need single-page extraction into LLM-ready markdown or richer formats. No API key is required by default for keyless scrape; configured keys or base URLs upgrade limits/control. Use `onlyMainContent`, clean-content, tags, and wait options to reduce page chrome or handle slow rendering. Do not use crawler fetch tools for keyword search. | Level 2 |
 | `xcrawl_scrape` | XCrawl Scrape API for single-page extraction using official `output.formats`, `request`, and `js_render.enabled` options. Use for hard JS-rendered/proxy/device/locale cases after lighter readers fail. Discover with `tool_search` if not visible. Do not use crawler fetch tools for keyword search. | Level 3 |
 
 </tool_reference>
@@ -73,11 +100,13 @@ skill.
 When the user asks for specific entities (people, companies, KOLs, prices, news), call `web_search` to get current data. Training data is stale for fast-moving domains.
 
 If `web_search` returns weak, sparse, contradictory, or obviously stale results, use:
-1. `tool_search(query="advanced web search")` to discover AnySearch MCP vertical tools, `exa_search`, and `tavily_search`.
-2. `anysearch_get_sub_domains` before vertical `anysearch_search` when the question is finance, social media, academic, legal, health, business, security, code, or another domain-specific data request.
-3. `anysearch_batch_search` for hybrid general + vertical coverage when the best domain route is uncertain.
-4. `exa_search` for AI-native source discovery, category-specific retrieval, research papers, company/person pages, financial reports, or deep search types.
-5. `tavily_search` for real-time web retrieval, news/finance/current factual queries, freshness filters, provider answers, or RAG-friendly chunks.
+1. `advanced_web_search` with the clearest intent: `vertical`, `news`, `finance`, `semantic`, `company`, `research_paper`, or `content`.
+2. Provider-specific override only when needed:
+   - `anysearch_get_sub_domains` before vertical `anysearch_search` when the question is finance, social media, academic, legal, health, business, security, code, or another domain-specific data request.
+   - `anysearch_batch_search` for hybrid general + vertical coverage when the best domain route is uncertain.
+   - `exa_search` for AI-native source discovery, category-specific retrieval, research papers, company/person pages, financial reports, or deep search types.
+   - `tavily_search` for real-time web retrieval, news/finance/current factual queries, freshness filters, provider answers, or RAG-friendly chunks.
+   - `firecrawl_search` when search results should include scraped page content.
 
 ### 2. AnySearch MCP vertical workflow
 Use AnySearch MCP vertical tools when the request benefits from domain-specific API-like retrieval rather than broad web ranking. Examples include finance quotes and fundamentals, company data, SEC-style public filings, social media discovery, academic papers, patents, legal/regulatory materials, health/biomedical public sources, security/IP intelligence, code documentation, energy/environment/agriculture/travel/film/gaming data.
@@ -97,11 +126,11 @@ Flow:
 ### 3. Fetch-first for known URLs
 If the user already provides a URL:
 1. Try `web_fetch(url="...")` first (lightest).
-2. If it returns empty/incomplete content or looks JS-blocked, use `tool_search(query="web crawl")` if needed, then escalate to `firecrawl_fetch`.
-3. Use `firecrawl_fetch` as the default provider-backed scrape path for a known URL: request markdown first, add links/summary/html/screenshot/json only when the task needs those fields.
-4. If Firecrawl is still blocked or misses content, use `xcrawl_scrape` for XCrawl's sync single-page scrape with `output.formats`, `request.only_main_content`, and `js_render.enabled`.
+2. If it returns empty/incomplete content or looks JS-blocked, use `advanced_web_fetch(url="...", prefer_rendered=true)` for default provider routing.
+3. Use provider-specific override only when needed: `firecrawl_fetch` for rendered scrape, `tavily_extract` for Tavily extraction, `exa_fetch` for Exa MCP fetch, `anysearch_extract` after an AnySearch result URL, and `xcrawl_scrape` only when configured.
+4. If Firecrawl is still blocked or misses content and XCrawl is configured, use `xcrawl_scrape` for XCrawl's sync single-page scrape with `output.formats`, `request.only_main_content`, and `js_render.enabled`.
 5. Do not use crawler fetch tools for keyword search. Search first, then fetch or scrape the selected URLs.
-6. If all three fail, report the specific failure mode (paywall, 403, JS-only SPA, auth wall, provider quota, etc.) to the user.
+6. If all routes fail, report the specific failure mode (paywall, 403, JS-only SPA, auth wall, provider quota, etc.) to the user.
 
 ### 4. Cite every claim
 Include the source URL and fetch date when presenting results. Users need to verify.
@@ -130,9 +159,8 @@ Correct flow:
 web_search(query="<company name> latest funding round 2026 amount lead investor")
   → returns top 3 results with dates and URLs
 if results are sparse or low quality:
-tool_search(query="advanced web search")
-tavily_search(query="<company name> latest funding round 2026 amount lead investor", topic="news", time_range="year")
-exa_search(query="<company name> latest funding round 2026 amount lead investor", category="company")
+advanced_web_search(query="<company name> latest funding round 2026 amount lead investor", intent="news")
+advanced_web_search(query="<company name> latest funding round 2026 amount lead investor", intent="company")
 web_fetch(url="<most authoritative link, e.g. the company's own announcement>")
   → reads the actual funding announcement
 ```
@@ -146,10 +174,10 @@ Correct flow:
 ```
 web_fetch(url="https://example.com/docs")
   → returns mostly empty HTML with a React root div → content is JS-rendered
-firecrawl_fetch(url="https://example.com/docs")
+advanced_web_fetch(url="https://example.com/docs", prefer_rendered=true)
   → returns full rendered content
 ```
-Output: summary based on `firecrawl_fetch` content, citing the URL.
+Output: summary based on `advanced_web_fetch` content, citing the URL.
 
 ### Example C — Vertical finance lookup
 
@@ -202,9 +230,10 @@ Wrong response: inventing a number.
 
 - ❌ **Answer time-sensitive questions from training memory without searching** → training data is stale for news, releases, prices, people. Always search first for anything dated.
 - ❌ **Return search results without citing source URL and date** → user can't verify. Every factual claim backed by search should include the link and retrieval date.
-- ❌ **Stop at `web_fetch` when it returns empty on a JS-heavy page** → escalate to `firecrawl_fetch`, then `xcrawl_scrape`. Don't conclude "page is broken" until all three fail.
+- ❌ **Stop at `web_fetch` when it returns empty on a JS-heavy page** → escalate to `advanced_web_fetch`; use `firecrawl_fetch` or `xcrawl_scrape` only as provider-specific overrides. Don't conclude "page is broken" until available readers fail.
+- ❌ **Skip the router and guess a provider at random** → use `advanced_web_search` or `advanced_web_fetch` first unless a provider-specific override is clearly needed.
 - ❌ **Fabricate data when search returns nothing** → hallucination. Say "public sources do not cover this yet" and offer alternatives (wait, check SEC filings, ask user for access).
-- ❌ **Claim "cannot access the web"** → you have `web_search`, `web_fetch`, and deferred advanced tools (`anysearch_get_sub_domains`, `anysearch_search`, `anysearch_batch_search`, `anysearch_extract`, `exa_search`, `tavily_search`, `firecrawl_fetch`, `xcrawl_scrape`) discoverable through `tool_search`. Use them. There is no "no internet" excuse.
+- ❌ **Claim "cannot access the web"** → you have `web_search`, `web_fetch`, advanced routers (`advanced_web_search`, `advanced_web_fetch`), and provider-specific override tools (`anysearch_get_sub_domains`, `anysearch_search`, `anysearch_batch_search`, `anysearch_extract`, `exa_search`, `exa_fetch`, `tavily_search`, `tavily_extract`, `firecrawl_search`, `firecrawl_fetch`, `xcrawl_scrape`) discoverable through `tool_search`. Use them. There is no "no internet" excuse.
 - ❌ **Mix tools for the wrong job**: using `xcrawl_scrape` for a simple static page (overkill/slow), or `web_fetch` for a paywalled SPA (won't work). Match tool to page complexity.
 - ❌ **Skip `anysearch_get_sub_domains` before vertical `anysearch_search`** → AnySearch MCP vertical routes have required parameters. Discover the route first.
 - ❌ **Omit required sub-domain parameters** → include every required parameter returned by `anysearch_get_sub_domains`, using an empty string when necessary.
@@ -217,8 +246,9 @@ Wrong response: inventing a number.
 <success_criteria>
 - Every factual claim from the web is paired with a source URL and fetch date.
 - Simple lookup requests are answered inline; report/file artifacts are reserved for explicit report/file asks, long outputs, or durable deliverables.
-- Any empty/incomplete `web_fetch` result triggers escalation to `firecrawl_fetch` before the page is reported as inaccessible.
-- Weak basic search results trigger `tool_search` discovery of advanced search providers, including AnySearch MCP vertical tools, before you conclude no public information exists.
+- Any empty/incomplete `web_fetch` result triggers escalation to `advanced_web_fetch` before the page is reported as inaccessible.
+- Weak basic search results trigger `advanced_web_search` before you conclude no public information exists.
+- Weak known-URL fetch results trigger `advanced_web_fetch` before you conclude a page is inaccessible.
 - Vertical searches call `anysearch_get_sub_domains` before `anysearch_search` and pass required sub-domain parameters.
 - AnySearch extraction happens only after a known URL has been selected; `anysearch_extract` is never used for keyword search.
 - When search returns nothing, the response explicitly says so and offers a path forward (different search, waiting, alternative source).

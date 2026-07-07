@@ -383,9 +383,14 @@ def test_runtime_templates_no_longer_reference_jina() -> None:
     assert "web_fetch" in web_research_guide
     assert "AnySearch API first" not in web_research_guide
     assert "SearXNG" in web_research_guide
+    assert "advanced_web_search" in web_research_guide
+    assert "advanced_web_fetch" in web_research_guide
     assert "anysearch_get_sub_domains" in web_research_guide
     assert "anysearch_search" in web_research_guide
     assert "AnySearch MCP" in web_research_guide
+    assert "exa_fetch" in web_research_guide
+    assert "tavily_extract" in web_research_guide
+    assert "firecrawl_search" in web_research_guide
     assert "DuckDuckGo fallback" not in web_research_guide
     assert "jina_" not in skill_marketplace.lower()
     assert "web_search" in skill_marketplace
@@ -430,6 +435,25 @@ def test_web_research_skill_documents_anysearch_vertical_workflow() -> None:
     assert "academic" in skill_text
     assert "sub_domain_params" in skill_text
     assert not re.search(r"[\u4e00-\u9fff]", skill_text)
+
+
+def test_web_research_skill_documents_advanced_router_model() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    skill_root = project_root / "backend" / "app" / "templates" / "system_skills" / "web-research"
+    skill_text = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+    source_quality = (skill_root / "references" / "source-quality.md").read_text(encoding="utf-8")
+
+    assert "Default escalation model" in skill_text
+    assert "`advanced_web_search`" in skill_text
+    assert "`advanced_web_fetch`" in skill_text
+    assert "provider-specific override" in skill_text
+    assert "XCrawl remains keyed-only" in skill_text
+    assert "no-key by default" in skill_text
+    assert "advanced_web_search" in source_quality
+    assert "advanced_web_fetch" in source_quality
+    assert "XCrawl only when configured" in source_quality
+    assert not re.search(r"[\u4e00-\u9fff]", skill_text)
+    assert not re.search(r"[\u4e00-\u9fff]", source_quality)
 
 
 def test_settings_no_longer_define_jina_api_key() -> None:

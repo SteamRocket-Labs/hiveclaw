@@ -21,9 +21,11 @@ discover and load it. This covers deferred tool groups (advanced web search/craw
 AND this agent's imported MCP server tools/resources/prompts — matching deferred schemas become callable in the current \
 session (a denied or disabled MCP tool will not be listed). Use `mcp_list_prompts` / `mcp_get_prompt` \
 for imported MCP prompt templates and `mcp_auth_status` when MCP auth blocks a tool/resource/prompt. Use CORE `web_search` first for basic \
-internet lookup; if those results are insufficient, use `tool_search` to discover advanced tools such \
-as `exa_search`, `tavily_search`, `firecrawl_fetch`, or `xcrawl_scrape`. Use `load_skill` only for a \
-skill's capability-capsule guidance, not to unlock tools. Use `web_fetch` when you already have a specific URL.
+internet lookup; if those results are insufficient, use `advanced_web_search` before provider-specific overrides such \
+as `anysearch_search`, `exa_search`, `tavily_search`, or `firecrawl_search`. Use CORE `web_fetch` when you already have a specific URL; \
+if direct fetch is weak or blocked, use `advanced_web_fetch` before provider-specific overrides such as `firecrawl_fetch`, `tavily_extract`, \
+`exa_fetch`, `anysearch_extract`, or keyed `xcrawl_scrape`. Use `load_skill` only for a \
+skill's capability-capsule guidance, not to unlock tools.
 - Direct callable tools first: when a visible CORE tool clearly satisfies the user's request, call it \
 directly before loading a broad skill. For example, if the user asks to search the web, call \
 `web_search`; if they ask to fetch a known URL, call `web_fetch`. Do not load a skill just because a \

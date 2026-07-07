@@ -48,6 +48,15 @@ type ToolGovernanceTaxonomy = {
   source?: string;
 };
 
+export type WorkspaceProviderAuthMetadata = {
+  mode?: 'no_key_default' | 'optional_key' | 'key_required' | string;
+  keyless_supported?: boolean;
+  credential_optional?: boolean;
+  key_required?: boolean;
+  label?: string;
+  description?: string;
+};
+
 type WorkspaceToolRow = {
   id: string;
   name?: string;
@@ -62,6 +71,7 @@ type WorkspaceToolRow = {
   mcp_server_name?: string | null;
   mcp_server_url?: string | null;
   governance_taxonomy?: ToolGovernanceTaxonomy | null;
+  provider_auth?: WorkspaceProviderAuthMetadata | null;
 };
 
 type WorkspaceToolCapabilityPolicy = Pick<CapabilityPolicy, 'allowed' | 'requires_approval'> | undefined;
@@ -122,6 +132,77 @@ export function getWorkspaceToolGovernanceState({
     return { executionMode, effectiveStatus: 'approval_required' };
   }
   return { executionMode, effectiveStatus: 'auto_allowed' };
+}
+
+const WEB_PACK_TOOL_ORDER: Record<string, number> = {
+  advanced_web_search: 0,
+  advanced_web_fetch: 1,
+  anysearch_get_sub_domains: 10,
+  anysearch_search: 11,
+  anysearch_batch_search: 12,
+  anysearch_extract: 13,
+  exa_search: 20,
+  exa_fetch: 21,
+  tavily_search: 30,
+  tavily_extract: 31,
+  firecrawl_search: 40,
+  firecrawl_fetch: 41,
+  xcrawl_scrape: 99,
+};
+
+function getWorkspaceToolCategoryRank(category?: string): number {
+  if (category === 'web_pack') return 0;
+  if (category === 'office_pack') return 20;
+  if (category === 'mcp') return 90;
+  return 50;
+}
+
+export function sortWorkspaceToolsForDisplay<T extends Pick<WorkspaceToolRow, 'name' | 'category' | 'display_name'>>(tools: T[]): T[] {
+  return [...tools].sort((a, b) => {
+    const categoryRank = getWorkspaceToolCategoryRank(a.category) - getWorkspaceToolCategoryRank(b.category);
+    if (categoryRank !== 0) return categoryRank;
+    const aRank = a.category === 'web_pack' ? WEB_PACK_TOOL_ORDER[String(a.name || '')] ?? 60 : 50;
+    const bRank = b.category === 'web_pack' ? WEB_PACK_TOOL_ORDER[String(b.name || '')] ?? 60 : 50;
+    if (aRank !== bRank) return aRank - bRank;
+    return String(a.display_name || a.name || '').localeCompare(String(b.display_name || b.name || ''));
+  });
+}
+
+export function getWorkspaceProviderAuthDisplay(
+  providerAuth: WorkspaceProviderAuthMetadata | null | undefined,
+  t: (key: string, fallback: string) => string,
+): { label: string; description: string; className: string } | null {
+  if (!providerAuth) return null;
+  switch (providerAuth.mode) {
+    case 'no_key_default':
+      return {
+        label: t('enterprise.tools.providerAuthNoKeyDefault', 'No key by default'),
+        description: t(
+          'enterprise.tools.providerAuthNoKeyDefaultDesc',
+          'Runs without an API key by default; optional keys only raise limits or production control.',
+        ),
+        className: 'is-no-key',
+      };
+    case 'key_required':
+      return {
+        label: t('enterprise.tools.providerAuthKeyRequired', 'Key required'),
+        description: t(
+          'enterprise.tools.providerAuthKeyRequiredDesc',
+          'Requires a configured provider key before agents can use it.',
+        ),
+        className: 'is-key-required',
+      };
+    case 'optional_key':
+    default:
+      return {
+        label: t('enterprise.tools.providerAuthOptionalKey', 'Optional key'),
+        description: t(
+          'enterprise.tools.providerAuthOptionalKeyDesc',
+          'Works without a key by default; add a key for higher limits or production control.',
+        ),
+        className: 'is-optional-key',
+      };
+  }
 }
 
 export function normalizeToolConfigListValue(value: unknown, options: { preserveEmpty?: boolean } = {}): string[] {
@@ -235,6 +316,7 @@ export default function WorkspaceToolsSection({
     hr: t('agent.toolCategories.hr', 'HR'),
     mcp: t('agent.toolCategories.mcp', 'MCP'),
     plaza: t('agent.toolCategories.plaza', 'Agent Circle'),
+    web_pack: t('agent.toolCategories.web_pack', 'Web Research'),
     office_pack: t('agent.toolCategories.office_pack', 'Office'),
     social: t('agent.toolCategories.social', 'Social'),
     code: t('agent.toolCategories.code', 'Code & Execution'),
@@ -970,7 +1052,7 @@ export default function WorkspaceToolsSection({
           ) : null}
 
           {(() => {
-            const extensionTools = allTools.filter(isExtensionOrAddonTool);
+            const extensionTools = sortWorkspaceToolsForDisplay(allTools.filter(isExtensionOrAddonTool));
             const grouped = extensionTools.reduce((acc: Record<string, WorkspaceToolRow[]>, tool) => {
               const category = tool.category || 'general';
               (acc[category] = acc[category] || []).push(tool);
@@ -987,38 +1069,49 @@ export default function WorkspaceToolsSection({
 
             return (
               <div className="ws-tools-groups">
-                {Object.entries(grouped).map(([category, categoryTools]) => {
-                  const hasCategoryConfig = !!GLOBAL_CATEGORY_CONFIG_SCHEMAS[category];
+                {Object.entries(grouped)
+                  .sort(([left], [right]) => getWorkspaceToolCategoryRank(left) - getWorkspaceToolCategoryRank(right))
+                  .map(([category, categoryTools]) => {
+                    const hasCategoryConfig = !!GLOBAL_CATEGORY_CONFIG_SCHEMAS[category];
+                    const sortedCategoryTools = sortWorkspaceToolsForDisplay(categoryTools);
 
-                  return (
-                    <div key={category}>
-                      <div className="ws-tools-group-head">
-                        <div className="ws-tools-group-label">
-                          {categoryLabels[category] || category}
+                    return (
+                      <div key={category}>
+                        <div className="ws-tools-group-head">
+                          <div className="ws-tools-group-label">
+                            {categoryLabels[category] || category}
+                          </div>
+                          {hasCategoryConfig ? (
+                            <button
+                              className="btn btn-secondary"
+                              onClick={() => {
+                                setConfigCategory(category);
+                                setEditingConfig({});
+                                const firstToolWithConfig = sortedCategoryTools.find((tool) => (tool.config_schema?.fields?.length ?? 0) > 0);
+                                if (firstToolWithConfig?.config) {
+                                  setEditingConfig({ ...firstToolWithConfig.config });
+                                }
+                              }}
+                              title={`Configure ${category}`}
+                            >
+                              Configure
+                            </button>
+                          ) : null}
                         </div>
-                        {hasCategoryConfig ? (
-                          <button
-                            className="btn btn-secondary"
-                            onClick={() => {
-                              setConfigCategory(category);
-                              setEditingConfig({});
-                              const firstToolWithConfig = categoryTools.find((tool) => (tool.config_schema?.fields?.length ?? 0) > 0);
-                              if (firstToolWithConfig?.config) {
-                                setEditingConfig({ ...firstToolWithConfig.config });
-                              }
-                            }}
-                            title={`Configure ${category}`}
-                          >
-                            Configure
-                          </button>
+                        {category === 'web_pack' ? (
+                          <div className="ws-tools-group-hint">
+                            {t(
+                              'enterprise.tools.webPackHint',
+                              'No-key web research by default. Add provider keys only for higher limits or production control; XCrawl remains key-required.',
+                            )}
+                          </div>
                         ) : null}
-                      </div>
 
                       <div className="ws-tools-list-sm">
                         {(() => {
                           // Split MCP tools into server groups; non-MCP tools render flat
-                          const nonMcpTools = categoryTools.filter((tool) => tool.type !== 'mcp');
-                          const mcpTools = categoryTools.filter((tool) => tool.type === 'mcp');
+                          const nonMcpTools = sortedCategoryTools.filter((tool) => tool.type !== 'mcp');
+                          const mcpTools = sortedCategoryTools.filter((tool) => tool.type === 'mcp');
                           const mcpByServer: Record<string, any[]> = {};
                           for (const tool of mcpTools) {
                             const server = tool.mcp_server_name || 'MCP';
@@ -1040,6 +1133,7 @@ export default function WorkspaceToolsSection({
                             const shortName = tool.type === 'mcp' && tool.mcp_server_name && displayName.startsWith(tool.mcp_server_name + ': ')
                               ? displayName.slice(tool.mcp_server_name.length + 2)
                               : displayName;
+                            const providerAuth = getWorkspaceProviderAuthDisplay(tool.provider_auth, t);
 
                             return (
                               <div key={tool.id} className="card ws-tools-tool-card">
@@ -1056,6 +1150,14 @@ export default function WorkspaceToolsSection({
                                         ) : null}
                                         {tool.is_default ? (
                                           <span className="ws-tools-tag ws-tools-tag-default">Default</span>
+                                        ) : null}
+                                        {providerAuth ? (
+                                          <span
+                                            className={`ws-tools-tag ws-tools-tag-auth ${providerAuth.className}`}
+                                            title={providerAuth.description}
+                                          >
+                                            {providerAuth.label}
+                                          </span>
                                         ) : null}
                                       </div>
                                       <div className="ws-tools-desc-clip">

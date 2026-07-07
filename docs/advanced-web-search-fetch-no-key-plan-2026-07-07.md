@@ -975,6 +975,58 @@ cd backend && source .venv/bin/activate && ruff check app/services/agent_tool_do
 All checks passed!
 ```
 
+### 11.3 前端 UI / API 适配
+
+完成时间：2026-07-07
+
+已落地：
+
+- `frontend/src/api/domains/tools.ts`
+  - 新增 `ToolProviderAuth` 与 `ToolCatalogRow` 类型。
+  - `/tools` catalog 从 `unknown[]` 改为 typed row，包含后端返回的 `provider_auth` metadata。
+  - `AgentTool` / `ToolDetail` 同步可选 `provider_auth` 字段。
+- `frontend/src/pages/workspace/WorkspaceToolsSection.tsx`
+  - Extensions & Add-ons 区域按 `web_pack` 优先展示。
+  - `advanced_web_search` / `advanced_web_fetch` 排在 web research 组最前。
+  - AnySearch、Exa、Tavily、Firecrawl 按 provider order 展示；`xcrawl_scrape` 保持最后，体现 keyed-only。
+  - 工具行新增 provider auth badge：`No key by default` / `Optional key` / `Key required`。
+  - `web_pack` 组新增简短提示：默认 no-key，provider key 仅用于更高额度或生产级管控，XCrawl 仍需 key。
+- `frontend/src/pages/workspace/WorkspaceToolsSection.css`
+  - 新增 web research 组提示样式。
+  - 新增 no-key / optional-key / key-required badge 状态样式。
+- `frontend/src/i18n/en.json` 与 `frontend/src/i18n/zh.json`
+  - 补齐 `agent.toolCategories.web_pack`。
+  - 补齐 provider auth badge 与 web_pack hint 中英文文案。
+- `frontend/src/pages/workspace/WorkspaceToolsSection.test.tsx`
+  - 新增 web_pack 排序测试。
+  - 新增 provider auth badge 文案映射测试。
+
+验证命令：
+
+```bash
+cd frontend && npm run test -- WorkspaceToolsSection --run
+```
+
+结果：
+
+```text
+Test Files  1 passed (1)
+Tests  6 passed (6)
+```
+
+验证命令：
+
+```bash
+cd frontend && npm run build
+```
+
+结果：
+
+```text
+tsc && vite build
+✓ built in 2.41s
+```
+
 ### 11.2 Skill / Prompt 对齐
 
 完成时间：2026-07-07

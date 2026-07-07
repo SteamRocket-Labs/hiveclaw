@@ -6,6 +6,33 @@
 
 import { get, put, post, del } from '../core';
 
+export interface ToolProviderAuth {
+  mode?: 'no_key_default' | 'optional_key' | 'key_required' | string;
+  keyless_supported?: boolean;
+  credential_optional?: boolean;
+  key_required?: boolean;
+  label?: string;
+  description?: string;
+}
+
+export interface ToolCatalogRow {
+  id: string;
+  name?: string;
+  display_name?: string;
+  description?: string;
+  type?: string;
+  category?: string;
+  enabled?: boolean;
+  is_default?: boolean;
+  config?: Record<string, unknown>;
+  config_schema?: { fields?: Array<Record<string, unknown>> };
+  governance_taxonomy?: Record<string, unknown> | null;
+  mcp_server_name?: string | null;
+  mcp_tool_name?: string | null;
+  mcp_server_url?: string | null;
+  provider_auth?: ToolProviderAuth | null;
+}
+
 export interface AgentTool {
   id: string;
   tool_id: string;
@@ -21,6 +48,7 @@ export interface AgentTool {
   config_schema?: { fields?: Array<Record<string, unknown>> };
   mcp_server_name?: string | null;
   mcp_tool_name?: string | null;
+  provider_auth?: ToolProviderAuth | null;
 }
 
 export interface ToolDetail {
@@ -31,6 +59,7 @@ export interface ToolDetail {
   parameters_schema: Record<string, unknown>;
   config: Record<string, unknown>;
   config_schema: Record<string, unknown>;
+  provider_auth?: ToolProviderAuth | null;
 }
 
 export interface CategoryConfig {
@@ -58,7 +87,7 @@ export interface FeishuRuntimeStatus {
 
 export const toolsApi = {
   /** Global tool catalog */
-  listCatalog: (tenantId?: string) => get<unknown[]>(`/tools${tenantId ? `?tenant_id=${tenantId}` : ''}`),
+  listCatalog: (tenantId?: string) => get<ToolCatalogRow[]>(`/tools${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   listAgentInstalled: (tenantId?: string) =>
     get<unknown[]>(`/tools/agent-installed${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   createTool: (data: Record<string, unknown>) => post<unknown>('/tools', data),

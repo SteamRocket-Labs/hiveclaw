@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ToolConfigSecretListField,
   getWorkspaceToolGovernanceState,
+  getWorkspaceProviderAuthDisplay,
+  sortWorkspaceToolsForDisplay,
   countToolConfigListValues,
   isExtensionOrAddonTool,
   normalizeToolConfigListValue,
@@ -112,5 +114,53 @@ describe('WorkspaceToolsSection AnySearch key pool helpers', () => {
       capability: 'external.web.search',
       policy: { allowed: false, requires_approval: false },
     })).toEqual({ executionMode: 'auto', effectiveStatus: 'legacy_denied' });
+  });
+
+  it('sorts web_pack tools with advanced routers first and keyed XCrawl last', () => {
+    const sorted = sortWorkspaceToolsForDisplay([
+      { id: 'xcrawl', name: 'xcrawl_scrape', category: 'web_pack' },
+      { id: 'exa', name: 'exa_search', category: 'web_pack' },
+      { id: 'fetch', name: 'advanced_web_fetch', category: 'web_pack' },
+      { id: 'search', name: 'advanced_web_search', category: 'web_pack' },
+      { id: 'any', name: 'anysearch_search', category: 'web_pack' },
+    ]);
+
+    expect(sorted.map((tool) => tool.name)).toEqual([
+      'advanced_web_search',
+      'advanced_web_fetch',
+      'anysearch_search',
+      'exa_search',
+      'xcrawl_scrape',
+    ]);
+  });
+
+  it('maps provider auth metadata to localized badge copy', () => {
+    const t = (_key: string, fallback: string) => fallback;
+
+    expect(getWorkspaceProviderAuthDisplay({
+      mode: 'no_key_default',
+      keyless_supported: true,
+      credential_optional: true,
+      key_required: false,
+      label: 'No key by default',
+      description: 'Routes to no-key-capable web providers by default.',
+    }, t)).toEqual({
+      className: 'is-no-key',
+      description: 'Runs without an API key by default; optional keys only raise limits or production control.',
+      label: 'No key by default',
+    });
+
+    expect(getWorkspaceProviderAuthDisplay({
+      mode: 'key_required',
+      keyless_supported: false,
+      credential_optional: false,
+      key_required: true,
+      label: 'Key required',
+      description: 'This provider requires a key.',
+    }, t)).toEqual({
+      className: 'is-key-required',
+      description: 'Requires a configured provider key before agents can use it.',
+      label: 'Key required',
+    });
   });
 });

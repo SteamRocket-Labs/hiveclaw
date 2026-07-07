@@ -162,6 +162,12 @@
   margin-bottom: var(--space-2);
 }
 
+.ws-tools-group-hint {
+  margin: calc(-1 * var(--space-1)) 0 var(--space-2);
+  font-size: var(--text-meta);
+  color: var(--text-tertiary);
+}
+
 .ws-tools-actions-end {
   margin-top: 10px;
   display: flex;
@@ -291,6 +297,26 @@
 .ws-tools-tag-addon {
   background: var(--bg-tertiary);
   color: var(--text-secondary);
+}
+
+.ws-tools-tag-auth {
+  border: 1px solid transparent;
+}
+
+.ws-tools-tag-auth.is-no-key {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+
+.ws-tools-tag-auth.is-optional-key {
+  background: var(--bg-tertiary);
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.ws-tools-tag-auth.is-key-required {
+  background: var(--warning-subtle);
+  color: var(--warning);
 }
 
 /* ── Status dot（尺寸走 class，动态色留 inline） ──── */

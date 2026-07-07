@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, delete, desc, exists, func, or_, select, update
+from sqlalchemy import and_, delete, desc, exists, false, func, or_, select, true, update
 
 from app.config import get_settings
 from app.models.knowledge import KnowledgeDocument, KnowledgeGrant, KnowledgeIndexJob, KnowledgeSegment
@@ -36,6 +36,38 @@ class PersonalKnowledgeIngestResult:
     canonical_md_path: str
     segment_count: int
     status: str
+
+
+@dataclass(frozen=True)
+class PersonalKnowledgeDocumentSummary:
+    document_id: uuid.UUID
+    title: str
+    source_kind: str
+    source_uri: str | None
+    source_sha256: str
+    source_ref: str
+    canonical_md_path: str
+    status: str
+    sensitivity: str
+    agent_searchable: bool
+    segment_count: int
+    created_at: Any
+    updated_at: Any
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PersonalKnowledgeDocumentSegment:
+    segment_id: uuid.UUID
+    position: int
+    heading_path: list[str]
+    content: str
+    token_count: int
+
+
+@dataclass(frozen=True)
+class PersonalKnowledgeDocumentDetail(PersonalKnowledgeDocumentSummary):
+    segments: list[PersonalKnowledgeDocumentSegment]
 
 
 @dataclass(frozen=True)
@@ -82,6 +114,86 @@ def _escape_like(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _personal_knowledge_access_predicate(
+    *,
+    tenant_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    current_user_id: uuid.UUID | None,
+    agent_id: uuid.UUID | None,
+):
+    if current_user_id == owner_user_id:
+        return true()
+
+    grantee_predicates = []
+    if current_user_id is not None:
+        grantee_predicates.append(
+            and_(KnowledgeGrant.grantee_type == "user", KnowledgeGrant.grantee_id == current_user_id)
+        )
+    if agent_id is not None:
+        grantee_predicates.append(and_(KnowledgeGrant.grantee_type == "agent", KnowledgeGrant.grantee_id == agent_id))
+    if not grantee_predicates:
+        return false()
+
+    return exists(
+        select(1).where(
+            KnowledgeGrant.tenant_id == tenant_id,
+            KnowledgeGrant.scope_type == "person",
+            KnowledgeGrant.scope_id == owner_user_id,
+            KnowledgeGrant.permission.in_(("read", "search", "manage")),
+            or_(*grantee_predicates),
+            or_(
+                and_(KnowledgeGrant.resource_type == "scope", KnowledgeGrant.resource_id == owner_user_id),
+                and_(KnowledgeGrant.resource_type == "document", KnowledgeGrant.resource_id == KnowledgeDocument.id),
+                KnowledgeGrant.document_id == KnowledgeDocument.id,
+            ),
+            or_(KnowledgeGrant.expires_at.is_(None), KnowledgeGrant.expires_at > func.now()),
+        )
+    )
+
+
+def build_personal_knowledge_document_list_statement(
+    *,
+    tenant_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    current_user_id: uuid.UUID | None,
+    agent_id: uuid.UUID | None,
+    limit: int,
+    document_id: uuid.UUID | None = None,
+):
+    segment_count = (
+        select(func.count(KnowledgeSegment.id))
+        .where(
+            KnowledgeSegment.tenant_id == tenant_id,
+            KnowledgeSegment.document_id == KnowledgeDocument.id,
+            KnowledgeSegment.scope_type == "person",
+            KnowledgeSegment.scope_id == owner_user_id,
+        )
+        .correlate(KnowledgeDocument)
+        .scalar_subquery()
+        .label("segment_count")
+    )
+    statement = (
+        select(KnowledgeDocument, segment_count)
+        .where(
+            KnowledgeDocument.tenant_id == tenant_id,
+            KnowledgeDocument.scope_type == "person",
+            KnowledgeDocument.scope_id == owner_user_id,
+            KnowledgeDocument.status != "deleted",
+            _personal_knowledge_access_predicate(
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                current_user_id=current_user_id,
+                agent_id=agent_id,
+            ),
+        )
+        .order_by(KnowledgeDocument.updated_at.desc(), KnowledgeDocument.created_at.desc())
+        .limit(max(1, int(limit or 50)))
+    )
+    if document_id is not None:
+        statement = statement.where(KnowledgeDocument.id == document_id)
+    return statement
+
+
 def build_personal_knowledge_search_statement(
     *,
     tenant_id: uuid.UUID,
@@ -103,7 +215,7 @@ def build_personal_knowledge_search_statement(
         KnowledgeSegment.content.ilike(like_query, escape="\\"),
         KnowledgeDocument.title.ilike(like_query, escape="\\"),
     )
-    statement = (
+    return (
         select(KnowledgeSegment, KnowledgeDocument, score)
         .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeSegment.document_id)
         .where(
@@ -116,39 +228,16 @@ def build_personal_knowledge_search_statement(
             KnowledgeSegment.scope_type == "person",
             KnowledgeSegment.scope_id == owner_user_id,
             search_predicate,
+            _personal_knowledge_access_predicate(
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                current_user_id=current_user_id,
+                agent_id=agent_id,
+            ),
         )
         .order_by(desc(score), KnowledgeDocument.updated_at.desc(), KnowledgeSegment.position.asc())
         .limit(max(1, int(limit or 5)))
     )
-    if current_user_id == owner_user_id:
-        return statement
-
-    grantee_predicates = []
-    if current_user_id is not None:
-        grantee_predicates.append(
-            and_(KnowledgeGrant.grantee_type == "user", KnowledgeGrant.grantee_id == current_user_id)
-        )
-    if agent_id is not None:
-        grantee_predicates.append(and_(KnowledgeGrant.grantee_type == "agent", KnowledgeGrant.grantee_id == agent_id))
-    if not grantee_predicates:
-        return statement.where(False)
-
-    grant_exists = exists(
-        select(1).where(
-            KnowledgeGrant.tenant_id == tenant_id,
-            KnowledgeGrant.scope_type == "person",
-            KnowledgeGrant.scope_id == owner_user_id,
-            KnowledgeGrant.permission.in_(("read", "search", "manage")),
-            or_(*grantee_predicates),
-            or_(
-                and_(KnowledgeGrant.resource_type == "scope", KnowledgeGrant.resource_id == owner_user_id),
-                and_(KnowledgeGrant.resource_type == "document", KnowledgeGrant.resource_id == KnowledgeDocument.id),
-                KnowledgeGrant.document_id == KnowledgeDocument.id,
-            ),
-            or_(KnowledgeGrant.expires_at.is_(None), KnowledgeGrant.expires_at > func.now()),
-        )
-    )
-    return statement.where(grant_exists)
 
 
 def _split_content(content: str, *, max_segment_chars: int, overlap_chars: int) -> list[str]:
@@ -253,6 +342,106 @@ class PersonalKnowledgeService:
 
     def __init__(self, *, data_root: str | Path | None = None) -> None:
         self.data_root = Path(data_root) if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
+
+    def _document_summary(
+        self,
+        *,
+        owner_user_id: uuid.UUID,
+        document: Any,
+        segment_count: int,
+    ) -> PersonalKnowledgeDocumentSummary:
+        document_id = document.id
+        return PersonalKnowledgeDocumentSummary(
+            document_id=document_id,
+            title=str(document.title or "Untitled knowledge document"),
+            source_kind=str(document.source_kind or "unknown"),
+            source_uri=document.source_uri,
+            source_sha256=str(document.source_sha256 or ""),
+            source_ref=f"kb://person/{owner_user_id}/documents/{document_id}",
+            canonical_md_path=str(document.canonical_md_path or ""),
+            status=str(document.status or "unknown"),
+            sensitivity=str(document.sensitivity or "internal"),
+            agent_searchable=bool(document.agent_searchable),
+            segment_count=int(segment_count or 0),
+            created_at=document.created_at,
+            updated_at=document.updated_at,
+            metadata=dict(document.doc_metadata_json or {}),
+        )
+
+    async def list_personal_documents(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+        agent_id: uuid.UUID | None = None,
+        limit: int = 50,
+    ) -> list[PersonalKnowledgeDocumentSummary]:
+        statement = build_personal_knowledge_document_list_statement(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            current_user_id=current_user_id,
+            agent_id=agent_id,
+            limit=limit,
+        )
+        rows = (await session.execute(statement)).all()
+        return [
+            self._document_summary(owner_user_id=owner_user_id, document=row[0], segment_count=row[1])
+            for row in rows
+        ]
+
+    async def get_personal_document(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        document_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+        agent_id: uuid.UUID | None = None,
+    ) -> PersonalKnowledgeDocumentDetail | None:
+        statement = build_personal_knowledge_document_list_statement(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            current_user_id=current_user_id,
+            agent_id=agent_id,
+            limit=1,
+            document_id=document_id,
+        )
+        rows = (await session.execute(statement)).all()
+        if not rows:
+            return None
+        document, segment_count = rows[0][0], rows[0][1]
+        segment_rows = (
+            await session.execute(
+                select(KnowledgeSegment)
+                .where(
+                    KnowledgeSegment.tenant_id == tenant_id,
+                    KnowledgeSegment.document_id == document.id,
+                    KnowledgeSegment.scope_type == "person",
+                    KnowledgeSegment.scope_id == owner_user_id,
+                )
+                .order_by(KnowledgeSegment.position.asc())
+            )
+        ).all()
+        segments: list[PersonalKnowledgeDocumentSegment] = []
+        for row in segment_rows:
+            try:
+                segment = row[0]
+            except (TypeError, KeyError):
+                segment = row
+            segments.append(
+                PersonalKnowledgeDocumentSegment(
+                    segment_id=segment.id,
+                    position=int(segment.position),
+                    heading_path=list(segment.heading_path_json or []),
+                    content=str(segment.content or ""),
+                    token_count=int(segment.token_count or 0),
+                )
+            )
+        summary = self._document_summary(owner_user_id=owner_user_id, document=document, segment_count=segment_count)
+        return PersonalKnowledgeDocumentDetail(**summary.__dict__, segments=segments)
 
     async def ingest_markdown(
         self,

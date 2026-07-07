@@ -816,3 +816,31 @@ ruff check app/runtime/retrieval/personal_knowledge_provider.py \
   tests/runtime/test_kb_candidates.py
 # All checks passed!
 ```
+
+### 14.4 Personal KB API 入口
+
+已落地：
+
+1. `backend/app/api/agent_knowledge.py` 在既有 `/agents/{agent_id}/knowledge` router 下新增 Personal KB thin-kernel API：
+   - `GET /personal/documents`
+   - `POST /personal/documents`
+   - `GET /personal/search?q=...`
+   - `GET /personal/documents/{document_id}`
+2. API 不接受客户端传入 owner。owner scope 统一从 `Agent.owner_user_id -> sponsor_user_id -> creator_id` 解析。
+3. 写入端只允许当前用户等于 Personal KB owner；非 owner 即使拥有 agent manage/use 权限也不能写 person scope。
+4. list/detail/search 复用 service 层 owner-or-grant ACL，和 `search_personal_kb` tool / runtime candidate lane 使用同一套 `knowledge_grants` 判定。
+5. `PersonalKnowledgeService` 新增 `list_personal_documents()` 与 `get_personal_document()`，用于前端文库、详情、段落 evidence 展示。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_personal_knowledge_service.py tests/api/test_agent_personal_knowledge_api.py -q
+# 13 passed in 0.29s
+
+ruff check app/api/agent_knowledge.py app/services/personal_knowledge_service.py \
+  tests/services/test_personal_knowledge_service.py \
+  tests/api/test_agent_personal_knowledge_api.py
+# All checks passed!
+```

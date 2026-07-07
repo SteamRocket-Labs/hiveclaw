@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import asdict, is_dataclass
+from datetime import datetime
+from typing import Any
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -20,6 +24,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.user import User
+from app.services.personal_knowledge_service import PersonalKnowledgeService
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
 logger = logging.getLogger(__name__)
@@ -27,8 +32,52 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agents/{agent_id}/knowledge", tags=["agent-knowledge"])
 
 
+class PersonalKnowledgeIngestRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    markdown: str = Field(..., min_length=1)
+    source_kind: str = Field("paste", min_length=1, max_length=40)
+    source_uri: str | None = None
+    agent_searchable: bool = True
+    sensitivity: str = Field("internal", min_length=1, max_length=30)
+
+
 def _data_root() -> Path:
     return Path(get_settings().AGENT_DATA_DIR)
+
+
+def _owner_user_id_for_personal_kb(agent: Agent) -> uuid.UUID:
+    owner_id = (
+        getattr(agent, "owner_user_id", None)
+        or getattr(agent, "sponsor_user_id", None)
+        or getattr(agent, "creator_id", None)
+    )
+    if owner_id is None:
+        raise HTTPException(status_code=409, detail="Agent owner is not configured")
+    return uuid.UUID(str(owner_id))
+
+
+def _tenant_id_for_agent(agent: Agent, current_user: User) -> uuid.UUID:
+    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    if tenant_id is None:
+        raise HTTPException(status_code=409, detail="Tenant is not configured")
+    return uuid.UUID(str(tenant_id))
+
+
+def _as_jsonable(value: Any) -> Any:
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_as_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _as_jsonable(item) for key, item in value.items()}
+    return value
+
+
+def _dataclass_payload(value: Any) -> dict[str, Any]:
+    raw = asdict(value) if is_dataclass(value) else vars(value)
+    return {key: _as_jsonable(item) for key, item in raw.items()}
 
 
 def _principal_stack_for_read(agent: Agent, current_user: User) -> PrincipalStack:
@@ -63,6 +112,99 @@ def _principal_stack_for_read(agent: Agent, current_user: User) -> PrincipalStac
         creator=creator,
         current_user=current,
     )
+
+
+@router.get("/personal/documents")
+async def list_personal_documents(
+    agent_id: uuid.UUID,
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    service = PersonalKnowledgeService()
+    documents = await service.list_personal_documents(
+        db,
+        tenant_id=_tenant_id_for_agent(agent, current_user),
+        owner_user_id=_owner_user_id_for_personal_kb(agent),
+        current_user_id=current_user.id,
+        agent_id=agent_id,
+        limit=limit,
+    )
+    return {"documents": [_dataclass_payload(document) for document in documents]}
+
+
+@router.post("/personal/documents")
+async def ingest_personal_document(
+    agent_id: uuid.UUID,
+    body: PersonalKnowledgeIngestRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    owner_user_id = _owner_user_id_for_personal_kb(agent)
+    if current_user.id != owner_user_id:
+        raise HTTPException(status_code=403, detail="Only the personal knowledge owner can write this scope")
+
+    service = PersonalKnowledgeService()
+    result = await service.ingest_markdown(
+        db,
+        tenant_id=_tenant_id_for_agent(agent, current_user),
+        owner_user_id=owner_user_id,
+        title=body.title,
+        markdown=body.markdown,
+        source_kind=body.source_kind,
+        source_uri=body.source_uri,
+        created_by_user_id=current_user.id,
+        agent_searchable=body.agent_searchable,
+        sensitivity=body.sensitivity,
+    )
+    await db.commit()
+    return _dataclass_payload(result)
+
+
+@router.get("/personal/search")
+async def search_personal_documents(
+    agent_id: uuid.UUID,
+    q: str = Query(..., min_length=1),
+    limit: int = Query(5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    service = PersonalKnowledgeService()
+    results = await service.search_personal(
+        db,
+        tenant_id=_tenant_id_for_agent(agent, current_user),
+        owner_user_id=_owner_user_id_for_personal_kb(agent),
+        query=q,
+        current_user_id=current_user.id,
+        agent_id=agent_id,
+        limit=limit,
+    )
+    return {"results": [_dataclass_payload(result) for result in results]}
+
+
+@router.get("/personal/documents/{document_id}")
+async def get_personal_document(
+    agent_id: uuid.UUID,
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    service = PersonalKnowledgeService()
+    document = await service.get_personal_document(
+        db,
+        tenant_id=_tenant_id_for_agent(agent, current_user),
+        owner_user_id=_owner_user_id_for_personal_kb(agent),
+        document_id=document_id,
+        current_user_id=current_user.id,
+        agent_id=agent_id,
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Personal knowledge document not found")
+    return _dataclass_payload(document)
 
 
 @router.get("/overview")

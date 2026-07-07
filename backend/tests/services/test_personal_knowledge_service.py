@@ -30,6 +30,9 @@ class _RowsResult:
     def all(self):
         return self._rows
 
+    def scalar_one_or_none(self):
+        return self._rows[0] if self._rows else None
+
 
 class _FakeAsyncSession:
     def __init__(self, existing_document=None) -> None:
@@ -59,6 +62,18 @@ class _SearchSession:
     async def execute(self, statement):
         self.executed.append(statement)
         return _RowsResult(self.rows)
+
+
+class _QueuedSession:
+    def __init__(self, results) -> None:
+        self.results = list(results)
+        self.executed: list[object] = []
+
+    async def execute(self, statement):
+        self.executed.append(statement)
+        if not self.results:
+            return _RowsResult([])
+        return _RowsResult(self.results.pop(0))
 
 
 def test_personal_knowledge_artifact_path_is_person_scope_stable(tmp_path: Path) -> None:
@@ -168,6 +183,127 @@ def test_external_search_statement_requires_matching_user_or_agent_grant() -> No
     assert "knowledge_grants.grantee_type" in compiled
     assert "knowledge_grants.resource_type" in compiled
     assert "knowledge_grants.permission IN" in compiled
+
+
+def test_personal_document_list_statement_requires_grant_for_non_owner() -> None:
+    from app.services.personal_knowledge_service import build_personal_knowledge_document_list_statement
+
+    statement = build_personal_knowledge_document_list_statement(
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        current_user_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        limit=25,
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
+
+    assert "knowledge_documents.scope_type" in compiled
+    assert "knowledge_documents.scope_id" in compiled
+    assert "knowledge_grants" in compiled
+    assert "knowledge_grants.permission IN" in compiled
+
+
+def test_personal_document_list_statement_does_not_require_grant_for_owner() -> None:
+    from app.services.personal_knowledge_service import build_personal_knowledge_document_list_statement
+
+    owner_id = uuid.uuid4()
+    statement = build_personal_knowledge_document_list_statement(
+        tenant_id=uuid.uuid4(),
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        agent_id=uuid.uuid4(),
+        limit=25,
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
+
+    assert "knowledge_documents.scope_type" in compiled
+    assert "knowledge_grants" not in compiled
+
+
+@pytest.mark.asyncio
+async def test_list_personal_documents_maps_document_summary_rows(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    document = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="Taste notes",
+        source_kind="paste",
+        source_uri="clipboard://taste",
+        source_sha256="a" * 64,
+        canonical_md_path="persons/owner/kb/doc.md",
+        status="ready",
+        sensitivity="internal",
+        agent_searchable=True,
+        doc_metadata_json={"ingest_format": "canonical_markdown"},
+        created_at=None,
+        updated_at=None,
+    )
+    session = _SearchSession(rows=[(document, 3)])
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    summaries = await service.list_personal_documents(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        agent_id=uuid.uuid4(),
+        limit=10,
+    )
+
+    assert len(summaries) == 1
+    assert summaries[0].document_id == document.id
+    assert summaries[0].title == "Taste notes"
+    assert summaries[0].segment_count == 3
+    assert summaries[0].source_ref == f"kb://person/{owner_id}/documents/{document.id}"
+
+
+@pytest.mark.asyncio
+async def test_get_personal_document_maps_segments_under_same_acl(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    document = SimpleNamespace(
+        id=document_id,
+        title="Retrieval notes",
+        source_kind="paste",
+        source_uri=None,
+        source_sha256="b" * 64,
+        canonical_md_path="persons/owner/kb/doc.md",
+        status="ready",
+        sensitivity="internal",
+        agent_searchable=True,
+        doc_metadata_json={},
+        created_at=None,
+        updated_at=None,
+    )
+    segment = SimpleNamespace(
+        id=uuid.uuid4(),
+        position=0,
+        heading_path_json=["Retrieval"],
+        content="Use source refs and ACL before context injection.",
+        token_count=8,
+    )
+    session = _QueuedSession(results=[[(document, 1)], [segment]])
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    detail = await service.get_personal_document(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        document_id=document_id,
+        current_user_id=owner_id,
+        agent_id=uuid.uuid4(),
+    )
+
+    assert detail is not None
+    assert detail.document_id == document_id
+    assert detail.segment_count == 1
+    assert detail.segments[0].segment_id == segment.id
+    assert detail.segments[0].heading_path == ["Retrieval"]
 
 
 @pytest.mark.asyncio

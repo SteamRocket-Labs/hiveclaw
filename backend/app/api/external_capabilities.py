@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_admin
+from app.config import get_settings
+from app.core.permissions import check_agent_access
+from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 from app.models.user import User
+from app.services.external_capabilities.activation import activate_external_extension_for_agent
 from app.services.external_capabilities.trust_gate import (
     approve_external_capability_snapshot,
     list_external_capability_reviews,
@@ -114,3 +118,27 @@ async def approve_external_capability_review_route(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+
+@router.post("/agents/{agent_id}/external-extensions/{snapshot_id}/activate")
+async def activate_external_extension_route(
+    agent_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    tenant_id = getattr(agent, "tenant_id", None) or current_user.tenant_id
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    try:
+        return await activate_external_extension_for_agent(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            snapshot_id=snapshot_id,
+            workspace=workspace,
+            activated_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

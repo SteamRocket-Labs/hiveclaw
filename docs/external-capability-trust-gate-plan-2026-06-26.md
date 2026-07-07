@@ -35,8 +35,8 @@ External Capability Trust Gate
 
 当前代码现实必须分清：
 
-- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging、standalone MCP import 的 Trust Gate staging。
-- 未完成：`external_extension_catalog_entries` / `external_extension_activations`、materializer sandbox、Codex adapter、approved snapshot -> existing runtime projection、Agent Detail / Workspace Settings 的最终统一 IA。
+- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging、standalone MCP import 的 Trust Gate staging、approved Skill snapshot -> existing Skill runtime activation。
+- 未完成：`external_extension_catalog_entries`、materializer sandbox、Codex adapter、MCP/plugin approved snapshot -> existing runtime projection、Agent Detail / Workspace Settings 的最终统一 IA。
 - 因此本文档是目标计划和落地契约，不得把规划中的 Trust Gate 误读为当前已经全量上线的代码事实。
 
 核心原则：
@@ -2198,6 +2198,43 @@ Catalog / Snapshot / Assignment
    - hooks 只走 allowlist handler。
 
 #### Round 3 补充：Default / Optional Skill 与 Subagent 前端模型
+
+Round 3 Skill activation substrate 实装证据（2026-07-07）：
+
+- 新增 `backend/app/services/external_capabilities/activation.py`：
+  - `activate_external_extension_for_agent()` 只接受 `status=approved` 的 snapshot。
+  - Skill component 激活时调用既有 `install_active_skill_package()`，不改 Skill loader/runtime。
+  - 激活结果写入 `external_extension_activations`，保留 agent、snapshot、component type、activation result 和 user 证据。
+- 修改 `backend/app/services/external_capabilities/skill_source_adapter.py`：
+  - external Skill review manifest 现在携带 `metadata.files` artifact，保证 approved snapshot 可回放安装。
+- 新增迁移 `backend/alembic/versions/external_extension_activation_0707.py`：
+  - 创建 `external_extension_activations`，带 tenant RLS policy。
+- 新增 API：
+  - `POST /agents/{agent_id}/external-extensions/{snapshot_id}/activate`
+  - route 先走 `check_agent_access()`，再按 agent workspace 激活 approved snapshot。
+- 验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_external_capability_trust_gate.py::test_stage_external_skill_package_review_maps_skill_guard_block_to_blocked_review \
+  tests/services/test_external_capability_activation.py \
+  tests/api/test_external_capability_activation_api.py -q
+# 3 passed in 0.37s
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/models/external_capability.py \
+  app/services/external_capabilities/activation.py \
+  app/services/external_capabilities/skill_source_adapter.py \
+  app/api/external_capabilities.py \
+  tests/services/test_external_capability_activation.py \
+  tests/api/test_external_capability_activation_api.py \
+  tests/services/test_external_capability_trust_gate.py \
+  alembic/versions/external_extension_activation_0707.py
+# All checks passed!
+
+cd backend && source .venv/bin/activate && alembic heads
+# external_extension_activation_0707 (head)
+```
 
 当前实现只能算有基础，不算完善：
 

@@ -202,3 +202,5 @@ async def test_stage_external_skill_package_review_maps_skill_guard_block_to_blo
     row = db.added[0]
     assert row.admission_class == "blocked"
     assert row.admission_report_json["notes"][0]["code"] == "skill_guard_blocked"
+    component = row.normalized_manifest_json["components"][0]
+    assert component["metadata"]["files"][0]["path"] == "SKILL.md"

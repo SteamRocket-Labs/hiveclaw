@@ -44,6 +44,7 @@ def build_external_skill_bundle(
             "folder_name": folder_name,
             "file_count": len(normalized_files),
         },
+        metadata={"files": normalized_files},
     )
     bundle = NormalizedExternalPluginBundle(
         source_format=source_format,

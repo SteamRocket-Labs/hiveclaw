@@ -10,7 +10,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.external_capability import ExternalCapabilityReview, ExternalCapabilitySnapshot
+from app.models.external_capability import (
+    ExternalCapabilityReview,
+    ExternalCapabilitySnapshot,
+    ExternalExtensionCatalogEntry,
+)
 from app.services.external_capabilities.types import NormalizedExternalPluginBundle
 
 _BLOCKING_NOTE_CODES = {"component_path_escape", "missing_skill_md", "skill_guard_blocked"}
@@ -94,8 +98,13 @@ async def approve_external_capability_snapshot(
         review.status = "approved"
         db.add(snapshot)
         await db.flush()
+        catalog_entries = _catalog_entries_for_snapshot(snapshot)
+        for entry in catalog_entries:
+            db.add(entry)
+        if catalog_entries:
+            await db.flush()
         await db.commit()
-        return _snapshot_to_dict(snapshot)
+        return _snapshot_to_dict(snapshot, catalog_entries=catalog_entries)
     except Exception:
         await db.rollback()
         raise
@@ -108,6 +117,18 @@ async def list_external_capability_reviews(db: AsyncSession, *, tenant_id: uuid.
         .order_by(ExternalCapabilityReview.created_at.desc())
     )
     return [_review_to_dict(row) for row in result.scalars().all()]
+
+
+async def list_external_extension_catalog_entries(db: AsyncSession, *, tenant_id: uuid.UUID) -> list[dict[str, Any]]:
+    result = await db.execute(
+        select(ExternalExtensionCatalogEntry)
+        .where(
+            ExternalExtensionCatalogEntry.tenant_id == tenant_id,
+            ExternalExtensionCatalogEntry.status == "available",
+        )
+        .order_by(ExternalExtensionCatalogEntry.component_type, ExternalExtensionCatalogEntry.component_name)
+    )
+    return [_catalog_entry_to_dict(row) for row in result.scalars().all()]
 
 
 def _bundle_manifest(bundle: NormalizedExternalPluginBundle) -> dict[str, Any]:
@@ -172,6 +193,43 @@ def _snapshot_key(review: ExternalCapabilityReview) -> str:
     return f"{review.source_format}:{review.normalized_name}:{digest}"
 
 
+def _catalog_entries_for_snapshot(snapshot: ExternalCapabilitySnapshot) -> list[ExternalExtensionCatalogEntry]:
+    manifest = snapshot.component_manifest_json or {}
+    components = manifest.get("components") if isinstance(manifest, dict) else None
+    if not isinstance(components, list):
+        return []
+
+    entries: list[ExternalExtensionCatalogEntry] = []
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        component_type = str(component.get("component_type") or "").strip()
+        qualified_name = str(component.get("qualified_name") or "").strip()
+        if not component_type or not qualified_name:
+            continue
+        local_name = str(component.get("local_name") or "").strip()
+        component_name = local_name or qualified_name.rsplit(":", maxsplit=1)[-1]
+        entries.append(
+            ExternalExtensionCatalogEntry(
+                tenant_id=snapshot.tenant_id,
+                snapshot_id=snapshot.id,
+                component_type=component_type,
+                component_name=component_name,
+                qualified_name=qualified_name,
+                policy="optional",
+                status="available",
+                source_format=snapshot.source_format,
+                source_uri=snapshot.source_uri,
+                metadata_json={
+                    "runtime_projection": component.get("runtime_projection") or {},
+                    "metadata": component.get("metadata") or {},
+                    "ignored_fields": component.get("ignored_fields") or [],
+                },
+            )
+        )
+    return entries
+
+
 def _stable_digest(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -193,7 +251,27 @@ def _review_to_dict(row: ExternalCapabilityReview) -> dict[str, Any]:
     }
 
 
-def _snapshot_to_dict(row: ExternalCapabilitySnapshot) -> dict[str, Any]:
+def _catalog_entry_to_dict(row: ExternalExtensionCatalogEntry) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "tenant_id": str(row.tenant_id),
+        "snapshot_id": str(row.snapshot_id),
+        "component_type": row.component_type,
+        "component_name": row.component_name,
+        "qualified_name": row.qualified_name,
+        "policy": row.policy,
+        "status": row.status,
+        "source_format": row.source_format,
+        "source_uri": row.source_uri,
+        "metadata": row.metadata_json or {},
+    }
+
+
+def _snapshot_to_dict(
+    row: ExternalCapabilitySnapshot,
+    *,
+    catalog_entries: list[ExternalExtensionCatalogEntry] | None = None,
+) -> dict[str, Any]:
     return {
         "id": str(row.id),
         "tenant_id": str(row.tenant_id),
@@ -208,4 +286,5 @@ def _snapshot_to_dict(row: ExternalCapabilitySnapshot) -> dict[str, Any]:
         "admission_report": row.admission_report_json or {},
         "governance_projection": row.governance_projection_json or {},
         "component_manifest": row.component_manifest_json or {},
+        "catalog_entries": [_catalog_entry_to_dict(entry) for entry in catalog_entries or []],
     }

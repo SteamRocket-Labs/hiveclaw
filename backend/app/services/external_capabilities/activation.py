@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.subagent import SUBAGENT_TYPE_EXPLORER, SubagentSpec, canonical_subagent_type
+from app.agents.subagent_definition import (
+    SubagentDefinitionStore,
+    parse_subagent_definition,
+    validate_subagent_name,
+)
 from app.models.external_capability import ExternalCapabilitySnapshot, ExternalExtensionActivation
+from app.services.mcp_server_service import import_mcp_for_agent_and_register
 from app.services.skill_installation import install_active_skill_package
+
+_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 async def activate_external_extension_for_agent(
@@ -31,7 +41,7 @@ async def activate_external_extension_for_agent(
     if snapshot is None:
         raise ValueError("approved external capability snapshot not found")
 
-    activated_components = _activate_components(snapshot=snapshot, workspace=workspace)
+    activated_components = await _activate_components(snapshot=snapshot, workspace=workspace, agent_id=agent_id)
     activation = ExternalExtensionActivation(
         tenant_id=tenant_id,
         agent_id=agent_id,
@@ -58,7 +68,12 @@ async def activate_external_extension_for_agent(
         raise
 
 
-def _activate_components(*, snapshot: ExternalCapabilitySnapshot, workspace: Path) -> list[dict[str, Any]]:
+async def _activate_components(
+    *,
+    snapshot: ExternalCapabilitySnapshot,
+    workspace: Path,
+    agent_id: uuid.UUID,
+) -> list[dict[str, Any]]:
     manifest = snapshot.component_manifest_json or {}
     components = manifest.get("components") or []
     activated: list[dict[str, Any]] = []
@@ -69,6 +84,12 @@ def _activate_components(*, snapshot: ExternalCapabilitySnapshot, workspace: Pat
         if component_type == "skill":
             activated.append(_activate_skill_component(component=component, snapshot=snapshot, workspace=workspace))
             continue
+        if component_type == "mcp_server":
+            activated.append(await _activate_mcp_component(component=component, agent_id=agent_id))
+            continue
+        if component_type == "subagent":
+            activated.append(_activate_subagent_component(component=component, workspace=workspace))
+            continue
         activated.append(
             {
                 "component_type": str(component_type or "unknown"),
@@ -77,6 +98,63 @@ def _activate_components(*, snapshot: ExternalCapabilitySnapshot, workspace: Pat
             }
         )
     return activated
+
+
+async def _activate_mcp_component(*, component: dict[str, Any], agent_id: uuid.UUID) -> dict[str, Any]:
+    runtime_projection = component.get("runtime_projection")
+    runtime_projection = runtime_projection if isinstance(runtime_projection, dict) else {}
+    config = runtime_projection.get("config")
+    config = config if isinstance(config, dict) else None
+    server_name = _optional_string(runtime_projection.get("server_name")) or _optional_string(component.get("local_name"))
+    message = await import_mcp_for_agent_and_register(
+        agent_id,
+        server_id=_optional_string(runtime_projection.get("server_id")),
+        mcp_url=_optional_string(runtime_projection.get("mcp_url")),
+        server_name=server_name,
+        config=config,
+    )
+    return {
+        "component_type": "mcp_server",
+        "name": server_name or _optional_string(runtime_projection.get("server_id")) or "mcp_server",
+        "status": "activated",
+        "message": message,
+    }
+
+
+def _activate_subagent_component(*, component: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    metadata = component.get("metadata") if isinstance(component.get("metadata"), dict) else {}
+    runtime_projection = component.get("runtime_projection")
+    runtime_projection = runtime_projection if isinstance(runtime_projection, dict) else {}
+    raw_definition = _optional_string(metadata.get("definition")) or ""
+    parsed = parse_subagent_definition(raw_definition) if raw_definition else None
+    raw_name = _optional_string(component.get("local_name")) or _optional_string(component.get("qualified_name")) or "subagent"
+    name = _safe_subagent_name(raw_name)
+    description = _optional_string(runtime_projection.get("description")) or (parsed.description if parsed else "")
+    if not description:
+        raise ValueError(f"subagent component {name!r} has no description")
+    spec = SubagentSpec(
+        name=name,
+        description=description,
+        type=canonical_subagent_type(
+            runtime_projection.get("type") or (parsed.type if parsed else None),
+            default=SUBAGENT_TYPE_EXPLORER,
+        ),
+        allowed_tools=_string_tuple(runtime_projection.get("tools") or runtime_projection.get("allowed_tools"))
+        or (parsed.allowed_tools if parsed else ()),
+        excluded_tools=_string_tuple(runtime_projection.get("excluded_tools")) or (parsed.excluded_tools if parsed else ()),
+        model=_optional_string(runtime_projection.get("model")) or (parsed.model if parsed else None),
+        max_tool_rounds=_positive_int_or_none(runtime_projection.get("max_tool_rounds"))
+        or (parsed.max_tool_rounds if parsed else None),
+        isolation=parsed.isolation if parsed else "none",
+        memory_scope=parsed.memory_scope if parsed else None,
+        system_prompt=parsed.system_prompt if parsed else "",
+        skills=_string_tuple(runtime_projection.get("skills")) or (parsed.skills if parsed else ()),
+        initial_prompt=parsed.initial_prompt if parsed else None,
+        color=parsed.color if parsed else None,
+        effort=parsed.effort if parsed else None,
+    )
+    SubagentDefinitionStore(workspace / "subagents").save(spec)
+    return {"component_type": "subagent", "name": name, "status": "activated"}
 
 
 def _activate_skill_component(
@@ -113,3 +191,26 @@ def _component_type_counts(components: list[dict[str, Any]]) -> dict[str, int]:
         counts[key] = counts.get(key, 0) + 1
     return counts
 
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+def _positive_int_or_none(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _safe_subagent_name(value: str) -> str:
+    normalized = _SAFE_NAME_RE.sub("-", value.replace(":", "-")).strip("-_.")
+    return validate_subagent_name(normalized or "subagent")

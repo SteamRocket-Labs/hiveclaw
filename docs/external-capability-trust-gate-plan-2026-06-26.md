@@ -1,8 +1,8 @@
 # External Capability Trust Gate Plan
 
 日期：2026-06-26
-更新：2026-07-07，按 Pack 退役后的 Extension surface 重写
-状态：设计计划，待实现
+更新：2026-07-07，按 Pack 退役后的 Extension surface 重写，并补充已实装证据
+状态：核心闭环已实装；CC/Codex component adapter、Trust Gate、Catalog、Agent activation、Agent/Workspace 前端入口已落地；hook/slash/app connector activation 仍按 unsupported fail-closed 处理
 范围：外部 Plugin/Extension 的发现、检验、审批、安装、激活、撤销与审计；Skill、MCP Server、Subagent、Hook 是 Plugin components，也保留单组件快捷导入入口
 上位文档：
 - `docs/agent-extension-surface-skill-mcp.md`
@@ -35,9 +35,9 @@ External Capability Trust Gate
 
 当前代码现实必须分清：
 
-- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging、standalone MCP import 的 Trust Gate staging、approved Skill snapshot -> existing Skill runtime activation、approved external snapshot activation 在 `/agents/{agent_id}/extensions` 的 read model 可见、Agent Detail 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions`、Workspace Settings 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions` 且旧路径 redirect。
-- 未完成：`external_extension_catalog_entries`、materializer sandbox、Codex adapter、MCP/plugin approved snapshot -> existing runtime projection。
-- 因此本文档是目标计划和落地契约，不得把规划中的 Trust Gate 误读为当前已经全量上线的代码事实。
+- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、Codex plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` / `external_extension_catalog_entries` / `external_extension_activations` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve / catalog API、agent-scoped catalog API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging、standalone MCP import 的 Trust Gate staging、approved Skill snapshot -> existing Skill runtime activation、approved MCP snapshot -> existing MCP server-first runtime activation、approved Subagent snapshot -> sanitized agent definition activation、approved external snapshot activation 在 `/agents/{agent_id}/extensions` 的 read model 可见、Agent Detail 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions` 且默认显示可安装 Catalog、Workspace Settings 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions` 且默认显示 Catalog / Review queue，旧路径 redirect。
+- 显式 fail-closed：CC/Codex 的 hook、slash command、app connector、LSP、output style 等子能力会进入 adapter report / unsupported components 或 activation unsupported result；在 Hive 有对应受治理 runtime binding 前，不进入 prompt、tool surface、hook dispatcher 或 connector runtime。
+- 因此本文档既是设计契约，也是 2026-07-07 当前实现证据；后续不得把 Trust Gate 误读为第二套 runtime，也不得把 unsupported 子能力静默当作已激活。
 
 核心原则：
 
@@ -1214,6 +1214,33 @@ external_extension_activations
 
 `external_extension_assignments` 可以作为 `external_extension_activations` 的旧名或 read model，但 canonical 语义应是 activation。Catalog entry 是“可以用”，activation 是“正在用”。
 
+2026-07-07 当前已实装的第一版 catalog / activation 表是上述目标模型的收敛子集：
+
+```text
+external_extension_catalog_entries
+  tenant_id
+  snapshot_id
+  component_type
+  component_name
+  qualified_name
+  policy                         optional by default
+  status                         available
+  source_format
+  source_uri
+  metadata_json                  runtime_projection / metadata / ignored_fields
+
+external_extension_activations
+  tenant_id
+  agent_id
+  snapshot_id
+  status                         active
+  component_types_json
+  activation_result_json
+  activated_by_user_id
+```
+
+这一版刻意没有把 enterprise catalog availability 等同为 global runtime install。后台 approve 后只发布 `available + optional` catalog entry；只有 agent owner/admin 在 Agent Detail 的 Catalog 中安装，才产生 `external_extension_activations` 并投影到既有 runtime。
+
 对当前 legacy 表的迁移：
 
 ```text
@@ -2304,11 +2331,74 @@ cd frontend && npm run build
 # tsc && vite build: exit 0
 ```
 
-当前实现只能算有基础，不算完善：
+Round 3 Catalog / Codex / MCP / Subagent activation 补齐证据（2026-07-07）：
 
-- Skill 侧已有 agent 已安装 Skill 读模型、preset import、URL import、ClawHub import 的入口；Agent Detail 顶层已统一到 `Extensions`，但 Catalog / Available / Pending / Candidate 四态还未全部落入一个 canonical endpoint。
-- Subagent 侧已有 builtin / tenant / agent 三层定义管理，也能在 Agent Detail 的 `Extensions -> Sub-agents` 中生成、编辑、fork subagent definition；tenant definition 现在更接近“企业定义库可见”，不是“可选能力待安装”。
-- 因此，如果后台直接添加 10 个 Skill 和 100 个 Subagent，目标状态不应该是它们全部进入每个 agent runtime；目标状态应该是它们进入 workspace catalog，用户在某个 employee/agent 的 `能力 / Extensions` 页面按需安装。
+- 新增 `ExternalExtensionCatalogEntry` model 和迁移 `backend/alembic/versions/external_extension_catalog_entries_0707.py`：
+  - approve review 后自动从 snapshot component manifest 发布 workspace-visible catalog entries。
+  - 默认 `policy=optional`、`status=available`；不自动激活到所有 agent。
+  - catalog entry 带 `snapshot_id`、`component_type`、`qualified_name`、`source_format`、`source_uri`、`metadata_json`，用于后续 agent-scoped activation。
+- 新增 backend API：
+  - `GET /enterprise/external-capabilities/catalog`：后台查看已审批目录。
+  - `GET /agents/{agent_id}/external-extensions/catalog`：agent owner/admin 按当前 agent 权限查看同租户 approved catalog。
+- 新增 `backend/app/services/external_capabilities/codex_plugin_adapter.py`：
+  - 解析 `.codex-plugin/plugin.json` 和 Codex skill directory。
+  - Codex skill component 归一为 Hive `skill` component，保留 artifact files 以支持 snapshot activation。
+  - Codex app connector 声明进入 `unsupported_components`，原因是需要 Hive connector binding；不进入 runtime。
+- 扩展 `backend/app/services/external_capabilities/cc_plugin_adapter.py`：
+  - CC plugin skill component 现在保留 skill directory text artifacts。
+  - CC plugin subagent component 保留原始 markdown definition，但 activation 会过滤 `permissionMode`、`hooks`、`mcpServers` 等扩权字段。
+  - CC slash command / hook 继续进入 component report，但 activation fail-closed，直到 Hive 有对应受治理 binding。
+- 扩展 `backend/app/services/external_capabilities/activation.py`：
+  - Skill component -> existing `install_active_skill_package()`。
+  - MCP component -> existing `import_mcp_for_agent_and_register()`，仍走 MCP authz / server-first runtime。
+  - Subagent component -> sanitized agent-level subagent definition；不会让 plugin frontmatter 绕过权限。
+  - 其他 component type 返回 `unsupported_activation_component`，不静默启用。
+- 新增前端 Catalog UI：
+  - `frontend/src/pages/agent-detail/AgentExtensionCatalogSection.tsx`：Agent Detail `Extensions` 默认显示可安装 Catalog，点击 `Install` 才激活到当前 agent。
+  - `frontend/src/pages/workspace/WorkspaceExtensionCatalogSection.tsx`：Workspace `Extensions` 默认显示 approved catalog 和 pending review queue，管理员可 approve。
+  - `AgentExtensionsSection` 和 `WorkspaceExtensionsSection` 的默认子页从 `MCP & Plugins` 改为 `Catalog`。
+- 验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_external_capability_trust_gate.py \
+  tests/services/test_external_capability_activation.py \
+  tests/services/test_external_cc_plugin_adapter.py \
+  tests/services/test_external_codex_plugin_adapter.py \
+  tests/api/test_external_capability_reviews_api.py -q
+# 15 passed, 4 warnings in 1.58s
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/models/external_capability.py \
+  app/services/external_capabilities/trust_gate.py \
+  app/services/external_capabilities/activation.py \
+  app/services/external_capabilities/cc_plugin_adapter.py \
+  app/services/external_capabilities/codex_plugin_adapter.py \
+  app/api/external_capabilities.py \
+  tests/services/test_external_capability_trust_gate.py \
+  tests/services/test_external_capability_activation.py \
+  tests/services/test_external_cc_plugin_adapter.py \
+  tests/services/test_external_codex_plugin_adapter.py \
+  tests/api/test_external_capability_reviews_api.py \
+  alembic/versions/external_extension_catalog_entries_0707.py
+# All checks passed!
+
+cd backend && source .venv/bin/activate && alembic heads
+# external_extension_catalog_entries_0707 (head)
+
+cd frontend && npm run test -- AgentExtensionsSection.test.tsx WorkspaceExtensionsSection.test.tsx --run
+# Test Files 2 passed (2)
+# Tests 2 passed (2)
+
+cd frontend && npm run build
+# tsc && vite build: exit 0
+```
+
+当前实现的产品语义：
+
+- Skill 侧已有 agent 已安装 Skill 读模型、preset import、URL import、ClawHub import 的入口；外部来源现在先进入 Trust Gate，approved snapshot 才能通过 Agent Catalog 激活。
+- Subagent 侧已有 builtin / tenant / agent 三层定义管理；外部 plugin subagent 现在可以作为 approved catalog entry 被当前 agent 显式安装，activation 时生成 sanitized agent-local definition。
+- 如果后台直接添加 10 个 Skill 和 100 个 Subagent，目标状态不是它们全部进入每个 agent runtime；目标状态是它们进入 workspace catalog，用户在某个 employee/agent 的 `能力 / Extensions` 页面按需安装。
 
 新的能力分类必须统一成：
 

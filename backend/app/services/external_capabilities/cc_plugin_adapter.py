@@ -123,7 +123,9 @@ def _load_standard_skills(
                 content_sha256=_sha256_file(skill_file),
                 runtime_projection={
                     "description": _string(frontmatter.get("description")) or _first_body_line(body),
+                    "folder_name": local_name.replace(":", "-"),
                 },
+                metadata={"files": _text_files_for_directory(root=skill_file.parent, relative_root=skill_file.parent)},
             )
         )
     return components
@@ -164,6 +166,7 @@ def _load_standard_agents(
                 source_path=_relative_path(root, agent_file),
                 content_sha256=_sha256_file(agent_file),
                 runtime_projection=_agent_runtime_projection(frontmatter, body),
+                metadata={"definition": agent_file.read_text(encoding="utf-8", errors="replace")},
                 ignored_fields=ignored_fields,
             )
         )
@@ -268,6 +271,7 @@ def _markdown_component(
         source_path=_relative_path(root, file_path),
         content_sha256=_sha256_file(file_path),
         runtime_projection=runtime_projection,
+        metadata={"content": file_path.read_text(encoding="utf-8", errors="replace")},
     )
 
 
@@ -383,6 +387,25 @@ def _relative_path(root: Path, file_path: Path) -> str:
         return str(file_path.resolve().relative_to(root))
     except ValueError:
         return str(file_path)
+
+
+def _text_files_for_directory(*, root: Path, relative_root: Path) -> list[dict[str, str]]:
+    base = root.resolve()
+    relative_base = relative_root.resolve()
+    files: list[dict[str, str]] = []
+    for file_path in sorted(root.rglob("*")):
+        if not file_path.is_file():
+            continue
+        resolved = file_path.resolve()
+        if not resolved.is_relative_to(base):
+            continue
+        files.append(
+            {
+                "path": str(resolved.relative_to(relative_base)),
+                "content": file_path.read_text(encoding="utf-8", errors="replace"),
+            }
+        )
+    return files
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:

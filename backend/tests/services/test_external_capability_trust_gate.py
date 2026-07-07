@@ -175,6 +175,55 @@ async def test_approve_external_capability_review_creates_approved_snapshot_only
 
 
 @pytest.mark.asyncio
+async def test_approve_external_capability_review_publishes_components_to_catalog():
+    tenant_id = uuid4()
+    reviewer_id = uuid4()
+    review = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        source_format="cc_plugin",
+        source_uri="github:acme/review-pack",
+        source_hash="manifest-hash",
+        normalized_name="review-pack",
+        status="review_required",
+        admission_class="governed_runtime",
+        admission_report_json={"notes": []},
+        governance_projection_json={"runtime_governance": "existing_governance_after_activation"},
+        normalized_manifest_json={
+            "components": [
+                {
+                    "component_type": "skill",
+                    "local_name": "audit",
+                    "qualified_name": "review-pack:audit",
+                    "runtime_projection": {"description": "Audit code"},
+                }
+            ]
+        },
+    )
+    db = _TrustGateSession([review])
+
+    snapshot = await approve_external_capability_snapshot(
+        db,
+        tenant_id=tenant_id,
+        review_id=review.id,
+        approved_by_user_id=reviewer_id,
+    )
+
+    catalog_entries = [row for row in db.added if row.__class__.__name__ == "ExternalExtensionCatalogEntry"]
+    assert len(catalog_entries) == 1
+    entry = catalog_entries[0]
+    assert snapshot["catalog_entries"][0]["qualified_name"] == "review-pack:audit"
+    assert entry.tenant_id == tenant_id
+    assert entry.snapshot_id == db.added[0].id
+    assert entry.component_type == "skill"
+    assert entry.component_name == "audit"
+    assert entry.qualified_name == "review-pack:audit"
+    assert entry.policy == "optional"
+    assert entry.status == "available"
+    assert entry.metadata_json["runtime_projection"] == {"description": "Audit code"}
+
+
+@pytest.mark.asyncio
 async def test_stage_external_skill_package_review_maps_skill_guard_block_to_blocked_review():
     tenant_id = uuid4()
     user_id = uuid4()

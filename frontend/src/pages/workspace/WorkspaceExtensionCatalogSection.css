@@ -1,0 +1,118 @@
+.workspace-extension-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.workspace-extension-catalog-loading,
+.workspace-extension-catalog-empty {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.workspace-extension-catalog-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.workspace-extension-catalog-stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.workspace-extension-catalog-stat strong {
+  color: var(--text-primary);
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.workspace-extension-catalog-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.workspace-extension-catalog-heading {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.workspace-extension-catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.workspace-extension-catalog-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.workspace-extension-catalog-main {
+  min-width: 0;
+}
+
+.workspace-extension-catalog-name {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-extension-catalog-sub {
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-extension-catalog-tags {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.workspace-extension-catalog-tags span {
+  padding: 2px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.workspace-extension-catalog-action {
+  flex: 0 0 auto;
+  min-width: 92px;
+}
+
+@media (max-width: 640px) {
+  .workspace-extension-catalog-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workspace-extension-catalog-tags {
+    justify-content: flex-start;
+  }
+
+  .workspace-extension-catalog-action {
+    width: 100%;
+  }
+}

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 import app.api.external_capabilities as external_mod
 from app.api.external_capabilities import router
-from app.core.security import get_current_admin
+from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 
 
@@ -30,6 +30,7 @@ def _build_client(*, tenant_id=None):
         yield fake_db
 
     app.dependency_overrides[get_current_admin] = override_admin
+    app.dependency_overrides[get_current_user] = override_admin
     app.dependency_overrides[get_db] = override_db
     return TestClient(app, raise_server_exceptions=False), fake_db, current_user
 
@@ -91,6 +92,58 @@ def test_approve_external_capability_review_api_returns_snapshot(monkeypatch):
     monkeypatch.setattr(external_mod, "approve_external_capability_snapshot", fake_approve)
 
     resp = client.post(f"/enterprise/external-capabilities/reviews/{target_review_id}/approve")
+
+    assert resp.status_code == 200
+    assert resp.json() == expected
+
+
+def test_list_external_extension_catalog_entries_api_uses_tenant(monkeypatch):
+    client, fake_db, current_user = _build_client()
+    expected = [
+        {
+            "id": str(uuid4()),
+            "snapshot_id": str(uuid4()),
+            "component_type": "skill",
+            "component_name": "audit",
+            "qualified_name": "review-pack:audit",
+            "policy": "optional",
+            "status": "available",
+        }
+    ]
+
+    async def fake_list_catalog(db_session, *, tenant_id):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        return expected
+
+    monkeypatch.setattr(external_mod, "list_external_extension_catalog_entries", fake_list_catalog)
+
+    resp = client.get("/enterprise/external-capabilities/catalog")
+
+    assert resp.status_code == 200
+    assert resp.json() == expected
+
+
+def test_list_agent_external_extension_catalog_checks_agent_access(monkeypatch):
+    agent_id = uuid4()
+    client, fake_db, current_user = _build_client()
+    expected = [{"id": str(uuid4()), "snapshot_id": str(uuid4()), "component_type": "subagent"}]
+
+    async def fake_check_agent_access(db_session, user, requested_agent_id):
+        assert db_session is fake_db
+        assert user is current_user
+        assert requested_agent_id == agent_id
+        return SimpleNamespace(tenant_id=current_user.tenant_id), "owner"
+
+    async def fake_list_catalog(db_session, *, tenant_id):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        return expected
+
+    monkeypatch.setattr(external_mod, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(external_mod, "list_external_extension_catalog_entries", fake_list_catalog)
+
+    resp = client.get(f"/agents/{agent_id}/external-extensions/catalog")
 
     assert resp.status_code == 200
     assert resp.json() == expected

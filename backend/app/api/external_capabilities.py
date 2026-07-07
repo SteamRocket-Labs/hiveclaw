@@ -17,6 +17,7 @@ from app.services.external_capabilities.activation import activate_external_exte
 from app.services.external_capabilities.trust_gate import (
     approve_external_capability_snapshot,
     list_external_capability_reviews,
+    list_external_extension_catalog_entries,
     stage_external_capability_review,
 )
 from app.services.external_capabilities.types import ExternalCapabilityComponent, NormalizedExternalPluginBundle
@@ -84,6 +85,16 @@ async def list_external_capability_reviews_route(
     return await list_external_capability_reviews(db, tenant_id=current_user.tenant_id)
 
 
+@router.get("/enterprise/external-capabilities/catalog")
+async def list_external_extension_catalog_route(
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    return await list_external_extension_catalog_entries(db, tenant_id=current_user.tenant_id)
+
+
 @router.post("/enterprise/external-capabilities/reviews")
 async def stage_external_capability_review_route(
     data: ExternalCapabilityReviewIn,
@@ -117,6 +128,19 @@ async def approve_external_capability_review_route(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/agents/{agent_id}/external-extensions/catalog")
+async def list_agent_external_extension_catalog_route(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    tenant_id = getattr(agent, "tenant_id", None) or current_user.tenant_id
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    return await list_external_extension_catalog_entries(db, tenant_id=tenant_id)
 
 
 @router.post("/agents/{agent_id}/external-extensions/{snapshot_id}/activate")

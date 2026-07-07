@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import AgentExtensionCatalogSection from './AgentExtensionCatalogSection';
 import AgentSkillsSection from './AgentSkillsSection';
 import AgentSubagentsSection from './AgentSubagentsSection';
 import ToolsManager from './ToolsManager';
@@ -11,13 +12,14 @@ type AgentExtensionsSectionProps = {
   canManage?: boolean;
 };
 
-type ExtensionSubview = 'mcp' | 'skills' | 'subagents';
+type ExtensionSubview = 'catalog' | 'mcp' | 'skills' | 'subagents';
 
 const EXTENSION_SUBVIEWS: Array<{
   id: ExtensionSubview;
   labelKey: string;
   fallback: string;
 }> = [
+  { id: 'catalog', labelKey: 'agent.extensions.tabs.catalog', fallback: 'Catalog' },
   { id: 'mcp', labelKey: 'agent.extensions.tabs.mcp', fallback: 'MCP & Plugins' },
   { id: 'skills', labelKey: 'agent.extensions.tabs.skills', fallback: 'Skills' },
   { id: 'subagents', labelKey: 'agent.extensions.tabs.subagents', fallback: 'Sub-agents' },
@@ -25,7 +27,7 @@ const EXTENSION_SUBVIEWS: Array<{
 
 export default function AgentExtensionsSection({ agentId, canManage = false }: AgentExtensionsSectionProps) {
   const { t } = useTranslation();
-  const [activeSubview, setActiveSubview] = useState<ExtensionSubview>('mcp');
+  const [activeSubview, setActiveSubview] = useState<ExtensionSubview>('catalog');
 
   return (
     <section className="agent-extensions-section" data-testid="agent-extensions-section">
@@ -50,6 +52,11 @@ export default function AgentExtensionsSection({ agentId, canManage = false }: A
       </div>
 
       <div className="agent-extensions-body">
+        {activeSubview === 'catalog' && (
+          <div data-testid="agent-extensions-catalog-view">
+            <AgentExtensionCatalogSection agentId={agentId} canManage={canManage} />
+          </div>
+        )}
         {activeSubview === 'mcp' && (
           <div data-testid="agent-extensions-mcp-view">
             <ToolsManager agentId={agentId} canManage={canManage} />

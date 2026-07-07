@@ -74,8 +74,16 @@ def test_cc_plugin_adapter_namespaces_components_and_ignores_agent_escalation(tm
     reviewer = bundle.component_by_name("review-pack:reviewer")
     assert reviewer.component_type == "subagent"
     assert reviewer.runtime_projection["tools"] == ["read_file"]
+    assert reviewer.metadata["definition"].startswith("---\nname: reviewer")
     assert "permissionMode" not in reviewer.runtime_projection
     assert set(reviewer.ignored_fields) == {"hooks", "mcpServers", "permissionMode"}
+    skill = bundle.component_by_name("review-pack:audit")
+    assert skill.metadata["files"] == [
+        {
+            "path": "SKILL.md",
+            "content": "---\nname: audit\ndescription: Audit code\n---\nAudit the selected code.",
+        }
+    ]
     assert bundle.credential_requirements == [
         {"key": "apiKey", "sensitive": True, "source": "manifest.userConfig"},
         {"key": "endpoint", "sensitive": False, "source": "manifest.userConfig"},

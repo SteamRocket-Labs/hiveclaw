@@ -86,6 +86,35 @@ class ExternalCapabilitySnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ExternalExtensionCatalogEntry(Base):
+    """Workspace-visible approved component published from an approved snapshot."""
+
+    __tablename__ = "external_extension_catalog_entries"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "snapshot_id", "qualified_name", name="uq_external_catalog_snapshot_component"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    component_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    component_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    qualified_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    policy: Mapped[str] = mapped_column(String(40), nullable=False, default="optional", index=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="available", index=True)
+    source_format: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    source_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ExternalExtensionActivation(Base):
     """Agent-scoped activation of one approved external capability snapshot."""
 

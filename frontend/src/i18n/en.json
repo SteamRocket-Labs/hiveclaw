@@ -754,12 +754,20 @@
       "title": "Capabilities",
       "tabsLabel": "Capability types",
       "tabs": {
+        "catalog": "Catalog",
         "mcp": "MCP & Plugins",
         "skills": "Skills",
         "subagents": "Sub-agents"
       },
       "externalSnapshots": "Approved External Snapshots",
-      "noExternalSnapshots": "No approved external snapshots activated"
+      "noExternalSnapshots": "No approved external snapshots activated",
+      "catalogLoadFailed": "Failed to load extension catalog",
+      "catalogActivated": "Extension activated",
+      "catalogActivateFailed": "Failed to activate extension",
+      "catalogEmpty": "No approved optional extensions are available yet.",
+      "catalogActive": "Active",
+      "catalogAvailable": "Available",
+      "catalogInstall": "Install"
     },
     "detail": {
       "loading": "Loading...",
@@ -2088,10 +2096,22 @@
       "title": "Extension Catalog",
       "tabsLabel": "Extension types",
       "tabs": {
+        "catalog": "Catalog",
         "mcp": "MCP & Plugins",
         "skills": "Skills",
         "subagents": "Sub-agents"
-      }
+      },
+      "catalogLoadFailed": "Failed to load extension catalog",
+      "reviewApproved": "Review approved",
+      "reviewApproveFailed": "Failed to approve review",
+      "catalogAvailable": "Available",
+      "reviewQueue": "Review queue",
+      "approvedCatalog": "Approved catalog",
+      "catalogEmpty": "No approved external extensions have been published yet.",
+      "pendingReviews": "Pending reviews",
+      "noPendingReviews": "No external capability reviews are waiting.",
+      "components": "components",
+      "approve": "Approve"
     },
     "memory": {
       "title": "Memory Settings",

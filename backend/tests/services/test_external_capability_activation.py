@@ -5,6 +5,8 @@ from uuid import uuid4
 
 import pytest
 
+from app.agents.subagent_definition import parse_subagent_definition
+from app.services.external_capabilities import activation as activation_mod
 from app.services.external_capabilities.activation import activate_external_extension_for_agent
 
 
@@ -86,3 +88,136 @@ async def test_activate_external_skill_snapshot_installs_existing_skill_runtime(
     assert db.added[0].agent_id == agent_id
     assert db.added[0].snapshot_id == snapshot_id
     assert db.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_activate_external_mcp_snapshot_uses_agent_scoped_existing_runtime(monkeypatch, tmp_path):
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    calls = []
+
+    async def fake_import_mcp_for_agent_and_register(import_agent_id, **kwargs):
+        calls.append((import_agent_id, kwargs))
+        return "Imported Docs MCP"
+
+    monkeypatch.setattr(activation_mod, "import_mcp_for_agent_and_register", fake_import_mcp_for_agent_and_register)
+    snapshot = SimpleNamespace(
+        id=snapshot_id,
+        tenant_id=tenant_id,
+        status="approved",
+        snapshot_key="mcp_server:docs:abc",
+        component_manifest_json={
+            "components": [
+                {
+                    "component_type": "mcp_server",
+                    "local_name": "docs",
+                    "qualified_name": "mcp:docs",
+                    "runtime_projection": {
+                        "server_id": "docs/server",
+                        "server_name": "Docs MCP",
+                        "mcp_url": "https://mcp.example/sse",
+                        "config": {"transport": "sse"},
+                    },
+                }
+            ]
+        },
+    )
+    db = _ActivationSession(snapshot)
+
+    result = await activate_external_extension_for_agent(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        workspace=tmp_path,
+        activated_by_user_id=uuid4(),
+    )
+
+    assert result["activated_components"] == [
+        {
+            "component_type": "mcp_server",
+            "name": "Docs MCP",
+            "status": "activated",
+            "message": "Imported Docs MCP",
+        }
+    ]
+    assert calls == [
+        (
+            agent_id,
+            {
+                "server_id": "docs/server",
+                "mcp_url": "https://mcp.example/sse",
+                "server_name": "Docs MCP",
+                "config": {"transport": "sse"},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_activate_external_subagent_snapshot_writes_sanitized_agent_definition(tmp_path):
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    raw_definition = """---
+name: reviewer
+description: Review code
+permissionMode: bypassPermissions
+hooks:
+  PreToolUse: []
+mcpServers:
+  github: {}
+tools:
+  - read_file
+skills:
+  - audit
+model: claude-sonnet
+---
+
+Review code carefully.
+"""
+    snapshot = SimpleNamespace(
+        id=snapshot_id,
+        tenant_id=tenant_id,
+        status="approved",
+        snapshot_key="cc_plugin:review-pack:abc",
+        component_manifest_json={
+            "components": [
+                {
+                    "component_type": "subagent",
+                    "local_name": "reviewer",
+                    "qualified_name": "review-pack:reviewer",
+                    "metadata": {"definition": raw_definition},
+                    "runtime_projection": {
+                        "description": "Review code",
+                        "tools": ["read_file"],
+                        "skills": ["audit"],
+                        "model": "claude-sonnet",
+                    },
+                }
+            ]
+        },
+    )
+    db = _ActivationSession(snapshot)
+
+    result = await activate_external_extension_for_agent(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        workspace=tmp_path,
+        activated_by_user_id=uuid4(),
+    )
+
+    definition_path = tmp_path / "subagents" / "reviewer.md"
+    spec = parse_subagent_definition(definition_path.read_text(encoding="utf-8"))
+    assert result["activated_components"] == [
+        {"component_type": "subagent", "name": "reviewer", "status": "activated"}
+    ]
+    assert spec.allowed_tools == ("read_file",)
+    assert spec.skills == ("audit",)
+    assert spec.model == "claude-sonnet"
+    assert spec.permission_mode is None
+    assert spec.hooks is None
+    assert spec.mcp_servers == ()

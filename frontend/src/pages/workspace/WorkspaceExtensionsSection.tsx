@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import WorkspaceExtensionCatalogSection from './WorkspaceExtensionCatalogSection';
 import WorkspaceSkillsSection from './WorkspaceSkillsSection';
 import WorkspaceSubagentsSection from './WorkspaceSubagentsSection';
 import WorkspaceToolsSection from './WorkspaceToolsSection';
@@ -10,13 +11,14 @@ type WorkspaceExtensionsSectionProps = {
   selectedTenantId: string;
 };
 
-type WorkspaceExtensionSubview = 'mcp' | 'skills' | 'subagents';
+type WorkspaceExtensionSubview = 'catalog' | 'mcp' | 'skills' | 'subagents';
 
 const WORKSPACE_EXTENSION_SUBVIEWS: Array<{
   id: WorkspaceExtensionSubview;
   labelKey: string;
   fallback: string;
 }> = [
+  { id: 'catalog', labelKey: 'enterprise.extensions.tabs.catalog', fallback: 'Catalog' },
   { id: 'mcp', labelKey: 'enterprise.extensions.tabs.mcp', fallback: 'MCP & Plugins' },
   { id: 'skills', labelKey: 'enterprise.extensions.tabs.skills', fallback: 'Skills' },
   { id: 'subagents', labelKey: 'enterprise.extensions.tabs.subagents', fallback: 'Sub-agents' },
@@ -24,7 +26,7 @@ const WORKSPACE_EXTENSION_SUBVIEWS: Array<{
 
 export default function WorkspaceExtensionsSection({ selectedTenantId }: WorkspaceExtensionsSectionProps) {
   const { t } = useTranslation();
-  const [activeSubview, setActiveSubview] = useState<WorkspaceExtensionSubview>('mcp');
+  const [activeSubview, setActiveSubview] = useState<WorkspaceExtensionSubview>('catalog');
 
   return (
     <section className="workspace-extensions-section" data-testid="workspace-extensions-section">
@@ -49,6 +51,11 @@ export default function WorkspaceExtensionsSection({ selectedTenantId }: Workspa
       </div>
 
       <div className="workspace-extensions-body">
+        {activeSubview === 'catalog' && (
+          <div data-testid="workspace-extensions-catalog-view">
+            <WorkspaceExtensionCatalogSection />
+          </div>
+        )}
         {activeSubview === 'mcp' && (
           <div data-testid="workspace-extensions-mcp-view">
             <WorkspaceToolsSection selectedTenantId={selectedTenantId} />

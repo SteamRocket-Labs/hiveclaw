@@ -135,6 +135,7 @@ export interface ExternalCapabilitySnapshotSummary {
   admission_report?: Record<string, unknown>;
   governance_projection?: Record<string, unknown>;
   component_manifest?: Record<string, unknown>;
+  catalog_entries?: ExternalExtensionCatalogEntry[];
   approved_at?: string;
   created_at?: string;
 }
@@ -159,6 +160,20 @@ export interface ExternalExtensionActivationResult {
   activation: ExternalExtensionActivationSummary;
   snapshot: ExternalCapabilitySnapshotSummary;
   result: Record<string, unknown>;
+}
+
+export interface ExternalExtensionCatalogEntry {
+  id: string;
+  tenant_id?: string;
+  snapshot_id: string;
+  component_type: string;
+  component_name: string;
+  qualified_name: string;
+  policy: string;
+  status: string;
+  source_format?: string;
+  source_uri?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export const extensionsApi = {
@@ -202,9 +217,17 @@ export const extensionsApi = {
   listExternalCapabilityReviews: () =>
     get<ExternalCapabilityReviewSummary[]>('/enterprise/external-capabilities/reviews'),
 
+  /** Company admin: list approved external capability catalog entries. */
+  listExternalExtensionCatalog: () =>
+    get<ExternalExtensionCatalogEntry[]>('/enterprise/external-capabilities/catalog'),
+
   /** Company admin: approve one staged external capability snapshot. */
   approveExternalCapabilityReview: (reviewId: string) =>
     post<ExternalCapabilityReviewResult>(`/enterprise/external-capabilities/reviews/${reviewId}/approve`),
+
+  /** Agent owner/admin: list approved catalog entries available to this agent. */
+  listAgentExternalExtensionCatalog: (agentId: string) =>
+    get<ExternalExtensionCatalogEntry[]>(`/agents/${agentId}/external-extensions/catalog`),
 
   /** Agent owner/admin: activate one approved external snapshot for this agent. */
   activateExternalExtension: (agentId: string, snapshotId: string) =>

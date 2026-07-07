@@ -754,12 +754,20 @@
       "title": "能力",
       "tabsLabel": "能力类型",
       "tabs": {
+        "catalog": "目录",
         "mcp": "MCP 与插件",
         "skills": "技能",
         "subagents": "子代理"
       },
       "externalSnapshots": "已批准外部快照",
-      "noExternalSnapshots": "暂无已激活的外部快照"
+      "noExternalSnapshots": "暂无已激活的外部快照",
+      "catalogLoadFailed": "插件目录加载失败",
+      "catalogActivated": "插件已激活",
+      "catalogActivateFailed": "插件激活失败",
+      "catalogEmpty": "暂无可安装的已审批可选插件。",
+      "catalogActive": "已启用",
+      "catalogAvailable": "可用",
+      "catalogInstall": "安装"
     },
     "detail": {
       "loading": "加载中...",
@@ -2142,10 +2150,22 @@
       "title": "插件目录",
       "tabsLabel": "插件类型",
       "tabs": {
+        "catalog": "目录",
         "mcp": "MCP 与插件",
         "skills": "技能",
         "subagents": "子代理"
-      }
+      },
+      "catalogLoadFailed": "插件目录加载失败",
+      "reviewApproved": "审核已通过",
+      "reviewApproveFailed": "审核通过失败",
+      "catalogAvailable": "可用",
+      "reviewQueue": "审核队列",
+      "approvedCatalog": "已审批目录",
+      "catalogEmpty": "还没有发布已审批的外部插件。",
+      "pendingReviews": "待审核",
+      "noPendingReviews": "暂无等待审核的外部能力。",
+      "components": "组件",
+      "approve": "通过"
     },
     "memory": {
       "title": "记忆设置",

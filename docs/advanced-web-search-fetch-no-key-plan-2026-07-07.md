@@ -975,6 +975,48 @@ cd backend && source .venv/bin/activate && ruff check app/services/agent_tool_do
 All checks passed!
 ```
 
+### 11.2 Skill / Prompt 对齐
+
+完成时间：2026-07-07
+
+已落地：
+
+- `backend/app/templates/system_skills/web-research/SKILL.md`
+  - frontmatter tool list 加入 `advanced_web_search`、`advanced_web_fetch`、`firecrawl_search`、`tavily_extract`、`exa_fetch`。
+  - 新增默认升级心智模型：`web_search` / `web_fetch` -> `advanced_web_search` / `advanced_web_fetch` -> provider-specific override。
+  - AnySearch、Exa、Tavily、Firecrawl 明确 no-key by default；XCrawl 明确 keyed-only。
+  - workflow、examples、anti-patterns、success criteria 均改为 router-first。
+- `backend/app/templates/system_skills/web-research/references/source-quality.md`
+  - source-quality escalation 顺序改为 advanced router first，XCrawl only when configured。
+- `backend/app/runtime/prompt_sections/tools.py`
+  - runtime tools prompt 明确 core first、advanced router second、provider-specific override last。
+- `backend/tests/services/test_prompt_contracts.py`
+  - 增加 advanced router skill/prompt contract。
+
+验证命令：
+
+```bash
+source backend/.venv/bin/activate && pytest backend/tests/services/test_prompt_contracts.py -q
+```
+
+结果：
+
+```text
+27 passed, 3 warnings
+```
+
+验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && ruff check app/runtime/prompt_sections/tools.py tests/services/test_prompt_contracts.py
+```
+
+结果：
+
+```text
+All checks passed!
+```
+
 ### 11.3 前端 UI / API 适配
 
 完成时间：2026-07-07
@@ -1024,47 +1066,64 @@ cd frontend && npm run build
 
 ```text
 tsc && vite build
-✓ built in 2.41s
+✓ built in 2.47s
 ```
 
-### 11.2 Skill / Prompt 对齐
+### 11.4 最终整体验证
 
 完成时间：2026-07-07
 
-已落地：
+验证范围：
 
-- `backend/app/templates/system_skills/web-research/SKILL.md`
-  - frontmatter tool list 加入 `advanced_web_search`、`advanced_web_fetch`、`firecrawl_search`、`tavily_extract`、`exa_fetch`。
-  - 新增默认升级心智模型：`web_search` / `web_fetch` -> `advanced_web_search` / `advanced_web_fetch` -> provider-specific override。
-  - AnySearch、Exa、Tavily、Firecrawl 明确 no-key by default；XCrawl 明确 keyed-only。
-  - workflow、examples、anti-patterns、success criteria 均改为 router-first。
-- `backend/app/templates/system_skills/web-research/references/source-quality.md`
-  - source-quality escalation 顺序改为 advanced router first，XCrawl only when configured。
-- `backend/app/runtime/prompt_sections/tools.py`
-  - runtime tools prompt 明确 core first、advanced router second、provider-specific override last。
-- `backend/tests/services/test_prompt_contracts.py`
-  - 增加 advanced router skill/prompt contract。
+- 后端 no-key web provider runtime、tool surface、API catalog、governance、pack、plan-mode、prompt contract。
+- 前端 Workspace tools UI/API 类型、web_pack 排序、provider auth badge、i18n、生产 build。
 
 验证命令：
 
 ```bash
-source backend/.venv/bin/activate && pytest backend/tests/services/test_prompt_contracts.py -q
+source backend/.venv/bin/activate && pytest backend/tests/services/test_web_mcp_resilience.py backend/tests/tools/test_search_provider_tool_definitions.py backend/tests/api/test_tools_api_surface.py backend/tests/services/test_agent_tools.py backend/tests/services/test_capability_gate_policy_surface.py backend/tests/services/test_capability_group_policy_service.py backend/tests/services/test_pack_policy_service.py backend/tests/services/test_agent_tools_core_surface.py backend/tests/tools/test_bridge_equivalence.py backend/tests/tools/test_plan_mode_policy.py backend/tests/tools/test_parallel_metadata.py backend/tests/services/test_prompt_contracts.py backend/tests/tools/test_tool_contract.py -q
 ```
 
 结果：
 
 ```text
-27 passed, 3 warnings
+198 passed, 4 warnings
 ```
 
 验证命令：
 
 ```bash
-cd backend && source .venv/bin/activate && ruff check app/runtime/prompt_sections/tools.py tests/services/test_prompt_contracts.py
+cd backend && source .venv/bin/activate && ruff check app/services/agent_tool_domains/web_mcp.py app/tools/handlers/search.py app/services/agent_tools.py app/services/governance_capability_taxonomy.py app/api/tools.py app/tools/registry.py app/tools/service.py app/runtime/tool_result_ledger.py app/tools/plan_mode_policy.py app/tools/governance.py app/services/capability_gate.py app/services/plan_mode_core.py app/kernel/engine.py app/agents/orchestrator.py app/agents/subagent.py app/runtime/prompt_sections/tools.py tests/services/test_web_mcp_resilience.py tests/tools/test_search_provider_tool_definitions.py tests/api/test_tools_api_surface.py tests/services/test_agent_tools.py tests/services/test_capability_gate_policy_surface.py tests/services/test_capability_group_policy_service.py tests/services/test_pack_policy_service.py tests/services/test_agent_tools_core_surface.py tests/tools/test_bridge_equivalence.py tests/tools/test_plan_mode_policy.py tests/tools/test_parallel_metadata.py tests/services/test_prompt_contracts.py
 ```
 
 结果：
 
 ```text
 All checks passed!
+```
+
+验证命令：
+
+```bash
+cd frontend && npm run test -- WorkspaceToolsSection --run
+```
+
+结果：
+
+```text
+Test Files  1 passed (1)
+Tests  6 passed (6)
+```
+
+验证命令：
+
+```bash
+cd frontend && npm run build
+```
+
+结果：
+
+```text
+tsc && vite build
+✓ built in 2.47s
 ```

@@ -115,6 +115,16 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "agent_plugin_assignments",
     "plugin_hook_registrations",
     "plugin_dependency_edges",
+    # Personal / company knowledge-base core records. These are tenant-scoped
+    # and scope-scoped; keep forced on fresh create_all bootstrap so owner-role
+    # app connections cannot bypass KB ACL decisions.
+    "knowledge_documents",
+    "knowledge_segments",
+    "knowledge_entities",
+    "knowledge_assertions",
+    "knowledge_links",
+    "knowledge_index_jobs",
+    "knowledge_grants",
 )
 
 REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (

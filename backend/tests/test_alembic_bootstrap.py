@@ -116,6 +116,20 @@ def test_remaining_global_and_derived_tables_are_forced_on_fresh_bootstrap_path(
     assert set(REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES) <= set(RLS_FORCED_TENANT_TABLES)
 
 
+def test_personal_knowledge_tables_are_forced_rls_on_fresh_bootstrap_path() -> None:
+    from app.db_bootstrap import RLS_FORCED_TENANT_TABLES
+
+    assert {
+        "knowledge_documents",
+        "knowledge_segments",
+        "knowledge_entities",
+        "knowledge_assertions",
+        "knowledge_links",
+        "knowledge_index_jobs",
+        "knowledge_grants",
+    } <= set(RLS_FORCED_TENANT_TABLES)
+
+
 def test_bootstrap_policy_sql_covers_remaining_global_and_derived_tables() -> None:
     from app.db_bootstrap import _policy_predicates_for_table
 

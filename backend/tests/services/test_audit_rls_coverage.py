@@ -78,10 +78,12 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
     force_all_module = _load_migration_module("force_all_tenant_rls_0615.py")
     remaining_module = _load_migration_module("rls_remaining_global_and_derived_tables_0703.py")
     runtime_budget_module = _load_migration_module("runtime_budget_control_plane_0704.py")
+    personal_knowledge_module = _load_migration_module("personal_knowledge_core_0707.py")
     migration_tables = (
         set(force_all_module._FORCE_TABLES)
         | set(remaining_module._ALL_TABLES)
         | set(runtime_budget_module._RUNTIME_BUDGET_TABLES)
+        | set(personal_knowledge_module._KNOWLEDGE_TABLES)
     )
 
     missing = sorted(set(RLS_FORCED_TENANT_TABLES) - migration_tables)

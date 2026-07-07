@@ -436,6 +436,10 @@
       "sections": "Admin surfaces"
     },
     "sections": {
+      "extensions": {
+        "title": "Extension Catalog",
+        "description": "MCP servers, plugins, skills, subagents, connectors, and tenant-level capability installs."
+      },
       "runtime_budgets": {
         "title": "Runtime Protection",
         "description": "Company-level limits that take priority over the platform defaults."
@@ -2061,6 +2065,7 @@
     "tabs": {
       "dashboard": "Workbench",
       "llm": "AI Models",
+      "extensions": "Extensions",
       "tools": "Tools & Extensions",
       "org": "Org Structure",
       "info": "Company Info",
@@ -2078,6 +2083,15 @@
       "digitalEmployees": "Digital Employees",
       "hr": "Onboarding Assistant",
       "memory": "Memory Settings"
+    },
+    "extensions": {
+      "title": "Extension Catalog",
+      "tabsLabel": "Extension types",
+      "tabs": {
+        "mcp": "MCP & Plugins",
+        "skills": "Skills",
+        "subagents": "Sub-agents"
+      }
     },
     "memory": {
       "title": "Memory Settings",

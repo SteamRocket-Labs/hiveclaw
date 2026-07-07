@@ -5,9 +5,7 @@ export type WorkspaceSectionTab =
   | 'memory'
   | 'digital_employees'
   | 'hr'
-  | 'tools'
-  | 'skills'
-  | 'subagents'
+  | 'extensions'
   | 'runtime_budgets'
   | 'quotas'
   | 'users'
@@ -33,9 +31,7 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { tab: 'memory', slug: 'memory', path: '/enterprise/memory', labelKey: 'enterprise.tabs.memory', fallbackLabel: 'Memory' },
   { tab: 'digital_employees', slug: 'digital-employees', path: '/enterprise/digital-employees', labelKey: 'enterprise.tabs.digitalEmployees', fallbackLabel: 'Digital Employees' },
   { tab: 'hr', slug: 'hr', path: '/enterprise/hr', labelKey: 'enterprise.tabs.hr', fallbackLabel: 'HR Agent' },
-  { tab: 'tools', slug: 'tools', path: '/enterprise/tools', labelKey: 'enterprise.tabs.tools', fallbackLabel: 'Tools' },
-  { tab: 'skills', slug: 'skills', path: '/enterprise/skills', labelKey: 'enterprise.tabs.skills', fallbackLabel: 'Skills' },
-  { tab: 'subagents', slug: 'subagents', path: '/enterprise/subagents', labelKey: 'enterprise.tabs.subagents', fallbackLabel: 'Sub-agents' },
+  { tab: 'extensions', slug: 'extensions', path: '/enterprise/extensions', labelKey: 'enterprise.tabs.extensions', fallbackLabel: 'Extensions' },
   { tab: 'runtime_budgets', slug: 'runtime-budgets', path: '/enterprise/runtime-budgets', labelKey: 'enterprise.tabs.runtimeBudgets', fallbackLabel: 'Runtime Budgets' },
   { tab: 'quotas', slug: 'quotas', path: '/enterprise/quotas', labelKey: 'enterprise.tabs.quotas', fallbackLabel: 'Quotas' },
   { tab: 'users', slug: 'users', path: '/enterprise/users', labelKey: 'enterprise.tabs.users', fallbackLabel: 'Users' },
@@ -54,4 +50,7 @@ export const WORKSPACE_DEFAULT_PATH = WORKSPACE_SECTIONS[0].path;
 export const WORKSPACE_LEGACY_REDIRECTS = [
   { from: '/enterprise', to: WORKSPACE_DEFAULT_PATH },
   { from: '/invitations', to: '/enterprise/invitations' },
+  { from: '/enterprise/tools', to: '/enterprise/extensions' },
+  { from: '/enterprise/skills', to: '/enterprise/extensions' },
+  { from: '/enterprise/subagents', to: '/enterprise/extensions' },
 ] as const;

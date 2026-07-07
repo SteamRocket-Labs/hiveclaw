@@ -20,11 +20,9 @@ import WorkspaceLlmSection from './workspace/WorkspaceLlmSection';
 import WorkspaceOrgSection from './workspace/WorkspaceOrgSection';
 import WorkspaceQuotasSection from './workspace/WorkspaceQuotasSection';
 import WorkspaceRuntimeBudgetsSection from './workspace/WorkspaceRuntimeBudgetsSection';
-import WorkspaceSkillsSection from './workspace/WorkspaceSkillsSection';
-import WorkspaceSubagentsSection from './workspace/WorkspaceSubagentsSection';
+import WorkspaceExtensionsSection from './workspace/WorkspaceExtensionsSection';
 import WorkspaceHrAgentSection from './workspace/WorkspaceHrAgentSection';
 import WorkspaceMemorySection from './workspace/WorkspaceMemorySection';
-import WorkspaceToolsSection from './workspace/WorkspaceToolsSection';
 import WorkspaceUsersSection from './workspace/WorkspaceUsersSection';
 import type { WorkspaceSettingsSectionTab } from '../surfaces/workspace/sections';
 import './EnterpriseSettings.css';
@@ -670,7 +668,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                     <div className="tabs">
                         {([
                             { tabs: ['info', 'org', 'users', 'invites'] as const },
-                            { tabs: ['llm', 'tools', 'skills', 'subagents', 'digital_employees', 'hr'] as const },
+                            { tabs: ['llm', 'extensions', 'digital_employees', 'hr'] as const },
                             { tabs: ['runtime_budgets', 'quotas', 'approvals', 'audit'] as const },
                         ]).flatMap((group, gi) => [
                             ...(gi > 0 ? [<div key={`sep-${gi}`} className="tab-separator" />] : []),
@@ -744,20 +742,14 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                 {/* ── Users Tab ── */}
                 {activeTab === 'users' && <WorkspaceUsersSection selectedTenantId={selectedTenantId} />}
 
-                {/* ── Tools Tab ── */}
-                {activeTab === 'tools' && <WorkspaceToolsSection selectedTenantId={selectedTenantId} />}
+                {/* ── Extensions Tab ── */}
+                {activeTab === 'extensions' && <WorkspaceExtensionsSection selectedTenantId={selectedTenantId} />}
 
                 {/* ── HR Agent Tab ── */}
                 {activeTab === 'hr' && <WorkspaceHrAgentSection selectedTenantId={selectedTenantId} />}
 
                 {/* ── Digital Employee Management Tab ── */}
                 {activeTab === 'digital_employees' && <WorkspaceDigitalEmployeesSection selectedTenantId={selectedTenantId} />}
-
-                {/* ── Skills Tab ── */}
-                {activeTab === 'skills' && <WorkspaceSkillsSection />}
-
-                {/* ── Sub-agents Company Library (C4, §12.8) ── */}
-                {activeTab === 'subagents' && <WorkspaceSubagentsSection />}
 
                 {/* ── Memory Config Tab ── */}
                 {activeTab === 'memory' && <WorkspaceMemorySection selectedTenantId={selectedTenantId} />}

@@ -159,6 +159,9 @@ export default function App() {
                                 element={<ControlPlane tab={section.tab} />}
                             />
                         ))}
+                        <Route path="tools" element={<Navigate to="extensions" replace />} />
+                        <Route path="skills" element={<Navigate to="extensions" replace />} />
+                        <Route path="subagents" element={<Navigate to="extensions" replace />} />
                     </Route>
                     <Route
                         path="/invitations"

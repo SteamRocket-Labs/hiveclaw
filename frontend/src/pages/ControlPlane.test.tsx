@@ -49,13 +49,11 @@ describe('ControlPlane', () => {
     expect(markup).toContain('Agent Governance');
     expect(markup).toContain('Digital Employees');
     expect(markup).toContain('Models &amp; Budget');
-    expect(markup).toContain('Capabilities &amp; Tools');
-    expect(markup).toContain('Team &amp; Delegation');
+    expect(markup).toContain('Extension Catalog');
     expect(markup).toContain('Memory Governance');
     expect(markup).toContain('Channels &amp; Integrations');
     expect(markup).toContain('Approval Center');
     expect(markup).toContain('Audit Log');
-    expect(markup).toContain('Assets &amp; Automation');
     expect(markup).toContain('Local Agent Channel');
     expect(markup).toContain('href="/enterprise/hr"');
     expect(markup).toContain('href="/enterprise/digital-employees"');
@@ -63,10 +61,10 @@ describe('ControlPlane', () => {
   });
 
   it('embeds legacy workspace sections inside the new control-plane shell', () => {
-    const markup = renderToStaticMarkup(<ControlPlane tab="tools" />);
+    const markup = renderToStaticMarkup(<ControlPlane tab="extensions" />);
 
-    expect(markup).toContain('Capabilities &amp; Tools');
-    expect(markup).toContain('Enterprise section tools chrome=embedded');
+    expect(markup).toContain('Extension Catalog');
+    expect(markup).toContain('Enterprise section extensions chrome=embedded');
     expect(markup).not.toContain('Company Admin');
   });
 

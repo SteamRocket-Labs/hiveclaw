@@ -794,7 +794,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
             )}
             {kind === 'team' && (
               <>
-                <Link to="/enterprise/subagents" className="feature-link-row">
+                <Link to="/enterprise/extensions" className="feature-link-row">
                   <IconUsers size={18} stroke={1.7} />
                   <span>
                     <strong>{t('featureHub.companySubagents', 'Company subagent library')}</strong>
@@ -944,7 +944,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
                 </span>
                 <span className="feature-inline-actions">
                   <Link to={`/agents/${agent.id}#a2a`}>{t('featureHub.a2a', 'A2A')}</Link>
-                  <Link to={`/agents/${agent.id}#subagents`}>{t('featureHub.subagents', 'Subagents')}</Link>
+                  <Link to={`/agents/${agent.id}#extensions`}>{t('featureHub.subagents', 'Subagents')}</Link>
                 </span>
               </div>
             ))}

@@ -19,9 +19,8 @@ describe('workspace section routing', () => {
       '/enterprise/memory',
       '/enterprise/digital-employees',
       '/enterprise/hr',
-      '/enterprise/tools',
-      '/enterprise/skills',
-      '/enterprise/subagents',
+      '/enterprise/extensions',
+      '/enterprise/runtime-budgets',
       '/enterprise/quotas',
       '/enterprise/users',
       '/enterprise/org',
@@ -35,6 +34,9 @@ describe('workspace section routing', () => {
     expect(WORKSPACE_LEGACY_REDIRECTS).toEqual([
       { from: '/enterprise', to: '/enterprise/dashboard' },
       { from: '/invitations', to: '/enterprise/invitations' },
+      { from: '/enterprise/tools', to: '/enterprise/extensions' },
+      { from: '/enterprise/skills', to: '/enterprise/extensions' },
+      { from: '/enterprise/subagents', to: '/enterprise/extensions' },
     ]);
   });
 });

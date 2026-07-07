@@ -35,8 +35,8 @@ External Capability Trust Gate
 
 当前代码现实必须分清：
 
-- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging、standalone MCP import 的 Trust Gate staging、approved Skill snapshot -> existing Skill runtime activation、approved external snapshot activation 在 `/agents/{agent_id}/extensions` 的 read model 可见、Agent Detail 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions`。
-- 未完成：`external_extension_catalog_entries`、materializer sandbox、Codex adapter、MCP/plugin approved snapshot -> existing runtime projection、Workspace Settings 的最终统一 IA。
+- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging、standalone MCP import 的 Trust Gate staging、approved Skill snapshot -> existing Skill runtime activation、approved external snapshot activation 在 `/agents/{agent_id}/extensions` 的 read model 可见、Agent Detail 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions`、Workspace Settings 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions` 且旧路径 redirect。
+- 未完成：`external_extension_catalog_entries`、materializer sandbox、Codex adapter、MCP/plugin approved snapshot -> existing runtime projection。
 - 因此本文档是目标计划和落地契约，不得把规划中的 Trust Gate 误读为当前已经全量上线的代码事实。
 
 核心原则：
@@ -2274,6 +2274,36 @@ cd frontend && npm run test -- \
 # Tests  100 passed (100)
 ```
 
+Round 3 / Workspace Settings 入口收敛证据（2026-07-07）：
+
+- 修改 `frontend/src/surfaces/workspace/sections.ts`：
+  - 新增 canonical `/enterprise/extensions`。
+  - 从 workspace 主 section 中移除 `/enterprise/tools`、`/enterprise/skills`、`/enterprise/subagents`。
+  - `WORKSPACE_LEGACY_REDIRECTS` 明确保留三条 legacy redirect 到 `/enterprise/extensions`。
+- 修改 `frontend/src/App.tsx`：
+  - `/enterprise/tools`、`/enterprise/skills`、`/enterprise/subagents` 路由层直接 redirect 到 `extensions`。
+- 新增 `frontend/src/pages/workspace/WorkspaceExtensionsSection.tsx`：
+  - 二级分段：`MCP & Plugins`、`Skills`、`Sub-agents`。
+  - 复用既有 `WorkspaceToolsSection`、`WorkspaceSkillsSection`、`WorkspaceSubagentsSection`，不重写后台能力模块。
+- 修改 `frontend/src/pages/EnterpriseSettings.tsx`、`frontend/src/pages/ControlPlane.tsx`：
+  - 后台导航和 Control Plane card 只暴露 `Extension Catalog`。
+  - Feature Hub 中旧 `subagents` 产品链接改为 `/enterprise/extensions`；Agent Detail 链接改为 `#extensions`。
+- 验证命令：
+
+```bash
+cd frontend && npm run test -- \
+  src/surfaces/workspace/sections.test.ts \
+  src/pages/workspace/WorkspaceExtensionsSection.test.tsx \
+  src/pages/ControlPlane.test.tsx \
+  src/pages/WorkspaceFeatureHub.test.tsx \
+  src/pages/layout/LayoutSections.test.tsx
+# Test Files  5 passed (5)
+# Tests  27 passed (27)
+
+cd frontend && npm run build
+# tsc && vite build: exit 0
+```
+
 当前实现只能算有基础，不算完善：
 
 - Skill 侧已有 agent 已安装 Skill 读模型、preset import、URL import、ClawHub import 的入口；Agent Detail 顶层已统一到 `Extensions`，但 Catalog / Available / Pending / Candidate 四态还未全部落入一个 canonical endpoint。
@@ -2741,7 +2771,7 @@ FreeCode / CC 的 plugin 体系是 component source + enablement layer，不是�
 | 债务 | 当前证据 | 影响 | 收口方式 |
 |---|---|---|---|
 | Agent Detail 四态 read model 仍不完整 | `frontend/src/pages/AgentDetail.tsx` 顶层已收敛为 `extensions`，但 `/agents/{agent_id}/extensions` 主要返回 active skills/MCP/plugins/external activations，available / pending / candidate 还未统一 | 用户能从单入口看 active 能力，但还不能完整区分可安装、审批中、自产生长候选 | 继续扩展 canonical `/agents/{agent_id}/extensions` product contract：加入 catalog delta、pending reviews、pending activations、factor candidates；旧 `#tools/#skills/#subagents` 仅保留 hash 兼容映射 |
-| Workspace Settings 仍分裂为 Tools / Skills / Subagents | `frontend/src/pages/EnterpriseSettings.tsx` 仍分别挂 `WorkspaceToolsSection`、`WorkspaceSkillsSection`、`WorkspaceSubagentsSection` | 后台预置、审批、市场、能力因子四个概念分散，治理链路不可见 | 收敛为 `Extension Catalog`、`External Reviews`、`Marketplaces`、`Capability Factor Intake` |
+| Workspace Settings 四态治理面仍不完整 | `frontend/src/pages/EnterpriseSettings.tsx` 顶层已收敛为 `extensions`，并通过 `WorkspaceExtensionsSection` 复用 Tools / Skills / Subagents；但 `External Reviews`、`Marketplaces`、`Capability Factor Intake` 还未成为同一后台页面内的 canonical 子面 | 后台可从单入口进入能力管理，但审批、市场、自产因子入库还没有完整产品闭环 | 在 `WorkspaceExtensionsSection` 内继续接入 `External Reviews`、`Marketplaces`、`Capability Factor Intake`；旧 `/enterprise/tools|skills|subagents` 仅保留 redirect |
 | Subagent tenant library 和 agent enablement 混在一起 | `list_subagent_definitions` 合并 agent / tenant / builtin；Agent Detail 直接展示 merged definitions | 后台放 100 个 tenant subagent 时，agent 端容易误以为全部已安装 | tenant subagent 先进 catalog；只有 default selector 命中或用户 install 才产生 agent-scoped enablement；执行仍走 existing subagent runtime |
 | Skill preset / platform skill copy 和 external import 共用 active installer | 默认 skill seeder、agent create、HR registry skill、platform skill reuse 都调用 `install_active_skill_package` | 内部可信复制和外部来源审查使用同一函数，审计上分不清 trust boundary | 拆分 `install_trusted_platform_skill` 与 `stage_external_skill_source`；所有调用点必须声明 `source_trust_class` |
 | Extension read model 有两套概念 | `/agents/{agent_id}/extensions` 是 skills/MCP/plugins；`/{agent_id}/extension-registry` 是 read-only CCPlus projection | 容易出现两个“统一能力面”的真相源，前端不知道该信谁 | 保留一个 canonical `/agents/{agent_id}/extensions` product contract；ExtensionRegistryV1 作为兼容 projection，由 canonical read model 派生 |

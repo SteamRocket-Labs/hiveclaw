@@ -243,8 +243,8 @@ describe('WorkspaceFeatureHub', () => {
     expect(markup).toContain('A2A collaborators');
     expect(markup).toContain('Local Agent Channel');
     expect(markup).toContain('href="/agents/agent-1#a2a"');
-    expect(markup).toContain('href="/agents/agent-1#subagents"');
-    expect(markup).toContain('href="/enterprise/subagents"');
+    expect(markup).toContain('href="/agents/agent-1#extensions"');
+    expect(markup).toContain('href="/enterprise/extensions"');
     expect(markup).toContain('href="/local-agents"');
   });
 });

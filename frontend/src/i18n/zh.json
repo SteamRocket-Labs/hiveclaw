@@ -411,6 +411,10 @@
       "sections": "后台页面"
     },
     "sections": {
+      "extensions": {
+        "title": "插件目录",
+        "description": "统一管理 MCP 服务器、插件、技能、子代理、连接器和租户级能力安装。"
+      },
       "runtime_budgets": {
         "title": "运行保护",
         "description": "公司级上限会优先于平台默认值生效。"
@@ -2115,6 +2119,7 @@
     "tabs": {
       "dashboard": "工作台",
       "llm": "AI 模型",
+      "extensions": "插件",
       "tools": "工具与扩展",
       "org": "组织架构",
       "info": "公司信息",
@@ -2132,6 +2137,15 @@
       "digitalEmployees": "数字员工",
       "hr": "入职助手",
       "memory": "记忆设置"
+    },
+    "extensions": {
+      "title": "插件目录",
+      "tabsLabel": "插件类型",
+      "tabs": {
+        "mcp": "MCP 与插件",
+        "skills": "技能",
+        "subagents": "子代理"
+      }
     },
     "memory": {
       "title": "记忆设置",

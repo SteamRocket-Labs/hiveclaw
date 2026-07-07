@@ -721,6 +721,8 @@
       "knowledgeTooltip": "这位员工知道什么 — 知识页、记忆条目、晋升候选与来源追溯",
       "evolution": "进化",
       "evolutionTooltip": "这位员工如何随时间成长 — 技能生命周期与提升记录",
+      "extensions": "插件",
+      "extensionsTooltip": "这位员工可用的 MCP 服务器、插件、技能与子代理",
       "tools": "MCP",
       "toolsTooltip": "通过 MCP 接入的外部连接器与工具 — 服务器、能力与访问策略",
       "skills": "技能",
@@ -743,6 +745,17 @@
       "approvals": "审批",
       "approvalsTooltip": "需要你确认后才能继续的操作",
       "settings": "设置"
+    },
+    "extensions": {
+      "title": "能力",
+      "tabsLabel": "能力类型",
+      "tabs": {
+        "mcp": "MCP 与插件",
+        "skills": "技能",
+        "subagents": "子代理"
+      },
+      "externalSnapshots": "已批准外部快照",
+      "noExternalSnapshots": "暂无已激活的外部快照"
     },
     "detail": {
       "loading": "加载中...",

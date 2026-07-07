@@ -80,4 +80,39 @@ describe('extensions API adapter', () => {
     expect(post).toHaveBeenCalledWith('/enterprise/plugins/backfill');
     expect(put).toHaveBeenCalledWith('/agents/agent-1/plugins/web_pack', { enabled: true });
   });
+
+  it('treats enterprise MCP import as a Trust Gate review request, not direct server creation', async () => {
+    vi.doMock('../core', async () => {
+      const actual = await vi.importActual<typeof import('../core')>('../core');
+      return {
+        ...actual,
+        post: vi.fn(),
+      };
+    });
+
+    const { extensionsApi } = await import('./extensions');
+    const { post } = await import('../core');
+    vi.mocked(post).mockResolvedValue({
+      id: 'review-1',
+      status: 'review_required',
+      source_format: 'mcp_server',
+      source_uri: 'https://example.test/mcp',
+      normalized_name: 'Example MCP',
+    });
+
+    const result = await extensionsApi.importEnterpriseMcpServer({
+      mcp_url: 'https://example.test/mcp',
+      server_name: 'Example MCP',
+    });
+
+    expect(post).toHaveBeenCalledWith('/enterprise/mcp-servers/import', {
+      mcp_url: 'https://example.test/mcp',
+      server_name: 'Example MCP',
+    });
+    expect(result).toMatchObject({
+      status: 'review_required',
+      source_format: 'mcp_server',
+      normalized_name: 'Example MCP',
+    });
+  });
 });

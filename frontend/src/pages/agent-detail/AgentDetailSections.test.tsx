@@ -32,7 +32,7 @@ import AgentWorkspaceSection from './AgentWorkspaceSection';
 import CopyMessageButton from './CopyMessageButton';
 import PlanCard, { confirmAndHandoffPlan } from './PlanCard';
 import AgentA2ASection from './AgentA2ASection';
-import ToolsManager from './ToolsManager';
+import ToolsManager, { externalActivationComponentSummary } from './ToolsManager';
 import {
   AGENT_DETAIL_TABS,
   applySessionActiveProjection,
@@ -767,6 +767,9 @@ describe('AgentDetail extracted sections', () => {
       hash: '',
     });
     expect(getAgentDetailHashTab('#mind', AGENT_DETAIL_TABS)).toBe('knowledge');
+    expect(getAgentDetailHashTab('#tools', AGENT_DETAIL_TABS)).toBe('extensions');
+    expect(getAgentDetailHashTab('#skills', AGENT_DETAIL_TABS)).toBe('extensions');
+    expect(getAgentDetailHashTab('#subagents', AGENT_DETAIL_TABS)).toBe('extensions');
     expect(getAgentDetailHashTab('#unknown', AGENT_DETAIL_TABS)).toBeNull();
   });
 
@@ -959,6 +962,13 @@ describe('AgentDetail extracted sections', () => {
     const markup = renderToStaticMarkup(<ToolsManager agentId="agent-1" canManage />);
 
     expect(markup).toContain('loading');
+  });
+
+  it('summarizes external activation component types for the unified extensions view', () => {
+    expect(externalActivationComponentSummary({ skill: 1, mcp_server: 2, hook: 0 })).toBe(
+      'skill 1 · mcp_server 2',
+    );
+    expect(externalActivationComponentSummary({})).toBe('');
   });
 
   it('renders AgentA2ASection from governed A2A collaborators instead of all tenant agents', () => {

@@ -17,11 +17,10 @@ import AgentChatSection, {
     type SessionPermissionMode,
 } from './agent-detail/AgentChatSection';
 import AgentEvolutionSection from './agent-detail/AgentEvolutionSection';
+import AgentExtensionsSection from './agent-detail/AgentExtensionsSection';
 import AgentKnowledgeSection from './agent-detail/AgentKnowledgeSection';
 import OfficeWorkbenchSection from './agent-detail/OfficeWorkbenchSection';
 import AgentSettingsSection from './agent-detail/AgentSettingsSection';
-import AgentSkillsSection from './agent-detail/AgentSkillsSection';
-import AgentSubagentsSection from './agent-detail/AgentSubagentsSection';
 import AgentStatusSection from './agent-detail/AgentStatusSection';
 import AgentWorkspaceSection from './agent-detail/AgentWorkspaceSection';
 import {
@@ -71,7 +70,6 @@ import {
     type ChatMessagesUpdater,
 } from './agent-detail/sessionMessageStore';
 import AgentA2ASection from './agent-detail/AgentA2ASection';
-import ToolsManager from './agent-detail/ToolsManager';
 import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
 import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } from '../api/domains/agents';
 import { activityApi } from '../api/domains/activity';
@@ -93,13 +91,11 @@ import LocalAgents from './LocalAgents';
 import LocalAgentChatSection from './agent-detail/LocalAgentChatSection';
 import './AgentDetail.css';
 
-// P8 IA (docs/agent-memory-md-first-spec.md §10): Knowledge replaces the
-// raw-file "mind" tab as the primary memory view (raw Markdown lives in the
-// Knowledge → Raw subview); `tools` is the MCP plane; skills and workflows
-// stay standalone capability modules that Knowledge only deep-links to.
-// C3 (docs/subagent-source-capability.md §12.8): subagents joins as the
-// fourth capability module — the employee's craft-clone work methods.
-export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'a2a', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+// P8 IA (docs/agent-memory-md-first-spec.md §10): Knowledge remains the
+// primary memory view. External capability governance is exposed through a
+// single agent-level Extensions tab, while MCP/tools, Skills, and Sub-agents
+// keep their existing runtime modules behind that entry.
+export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', 'extensions', 'a2a', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 type AgentDetailTab = typeof AGENT_DETAIL_TABS[number];
 
 export function isSessionWorkbenchRoute(activeTab: string, search: string): boolean {
@@ -109,7 +105,13 @@ export function isSessionWorkbenchRoute(activeTab: string, search: string): bool
 
 export function getAgentDetailHashTab(hash: string | undefined, validTabs: readonly string[]): string | null {
     const rawHashTab = hash?.replace('#', '');
-    const hashTab = rawHashTab === 'mind' ? 'knowledge' : rawHashTab;
+    const legacyHashTabMap: Record<string, string> = {
+        mind: 'knowledge',
+        tools: 'extensions',
+        skills: 'extensions',
+        subagents: 'extensions',
+    };
+    const hashTab = rawHashTab ? (legacyHashTabMap[rawHashTab] ?? rawHashTab) : rawHashTab;
     return hashTab && validTabs.includes(hashTab) ? hashTab : null;
 }
 
@@ -281,7 +283,7 @@ export function buildSessionWorkbenchNavigation(
 /** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
 export const AGENT_DETAIL_TAB_GROUPS: { tabs: AgentDetailTab[]; }[] = [
     { tabs: ['status', 'chat'] },
-    { tabs: ['aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents'] },
+    { tabs: ['aware', 'knowledge', 'evolution', 'extensions'] },
     { tabs: ['workspace', 'workflows', 'office', 'a2a', 'activityLog', 'approvals'] },
     { tabs: ['settings'] },
 ];
@@ -291,9 +293,7 @@ const AGENT_TAB_LABELS: Record<AgentDetailTab, string> = {
     aware: 'Awareness',
     knowledge: 'Knowledge',
     evolution: 'Evolution',
-    tools: 'Tools',
-    skills: 'Skills',
-    subagents: 'Sub-agents',
+    extensions: 'Extensions',
     a2a: 'A2A',
     workspace: 'Workspace',
     workflows: 'Workflows',
@@ -329,8 +329,8 @@ export const AGENT_WORKBENCH_AREAS: Array<{
         id: 'capabilities',
         labelKey: 'agent.workbench.capabilities',
         fallback: 'Capabilities',
-        primaryTab: 'tools',
-        tabs: ['tools', 'skills', 'workflows'],
+        primaryTab: 'extensions',
+        tabs: ['extensions', 'workflows'],
     },
     {
         id: 'memory',
@@ -343,8 +343,8 @@ export const AGENT_WORKBENCH_AREAS: Array<{
         id: 'team',
         labelKey: 'agent.workbench.team',
         fallback: 'A2A / Team',
-        primaryTab: 'subagents',
-        tabs: ['subagents', 'a2a'],
+        primaryTab: 'a2a',
+        tabs: ['a2a'],
     },
     {
         id: 'documents',
@@ -2768,28 +2768,10 @@ function AgentDetailInner() {
                     <AgentWorkflowsSection agentId={id!} canManage={(agent as any)?.access_level !== 'use'} />
                 )}
 
-                {/* ── Tools Tab ── */}
-                {
-                    activeTab === 'tools' && (
-                        <div>
-                            <div className="agent-detail-tools-header">
-                                <h3 className="agent-detail-tools-header-title">{t('agent.toolMgmt.title')}</h3>
-                                <p className="agent-detail-tools-header-desc">{t('agent.toolMgmt.description')}</p>
-                            </div>
-                            <ToolsManager agentId={id!} canManage={canManage} />
-                        </div>
-                    )
-                }
-
-                {/* ── Skills Tab ── */}
-                {
-                    activeTab === 'skills' && <AgentSkillsSection agentId={id!} />
-                }
-
-                {/* ── Sub-agents Tab (C3, §12.8 fourth capability module) ── */}
-                {
-                    activeTab === 'subagents' && <AgentSubagentsSection agentId={id!} canManage={canManage} />
-                }
+                {/* ── Extensions Tab: MCP/plugins, Skills, and Sub-agents ── */}
+                {activeTab === 'extensions' && (
+                    <AgentExtensionsSection agentId={id!} canManage={canManage} />
+                )}
 
                 {/* ── A2A Tab ── */}
                 {

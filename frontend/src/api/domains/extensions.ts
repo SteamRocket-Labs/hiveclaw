@@ -42,6 +42,7 @@ export interface AgentExtensions {
   skills: ExtensionSkill[];
   mcp_servers: AgentMcpServer[];
   plugins?: Array<InstalledPlugin & { enabled: boolean }>;
+  external_activations?: ExternalExtensionActivationSummary[];
 }
 
 /** Tenant-managed MCP server record (company admin, server-first). */
@@ -104,9 +105,60 @@ export interface McpImportRequest {
   config?: Record<string, unknown>;
 }
 
-export interface McpImportResult {
-  message: string;
-  server: McpServerRecord | null;
+export interface ExternalCapabilityReviewSummary {
+  id: string;
+  source_format: string;
+  source_uri: string;
+  source_ref?: string | null;
+  source_hash?: string;
+  normalized_name: string;
+  status: string;
+  admission_class?: string;
+  admission_report?: Record<string, unknown>;
+  governance_projection?: Record<string, unknown>;
+  normalized_manifest?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ExternalCapabilitySnapshotSummary {
+  id: string;
+  review_id?: string;
+  snapshot_key?: string;
+  source_format: string;
+  source_uri: string;
+  source_ref?: string | null;
+  source_hash?: string;
+  normalized_name: string;
+  status: string;
+  admission_class?: string;
+  admission_report?: Record<string, unknown>;
+  governance_projection?: Record<string, unknown>;
+  component_manifest?: Record<string, unknown>;
+  approved_at?: string;
+  created_at?: string;
+}
+
+export interface ExternalCapabilityReviewResult extends ExternalCapabilityReviewSummary {
+  snapshot?: ExternalCapabilitySnapshotSummary | null;
+}
+
+export interface ExternalExtensionActivationSummary {
+  id: string;
+  snapshot_id: string;
+  status: string;
+  normalized_name?: string;
+  source_format?: string;
+  source_uri?: string;
+  component_types?: Record<string, unknown>;
+  activation_result?: Record<string, unknown>;
+  activated_at?: string;
+}
+
+export interface ExternalExtensionActivationResult {
+  activation: ExternalExtensionActivationSummary;
+  snapshot: ExternalCapabilitySnapshotSummary;
+  result: Record<string, unknown>;
 }
 
 export const extensionsApi = {
@@ -142,9 +194,21 @@ export const extensionsApi = {
   /** Company admin: tenant MCP server records, server-first with stable identity. */
   listEnterpriseMcpServers: () => get<McpServerRecord[]>('/enterprise/mcp-servers'),
 
-  /** Company admin: import an MCP server for the tenant (creates one server record). */
+  /** Company admin: stage an external MCP server through Trust Gate review. */
   importEnterpriseMcpServer: (body: McpImportRequest) =>
-    post<McpImportResult>('/enterprise/mcp-servers/import', body),
+    post<ExternalCapabilityReviewResult>('/enterprise/mcp-servers/import', body),
+
+  /** Company admin: list Trust Gate review records for external capabilities. */
+  listExternalCapabilityReviews: () =>
+    get<ExternalCapabilityReviewSummary[]>('/enterprise/external-capabilities/reviews'),
+
+  /** Company admin: approve one staged external capability snapshot. */
+  approveExternalCapabilityReview: (reviewId: string) =>
+    post<ExternalCapabilityReviewResult>(`/enterprise/external-capabilities/reviews/${reviewId}/approve`),
+
+  /** Agent owner/admin: activate one approved external snapshot for this agent. */
+  activateExternalExtension: (agentId: string, snapshotId: string) =>
+    post<ExternalExtensionActivationResult>(`/agents/${agentId}/external-extensions/${snapshotId}/activate`),
 
   /** Company admin: delete one tenant MCP server record by its stable id. */
   deleteEnterpriseMcpServer: (serverId: string) =>

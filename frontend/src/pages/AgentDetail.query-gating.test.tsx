@@ -75,11 +75,10 @@ vi.mock('./agent-detail/AgentAwareSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentChatSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentMindSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentSettingsSection', () => ({ default: () => null }));
-vi.mock('./agent-detail/AgentSkillsSection', () => ({ default: () => null }));
+vi.mock('./agent-detail/AgentExtensionsSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentStatusSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentWorkspaceSection', () => ({ default: () => null }));
 vi.mock('./agent-detail/AgentA2ASection', () => ({ default: () => null }));
-vi.mock('./agent-detail/ToolsManager', () => ({ default: () => null }));
 
 import AgentDetail from './AgentDetail';
 
@@ -138,8 +137,7 @@ describe('AgentDetail aware reflection session gating', () => {
     expect(markup).toContain('A2A / Team');
     expect(markup).toContain('Documents &amp; Workspace');
     expect(markup).toContain('Permissions &amp; Settings');
-    expect(markup).toContain('Tools');
-    expect(markup).toContain('Skills');
+    expect(markup).toContain('Extensions');
     expect(markup).toContain('Workflows');
   });
 });

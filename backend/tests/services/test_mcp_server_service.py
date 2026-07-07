@@ -229,10 +229,11 @@ async def test_get_agent_extensions_has_both_keys(monkeypatch):
 
     result = await mcp_server_service.get_agent_extensions(db, agent_id)
 
-    assert set(result.keys()) == {"skills", "mcp_servers", "plugins"}
+    assert set(result.keys()) == {"skills", "mcp_servers", "plugins", "external_activations"}
     assert result["skills"][0]["source"] == "workspace"
     assert result["mcp_servers"] == []
     assert result["plugins"] == []
+    assert result["external_activations"] == []
     assert "pack_name" not in result
 
 
@@ -305,6 +306,7 @@ async def test_get_agent_extensions_includes_agent_plugin_assignments(monkeypatc
         [
             _Result(scalar=SimpleNamespace(id=agent_id, tenant_id=tenant_id)),  # agent lookup
             _Result(rows=[(plugin, assignment)]),  # plugin assignments
+            _Result(rows=[]),  # external activations
             _Result(scalars=[]),  # installed skill records
             _Result(rows=[]),  # get_agent_mcp_servers → no assignments
         ]
@@ -320,6 +322,58 @@ async def test_get_agent_extensions_includes_agent_plugin_assignments(monkeypatc
             "status": "enabled",
             "source_kind": "builtin",
             "enabled": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_extensions_includes_external_snapshot_activations(monkeypatch):
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    activation_id = uuid4()
+    snapshot_id = uuid4()
+
+    async def fake_skills(_agent_id):
+        return []
+
+    monkeypatch.setattr(mcp_server_service, "_list_agent_workspace_skills", fake_skills)
+    activation = SimpleNamespace(
+        id=activation_id,
+        snapshot_id=snapshot_id,
+        status="active",
+        component_types_json={"skill": 1, "mcp_server": 1},
+        activation_result_json={"activated_components": [{"type": "skill", "name": "secops"}]},
+        activated_at=None,
+    )
+    snapshot = SimpleNamespace(
+        id=snapshot_id,
+        source_format="cc_plugin",
+        source_uri="https://github.com/acme/secops-plugin",
+        normalized_name="secops-plugin",
+    )
+    db = _SpyDB(
+        [
+            _Result(scalar=SimpleNamespace(id=agent_id, tenant_id=tenant_id)),  # agent lookup
+            _Result(rows=[]),  # plugin assignments
+            _Result(rows=[(activation, snapshot)]),  # external activations
+            _Result(scalars=[]),  # installed skill records
+            _Result(rows=[]),  # get_agent_mcp_servers → no assignments
+        ]
+    )
+
+    result = await mcp_server_service.get_agent_extensions(db, agent_id)
+
+    assert result["external_activations"] == [
+        {
+            "id": str(activation_id),
+            "snapshot_id": str(snapshot_id),
+            "status": "active",
+            "normalized_name": "secops-plugin",
+            "source_format": "cc_plugin",
+            "source_uri": "https://github.com/acme/secops-plugin",
+            "component_types": {"skill": 1, "mcp_server": 1},
+            "activation_result": {"activated_components": [{"type": "skill", "name": "secops"}]},
+            "activated_at": None,
         }
     ]
 

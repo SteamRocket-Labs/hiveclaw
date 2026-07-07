@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
 from app.models.capability_install import AgentCapabilityInstall
+from app.models.external_capability import ExternalCapabilitySnapshot, ExternalExtensionActivation
 from app.models.mcp_server import (
     AgentMCPServerAssignment,
     AgentMCPToolOverride,
@@ -259,10 +260,49 @@ def _dedupe_skill_extensions(skills: list[dict]) -> list[dict]:
     return deduped
 
 
+def _isoformat_or_none(value) -> str | None:
+    return value.isoformat() if hasattr(value, "isoformat") else None
+
+
+async def _list_agent_external_activations(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+) -> list[dict]:
+    """Read approved external snapshot activations into the agent extension DTO."""
+    result = await db.execute(
+        select(ExternalExtensionActivation, ExternalCapabilitySnapshot)
+        .join(ExternalCapabilitySnapshot, ExternalCapabilitySnapshot.id == ExternalExtensionActivation.snapshot_id)
+        .where(
+            ExternalExtensionActivation.tenant_id == tenant_id,
+            ExternalExtensionActivation.agent_id == agent_id,
+            ExternalExtensionActivation.status == "active",
+            ExternalCapabilitySnapshot.status == "approved",
+        )
+        .order_by(ExternalExtensionActivation.activated_at.desc())
+    )
+    return [
+        {
+            "id": str(activation.id),
+            "snapshot_id": str(snapshot.id),
+            "status": activation.status,
+            "normalized_name": snapshot.normalized_name,
+            "source_format": snapshot.source_format,
+            "source_uri": snapshot.source_uri,
+            "component_types": getattr(activation, "component_types_json", None) or {},
+            "activation_result": getattr(activation, "activation_result_json", None) or {},
+            "activated_at": _isoformat_or_none(getattr(activation, "activated_at", None)),
+        }
+        for activation, snapshot in result.all()
+    ]
+
+
 async def get_agent_extensions(db: AsyncSession, agent_id: uuid.UUID) -> dict:
     """Single source of truth for an agent's extension state: skills + MCP + plugins."""
     agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
     plugins: list[dict] = []
+    external_activations: list[dict] = []
     if agent and agent.tenant_id:
         rows = (
             (
@@ -294,12 +334,18 @@ async def get_agent_extensions(db: AsyncSession, agent_id: uuid.UUID) -> dict:
             }
             for plugin, assignment in rows
         ]
+        external_activations = await _list_agent_external_activations(
+            db,
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+        )
     return {
         "skills": _dedupe_skill_extensions(
             [*(await _list_agent_workspace_skills(agent_id)), *(await _list_installed_skill_extensions(db, agent_id))]
         ),
         "mcp_servers": await get_agent_mcp_servers(db, agent_id),
         "plugins": plugins,
+        "external_activations": external_activations,
     }
 
 

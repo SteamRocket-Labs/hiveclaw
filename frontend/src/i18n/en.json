@@ -721,6 +721,8 @@
       "knowledgeTooltip": "What this employee knows — wiki, memory entries, promotion candidates, and provenance",
       "evolution": "Evolution",
       "evolutionTooltip": "How this employee improves over time — skill lifecycle and promotion history",
+      "extensions": "Extensions",
+      "extensionsTooltip": "MCP servers, plugins, skills, and sub-agents available to this employee",
       "tools": "MCP",
       "toolsTooltip": "External connectors and tools via MCP — servers, capabilities, and access policy",
       "skills": "Skills",
@@ -743,6 +745,17 @@
       "approvals": "Approvals",
       "approvalsTooltip": "Actions waiting for your review before they can proceed",
       "settings": "Settings"
+    },
+    "extensions": {
+      "title": "Capabilities",
+      "tabsLabel": "Capability types",
+      "tabs": {
+        "mcp": "MCP & Plugins",
+        "skills": "Skills",
+        "subagents": "Sub-agents"
+      },
+      "externalSnapshots": "Approved External Snapshots",
+      "noExternalSnapshots": "No approved external snapshots activated"
     },
     "detail": {
       "loading": "Loading...",

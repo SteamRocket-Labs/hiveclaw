@@ -31,6 +31,13 @@ const STATUS_COLORS: Record<string, string> = {
 
 const statusColor = (status?: string) => STATUS_COLORS[status || ''] || 'var(--text-tertiary)';
 
+export function externalActivationComponentSummary(componentTypes?: Record<string, unknown> | null): string {
+  return Object.entries(componentTypes ?? {})
+    .filter(([, count]) => Number(count) > 0)
+    .map(([componentType, count]) => `${componentType} ${Number(count)}`)
+    .join(' · ');
+}
+
 export default function ToolsManager({ agentId, canManage = false }: ToolsManagerProps) {
   const { t } = useTranslation();
   const [tools, setTools] = useState<AgentTool[]>([]);
@@ -206,6 +213,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
 
   const mcpServers = extensions?.mcp_servers ?? [];
   const plugins = extensions?.plugins ?? [];
+  const externalActivations = extensions?.external_activations ?? [];
 
   const configToolForServerTool = (server: AgentMcpServer, serverTool: AgentMcpServerTool) =>
     tools.find((tool) => {
@@ -288,6 +296,39 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
           ) : (
             <div className="card tools-manager-empty">
               {t('agent.extensions.noPlugins', 'No plugins assigned')}
+            </div>
+          )}
+        </section>
+
+        <section>
+          {moduleTitle(t('agent.extensions.externalSnapshots', 'Approved External Snapshots'), externalActivations.length)}
+          {externalActivations.length > 0 ? (
+            <div className="tools-manager-list">
+              {externalActivations.map((activation) => {
+                const componentSummary = externalActivationComponentSummary(activation.component_types);
+                return (
+                  <div key={activation.id} className="card tools-manager-row">
+                    <div className="tools-manager-min0">
+                      <div className="tools-manager-row-head">
+                        <span className="tools-manager-name">
+                          {activation.normalized_name || activation.snapshot_id}
+                        </span>
+                        <span className="tools-manager-tag">
+                          {activation.source_format || 'external'}
+                        </span>
+                      </div>
+                      <div className="tools-manager-sub">
+                        {activation.status}
+                        {componentSummary ? ` · ${componentSummary}` : ''}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="card tools-manager-empty">
+              {t('agent.extensions.noExternalSnapshots', 'No approved external snapshots activated')}
             </div>
           )}
         </section>

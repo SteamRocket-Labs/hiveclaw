@@ -897,10 +897,16 @@ def _build_agent_message_tool_executor(
 ):
     """Wrap A2A tool execution with chat-history persistence."""
 
-    async def _executor(tool_name: str, tool_args: dict) -> str:
+    async def _executor(tool_name: str, tool_args: dict, *, emit_runtime_hooks: bool = True) -> str:
         from app.services.agent_tools import execute_tool
 
-        tool_result = await execute_tool(tool_name, tool_args, target_agent_id, owner_id)
+        tool_result = await execute_tool(
+            tool_name,
+            tool_args,
+            target_agent_id,
+            owner_id,
+            emit_runtime_hooks=emit_runtime_hooks,
+        )
         await _persist_agent_tool_call(
             session_agent_id=session_agent_id,
             owner_id=owner_id,

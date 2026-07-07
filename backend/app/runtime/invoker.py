@@ -1035,6 +1035,8 @@ async def _execute_tool_with_request(
             executor_kwargs["tool_call_id"] = tool_call_id
         if trace_metadata_sink is not None and (accepts_kwargs or "trace_metadata_sink" in executor_params):
             executor_kwargs["trace_metadata_sink"] = trace_metadata_sink
+        if accepts_kwargs or "emit_runtime_hooks" in executor_params:
+            executor_kwargs["emit_runtime_hooks"] = False
         frame_kwargs = _tool_frame_kwargs_from_session_context(request.session_context)
         for key, value in frame_kwargs.items():
             if accepts_kwargs or key in executor_params:

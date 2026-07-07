@@ -522,6 +522,37 @@ async def test_custom_tool_executor_receives_delegation_token(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_custom_tool_executor_disables_inner_runtime_hooks():
+    from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request
+
+    seen: dict[str, object] = {}
+
+    async def custom_executor(tool_name, args, *, emit_runtime_hooks=True):
+        seen["tool_name"] = tool_name
+        seen["args"] = args
+        seen["emit_runtime_hooks"] = emit_runtime_hooks
+        return "custom-ok"
+
+    async def emit_event(_payload):
+        return None
+
+    request = AgentInvocationRequest(
+        model=object(),
+        messages=[{"role": "user", "content": "x"}],
+        agent_name="Agent",
+        role_description="role",
+        tool_executor=custom_executor,
+    )
+
+    result = await _execute_tool_with_request("read_file", {"path": "workspace/notes.md"}, request, emit_event)
+
+    assert result == "custom-ok"
+    assert seen["tool_name"] == "read_file"
+    assert seen["args"] == {"path": "workspace/notes.md"}
+    assert seen["emit_runtime_hooks"] is False
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_receives_interactive_available_for_web_chat_session(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request
     from app.runtime.session import SessionContext

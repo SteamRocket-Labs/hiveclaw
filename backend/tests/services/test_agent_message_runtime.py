@@ -133,8 +133,8 @@ async def test_build_agent_message_tool_executor_persists_tool_calls(monkeypatch
     participant_id = uuid4()
     calls = {}
 
-    async def fake_execute_tool(tool_name, args, agent_id, user_id):
-        calls["execute"] = (tool_name, args, agent_id, user_id)
+    async def fake_execute_tool(tool_name, args, agent_id, user_id, *, emit_runtime_hooks=True):
+        calls["execute"] = (tool_name, args, agent_id, user_id, emit_runtime_hooks)
         return "TOOL_RESULT"
 
     async def fake_persist(**kwargs):
@@ -151,7 +151,7 @@ async def test_build_agent_message_tool_executor_persists_tool_calls(monkeypatch
         participant_id=participant_id,
     )
 
-    result = await executor("read_file", {"path": "skills/test/SKILL.md"})
+    result = await executor("read_file", {"path": "skills/test/SKILL.md"}, emit_runtime_hooks=False)
 
     assert result == "TOOL_RESULT"
     assert calls["execute"] == (
@@ -159,6 +159,7 @@ async def test_build_agent_message_tool_executor_persists_tool_calls(monkeypatch
         {"path": "skills/test/SKILL.md"},
         target_id,
         owner_id,
+        False,
     )
     assert calls["persist"]["tool_name"] == "read_file"
     assert calls["persist"]["tool_args"] == {"path": "skills/test/SKILL.md"}

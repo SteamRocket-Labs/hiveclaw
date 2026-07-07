@@ -35,7 +35,21 @@ COMMAND_PARITY_TOOLS = {
     "advanced_plan",
     "verify_plan",
 }
-ADVANCED_WEB_TOOLS = {"exa_search", "tavily_search", "firecrawl_fetch", "xcrawl_scrape"}
+ADVANCED_WEB_TOOLS = {
+    "advanced_web_search",
+    "advanced_web_fetch",
+    "anysearch_get_sub_domains",
+    "anysearch_search",
+    "anysearch_batch_search",
+    "anysearch_extract",
+    "exa_search",
+    "exa_fetch",
+    "tavily_search",
+    "tavily_extract",
+    "firecrawl_search",
+    "firecrawl_fetch",
+    "xcrawl_scrape",
+}
 CODING_PLUGIN_TOOLS = {"lsp_symbol_search", "worktree_create", "notebook_edit", "browser_ui_open"}
 OFFICE_RUNTIME_TOOLS = {
     "read_document",

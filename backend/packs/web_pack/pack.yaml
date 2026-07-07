@@ -1,12 +1,20 @@
 name: web_pack
 version: "0.1.0"
-description: Web search and provider-backed page extraction.
+description: No-key-first advanced web search and provider-backed page extraction.
 source:
   kind: builtin
 
 tools:
   - name: web_search
     role: requires_core
+    governance:
+      security_zone: public
+  - name: advanced_web_search
+    role: optional_provider
+    governance:
+      security_zone: public
+  - name: advanced_web_fetch
+    role: optional_provider
     governance:
       security_zone: public
   - name: anysearch_get_sub_domains
@@ -29,7 +37,19 @@ tools:
     role: optional_provider
     governance:
       security_zone: public
+  - name: exa_fetch
+    role: optional_provider
+    governance:
+      security_zone: public
   - name: tavily_search
+    role: optional_provider
+    governance:
+      security_zone: public
+  - name: tavily_extract
+    role: optional_provider
+    governance:
+      security_zone: public
+  - name: firecrawl_search
     role: optional_provider
     governance:
       security_zone: public
@@ -51,26 +71,38 @@ credential_requirements:
       - anysearch_search
       - anysearch_batch_search
       - anysearch_extract
+      - advanced_web_search
+      - advanced_web_fetch
   - key: exa_api_key
     scope: tenant
     storage: encrypted_tool_config
     used_by:
       - exa_search
+      - exa_fetch
+      - advanced_web_search
+      - advanced_web_fetch
   - key: tavily_api_key
     scope: tenant
     storage: encrypted_tool_config
     used_by:
       - tavily_search
+      - tavily_extract
+      - advanced_web_search
+      - advanced_web_fetch
   - key: firecrawl_api_key
     scope: tenant
     storage: encrypted_tool_config
     used_by:
+      - firecrawl_search
       - firecrawl_fetch
+      - advanced_web_search
+      - advanced_web_fetch
   - key: xcrawl_api_key
     scope: tenant
     storage: encrypted_tool_config
     used_by:
       - xcrawl_scrape
+      - advanced_web_fetch
 
 activation:
   default_state: active

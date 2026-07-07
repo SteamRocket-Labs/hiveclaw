@@ -341,7 +341,18 @@ _GENERIC_EXTERNAL_EFFECT_LABELS: frozenset[str] = frozenset(
 
 ACTION_DISPLAY_LABELS: dict[str, str] = {
     "web_search": "Web 来源核验",
+    "advanced_web_search": "Web 来源核验",
     "web_fetch": "Web 来源核验",
+    "advanced_web_fetch": "Web 来源核验",
+    "anysearch_get_sub_domains": "Web 来源核验",
+    "anysearch_search": "Web 来源核验",
+    "anysearch_batch_search": "Web 来源核验",
+    "anysearch_extract": "Web 来源核验",
+    "exa_search": "Web 来源核验",
+    "exa_fetch": "Web 来源核验",
+    "tavily_search": "Web 来源核验",
+    "tavily_extract": "Web 来源核验",
+    "firecrawl_search": "Web 来源核验",
     "firecrawl_fetch": "Web 来源核验",
     "xcrawl_scrape": "Web 来源核验",
     "list_files": "只读工作区检查",

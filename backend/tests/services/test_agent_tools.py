@@ -452,7 +452,7 @@ async def test_get_agent_tools_for_llm_hides_hr_only_assignment_from_regular_age
 
 
 @pytest.mark.asyncio
-async def test_get_agent_tools_for_llm_hides_unavailable_external_providers(monkeypatch):
+async def test_get_agent_tools_for_llm_keeps_keyless_web_providers_visible(monkeypatch):
     from app.services import agent_tools as agent_tools_module
 
     async def no_exa_key() -> str:
@@ -486,12 +486,75 @@ async def test_get_agent_tools_for_llm_hides_unavailable_external_providers(monk
 
     assert "web_fetch" in names
     assert "web_search" in names
-    assert "exa_search" not in names
-    assert "tavily_search" not in names
-    assert "firecrawl_fetch" not in names
+    assert "advanced_web_search" in names
+    assert "advanced_web_fetch" in names
+    assert "anysearch_get_sub_domains" in names
+    assert "anysearch_search" in names
+    assert "anysearch_batch_search" in names
+    assert "anysearch_extract" in names
+    assert "exa_search" in names
+    assert "exa_fetch" in names
+    assert "tavily_search" in names
+    assert "tavily_extract" in names
+    assert "firecrawl_search" in names
+    assert "firecrawl_fetch" in names
     assert "xcrawl_scrape" not in names
     assert "discover_resources" not in names
     assert "import_mcp_server" not in names
+
+
+@pytest.mark.asyncio
+async def test_provider_available_tools_respects_explicit_api_key_mode(monkeypatch):
+    from app.services import agent_tools as agent_tools_module
+
+    async def no_key() -> str:
+        return ""
+
+    async def api_key_required_config(tool_name: str) -> dict:
+        if tool_name == "web_search":
+            return {"anysearch_auth_mode": "api_key", "anysearch_api_keys": ""}
+        if tool_name in {
+            "advanced_web_search",
+            "advanced_web_fetch",
+            "exa_search",
+            "exa_fetch",
+            "tavily_search",
+            "tavily_extract",
+            "firecrawl_search",
+            "firecrawl_fetch",
+        }:
+            return {"auth_mode": "api_key", "api_key": ""}
+        return {}
+
+    async def no_smithery_key(_agent_id=None) -> str:
+        return ""
+
+    async def no_modelscope_token() -> str:
+        return ""
+
+    monkeypatch.setattr(agent_tools_module, "_get_exa_api_key", no_key)
+    monkeypatch.setattr(agent_tools_module, "_get_tavily_api_key", no_key)
+    monkeypatch.setattr(agent_tools_module, "_get_firecrawl_api_key", no_key)
+    monkeypatch.setattr(agent_tools_module, "_get_xcrawl_api_key", no_key)
+    monkeypatch.setattr(agent_tools_module, "_get_tool_config", api_key_required_config)
+    monkeypatch.setattr("app.services.resource_discovery._get_smithery_api_key", no_smithery_key)
+    monkeypatch.setattr("app.services.resource_discovery._get_modelscope_api_token", no_modelscope_token)
+
+    available = await agent_tools_module._provider_available_tools()
+
+    assert "advanced_web_search" not in available
+    assert "advanced_web_fetch" not in available
+    assert "anysearch_get_sub_domains" not in available
+    assert "anysearch_search" not in available
+    assert "anysearch_batch_search" not in available
+    assert "anysearch_extract" not in available
+    assert "exa_search" not in available
+    assert "exa_fetch" not in available
+    assert "tavily_search" not in available
+    assert "tavily_extract" not in available
+    assert "firecrawl_search" not in available
+    assert "firecrawl_fetch" not in available
+    assert "xcrawl_scrape" not in available
 
 
 def test_filter_feishu_tools_for_access_allows_cli_backed_office_tools_without_channel():

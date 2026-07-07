@@ -314,6 +314,126 @@ async def anysearch_extract(arguments: dict) -> str:
     return await _anysearch_extract(arguments)
 
 
+# ── advanced web routers ─────────────────────────────────────────────
+
+
+@tool(
+    ToolMeta(
+        name="advanced_web_search",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
+        description=(
+            "Advanced web search router for no-key providers by default. It chooses among AnySearch vertical "
+            "search, Exa AI-native search, Tavily real-time search, and Firecrawl Search when core `web_search` "
+            "is too shallow, stale, sparse, or needs result content.\n\n"
+            "Usage:\n"
+            "- Use this after `web_search` is insufficient, or when you already know the query needs an advanced provider.\n"
+            "- Set `intent=vertical` with domain/sub_domain data for AnySearch; use `intent=news/current/finance` for Tavily; use `intent=semantic/company/research_paper` for Exa; use `include_content=true` or `intent=content` for Firecrawl Search.\n"
+            "- Leave `provider=auto` unless you need a deterministic provider override."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Concise search query."},
+                "intent": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "vertical",
+                        "current",
+                        "news",
+                        "finance",
+                        "semantic",
+                        "company",
+                        "research_paper",
+                        "content",
+                    ],
+                    "description": "Routing hint for the advanced search provider.",
+                },
+                "provider": {
+                    "type": "string",
+                    "enum": ["auto", "anysearch", "exa", "tavily", "firecrawl"],
+                    "description": "Optional deterministic provider override.",
+                },
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+                "include_content": {
+                    "type": "boolean",
+                    "description": "Use Firecrawl Search when result body content is needed with search results.",
+                },
+                "domain": {"type": "string", "enum": _ANYSEARCH_DOMAINS},
+                "sub_domain": {"type": "string"},
+                "sub_domain_params": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": "AnySearch vertical sub-domain parameters discovered through anysearch_get_sub_domains.",
+                },
+            },
+            "required": ["query"],
+        },
+        category="search",
+        display_name="Advanced Web Search",
+        icon="\U0001f9ed",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="web_pack",
+        adapter="args_only",
+    )
+)
+async def advanced_web_search(arguments: dict) -> str:
+    from app.services.agent_tool_domains.web_mcp import _advanced_web_search
+
+    return await _advanced_web_search(arguments)
+
+
+@tool(
+    ToolMeta(
+        name="advanced_web_fetch",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
+        description=(
+            "Advanced web fetch router for known URLs. It tries direct `web_fetch`, Firecrawl, Tavily Extract, "
+            "Exa Fetch, AnySearch Extract, and XCrawl only when configured.\n\n"
+            "Usage:\n"
+            "- Use this when a known URL needs stronger extraction than direct `web_fetch`, or when you want one router to try alternate readers.\n"
+            "- Set `prefer_rendered=true` for JS-rendered pages so Firecrawl runs before direct `web_fetch`.\n"
+            "- Set `provider` only for deterministic overrides; `provider=xcrawl` requires a configured XCrawl API key."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to read or extract."},
+                "provider": {
+                    "type": "string",
+                    "enum": ["auto", "web_fetch", "firecrawl", "tavily", "exa", "anysearch", "xcrawl"],
+                    "description": "Optional deterministic provider override.",
+                },
+                "prefer_rendered": {
+                    "type": "boolean",
+                    "description": "Run Firecrawl before direct web_fetch for JS-rendered or blocked pages.",
+                },
+                "skip_core": {
+                    "type": "boolean",
+                    "description": "Skip direct web_fetch in auto mode and start with provider extractors.",
+                },
+                "max_chars": {"type": "integer", "minimum": 1, "maximum": 30000},
+            },
+            "required": ["url"],
+        },
+        category="search",
+        display_name="Advanced Web Fetch",
+        icon="\U0001f310",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="web_pack",
+        adapter="args_only",
+    )
+)
+async def advanced_web_fetch(arguments: dict) -> str:
+    from app.services.agent_tool_domains.web_mcp import _advanced_web_fetch
+
+    return await _advanced_web_fetch(arguments)
+
+
 # ── advanced search providers ────────────────────────────────────────
 
 
@@ -330,7 +450,7 @@ async def anysearch_extract(arguments: dict) -> str:
             "- Use Exa when you need AI-native search, semantic/source discovery, dense extracted text, or a known retrieval category such as research papers, companies, people, news, or financial reports.\n"
             "- `search_type` controls latency vs. reasoning depth: auto/instant/fast for quick retrieval; deep-lite/deep/deep-reasoning for harder synthesized research.\n"
             "- Results include titles, URLs, and extracted text. Follow up with `web_fetch`, `firecrawl_fetch`, or `xcrawl_scrape` for full page content when needed.\n"
-            "- Requires Exa API configuration."
+            "- Works with no API key through Exa MCP by default; an Exa API key upgrades the direct API path and production limits."
         ),
         parameters={
             "type": "object",
@@ -381,10 +501,27 @@ async def anysearch_extract(arguments: dict) -> str:
         governance="safe",
         pack="web_pack",
         adapter="args_only",
-        config={"api_key": "", "max_results": 5},
+        config={"api_key": "", "auth_mode": "auto", "mcp_url": "https://mcp.exa.ai/mcp", "max_results": 5},
         config_schema={
             "fields": [
                 {"key": "api_key", "label": "Exa API Key", "type": "password", "default": "", "placeholder": "exk_..."},
+                {
+                    "key": "auth_mode",
+                    "label": "Auth mode",
+                    "type": "select",
+                    "options": [
+                        {"value": "auto", "label": "Auto (API key when configured, otherwise keyless Exa MCP)"},
+                        {"value": "keyless", "label": "Keyless Exa MCP"},
+                        {"value": "api_key", "label": "API key required"},
+                    ],
+                    "default": "auto",
+                },
+                {
+                    "key": "mcp_url",
+                    "label": "Exa MCP URL",
+                    "type": "text",
+                    "default": "https://mcp.exa.ai/mcp",
+                },
                 {
                     "key": "max_results",
                     "label": "Default results count",
@@ -405,6 +542,59 @@ async def exa_search(arguments: dict) -> str:
 
 @tool(
     ToolMeta(
+        name="exa_fetch",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
+        description=(
+            "Exa Fetch for reading a known URL through Exa MCP. Works with no API key by default via Exa MCP; "
+            "configured keys upgrade limits/control.\n\n"
+            "Usage:\n"
+            "- Use after Exa or other search returns a URL and you want Exa's fetched page content.\n"
+            "- For ordinary static pages, `web_fetch` is still the lightest first reader; use `advanced_web_fetch` when unsure."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch through Exa MCP."},
+                "max_chars": {"type": "integer", "minimum": 1, "maximum": 30000},
+            },
+            "required": ["url"],
+        },
+        category="search",
+        display_name="Exa Fetch",
+        icon="\U0001f4d6",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="web_pack",
+        adapter="args_only",
+        config={"api_key": "", "auth_mode": "auto", "mcp_url": "https://mcp.exa.ai/mcp"},
+        config_schema={
+            "fields": [
+                {"key": "api_key", "label": "Exa API Key", "type": "password", "default": "", "placeholder": "exk_..."},
+                {
+                    "key": "auth_mode",
+                    "label": "Auth mode",
+                    "type": "select",
+                    "options": [
+                        {"value": "auto", "label": "Auto (API key when configured, otherwise keyless Exa MCP)"},
+                        {"value": "keyless", "label": "Keyless Exa MCP"},
+                        {"value": "api_key", "label": "API key required"},
+                    ],
+                    "default": "auto",
+                },
+                {"key": "mcp_url", "label": "Exa MCP URL", "type": "text", "default": "https://mcp.exa.ai/mcp"},
+            ]
+        },
+    )
+)
+async def exa_fetch(arguments: dict) -> str:
+    from app.services.agent_tool_domains.web_mcp import _exa_fetch
+
+    return await _exa_fetch(arguments)
+
+
+@tool(
+    ToolMeta(
         name="tavily_search",
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
@@ -415,7 +605,7 @@ async def exa_search(arguments: dict) -> str:
             "- Use Tavily when you need real-time web access, current factual retrieval, RAG-friendly content, or topic routing (`general`, `news`, `finance`).\n"
             "- `search_depth` controls latency vs. relevance: ultra-fast/fast for speed, basic for balanced lookup, advanced for high-relevance chunks.\n"
             "- Use `time_range`, `start_date`, or `end_date` for freshness; use `include_answer` for a sourced provider answer; use `include_raw_content` when the model needs cleaned page content.\n"
-            "- Requires Tavily API configuration."
+            "- Works with no API key by default via Tavily keyless search; a Tavily API key upgrades limits without changing result parsing."
         ),
         parameters={
             "type": "object",
@@ -479,7 +669,7 @@ async def exa_search(arguments: dict) -> str:
         governance="safe",
         pack="web_pack",
         adapter="args_only",
-        config={"api_key": "", "max_results": 5},
+        config={"api_key": "", "auth_mode": "auto", "max_results": 5},
         config_schema={
             "fields": [
                 {
@@ -488,6 +678,17 @@ async def exa_search(arguments: dict) -> str:
                     "type": "password",
                     "default": "",
                     "placeholder": "tvly-...",
+                },
+                {
+                    "key": "auth_mode",
+                    "label": "Auth mode",
+                    "type": "select",
+                    "options": [
+                        {"value": "auto", "label": "Auto (API key when configured, otherwise keyless)"},
+                        {"value": "keyless", "label": "Keyless"},
+                        {"value": "api_key", "label": "API key required"},
+                    ],
+                    "default": "auto",
                 },
                 {
                     "key": "max_results",
@@ -505,6 +706,71 @@ async def tavily_search(arguments: dict) -> str:
     from app.services.agent_tool_domains.web_mcp import _tavily_search
 
     return await _tavily_search(arguments)
+
+
+@tool(
+    ToolMeta(
+        name="tavily_extract",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
+        description=(
+            "Tavily Extract for reading a known URL with Tavily's extraction API. Works with no API key by default; "
+            "configured keys upgrade limits.\n\n"
+            "Usage:\n"
+            "- Use when you already have a URL and want Tavily Extract's cleaned content.\n"
+            "- Use `extract_depth=advanced` for harder pages; keep `format=markdown` for LLM-ready reading."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to extract."},
+                "extract_depth": {
+                    "type": "string",
+                    "enum": ["basic", "advanced"],
+                    "description": "Tavily extraction depth. Default basic.",
+                },
+                "format": {"type": "string", "enum": ["markdown", "text"], "description": "Output format."},
+                "include_images": {"type": "boolean", "description": "Include image metadata when supported."},
+                "max_chars": {"type": "integer", "minimum": 1, "maximum": 30000},
+            },
+            "required": ["url"],
+        },
+        category="search",
+        display_name="Tavily Extract",
+        icon="\U0001f4c4",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="web_pack",
+        adapter="args_only",
+        config={"api_key": "", "auth_mode": "auto"},
+        config_schema={
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "Tavily API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "tvly-...",
+                },
+                {
+                    "key": "auth_mode",
+                    "label": "Auth mode",
+                    "type": "select",
+                    "options": [
+                        {"value": "auto", "label": "Auto (API key when configured, otherwise keyless)"},
+                        {"value": "keyless", "label": "Keyless"},
+                        {"value": "api_key", "label": "API key required"},
+                    ],
+                    "default": "auto",
+                },
+            ]
+        },
+    )
+)
+async def tavily_extract(arguments: dict) -> str:
+    from app.services.agent_tool_domains.web_mcp import _tavily_extract
+
+    return await _tavily_extract(arguments)
 
 
 # ── web_fetch ───────────────────────────────────────────────────────
@@ -553,6 +819,90 @@ async def web_fetch(arguments: dict) -> str:
     return await _web_fetch(arguments)
 
 
+# ── firecrawl_search ─────────────────────────────────────────────────
+
+
+@tool(
+    ToolMeta(
+        name="firecrawl_search",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
+        description=(
+            "Firecrawl `/search` for keyword search with optional result content scraping. Works with no API key "
+            "by default; configured keys or self-hosted base URLs upgrade limits/control.\n\n"
+            "Usage:\n"
+            "- Use when search results should include scraped LLM-ready content, or when `advanced_web_search` routes to Firecrawl.\n"
+            "- Do not use this for a known URL; use `firecrawl_fetch` or `advanced_web_fetch` instead."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+                "include_content": {
+                    "type": "boolean",
+                    "description": "Ask Firecrawl Search to scrape markdown content for results.",
+                },
+                "sources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional Firecrawl source filters when supported.",
+                },
+            },
+            "required": ["query"],
+        },
+        category="search",
+        display_name="Firecrawl Search",
+        icon="\U0001f50d",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="web_pack",
+        adapter="args_only",
+        config={"api_key": "", "auth_mode": "auto", "base_url": "https://api.firecrawl.dev", "max_results": 5},
+        config_schema={
+            "fields": [
+                {
+                    "key": "api_key",
+                    "label": "Firecrawl API Key",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "fc-...",
+                },
+                {
+                    "key": "auth_mode",
+                    "label": "Auth mode",
+                    "type": "select",
+                    "options": [
+                        {"value": "auto", "label": "Auto (API key when configured, otherwise keyless)"},
+                        {"value": "keyless", "label": "Keyless"},
+                        {"value": "api_key", "label": "API key required"},
+                    ],
+                    "default": "auto",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Firecrawl API Base URL",
+                    "type": "text",
+                    "default": "https://api.firecrawl.dev",
+                },
+                {
+                    "key": "max_results",
+                    "label": "Default results count",
+                    "type": "number",
+                    "default": 5,
+                    "min": 1,
+                    "max": 20,
+                },
+            ]
+        },
+    )
+)
+async def firecrawl_search(arguments: dict) -> str:
+    from app.services.agent_tool_domains.web_mcp import _firecrawl_search
+
+    return await _firecrawl_search(arguments)
+
+
 # ── firecrawl_fetch ──────────────────────────────────────────────────
 
 
@@ -569,7 +919,7 @@ async def web_fetch(arguments: dict) -> str:
             "- Prefer `formats=['markdown']` for normal reading; add `links`, `summary`, `html`, `screenshot`, or `json` only when the downstream task needs those formats.\n"
             "- Use `only_main_content`, `only_clean_content`, `include_tags`, `exclude_tags`, or `wait_for_ms` to reduce page chrome or wait for JS-rendered content.\n"
             "- Do NOT use this for keyword search. If you do not have a URL yet, search first.\n"
-            "- This tool is provider-backed and requires Firecrawl configuration."
+            "- Works with no API key by default on Firecrawl keyless `/scrape`; a Firecrawl API key or self-hosted base URL can be configured for production limits/control."
         ),
         parameters={
             "type": "object",
@@ -617,7 +967,7 @@ async def web_fetch(arguments: dict) -> str:
         governance="safe",
         pack="web_pack",
         adapter="args_only",
-        config={"api_key": ""},
+        config={"api_key": "", "auth_mode": "auto", "base_url": "https://api.firecrawl.dev"},
         config_schema={
             "fields": [
                 {
@@ -626,7 +976,24 @@ async def web_fetch(arguments: dict) -> str:
                     "type": "password",
                     "default": "",
                     "placeholder": "fc-...",
-                }
+                },
+                {
+                    "key": "auth_mode",
+                    "label": "Auth mode",
+                    "type": "select",
+                    "options": [
+                        {"value": "auto", "label": "Auto (API key when configured, otherwise keyless)"},
+                        {"value": "keyless", "label": "Keyless"},
+                        {"value": "api_key", "label": "API key required"},
+                    ],
+                    "default": "auto",
+                },
+                {
+                    "key": "base_url",
+                    "label": "Firecrawl API Base URL",
+                    "type": "text",
+                    "default": "https://api.firecrawl.dev",
+                },
             ]
         },
     )

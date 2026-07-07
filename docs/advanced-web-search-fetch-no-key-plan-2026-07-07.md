@@ -901,3 +901,76 @@ Only when provider-specific control is needed:
 - 不把 XCrawl 无 key 时展示给 agent。
 - 不把 ScrapeGraphAI hosted API 当 no-key provider。
 - 不要求用户手动 import 外部 MCP 才能用默认高级 web research。
+
+## 11. 实施证据日志
+
+### 11.1 后端工具链与治理 surface
+
+完成时间：2026-07-07
+
+已落地：
+
+- `backend/app/services/agent_tool_domains/web_mcp.py`
+  - AnySearch MCP 改为 no-key anonymous default。
+  - `anysearch_auth_mode=api_key` 且无 key 时才返回 `provider_not_configured`。
+  - 新增 `advanced_web_search` / `advanced_web_fetch` router。
+  - 新增 `firecrawl_search`、`tavily_extract`、`exa_fetch` provider adapter。
+  - `advanced_web_fetch` 无 `XCRAWL_API_KEY` 时不会把 XCrawl 放进 fallback plan。
+- `backend/app/tools/handlers/search.py`
+  - 暴露 `advanced_web_search`、`advanced_web_fetch`、`firecrawl_search`、`tavily_extract`、`exa_fetch` ToolMeta。
+- `backend/app/services/agent_tools.py`
+  - Exa/Tavily/Firecrawl/AnySearch/advanced routers 默认 no-key 可见。
+  - XCrawl 保持 keyed-only。
+- `backend/app/services/governance_capability_taxonomy.py`
+  - `web_pack` taxonomy、`CAPABILITY_MAP` 覆盖新 search/read tools。
+- `backend/packs/web_pack/pack.yaml` 与 `packs/web_pack/pack.yaml`
+  - root/backend manifest 同步新增工具和 credential used_by。
+- runtime policy 同步：
+  - `backend/app/tools/registry.py`
+  - `backend/app/tools/service.py`
+  - `backend/app/runtime/tool_result_ledger.py`
+  - `backend/app/tools/plan_mode_policy.py`
+  - `backend/app/tools/governance.py`
+  - `backend/app/services/capability_gate.py`
+  - `backend/app/services/plan_mode_core.py`
+  - `backend/app/kernel/engine.py`
+  - `backend/app/agents/orchestrator.py`
+  - `backend/app/agents/subagent.py`
+- API catalog：
+  - `backend/app/api/tools.py` 返回 `provider_auth` metadata，前端可直接展示 no-key/optional-key/key-required 状态。
+
+验证命令：
+
+```bash
+source backend/.venv/bin/activate && pytest backend/tests/services/test_web_mcp_resilience.py backend/tests/tools/test_search_provider_tool_definitions.py backend/tests/api/test_tools_api_surface.py backend/tests/services/test_agent_tools.py -q
+```
+
+结果：
+
+```text
+93 passed, 3 warnings
+```
+
+验证命令：
+
+```bash
+source backend/.venv/bin/activate && pytest backend/tests/services/test_web_mcp_resilience.py backend/tests/tools/test_search_provider_tool_definitions.py backend/tests/api/test_tools_api_surface.py backend/tests/services/test_agent_tools.py backend/tests/services/test_capability_gate_policy_surface.py backend/tests/services/test_capability_group_policy_service.py backend/tests/services/test_pack_policy_service.py backend/tests/services/test_agent_tools_core_surface.py backend/tests/tools/test_bridge_equivalence.py backend/tests/tools/test_plan_mode_policy.py backend/tests/tools/test_parallel_metadata.py backend/tests/services/test_prompt_contracts.py backend/tests/tools/test_tool_contract.py -q
+```
+
+结果：
+
+```text
+197 passed, 4 warnings
+```
+
+验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && ruff check app/services/agent_tool_domains/web_mcp.py app/tools/handlers/search.py app/services/agent_tools.py app/services/governance_capability_taxonomy.py app/api/tools.py app/tools/registry.py app/tools/service.py app/runtime/tool_result_ledger.py app/tools/plan_mode_policy.py app/tools/governance.py app/services/capability_gate.py app/services/plan_mode_core.py app/kernel/engine.py app/agents/orchestrator.py app/agents/subagent.py tests/services/test_web_mcp_resilience.py tests/tools/test_search_provider_tool_definitions.py tests/api/test_tools_api_surface.py tests/services/test_agent_tools.py tests/services/test_capability_gate_policy_surface.py tests/services/test_capability_group_policy_service.py tests/services/test_pack_policy_service.py tests/services/test_agent_tools_core_surface.py tests/tools/test_bridge_equivalence.py tests/tools/test_plan_mode_policy.py tests/tools/test_parallel_metadata.py tests/services/test_prompt_contracts.py
+```
+
+结果：
+
+```text
+All checks passed!
+```

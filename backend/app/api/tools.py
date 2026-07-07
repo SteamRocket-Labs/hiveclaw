@@ -35,6 +35,23 @@ from app.services.tool_visibility import is_tool_allowed_for_agent
 
 router = APIRouter(tags=["tools"])
 
+_NO_KEY_DEFAULT_WEB_TOOLS = frozenset({"advanced_web_search", "advanced_web_fetch"})
+_OPTIONAL_KEY_WEB_TOOLS = frozenset(
+    {
+        "anysearch_get_sub_domains",
+        "anysearch_search",
+        "anysearch_batch_search",
+        "anysearch_extract",
+        "exa_search",
+        "exa_fetch",
+        "tavily_search",
+        "tavily_extract",
+        "firecrawl_search",
+        "firecrawl_fetch",
+    }
+)
+_KEY_REQUIRED_WEB_TOOLS = frozenset({"xcrawl_scrape"})
+
 
 class ToolCreateIn(BaseModel):
     name: str
@@ -339,6 +356,40 @@ async def _probe_feishu_cardkit_status(
     }
 
 
+def _provider_auth_metadata(tool_name: str) -> dict | None:
+    name = str(tool_name or "").strip()
+    if name in _NO_KEY_DEFAULT_WEB_TOOLS:
+        return {
+            "mode": "no_key_default",
+            "keyless_supported": True,
+            "credential_optional": True,
+            "key_required": False,
+            "label": "No key by default",
+            "description": (
+                "Routes to no-key-capable web providers by default. Optional provider keys only upgrade limits or production control."
+            ),
+        }
+    if name in _OPTIONAL_KEY_WEB_TOOLS:
+        return {
+            "mode": "optional_key",
+            "keyless_supported": True,
+            "credential_optional": True,
+            "key_required": False,
+            "label": "Optional key",
+            "description": "No API key is required by default. Adding a key upgrades provider limits or production control.",
+        }
+    if name in _KEY_REQUIRED_WEB_TOOLS:
+        return {
+            "mode": "key_required",
+            "keyless_supported": False,
+            "credential_optional": False,
+            "key_required": True,
+            "label": "Key required",
+            "description": "This provider is shown only as a configured add-on and requires its own API key to run.",
+        }
+    return None
+
+
 def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | None = None) -> dict:
     taxonomy = capability_descriptor_for_tool(str(tool.name))
     governance_taxonomy = None
@@ -372,7 +423,7 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
             "requires_local_bridge": False,
             "source": "custom_api",
         }
-    return {
+    payload = {
         "id": str(tool.id),
         "name": tool.name,
         "display_name": tool.display_name,
@@ -393,6 +444,10 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
         "tenant_id": str(tool.tenant_id) if tool.tenant_id else None,
         "governance_taxonomy": governance_taxonomy,
     }
+    provider_auth = _provider_auth_metadata(str(tool.name))
+    if provider_auth is not None:
+        payload["provider_auth"] = provider_auth
+    return payload
 
 
 async def _resolve_tenant_scope(

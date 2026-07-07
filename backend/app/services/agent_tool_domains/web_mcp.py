@@ -87,6 +87,24 @@ def _optional_bool(value: object, default: bool) -> bool:
     return bool(value)
 
 
+def _provider_auth_mode(config: dict, *, key: str = "auth_mode", default: str = "auto") -> str:
+    return _optional_enum(config.get(key), _WEB_PROVIDER_AUTH_MODES, default=default) or default
+
+
+def _anysearch_auth_mode(config: dict) -> str:
+    mode = config.get("anysearch_auth_mode")
+    if mode is None:
+        mode = config.get("auth_mode")
+    return _optional_enum(mode, _WEB_PROVIDER_AUTH_MODES, default="auto") or "auto"
+
+
+def _truncate_result_text(text: object, max_chars: int) -> str:
+    result = str(text or "").strip()
+    if len(result) > max_chars:
+        return result[:max_chars] + f"\n\n[... truncated at {max_chars} chars]"
+    return result
+
+
 _URL_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?$")
 _SKIP_CRAWLER_FALLBACK = "_skip_crawler_fallback"
 _SKIP_WEB_FETCH_FALLBACK = "_skip_web_fetch_fallback"
@@ -96,10 +114,27 @@ _EXA_CATEGORIES = {"company", "research paper", "news", "personal site", "financ
 _TAVILY_SEARCH_DEPTHS = {"basic", "advanced", "fast", "ultra-fast"}
 _TAVILY_TOPICS = {"general", "news", "finance"}
 _TAVILY_TIME_RANGES = {"day", "week", "month", "year", "d", "w", "m", "y"}
+_TAVILY_EXTRACT_DEPTHS = {"basic", "advanced"}
+_WEB_PROVIDER_AUTH_MODES = {"auto", "api_key", "keyless"}
+_ADVANCED_WEB_SEARCH_INTENTS = {
+    "auto",
+    "vertical",
+    "current",
+    "news",
+    "finance",
+    "semantic",
+    "company",
+    "research_paper",
+    "content",
+}
+_ADVANCED_WEB_SEARCH_PROVIDERS = {"auto", "anysearch", "exa", "tavily", "firecrawl"}
+_ADVANCED_WEB_FETCH_PROVIDERS = {"auto", "web_fetch", "firecrawl", "tavily", "exa", "anysearch", "xcrawl"}
 _ANYSEARCH_API_URL = "https://api.anysearch.com/v1/search"
 _ANYSEARCH_MCP_URL = "https://api.anysearch.com/mcp"
 _ANYSEARCH_ZONES = {"intl", "cn"}
 _ANYSEARCH_LOCAL_COUNTER = itertools.count()
+_EXA_MCP_URL = "https://mcp.exa.ai/mcp"
+_FIRECRAWL_API_BASE_URL = "https://api.firecrawl.dev"
 _FIRECRAWL_FORMATS = ("markdown", "summary", "html", "rawHtml", "links", "screenshot", "json")
 _XCRAWL_OUTPUT_FORMATS = ("markdown", "html", "raw_html", "links", "summary", "screenshot", "json")
 _XCRAWL_WAIT_UNTIL = {"load", "domcontentloaded", "networkidle"}
@@ -354,15 +389,18 @@ def _with_anysearch_max_results(arguments: dict, value: object) -> dict:
 async def _call_anysearch_mcp_tool(public_tool_name: str, mcp_tool_name: str, arguments: dict) -> str:
     config = await _get_tool_config("web_search")
     keys = _anysearch_api_keys(config)
-    allow_anonymous = _optional_bool(config.get("anysearch_allow_anonymous"), False)
-    if not keys and not allow_anonymous:
+    auth_mode = _anysearch_auth_mode(config)
+    if auth_mode == "api_key" and not keys:
         return render_tool_error(
             tool_name=public_tool_name,
             error_class="provider_not_configured",
             message=f"{public_tool_name} requires configured AnySearch API keys.",
             provider="anysearch_mcp",
             retryable=False,
-            actionable_hint="Configure AnySearch API keys on web_search, or explicitly enable anonymous AnySearch for dev/eval only.",
+            actionable_hint=(
+                "Set anysearch_auth_mode=auto/keyless for anonymous AnySearch MCP access, "
+                "or configure AnySearch API keys on web_search."
+            ),
         )
 
     key_scope = str(config.get("anysearch_key_scope") or "global").strip() or "global"
@@ -846,14 +884,15 @@ async def _exa_search(arguments: dict) -> str:
 
     config = await _get_tool_config("exa_search")
     api_key = config.get("api_key") or config.get("exa_api_key") or await _get_exa_api_key()
-    if not api_key:
+    auth_mode = _optional_enum(config.get("auth_mode"), _WEB_PROVIDER_AUTH_MODES | {"mcp_keyless"}, default="auto")
+    if auth_mode == "api_key" and not api_key:
         return render_tool_error(
             tool_name="exa_search",
             error_class="provider_not_configured",
             message="Exa API key is not configured.",
             provider="exa",
             retryable=False,
-            actionable_hint="Use web_search for basic no-key lookup, or configure Exa before using exa_search.",
+            actionable_hint="Set auth_mode=auto/keyless for no-key Exa MCP search, or configure an Exa API key.",
         )
     max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 20)
     search_type = _optional_enum(arguments.get("search_type"), _EXA_SEARCH_TYPES, default="auto")
@@ -862,6 +901,19 @@ async def _exa_search(arguments: dict) -> str:
     exclude_domains = _string_list(arguments.get("exclude_domains"))
     start_published_date = _optional_string(arguments.get("start_published_date"))
     end_published_date = _optional_string(arguments.get("end_published_date"))
+    if not api_key or auth_mode == "keyless" or auth_mode == "mcp_keyless":
+        return await _search_exa_mcp(
+            query,
+            max_results,
+            search_type=search_type,
+            category=category,
+            include_domains=include_domains,
+            exclude_domains=exclude_domains,
+            start_published_date=start_published_date,
+            end_published_date=end_published_date,
+            api_key=None,
+            mcp_url=_optional_string(config.get("mcp_url")) or _EXA_MCP_URL,
+        )
     return await _search_exa(
         query,
         api_key,
@@ -894,14 +946,15 @@ async def _tavily_search(arguments: dict) -> str:
 
     config = await _get_tool_config("tavily_search")
     api_key = config.get("api_key") or config.get("tavily_api_key") or await _get_tavily_api_key()
-    if not api_key:
+    auth_mode = _optional_enum(config.get("auth_mode"), _WEB_PROVIDER_AUTH_MODES, default="auto")
+    if auth_mode == "api_key" and not api_key:
         return render_tool_error(
             tool_name="tavily_search",
             error_class="provider_not_configured",
             message="Tavily API key is not configured.",
             provider="tavily",
             retryable=False,
-            actionable_hint="Use web_search for basic no-key lookup, or configure Tavily before using tavily_search.",
+            actionable_hint="Set auth_mode=auto/keyless for no-key Tavily search, or configure a Tavily API key.",
         )
     max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 20)
     search_depth = _optional_enum(arguments.get("search_depth"), _TAVILY_SEARCH_DEPTHS, default="basic")
@@ -926,20 +979,173 @@ async def _tavily_search(arguments: dict) -> str:
         include_raw_content=include_raw_content,
         include_domains=include_domains,
         exclude_domains=exclude_domains,
+        keyless=not api_key or auth_mode == "keyless",
+    )
+
+
+async def _advanced_web_search(arguments: dict) -> str:
+    query = _optional_string(arguments.get("query"))
+    if not query:
+        return _invalid_argument_error(
+            "advanced_web_search",
+            "advanced_web_search requires a non-empty query.",
+            provider="advanced_web_search",
+            hint="Pass concise search keywords. If you already have a URL, use advanced_web_fetch.",
+        )
+    if _looks_like_url(query):
+        return _invalid_argument_error(
+            "advanced_web_search",
+            "advanced_web_search expects search keywords, not a URL.",
+            provider="advanced_web_search",
+            hint="Use advanced_web_fetch when you already have a specific URL.",
+        )
+
+    intent = _optional_enum(arguments.get("intent"), _ADVANCED_WEB_SEARCH_INTENTS, default="auto") or "auto"
+    provider = _optional_enum(arguments.get("provider"), _ADVANCED_WEB_SEARCH_PROVIDERS, default="auto") or "auto"
+    max_results = max(1, min(_safe_int(arguments.get("max_results"), 5), 20))
+    include_content = _optional_bool(arguments.get("include_content"), False)
+
+    if provider == "anysearch" or intent == "vertical" or arguments.get("domain") or arguments.get("sub_domain"):
+        payload: dict[str, object] = {"query": query, "max_results": min(max_results, 10)}
+        for key in ("domain", "sub_domain"):
+            value = _optional_string(arguments.get(key))
+            if value:
+                payload[key] = value
+        sub_domain_params = arguments.get("sub_domain_params")
+        if isinstance(sub_domain_params, dict) and sub_domain_params:
+            payload["sub_domain_params"] = sub_domain_params
+        return await _anysearch_search(payload)
+
+    if provider == "firecrawl" or intent == "content" or include_content:
+        return await _firecrawl_search(
+            {
+                "query": query,
+                "max_results": max_results,
+                "include_content": include_content or intent == "content",
+            }
+        )
+
+    if provider == "tavily" or intent in {"current", "news", "finance"}:
+        payload = {"query": query, "max_results": max_results}
+        if intent in {"news", "current"}:
+            payload["topic"] = "news"
+        elif intent == "finance":
+            payload["topic"] = "finance"
+        return await _tavily_search(payload)
+
+    payload = {"query": query, "max_results": max_results}
+    if provider == "exa" or intent in {"semantic", "company", "research_paper", "auto"}:
+        if intent == "company":
+            payload["category"] = "company"
+        elif intent == "research_paper":
+            payload["category"] = "research paper"
+        return await _exa_search(payload)
+
+    return await _exa_search(payload)
+
+
+async def _advanced_web_fetch(arguments: dict) -> str:
+    url = _optional_string(arguments.get("url"))
+    if not url:
+        return _invalid_argument_error(
+            "advanced_web_fetch",
+            "advanced_web_fetch requires a URL.",
+            provider="advanced_web_fetch",
+            hint="Pass a fully-qualified URL or a domain-like URL such as example.com/path.",
+        )
+    normalized_url = _normalize_url(url)
+    if not normalized_url:
+        return _invalid_argument_error(
+            "advanced_web_fetch",
+            f"advanced_web_fetch received an invalid URL: {url}",
+            provider="advanced_web_fetch",
+            hint="Use a valid URL. If you only have keywords, use advanced_web_search first.",
+        )
+
+    provider = _optional_enum(arguments.get("provider"), _ADVANCED_WEB_FETCH_PROVIDERS, default="auto") or "auto"
+    max_chars = min(_safe_int(arguments.get("max_chars"), 12000), 30000)
+    prefer_rendered = _optional_bool(arguments.get("prefer_rendered"), False)
+    skip_core = _optional_bool(arguments.get("skip_core"), False)
+
+    async def _call_provider(name: str) -> str:
+        if name == "web_fetch":
+            return await _web_fetch(
+                {"url": normalized_url, "max_chars": min(max_chars, 20000), _SKIP_CRAWLER_FALLBACK: True}
+            )
+        if name == "firecrawl":
+            return await _firecrawl_fetch(
+                {"url": normalized_url, "max_chars": max_chars, _SKIP_WEB_FETCH_FALLBACK: True}
+            )
+        if name == "tavily":
+            return await _tavily_extract({"url": normalized_url, "max_chars": max_chars})
+        if name == "exa":
+            return await _exa_fetch({"url": normalized_url, "max_chars": max_chars})
+        if name == "anysearch":
+            return await _anysearch_extract({"url": normalized_url})
+        if name == "xcrawl":
+            return await _xcrawl_scrape(
+                {"url": normalized_url, "max_chars": max_chars, _SKIP_FIRECRAWL_FALLBACK: True}
+            )
+        return render_tool_error(
+            tool_name="advanced_web_fetch",
+            error_class="bad_arguments",
+            message=f"Unsupported advanced_web_fetch provider '{name}'.",
+            provider="advanced_web_fetch",
+            retryable=False,
+            actionable_hint="Use auto, web_fetch, firecrawl, tavily, exa, anysearch, or xcrawl.",
+        )
+
+    if provider != "auto":
+        if provider == "xcrawl" and not await _get_xcrawl_api_key():
+            return render_tool_error(
+                tool_name="advanced_web_fetch",
+                error_class="provider_not_configured",
+                message="XCrawl API key is not configured.",
+                provider="xcrawl",
+                retryable=False,
+                actionable_hint="Configure XCrawl before selecting provider=xcrawl, or use the no-key default fetch route.",
+            )
+        return await _call_provider(provider)
+
+    provider_order = ["firecrawl"] if prefer_rendered else []
+    if not skip_core and "web_fetch" not in provider_order:
+        provider_order.append("web_fetch")
+    for candidate in ("firecrawl", "tavily", "exa", "anysearch"):
+        if candidate not in provider_order:
+            provider_order.append(candidate)
+    if await _get_xcrawl_api_key():
+        provider_order.append("xcrawl")
+
+    failures: list[str] = []
+    for candidate in provider_order:
+        result = await _call_provider(candidate)
+        if not _provider_result_failed(result):
+            return result
+        failures.append(f"{candidate}: {result.splitlines()[0][:160] if result else 'empty result'}")
+
+    return render_tool_error(
+        tool_name="advanced_web_fetch",
+        error_class="provider_error",
+        message=f"advanced_web_fetch could not read {normalized_url} with providers: {'; '.join(failures)[:500]}",
+        provider="advanced_web_fetch",
+        retryable=True,
+        actionable_hint=(
+            "Try provider=firecrawl for rendered pages, provider=tavily/exa/anysearch for alternate extractors, "
+            "or configure XCrawl for hard JS/proxy/device cases."
+        ),
     )
 
 
 async def _try_crawler_fetch_fallback(normalized_url: str, max_chars: int) -> tuple[str, str] | None:
-    if await _get_firecrawl_api_key():
-        firecrawl_result = await _firecrawl_fetch(
-            {
-                "url": normalized_url,
-                "max_chars": max_chars,
-                _SKIP_WEB_FETCH_FALLBACK: True,
-            }
-        )
-        if not _provider_result_failed(firecrawl_result):
-            return ("firecrawl_fetch", firecrawl_result)
+    firecrawl_result = await _firecrawl_fetch(
+        {
+            "url": normalized_url,
+            "max_chars": max_chars,
+            _SKIP_WEB_FETCH_FALLBACK: True,
+        }
+    )
+    if not _provider_result_failed(firecrawl_result):
+        return ("firecrawl_fetch", firecrawl_result)
 
     if await _get_xcrawl_api_key():
         xcrawl_result = await _xcrawl_scrape(
@@ -1227,6 +1433,245 @@ async def _get_xcrawl_api_key() -> str:
     return config.get("api_key") or get_settings().XCRAWL_API_KEY
 
 
+async def _firecrawl_search(arguments: dict) -> str:
+    query = _optional_string(arguments.get("query"))
+    if not query:
+        return _invalid_argument_error(
+            "firecrawl_search",
+            "firecrawl_search requires a non-empty query.",
+            provider="firecrawl",
+            hint="Pass concise search keywords. If you already have a URL, use firecrawl_fetch or advanced_web_fetch.",
+        )
+    if _looks_like_url(query):
+        return _invalid_argument_error(
+            "firecrawl_search",
+            "firecrawl_search expects search keywords, not a URL.",
+            provider="firecrawl",
+            hint="Use firecrawl_fetch or advanced_web_fetch when you already have a specific URL.",
+        )
+
+    config = await _get_tool_config("firecrawl_search")
+    api_key = config.get("api_key") or config.get("firecrawl_api_key") or await _get_firecrawl_api_key()
+    auth_mode = _provider_auth_mode(config)
+    if auth_mode == "api_key" and not api_key:
+        return render_tool_error(
+            tool_name="firecrawl_search",
+            error_class="provider_not_configured",
+            message="Firecrawl API key is not configured.",
+            provider="firecrawl",
+            retryable=False,
+            actionable_hint="Set auth_mode=auto/keyless for no-key Firecrawl search, or configure a Firecrawl API key.",
+        )
+
+    max_results = max(1, min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 20))
+    include_content = _optional_bool(arguments.get("include_content"), False)
+    request_payload: dict[str, object] = {"query": query, "limit": max_results}
+    if include_content:
+        request_payload["scrapeOptions"] = {"formats": ["markdown"], "onlyMainContent": True}
+    sources = _string_list(arguments.get("sources"))
+    if sources:
+        request_payload["sources"] = sources
+
+    try:
+        headers = {"Content-Type": "application/json"}
+        if api_key and auth_mode != "keyless":
+            headers["Authorization"] = f"Bearer {api_key}"
+        base_url = (_optional_string(config.get("base_url")) or _FIRECRAWL_API_BASE_URL).rstrip("/")
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.post(f"{base_url}/v2/search", json=request_payload, headers=headers)
+
+        data = (
+            resp.json()
+            if "json" in (resp.headers.get("content-type", "") or "").lower() or resp.text.strip().startswith("{")
+            else {}
+        )
+        if resp.status_code != 200:
+            return _http_error(
+                "firecrawl_search",
+                provider="firecrawl",
+                status_code=resp.status_code,
+                detail=str(data) or resp.text,
+                hint="Retry later, narrow the query, or use another advanced search provider.",
+            )
+
+        payload = data.get("data", data) if isinstance(data, dict) else data
+        raw_results = payload if isinstance(payload, list) else payload.get("results", []) if isinstance(payload, dict) else []
+        results = []
+        for item in raw_results[:max_results]:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title") or item.get("name") or ""
+            url = item.get("url") or item.get("link") or ""
+            text = (
+                item.get("markdown")
+                or item.get("content")
+                or item.get("description")
+                or item.get("snippet")
+                or item.get("summary")
+                or ""
+            )
+            if not (title or url or text):
+                continue
+            results.append(f"**{title}**\n{url}\n{str(text)[:500]}")
+        if not results:
+            return f'🔍 No Firecrawl search results found for "{query}"'
+        return f'🔍 Firecrawl search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
+    except Exception as e:
+        return render_tool_error(
+            tool_name="firecrawl_search",
+            error_class="provider_error",
+            message=f"firecrawl_search failed: {str(e)[:300]}",
+            provider="firecrawl",
+            retryable=True,
+            actionable_hint="Retry later or use another advanced search provider.",
+        )
+
+
+async def _tavily_extract(arguments: dict) -> str:
+    url = _optional_string(arguments.get("url"))
+    if not url:
+        return _invalid_argument_error(
+            "tavily_extract",
+            "tavily_extract requires a URL.",
+            provider="tavily",
+            hint="Pass the URL returned by search when you need Tavily Extract content.",
+        )
+    normalized_url = _normalize_url(url)
+    if not normalized_url:
+        return _invalid_argument_error(
+            "tavily_extract",
+            f"tavily_extract received an invalid URL: {url}",
+            provider="tavily",
+            hint="Use a valid URL. If you only have keywords, use advanced_web_search first.",
+        )
+
+    config = await _get_tool_config("tavily_extract")
+    api_key = config.get("api_key") or config.get("tavily_api_key") or await _get_tavily_api_key()
+    auth_mode = _provider_auth_mode(config)
+    if auth_mode == "api_key" and not api_key:
+        return render_tool_error(
+            tool_name="tavily_extract",
+            error_class="provider_not_configured",
+            message="Tavily API key is not configured.",
+            provider="tavily",
+            retryable=False,
+            actionable_hint="Set auth_mode=auto/keyless for no-key Tavily Extract, or configure a Tavily API key.",
+        )
+
+    max_chars = min(_safe_int(arguments.get("max_chars"), 12000), 30000)
+    extract_depth = _optional_enum(arguments.get("extract_depth"), _TAVILY_EXTRACT_DEPTHS, default="basic") or "basic"
+    output_format = _optional_enum(arguments.get("format"), {"markdown", "text"}, default="markdown") or "markdown"
+    payload: dict[str, object] = {
+        "urls": [normalized_url],
+        "extract_depth": extract_depth,
+        "format": output_format,
+    }
+    include_images = arguments.get("include_images")
+    if include_images is not None:
+        payload["include_images"] = _optional_bool(include_images, False)
+
+    try:
+        headers = {"Content-Type": "application/json"}
+        if api_key and auth_mode != "keyless":
+            headers["Authorization"] = f"Bearer {api_key}"
+        else:
+            headers["X-Tavily-Access-Mode"] = "keyless"
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.post("https://api.tavily.com/extract", json=payload, headers=headers)
+        data = resp.json()
+        if resp.status_code != 200:
+            detail = data.get("error") if isinstance(data, dict) else None
+            return _http_error(
+                "tavily_extract",
+                provider="tavily",
+                status_code=resp.status_code,
+                detail=str(detail or data),
+                hint="Retry later or use another advanced_web_fetch provider.",
+            )
+        results = data.get("results", []) if isinstance(data, dict) else []
+        first = next((item for item in results if isinstance(item, dict)), {})
+        text = (
+            first.get("raw_content")
+            or first.get("content")
+            or first.get("markdown")
+            or first.get("text")
+            or ""
+        )
+        text = _truncate_result_text(text, max_chars)
+        if not text:
+            return render_tool_error(
+                tool_name="tavily_extract",
+                error_class="empty_content",
+                message=f"tavily_extract returned empty content for {normalized_url}",
+                provider="tavily",
+                retryable=False,
+                actionable_hint="Try web_fetch, Firecrawl, Exa Fetch, or AnySearch Extract.",
+            )
+        return f"📄 **Tavily extracted content from: {normalized_url}**\n\n{text}"
+    except Exception as e:
+        return render_tool_error(
+            tool_name="tavily_extract",
+            error_class="provider_error",
+            message=f"tavily_extract failed: {str(e)[:300]}",
+            provider="tavily",
+            retryable=True,
+            actionable_hint="Retry later or use another advanced_web_fetch provider.",
+        )
+
+
+async def _exa_fetch(arguments: dict) -> str:
+    url = _optional_string(arguments.get("url"))
+    if not url:
+        return _invalid_argument_error(
+            "exa_fetch",
+            "exa_fetch requires a URL.",
+            provider="exa",
+            hint="Pass a URL returned by search when you need Exa Fetch content.",
+        )
+    normalized_url = _normalize_url(url)
+    if not normalized_url:
+        return _invalid_argument_error(
+            "exa_fetch",
+            f"exa_fetch received an invalid URL: {url}",
+            provider="exa",
+            hint="Use a valid URL. If you only have keywords, use advanced_web_search first.",
+        )
+
+    config = await _get_tool_config("exa_fetch")
+    api_key = config.get("api_key") or config.get("exa_api_key") or await _get_exa_api_key()
+    auth_mode = _provider_auth_mode(config)
+    if auth_mode == "api_key" and not api_key:
+        return render_tool_error(
+            tool_name="exa_fetch",
+            error_class="provider_not_configured",
+            message="Exa API key is not configured.",
+            provider="exa",
+            retryable=False,
+            actionable_hint="Set auth_mode=auto/keyless for no-key Exa MCP Fetch, or configure an Exa API key.",
+        )
+
+    from app.services.mcp_client import MCPClient
+
+    mcp_url = _optional_string(config.get("mcp_url")) or _EXA_MCP_URL
+    mcp_api_key = None if auth_mode == "keyless" or not api_key else str(api_key)
+    try:
+        client = MCPClient(mcp_url, api_key=mcp_api_key)
+        result = await client.call_tool("web_fetch_exa", {"url": normalized_url})
+        if _provider_result_failed(result):
+            return result
+        max_chars = min(_safe_int(arguments.get("max_chars"), 12000), 30000)
+        return f"📄 **Exa MCP fetched content from: {normalized_url}**\n\n{_truncate_result_text(result, max_chars)}"
+    except Exception as e:
+        return render_tool_error(
+            tool_name="exa_fetch",
+            error_class="provider_error",
+            message=f"exa_fetch failed: {str(e)[:300]}",
+            provider="exa",
+            retryable=True,
+            actionable_hint="Retry later or use another advanced_web_fetch provider.",
+        )
+
+
 async def _firecrawl_fetch(arguments: dict) -> str:
     url = arguments.get("url", "").strip()
     if not url:
@@ -1246,15 +1691,17 @@ async def _firecrawl_fetch(arguments: dict) -> str:
             hint="Use a valid URL. If you only have keywords, use web_search first.",
         )
 
-    api_key = await _get_firecrawl_api_key()
-    if not api_key:
+    config = await _get_tool_config("firecrawl_fetch")
+    api_key = config.get("api_key") or config.get("firecrawl_api_key") or await _get_firecrawl_api_key()
+    auth_mode = _optional_enum(config.get("auth_mode"), _WEB_PROVIDER_AUTH_MODES, default="auto")
+    if auth_mode == "api_key" and not api_key:
         return render_tool_error(
             tool_name="firecrawl_fetch",
             error_class="provider_not_configured",
             message="Firecrawl API key is not configured.",
             provider="firecrawl",
             retryable=False,
-            actionable_hint="Configure Firecrawl before using this tool, or fall back to web_fetch.",
+            actionable_hint="Set auth_mode=auto/keyless for no-key Firecrawl scrape, or configure a Firecrawl API key.",
         )
 
     max_chars = min(_safe_int(arguments.get("max_chars", 12000), 12000), 30000)
@@ -1275,14 +1722,15 @@ async def _firecrawl_fetch(arguments: dict) -> str:
         request_payload["excludeTags"] = exclude_tags
 
     try:
+        headers = {"Content-Type": "application/json"}
+        if api_key and auth_mode != "keyless":
+            headers["Authorization"] = f"Bearer {api_key}"
+        base_url = (_optional_string(config.get("base_url")) or _FIRECRAWL_API_BASE_URL).rstrip("/")
         async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
             resp = await client.post(
-                "https://api.firecrawl.dev/v2/scrape",
+                f"{base_url}/v2/scrape",
                 json=request_payload,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
             )
 
         data = (
@@ -1597,9 +2045,57 @@ async def _search_exa(
     return f'🔍 Exa search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
 
 
+async def _search_exa_mcp(
+    query: str,
+    max_results: int,
+    *,
+    search_type: str | None = "auto",
+    category: str | None = None,
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+    start_published_date: str | None = None,
+    end_published_date: str | None = None,
+    api_key: str | None = None,
+    mcp_url: str = _EXA_MCP_URL,
+) -> str:
+    from app.services.mcp_client import MCPClient
+
+    advanced = bool(
+        (search_type and search_type != "auto")
+        or category
+        or include_domains
+        or exclude_domains
+        or start_published_date
+        or end_published_date
+    )
+    tool_name = "web_search_advanced_exa" if advanced else "web_search_exa"
+    tool_arguments: dict[str, object] = {
+        "query": query,
+        "numResults": max_results,
+    }
+    if advanced:
+        tool_arguments["type"] = search_type or "auto"
+        if category:
+            tool_arguments["category"] = category
+        if include_domains:
+            tool_arguments["includeDomains"] = include_domains
+        if exclude_domains:
+            tool_arguments["excludeDomains"] = exclude_domains
+        if start_published_date:
+            tool_arguments["startPublishedDate"] = start_published_date
+        if end_published_date:
+            tool_arguments["endPublishedDate"] = end_published_date
+
+    client = MCPClient(mcp_url, api_key=api_key)
+    result = await client.call_tool(tool_name, tool_arguments)
+    if _provider_result_failed(result):
+        return result
+    return f'🔍 Exa MCP search for "{query}" ({max_results} requested):\n\n{result}'
+
+
 async def _search_tavily(
     query: str,
-    api_key: str,
+    api_key: str | None,
     max_results: int,
     *,
     search_depth: str | None = "basic",
@@ -1611,6 +2107,7 @@ async def _search_tavily(
     include_raw_content: object = None,
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
+    keyless: bool = False,
 ) -> str:
     import httpx
 
@@ -1635,11 +2132,17 @@ async def _search_tavily(
     if exclude_domains:
         payload["exclude_domains"] = exclude_domains
 
+    headers = {"Content-Type": "application/json"}
+    if api_key and not keyless:
+        headers["Authorization"] = f"Bearer {api_key}"
+    else:
+        headers["X-Tavily-Access-Mode"] = "keyless"
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             "https://api.tavily.com/search",
             json=payload,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            headers=headers,
             timeout=15,
         )
         data = resp.json()

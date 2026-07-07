@@ -15,6 +15,8 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
     combined_names = {t["function"]["name"] for t in combined}
 
     assert combined_names == {
+        "advanced_web_fetch",
+        "advanced_web_search",
         "anysearch_batch_search",
         "anysearch_extract",
         "anysearch_get_sub_domains",
@@ -27,6 +29,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "delegate_to_agent",
         "edit_file",
         "execute_code",
+        "exa_fetch",
         "exa_search",
         "exit_plan_mode",
         "ask_user_question",
@@ -74,6 +77,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "call_mcp_tool",
         "check_async_task",
         "cancel_async_task",
+        "firecrawl_search",
         "firecrawl_fetch",
         "get_current_time",
         "goal_start",
@@ -127,6 +131,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "submit_t3_consolidation_pitch",
         "submit_t3_memory_gate_review",
         "submit_t3_revised_patch",
+        "tavily_extract",
         "tavily_search",
         "task_create",
         "task_get",

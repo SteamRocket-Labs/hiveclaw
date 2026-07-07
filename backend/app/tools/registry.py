@@ -86,7 +86,23 @@ _CHANNEL = {
     "get_current_time",
     "send_channel_file",
 }
-_WEB = {"web_search", "exa_search", "tavily_search", "web_fetch", "firecrawl_fetch", "xcrawl_scrape"}
+_WEB = {
+    "web_search",
+    "advanced_web_search",
+    "anysearch_get_sub_domains",
+    "anysearch_search",
+    "anysearch_batch_search",
+    "exa_search",
+    "tavily_search",
+    "firecrawl_search",
+    "web_fetch",
+    "advanced_web_fetch",
+    "anysearch_extract",
+    "exa_fetch",
+    "tavily_extract",
+    "firecrawl_fetch",
+    "xcrawl_scrape",
+}
 _OFFICE = {
     "office_document_create",
     "office_document_view",

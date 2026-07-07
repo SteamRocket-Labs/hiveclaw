@@ -142,9 +142,14 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "SearXNG" in tools["web_search"]
     assert "DuckDuckGo" not in tools["web_search"]
     assert "use `tool_search` to discover advanced search tools" in tools["web_search"]
+    assert "Advanced web search router" in tools["advanced_web_search"]
+    assert "Advanced web fetch router" in tools["advanced_web_fetch"]
     assert "provider-backed escalation tool discovered through `tool_search`" in tools["exa_search"]
+    assert "Exa Fetch" in tools["exa_fetch"]
     assert "provider-backed escalation tool discovered through `tool_search`" in tools["tavily_search"]
+    assert "Tavily Extract" in tools["tavily_extract"]
     assert "Prefer this after `web_search` identifies the right page" in tools["web_fetch"]
+    assert "Firecrawl `/search`" in tools["firecrawl_search"]
     assert "provider-backed escalation tool discovered through `tool_search`" in tools["firecrawl_fetch"]
     assert "JS-rendered" in tools["xcrawl_scrape"]
     assert (
@@ -240,10 +245,23 @@ def test_web_search_config_schema_only_exposes_supported_search_providers() -> N
 
 
 def test_advanced_search_tools_are_deferred_provider_tools() -> None:
-    from app.tools.handlers.search import exa_search, tavily_search
+    from app.tools.handlers.search import (
+        advanced_web_fetch,
+        advanced_web_search,
+        exa_fetch,
+        exa_search,
+        firecrawl_search,
+        tavily_extract,
+        tavily_search,
+    )
 
+    assert advanced_web_search.meta.pack == "web_pack"
+    assert advanced_web_fetch.meta.pack == "web_pack"
     assert exa_search.meta.pack == "web_pack"
+    assert exa_fetch.meta.pack == "web_pack"
     assert tavily_search.meta.pack == "web_pack"
+    assert tavily_extract.meta.pack == "web_pack"
+    assert firecrawl_search.meta.pack == "web_pack"
     assert "tool_search" in exa_search.meta.description
     assert "tool_search" in tavily_search.meta.description
     assert exa_search.meta.config_schema["fields"][0]["key"] == "api_key"

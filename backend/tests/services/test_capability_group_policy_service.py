@@ -11,7 +11,12 @@ def test_capability_group_policy_facade_preserves_legacy_pack_storage_names():
     assert policy_capability_group_names_for_tool("exa_search") == taxonomy_policy_capability_group_names_for_tool(
         "exa_search"
     )
+    assert "web_pack" in policy_capability_group_names_for_tool("advanced_web_search")
+    assert "web_pack" in policy_capability_group_names_for_tool("advanced_web_fetch")
     assert "web_pack" in policy_capability_group_names_for_tool("exa_search")
+    assert "web_pack" in policy_capability_group_names_for_tool("exa_fetch")
+    assert "web_pack" in policy_capability_group_names_for_tool("tavily_extract")
+    assert "web_pack" in policy_capability_group_names_for_tool("firecrawl_search")
     assert is_capability_group_enabled({"web_pack": False}, "web_pack") is False
     assert is_capability_group_enabled({"web_pack": True}, "web_pack") is True
 

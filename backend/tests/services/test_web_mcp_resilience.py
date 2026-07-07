@@ -886,12 +886,44 @@ async def test_anysearch_mcp_extract_forwards_url(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_anysearch_mcp_requires_configured_key_unless_anonymous_is_enabled(monkeypatch):
+async def test_anysearch_mcp_uses_anonymous_access_by_default_without_key(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 
     async def fake_get_tool_config(tool_name: str) -> dict:
         assert tool_name == "web_search"
         return {"anysearch_api_keys": "", "anysearch_allow_anonymous": False}
+
+    requests: list[dict] = []
+    monkeypatch.setattr(web_mcp, "_get_tool_config", fake_get_tool_config)
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _CapturingAsyncClient(
+            _FakeResponse(
+                status_code=200,
+                json_data={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"content": [{"type": "text", "text": "Anonymous AnySearch schema"}]},
+                },
+            ),
+            requests,
+        ),
+    )
+
+    result = await web_mcp._anysearch_get_sub_domains({"domain": "finance"})
+
+    assert "Anonymous AnySearch schema" in result
+    assert requests[0]["url"] == "https://api.anysearch.com/mcp"
+    assert "Authorization" not in requests[0]["headers"]
+
+
+@pytest.mark.asyncio
+async def test_anysearch_mcp_api_key_mode_requires_configured_key(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    async def fake_get_tool_config(tool_name: str) -> dict:
+        assert tool_name == "web_search"
+        return {"anysearch_api_keys": "", "anysearch_auth_mode": "api_key"}
 
     monkeypatch.setattr(web_mcp, "_get_tool_config", fake_get_tool_config)
 
@@ -1033,7 +1065,7 @@ async def test_exa_search_uses_provider_config(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tavily_search_reports_missing_provider_key(monkeypatch):
+async def test_tavily_search_uses_keyless_mode_without_provider_key(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 
     tool = SimpleNamespace(config={"api_key": "", "max_results": 5})
@@ -1043,12 +1075,24 @@ async def test_tavily_search_reports_missing_provider_key(monkeypatch):
         return ""
 
     monkeypatch.setattr(web_mcp, "_get_tavily_api_key", fake_get_tavily_api_key)
+    requests: list[dict] = []
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _CapturingAsyncClient(
+            _FakeResponse(
+                status_code=200,
+                json_data={"results": [{"title": "News", "url": "https://news.example/a", "content": "Fresh"}]},
+                headers={"content-type": "application/json"},
+            ),
+            requests,
+        ),
+    )
 
     result = await web_mcp._tavily_search({"query": "latest ai news"})
 
-    payload = _extract_tool_error_payload(result)
-    assert payload["tool_name"] == "tavily_search"
-    assert payload["error_class"] == "provider_not_configured"
+    assert "Tavily search" in result
+    assert requests[0]["headers"]["X-Tavily-Access-Mode"] == "keyless"
+    assert "Authorization" not in requests[0]["headers"]
 
 
 @pytest.mark.asyncio
@@ -1096,6 +1140,46 @@ async def test_exa_search_forwards_search_type_category_and_filters(monkeypatch)
         "endPublishedDate": "2026-01-01T00:00:00.000Z",
         "contents": {"text": {"maxCharacters": 800}},
     }
+
+
+@pytest.mark.asyncio
+async def test_exa_search_uses_keyless_mcp_when_provider_key_is_missing(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    async def fake_get_tool_config(tool_name: str) -> dict:
+        assert tool_name == "exa_search"
+        return {"api_key": "", "max_results": 5}
+
+    async def fake_get_exa_api_key() -> str:
+        return ""
+
+    calls: list[dict] = []
+
+    async def fake_search_exa_mcp(query: str, max_results: int, **kwargs) -> str:
+        calls.append({"query": query, "max_results": max_results, **kwargs})
+        return "keyless exa mcp results"
+
+    monkeypatch.setattr(web_mcp, "_get_tool_config", fake_get_tool_config)
+    monkeypatch.setattr(web_mcp, "_get_exa_api_key", fake_get_exa_api_key)
+    monkeypatch.setattr(web_mcp, "_search_exa_mcp", fake_search_exa_mcp)
+
+    result = await web_mcp._exa_search({"query": "recent agent search", "max_results": 4})
+
+    assert "keyless exa mcp results" in result
+    assert calls == [
+        {
+            "query": "recent agent search",
+            "max_results": 4,
+            "search_type": "auto",
+            "category": None,
+            "include_domains": [],
+            "exclude_domains": [],
+            "start_published_date": None,
+            "end_published_date": None,
+            "api_key": None,
+            "mcp_url": "https://mcp.exa.ai/mcp",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1148,6 +1232,309 @@ async def test_tavily_search_forwards_topic_depth_time_and_answer_options(monkey
         "include_raw_content": "markdown",
         "include_domains": ["reuters.com"],
     }
+    assert requests[0]["headers"]["Authorization"] == "Bearer tvly-key"
+    assert "X-Tavily-Access-Mode" not in requests[0]["headers"]
+
+
+@pytest.mark.asyncio
+async def test_firecrawl_search_uses_keyless_v2_search_without_provider_key(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    async def fake_get_tool_config(tool_name: str) -> dict:
+        assert tool_name == "firecrawl_search"
+        return {"api_key": "", "auth_mode": "auto", "base_url": "https://api.firecrawl.dev"}
+
+    async def fake_get_firecrawl_api_key() -> str:
+        return ""
+
+    requests: list[dict] = []
+    monkeypatch.setattr(web_mcp, "_get_tool_config", fake_get_tool_config)
+    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _CapturingAsyncClient(
+            _FakeResponse(
+                status_code=200,
+                text='{"success": true, "data": [{"title": "Docs", "url": "https://example.com/docs", "markdown": "Rendered docs"}]}',
+                json_data={
+                    "success": True,
+                    "data": [{"title": "Docs", "url": "https://example.com/docs", "markdown": "Rendered docs"}],
+                },
+                headers={"content-type": "application/json"},
+            ),
+            requests,
+        ),
+    )
+
+    result = await web_mcp._firecrawl_search({"query": "rendered docs", "max_results": 3, "include_content": True})
+
+    assert "Firecrawl search" in result
+    assert "Rendered docs" in result
+    assert requests[0]["url"] == "https://api.firecrawl.dev/v2/search"
+    assert "Authorization" not in requests[0]["headers"]
+    assert requests[0]["json"] == {
+        "query": "rendered docs",
+        "limit": 3,
+        "scrapeOptions": {"formats": ["markdown"], "onlyMainContent": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_tavily_extract_uses_keyless_extract_without_provider_key(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    async def fake_get_tool_config(tool_name: str) -> dict:
+        assert tool_name == "tavily_extract"
+        return {"api_key": "", "auth_mode": "auto"}
+
+    async def fake_get_tavily_api_key() -> str:
+        return ""
+
+    requests: list[dict] = []
+    monkeypatch.setattr(web_mcp, "_get_tool_config", fake_get_tool_config)
+    monkeypatch.setattr(web_mcp, "_get_tavily_api_key", fake_get_tavily_api_key)
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _CapturingAsyncClient(
+            _FakeResponse(
+                status_code=200,
+                json_data={
+                    "results": [
+                        {
+                            "url": "https://example.com/article",
+                            "raw_content": "# Article\n\nExtracted markdown",
+                        }
+                    ]
+                },
+                headers={"content-type": "application/json"},
+            ),
+            requests,
+        ),
+    )
+
+    result = await web_mcp._tavily_extract({"url": "https://example.com/article", "max_chars": 1000})
+
+    assert "Tavily extracted content" in result
+    assert "Extracted markdown" in result
+    assert requests[0]["url"] == "https://api.tavily.com/extract"
+    assert requests[0]["headers"]["X-Tavily-Access-Mode"] == "keyless"
+    assert "Authorization" not in requests[0]["headers"]
+    assert requests[0]["json"] == {
+        "urls": ["https://example.com/article"],
+        "extract_depth": "basic",
+        "format": "markdown",
+    }
+
+
+@pytest.mark.asyncio
+async def test_exa_fetch_uses_keyless_mcp_fetch_without_provider_key(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    async def fake_get_tool_config(tool_name: str) -> dict:
+        assert tool_name == "exa_fetch"
+        return {"api_key": "", "auth_mode": "auto", "mcp_url": "https://mcp.exa.ai/mcp"}
+
+    async def fake_get_exa_api_key() -> str:
+        return ""
+
+    calls: list[dict] = []
+
+    class FakeMCPClient:
+        def __init__(self, mcp_url: str, api_key: str | None = None):
+            calls.append({"mcp_url": mcp_url, "api_key": api_key})
+
+        async def call_tool(self, tool_name: str, arguments: dict) -> str:
+            calls.append({"tool_name": tool_name, "arguments": arguments})
+            return "# Exa page\n\nFetched via MCP"
+
+    monkeypatch.setattr(web_mcp, "_get_tool_config", fake_get_tool_config)
+    monkeypatch.setattr(web_mcp, "_get_exa_api_key", fake_get_exa_api_key)
+    monkeypatch.setattr("app.services.mcp_client.MCPClient", FakeMCPClient)
+
+    result = await web_mcp._exa_fetch({"url": "https://example.com/article"})
+
+    assert "Exa MCP fetched content" in result
+    assert "Fetched via MCP" in result
+    assert calls == [
+        {"mcp_url": "https://mcp.exa.ai/mcp", "api_key": None},
+        {"tool_name": "web_fetch_exa", "arguments": {"url": "https://example.com/article"}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_advanced_web_search_routes_vertical_intent_to_anysearch(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    calls: list[dict] = []
+
+    async def fake_anysearch_search(arguments: dict) -> str:
+        calls.append(arguments)
+        return "anysearch vertical result"
+
+    monkeypatch.setattr(web_mcp, "_anysearch_search", fake_anysearch_search)
+
+    result = await web_mcp._advanced_web_search(
+        {
+            "query": "AAPL quote",
+            "intent": "vertical",
+            "domain": "finance",
+            "sub_domain": "finance.quote",
+            "sub_domain_params": {"symbol": "AAPL", "type": "stock"},
+            "max_results": 2,
+        }
+    )
+
+    assert result == "anysearch vertical result"
+    assert calls == [
+        {
+            "query": "AAPL quote",
+            "domain": "finance",
+            "sub_domain": "finance.quote",
+            "sub_domain_params": {"symbol": "AAPL", "type": "stock"},
+            "max_results": 2,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_advanced_web_search_routes_current_news_to_tavily(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    calls: list[dict] = []
+
+    async def fake_tavily_search(arguments: dict) -> str:
+        calls.append(arguments)
+        return "tavily current result"
+
+    monkeypatch.setattr(web_mcp, "_tavily_search", fake_tavily_search)
+
+    result = await web_mcp._advanced_web_search(
+        {"query": "latest ai policy", "intent": "news", "max_results": 4}
+    )
+
+    assert result == "tavily current result"
+    assert calls == [{"query": "latest ai policy", "max_results": 4, "topic": "news"}]
+
+
+@pytest.mark.asyncio
+async def test_advanced_web_search_routes_semantic_company_to_exa(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    calls: list[dict] = []
+
+    async def fake_exa_search(arguments: dict) -> str:
+        calls.append(arguments)
+        return "exa company result"
+
+    monkeypatch.setattr(web_mcp, "_exa_search", fake_exa_search)
+
+    result = await web_mcp._advanced_web_search(
+        {"query": "OpenAI leadership page", "intent": "company", "max_results": 3}
+    )
+
+    assert result == "exa company result"
+    assert calls == [{"query": "OpenAI leadership page", "max_results": 3, "category": "company"}]
+
+
+@pytest.mark.asyncio
+async def test_advanced_web_search_routes_content_search_to_firecrawl(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    calls: list[dict] = []
+
+    async def fake_firecrawl_search(arguments: dict) -> str:
+        calls.append(arguments)
+        return "firecrawl content result"
+
+    monkeypatch.setattr(web_mcp, "_firecrawl_search", fake_firecrawl_search)
+
+    result = await web_mcp._advanced_web_search(
+        {"query": "docs rendered example", "include_content": True, "max_results": 5}
+    )
+
+    assert result == "firecrawl content result"
+    assert calls == [{"query": "docs rendered example", "max_results": 5, "include_content": True}]
+
+
+@pytest.mark.asyncio
+async def test_advanced_web_fetch_tries_firecrawl_first_when_rendered_content_is_requested(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    calls: list[dict] = []
+
+    async def fake_firecrawl_fetch(arguments: dict) -> str:
+        calls.append({"tool": "firecrawl_fetch", "arguments": arguments})
+        return "firecrawl rendered content"
+
+    async def fail_web_fetch(arguments: dict) -> str:
+        raise AssertionError("advanced_web_fetch should not call web_fetch first when prefer_rendered=true")
+
+    monkeypatch.setattr(web_mcp, "_firecrawl_fetch", fake_firecrawl_fetch)
+    monkeypatch.setattr(web_mcp, "_web_fetch", fail_web_fetch)
+
+    result = await web_mcp._advanced_web_fetch(
+        {"url": "https://example.com/app", "prefer_rendered": True, "max_chars": 1200}
+    )
+
+    assert result == "firecrawl rendered content"
+    assert calls == [
+        {
+            "tool": "firecrawl_fetch",
+            "arguments": {
+                "url": "https://example.com/app",
+                "max_chars": 1200,
+                "_skip_web_fetch_fallback": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_advanced_web_fetch_does_not_use_xcrawl_without_key(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    calls: list[str] = []
+
+    async def failed_web_fetch(arguments: dict) -> str:
+        calls.append("web_fetch")
+        return "❌ web_fetch failed"
+
+    async def failed_firecrawl_fetch(arguments: dict) -> str:
+        calls.append("firecrawl_fetch")
+        return "❌ firecrawl_fetch failed"
+
+    async def failed_tavily_extract(arguments: dict) -> str:
+        calls.append("tavily_extract")
+        return "❌ tavily_extract failed"
+
+    async def failed_exa_fetch(arguments: dict) -> str:
+        calls.append("exa_fetch")
+        return "❌ exa_fetch failed"
+
+    async def failed_anysearch_extract(arguments: dict) -> str:
+        calls.append("anysearch_extract")
+        return "❌ anysearch_extract failed"
+
+    async def no_xcrawl_key() -> str:
+        return ""
+
+    async def fail_xcrawl(arguments: dict) -> str:
+        raise AssertionError("advanced_web_fetch must not call xcrawl_scrape without a configured XCrawl key")
+
+    monkeypatch.setattr(web_mcp, "_web_fetch", failed_web_fetch)
+    monkeypatch.setattr(web_mcp, "_firecrawl_fetch", failed_firecrawl_fetch)
+    monkeypatch.setattr(web_mcp, "_tavily_extract", failed_tavily_extract)
+    monkeypatch.setattr(web_mcp, "_exa_fetch", failed_exa_fetch)
+    monkeypatch.setattr(web_mcp, "_anysearch_extract", failed_anysearch_extract)
+    monkeypatch.setattr(web_mcp, "_get_xcrawl_api_key", no_xcrawl_key)
+    monkeypatch.setattr(web_mcp, "_xcrawl_scrape", fail_xcrawl)
+
+    result = await web_mcp._advanced_web_fetch({"url": "https://example.com/app"})
+
+    payload = _extract_tool_error_payload(result)
+    assert payload["error_class"] == "provider_error"
+    assert payload["provider"] == "advanced_web_fetch"
+    assert calls == ["web_fetch", "firecrawl_fetch", "tavily_extract", "exa_fetch", "anysearch_extract"]
 
 
 @pytest.mark.asyncio
@@ -1229,6 +1616,35 @@ async def test_firecrawl_fetch_returns_markdown_content(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_firecrawl_fetch_uses_keyless_mode_without_provider_key(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    async def fake_get_firecrawl_api_key() -> str:
+        return ""
+
+    requests: list[dict] = []
+    monkeypatch.setattr(web_mcp, "_get_firecrawl_api_key", fake_get_firecrawl_api_key)
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _CapturingAsyncClient(
+            _FakeResponse(
+                status_code=200,
+                text='{"success": true, "data": {"markdown": "# Keyless\\n\\nWorks"}}',
+                json_data={"success": True, "data": {"markdown": "# Keyless\n\nWorks"}},
+                headers={"content-type": "application/json"},
+            ),
+            requests,
+        ),
+    )
+
+    result = await web_mcp._firecrawl_fetch({"url": "https://example.com/article", "max_chars": 1000})
+
+    assert "Keyless" in result
+    assert requests[0]["url"] == "https://api.firecrawl.dev/v2/scrape"
+    assert "Authorization" not in requests[0]["headers"]
+
+
+@pytest.mark.asyncio
 async def test_firecrawl_fetch_posts_v2_scrape_payload_with_official_options(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 
@@ -1265,6 +1681,7 @@ async def test_firecrawl_fetch_posts_v2_scrape_payload_with_official_options(mon
 
     assert "Hello" in result
     assert requests[0]["url"] == "https://api.firecrawl.dev/v2/scrape"
+    assert requests[0]["headers"]["Authorization"] == "Bearer fc-key"
     assert requests[0]["json"] == {
         "url": "https://example.com/article",
         "formats": ["markdown", "links"],

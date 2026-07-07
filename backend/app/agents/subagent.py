@@ -92,6 +92,17 @@ _EXPLORER_ALLOWED_TOOLS: tuple[str, ...] = (
     "get_current_time",
     "web_search",
     "web_fetch",
+    "advanced_web_search",
+    "advanced_web_fetch",
+    "anysearch_get_sub_domains",
+    "anysearch_search",
+    "anysearch_batch_search",
+    "anysearch_extract",
+    "exa_search",
+    "exa_fetch",
+    "tavily_search",
+    "tavily_extract",
+    "firecrawl_search",
     "firecrawl_fetch",
     "xcrawl_scrape",
 )
@@ -126,6 +137,17 @@ _CRITIC_ALLOWED_TOOLS: tuple[str, ...] = (
     "get_current_time",
     "web_search",
     "web_fetch",
+    "advanced_web_search",
+    "advanced_web_fetch",
+    "anysearch_get_sub_domains",
+    "anysearch_search",
+    "anysearch_batch_search",
+    "anysearch_extract",
+    "exa_search",
+    "exa_fetch",
+    "tavily_search",
+    "tavily_extract",
+    "firecrawl_search",
 )
 
 # Tools every child worker is denied: no further spawning/delegation, no
@@ -137,7 +159,18 @@ DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth
 # general-purpose agents are not starved by an 8-turn local cap. Hive's main
 # agent default is also 200, so subagents inherit the same practical floor.
 DEFAULT_SUBAGENT_TOOL_ROUNDS = 200
-_SOURCE_CAPTURE_TOOLS: frozenset[str] = frozenset({"web_fetch", "firecrawl_fetch", "xcrawl_scrape", "read_webpage"})
+_SOURCE_CAPTURE_TOOLS: frozenset[str] = frozenset(
+    {
+        "web_fetch",
+        "advanced_web_fetch",
+        "anysearch_extract",
+        "exa_fetch",
+        "tavily_extract",
+        "firecrawl_fetch",
+        "xcrawl_scrape",
+        "read_webpage",
+    }
+)
 _SAFE_T0_SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 
 #: Exec/automation CC-alignment (§5.2): fork is deliberately binary, matching CC's

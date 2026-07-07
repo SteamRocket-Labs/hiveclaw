@@ -2081,8 +2081,18 @@ async def _execute_tool_with_hooks(
                     _invalidate_prompt_prefix_cache(_session, reason=f"{tool_name}:{_path}")
         elif tool_name in (
             "web_search",
+            "advanced_web_search",
+            "anysearch_get_sub_domains",
+            "anysearch_search",
+            "anysearch_batch_search",
             "exa_search",
+            "firecrawl_search",
             "tavily_search",
+            "web_fetch",
+            "advanced_web_fetch",
+            "anysearch_extract",
+            "exa_fetch",
+            "tavily_extract",
             "firecrawl_fetch",
             "xcrawl_scrape",
             "read_document",

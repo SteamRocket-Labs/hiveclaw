@@ -108,11 +108,13 @@ RUNTIME_L2_CAPABILITY_SPECS: tuple[RuntimeL2CapabilitySpec, ...] = (
     RuntimeL2CapabilitySpec(
         name="web_pack",
         summary=(
-            "Advanced web search and read/extract tooling: AnySearch MCP provides vertical search/discovery "
-            "for finance, social media, academic, legal, health, business, security, code, and related data, "
-            "plus known-URL Markdown extraction as a read step; Exa provides AI-native search with search types "
-            "and category verticals; Tavily provides real-time agent/RAG search with topic, freshness, answer, "
-            "and raw-content options; Firecrawl/XCrawl handle page extraction when web_fetch is insufficient."
+            "Advanced web search and read/extract tooling: advanced_web_search and advanced_web_fetch route "
+            "between no-key-capable provider surfaces; AnySearch MCP provides vertical search/discovery for "
+            "finance, social media, academic, legal, health, business, security, code, and related data, plus "
+            "known-URL Markdown extraction as a read step; Exa provides keyless-capable AI-native search/fetch "
+            "through Exa MCP or keyed direct API; Tavily provides keyless-capable real-time search/extract; "
+            "Firecrawl provides keyless-capable search and page extraction; XCrawl remains a configured provider "
+            "for harder scrape cases."
         ),
         source="system",
         activation_mode=(
@@ -120,12 +122,17 @@ RUNTIME_L2_CAPABILITY_SPECS: tuple[RuntimeL2CapabilitySpec, ...] = (
             "search when results are insufficient, and use extract tools only after selecting a known URL."
         ),
         tools=(
+            "advanced_web_search",
+            "advanced_web_fetch",
             "anysearch_get_sub_domains",
             "anysearch_search",
             "anysearch_batch_search",
             "anysearch_extract",
             "exa_search",
+            "exa_fetch",
             "tavily_search",
+            "tavily_extract",
+            "firecrawl_search",
             "firecrawl_fetch",
             "xcrawl_scrape",
         ),
@@ -372,13 +379,18 @@ CAPABILITY_MAP: dict[str, str] = {
     "plaza_add_comment": "plaza.post.write",
     "web_search": "external.web.search",
     "bing_search": "external.web.search",
+    "advanced_web_search": "external.web.search",
     "anysearch_get_sub_domains": "external.web.search",
     "anysearch_search": "external.web.search",
     "anysearch_batch_search": "external.web.search",
     "exa_search": "external.web.search",
     "tavily_search": "external.web.search",
+    "firecrawl_search": "external.web.search",
     "web_fetch": "external.web.read",
+    "advanced_web_fetch": "external.web.read",
     "anysearch_extract": "external.web.read",
+    "exa_fetch": "external.web.read",
+    "tavily_extract": "external.web.read",
     "firecrawl_fetch": "external.web.read",
     "xcrawl_scrape": "external.web.read",
     "read_webpage": "external.web.read",

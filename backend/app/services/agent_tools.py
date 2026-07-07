@@ -237,8 +237,17 @@ _HR_TOOL_NAMES = {
     "discover_resources",
     "search_clawhub",
     "web_search",
+    "advanced_web_search",
+    "advanced_web_fetch",
+    "anysearch_get_sub_domains",
+    "anysearch_search",
+    "anysearch_batch_search",
+    "anysearch_extract",
     "exa_search",
+    "exa_fetch",
     "tavily_search",
+    "tavily_extract",
+    "firecrawl_search",
     "firecrawl_fetch",
     "xcrawl_scrape",
     "execute_code",
@@ -307,18 +316,34 @@ _hr_tools: list[dict] | None = None
 
 
 async def _provider_available_tools(agent_id: uuid.UUID | None = None) -> set[str]:
-    """Return provider-backed tools that are actually configured."""
+    """Return provider-backed tools that are available in this deployment."""
     available: set[str] = set()
 
     exa_key = await _get_exa_api_key()
     tavily_key = await _get_tavily_api_key()
     firecrawl_key = await _get_firecrawl_api_key()
     xcrawl_key = await _get_xcrawl_api_key()
-    if exa_key:
+    for tool_name in ("advanced_web_search", "advanced_web_fetch"):
+        if await _keyless_capable_provider_available(tool_name, "", "api_key"):
+            available.add(tool_name)
+    if await _anysearch_provider_available():
+        available |= {
+            "anysearch_get_sub_domains",
+            "anysearch_search",
+            "anysearch_batch_search",
+            "anysearch_extract",
+        }
+    if await _keyless_capable_provider_available("exa_search", exa_key, "exa_api_key"):
         available.add("exa_search")
-    if tavily_key:
+    if await _keyless_capable_provider_available("exa_fetch", exa_key, "exa_api_key"):
+        available.add("exa_fetch")
+    if await _keyless_capable_provider_available("tavily_search", tavily_key, "tavily_api_key"):
         available.add("tavily_search")
-    if firecrawl_key:
+    if await _keyless_capable_provider_available("tavily_extract", tavily_key, "tavily_api_key"):
+        available.add("tavily_extract")
+    if await _keyless_capable_provider_available("firecrawl_search", firecrawl_key, "firecrawl_api_key"):
+        available.add("firecrawl_search")
+    if await _keyless_capable_provider_available("firecrawl_fetch", firecrawl_key, "firecrawl_api_key"):
         available.add("firecrawl_fetch")
     if xcrawl_key:
         available.add("xcrawl_scrape")
@@ -336,11 +361,38 @@ async def _provider_available_tools(agent_id: uuid.UUID | None = None) -> set[st
     return available
 
 
+async def _keyless_capable_provider_available(tool_name: str, platform_key: str, provider_key_name: str) -> bool:
+    config = await _get_tool_config(tool_name)
+    auth_mode = str(config.get("auth_mode") or "auto").strip().lower()
+    configured_key = str(config.get("api_key") or config.get(provider_key_name) or platform_key or "").strip()
+    return auth_mode != "api_key" or bool(configured_key)
+
+
+async def _anysearch_provider_available() -> bool:
+    config = await _get_tool_config("web_search")
+    auth_mode = str(config.get("anysearch_auth_mode") or config.get("auth_mode") or "auto").strip().lower()
+    keys = config.get("anysearch_api_keys") or get_settings().ANYSEARCH_API_KEYS
+    if isinstance(keys, list | tuple):
+        configured_key = any(str(item).strip() for item in keys)
+    else:
+        configured_key = bool(str(keys or "").strip())
+    return auth_mode != "api_key" or configured_key
+
+
 async def _filter_unavailable_tools(agent_id: uuid.UUID, tools: list[dict]) -> list[dict]:
     """Hide externally-backed tools that are not configured in production."""
     provider_backed = {
+        "advanced_web_search",
+        "advanced_web_fetch",
+        "anysearch_get_sub_domains",
+        "anysearch_search",
+        "anysearch_batch_search",
+        "anysearch_extract",
         "exa_search",
+        "exa_fetch",
         "tavily_search",
+        "tavily_extract",
+        "firecrawl_search",
         "firecrawl_fetch",
         "xcrawl_scrape",
         "discover_resources",
@@ -1303,13 +1355,18 @@ from app.services.agent_tool_domains.feishu_users import (  # noqa: E402
 
 
 from app.services.agent_tool_domains.web_mcp import (  # noqa: E402
+    _advanced_web_fetch as _advanced_web_fetch,
+    _advanced_web_search as _advanced_web_search,
     _discover_resources as _discover_resources,
     _execute_mcp_tool as _execute_mcp_tool,
     _execute_via_smithery_connect as _execute_via_smithery_connect,
+    _exa_fetch as _exa_fetch,
     _firecrawl_fetch as _firecrawl_fetch,
+    _firecrawl_search as _firecrawl_search,
     _get_exa_api_key as _get_exa_api_key,
     _get_firecrawl_api_key as _get_firecrawl_api_key,
     _get_tavily_api_key as _get_tavily_api_key,
+    _get_tool_config as _get_tool_config,
     _get_xcrawl_api_key as _get_xcrawl_api_key,
     _import_mcp_server as _import_mcp_server,
     _search_exa as _search_exa,
@@ -1318,6 +1375,7 @@ from app.services.agent_tool_domains.web_mcp import (  # noqa: E402
     _search_google as _search_google,
     _search_tavily as _search_tavily,
     _smithery_auto_recover as _smithery_auto_recover,
+    _tavily_extract as _tavily_extract,
     _web_fetch as _web_fetch,
     _web_search as _web_search,
     _xcrawl_scrape as _xcrawl_scrape,

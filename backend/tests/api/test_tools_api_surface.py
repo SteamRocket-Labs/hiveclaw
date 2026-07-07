@@ -54,7 +54,14 @@ class _FakeDB:
         self.deleted.append(value)
 
 
-def _make_builtin_tool(*, name: str, category: str = "general", is_default: bool = False):
+def _make_builtin_tool(
+    *,
+    name: str,
+    category: str = "general",
+    is_default: bool = False,
+    config: dict | None = None,
+    config_schema: dict | None = None,
+):
     return SimpleNamespace(
         id=uuid4(),
         name=name,
@@ -64,8 +71,8 @@ def _make_builtin_tool(*, name: str, category: str = "general", is_default: bool
         category=category,
         icon="🔧",
         parameters_schema={"type": "object", "properties": {}},
-        config={},
-        config_schema={},
+        config=config or {},
+        config_schema=config_schema or {},
         mcp_server_url=None,
         mcp_server_name=None,
         mcp_tool_name=None,
@@ -140,6 +147,35 @@ def test_serialize_tool_classifies_dynamic_mcp_and_custom_api_as_extensions():
     assert custom_payload["governance_taxonomy"]["layer"] == "external_extension"
     assert custom_payload["governance_taxonomy"]["source"] == "custom_api"
     assert custom_payload["governance_taxonomy"]["enterprise_toggleable"] is True
+
+
+def test_serialize_tool_exposes_provider_auth_metadata_for_no_key_web_tools():
+    import app.api.tools as tools_api
+
+    advanced_search = _make_builtin_tool(name="advanced_web_search", category="web_pack")
+    exa_fetch = _make_builtin_tool(name="exa_fetch", category="web_pack", config={"auth_mode": "auto"})
+    xcrawl = _make_builtin_tool(name="xcrawl_scrape", category="web_pack", config={"api_key": ""})
+
+    advanced_payload = tools_api._serialize_tool(advanced_search)
+    exa_payload = tools_api._serialize_tool(exa_fetch)
+    xcrawl_payload = tools_api._serialize_tool(xcrawl)
+
+    assert advanced_payload["provider_auth"] == {
+        "mode": "no_key_default",
+        "keyless_supported": True,
+        "credential_optional": True,
+        "key_required": False,
+        "label": "No key by default",
+        "description": "Routes to no-key-capable web providers by default. Optional provider keys only upgrade limits or production control.",
+    }
+    assert exa_payload["provider_auth"]["mode"] == "optional_key"
+    assert exa_payload["provider_auth"]["keyless_supported"] is True
+    assert exa_payload["provider_auth"]["key_required"] is False
+    assert exa_payload["provider_auth"]["label"] == "Optional key"
+    assert xcrawl_payload["provider_auth"]["mode"] == "key_required"
+    assert xcrawl_payload["provider_auth"]["keyless_supported"] is False
+    assert xcrawl_payload["provider_auth"]["key_required"] is True
+    assert xcrawl_payload["provider_auth"]["label"] == "Key required"
 
 
 @pytest.mark.asyncio

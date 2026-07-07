@@ -37,6 +37,7 @@ HANDLER_MODULES: tuple[str, ...] = (
     "app.tools.handlers.plaza",
     "app.tools.handlers.hr",
     "app.tools.handlers.office",
+    "app.tools.handlers.knowledge",
     "app.tools.handlers.subagent",
     "app.tools.handlers.work_ledger",
     "app.tools.handlers.command_parity",

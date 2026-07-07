@@ -119,6 +119,7 @@ def _record_to_activation_candidate(record: KnowledgeCandidateRecord, *, rank: i
     source_type = f"{record.scope}_knowledge_base"
     key_features = {
         "scope": [record.scope],
+        "acl_scope": [record.scope],
         "title": [record.title],
         "item_id": [record.item_id],
     }
@@ -165,6 +166,7 @@ def _record_to_activation_candidate(record: KnowledgeCandidateRecord, *, rank: i
         ),
         metadata={
             "scope": record.scope,
+            "acl_scope": record.scope,
             "item_id": record.item_id,
             "title": record.title,
             **dict(record.metadata),

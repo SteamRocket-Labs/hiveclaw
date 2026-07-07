@@ -782,3 +782,37 @@ pytest tests/services/test_personal_knowledge_service.py -q
 ruff check app/services/personal_knowledge_service.py tests/services/test_personal_knowledge_service.py
 # All checks passed!
 ```
+
+### 14.3 Tool / Runtime Attention Control 接入
+
+已落地：
+
+1. `backend/app/tools/handlers/knowledge.py` 新增 `search_personal_kb`，通过 `ToolExecutionRequest.context` 读取 `agent_id/user_id/tenant_id`，再由 `Agent.owner_user_id/sponsor_user_id/creator_id` 解析 owner scope；不接受模型传入 owner。
+2. `backend/app/tools/collector.py` 将 `app.tools.handlers.knowledge` 加入 `HANDLER_MODULES`，`search_personal_kb` 进入 OpenAI tool schema、seed list、execution registry、read-only set、parallel-safe set。
+3. `backend/app/runtime/retrieval/personal_knowledge_provider.py` 新增 `PersonalKnowledgeCandidateProvider`，把 `KnowledgeSearchHit` 映射为 `KnowledgeCandidateRecord`。
+4. `backend/app/runtime/retrieval/kb_candidates.py` 在 `KnowledgeCandidateRecord -> ActivationCandidate` 转换时写入 `acl_scope = record.scope`，避免 Personal KB candidate 被 Activation Router 误判为 company scope。
+5. `backend/app/runtime/invoker.py` 新增 `_record_knowledge_activation_for_request()`，在 ActivationQuery 构建后执行 Personal KB gather -> Activation Router -> RuntimeAssemblyState 记录。插件 hook 可加上下文，但 Personal KB 的 Q/gather/route 是 runtime native 路径。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/runtime/test_personal_knowledge_provider.py \
+  tests/tools/test_personal_knowledge_tool.py \
+  tests/runtime/test_personal_knowledge_activation.py -q
+# 5 passed, 4 warnings in 0.23s
+
+pytest tests/runtime/test_kb_candidates.py -q
+# 3 passed, 4 warnings in 0.10s
+
+ruff check app/runtime/retrieval/personal_knowledge_provider.py \
+  app/runtime/retrieval/kb_candidates.py \
+  app/tools/handlers/knowledge.py \
+  app/tools/collector.py app/tools/registry.py app/runtime/invoker.py \
+  tests/runtime/test_personal_knowledge_provider.py \
+  tests/tools/test_personal_knowledge_tool.py \
+  tests/runtime/test_personal_knowledge_activation.py \
+  tests/runtime/test_kb_candidates.py
+# All checks passed!
+```

@@ -67,6 +67,7 @@ _SCHEDULED = {"set_trigger", "update_trigger", "cancel_trigger", "list_triggers"
 _MEMORY = {
     "search_memory",
     "load_memory",
+    "search_personal_kb",
     "save_memory",
     "update_memory",
     "retire_memory",

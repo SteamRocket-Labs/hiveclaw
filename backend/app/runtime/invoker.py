@@ -355,6 +355,73 @@ def _build_activation_query_for_request(request: AgentInvocationRequest) -> dict
     return activation_query.to_manifest()
 
 
+def _principal_stack_for_activation(*, owner_user_id: Any, current_user_id: Any):
+    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
+
+    owner_text = str(owner_user_id or "").strip()
+    current_text = str(current_user_id or "").strip()
+    return PrincipalStack(
+        direct_owner=Principal(role=PrincipalRole.OWNER, id=owner_text, label="owner") if owner_text else None,
+        current_user=Principal(role=PrincipalRole.CURRENT_USER, id=current_text, label="current_user")
+        if current_text
+        else None,
+    )
+
+
+async def _record_knowledge_activation_for_request(
+    request: AgentInvocationRequest,
+    activation_query: dict[str, Any],
+    *,
+    provider: Any | None = None,
+) -> None:
+    if request.session_context is None or request.agent_id is None:
+        return
+    metadata = _ensure_turn_metadata(request)
+    tenant_id = metadata.get("tenant_id")
+    owner_user_id = metadata.get("owner_user_id") or metadata.get("owner_id") or request.user_id
+    current_user_id = request.user_id
+    prompt_text = str(activation_query.get("raw_prompt") or _latest_user_prompt(request.messages) or "").strip()
+    if not tenant_id or not prompt_text:
+        return
+
+    from app.runtime.activation_router import ActivationRouterContext, route_activation_candidates
+    from app.runtime.context import ensure_runtime_assembly_state
+    from app.runtime.retrieval.kb_candidates import KnowledgeACLContext, gather_knowledge_base_candidates
+    from app.runtime.retrieval.personal_knowledge_provider import PersonalKnowledgeCandidateProvider
+
+    candidate_provider = provider or PersonalKnowledgeCandidateProvider()
+    candidates = await gather_knowledge_base_candidates(
+        prompt_text,
+        acl_context=KnowledgeACLContext(
+            tenant_id=tenant_id,
+            agent_id=request.agent_id,
+            owner_user_id=owner_user_id,
+            current_user_id=current_user_id,
+            allowed_scopes=("personal",),
+        ),
+        provider=candidate_provider,
+        scopes=("personal",),
+        limit=10,
+    )
+    if not candidates:
+        return
+
+    assembly_state = ensure_runtime_assembly_state(request.session_context)
+    assembly_state.record_activation_candidates(candidates)
+    router_output = route_activation_candidates(
+        candidates,
+        context=ActivationRouterContext(
+            principal_stack=_principal_stack_for_activation(
+                owner_user_id=owner_user_id,
+                current_user_id=current_user_id,
+            ),
+            activation_query=activation_query,
+            allowed_candidate_kinds=("knowledge_base",),
+        ),
+    )
+    assembly_state.record_activation_router_output(router_output)
+
+
 def _format_hook_additional_contexts(contexts: list[str]) -> str:
     cleaned = [str(item).strip() for item in contexts if str(item).strip()]
     if not cleaned:
@@ -1521,6 +1588,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
 
             activation_query = _build_activation_query_for_request(request)
             ensure_runtime_assembly_state(request.session_context).record_activation_query(activation_query)
+            await _record_knowledge_activation_for_request(request, activation_query)
     except Exception as _activation_err:
         logging.getLogger(__name__).debug("[Invoker] ActivationQuery build failed (non-fatal): %s", _activation_err)
 

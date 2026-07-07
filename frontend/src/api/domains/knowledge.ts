@@ -1,4 +1,4 @@
-import { get } from '../core';
+import { get, post } from '../core';
 
 // Knowledge read model (backend spec §11 / P7) — structured views over the
 // agent's memory engine. The Knowledge plane consumes these instead of
@@ -149,6 +149,65 @@ export interface KnowledgeCandidates {
   heldCurations: { at: string; stage: string; reason: string; detail: Record<string, unknown> }[];
 }
 
+export interface PersonalKnowledgeDocumentSummary {
+  document_id: string;
+  title: string;
+  source_kind: string;
+  source_uri: string | null;
+  source_sha256: string;
+  source_ref: string;
+  canonical_md_path: string;
+  status: string;
+  sensitivity: string;
+  agent_searchable: boolean;
+  segment_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface PersonalKnowledgeSegment {
+  segment_id: string;
+  position: number;
+  heading_path: string[];
+  content: string;
+  token_count: number;
+}
+
+export interface PersonalKnowledgeDocumentDetail extends PersonalKnowledgeDocumentSummary {
+  segments: PersonalKnowledgeSegment[];
+}
+
+export interface PersonalKnowledgeSearchResult {
+  document_id: string;
+  segment_id: string;
+  title: string;
+  snippet: string;
+  source_ref: string;
+  score: number;
+  heading_path: string[];
+  sensitivity: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface PersonalKnowledgeIngestRequest {
+  title: string;
+  markdown: string;
+  source_kind?: string;
+  source_uri?: string | null;
+  agent_searchable?: boolean;
+  sensitivity?: string;
+}
+
+export interface PersonalKnowledgeIngestResponse {
+  document_id: string;
+  source_sha256: string;
+  artifact_hash: string;
+  canonical_md_path: string;
+  segment_count: number;
+  status: string;
+}
+
 export const knowledgeApi = {
   overview: (agentId: string) => get<KnowledgeOverview>(`/agents/${agentId}/knowledge/overview`),
   pages: (agentId: string) => get<{ pages: KnowledgePageSummary[] }>(`/agents/${agentId}/knowledge/pages`),
@@ -158,4 +217,16 @@ export const knowledgeApi = {
   events: (agentId: string) => get<{ events: KnowledgeEvent[] }>(`/agents/${agentId}/knowledge/events`),
   candidates: (agentId: string) => get<KnowledgeCandidates>(`/agents/${agentId}/knowledge/candidates`),
   observability: (agentId: string) => get<MemoryObservability>(`/agents/${agentId}/knowledge/observability`),
+  personalDocuments: (agentId: string) =>
+    get<{ documents: PersonalKnowledgeDocumentSummary[] }>(`/agents/${agentId}/knowledge/personal/documents`),
+  personalIngest: (agentId: string, body: PersonalKnowledgeIngestRequest) =>
+    post<PersonalKnowledgeIngestResponse>(`/agents/${agentId}/knowledge/personal/documents`, body),
+  personalSearch: (agentId: string, query: string, limit = 5) => {
+    const params = new URLSearchParams({ q: query, limit: String(limit) });
+    return get<{ results: PersonalKnowledgeSearchResult[] }>(
+      `/agents/${agentId}/knowledge/personal/search?${params.toString()}`,
+    );
+  },
+  personalDocument: (agentId: string, documentId: string) =>
+    get<PersonalKnowledgeDocumentDetail>(`/agents/${agentId}/knowledge/personal/documents/${documentId}`),
 };

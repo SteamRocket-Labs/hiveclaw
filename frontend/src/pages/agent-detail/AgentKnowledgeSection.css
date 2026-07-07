@@ -184,6 +184,119 @@
   color: var(--text-tertiary);
 }
 
+/* ── Personal KB lane ─────────────────────────────────── */
+.agent-knowledge-personal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.agent-knowledge-personal-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.agent-knowledge-personal-search {
+  display: flex;
+  gap: var(--space-2);
+  width: min(520px, 100%);
+}
+
+.agent-knowledge-personal-search-input {
+  flex: 1;
+}
+
+.agent-knowledge-personal-intake {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.agent-knowledge-personal-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+}
+
+.agent-knowledge-personal-textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+
+.agent-knowledge-personal-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.agent-knowledge-personal-list,
+.agent-knowledge-personal-detail,
+.agent-knowledge-personal-segments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.agent-knowledge-personal-doc {
+  align-items: flex-start;
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  width: 100%;
+}
+
+.agent-knowledge-personal-doc.is-selected {
+  border-color: var(--accent-primary);
+  background: var(--accent-subtle);
+}
+
+.agent-knowledge-personal-doc span,
+.agent-knowledge-personal-result span {
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+}
+
+.agent-knowledge-personal-doc code,
+.agent-knowledge-personal-result code {
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.agent-knowledge-personal-result {
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: var(--space-2);
+}
+
+.agent-knowledge-personal-result:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.agent-knowledge-personal-result p,
+.agent-knowledge-personal-segment p {
+  color: var(--text-secondary);
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.agent-knowledge-personal-segment {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-2);
+}
+
+@media (max-width: 880px) {
+  .agent-knowledge-personal-grid,
+  .agent-knowledge-personal-form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── Timeline ──────────────────────────────────────────── */
 .agent-knowledge-timeline {
   display: flex;

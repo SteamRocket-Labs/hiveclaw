@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import AgentMindSection from './AgentMindSection';
@@ -9,6 +9,9 @@ import {
   type KnowledgeEntry,
   type KnowledgeOverview,
   type KnowledgePageSummary,
+  type PersonalKnowledgeDocumentDetail,
+  type PersonalKnowledgeDocumentSummary,
+  type PersonalKnowledgeSearchResult,
 } from '../../api/domains/knowledge';
 import './AgentKnowledgeSection.css';
 
@@ -18,9 +21,9 @@ import './AgentKnowledgeSection.css';
 // First screen answers "这个员工记住了什么、最近学到什么、管线健康吗".
 // Raw stays the admin escape hatch over soul.md / memory/.
 
-type SubView = 'overview' | 'self' | 'profiles' | 'knowledge' | 'milestones' | 'timeline' | 'raw';
+type SubView = 'overview' | 'self' | 'profiles' | 'personal' | 'knowledge' | 'milestones' | 'timeline' | 'raw';
 
-const SUBVIEWS: SubView[] = ['overview', 'self', 'profiles', 'knowledge', 'milestones', 'timeline', 'raw'];
+const SUBVIEWS: SubView[] = ['overview', 'self', 'profiles', 'personal', 'knowledge', 'milestones', 'timeline', 'raw'];
 
 type AgentKnowledgeSectionProps = {
   agentId: string;
@@ -251,10 +254,174 @@ function PagesView({
   );
 }
 
+type PersonalKnowledgeViewProps = {
+  canEdit: boolean;
+  documents: PersonalKnowledgeDocumentSummary[];
+  selectedDocument?: PersonalKnowledgeDocumentDetail;
+  searchResults: PersonalKnowledgeSearchResult[];
+  selectedDocumentId: string | null;
+  intakeTitle: string;
+  intakeMarkdown: string;
+  searchQuery: string;
+  isSaving: boolean;
+  onIntakeTitleChange: (value: string) => void;
+  onIntakeMarkdownChange: (value: string) => void;
+  onSearchQueryChange: (value: string) => void;
+  onSubmitIntake: () => void;
+  onRunSearch: () => void;
+  onSelectDocument: (documentId: string) => void;
+};
+
+export function PersonalKnowledgeView({
+  canEdit,
+  documents,
+  selectedDocument,
+  searchResults,
+  selectedDocumentId,
+  intakeTitle,
+  intakeMarkdown,
+  searchQuery,
+  isSaving,
+  onIntakeTitleChange,
+  onIntakeMarkdownChange,
+  onSearchQueryChange,
+  onSubmitIntake,
+  onRunSearch,
+  onSelectDocument,
+}: PersonalKnowledgeViewProps) {
+  const { t } = useTranslation();
+  return (
+    <div className="agent-knowledge-personal">
+      <div className="agent-knowledge-personal-toolbar">
+        <form
+          className="agent-knowledge-personal-search"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onRunSearch();
+          }}
+        >
+          <input
+            className="input agent-knowledge-personal-search-input"
+            value={searchQuery}
+            onChange={(event) => onSearchQueryChange(event.target.value)}
+            placeholder={t('agent.knowledge.personalSearchPlaceholder', 'Search Personal KB...')}
+          />
+          <button className="btn btn-sm" type="submit">
+            {t('agent.knowledge.personalSearch', 'Search')}
+          </button>
+        </form>
+      </div>
+
+      {canEdit && (
+        <form
+          className="agent-knowledge-card agent-knowledge-personal-intake"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmitIntake();
+          }}
+        >
+          <div className="agent-knowledge-personal-form-row">
+            <input
+              className="input"
+              value={intakeTitle}
+              onChange={(event) => onIntakeTitleChange(event.target.value)}
+              placeholder={t('agent.knowledge.personalTitlePlaceholder', 'Document title')}
+            />
+            <button className="btn btn-primary btn-sm" type="submit" disabled={isSaving || !intakeMarkdown.trim()}>
+              {isSaving ? t('common.saving', 'Saving...') : t('agent.knowledge.personalIngest', 'Add to Personal KB')}
+            </button>
+          </div>
+          <textarea
+            className="textarea agent-knowledge-personal-textarea"
+            value={intakeMarkdown}
+            onChange={(event) => onIntakeMarkdownChange(event.target.value)}
+            placeholder={t('agent.knowledge.personalMarkdownPlaceholder', 'Paste Markdown or notes here...')}
+          />
+        </form>
+      )}
+
+      <div className="agent-knowledge-personal-grid">
+        <div className="agent-knowledge-personal-list">
+          <h4 className="agent-knowledge-card-title">{t('agent.knowledge.personalLibrary', 'Personal KB')}</h4>
+          {documents.map((document) => (
+            <button
+              key={document.document_id}
+              className={`agent-knowledge-card agent-knowledge-personal-doc ${
+                selectedDocumentId === document.document_id ? 'is-selected' : ''
+              }`}
+              onClick={() => onSelectDocument(document.document_id)}
+              type="button"
+            >
+              <strong>{document.title}</strong>
+              <span>
+                {document.segment_count} {t('agent.knowledge.personalSegments', 'segments')} · {document.sensitivity}
+              </span>
+              <code>{document.source_ref}</code>
+            </button>
+          ))}
+          {documents.length === 0 && (
+            <p className="agent-knowledge-empty">
+              {t('agent.knowledge.personalEmpty', 'Personal KB is empty for this owner scope.')}
+            </p>
+          )}
+        </div>
+
+        <div className="agent-knowledge-personal-detail">
+          {searchResults.length > 0 && (
+            <div className="agent-knowledge-card">
+              <h4 className="agent-knowledge-card-title">{t('agent.knowledge.personalSearchResults', 'Search results')}</h4>
+              {searchResults.map((result) => (
+                <div key={result.segment_id} className="agent-knowledge-personal-result">
+                  <strong>{result.title}</strong>
+                  <span>{result.heading_path.join(' / ')}</span>
+                  <p>{result.snippet}</p>
+                  <code>{result.source_ref}</code>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {selectedDocument ? (
+            <div className="agent-knowledge-card">
+              <div className="agent-knowledge-entry-head">
+                <strong className="agent-knowledge-entry-title">{selectedDocument.title}</strong>
+                <span className="badge">{selectedDocument.status}</span>
+              </div>
+              <div className="agent-knowledge-entry-meta">
+                <code>{selectedDocument.source_ref}</code> · {selectedDocument.canonical_md_path}
+              </div>
+              <div className="agent-knowledge-personal-segments">
+                {selectedDocument.segments.map((segment) => (
+                  <div key={segment.segment_id} className="agent-knowledge-personal-segment">
+                    <div className="agent-knowledge-entry-meta">
+                      #{segment.position + 1} {segment.heading_path.join(' / ')} · {segment.token_count} tok
+                    </div>
+                    <p>{segment.content}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="agent-knowledge-empty">
+              {t('agent.knowledge.personalSelectPrompt', 'Select a Personal KB document to inspect source segments.')}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab }: AgentKnowledgeSectionProps) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const [subView, setSubView] = useState<SubView>('overview');
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
+  const [selectedPersonalDocumentId, setSelectedPersonalDocumentId] = useState<string | null>(null);
+  const [personalTitle, setPersonalTitle] = useState('');
+  const [personalMarkdown, setPersonalMarkdown] = useState('');
+  const [personalSearchInput, setPersonalSearchInput] = useState('');
+  const [personalSearchQuery, setPersonalSearchQuery] = useState('');
   const availableSubViews = canEdit ? SUBVIEWS : SUBVIEWS.filter((view) => view !== 'raw');
 
   useEffect(() => {
@@ -292,6 +459,39 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
     queryFn: () => knowledgeApi.events(agentId),
     enabled: subView === 'timeline',
   });
+  const personalDocumentsQuery = useQuery({
+    queryKey: ['knowledge-personal-documents', agentId],
+    queryFn: () => knowledgeApi.personalDocuments(agentId),
+    enabled: subView === 'personal',
+  });
+  const personalSearchQueryResult = useQuery({
+    queryKey: ['knowledge-personal-search', agentId, personalSearchQuery],
+    queryFn: () => knowledgeApi.personalSearch(agentId, personalSearchQuery),
+    enabled: subView === 'personal' && personalSearchQuery.trim().length > 0,
+  });
+  const personalDocumentQuery = useQuery({
+    queryKey: ['knowledge-personal-document', agentId, selectedPersonalDocumentId],
+    queryFn: () => knowledgeApi.personalDocument(agentId, selectedPersonalDocumentId as string),
+    enabled: subView === 'personal' && !!selectedPersonalDocumentId,
+  });
+  const personalIngestMutation = useMutation({
+    mutationFn: () =>
+      knowledgeApi.personalIngest(agentId, {
+        title: personalTitle.trim() || t('agent.knowledge.personalUntitled', 'Untitled personal note'),
+        markdown: personalMarkdown,
+        source_kind: 'paste',
+        source_uri: 'browser://knowledge/personal',
+        agent_searchable: true,
+        sensitivity: 'internal',
+      }),
+    onSuccess: (result) => {
+      setPersonalMarkdown('');
+      setPersonalTitle('');
+      setSelectedPersonalDocumentId(result.document_id);
+      void queryClient.invalidateQueries({ queryKey: ['knowledge-personal-documents', agentId] });
+      void queryClient.invalidateQueries({ queryKey: ['knowledge-personal-document', agentId, result.document_id] });
+    },
+  });
 
   const allEntries = entriesQuery.data?.entries ?? [];
   const selfEntries = allEntries.filter((entry) => entry.file.endsWith('self/self.md'));
@@ -299,6 +499,8 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
   const allPages = pagesQuery.data?.pages ?? [];
   const knowledgePages = allPages.filter((page) => page.kind === 'knowledge');
   const milestonePages = allPages.filter((page) => page.kind === 'milestone');
+  const personalDocuments = personalDocumentsQuery.data?.documents ?? [];
+  const personalSearchResults = personalSearchQueryResult.data?.results ?? [];
 
   return (
     <div className="agent-knowledge-root">
@@ -335,6 +537,28 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
         <PlaneEntriesView
           entries={profileEntries}
           emptyText={t('agent.knowledge.noProfiles', '还没有主人/协作者/领域侧写条目。')}
+        />
+      )}
+
+      {subView === 'personal' && (
+        <PersonalKnowledgeView
+          canEdit={canEdit}
+          documents={personalDocuments}
+          selectedDocument={personalDocumentQuery.data}
+          searchResults={personalSearchResults}
+          selectedDocumentId={selectedPersonalDocumentId}
+          intakeTitle={personalTitle}
+          intakeMarkdown={personalMarkdown}
+          searchQuery={personalSearchInput}
+          isSaving={personalIngestMutation.isPending}
+          onIntakeTitleChange={setPersonalTitle}
+          onIntakeMarkdownChange={setPersonalMarkdown}
+          onSearchQueryChange={setPersonalSearchInput}
+          onSubmitIntake={() => {
+            if (personalMarkdown.trim()) personalIngestMutation.mutate();
+          }}
+          onRunSearch={() => setPersonalSearchQuery(personalSearchInput.trim())}
+          onSelectDocument={setSelectedPersonalDocumentId}
         />
       )}
 

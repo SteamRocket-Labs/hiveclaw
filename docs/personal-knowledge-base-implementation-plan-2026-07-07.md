@@ -844,3 +844,35 @@ ruff check app/api/agent_knowledge.py app/services/personal_knowledge_service.py
   tests/api/test_agent_personal_knowledge_api.py
 # All checks passed!
 ```
+
+### 14.5 前端 Personal KB 入口
+
+已落地：
+
+1. `frontend/src/api/domains/knowledge.ts` 新增 Personal KB API client：
+   - `personalDocuments()`
+   - `personalIngest()`
+   - `personalSearch()`
+   - `personalDocument()`
+2. `frontend/src/pages/agent-detail/AgentKnowledgeSection.tsx` 在现有 `Memory & Knowledge` tab 内新增 `personal` 子视图，不另开产品入口。
+3. Personal KB UI 支持：
+   - owner 粘贴 Markdown / notes 入库；
+   - document list；
+   - query search；
+   - document detail + segment evidence；
+   - source ref 可见。
+4. UI 不传 `owner_user_id`，owner 仍由后端从 agent 解析；这与权限 spec 和 A2A 预留入口保持一致。
+5. `frontend/src/i18n/en.json` 与 `frontend/src/i18n/zh.json` 已补齐文案。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run test -- src/api/domains/knowledge.test.ts src/pages/agent-detail/AgentKnowledgeSection.test.tsx
+# Test Files  2 passed (2)
+# Tests  7 passed (7)
+
+npm run build
+# tsc && vite build
+# ✓ built in 2.42s
+```

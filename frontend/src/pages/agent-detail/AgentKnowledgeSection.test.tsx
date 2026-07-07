@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 // - overview renders per-plane counts + failure-mode lifecycle + pipeline health
 // - the retired flat-T3 counters (Active/Superseded/Archived) never resurface
 // - plane subviews replace the dead "entries" view; Raw stays manage-only
+// - Personal KB is its own library lane, not mixed into agent Memory raw files
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -67,8 +68,12 @@ vi.mock('@tanstack/react-query', () => ({
     if (kind === 'knowledge-pages') return { data: { pages: [] } };
     if (kind === 'knowledge-entries') return { data: { entries: [selfEntry, profileEntry] } };
     if (kind === 'knowledge-events') return { data: { events: [] } };
+    if (kind === 'knowledge-personal-documents') return { data: { documents: [] } };
+    if (kind === 'knowledge-personal-search') return { data: { results: [] } };
     return { data: undefined };
   },
+  useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 
 vi.mock('./AgentMindSection', () => ({
@@ -88,10 +93,14 @@ vi.mock('../../api/domains/knowledge', () => ({
     events: vi.fn(),
     candidates: vi.fn(),
     observability: vi.fn(),
+    personalDocuments: vi.fn(),
+    personalIngest: vi.fn(),
+    personalSearch: vi.fn(),
+    personalDocument: vi.fn(),
   },
 }));
 
-import AgentKnowledgeSection from './AgentKnowledgeSection';
+import AgentKnowledgeSection, { PersonalKnowledgeView } from './AgentKnowledgeSection';
 
 describe('AgentKnowledgeSection', () => {
   it('renders the two-plane overview with failure-mode lifecycle and pipeline health', () => {
@@ -125,7 +134,7 @@ describe('AgentKnowledgeSection', () => {
     const html = renderToStaticMarkup(
       <AgentKnowledgeSection agentId="agent-1" canEdit onNavigateTab={() => {}} />,
     );
-    for (const view of ['overview', 'self', 'profiles', 'knowledge', 'milestones', 'timeline', 'raw']) {
+    for (const view of ['overview', 'self', 'profiles', 'personal', 'knowledge', 'milestones', 'timeline', 'raw']) {
       expect(html).toContain(view);
     }
     // the dead subview BUTTONS are gone (copy like 'Skill candidates' may remain)
@@ -139,5 +148,86 @@ describe('AgentKnowledgeSection', () => {
     );
     expect(html).toContain('overview');
     expect(html).not.toContain('raw');
+  });
+
+  it('renders the Personal KB lane with intake, searchable docs, and source refs', () => {
+    const html = renderToStaticMarkup(
+      <PersonalKnowledgeView
+        canEdit
+        documents={[
+          {
+            document_id: 'doc-1',
+            title: 'Taste notes',
+            source_kind: 'paste',
+            source_uri: 'clipboard://taste',
+            source_sha256: 'a'.repeat(64),
+            source_ref: 'kb://person/user-1/documents/doc-1',
+            canonical_md_path: 'persons/user-1/kb/doc.md',
+            status: 'ready',
+            sensitivity: 'internal',
+            agent_searchable: true,
+            segment_count: 2,
+            created_at: null,
+            updated_at: null,
+            metadata: {},
+          },
+        ]}
+        selectedDocument={{
+          document_id: 'doc-1',
+          title: 'Taste notes',
+          source_kind: 'paste',
+          source_uri: 'clipboard://taste',
+          source_sha256: 'a'.repeat(64),
+          source_ref: 'kb://person/user-1/documents/doc-1',
+          canonical_md_path: 'persons/user-1/kb/doc.md',
+          status: 'ready',
+          sensitivity: 'internal',
+          agent_searchable: true,
+          segment_count: 1,
+          created_at: null,
+          updated_at: null,
+          metadata: {},
+          segments: [
+            {
+              segment_id: 'seg-1',
+              position: 0,
+              heading_path: ['Retrieval'],
+              content: 'Use source refs and ACL before context injection.',
+              token_count: 8,
+            },
+          ],
+        }}
+        searchResults={[
+          {
+            document_id: 'doc-1',
+            segment_id: 'seg-1',
+            title: 'Taste notes',
+            snippet: 'Use source refs and ACL before context injection.',
+            source_ref: 'kb://person/user-1/documents/doc-1#segment=seg-1',
+            score: 0.91,
+            heading_path: ['Retrieval'],
+            sensitivity: 'internal',
+            metadata: {},
+          },
+        ]}
+        selectedDocumentId="doc-1"
+        intakeTitle="Taste notes"
+        intakeMarkdown="# Taste"
+        searchQuery="source refs"
+        isSaving={false}
+        onIntakeTitleChange={() => {}}
+        onIntakeMarkdownChange={() => {}}
+        onSearchQueryChange={() => {}}
+        onSubmitIntake={() => {}}
+        onRunSearch={() => {}}
+        onSelectDocument={() => {}}
+      />,
+    );
+
+    expect(html).toContain('Personal KB');
+    expect(html).toContain('Taste notes');
+    expect(html).toContain('Use source refs and ACL');
+    expect(html).toContain('kb://person/user-1/documents/doc-1#segment=seg-1');
+    expect(html).toContain('source refs');
   });
 });

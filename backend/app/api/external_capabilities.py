@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+import uuid
+from typing import Any, Literal
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.security import get_current_admin
+from app.database import get_db
+from app.models.user import User
+from app.services.external_capabilities.trust_gate import (
+    approve_external_capability_snapshot,
+    list_external_capability_reviews,
+    stage_external_capability_review,
+)
+from app.services.external_capabilities.types import ExternalCapabilityComponent, NormalizedExternalPluginBundle
+
+router = APIRouter(tags=["external-capabilities"])
+
+
+class ExternalCapabilityComponentIn(BaseModel):
+    component_type: Literal["slash_command", "skill", "subagent", "hook", "mcp_server"]
+    local_name: str
+    qualified_name: str
+    source_path: str
+    content_sha256: str
+    runtime_projection: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    ignored_fields: list[str] = Field(default_factory=list)
+
+    def to_component(self) -> ExternalCapabilityComponent:
+        return ExternalCapabilityComponent(
+            component_type=self.component_type,
+            local_name=self.local_name,
+            qualified_name=self.qualified_name,
+            source_path=self.source_path,
+            content_sha256=self.content_sha256,
+            runtime_projection=dict(self.runtime_projection),
+            metadata=dict(self.metadata),
+            ignored_fields=tuple(self.ignored_fields),
+        )
+
+
+class ExternalCapabilityReviewIn(BaseModel):
+    source_format: str
+    source_uri: str
+    plugin_name: str
+    version: str | None = None
+    description: str | None = None
+    manifest_sha256: str | None = None
+    components: list[ExternalCapabilityComponentIn] = Field(default_factory=list)
+    unsupported_components: list[dict[str, Any]] = Field(default_factory=list)
+    credential_requirements: list[dict[str, Any]] = Field(default_factory=list)
+    admission_notes: list[dict[str, Any]] = Field(default_factory=list)
+
+    def to_bundle(self) -> NormalizedExternalPluginBundle:
+        return NormalizedExternalPluginBundle(
+            source_format=self.source_format,
+            source_uri=self.source_uri,
+            plugin_name=self.plugin_name,
+            version=self.version,
+            description=self.description,
+            manifest_sha256=self.manifest_sha256,
+            components=[component.to_component() for component in self.components],
+            unsupported_components=list(self.unsupported_components),
+            credential_requirements=list(self.credential_requirements),
+            admission_notes=list(self.admission_notes),
+        )
+
+
+@router.get("/enterprise/external-capabilities/reviews")
+async def list_external_capability_reviews_route(
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    return await list_external_capability_reviews(db, tenant_id=current_user.tenant_id)
+
+
+@router.post("/enterprise/external-capabilities/reviews")
+async def stage_external_capability_review_route(
+    data: ExternalCapabilityReviewIn,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    return await stage_external_capability_review(
+        db,
+        tenant_id=current_user.tenant_id,
+        created_by_user_id=current_user.id,
+        bundle=data.to_bundle(),
+    )
+
+
+@router.post("/enterprise/external-capabilities/reviews/{review_id}/approve")
+async def approve_external_capability_review_route(
+    review_id: uuid.UUID,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    try:
+        return await approve_external_capability_snapshot(
+            db,
+            tenant_id=current_user.tenant_id,
+            review_id=review_id,
+            approved_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+

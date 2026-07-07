@@ -35,8 +35,8 @@ External Capability Trust Gate
 
 当前代码现实必须分清：
 
-- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理。
-- 未完成：统一 `external_capability_reviews` / `trusted_capability_snapshots` / `external_extension_catalog_entries` / `external_extension_activations` 总账、Trust Gate service、materializer sandbox、CC/Codex adapters、`admission_class` / `governance_projection_json` 落库、direct import bypass 收口、Agent Detail / Workspace Settings 的最终统一 IA。
+- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve API。
+- 未完成：`external_extension_catalog_entries` / `external_extension_activations`、materializer sandbox、Codex adapter、Skill/MCP/direct import bypass 收口、approved snapshot -> existing runtime projection、Agent Detail / Workspace Settings 的最终统一 IA。
 - 因此本文档是目标计划和落地契约，不得把规划中的 Trust Gate 误读为当前已经全量上线的代码事实。
 
 核心原则：
@@ -1999,6 +1999,47 @@ Round 2 完成标准：
 - `Trusted Snapshot` 可以追溯 source_ref、resolved_ref、content_sha256、review_id。
 - legacy direct import API 开始返回 `review_required` 或投影到 Trust Gate，不再直接写 active runtime。
 - 后端 targeted tests 覆盖 state machine、hash、scan、reject、revoke。
+
+Round 2 substrate 实装证据（2026-07-07）：
+
+- 新增 `backend/app/models/external_capability.py`：
+  - `ExternalCapabilityReview`：外部能力进入 Hive 前的 staged review 记录。
+  - `ExternalCapabilitySnapshot`：approve 后产生的 approved snapshot；后续 activation 只能引用 snapshot，不引用 raw source。
+- 新增迁移 `backend/alembic/versions/external_capability_trust_gate_0707.py`：
+  - 创建 `external_capability_reviews` / `external_capability_snapshots`。
+  - 两张表都带 `tenant_id`、索引、唯一约束和 tenant RLS policy。
+- 新增 `backend/app/services/external_capabilities/trust_gate.py`：
+  - `stage_external_capability_review()`：根据 normalized bundle 生成 `admission_class`、`admission_report_json`、`governance_projection_json`，但不做 activation。
+  - `approve_external_capability_snapshot()`：只从 non-blocked review 生成 approved snapshot；blocked review 不能 approve。
+  - `list_external_capability_reviews()`：workspace admin 可查看 review queue。
+- 新增 `backend/app/api/external_capabilities.py` 并接入 `backend/app/main.py`：
+  - `GET /enterprise/external-capabilities/reviews`
+  - `POST /enterprise/external-capabilities/reviews`
+  - `POST /enterprise/external-capabilities/reviews/{review_id}/approve`
+- 新增测试：
+  - `backend/tests/services/test_external_capability_trust_gate.py`
+  - `backend/tests/api/test_external_capability_reviews_api.py`
+- 验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_external_capability_trust_gate.py \
+  tests/api/test_external_capability_reviews_api.py -q
+# 5 passed in 0.31s
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/models/external_capability.py \
+  app/services/external_capabilities/trust_gate.py \
+  app/api/external_capabilities.py \
+  app/main.py \
+  tests/services/test_external_capability_trust_gate.py \
+  tests/api/test_external_capability_reviews_api.py \
+  alembic/versions/external_capability_trust_gate_0707.py
+# All checks passed!
+
+cd backend && source .venv/bin/activate && alembic heads
+# external_capability_trust_gate_0707 (head)
+```
 
 ### Round 3：Agent runtime visibility / activation layer 与 Agent Detail 前端收敛
 

@@ -29,6 +29,7 @@ from app.api.dingtalk import router as dingtalk_router
 from app.api.discord_bot import router as discord_router
 from app.api.email_channel import router as email_channel_router
 from app.api.enterprise import router as enterprise_router
+from app.api.external_capabilities import router as external_capabilities_router
 from app.api.feature_flags import router as feature_flags_router
 from app.api.feishu import router as feishu_router
 from app.api.files import enterprise_kb_router
@@ -848,6 +849,7 @@ _api_routers = [
     role_templates_router,
     runtime_budgets_router,
     tenant_channels_router,
+    external_capabilities_router,
     tools_router,
     workflows_router,
     workflow_definitions_router,

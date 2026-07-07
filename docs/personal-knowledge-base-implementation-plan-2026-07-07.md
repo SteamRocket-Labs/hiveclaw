@@ -876,3 +876,69 @@ npm run build
 # tsc && vite build
 # ✓ built in 2.42s
 ```
+
+### 14.6 组合回归与断点检查
+
+本轮回归覆盖：
+
+1. 插件系统 hook 修复点：custom tool executor 不再重复触发内部 runtime hook。
+2. Personal KB schema / migration / RLS。
+3. Personal KB ingest / search / list / detail service。
+4. Personal KB API。
+5. `search_personal_kb` tool。
+6. Runtime Attention Control candidate lane。
+7. Activation Router 的 personal scope 记录。
+8. 前端 Knowledge tab 的 Personal KB API 与 UI。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/models/test_knowledge_records.py \
+  tests/migrations/test_personal_knowledge_core_migration.py \
+  tests/services/test_personal_knowledge_service.py \
+  tests/api/test_agent_personal_knowledge_api.py \
+  tests/runtime/test_personal_knowledge_provider.py \
+  tests/tools/test_personal_knowledge_tool.py \
+  tests/runtime/test_personal_knowledge_activation.py \
+  tests/runtime/test_kb_candidates.py \
+  tests/services/test_audit_rls_coverage.py::test_force_all_tenant_rls_migration_covers_bootstrap_force_tables \
+  tests/test_alembic_bootstrap.py::test_personal_knowledge_tables_are_forced_rls_on_fresh_bootstrap_path \
+  tests/runtime/test_invoker.py::test_custom_tool_executor_disables_inner_runtime_hooks \
+  tests/services/test_agent_message_runtime.py::test_build_agent_message_tool_executor_persists_tool_calls -q
+# 33 passed, 4 warnings in 0.49s
+
+ruff check app/models/knowledge.py app/db_bootstrap.py \
+  app/services/personal_knowledge_service.py app/api/agent_knowledge.py \
+  app/runtime/retrieval/personal_knowledge_provider.py \
+  app/runtime/retrieval/kb_candidates.py app/tools/handlers/knowledge.py \
+  app/tools/collector.py app/tools/registry.py app/runtime/invoker.py \
+  app/services/agent_tool_domains/messaging.py \
+  tests/models/test_knowledge_records.py \
+  tests/migrations/test_personal_knowledge_core_migration.py \
+  tests/services/test_personal_knowledge_service.py \
+  tests/api/test_agent_personal_knowledge_api.py \
+  tests/runtime/test_personal_knowledge_provider.py \
+  tests/tools/test_personal_knowledge_tool.py \
+  tests/runtime/test_personal_knowledge_activation.py \
+  tests/runtime/test_kb_candidates.py \
+  tests/runtime/test_invoker.py tests/services/test_agent_message_runtime.py
+# All checks passed!
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run test -- src/api/domains/knowledge.test.ts src/pages/agent-detail/AgentKnowledgeSection.test.tsx
+# Test Files  2 passed (2)
+# Tests  7 passed (7)
+
+npm run build
+# tsc && vite build
+# ✓ built in 2.37s
+```
+
+结论：
+
+1. Personal KB 没有绕开 Attention Control：runtime candidate lane、tool search、API search 均从同一 Knowledge Core 表读取，并受 owner/grant 约束。
+2. Personal KB 没有引入第 4 个产品：入口内化在现有 Agent `Memory & Knowledge` tab，属于 Personal Knowledge / Knowledge LM 的实现面。
+3. 权限入口已预留且可执行：`knowledge_grants` 对 user/agent + scope/document 建模；owner 不需要 grant，非 owner 必须 grant。
+4. 当前 M1 没有向量库硬依赖：Personal 先用 PostgreSQL `tsvector` / GIN 和 canonical Markdown artifact，后续企业 KB 可在同一 schema 上扩 Ontology / vector provider。

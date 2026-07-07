@@ -80,16 +80,6 @@ export interface InstalledPlugin {
   lockfile?: Record<string, unknown>;
 }
 
-export interface PluginInstallRequest {
-  plugin_key: string;
-  config?: Record<string, unknown> | null;
-  agent_ids?: string[] | null;
-}
-
-export interface PluginUninstallRequest {
-  plugin_key: string;
-}
-
 export interface AgentPluginAssignmentResult {
   id: string;
   agent_id: string;
@@ -239,19 +229,6 @@ export const extensionsApi = {
 
   /** Company admin: trigger the MCP backfill for the current tenant (idempotent). */
   backfillEnterpriseMcpServers: () => post<McpBackfillSummary>('/enterprise/mcp-servers/backfill'),
-
-  /** Company admin: tenant-installed plugin records. */
-  listEnterprisePlugins: () => get<InstalledPlugin[]>('/enterprise/plugins'),
-
-  /** Company admin: install a plugin and optionally assign it to selected agents. */
-  installEnterprisePlugin: (body: PluginInstallRequest) => post<InstalledPlugin>('/enterprise/plugins/install', body),
-
-  /** Company admin: uninstall a plugin if no installed plugin depends on it. */
-  uninstallEnterprisePlugin: (body: PluginUninstallRequest) =>
-    post<{ ok: boolean; plugin_key: string }>('/enterprise/plugins/uninstall', body),
-
-  /** Company admin: backfill default-active plugins for the current tenant. */
-  backfillEnterprisePlugins: () => post<{ ok: boolean; installed: string[] }>('/enterprise/plugins/backfill'),
 
   /** Agent-scoped plugin enable/disable. */
   setAgentPluginAssignment: (agentId: string, pluginKey: string, data: { enabled: boolean }) =>

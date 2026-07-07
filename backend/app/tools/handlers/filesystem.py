@@ -106,7 +106,7 @@ def read_file(workspace: Path, arguments: dict, tenant_id: str | None = None) ->
             "Use .txt only for temporary probes/log snippets or when the user explicitly requests plain text. "
             "Use `save_skill` for skill activation candidates, and the work ledger for durable goal state.\n"
             "- Governed paths: memory/, logs/, evolution/, and runtime_artifacts/ are platform-managed; direct writes there are refused.\n"
-            "- Skill paths: skills/** are active capability packages; direct writes are refused and promotion must go through Skill Gate.\n"
+            "- Skill paths: skills/** are active skill directories; direct writes are refused and promotion must go through Skill Gate.\n"
             "- Protected paths: soul.md is updated only through Dream/Soul candidate promotion; direct writes are refused.\n"
             "- This tool overwrites the file completely — if you only need to change part of a file, use `edit_file`."
         ),
@@ -151,7 +151,7 @@ def write_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             "- The edit will FAIL if `old_text` is not found or matches multiple locations. Provide enough surrounding "
             "context to make your match unique, or use `replace_all: true` to change every occurrence.\n"
             "- Governed paths: memory/, logs/, evolution/, and runtime_artifacts/ are platform-managed; direct edits there are refused.\n"
-            "- Skill paths: skills/** are active capability packages; direct edits are refused and promotion must go through Skill Gate.\n"
+            "- Skill paths: skills/** are active skill directories; direct edits are refused and promotion must go through Skill Gate.\n"
             "- Prefer this over `write_file` for existing files — it only changes what you specify, preserving the rest."
         ),
         parameters={

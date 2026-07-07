@@ -1,11 +1,9 @@
-"""Installed-plugin records — tenant-scoped identity for capability packs
-installed via the plugin system (Step 5).
+"""Installed-plugin records for legacy tenant plugin projections.
 
-Generalizes the MCPServer install primitive (``app/models/mcp_server.py``) to any
-capability pack. Every table is tenant-scoped and joins Hive's PostgreSQL RLS:
-``tenant_id`` is mandatory so the ``tenant_isolation_{table}`` policy filters on a
-real physical column — a child reachable only by FK could not be RLS-covered and
-would leak across tenants. See docs/cc-tooling-alignment-and-plugin-system.md §3.
+Every table is tenant-scoped and joins Hive's PostgreSQL RLS: ``tenant_id`` is
+mandatory so the ``tenant_isolation_{table}`` policy filters on a real physical
+column. New external capability installs use the Trust Gate catalog/activation
+tables; these rows remain as migration-compatible projections.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ from app.database import Base
 
 
 class TenantInstalledPlugin(Base):
-    """One capability pack installed into a tenant (mirrors MCPServer)."""
+    """One legacy plugin projection installed into a tenant."""
 
     __tablename__ = "tenant_installed_plugins"
     __table_args__ = (UniqueConstraint("tenant_id", "plugin_key", name="uq_installed_plugins_tenant_key"),)
@@ -30,7 +28,7 @@ class TenantInstalledPlugin(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    # Stable, tenant-unique identity = the pack manifest name (e.g. "web_pack").
+    # Stable, tenant-unique identity = the legacy manifest name (e.g. "web_pack").
     plugin_key: Mapped[str] = mapped_column(String(200), nullable=False)
     version: Mapped[str] = mapped_column(String(40), nullable=False, default="0.0.0")
     # Provenance (governed inclusion §6.7): builtin/local installable in v1; remote

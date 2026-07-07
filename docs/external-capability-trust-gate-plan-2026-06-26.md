@@ -1903,6 +1903,33 @@ Round 1 完成标准：
 - 后端有 namespace、permission downgrade、dependency closure、credential handle、marketplace refresh vs activation reload 的 tests。
 - 后续实现必须以这些 contract 为测试依据，不再沿用 `pack.yaml` 作为新生态目标。
 
+Round 1 实装证据（2026-07-07）：
+
+- 新增 `backend/app/services/external_capabilities/cc_plugin_adapter.py`，只负责把 CC plugin 目录归一化为 Hive component report，不写 DB、不安装 active runtime、不调用 `ToolRuntimeService`。
+- 新增 `backend/app/services/external_capabilities/context_projection.py`，输出 CC-shaped context payload：`tools`、`mcp_servers`、`slash_commands`、`agents`、`skills`、`plugins`、`hooks`，并保持 native tools 与 plugin components 分离。
+- 新增 `backend/tests/services/test_external_cc_plugin_adapter.py`：
+  - 验证 `commands/`、`skills/`、`agents/`、`hooks/hooks.json`、`.mcp.json` 被 namespace 成 `plugin:component`。
+  - 验证 plugin agent frontmatter 里的 `permissionMode`、`hooks`、`mcpServers` 被忽略并记录，不进入 runtime projection。
+  - 验证 `userConfig` 转成 credential requirement，`lspServers` / `outputStyles` 标记为 unsupported。
+  - 验证 manifest component path traversal 被 admission note 捕获，不读取插件根目录外文件。
+- 新增 `backend/tests/services/test_agent_extension_context_projection.py`：
+  - 验证 native tool names 不会和 plugin component names 混合。
+  - 验证 dry-run payload 对齐 CC system init 的组件分组。
+- 验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_external_cc_plugin_adapter.py \
+  tests/services/test_agent_extension_context_projection.py -q
+# 3 passed in 0.07s
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/external_capabilities \
+  tests/services/test_external_cc_plugin_adapter.py \
+  tests/services/test_agent_extension_context_projection.py
+# All checks passed!
+```
+
 ### Round 2：后端 canonical substrate，建立 Trust Gate 与 Snapshot 总账
 
 目标：

@@ -2083,6 +2083,7 @@ class PersonalKnowledgeService:
             channel: str,
             rank: int,
             raw_score: float,
+            channel_metadata: dict[str, Any] | None = None,
         ) -> None:
             segment_id = segment.id
             document_metadata = dict(getattr(document, "doc_metadata_json", None) or {})
@@ -2104,6 +2105,8 @@ class PersonalKnowledgeService:
             channel_trace = entry["channels"].setdefault(channel, {"rank": rank, "raw_score": raw_score})
             channel_trace["rank"] = min(int(channel_trace["rank"]), int(rank))
             channel_trace["raw_score"] = max(float(channel_trace["raw_score"]), float(raw_score or 0.0))
+            if channel_metadata:
+                channel_trace.update(channel_metadata)
             entry["rrf"] += 1.0 / (60.0 + max(1, int(rank)))
 
         text_statement = build_personal_knowledge_search_statement(
@@ -2142,10 +2145,12 @@ class PersonalKnowledgeService:
         for entity in entities:
             entity_segment_ids.extend(_source_ref_segment_ids(getattr(entity, "source_refs_json", None)))
 
-        graph_segment_ids: list[uuid.UUID] = []
+        graph_segment_scores: dict[uuid.UUID, float] = {}
+        graph_segment_hops: dict[uuid.UUID, int] = {}
         if entities:
             entity_ids = [entity.id for entity in entities if getattr(entity, "id", None) is not None]
             if entity_ids:
+                graph_link_limit = max(candidate_limit * 50, 250)
                 graph_rows = (
                     await session.execute(
                         select(KnowledgeLink)
@@ -2153,18 +2158,75 @@ class PersonalKnowledgeService:
                             KnowledgeLink.tenant_id == tenant_id,
                             KnowledgeLink.scope_type == "person",
                             KnowledgeLink.scope_id == owner_user_id,
-                            or_(KnowledgeLink.from_id.in_(entity_ids), KnowledgeLink.to_id.in_(entity_ids)),
+                            KnowledgeLink.from_kind == "entity",
+                            KnowledgeLink.to_kind == "entity",
                         )
                         .order_by(KnowledgeLink.confidence.desc())
-                        .limit(candidate_limit)
+                        .limit(graph_link_limit)
                     )
                 ).all()
+                adjacency: dict[str, list[str]] = {}
+                links: list[Any] = []
                 for row in graph_rows:
                     link = _row_first(row)
-                    if not hasattr(link, "source_refs_json"):
+                    from_id = getattr(link, "from_id", None)
+                    to_id = getattr(link, "to_id", None)
+                    if from_id is None or to_id is None:
                         continue
-                    graph_segment_ids.extend(_source_ref_segment_ids(getattr(link, "source_refs_json", None)))
+                    from_key = str(from_id)
+                    to_key = str(to_id)
+                    adjacency.setdefault(from_key, [])
+                    adjacency.setdefault(to_key, [])
+                    adjacency[from_key].append(to_key)
+                    adjacency[to_key].append(from_key)
+                    links.append(link)
 
+                if adjacency and links:
+                    from app.memory.relation_graph import personalized_pagerank
+
+                    seed_weights = {
+                        str(entity.id): 1.0 / float(rank)
+                        for rank, entity in enumerate(entities, start=1)
+                        if getattr(entity, "id", None) is not None
+                    }
+                    ppr_scores = personalized_pagerank(adjacency, seed_weights)
+                    seed_keys = set(seed_weights)
+                    distances: dict[str, int] = {node_id: 0 for node_id in seed_keys if node_id in adjacency}
+                    frontier = list(distances)
+                    while frontier:
+                        current = frontier.pop(0)
+                        for neighbor in adjacency.get(current, []):
+                            if neighbor in distances:
+                                continue
+                            distances[neighbor] = distances[current] + 1
+                            frontier.append(neighbor)
+
+                    for link in links:
+                        if not hasattr(link, "source_refs_json"):
+                            continue
+                        from_key = str(getattr(link, "from_id", ""))
+                        to_key = str(getattr(link, "to_id", ""))
+                        endpoint_score = max(float(ppr_scores.get(from_key, 0.0)), float(ppr_scores.get(to_key, 0.0)))
+                        if endpoint_score <= 0.0:
+                            continue
+                        confidence = _coerce_confidence(getattr(link, "confidence", 1.0))
+                        link_score = endpoint_score * confidence
+                        if link_score <= 0.0:
+                            continue
+                        known_distances = [
+                            distance
+                            for distance in (distances.get(from_key), distances.get(to_key))
+                            if distance is not None
+                        ]
+                        hop_count = (min(known_distances) + 1) if known_distances else 1
+                        for segment_id in _source_ref_segment_ids(getattr(link, "source_refs_json", None)):
+                            graph_segment_scores[segment_id] = max(graph_segment_scores.get(segment_id, 0.0), link_score)
+                            graph_segment_hops[segment_id] = min(graph_segment_hops.get(segment_id, hop_count), hop_count)
+
+        graph_segment_ids = [
+            segment_id
+            for segment_id, _score in sorted(graph_segment_scores.items(), key=lambda item: item[1], reverse=True)
+        ]
         fetch_segment_ids = list(dict.fromkeys([*entity_segment_ids, *graph_segment_ids]))
         if fetch_segment_ids:
             segment_rows = (
@@ -2211,7 +2273,8 @@ class PersonalKnowledgeService:
                         document=document,
                         channel="graph",
                         rank=graph_rank_by_segment[segment.id],
-                        raw_score=1.0,
+                        raw_score=graph_segment_scores.get(segment.id, 0.0),
+                        channel_metadata={"method": "ppr", "hops": graph_segment_hops.get(segment.id, 1)},
                     )
 
         hits: list[KnowledgeSearchHit] = []

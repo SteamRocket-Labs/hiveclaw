@@ -720,6 +720,78 @@ async def test_search_personal_fuses_entity_and_graph_channels_with_score_trace(
 
 
 @pytest.mark.asyncio
+async def test_search_personal_graph_channel_uses_multihop_ppr_scores(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    document = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="Associative retrieval memo",
+        source_sha256="e" * 64,
+        canonical_md_path="persons/owner/kb/assoc.md",
+        sensitivity="internal",
+        doc_metadata_json={},
+        updated_at=None,
+    )
+    seed_segment = SimpleNamespace(
+        id=uuid.uuid4(),
+        heading_path_json=["Seed"],
+        content="Open Notebook captures source grounded personal knowledge.",
+    )
+    two_hop_segment = SimpleNamespace(
+        id=uuid.uuid4(),
+        heading_path_json=["Two hop"],
+        content="NotebookLM comparison should be recalled through the adjacent project link.",
+    )
+    entity_a_id = uuid.uuid4()
+    entity_b_id = uuid.uuid4()
+    entity_c_id = uuid.uuid4()
+    entity_a = SimpleNamespace(
+        id=entity_a_id,
+        canonical_name="Open Notebook",
+        aliases_json=["OpenNotebook"],
+        confidence=0.9,
+        source_refs_json=[{"segment_id": str(seed_segment.id), "document_id": str(document.id)}],
+    )
+    link_ab = SimpleNamespace(
+        id=uuid.uuid4(),
+        from_id=entity_a_id,
+        to_id=entity_b_id,
+        confidence=0.9,
+        relation="inspired_by",
+        source_refs_json=[],
+    )
+    link_bc = SimpleNamespace(
+        id=uuid.uuid4(),
+        from_id=entity_b_id,
+        to_id=entity_c_id,
+        confidence=0.8,
+        relation="compares_with",
+        source_refs_json=[{"segment_id": str(two_hop_segment.id), "document_id": str(document.id)}],
+    )
+    session = _QueuedSession(results=[[], [entity_a], [link_ab, link_bc], [(seed_segment, document), (two_hop_segment, document)]])
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    hits = await service.search_personal(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        query="OpenNotebook",
+        current_user_id=owner_id,
+        agent_id=uuid.uuid4(),
+        limit=5,
+    )
+
+    assert [hit.segment_id for hit in hits] == [seed_segment.id, two_hop_segment.id]
+    graph_trace = hits[1].score_trace["channels"]["graph"]
+    assert graph_trace["rank"] == 1
+    assert 0.0 < graph_trace["raw_score"] < 1.0
+    assert graph_trace["method"] == "ppr"
+    assert graph_trace["hops"] >= 2
+
+
+@pytest.mark.asyncio
 async def test_create_personal_grant_writes_owner_scope_grant(tmp_path: Path) -> None:
     from app.services.personal_knowledge_service import PersonalKnowledgeService
 

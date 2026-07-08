@@ -745,7 +745,7 @@ Personal KB M1 完成必须满足：
 
 | 原子项 | 状态 | Commit | 证据 |
 | --- | --- | --- | --- |
-| M1-G1 多跳 PPR 检索 | 待修复 | - | - |
+| M1-G1 多跳 PPR 检索 | 已完成 | `complete personal kb ppr retrieval` | `pytest tests/services/test_personal_knowledge_service.py -q` -> 25 passed；`ruff check app/services/personal_knowledge_service.py tests/services/test_personal_knowledge_service.py` -> All checks passed。新增二跳 PPR 红测，`search_personal()` graph channel 返回 `method=ppr`、`hops`、非固定 `raw_score`。 |
 | M1-G2 异步 ingestion job | 待修复 | - | - |
 | M1-G3 optional vector boundary | 待修复 | - | - |
 | M1-G4 extractor 独立测试 | 待修复 | - | - |

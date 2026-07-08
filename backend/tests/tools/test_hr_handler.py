@@ -22,7 +22,7 @@ def test_create_digital_employee_is_registered():
 def test_create_digital_employee_schema_requires_session_confirmed_blueprint():
     """Creation is sensitive: it must be bound to a previewed and confirmed blueprint."""
     from app.services.agent_tools import get_combined_openai_tools
-    from app.tools.handlers.hr import ROLE_DESCRIPTION_MAX_CHARS
+    from app.tools.handlers.hr import HR_LONG_TEXT_MAX_CHARS, ROLE_DESCRIPTION_MAX_CHARS
 
     all_tools = get_combined_openai_tools()
     hr_tool = next(t for t in all_tools if t["function"]["name"] == "create_digital_employee")
@@ -34,7 +34,9 @@ def test_create_digital_employee_schema_requires_session_confirmed_blueprint():
     assert "role_description" in params["properties"]
     assert params["properties"]["role_description"]["maxLength"] == ROLE_DESCRIPTION_MAX_CHARS
     assert "personality" in params["properties"]
+    assert params["properties"]["personality"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
     assert "boundaries" in params["properties"]
+    assert params["properties"]["boundaries"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
     assert "primary_users" in params["properties"]
     assert "core_outputs" in params["properties"]
     assert "skill_names" in params["properties"]
@@ -43,7 +45,12 @@ def test_create_digital_employee_schema_requires_session_confirmed_blueprint():
     assert "company_charter" in params["properties"]
     assert "owner_agency_charter" in params["properties"]
     assert "source_attributions" in params["properties"]
-    source_schema = params["properties"]["source_attributions"]["items"]["properties"]
+    assert params["properties"]["welcome_message"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
+    assert params["properties"]["focus_content"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
+    assert params["properties"]["heartbeat_topics"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
+    source_items_schema = params["properties"]["source_attributions"]["items"]
+    assert source_items_schema["required"] == ["field"]
+    source_schema = source_items_schema["properties"]
     assert source_schema["source_type"]["enum"] == [
         "confirmed_by_user",
         "supported_by_company_kb",
@@ -55,13 +62,18 @@ def test_create_digital_employee_schema_requires_session_confirmed_blueprint():
 
 def test_preview_agent_blueprint_schema_exposes_role_description_prompt_guard():
     from app.services.agent_tools import get_combined_openai_tools
-    from app.tools.handlers.hr import ROLE_DESCRIPTION_MAX_CHARS
+    from app.tools.handlers.hr import HR_LONG_TEXT_MAX_CHARS, ROLE_DESCRIPTION_MAX_CHARS
 
     all_tools = get_combined_openai_tools()
     preview_tool = next(t for t in all_tools if t["function"]["name"] == "preview_agent_blueprint")
     params = preview_tool["function"]["parameters"]
 
     assert params["properties"]["role_description"]["maxLength"] == ROLE_DESCRIPTION_MAX_CHARS
+    assert params["properties"]["personality"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
+    assert params["properties"]["boundaries"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
+    assert params["properties"]["welcome_message"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
+    assert params["properties"]["focus_content"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
+    assert params["properties"]["heartbeat_topics"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
     assert "source_attributions" in params["properties"]
 
 
@@ -97,12 +109,12 @@ def test_build_blueprint_preview_payload_trims_role_description_to_prompt_guard(
 
 
 def test_hr_tool_included_in_hr_tools_set():
-    """_get_hr_tools should return the create_digital_employee tool."""
+    """_get_hr_tools should include the HR creation core without pinning dynamic search providers."""
     from app.services.agent_tools import _get_hr_tools
 
     hr_tools = _get_hr_tools()
     names = [t["function"]["name"] for t in hr_tools]
-    assert set(names) == {
+    required_names = {
         "create_digital_employee",
         "preview_agent_blueprint",
         "web_search",
@@ -114,6 +126,7 @@ def test_hr_tool_included_in_hr_tools_set():
         "discover_resources",
         "search_clawhub",
     }
+    assert required_names <= set(names)
 
 
 def test_hr_tool_meta_has_correct_attributes():
@@ -274,6 +287,35 @@ def test_build_blueprint_preview_payload_rejects_invalid_source_attribution_type
     assert any("invalid source_attributions ignored" in warning for warning in payload["warnings"])
 
 
+def test_build_blueprint_preview_payload_defaults_missing_source_type_to_unknown_knowledge_debt() -> None:
+    from app.tools.handlers.hr import _build_blueprint_preview_payload
+
+    payload = _build_blueprint_preview_payload(
+        {
+            "name": "研究助理",
+            "role_description": "服务投研团队的市场研究员。",
+            "primary_users": ["投研团队"],
+            "core_outputs": ["日报"],
+            "focus_content": "先完成日报",
+            "source_attributions": [
+                {"field": "core_outputs", "value_summary": "日报需要进一步确认来源"}
+            ],
+        }
+    )
+
+    assert payload["blueprint"]["source_attributions"] == [
+        {
+            "field": "core_outputs",
+            "source_type": "unknown_or_needs_company_source",
+            "value_summary": "日报需要进一步确认来源",
+            "source_refs": [],
+        }
+    ]
+    assert any("missing source_attributions source_type defaulted" in warning for warning in payload["warnings"])
+    assert payload["knowledge_debt"][0]["field"] == "core_outputs"
+    assert "unknown_or_needs_company_source" in payload["confirmation_requirements"]["source_types_to_present"]
+
+
 def test_build_blueprint_preview_payload_auto_recommends_platform_skills() -> None:
     from app.tools.handlers.hr import _build_blueprint_preview_payload
 
@@ -361,6 +403,46 @@ def test_blueprint_hash_is_stable_for_semantically_identical_payloads() -> None:
     )
 
     assert first["blueprint_hash"] == second["blueprint_hash"]
+
+
+def test_blueprint_hash_is_stable_when_source_type_missing_then_defaulted() -> None:
+    from app.tools.handlers.hr import _build_blueprint_preview_payload
+
+    missing_source_type = _build_blueprint_preview_payload(
+        {
+            "name": "通用助理",
+            "role_description": "按照用户指令完成对话、检索、整理和提醒等基础工作。",
+            "primary_users": ["用户本人"],
+            "core_outputs": ["按需对话回复"],
+            "boundaries": "不伪造引用",
+            "focus_content": "等待用户首次具体指派",
+            "permission_scope": "self",
+            "source_attributions": [
+                {"field": "name", "value_summary": "通用助理"}
+            ],
+        }
+    )
+    explicit_unknown = _build_blueprint_preview_payload(
+        {
+            "name": "通用助理",
+            "role_description": "按照用户指令完成对话、检索、整理和提醒等基础工作。",
+            "primary_users": ["用户本人"],
+            "core_outputs": ["按需对话回复"],
+            "boundaries": "不伪造引用",
+            "focus_content": "等待用户首次具体指派",
+            "permission_scope": "self",
+            "source_attributions": [
+                {
+                    "field": "name",
+                    "source_type": "unknown_or_needs_company_source",
+                    "value_summary": "通用助理",
+                }
+            ],
+        }
+    )
+
+    assert missing_source_type["blueprint"]["source_attributions"] == explicit_unknown["blueprint"]["source_attributions"]
+    assert missing_source_type["blueprint_hash"] == explicit_unknown["blueprint_hash"]
 
 
 def test_build_blueprint_preview_payload_keeps_external_skill_urls_separate_from_platform_skills() -> None:
@@ -702,6 +784,16 @@ def test_create_digital_employee_uses_validated_model_resolution() -> None:
     assert "_resolve_employee_creation_model" in src
     assert "_resolve_employee_refinement_model" in src
     assert "_validate_creation_flow_confirmation" in src
+
+
+def test_create_digital_employee_uses_audited_identity_bootstrap_bypass() -> None:
+    from app.tools.handlers import hr
+
+    src = inspect.getsource(hr.create_digital_employee)
+
+    assert "rls_bypass_reason=" in src
+    assert "HR digital employee identity bootstrap" in src
+    assert "rls_bypass_actor_id=str(user.id)" in src
 
 
 @pytest.mark.asyncio

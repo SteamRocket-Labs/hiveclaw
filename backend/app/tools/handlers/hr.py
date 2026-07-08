@@ -28,13 +28,16 @@ from app.tools.runtime import ToolExecutionRequest
 logger = logging.getLogger(__name__)
 
 ROLE_DESCRIPTION_MAX_CHARS = 4000
+HR_LONG_TEXT_MAX_CHARS = 4000
+
+UNKNOWN_SOURCE_ATTRIBUTION_TYPE = "unknown_or_needs_company_source"
 
 SOURCE_ATTRIBUTION_TYPES = [
     "confirmed_by_user",
     "supported_by_company_kb",
     "suggested_by_history",
     "suggested_by_general_knowledge",
-    "unknown_or_needs_company_source",
+    UNKNOWN_SOURCE_ATTRIBUTION_TYPE,
 ]
 
 SOURCE_ATTRIBUTIONS_SCHEMA = {
@@ -53,7 +56,10 @@ SOURCE_ATTRIBUTIONS_SCHEMA = {
             "source_type": {
                 "type": "string",
                 "enum": SOURCE_ATTRIBUTION_TYPES,
-                "description": "Whether the value is user-confirmed, company-knowledge-backed, historical, general, or unresolved.",
+                "description": (
+                    "Whether the value is user-confirmed, company-knowledge-backed, historical, general, or unresolved. "
+                    "If omitted, the server records it as unresolved knowledge debt."
+                ),
             },
             "source_refs": {
                 "type": "array",
@@ -61,7 +67,7 @@ SOURCE_ATTRIBUTIONS_SCHEMA = {
                 "description": "Evidence refs such as kb://..., t3:memory/..., explicit:..., or external source refs.",
             },
         },
-        "required": ["field", "source_type"],
+        "required": ["field"],
     },
     "description": (
         "Source attribution for substantive blueprint content. Company knowledge is authoritative, "
@@ -243,13 +249,20 @@ def _parse_source_attributions(value: object) -> tuple[list[dict[str, Any]], lis
     normalized: list[dict[str, Any]] = []
     warnings: list[str] = []
     invalid_count = 0
+    defaulted_source_type_count = 0
     for item in raw_items:
         if not isinstance(item, dict):
             invalid_count += 1
             continue
         source_type = str(item.get("source_type") or "").strip()
         field = str(item.get("field") or "").strip()
-        if source_type not in SOURCE_ATTRIBUTION_TYPES or not field:
+        if not field:
+            invalid_count += 1
+            continue
+        if not source_type:
+            source_type = UNKNOWN_SOURCE_ATTRIBUTION_TYPE
+            defaulted_source_type_count += 1
+        elif source_type not in SOURCE_ATTRIBUTION_TYPES:
             invalid_count += 1
             continue
         entry: dict[str, Any] = {
@@ -263,6 +276,11 @@ def _parse_source_attributions(value: object) -> tuple[list[dict[str, Any]], lis
         normalized.append(entry)
     if invalid_count:
         warnings.append(f"invalid source_attributions ignored: {invalid_count}")
+    if defaulted_source_type_count:
+        warnings.append(
+            "missing source_attributions source_type defaulted to "
+            f"{UNKNOWN_SOURCE_ATTRIBUTION_TYPE}: {defaulted_source_type_count}"
+        )
     return normalized, warnings
 
 
@@ -1539,6 +1557,7 @@ def _append_hr_creation_t0_event(
                 },
                 "personality": {
                     "type": "string",
+                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
                     "description": "Operating style as concrete behaviors (e.g. 'Always cite sources when presenting data', 'Proactively flag risks before they escalate'). One per line, 3-5 lines.",
                 },
                 "primary_users": {
@@ -1553,6 +1572,7 @@ def _append_hr_creation_t0_event(
                 },
                 "boundaries": {
                     "type": "string",
+                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
                     "description": "Hard rules and red lines specific to this role's risk profile (e.g. 'Never fabricate financial data', 'Do not share user PII externally'). One per line, 3-5 lines.",
                 },
                 "company_charter": {
@@ -1626,14 +1646,17 @@ def _append_hr_creation_t0_event(
                 },
                 "welcome_message": {
                     "type": "string",
+                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
                     "description": "Greeting shown when someone first chats with this agent. Should introduce the agent's role and capabilities.",
                 },
                 "focus_content": {
                     "type": "string",
+                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
                     "description": "What should the agent work on first? Written as a task list or agenda in markdown.",
                 },
                 "heartbeat_topics": {
                     "type": "string",
+                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
                     "description": "Role-specific exploration topics for the agent's heartbeat. E.g. 'Focus on AI/VC funding news, semiconductor breakthroughs, and founder movements.'",
                 },
             },
@@ -1866,7 +1889,14 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 last_heartbeat_at=_dt.now(_tz.utc),
             )
             db.add(agent)
-            await ensure_agent_identity(db, agent, display_name=agent.name, avatar_url=None)
+            await ensure_agent_identity(
+                db,
+                agent,
+                display_name=agent.name,
+                avatar_url=None,
+                rls_bypass_reason=f"HR digital employee identity bootstrap for tenant {effective_tenant_id}",
+                rls_bypass_actor_id=str(user.id),
+            )
 
             # Permissions
             if permission_scope == "self":
@@ -2421,10 +2451,12 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 },
                 "personality": {
                     "type": "string",
+                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
                     "description": "Desired operating style, one trait per line if helpful.",
                 },
                 "boundaries": {
                     "type": "string",
+                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
                     "description": "Risk boundaries or red lines, one per line if helpful.",
                 },
                 "source_attributions": SOURCE_ATTRIBUTIONS_SCHEMA,
@@ -2459,9 +2491,21 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     "description": "Who should be allowed to use the agent.",
                 },
                 "triggers": {"type": "array", "items": {"type": "object"}, "description": "Proposed scheduled tasks."},
-                "welcome_message": {"type": "string", "description": "Planned greeting."},
-                "focus_content": {"type": "string", "description": "Initial work agenda."},
-                "heartbeat_topics": {"type": "string", "description": "Exploration topics for heartbeat."},
+                "welcome_message": {
+                    "type": "string",
+                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
+                    "description": "Planned greeting.",
+                },
+                "focus_content": {
+                    "type": "string",
+                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
+                    "description": "Initial work agenda.",
+                },
+                "heartbeat_topics": {
+                    "type": "string",
+                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
+                    "description": "Exploration topics for heartbeat.",
+                },
             },
             "required": ["name"],
         },

@@ -26,6 +26,14 @@ def test_agent_class_internal_system_literal_is_valid():
     assert "internal_tenant" in args
 
 
+def test_hr_template_version_tracks_creation_failure_recovery_contract() -> None:
+    """Changing the HR creation contract must force existing HR workspaces to resync."""
+    from app.api import agents as agents_api
+
+    assert agents_api.HR_TEMPLATE_VERSION.startswith("hr-flow-v5-")
+    assert "personal-kb-work-routing" in agents_api.HR_TEMPLATE_VERSION
+
+
 class _FakeScalars:
     def __init__(self, rows: list[SimpleNamespace]) -> None:
         self._rows = rows

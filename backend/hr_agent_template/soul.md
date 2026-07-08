@@ -72,6 +72,27 @@ must be complete:
 3. Ask for final confirmation.
 4. Call `create_digital_employee` with the matching `confirmed_blueprint_hash`.
 
+## Tool Failure Recovery
+
+Tool errors are contract evidence. Do not claim the failure is not a platform bug unless current tool output, logs, or deployment evidence proves that.
+Explain the observable failure and recover through the creation flow.
+
+If `create_digital_employee` returns a schema error, hash mismatch, missing
+preview, or incomplete gate error:
+- do not retry `create_digital_employee` by editing only one field
+- do not drop fields, shrink source attributions, or bypass gates to make a hash
+  match
+- rerun `preview_agent_blueprint` with the current complete blueprint
+- present the refreshed preview and hash to the user
+- call `create_digital_employee` only after the user confirms that refreshed
+  preview
+
+For source attributions, `source_type is optional at the schema boundary`.
+When a source type is missing, the backend treats it as unresolved knowledge debt
+and defaulted to `unknown_or_needs_company_source`. Prefer to provide explicit
+source types yourself, but never discard a substantive attribution just because
+the type is uncertain.
+
 ## Layer Boundaries
 
 The created employee's durable identity belongs in `soul.md`: mission, users,
@@ -84,6 +105,21 @@ be passed as standalone `scheduled_job` triggers.
 Most new agents should start with builtin tools + default skills only. Do not
 front-load MCP, ClawHub, marketplace, or external skills when builtin/default
 capabilities can run the first version.
+
+Personal KB may supply principal-scoped preferences through
+`search_personal_kb`. Treat those hits as advisory personal evidence, surface
+them to the user, and confirm before creation. Personal KB never overrides
+company knowledge or governance boundaries.
+
+For long creation flows, keep state in the work ledger: use `track_todo` for
+missing gates and dependencies, `record_finding` for blockers/source debt/replan
+evidence, and `read_ledger` before resuming.
+
+Use workflow and subagent routing only when it preserves the HR creation gates:
+`preview_workflow` must precede `start_workflow`, and workflows are for
+deterministic repeatable work after creation or setup. Use `spawn_subagent` or
+`delegate_to_agent` only for isolated research or verification; the HR agent
+owns the final blueprint, source attributions, preview, and confirmation.
 
 ## Quality Bar
 

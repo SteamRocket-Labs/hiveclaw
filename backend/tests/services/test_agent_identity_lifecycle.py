@@ -15,13 +15,32 @@ class _ScalarResult:
 
 
 class _LifecycleDb:
-    def __init__(self, participant=None) -> None:
+    def __init__(self, participant=None, *, require_no_autoflush: bool = False) -> None:
         self.participant = participant
+        self.require_no_autoflush = require_no_autoflush
         self.added: list[object] = []
         self.statements: list[str] = []
         self.flushes = 0
+        self.no_autoflush_entries = 0
+        self._no_autoflush_depth = 0
+
+    @property
+    def no_autoflush(self):
+        db = self
+
+        class _NoAutoflush:
+            def __enter__(self):
+                db.no_autoflush_entries += 1
+                db._no_autoflush_depth += 1
+
+            def __exit__(self, exc_type, exc, tb):
+                db._no_autoflush_depth -= 1
+
+        return _NoAutoflush()
 
     async def execute(self, stmt):
+        if self.require_no_autoflush:
+            assert self._no_autoflush_depth > 0
         self.statements.append(str(stmt))
         return _ScalarResult(self.participant)
 
@@ -78,7 +97,7 @@ async def test_ensure_agent_identity_backfills_sponsor_and_participant() -> None
         sponsor_user_id=None,
         participant_id=None,
     )
-    db = _LifecycleDb(participant=None)
+    db = _LifecycleDb(participant=None, require_no_autoflush=True)
 
     participant_id = await ensure_agent_identity(db, agent)
 
@@ -89,6 +108,47 @@ async def test_ensure_agent_identity_backfills_sponsor_and_participant() -> None
     assert db.added[0].type == "agent"
     assert db.added[0].ref_id == agent.id
     assert db.added[0].display_name == "Finance Analyst"
+    assert db.flushes == 1
+    assert db.no_autoflush_entries == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_agent_identity_can_use_audited_rls_bypass(monkeypatch) -> None:
+    import contextlib
+
+    import app.services.agent_identity_lifecycle as lifecycle
+
+    owner_id = uuid4()
+    actor_id = uuid4()
+    reason = "hr digital employee identity bootstrap"
+    agent = SimpleNamespace(
+        id=uuid4(),
+        name="EventPilot",
+        avatar_url=None,
+        creator_id=uuid4(),
+        owner_user_id=owner_id,
+        sponsor_user_id=None,
+        participant_id=None,
+    )
+    db = _LifecycleDb(participant=None, require_no_autoflush=True)
+    bypass_calls = []
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason, actor_id=None):
+        bypass_calls.append({"session": session, "reason": reason, "actor_id": actor_id})
+        yield session
+
+    monkeypatch.setattr(lifecycle, "enter_rls_bypass", fake_enter_rls_bypass)
+
+    participant_id = await lifecycle.ensure_agent_identity(
+        db,
+        agent,
+        rls_bypass_reason=reason,
+        rls_bypass_actor_id=str(actor_id),
+    )
+
+    assert agent.participant_id == participant_id
+    assert bypass_calls == [{"session": db, "reason": reason, "actor_id": str(actor_id)}]
     assert db.flushes == 1
 
 

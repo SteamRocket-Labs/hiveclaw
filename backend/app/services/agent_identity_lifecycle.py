@@ -8,6 +8,7 @@ of deleting agent/participant rows.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -15,6 +16,7 @@ from typing import Any
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import enter_rls_bypass
 from app.models.agent import Agent
 from app.models.participant import Participant
 from app.models.runtime_task import RuntimeTask
@@ -69,13 +71,31 @@ async def ensure_agent_identity(
     *,
     display_name: str | None = None,
     avatar_url: str | None = None,
+    rls_bypass_reason: str | None = None,
+    rls_bypass_actor_id: str | None = None,
 ) -> uuid.UUID:
     """Ensure an agent has a sponsor and a stable Participant identity.
 
     Safe for both pre-flush creation and legacy backfill. The helper assigns a
     UUID to ``agent.id`` before flush when needed so ``participants.ref_id`` can
     be written atomically with the Agent row.
+
+    ``participants`` is a derived global identity table: its RLS policy checks
+    the referenced user/agent row. Creating a brand-new Agent and its Participant
+    is therefore circular under strict RLS because ``agents.participant_id``
+    points to the participant while the participant policy references the agent.
+    Creation paths may pass ``rls_bypass_reason`` to make that bootstrap an
+    explicit audited boundary instead of an implicit policy failure.
     """
+    if rls_bypass_reason:
+        async with enter_rls_bypass(db, reason=rls_bypass_reason, actor_id=rls_bypass_actor_id) as bypass_db:
+            return await ensure_agent_identity(
+                bypass_db,
+                agent,
+                display_name=display_name,
+                avatar_url=avatar_url,
+            )
+
     if getattr(agent, "id", None) is None:
         agent.id = uuid.uuid4()
 
@@ -83,18 +103,20 @@ async def ensure_agent_identity(
     agent.sponsor_user_id = sponsor_id
 
     participant = None
-    if getattr(agent, "participant_id", None) is not None:
-        result = await db.execute(select(Participant).where(Participant.id == agent.participant_id))
-        participant = result.scalar_one_or_none()
+    no_autoflush = getattr(db, "no_autoflush", contextlib.nullcontext())
+    with no_autoflush:
+        if getattr(agent, "participant_id", None) is not None:
+            result = await db.execute(select(Participant).where(Participant.id == agent.participant_id))
+            participant = result.scalar_one_or_none()
 
-    if participant is None:
-        result = await db.execute(
-            select(Participant).where(
-                Participant.type == "agent",
-                Participant.ref_id == agent.id,
+        if participant is None:
+            result = await db.execute(
+                select(Participant).where(
+                    Participant.type == "agent",
+                    Participant.ref_id == agent.id,
+                )
             )
-        )
-        participant = result.scalar_one_or_none()
+            participant = result.scalar_one_or_none()
 
     if participant is None:
         participant = Participant(

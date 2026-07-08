@@ -533,6 +533,42 @@ def test_hr_templates_use_dynamic_rounds_with_mandatory_creation_gates() -> None
     assert "lean 2-3 round" not in combined.lower()
 
 
+def test_hr_templates_document_creation_failure_recovery_contract() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    hr_create_employee = (
+        project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
+    combined = "\n".join([hr_create_employee, hr_soul])
+
+    assert "Tool Failure Recovery" in combined
+    assert "Do not claim the failure is not a platform bug" in combined
+    assert "do not retry `create_digital_employee` by editing only one field" in combined
+    assert "rerun `preview_agent_blueprint`" in combined
+    assert "source_type is optional at the schema boundary" in combined
+    assert "defaulted to `unknown_or_needs_company_source`" in combined
+
+
+def test_hr_templates_document_personal_kb_and_work_routing_contracts() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    hr_create_employee = (
+        project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
+    combined = "\n".join([hr_create_employee, hr_soul])
+
+    assert "Personal KB" in combined
+    assert "search_personal_kb" in combined
+    assert "track_todo" in combined
+    assert "record_finding" in combined
+    assert "read_ledger" in combined
+    assert "preview_workflow" in combined
+    assert "start_workflow" in combined
+    assert "spawn_subagent" in combined
+    assert "delegate_to_agent" in combined
+    assert "memory/t3/" not in combined
+
+
 def test_hr_templates_do_not_reference_retired_objective_ledger() -> None:
     project_root = Path(__file__).resolve().parents[3]
     hr_create_employee = (

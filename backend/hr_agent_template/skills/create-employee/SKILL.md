@@ -10,6 +10,14 @@ tools:
   - web_fetch
   - firecrawl_fetch
   - execute_code
+  - search_personal_kb
+  - track_todo
+  - record_finding
+  - read_ledger
+  - preview_workflow
+  - start_workflow
+  - spawn_subagent
+  - delegate_to_agent
 ---
 
 # Create Digital Employee
@@ -75,7 +83,7 @@ include source attributions for substantive fields:
     "field": "focus_content",
     "value_summary": "Start with a weekly investment brief",
     "source_type": "suggested_by_history",
-    "source_refs": ["t3:memory/t3/episodes.md#similar-role"]
+    "source_refs": ["memory/knowledge/hr-creation-patterns.md#similar-role"]
   }
 ]
 ```
@@ -83,12 +91,41 @@ include source attributions for substantive fields:
 Memory may help you propose; it may not decide. All non-current-session
 suggestions must be shown to the user and confirmed before creation.
 
+## Personal KB And Work Routing
+
+Use `search_personal_kb` when the user references personal preferences,
+recurring creation style, prior hiring decisions, or uploaded personal knowledge.
+Personal KB is principal-scoped evidence: it may help propose defaults, but it
+is not company policy and cannot define governance boundaries unless the user
+confirms it or company knowledge supports it. Present Personal KB-derived
+suggestions before creation and cite them as personal knowledge evidence in
+`source_refs`.
+
+Use the work ledger for long creation flows:
+- `track_todo` records missing gates, dependencies, and explicit confirmation
+  checkpoints.
+- `record_finding` records blockers, source debt, failed tool calls, and replan
+  evidence.
+- `read_ledger` restores state before resuming a multi-turn creation.
+
+Use workflow and subagent routing only for real work boundaries:
+- `preview_workflow` before `start_workflow`; workflows are for deterministic,
+  repeatable work after creation or setup, not a substitute for HR creation
+  gates.
+- `spawn_subagent` / `delegate_to_agent` only for isolated research or
+  verification. The HR agent still owns the final blueprint, source
+  attributions, preview, and confirmation gate.
+
 ## Tool Reference
 
 | Need | Tool | Rule |
 |------|------|------|
 | Preview the employee blueprint | `preview_agent_blueprint` | Mandatory before creation |
 | Create the employee | `create_digital_employee` | Only after explicit user confirmation of the preview |
+| Recover long creation state | `track_todo`, `record_finding`, `read_ledger` | Use for gates, blockers, and resume evidence |
+| Use Personal KB | `search_personal_kb` | Personal preference evidence only; confirm before creation |
+| Route deterministic repeatable work | `preview_workflow`, `start_workflow` | Preview first; never bypass HR gates |
+| Route isolated research or verification | `spawn_subagent`, `delegate_to_agent` | HR agent owns final blueprint and confirmation |
 | Research the company/domain/role | `web_search`, `web_fetch`, `firecrawl_fetch` | Use only when needed to fill role understanding; still mark sources |
 | Discover MCP integrations | `discover_resources` | Only for a real day-one blocker |
 | Discover ClawHub skills | `search_clawhub` | Last resort after builtin/default and platform paths are insufficient |
@@ -145,6 +182,27 @@ then routes capabilities only after that identity and work contract are clear.
 5. Present the preview, source lanes, setup debt, and required confirmations.
 6. Only after explicit confirmation, call `create_digital_employee` with the
    confirmed blueprint hash and matching payload.
+
+## Tool Failure Recovery
+
+Tool errors are contract evidence. Do not claim the failure is not a platform bug unless current tool output, logs, or deployment evidence proves that.
+Explain the observable failure and recover through the creation flow.
+
+If `create_digital_employee` returns a schema error, hash mismatch, missing
+preview, or incomplete gate error:
+- do not retry `create_digital_employee` by editing only one field
+- do not drop fields, shrink source attributions, or bypass gates to make a hash
+  match
+- rerun `preview_agent_blueprint` with the current complete blueprint
+- present the refreshed preview and hash to the user
+- call `create_digital_employee` only after the user confirms that refreshed
+  preview
+
+For source attributions, `source_type is optional at the schema boundary`.
+When a source type is missing, the backend treats it as unresolved knowledge debt
+and defaulted to `unknown_or_needs_company_source`. Prefer to provide explicit
+source types yourself, but never discard a substantive attribution just because
+the type is uncertain.
 
 ## Capability Routing
 
@@ -240,7 +298,7 @@ preview_agent_blueprint(
             "field": "focus_content",
             "value_summary": "周度 AI infra 融资简报",
             "source_type": "suggested_by_history",
-            "source_refs": ["t3:memory/t3/episodes.md#research-brief-pattern"]
+            "source_refs": ["memory/knowledge/hr-creation-patterns.md#research-brief-pattern"]
         }
     ]
 )

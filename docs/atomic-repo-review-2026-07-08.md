@@ -11,6 +11,7 @@
 |---|---|---|---|
 | 2026-07-08 | P0-1 Personal KB capability gate | ✅ 已闭环 | `cd backend && source .venv/bin/activate && pytest tests/services/test_capability_gate_policy_surface.py -q` → `11 passed`; `audit_capability_mapping()` → `{'unmapped': [], 'stale': []}` |
 | 2026-07-08 | P0-2 QKV activation_events T0 truth-surface leak | ✅ 已闭环 | `cd backend && source .venv/bin/activate && pytest tests/runtime/test_t0_to_t2_session_close.py tests/runtime/test_activation_events.py -q` → `20 passed` |
+| 2026-07-08 | P0-3 HR red test + template sweep + existing HR diff | ✅ 已闭环 | Red: 3 targeted tests failed for v4/template/tool-set equality; Green: `cd backend && source .venv/bin/activate && pytest tests/tools/test_hr_handler.py tests/api/test_hr_agent_endpoint.py tests/services/test_agent_identity_lifecycle.py tests/services/test_prompt_contracts.py -q` → `70 passed` |
 
 ---
 
@@ -24,7 +25,7 @@
 | ③ Plugin：CC 市场适配 | ❌ **≈15%** | marketplace/source 拉取/materialize/`${CLAUDE_PLUGIN_ROOT}` 全零；adapter 是孤儿代码 |
 | ③ Plugin：trust gate | ⚠️ ≈60% | skill/MCP import→approve→activate 真接线；缺 revoke/rollback 下半场 + legacy 双轨旁路 |
 | ④ Personal KB | ⚠️ owner 面 ~85% / ✅ agent gate 已修 | `search_personal_kb` 已注册 `agent.knowledge.read`；剩余债务转向异步索引、owner 搜索过滤、自主态 grant |
-| ⑤ HR Agent | ✅ diff 可 commit / ⚠️ 模板需一轮 sweep | 未提交 diff 干净；模板滞后两平面迁移与 Personal KB 两次演进 |
+| ⑤ HR Agent | ✅ P0 已闭环 | HR v5 模板已同步 Personal KB、work ledger、workflow/subagent 路由；旧 `memory/t3/` source attribution 示例已迁；现有 HR diff 已回归验证 |
 | ⑥ Loop | ② 部分实现 | trigger 覆盖 cron 内核；缺模型自节奏 self-pace 链与 `/loop` 命令层 |
 | ⑥ Target Mode | **CC 侧不存在此功能**（Fact） | Hive Goal Mode 是 Codex-inspired 原生 delta，单次续跑防 runaway，缺"模型自判完成"闭环 |
 
@@ -156,10 +157,10 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 
 ## 5. HR Agent 兼容性
 
-- **未提交 diff：可直接 commit**。放宽窄口径正确（field 仍必填 hr.py:266、显式非法仍拒 :264、缺省默认+计 warning :261-282）；方向是数据质量改善（保留+标债 vs 整条丢弃）；7 测试全绿实跑；版本 bump 驱动存量 resync 且有 .bak 备份。
+- **已闭环 diff：可提交状态已验证**。放宽窄口径正确（field 仍必填 hr.py:266、显式非法仍拒 :264、缺省默认+计 warning :261-282）；方向是数据质量改善（保留+标债 vs 整条丢弃）；版本 bump 驱动存量 resync 且有 .bak 备份。
 - **无硬断点**：空记忆库 QKV 激活/retriever 优雅降级有测试；soul.md 当不透明整文注入零解析→结构不可能漂移；工具 seeding 与存量一致。
-- **既存红测（与 diff 无关）**：test_hr_tool_included_in_hr_tools_set（test_hr_handler.py:107）对 _get_hr_tools() 精确等值断言，被 675815482 加的 9 个 no-key 搜索工具打破。修法=改为必含核心工具的 superset 断言，别钉动态 provider 集合。
-- **模板一轮 sweep（建议与当前 diff 同批，版本已 bump 免费顺带 resync）**：O1 SKILL.md:78,264 还在用退役 t3 路径示例（HEARTBEAT.md 已迁两平面，SKILL.md 漏迁——污染 source-attribution 核心治理产物）；M1 Personal KB 引导完全缺席（**依赖 §4 B1 先修**，否则教 agent 调被拒工具）；M2/M3 workflow/subagent 能力路由缺失；M4 work ledger 未提。
+- **既存红测已修**：test_hr_tool_included_in_hr_tools_set（test_hr_handler.py:107）已改为核心 HR 工具 superset 断言，不再钉动态 provider 集合。
+- **模板 sweep 已修**：HR 模板版本推进到 `hr-flow-v5-personal-kb-work-routing-2026-07-08`；SKILL.md 退役 `memory/t3/` source attribution 示例已迁到两平面知识路径；Personal KB、work ledger、workflow、subagent 路由已补齐。
 - 文档漂移：CLAUDE.md + path-contract Ownership 表仍把 memory/t3/*.md 当 canonical（C7 后已两平面，t3_platform_gate.py:22 明标 legacy）。
 
 ---
@@ -186,15 +187,15 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 ### P0 — 生产断点 / 治理级（立即）
 1. ✅ **Personal KB B1**：search_personal_kb 注册 CAPABILITY_MAP（一行）+ 补真走 governance 的集成测试当修复门。上线前置。已闭环：`search_personal_kb -> agent.knowledge.read`，capability audit 无 drift。
 2. ✅ **QKV B9**：T0 seal 前 strip 原始 activation_events，堵 truth-surface 泄漏；policy dict 接真实校验或删。已闭环：T0 boundary 只保留 `activation_feedback_summary`，不落原始 `activation_events`。
-3. **HR 既存红测**：test_hr_tool_included_in_hr_tools_set 改 superset 断言（当前 CI 红）。
-4. **HR diff**：直接 commit（已评审通过）。
+3. ✅ **HR 既存红测**：test_hr_tool_included_in_hr_tools_set 改 superset 断言；已由目标红测转绿并纳入 HR 回归组。
+4. ✅ **HR diff**：已完成并回归验证；HR v5 模板同步 Personal KB / ledger / workflow / subagent 路由，旧 `memory/t3/` 示例已清除。
 
 ### P1 — 结构性技术债（要么接活要么退役，禁半接线常态化）
 5. **QKV 收缩**：S1 删恒空 hints 注入（kb_hint 已够）；S2 退役只写不读 K 侧回路与死 gather 函数——除非拍板接活（接活先修 LLM parser + scoring 回归模型判断）。
 6. **RTD T3 六项死写入**：逐项决定接读者或删写入；台账工厂 7 文件合并 ~645→300L；死观测面 context-usage 接前端或删端点。
 7. **Plugin trust gate 下半场**：revoke/deactivate/rollback + 被拒清理 + 版本 supersede；legacy plugins/install 双轨收敛（改走 trust gate 或真退役含删表 migration）。
 8. **Personal KB B2-B4**：异步 worker 消费 KnowledgeIndexJob + 上传大小上限；owner 搜索去 agent_searchable 过滤；自主态 grant 拍板后实现。
-9. **HR 模板 sweep**（B1 落后）：O1 stale t3 例子 + M1 KB 引导 + M2/M3 能力路由，与 diff 同批 bump。
+9. ✅ **HR 模板 sweep**（B1 落后）：O1 stale t3 例子 + M1 KB 引导 + M2/M3 能力路由，已随 P0-3 同批 bump 到 HR v5。
 10. **瘦身**：~1,990 LOC test-only 死模块退役（cc_plugin_adapter 等三个 external_capabilities 文件除外——若 Plugin 主线拍板接线则留）。
 
 ### P2 — 对齐增强（拍板后排期）

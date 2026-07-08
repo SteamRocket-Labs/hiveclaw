@@ -181,6 +181,24 @@ class _FakeMediaTranscriptionProvider:
         )
 
 
+class _FakeVectorProvider:
+    def __init__(self, *, search_hits: list | None = None, fail_index: bool = False) -> None:
+        self.search_hits = list(search_hits or [])
+        self.fail_index = fail_index
+        self.index_calls: list[dict] = []
+        self.search_calls: list[dict] = []
+
+    async def index_personal_segments(self, **kwargs):
+        self.index_calls.append(kwargs)
+        if self.fail_index:
+            raise ValueError("vector provider offline")
+        return {"indexed": len(kwargs.get("segments") or [])}
+
+    async def search_personal_segments(self, **kwargs):
+        self.search_calls.append(kwargs)
+        return list(self.search_hits)
+
+
 class _SearchSession:
     def __init__(self, rows) -> None:
         self.rows = rows
@@ -273,6 +291,66 @@ async def test_ingest_markdown_writes_artifact_document_segments_and_index_job(t
     assert len(jobs) == 1
     assert any(isinstance(statement, Delete) for statement in session.executed)
     assert any(isinstance(statement, Update) for statement in session.executed)
+
+
+@pytest.mark.asyncio
+async def test_ingest_markdown_records_optional_vector_unconfigured_without_pgvector_dependency(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path, extractor=_NoopKnowledgeExtractor())
+
+    await service.ingest_markdown(
+        session,
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        title="No vector provider",
+        markdown="# Source\n\nPersonal M1 must boot without pgvector.",
+        source_kind="paste",
+    )
+
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+    assert jobs[-1].job_metadata_json["optional_vector"] == {
+        "enabled": False,
+        "status": "disabled",
+        "reason": "provider_unconfigured",
+    }
+    assert "vector" not in jobs[-1].job_metadata_json["channels"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_markdown_indexes_optional_vector_provider_from_segments(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    provider = _FakeVectorProvider()
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(
+        data_root=tmp_path,
+        extractor=_NoopKnowledgeExtractor(),
+        vector_provider=provider,
+    )
+
+    result = await service.ingest_markdown(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        title="Vector source",
+        markdown="# Vector\n\nSemantic lane consumes canonical segment text.",
+        source_kind="paste",
+    )
+
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+    assert provider.index_calls
+    assert provider.index_calls[0]["tenant_id"] == tenant_id
+    assert provider.index_calls[0]["owner_user_id"] == owner_id
+    assert provider.index_calls[0]["document_id"] == result.document_id
+    assert provider.index_calls[0]["segments"][0]["heading_path"] == ["Vector"]
+    assert provider.index_calls[0]["segments"][0]["index_text"].startswith("Vector source\nVector")
+    assert "Semantic lane consumes canonical segment text." in provider.index_calls[0]["segments"][0]["index_text"]
+    assert jobs[-1].job_metadata_json["optional_vector"]["status"] == "ready"
+    assert "vector" in jobs[-1].job_metadata_json["channels"]
 
 
 @pytest.mark.asyncio
@@ -844,6 +922,58 @@ async def test_search_personal_graph_channel_uses_multihop_ppr_scores(tmp_path: 
     assert 0.0 < graph_trace["raw_score"] < 1.0
     assert graph_trace["method"] == "ppr"
     assert graph_trace["hops"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_search_personal_fuses_optional_vector_provider_after_acl_fetch(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    vector_segment = SimpleNamespace(
+        id=uuid.uuid4(),
+        heading_path_json=["Semantic"],
+        content="Notebook style imports should be recalled by semantic similarity.",
+    )
+    document = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="Open Notebook comparison",
+        source_sha256="f" * 64,
+        canonical_md_path="persons/owner/kb/vector.md",
+        sensitivity="internal",
+        doc_metadata_json={},
+        updated_at=None,
+        status="ready",
+    )
+    provider = _FakeVectorProvider(
+        search_hits=[
+            {
+                "segment_id": str(vector_segment.id),
+                "score": 0.91,
+                "metadata": {"provider": "fake"},
+            }
+        ]
+    )
+    session = _QueuedSession([[], [], [(vector_segment, document)]])
+    service = PersonalKnowledgeService(data_root=tmp_path, vector_provider=provider)
+
+    hits = await service.search_personal(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        query="notebook source grounded imports",
+        current_user_id=owner_id,
+        agent_id=uuid.uuid4(),
+        limit=3,
+    )
+
+    assert [hit.segment_id for hit in hits] == [vector_segment.id]
+    assert provider.search_calls[0]["query"] == "notebook source grounded imports"
+    vector_trace = hits[0].score_trace["channels"]["optional_vector"]
+    assert vector_trace["rank"] == 1
+    assert vector_trace["raw_score"] == pytest.approx(0.91)
+    assert vector_trace["provider"] == "fake"
+    assert hits[0].score_trace["optional_vector"]["status"] == "ready"
 
 
 @pytest.mark.asyncio

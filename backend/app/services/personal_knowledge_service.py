@@ -612,11 +612,13 @@ class PersonalKnowledgeService:
         conversion_service: Any | None = None,
         extractor: Any = _DEFAULT_EXTRACTOR,
         media_provider: Any | None = None,
+        vector_provider: Any | None = None,
     ) -> None:
         self.data_root = Path(data_root) if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
         self.conversion_service = conversion_service
         self.extractor = extractor
         self.media_provider = media_provider
+        self.vector_provider = vector_provider
 
     def _conversion_service(self) -> Any:
         if self.conversion_service is not None:
@@ -636,6 +638,9 @@ class PersonalKnowledgeService:
 
     def _media_transcription_provider(self) -> Any | None:
         return self.media_provider
+
+    def _vector_index_provider(self) -> Any | None:
+        return self.vector_provider
 
     def _document_summary(
         self,
@@ -1512,11 +1517,71 @@ class PersonalKnowledgeService:
                     final_error = f"knowledge_extraction_failed:{exc}"
                     all_warnings.append(final_error)
 
+        optional_vector_state: dict[str, Any] = {
+            "enabled": False,
+            "status": "disabled",
+            "reason": "provider_unconfigured",
+        }
+        vector_provider = self._vector_index_provider()
+        if vector_provider is not None:
+            provider_name = vector_provider.__class__.__name__
+            try:
+                vector_segments = [
+                    {
+                        "segment_id": str(segment.id),
+                        "document_id": str(document.id),
+                        "position": int(segment.position),
+                        "heading_path": list(segment.heading_path_json or []),
+                        "content": str(segment.content or ""),
+                        "index_text": "\n".join(
+                            part
+                            for part in [
+                                clean_title,
+                                " / ".join(str(item) for item in list(segment.heading_path_json or [])),
+                                str(segment.content or ""),
+                            ]
+                            if part
+                        ),
+                        "token_count": int(segment.token_count or 0),
+                        "segment_hash": str(segment.segment_hash or ""),
+                    }
+                    for segment in segment_objects
+                ]
+                call = vector_provider.index_personal_segments(
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    document_id=document.id,
+                    source_sha256=clean_source_sha256,
+                    artifact_hash=artifact_hash,
+                    title=clean_title,
+                    segments=vector_segments,
+                )
+                vector_result = await call if inspect.isawaitable(call) else call
+                optional_vector_state = {
+                    "enabled": True,
+                    "status": "ready",
+                    "provider": provider_name,
+                    "indexed_segments": len(vector_segments),
+                    "result": dict(vector_result or {}) if isinstance(vector_result, dict) else {},
+                }
+                if "vector" not in channels:
+                    channels = [*channels, "vector"]
+            except Exception as exc:
+                vector_warning = f"optional_vector_index_failed:{exc}"
+                all_warnings.append(vector_warning)
+                optional_vector_state = {
+                    "enabled": True,
+                    "status": "failed",
+                    "provider": provider_name,
+                    "error": vector_warning,
+                }
+
         document.status = final_status
         document.doc_metadata_json = {
             **(document.doc_metadata_json or {}),
             "ingest_format": "canonical_markdown",
             "warnings": all_warnings,
+            "optional_vector": optional_vector_state,
             **(doc_metadata or {}),
         }
         if job is not None:
@@ -1528,6 +1593,7 @@ class PersonalKnowledgeService:
                 "channels": channels,
                 "source_kind": clean_source_kind,
                 "warnings": all_warnings,
+                "optional_vector": optional_vector_state,
             }
 
         await session.execute(
@@ -2563,6 +2629,64 @@ class PersonalKnowledgeService:
         for entity in entities:
             entity_segment_ids.extend(_source_ref_segment_ids(getattr(entity, "source_refs_json", None)))
 
+        optional_vector_trace: dict[str, Any] = {
+            "enabled": False,
+            "status": "disabled",
+            "reason": "provider_unconfigured",
+        }
+        vector_segment_scores: dict[uuid.UUID, float] = {}
+        vector_segment_metadata: dict[uuid.UUID, dict[str, Any]] = {}
+        vector_provider = self._vector_index_provider()
+        if vector_provider is not None:
+            provider_name = vector_provider.__class__.__name__
+            try:
+                call = vector_provider.search_personal_segments(
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    query=clean_query,
+                    limit=candidate_limit,
+                    current_user_id=current_user_id,
+                    agent_id=agent_id,
+                )
+                vector_hits = await call if inspect.isawaitable(call) else call
+                for hit in list(vector_hits or []):
+                    if isinstance(hit, dict):
+                        raw_segment_id = hit.get("segment_id")
+                        raw_score = hit.get("score", 0.0)
+                        raw_metadata = hit.get("metadata") or {}
+                    elif isinstance(hit, tuple):
+                        raw_segment_id = hit[0] if len(hit) >= 1 else None
+                        raw_score = hit[1] if len(hit) >= 2 else 0.0
+                        raw_metadata = hit[2] if len(hit) >= 3 and isinstance(hit[2], dict) else {}
+                    else:
+                        raw_segment_id = getattr(hit, "segment_id", None)
+                        raw_score = getattr(hit, "score", 0.0)
+                        raw_metadata = getattr(hit, "metadata", {}) or {}
+                    if raw_segment_id is None:
+                        continue
+                    try:
+                        segment_id = uuid.UUID(str(raw_segment_id))
+                    except (TypeError, ValueError):
+                        continue
+                    score = max(0.0, float(raw_score or 0.0))
+                    if score <= 0.0:
+                        continue
+                    vector_segment_scores[segment_id] = max(vector_segment_scores.get(segment_id, 0.0), score)
+                    vector_segment_metadata[segment_id] = dict(raw_metadata or {})
+                optional_vector_trace = {
+                    "enabled": True,
+                    "status": "ready",
+                    "provider": provider_name,
+                    "candidate_count": len(vector_segment_scores),
+                }
+            except Exception as exc:
+                optional_vector_trace = {
+                    "enabled": True,
+                    "status": "failed",
+                    "provider": provider_name,
+                    "error": f"optional_vector_search_failed:{exc}",
+                }
+
         graph_segment_scores: dict[uuid.UUID, float] = {}
         graph_segment_hops: dict[uuid.UUID, int] = {}
         if entities:
@@ -2645,7 +2769,11 @@ class PersonalKnowledgeService:
             segment_id
             for segment_id, _score in sorted(graph_segment_scores.items(), key=lambda item: item[1], reverse=True)
         ]
-        fetch_segment_ids = list(dict.fromkeys([*entity_segment_ids, *graph_segment_ids]))
+        vector_segment_ids = [
+            segment_id
+            for segment_id, _score in sorted(vector_segment_scores.items(), key=lambda item: item[1], reverse=True)
+        ]
+        fetch_segment_ids = list(dict.fromkeys([*entity_segment_ids, *graph_segment_ids, *vector_segment_ids]))
         if fetch_segment_ids:
             segment_rows = (
                 await session.execute(
@@ -2675,6 +2803,7 @@ class PersonalKnowledgeService:
             ).all()
             entity_rank_by_segment = {segment_id: rank for rank, segment_id in enumerate(entity_segment_ids, start=1)}
             graph_rank_by_segment = {segment_id: rank for rank, segment_id in enumerate(graph_segment_ids, start=1)}
+            vector_rank_by_segment = {segment_id: rank for rank, segment_id in enumerate(vector_segment_ids, start=1)}
             for row in segment_rows:
                 segment, document = row[0], row[1]
                 if segment.id in entity_rank_by_segment:
@@ -2693,6 +2822,15 @@ class PersonalKnowledgeService:
                         rank=graph_rank_by_segment[segment.id],
                         raw_score=graph_segment_scores.get(segment.id, 0.0),
                         channel_metadata={"method": "ppr", "hops": graph_segment_hops.get(segment.id, 1)},
+                    )
+                if segment.id in vector_rank_by_segment:
+                    add_candidate(
+                        segment=segment,
+                        document=document,
+                        channel="optional_vector",
+                        rank=vector_rank_by_segment[segment.id],
+                        raw_score=vector_segment_scores.get(segment.id, 0.0),
+                        channel_metadata=vector_segment_metadata.get(segment.id, {}),
                     )
 
         hits: list[KnowledgeSearchHit] = []
@@ -2730,6 +2868,7 @@ class PersonalKnowledgeService:
                         "rrf": float(entry["rrf"]),
                         "boosts": boosts,
                         "final": final_score,
+                        "optional_vector": optional_vector_trace,
                         "document_status": str(getattr(document, "status", "ready") or "ready"),
                         "document_metadata": {
                             key: document_metadata[key]

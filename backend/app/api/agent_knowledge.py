@@ -30,6 +30,7 @@ from app.services.principal_context import Principal, PrincipalRole, PrincipalSt
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents/{agent_id}/knowledge", tags=["agent-knowledge"])
+personal_router = APIRouter(prefix="/knowledge/personal", tags=["personal-knowledge"])
 
 
 class PersonalKnowledgeIngestRequest(BaseModel):
@@ -58,6 +59,13 @@ def _owner_user_id_for_personal_kb(agent: Agent) -> uuid.UUID:
 
 def _tenant_id_for_agent(agent: Agent, current_user: User) -> uuid.UUID:
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    if tenant_id is None:
+        raise HTTPException(status_code=409, detail="Tenant is not configured")
+    return uuid.UUID(str(tenant_id))
+
+
+def _tenant_id_for_user(current_user: User) -> uuid.UUID:
+    tenant_id = getattr(current_user, "tenant_id", None)
     if tenant_id is None:
         raise HTTPException(status_code=409, detail="Tenant is not configured")
     return uuid.UUID(str(tenant_id))
@@ -112,6 +120,87 @@ def _principal_stack_for_read(agent: Agent, current_user: User) -> PrincipalStac
         creator=creator,
         current_user=current,
     )
+
+
+@personal_router.get("/documents")
+async def list_current_user_personal_documents(
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    documents = await service.list_personal_documents(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        current_user_id=uuid.UUID(str(current_user.id)),
+        agent_id=None,
+        limit=limit,
+    )
+    return {"documents": [_dataclass_payload(document) for document in documents]}
+
+
+@personal_router.post("/documents")
+async def ingest_current_user_personal_document(
+    body: PersonalKnowledgeIngestRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    result = await service.ingest_markdown(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        title=body.title,
+        markdown=body.markdown,
+        source_kind=body.source_kind,
+        source_uri=body.source_uri,
+        created_by_user_id=uuid.UUID(str(current_user.id)),
+        agent_searchable=body.agent_searchable,
+        sensitivity=body.sensitivity,
+    )
+    await db.commit()
+    return _dataclass_payload(result)
+
+
+@personal_router.get("/search")
+async def search_current_user_personal_documents(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    results = await service.search_personal(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        query=q,
+        current_user_id=uuid.UUID(str(current_user.id)),
+        agent_id=None,
+        limit=limit,
+    )
+    return {"results": [_dataclass_payload(result) for result in results]}
+
+
+@personal_router.get("/documents/{document_id}")
+async def get_current_user_personal_document(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    document = await service.get_personal_document(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        document_id=document_id,
+        current_user_id=uuid.UUID(str(current_user.id)),
+        agent_id=None,
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Personal knowledge document not found")
+    return _dataclass_payload(document)
 
 
 @router.get("/personal/documents")

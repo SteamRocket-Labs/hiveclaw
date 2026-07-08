@@ -11,6 +11,7 @@ import {
   IconChevronsRight,
   IconChevronDown,
   IconChevronRight,
+  IconDatabase,
   IconDeviceDesktop,
   IconFolder,
   IconGitBranch,
@@ -48,6 +49,7 @@ type SidebarNavItem = {
 const workspaceNavItems: SidebarNavItem[] = [
   { to: '/plaza', labelKey: 'nav.plaza', fallback: 'Agent Circle', icon: <IconSitemap size={15} stroke={1.6} /> },
   { to: '/automations', labelKey: 'nav.tasksAutomation', fallback: 'Tasks / Automation', icon: <IconCheckbox size={15} stroke={1.6} /> },
+  { to: '/knowledge', labelKey: 'nav.knowledge', fallback: 'Knowledge', icon: <IconDatabase size={15} stroke={1.6} /> },
   { to: '/local-agents', labelKey: 'nav.bridge', fallback: 'Bridge', icon: <IconDeviceDesktop size={15} stroke={1.6} /> },
 ];
 

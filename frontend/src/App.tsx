@@ -21,6 +21,7 @@ const SsoEntry = lazy(() => import('./pages/SsoEntry'));
 const CompanySetup = lazy(() => import('./pages/CompanySetup'));
 const DigitalEmployees = lazy(() => import('./pages/DigitalEmployees'));
 const WorkspaceFeatureHub = lazy(() => import('./pages/WorkspaceFeatureHub'));
+const PersonalKnowledge = lazy(() => import('./pages/PersonalKnowledge'));
 const Plaza = lazy(() => import('./pages/Plaza'));
 const AgentDetail = lazy(() => import('./pages/AgentDetail'));
 const AgentCreate = lazy(() => import('./pages/AgentCreate'));
@@ -132,6 +133,8 @@ export default function App() {
                         <Route path="agents" element={<DigitalEmployees />} />
                         <Route path="plans" element={<WorkspaceFeatureHub kind="plans" />} />
                         <Route path="automations" element={<WorkspaceFeatureHub kind="automations" />} />
+                        <Route path="knowledge" element={<PersonalKnowledge />} />
+                        <Route path="workspace/knowledge" element={<Navigate to="/knowledge" replace />} />
                         <Route path="memory" element={<WorkspaceFeatureHub kind="memory" />} />
                         <Route path="documents" element={<WorkspaceFeatureHub kind="documents" />} />
                         <Route path="approvals" element={<WorkspaceFeatureHub kind="approvals" />} />

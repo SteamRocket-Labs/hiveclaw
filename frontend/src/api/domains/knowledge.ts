@@ -229,4 +229,16 @@ export const knowledgeApi = {
   },
   personalDocument: (agentId: string, documentId: string) =>
     get<PersonalKnowledgeDocumentDetail>(`/agents/${agentId}/knowledge/personal/documents/${documentId}`),
+  myPersonalDocuments: () =>
+    get<{ documents: PersonalKnowledgeDocumentSummary[] }>('/knowledge/personal/documents'),
+  myPersonalIngest: (body: PersonalKnowledgeIngestRequest) =>
+    post<PersonalKnowledgeIngestResponse>('/knowledge/personal/documents', body),
+  myPersonalSearch: (query: string, limit = 5) => {
+    const params = new URLSearchParams({ q: query, limit: String(limit) });
+    return get<{ results: PersonalKnowledgeSearchResult[] }>(
+      `/knowledge/personal/search?${params.toString()}`,
+    );
+  },
+  myPersonalDocument: (documentId: string) =>
+    get<PersonalKnowledgeDocumentDetail>(`/knowledge/personal/documents/${documentId}`),
 };

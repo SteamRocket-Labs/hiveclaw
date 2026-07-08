@@ -1,7 +1,7 @@
 # Personal Knowledge Base 落地实施计划
 
 日期：2026-07-07
-状态：实施中
+状态：M1 owner-scoped Personal KB 入口已落地；upload / URL 摄取仍以统一后端摄取能力为后续入口，不做前端假功能
 上游文档：
 
 - `docs/personal-knowledge-base-spec.md`
@@ -622,12 +622,14 @@ Audit event
 入口：
 
 ```text
-/workspace/knowledge
+/knowledge
 ```
+
+`/workspace/knowledge` 作为历史设计稿兼容路径重定向到 `/knowledge`，不是新的产品面。
 
 M1 页面：
 
-1. Inbox：上传、粘贴、URL、Agent artifact 待处理。
+1. Inbox：当前实装 Markdown / notes 直投；上传、URL、Agent artifact 必须以后端统一摄取能力为真相打开，不能先做前端假入口。
 2. Library：文档列表、状态、敏感度、agent_searchable。
 3. Search：全局检索，展示 trace。
 4. Document Detail：MD 预览、segments、entities、refs、被哪些 Agent 使用。
@@ -845,36 +847,69 @@ ruff check app/api/agent_knowledge.py app/services/personal_knowledge_service.py
 # All checks passed!
 ```
 
-### 14.5 前端 Personal KB 入口
+### 14.5 Workspace 顶层 Personal KB 入口（2026-07-08 修正）
 
 已落地：
 
-1. `frontend/src/api/domains/knowledge.ts` 新增 Personal KB API client：
+1. 后端新增 owner-scoped thin API，主语义仍由 `PersonalKnowledgeService` 和 Knowledge Core 表决定：
+   - `GET /api/knowledge/personal/documents`
+   - `POST /api/knowledge/personal/documents`
+   - `GET /api/knowledge/personal/search`
+   - `GET /api/knowledge/personal/documents/{document_id}`
+2. agent-scoped API 保留为 Agent 消费/调试视角，不再承担 Personal KB 主入口：
+   - `GET /api/agents/{agent_id}/knowledge/personal/documents`
+   - `POST /api/agents/{agent_id}/knowledge/personal/documents`
+   - `GET /api/agents/{agent_id}/knowledge/personal/search`
+   - `GET /api/agents/{agent_id}/knowledge/personal/documents/{document_id}`
+3. `frontend/src/api/domains/knowledge.ts` 现在同时提供两组 client：
+   - workspace/owner-scoped：
+     - `myPersonalDocuments()`
+     - `myPersonalIngest()`
+     - `myPersonalSearch()`
+     - `myPersonalDocument()`
+   - agent-scoped：
    - `personalDocuments()`
    - `personalIngest()`
    - `personalSearch()`
    - `personalDocument()`
-2. `frontend/src/pages/agent-detail/AgentKnowledgeSection.tsx` 在现有 `Memory & Knowledge` tab 内新增 `personal` 子视图，不另开产品入口。
-3. Personal KB UI 支持：
+4. `frontend/src/pages/layout/AppSidebar.tsx` 在 workspace 顶层 nav 中加入 `知识库`，位置与 `Agent圈`、`任务 / 自动化`、`Bridge` 同级；路由为 `/knowledge`。
+5. `frontend/src/App.tsx` 新增 `/knowledge` 页面，并把历史设计稿路径 `/workspace/knowledge` 重定向到 `/knowledge`。
+6. `frontend/src/pages/PersonalKnowledge.tsx` / `.css` 新增 Owner 级 Personal KB 工作台。当前实装能力：
    - owner 粘贴 Markdown / notes 入库；
    - document list；
    - query search；
    - document detail + segment evidence；
-   - source ref 可见。
-4. UI 不传 `owner_user_id`，owner 仍由后端从 agent 解析；这与权限 spec 和 A2A 预留入口保持一致。
-5. `frontend/src/i18n/en.json` 与 `frontend/src/i18n/zh.json` 已补齐文案。
+   - source refs 可见；
+   - `知识网` / `画像` / `授权` 作为同一 Personal Knowledge plane 内部入口呈现，不新增第 4 个产品；
+   - `企业库（只读）` 只作为只读/晋升方向入口，不在 Personal 页面管理 Company KB。
+7. UI 不传 `owner_user_id`；owner 由后端 `current_user` 解析。agent-scoped 旧入口仍由后端从 agent 解析 owner。这与权限 spec 和 A2A 预留入口保持一致。
+8. `frontend/src/i18n/en.json` 与 `frontend/src/i18n/zh.json` 已补齐文案。
 
 验证命令：
 
 ```bash
-cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
-npm run test -- src/api/domains/knowledge.test.ts src/pages/agent-detail/AgentKnowledgeSection.test.tsx
-# Test Files  2 passed (2)
-# Tests  7 passed (7)
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/api/test_agent_personal_knowledge_api.py -q
+# 5 passed in 0.48s
 
-npm run build
-# tsc && vite build
-# ✓ built in 2.42s
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run test -- src/api/domains/knowledge.test.ts src/pages/layout/LayoutSections.test.tsx src/pages/PersonalKnowledge.test.tsx
+# Test Files  3 passed (3)
+# Tests  18 passed (18)
+```
+
+红测证据：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/api/test_agent_personal_knowledge_api.py -q
+# initially failed: AttributeError: module 'app.api.agent_knowledge' has no attribute 'personal_router'
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run test -- src/api/domains/knowledge.test.ts src/pages/layout/LayoutSections.test.tsx src/pages/PersonalKnowledge.test.tsx
+# initially failed: myPersonalDocuments is not a function; Cannot find module './PersonalKnowledge'; AppSidebar missing Knowledge
 ```
 
 ### 14.6 组合回归与断点检查
@@ -888,7 +923,8 @@ npm run build
 5. `search_personal_kb` tool。
 6. Runtime Attention Control candidate lane。
 7. Activation Router 的 personal scope 记录。
-8. 前端 Knowledge tab 的 Personal KB API 与 UI。
+8. 前端 Workspace 顶层 Knowledge 入口、owner-scoped Personal KB API 与 UI。
+9. Agent Detail 的 Personal KB 子视图仍保留，作为 agent 消费/调试入口，不再是主入口。
 
 验证命令：
 
@@ -907,13 +943,13 @@ pytest tests/models/test_knowledge_records.py \
   tests/test_alembic_bootstrap.py::test_personal_knowledge_tables_are_forced_rls_on_fresh_bootstrap_path \
   tests/runtime/test_invoker.py::test_custom_tool_executor_disables_inner_runtime_hooks \
   tests/services/test_agent_message_runtime.py::test_build_agent_message_tool_executor_persists_tool_calls -q
-# 33 passed, 4 warnings in 0.49s
+# 35 passed, 4 warnings in 0.53s
 
 ruff check app/models/knowledge.py app/db_bootstrap.py \
   app/services/personal_knowledge_service.py app/api/agent_knowledge.py \
   app/runtime/retrieval/personal_knowledge_provider.py \
   app/runtime/retrieval/kb_candidates.py app/tools/handlers/knowledge.py \
-  app/tools/collector.py app/tools/registry.py app/runtime/invoker.py \
+  app/tools/collector.py app/tools/registry.py app/runtime/invoker.py app/main.py \
   app/services/agent_tool_domains/messaging.py \
   tests/models/test_knowledge_records.py \
   tests/migrations/test_personal_knowledge_core_migration.py \
@@ -927,18 +963,19 @@ ruff check app/models/knowledge.py app/db_bootstrap.py \
 # All checks passed!
 
 cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
-npm run test -- src/api/domains/knowledge.test.ts src/pages/agent-detail/AgentKnowledgeSection.test.tsx
-# Test Files  2 passed (2)
-# Tests  7 passed (7)
+npm run test -- src/api/domains/knowledge.test.ts src/pages/layout/LayoutSections.test.tsx src/pages/PersonalKnowledge.test.tsx src/pages/agent-detail/AgentKnowledgeSection.test.tsx
+# Test Files  4 passed (4)
+# Tests  22 passed (22)
 
 npm run build
 # tsc && vite build
-# ✓ built in 2.37s
+# ✓ built in 2.60s
 ```
 
 结论：
 
 1. Personal KB 没有绕开 Attention Control：runtime candidate lane、tool search、API search 均从同一 Knowledge Core 表读取，并受 owner/grant 约束。
-2. Personal KB 没有引入第 4 个产品：入口内化在现有 Agent `Memory & Knowledge` tab，属于 Personal Knowledge / Knowledge LM 的实现面。
+2. Personal KB 没有引入第 4 个产品：顶层 `知识库` 是 Personal Knowledge / Knowledge LM 的主入口；persona/profile/taste 仍属于该入口内部 plane。
 3. 权限入口已预留且可执行：`knowledge_grants` 对 user/agent + scope/document 建模；owner 不需要 grant，非 owner 必须 grant。
 4. 当前 M1 没有向量库硬依赖：Personal 先用 PostgreSQL `tsvector` / GIN 和 canonical Markdown artifact，后续企业 KB 可在同一 schema 上扩 Ontology / vector provider。
+5. Company KB 不在 Personal KB 页面内管理；Personal 页面只保留只读/晋升方向入口，避免后续飞书式权限映射时重构。

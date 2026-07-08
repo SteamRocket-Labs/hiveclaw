@@ -95,4 +95,39 @@ describe('knowledgeApi personal KB endpoints', () => {
     expect(requestOf().url).toBe('/api/agents/agent-1/knowledge/personal/search?q=source+refs+%2B+ACL&limit=7');
     expect(requestOf().init.method).toBe('GET');
   });
+
+  it('uses owner-scoped workspace personal KB routes without an agent id', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ documents: [{ document_id: 'doc-1', title: 'Owner notes' }] }))
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockResolvedValueOnce(jsonResponse({ document_id: 'doc-1', title: 'Owner notes', segments: [] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          document_id: 'doc-2',
+          source_sha256: 'a'.repeat(64),
+          artifact_hash: 'b'.repeat(64),
+          canonical_md_path: 'persons/owner/kb/doc.md',
+          segment_count: 1,
+          status: 'ready',
+        }),
+      );
+
+    await knowledgeApi.myPersonalDocuments();
+    await knowledgeApi.myPersonalSearch('owner scope', 9);
+    await knowledgeApi.myPersonalDocument('doc-1');
+    await knowledgeApi.myPersonalIngest({
+      title: 'Owner note',
+      markdown: '# Owner\n\nWorkspace level.',
+      source_kind: 'paste',
+      source_uri: 'browser://knowledge/personal',
+      agent_searchable: true,
+      sensitivity: 'internal',
+    });
+
+    expect(requestOf(0).url).toBe('/api/knowledge/personal/documents');
+    expect(requestOf(1).url).toBe('/api/knowledge/personal/search?q=owner+scope&limit=9');
+    expect(requestOf(2).url).toBe('/api/knowledge/personal/documents/doc-1');
+    expect(requestOf(3).url).toBe('/api/knowledge/personal/documents');
+    expect(JSON.parse(String(requestOf(3).init.body)).owner_user_id).toBeUndefined();
+  });
 });

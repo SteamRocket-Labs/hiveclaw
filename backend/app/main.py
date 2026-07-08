@@ -43,6 +43,7 @@ from app.api.local_agent_channel import router as local_agent_channel_router
 from app.api.local_bridge import router as local_bridge_router
 from app.api.workflows import router as workflows_router
 from app.api.workflow_definitions import router as workflow_definitions_router
+from app.api.agent_knowledge import personal_router as personal_knowledge_router
 from app.api.agent_knowledge import router as agent_knowledge_router
 from app.api.agent_subagents import enterprise_router as enterprise_subagents_router
 from app.api.agent_subagents import router as agent_subagents_router
@@ -853,6 +854,7 @@ _api_routers = [
     tools_router,
     workflows_router,
     workflow_definitions_router,
+    personal_knowledge_router,
     agent_knowledge_router,
     agent_subagents_router,
     enterprise_subagents_router,

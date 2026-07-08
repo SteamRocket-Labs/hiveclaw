@@ -172,6 +172,7 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('Digital Employees');
     expect(markup).toContain('Tasks / Automation');
     expect(markup).toContain('Agent Circle');
+    expect(markup).toContain('Knowledge');
     expect(markup).not.toContain('Conversations &amp; Tasks');
     expect(markup).not.toContain('Plan Review');
     expect(markup).not.toContain('Memory &amp; Knowledge');
@@ -180,6 +181,7 @@ describe('Layout extracted sections', () => {
     expect(markup).not.toContain('Workspace search');
     expect(markup).not.toContain('Control Plane');
     expect(markup).toContain('Bridge');
+    expect(markup).toContain('href="/knowledge"');
     expect(markup).toContain('href="/local-agents"');
     expect(markup).not.toContain('href="/team"');
     expect(markup).toContain('href="/agents"');

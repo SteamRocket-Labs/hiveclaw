@@ -49,6 +49,159 @@ def _client(monkeypatch, *, user=None, agent=None):
     return TestClient(app, raise_server_exceptions=False), fake_db, user, agent
 
 
+def _personal_client(monkeypatch, *, user=None):
+    app = FastAPI()
+    app.include_router(agent_knowledge_api.personal_router)
+    fake_db = _FakeDB()
+    user = user or SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), is_active=True)
+
+    async def override_user():
+        return user
+
+    async def override_db():
+        yield fake_db
+
+    app.dependency_overrides[get_current_user] = override_user
+    app.dependency_overrides[get_db] = override_db
+    return TestClient(app, raise_server_exceptions=False), fake_db, user
+
+
+def test_current_user_personal_knowledge_routes_use_owner_scope_without_agent(monkeypatch):
+    owner_id = uuid4()
+    document_id = uuid4()
+    segment_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    captured = []
+
+    class _FakeService:
+        async def list_personal_documents(self, session, **kwargs):
+            captured.append(("list", kwargs))
+            return [
+                SimpleNamespace(
+                    document_id=document_id,
+                    title="Owner notes",
+                    source_kind="paste",
+                    source_uri=None,
+                    source_sha256="a" * 64,
+                    source_ref=f"kb://person/{owner_id}/documents/{document_id}",
+                    canonical_md_path="persons/owner/kb/doc.md",
+                    status="ready",
+                    sensitivity="internal",
+                    agent_searchable=True,
+                    segment_count=1,
+                    created_at=None,
+                    updated_at=None,
+                    metadata={},
+                )
+            ]
+
+        async def search_personal(self, session, **kwargs):
+            captured.append(("search", kwargs))
+            return [
+                SimpleNamespace(
+                    document_id=document_id,
+                    segment_id=segment_id,
+                    title="Owner notes",
+                    snippet="Use owner scope.",
+                    source_ref=f"kb://person/{owner_id}/documents/{document_id}#segment={segment_id}",
+                    score=0.9,
+                    heading_path=["Owner"],
+                    sensitivity="internal",
+                    metadata={},
+                )
+            ]
+
+        async def get_personal_document(self, session, **kwargs):
+            captured.append(("detail", kwargs))
+            return SimpleNamespace(
+                document_id=document_id,
+                title="Owner notes",
+                source_kind="paste",
+                source_uri=None,
+                source_sha256="a" * 64,
+                source_ref=f"kb://person/{owner_id}/documents/{document_id}",
+                canonical_md_path="persons/owner/kb/doc.md",
+                status="ready",
+                sensitivity="internal",
+                agent_searchable=True,
+                segment_count=1,
+                created_at=None,
+                updated_at=None,
+                metadata={},
+                segments=[
+                    SimpleNamespace(
+                        segment_id=segment_id,
+                        position=0,
+                        heading_path=["Owner"],
+                        content="Use owner scope.",
+                        token_count=4,
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, _db, _user = _personal_client(monkeypatch, user=user)
+
+    listed = client.get("/knowledge/personal/documents")
+    searched = client.get("/knowledge/personal/search", params={"q": "owner scope"})
+    detailed = client.get(f"/knowledge/personal/documents/{document_id}")
+
+    assert listed.status_code == 200
+    assert searched.status_code == 200
+    assert detailed.status_code == 200
+    assert listed.json()["documents"][0]["document_id"] == str(document_id)
+    assert searched.json()["results"][0]["segment_id"] == str(segment_id)
+    assert detailed.json()["segments"][0]["content"] == "Use owner scope."
+    assert [name for name, _kwargs in captured] == ["list", "search", "detail"]
+    for _name, kwargs in captured:
+        assert kwargs["tenant_id"] == user.tenant_id
+        assert kwargs["owner_user_id"] == owner_id
+        assert kwargs["current_user_id"] == owner_id
+        assert kwargs["agent_id"] is None
+
+
+def test_current_user_personal_knowledge_ingest_never_accepts_browser_owner_id(monkeypatch):
+    owner_id = uuid4()
+    document_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    captured = {}
+
+    class _FakeService:
+        async def ingest_markdown(self, session, **kwargs):
+            captured.update({"session": session, **kwargs})
+            return SimpleNamespace(
+                document_id=document_id,
+                source_sha256="a" * 64,
+                artifact_hash="b" * 64,
+                canonical_md_path="persons/owner/kb/doc.md",
+                segment_count=1,
+                status="ready",
+            )
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    response = client.post(
+        "/knowledge/personal/documents",
+        json={
+            "title": "Owner note",
+            "markdown": "# Owner\n\nDo not trust browser owner ids.",
+            "source_kind": "paste",
+            "source_uri": "browser://knowledge/personal",
+            "owner_user_id": str(uuid4()),
+            "agent_searchable": True,
+            "sensitivity": "internal",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["document_id"] == str(document_id)
+    assert fake_db.commit_count == 1
+    assert captured["tenant_id"] == user.tenant_id
+    assert captured["owner_user_id"] == owner_id
+    assert captured["created_by_user_id"] == owner_id
+
+
 def test_personal_knowledge_ingest_uses_agent_owner_and_commits(monkeypatch):
     owner_id = uuid4()
     agent_id = uuid4()

@@ -115,6 +115,12 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "agent_plugin_assignments",
     "plugin_hook_registrations",
     "plugin_dependency_edges",
+    "external_capability_reviews",
+    "external_capability_snapshots",
+    "external_extension_catalog_entries",
+    "external_extension_components",
+    "external_extension_hook_registrations",
+    "external_extension_activations",
     # Personal / company knowledge-base core records. These are tenant-scoped
     # and scope-scoped; keep forced on fresh create_all bootstrap so owner-role
     # app connections cannot bypass KB ACL decisions.

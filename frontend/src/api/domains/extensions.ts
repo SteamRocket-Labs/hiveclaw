@@ -152,6 +152,11 @@ export interface ExternalExtensionActivationResult {
   result: Record<string, unknown>;
 }
 
+export interface ExternalExtensionActivationRequest {
+  component_qualified_names?: string[] | null;
+  credential_handles?: Record<string, string>;
+}
+
 export interface ExternalExtensionCatalogEntry {
   id: string;
   tenant_id?: string;
@@ -233,8 +238,14 @@ export const extensionsApi = {
     get<ExternalExtensionCatalogEntry[]>(`/agents/${agentId}/external-extensions/catalog`),
 
   /** Agent owner/admin: activate one approved external snapshot for this agent. */
-  activateExternalExtension: (agentId: string, snapshotId: string) =>
-    post<ExternalExtensionActivationResult>(`/agents/${agentId}/external-extensions/${snapshotId}/activate`),
+  activateExternalExtension: (
+    agentId: string,
+    snapshotId: string,
+    body?: ExternalExtensionActivationRequest,
+  ) =>
+    body
+      ? post<ExternalExtensionActivationResult>(`/agents/${agentId}/external-extensions/${snapshotId}/activate`, body)
+      : post<ExternalExtensionActivationResult>(`/agents/${agentId}/external-extensions/${snapshotId}/activate`),
 
   /** Agent owner/admin: deactivate one active external snapshot for this agent. */
   deactivateExternalExtension: (agentId: string, snapshotId: string) =>

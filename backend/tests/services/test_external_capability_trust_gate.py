@@ -316,6 +316,76 @@ async def test_approve_external_capability_review_publishes_components_to_catalo
 
 
 @pytest.mark.asyncio
+async def test_approve_external_capability_review_persists_component_records_and_hook_registrations():
+    tenant_id = uuid4()
+    reviewer_id = uuid4()
+    review = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        source_format="cc_plugin",
+        source_uri="github:acme/review-pack",
+        source_hash="manifest-hash",
+        normalized_name="review-pack",
+        status="review_required",
+        admission_class="admin_scoped",
+        admission_report_json={"notes": []},
+        governance_projection_json={"runtime_governance": "existing_governance_after_activation"},
+        normalized_manifest_json={
+            "components": [
+                {
+                    "component_type": "skill",
+                    "local_name": "audit",
+                    "qualified_name": "review-pack:skill:audit",
+                    "source_path": "skills/audit/SKILL.md",
+                    "content_sha256": "skill-sha",
+                    "runtime_projection": {"folder_name": "audit"},
+                },
+                {
+                    "component_type": "hook",
+                    "local_name": "pre-bash",
+                    "qualified_name": "review-pack:hook:pre-bash",
+                    "source_path": ".claude/hooks.json",
+                    "content_sha256": "hook-sha",
+                    "runtime_projection": {
+                        "event": "PreToolUse",
+                        "matcher": {"tool": "bash"},
+                        "handler": "deny-dangerous-command",
+                        "mode": "enforce",
+                    },
+                },
+            ]
+        },
+    )
+    db = _TrustGateSession([review])
+
+    snapshot = await approve_external_capability_snapshot(
+        db,
+        tenant_id=tenant_id,
+        review_id=review.id,
+        approved_by_user_id=reviewer_id,
+    )
+
+    component_records = [row for row in db.added if row.__class__.__name__ == "ExternalExtensionComponent"]
+    hook_registrations = [row for row in db.added if row.__class__.__name__ == "ExternalExtensionHookRegistration"]
+    assert len(component_records) == 2
+    assert [row.qualified_name for row in component_records] == [
+        "review-pack:skill:audit",
+        "review-pack:hook:pre-bash",
+    ]
+    assert component_records[1].status == "approved"
+    assert component_records[1].runtime_projection_json["event"] == "PreToolUse"
+    assert len(hook_registrations) == 1
+    hook_registration = hook_registrations[0]
+    assert hook_registration.snapshot_id == db.added[0].id
+    assert hook_registration.qualified_name == "review-pack:hook:pre-bash"
+    assert hook_registration.event == "PreToolUse"
+    assert hook_registration.status == "pending_approval"
+    assert hook_registration.matcher_json == {"tool": "bash"}
+    assert hook_registration.handler == "deny-dangerous-command"
+    assert snapshot["hook_registrations"][0]["status"] == "pending_approval"
+
+
+@pytest.mark.asyncio
 async def test_revoke_external_capability_snapshot_marks_catalog_unavailable():
     tenant_id = uuid4()
     reviewer_id = uuid4()

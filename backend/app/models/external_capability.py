@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -115,6 +115,73 @@ class ExternalExtensionCatalogEntry(Base):
     )
 
 
+class ExternalExtensionComponent(Base):
+    """Snapshot-scoped normalized component evidence.
+
+    This is the canonical component inventory for an approved external snapshot.
+    It stays upstream of runtime activation so component-level selection can be
+    audited without mixing new Trust Gate semantics into legacy plugin package
+    projections.
+    """
+
+    __tablename__ = "external_extension_components"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "snapshot_id", "qualified_name", name="uq_external_component_snapshot_name"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    component_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    component_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    qualified_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_sha256: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="approved", index=True)
+    runtime_projection_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ExternalExtensionHookRegistration(Base):
+    """Fail-closed external hook registration minted from an approved snapshot."""
+
+    __tablename__ = "external_extension_hook_registrations"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "snapshot_id", "qualified_name", name="uq_external_hook_snapshot_name"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    component_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("external_extension_components.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    qualified_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    event: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    handler: Mapped[str] = mapped_column(String(200), nullable=False)
+    mode: Mapped[str] = mapped_column(String(30), nullable=False, default="observe")
+    matcher_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending_approval", index=True)
+    approval_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class ExternalExtensionActivation(Base):
     """Agent-scoped activation of one approved external capability snapshot."""
 
@@ -135,6 +202,8 @@ class ExternalExtensionActivation(Base):
     )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active", index=True)
     component_types_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    selected_components_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    credential_handles_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     activation_result_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     activated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True

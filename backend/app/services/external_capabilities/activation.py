@@ -31,6 +31,8 @@ async def activate_external_extension_for_agent(
     snapshot_id: uuid.UUID,
     workspace: Path,
     activated_by_user_id: uuid.UUID | None,
+    component_qualified_names: list[str] | None = None,
+    credential_handles: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     result = await db.execute(
         select(ExternalCapabilitySnapshot).where(
@@ -43,13 +45,21 @@ async def activate_external_extension_for_agent(
     if snapshot is None:
         raise ValueError("approved external capability snapshot not found")
 
-    activated_components = await _activate_components(snapshot=snapshot, workspace=workspace, agent_id=agent_id)
+    activated_components, selected_component_names, used_credential_handles = await _activate_components(
+        snapshot=snapshot,
+        workspace=workspace,
+        agent_id=agent_id,
+        component_qualified_names=component_qualified_names,
+        credential_handles=credential_handles,
+    )
     activation = ExternalExtensionActivation(
         tenant_id=tenant_id,
         agent_id=agent_id,
         snapshot_id=snapshot_id,
         status="active",
         component_types_json=_component_type_counts(activated_components),
+        selected_components_json=selected_component_names,
+        credential_handles_json=used_credential_handles,
         activation_result_json={"components": activated_components},
         activated_by_user_id=activated_by_user_id,
     )
@@ -123,11 +133,24 @@ async def _activate_components(
     snapshot: ExternalCapabilitySnapshot,
     workspace: Path,
     agent_id: uuid.UUID,
-) -> list[dict[str, Any]]:
+    component_qualified_names: list[str] | None,
+    credential_handles: dict[str, str] | None,
+) -> tuple[list[dict[str, Any]], list[str], dict[str, str]]:
     manifest = snapshot.component_manifest_json or {}
     components = manifest.get("components") or []
+    selected_components = _select_components(components, component_qualified_names=component_qualified_names)
+    selected_component_names = [_component_qualified_name(component) for component in selected_components]
+    normalized_credential_handles = _normalize_credential_handles(credential_handles)
+    component_credential_handles: dict[str, dict[str, str]] = {}
+    used_credential_handles: dict[str, str] = {}
+    for component in selected_components:
+        component_name = _component_qualified_name(component)
+        component_handles = _credential_handles_for_component(component, normalized_credential_handles)
+        component_credential_handles[component_name] = component_handles
+        used_credential_handles.update(component_handles)
+
     activated: list[dict[str, Any]] = []
-    for component in components:
+    for component in selected_components:
         if not isinstance(component, dict):
             continue
         component_type = component.get("component_type")
@@ -135,10 +158,19 @@ async def _activate_components(
             activated.append(_activate_skill_component(component=component, snapshot=snapshot, workspace=workspace))
             continue
         if component_type == "mcp_server":
-            activated.append(await _activate_mcp_component(component=component, agent_id=agent_id))
+            activated.append(
+                await _activate_mcp_component(
+                    component=component,
+                    agent_id=agent_id,
+                    credential_handles=component_credential_handles.get(_component_qualified_name(component), {}),
+                )
+            )
             continue
         if component_type == "subagent":
             activated.append(_activate_subagent_component(component=component, workspace=workspace))
+            continue
+        if component_type == "hook":
+            activated.append(_activate_hook_component(component=component))
             continue
         activated.append(
             {
@@ -147,14 +179,21 @@ async def _activate_components(
                 "status": "unsupported_activation_component",
             }
         )
-    return activated
+    return activated, selected_component_names, used_credential_handles
 
 
-async def _activate_mcp_component(*, component: dict[str, Any], agent_id: uuid.UUID) -> dict[str, Any]:
+async def _activate_mcp_component(
+    *,
+    component: dict[str, Any],
+    agent_id: uuid.UUID,
+    credential_handles: dict[str, str],
+) -> dict[str, Any]:
     runtime_projection = component.get("runtime_projection")
     runtime_projection = runtime_projection if isinstance(runtime_projection, dict) else {}
     config = runtime_projection.get("config")
     config = config if isinstance(config, dict) else None
+    if credential_handles:
+        config = {**(config or {}), "credential_handles": credential_handles}
     server_name = _optional_string(runtime_projection.get("server_name")) or _optional_string(component.get("local_name"))
     message = await import_mcp_for_agent_and_register(
         agent_id,
@@ -168,6 +207,18 @@ async def _activate_mcp_component(*, component: dict[str, Any], agent_id: uuid.U
         "name": server_name or _optional_string(runtime_projection.get("server_id")) or "mcp_server",
         "status": "activated",
         "message": message,
+        **({"credential_handles": credential_handles} if credential_handles else {}),
+    }
+
+
+def _activate_hook_component(*, component: dict[str, Any]) -> dict[str, Any]:
+    runtime_projection = component.get("runtime_projection")
+    runtime_projection = runtime_projection if isinstance(runtime_projection, dict) else {}
+    return {
+        "component_type": "hook",
+        "name": _component_qualified_name(component),
+        "status": "pending_hook_approval",
+        "event": _optional_string(runtime_projection.get("event")) or "unknown",
     }
 
 
@@ -240,6 +291,91 @@ def _component_type_counts(components: list[dict[str, Any]]) -> dict[str, int]:
         key = str(component.get("component_type") or "unknown")
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def _select_components(
+    components: Any,
+    *,
+    component_qualified_names: list[str] | None,
+) -> list[dict[str, Any]]:
+    normalized_components = [component for component in components if isinstance(component, dict)] if isinstance(components, list) else []
+    if component_qualified_names is None:
+        return normalized_components
+    requested_names = _normalize_component_names(component_qualified_names)
+    if not requested_names:
+        raise ValueError("at least one component must be selected")
+    by_name = {_component_qualified_name(component): component for component in normalized_components}
+    missing = [name for name in requested_names if name not in by_name]
+    if missing:
+        raise ValueError(f"external capability component not found: {', '.join(missing)}")
+    return [by_name[name] for name in requested_names]
+
+
+def _normalize_component_names(component_qualified_names: list[str]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in component_qualified_names:
+        name = _optional_string(value)
+        if name and name not in seen:
+            names.append(name)
+            seen.add(name)
+    return names
+
+
+def _component_qualified_name(component: dict[str, Any]) -> str:
+    return (
+        _optional_string(component.get("qualified_name"))
+        or _optional_string(component.get("local_name"))
+        or "unknown_component"
+    )
+
+
+def _normalize_credential_handles(credential_handles: dict[str, str] | None) -> dict[str, str]:
+    if not isinstance(credential_handles, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in credential_handles.items():
+        normalized_key = _optional_string(key)
+        normalized_value = _optional_string(value)
+        if normalized_key and normalized_value:
+            normalized[normalized_key] = normalized_value
+    return normalized
+
+
+def _credential_handles_for_component(
+    component: dict[str, Any],
+    credential_handles: dict[str, str],
+) -> dict[str, str]:
+    required_keys = _required_credential_keys(component)
+    missing = [key for key in required_keys if key not in credential_handles]
+    if missing:
+        raise ValueError(f"missing credential handle for component {_component_qualified_name(component)}: {', '.join(missing)}")
+    return {key: credential_handles[key] for key in required_keys}
+
+
+def _required_credential_keys(component: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    for container_name in ("runtime_projection", "metadata"):
+        container = component.get(container_name)
+        if not isinstance(container, dict):
+            continue
+        for raw_requirement in container.get("credential_requirements") or []:
+            key = _credential_requirement_key(raw_requirement)
+            if key and key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _credential_requirement_key(raw_requirement: Any) -> str | None:
+    if isinstance(raw_requirement, str):
+        return _optional_string(raw_requirement)
+    if not isinstance(raw_requirement, dict):
+        return None
+    for field in ("key", "name", "id"):
+        value = _optional_string(raw_requirement.get(field))
+        if value:
+            return value
+    return None
 
 
 def _optional_string(value: Any) -> str | None:

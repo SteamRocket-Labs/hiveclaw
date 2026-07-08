@@ -33,7 +33,7 @@ def _build_client():
     return TestClient(app, raise_server_exceptions=False), fake_db, current_user
 
 
-def test_activate_external_extension_route_checks_agent_access_and_activates(monkeypatch):
+def test_activate_external_extension_route_checks_agent_access_and_activates_selected_components(monkeypatch):
     client, fake_db, current_user = _build_client()
     agent_id = uuid4()
     snapshot_id = uuid4()
@@ -44,17 +44,35 @@ def test_activate_external_extension_route_checks_agent_access_and_activates(mon
         assert target_agent_id == agent_id
         return SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id), "manage"
 
-    async def fake_activate(db_session, *, tenant_id, agent_id, snapshot_id, workspace, activated_by_user_id):
+    async def fake_activate(
+        db_session,
+        *,
+        tenant_id,
+        agent_id,
+        snapshot_id,
+        workspace,
+        activated_by_user_id,
+        component_qualified_names,
+        credential_handles,
+    ):
         assert db_session is fake_db
         assert tenant_id == current_user.tenant_id
         assert activated_by_user_id == current_user.id
         assert str(workspace).endswith(str(agent_id))
+        assert component_qualified_names == ["docs-pack:skill:audit"]
+        assert credential_handles == {"docs_api_key": "credential-handle-123"}
         return {"status": "active", "snapshot_id": str(snapshot_id)}
 
     monkeypatch.setattr(external_mod, "check_agent_access", fake_check)
     monkeypatch.setattr(external_mod, "activate_external_extension_for_agent", fake_activate)
 
-    resp = client.post(f"/agents/{agent_id}/external-extensions/{snapshot_id}/activate")
+    resp = client.post(
+        f"/agents/{agent_id}/external-extensions/{snapshot_id}/activate",
+        json={
+            "component_qualified_names": ["docs-pack:skill:audit"],
+            "credential_handles": {"docs_api_key": "credential-handle-123"},
+        },
+    )
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "active"

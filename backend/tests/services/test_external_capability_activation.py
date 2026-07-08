@@ -159,6 +159,131 @@ async def test_activate_external_mcp_snapshot_uses_agent_scoped_existing_runtime
 
 
 @pytest.mark.asyncio
+async def test_activate_external_snapshot_selects_components_and_requires_credential_handles(monkeypatch, tmp_path):
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    calls = []
+
+    async def fake_import_mcp_for_agent_and_register(import_agent_id, **kwargs):
+        calls.append((import_agent_id, kwargs))
+        return "Imported Docs MCP"
+
+    monkeypatch.setattr(activation_mod, "import_mcp_for_agent_and_register", fake_import_mcp_for_agent_and_register)
+    snapshot = SimpleNamespace(
+        id=snapshot_id,
+        tenant_id=tenant_id,
+        status="approved",
+        snapshot_key="cc_plugin:docs-pack:abc",
+        component_manifest_json={
+            "components": [
+                {
+                    "component_type": "skill",
+                    "local_name": "audit",
+                    "qualified_name": "docs-pack:skill:audit",
+                    "metadata": {
+                        "files": [
+                            {"path": "SKILL.md", "content": "# Audit Skill"},
+                        ]
+                    },
+                    "runtime_projection": {"folder_name": "audit"},
+                },
+                {
+                    "component_type": "mcp_server",
+                    "local_name": "docs",
+                    "qualified_name": "docs-pack:mcp:docs",
+                    "runtime_projection": {
+                        "server_id": "docs/server",
+                        "server_name": "Docs MCP",
+                        "mcp_url": "https://mcp.example/sse",
+                        "config": {"transport": "sse"},
+                        "credential_requirements": [{"key": "docs_api_key", "label": "Docs API key"}],
+                    },
+                },
+                {
+                    "component_type": "hook",
+                    "local_name": "pre-bash",
+                    "qualified_name": "docs-pack:hook:pre-bash",
+                    "runtime_projection": {"event": "PreToolUse", "handler": "deny-dangerous-command"},
+                },
+            ]
+        },
+    )
+
+    skill_db = _ActivationSession(snapshot)
+    skill_result = await activate_external_extension_for_agent(
+        skill_db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        workspace=tmp_path,
+        activated_by_user_id=uuid4(),
+        component_qualified_names=["docs-pack:skill:audit"],
+        credential_handles={},
+    )
+
+    assert skill_result["activated_components"] == [{"component_type": "skill", "name": "audit", "files_written": 1}]
+    assert calls == []
+    activation = skill_db.added[0]
+    assert activation.selected_components_json == ["docs-pack:skill:audit"]
+    assert activation.credential_handles_json == {}
+
+    missing_credential_db = _ActivationSession(snapshot)
+    with pytest.raises(ValueError, match="missing credential handle"):
+        await activate_external_extension_for_agent(
+            missing_credential_db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            snapshot_id=snapshot_id,
+            workspace=tmp_path,
+            activated_by_user_id=uuid4(),
+            component_qualified_names=["docs-pack:mcp:docs"],
+            credential_handles={},
+        )
+
+    mcp_db = _ActivationSession(snapshot)
+    mcp_result = await activate_external_extension_for_agent(
+        mcp_db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        workspace=tmp_path,
+        activated_by_user_id=uuid4(),
+        component_qualified_names=["docs-pack:mcp:docs", "docs-pack:hook:pre-bash"],
+        credential_handles={"docs_api_key": "credential-handle-123"},
+    )
+
+    assert mcp_result["activated_components"] == [
+        {
+            "component_type": "mcp_server",
+            "name": "Docs MCP",
+            "status": "activated",
+            "message": "Imported Docs MCP",
+            "credential_handles": {"docs_api_key": "credential-handle-123"},
+        },
+        {
+            "component_type": "hook",
+            "name": "docs-pack:hook:pre-bash",
+            "status": "pending_hook_approval",
+            "event": "PreToolUse",
+        },
+    ]
+    assert calls == [
+        (
+            agent_id,
+            {
+                "server_id": "docs/server",
+                "mcp_url": "https://mcp.example/sse",
+                "server_name": "Docs MCP",
+                "config": {"transport": "sse", "credential_handles": {"docs_api_key": "credential-handle-123"}},
+            },
+        )
+    ]
+    assert mcp_db.added[0].selected_components_json == ["docs-pack:mcp:docs", "docs-pack:hook:pre-bash"]
+    assert mcp_db.added[0].credential_handles_json == {"docs_api_key": "credential-handle-123"}
+
+
+@pytest.mark.asyncio
 async def test_activate_external_subagent_snapshot_writes_sanitized_agent_definition(tmp_path):
     tenant_id = uuid4()
     agent_id = uuid4()

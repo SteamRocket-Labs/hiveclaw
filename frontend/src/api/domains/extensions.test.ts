@@ -117,11 +117,19 @@ describe('extensions API adapter', () => {
     await extensionsApi.rejectExternalCapabilityReview('review-1', { reason: 'unsafe hook' });
     await extensionsApi.revokeExternalCapabilitySnapshot('snapshot-1');
     await extensionsApi.deactivateExternalExtension('agent-1', 'snapshot-1');
+    await extensionsApi.activateExternalExtension('agent-1', 'snapshot-1', {
+      component_qualified_names: ['docs-pack:skill:audit'],
+      credential_handles: { docs_api_key: 'credential-handle-123' },
+    });
 
     expect(post).toHaveBeenCalledWith('/enterprise/external-capabilities/reviews/review-1/reject', {
       reason: 'unsafe hook',
     });
     expect(post).toHaveBeenCalledWith('/enterprise/external-capabilities/snapshots/snapshot-1/revoke');
     expect(post).toHaveBeenCalledWith('/agents/agent-1/external-extensions/snapshot-1/deactivate');
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/external-extensions/snapshot-1/activate', {
+      component_qualified_names: ['docs-pack:skill:audit'],
+      credential_handles: { docs_api_key: 'credential-handle-123' },
+    });
   });
 });

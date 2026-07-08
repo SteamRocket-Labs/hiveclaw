@@ -84,6 +84,11 @@ class ExternalCapabilityRejectIn(BaseModel):
     reason: str | None = None
 
 
+class ExternalExtensionActivationIn(BaseModel):
+    component_qualified_names: list[str] | None = None
+    credential_handles: dict[str, str] = Field(default_factory=dict)
+
+
 @router.get("/enterprise/external-capabilities/reviews")
 async def list_external_capability_reviews_route(
     current_user: User = Depends(get_current_admin),
@@ -197,6 +202,7 @@ async def list_agent_external_extension_catalog_route(
 async def activate_external_extension_route(
     agent_id: uuid.UUID,
     snapshot_id: uuid.UUID,
+    data: ExternalExtensionActivationIn | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -213,6 +219,8 @@ async def activate_external_extension_route(
             snapshot_id=snapshot_id,
             workspace=workspace,
             activated_by_user_id=current_user.id,
+            component_qualified_names=data.component_qualified_names if data else None,
+            credential_handles=data.credential_handles if data else {},
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

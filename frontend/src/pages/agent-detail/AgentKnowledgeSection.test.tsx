@@ -150,10 +150,9 @@ describe('AgentKnowledgeSection', () => {
     expect(html).not.toContain('raw');
   });
 
-  it('renders the Personal KB lane with intake, searchable docs, and source refs', () => {
+  it('renders the Personal KB lane as read-only search, library, and source refs inside Agent Detail', () => {
     const html = renderToStaticMarkup(
       <PersonalKnowledgeView
-        canEdit
         documents={[
           {
             document_id: 'doc-1',
@@ -211,23 +210,20 @@ describe('AgentKnowledgeSection', () => {
           },
         ]}
         selectedDocumentId="doc-1"
-        intakeTitle="Taste notes"
-        intakeMarkdown="# Taste"
         searchQuery="source refs"
-        isSaving={false}
-        onIntakeTitleChange={() => {}}
-        onIntakeMarkdownChange={() => {}}
         onSearchQueryChange={() => {}}
-        onSubmitIntake={() => {}}
         onRunSearch={() => {}}
         onSelectDocument={() => {}}
       />,
     );
 
     expect(html).toContain('Personal KB');
+    expect(html).toContain('Read-only owner-scope view');
     expect(html).toContain('Taste notes');
     expect(html).toContain('Use source refs and ACL');
     expect(html).toContain('kb://person/user-1/documents/doc-1#segment=seg-1');
     expect(html).toContain('source refs');
+    expect(html).not.toContain('Add to Personal KB');
+    expect(html).not.toContain('Paste Markdown or notes here');
   });
 });

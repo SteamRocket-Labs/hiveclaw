@@ -1537,10 +1537,11 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('web-research');
     expect(markup).toContain('market-research');
     expect(markup).toContain('github-briefing');
-    expect(markup).toContain('MCP-backed capabilities');
-    expect(markup).toContain('filesystem-mcp');
-    expect(markup).toContain('Plugins');
-    expect(markup).toContain('paperclip');
+    expect(markup).toContain('MCP servers and plugins are managed in the MCP &amp; Plugins tab.');
+    expect(markup).not.toContain('MCP-backed capabilities');
+    expect(markup).not.toContain('filesystem-mcp');
+    expect(markup).not.toContain('<h4 class="agent-skills-panel-title">Plugins</h4>');
+    expect(markup).not.toContain('paperclip');
     expect(markup).not.toContain('root=skills');
   });
 

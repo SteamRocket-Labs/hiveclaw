@@ -737,3 +737,44 @@ commit：
 剩余风险：
 
 - 生产级 audio/video/image provider 需要 credential 后启用；当前无 provider 的 failed/unconfigured 状态已闭环，不伪装 ready。
+
+### 2026-07-08 Agent Detail 入口归位与 Skill 表达清理
+
+改动文件：
+
+- `frontend/src/pages/agent-detail/AgentKnowledgeSection.tsx`
+- `frontend/src/pages/agent-detail/AgentKnowledgeSection.css`
+- `frontend/src/pages/agent-detail/AgentKnowledgeSection.test.tsx`
+- `frontend/src/pages/agent-detail/AgentSkillsSection.tsx`
+- `frontend/src/pages/agent-detail/AgentSkillsSection.css`
+- `frontend/src/pages/agent-detail/AgentDetailSections.test.tsx`
+- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+
+功能证据：
+
+- Agent Detail 的 Personal KB lane 只保留 owner-scope read-only 搜索、文库和 source refs 检查，不再提供 `Add to Personal KB` / paste 输入。
+- Agent Detail 内提供 “Open Personal KB” 跳转到全局 `/knowledge`，写入口归位到 Personal KB 工作台。
+- Skill tab 只展示 installed skills；MCP servers 和 plugins 不再混在 Skill panel 内，改为提示由 `MCP & Plugins` tab 管理。
+- 这保持了产品边界：Personal KB 是全局 owner 入口；Agent Detail 是只读消费面；插件/MCP 是 extension 面，不是 Skill 定义列表的一部分。
+
+测试命令：
+
+```bash
+cd frontend && npm test -- src/pages/agent-detail/AgentKnowledgeSection.test.tsx src/pages/agent-detail/AgentDetailSections.test.tsx
+cd frontend && npm run build
+```
+
+测试结果：
+
+```text
+2 passed / 95 tests passed
+tsc && vite build -> exit 0, 7044 modules transformed
+```
+
+commit：
+
+- 本提交：`feat: align agent detail knowledge and skill surfaces`。
+
+剩余风险：
+
+- 无。MCP/Plugins 的真实管理仍由既有 `AgentExtensionsSection` / MCP & Plugins tab 承担。

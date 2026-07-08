@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import AgentMindSection from './AgentMindSection';
@@ -255,37 +255,23 @@ function PagesView({
 }
 
 type PersonalKnowledgeViewProps = {
-  canEdit: boolean;
   documents: PersonalKnowledgeDocumentSummary[];
   selectedDocument?: PersonalKnowledgeDocumentDetail;
   searchResults: PersonalKnowledgeSearchResult[];
   selectedDocumentId: string | null;
-  intakeTitle: string;
-  intakeMarkdown: string;
   searchQuery: string;
-  isSaving: boolean;
-  onIntakeTitleChange: (value: string) => void;
-  onIntakeMarkdownChange: (value: string) => void;
   onSearchQueryChange: (value: string) => void;
-  onSubmitIntake: () => void;
   onRunSearch: () => void;
   onSelectDocument: (documentId: string) => void;
 };
 
 export function PersonalKnowledgeView({
-  canEdit,
   documents,
   selectedDocument,
   searchResults,
   selectedDocumentId,
-  intakeTitle,
-  intakeMarkdown,
   searchQuery,
-  isSaving,
-  onIntakeTitleChange,
-  onIntakeMarkdownChange,
   onSearchQueryChange,
-  onSubmitIntake,
   onRunSearch,
   onSelectDocument,
 }: PersonalKnowledgeViewProps) {
@@ -312,33 +298,18 @@ export function PersonalKnowledgeView({
         </form>
       </div>
 
-      {canEdit && (
-        <form
-          className="agent-knowledge-card agent-knowledge-personal-intake"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSubmitIntake();
-          }}
-        >
-          <div className="agent-knowledge-personal-form-row">
-            <input
-              className="input"
-              value={intakeTitle}
-              onChange={(event) => onIntakeTitleChange(event.target.value)}
-              placeholder={t('agent.knowledge.personalTitlePlaceholder', 'Document title')}
-            />
-            <button className="btn btn-primary btn-sm" type="submit" disabled={isSaving || !intakeMarkdown.trim()}>
-              {isSaving ? t('common.saving', 'Saving...') : t('agent.knowledge.personalIngest', 'Add to Personal KB')}
-            </button>
-          </div>
-          <textarea
-            className="textarea agent-knowledge-personal-textarea"
-            value={intakeMarkdown}
-            onChange={(event) => onIntakeMarkdownChange(event.target.value)}
-            placeholder={t('agent.knowledge.personalMarkdownPlaceholder', 'Paste Markdown or notes here...')}
-          />
-        </form>
-      )}
+      <div className="agent-knowledge-card agent-knowledge-personal-readonly">
+        <strong>{t('agent.knowledge.personalReadonlyTitle', 'Read-only owner-scope view')}</strong>
+        <span>
+          {t(
+            'agent.knowledge.personalReadonlyDesc',
+            'Agent Detail can search and inspect Personal KB evidence, but ingestion and permission changes belong to the global Personal Knowledge workspace.',
+          )}
+        </span>
+        <a className="btn btn-secondary btn-sm" href="/knowledge">
+          {t('agent.knowledge.personalOpenGlobal', 'Open Personal KB')}
+        </a>
+      </div>
 
       <div className="agent-knowledge-personal-grid">
         <div className="agent-knowledge-personal-list">
@@ -414,12 +385,9 @@ export function PersonalKnowledgeView({
 
 export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab }: AgentKnowledgeSectionProps) {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
   const [subView, setSubView] = useState<SubView>('overview');
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null);
   const [selectedPersonalDocumentId, setSelectedPersonalDocumentId] = useState<string | null>(null);
-  const [personalTitle, setPersonalTitle] = useState('');
-  const [personalMarkdown, setPersonalMarkdown] = useState('');
   const [personalSearchInput, setPersonalSearchInput] = useState('');
   const [personalSearchQuery, setPersonalSearchQuery] = useState('');
   const availableSubViews = canEdit ? SUBVIEWS : SUBVIEWS.filter((view) => view !== 'raw');
@@ -474,24 +442,6 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
     queryFn: () => knowledgeApi.personalDocument(agentId, selectedPersonalDocumentId as string),
     enabled: subView === 'personal' && !!selectedPersonalDocumentId,
   });
-  const personalIngestMutation = useMutation({
-    mutationFn: () =>
-      knowledgeApi.personalIngest(agentId, {
-        title: personalTitle.trim() || t('agent.knowledge.personalUntitled', 'Untitled personal note'),
-        markdown: personalMarkdown,
-        source_kind: 'paste',
-        source_uri: 'browser://knowledge/personal',
-        agent_searchable: true,
-        sensitivity: 'internal',
-      }),
-    onSuccess: (result) => {
-      setPersonalMarkdown('');
-      setPersonalTitle('');
-      setSelectedPersonalDocumentId(result.document_id);
-      void queryClient.invalidateQueries({ queryKey: ['knowledge-personal-documents', agentId] });
-      void queryClient.invalidateQueries({ queryKey: ['knowledge-personal-document', agentId, result.document_id] });
-    },
-  });
 
   const allEntries = entriesQuery.data?.entries ?? [];
   const selfEntries = allEntries.filter((entry) => entry.file.endsWith('self/self.md'));
@@ -542,21 +492,12 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
 
       {subView === 'personal' && (
         <PersonalKnowledgeView
-          canEdit={canEdit}
           documents={personalDocuments}
           selectedDocument={personalDocumentQuery.data}
           searchResults={personalSearchResults}
           selectedDocumentId={selectedPersonalDocumentId}
-          intakeTitle={personalTitle}
-          intakeMarkdown={personalMarkdown}
           searchQuery={personalSearchInput}
-          isSaving={personalIngestMutation.isPending}
-          onIntakeTitleChange={setPersonalTitle}
-          onIntakeMarkdownChange={setPersonalMarkdown}
           onSearchQueryChange={setPersonalSearchInput}
-          onSubmitIntake={() => {
-            if (personalMarkdown.trim()) personalIngestMutation.mutate();
-          }}
           onRunSearch={() => setPersonalSearchQuery(personalSearchInput.trim())}
           onSelectDocument={setSelectedPersonalDocumentId}
         />

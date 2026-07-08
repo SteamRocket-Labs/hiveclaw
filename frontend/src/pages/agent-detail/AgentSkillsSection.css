@@ -59,6 +59,16 @@
   color: var(--text-secondary);
   font-size: var(--text-body);
   line-height: var(--leading-emphasis);
+  margin-bottom: var(--space-2);
+}
+
+.agent-skills-routing-note {
+  padding: 10px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
   margin-bottom: var(--space-4);
 }
 
@@ -69,6 +79,10 @@
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: var(--space-3);
   margin-bottom: var(--space-4);
+}
+
+.agent-skills-grid-single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .agent-skills-panel {

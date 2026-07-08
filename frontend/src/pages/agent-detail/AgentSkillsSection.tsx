@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
-import { extensionsApi, type AgentExtensions } from '../../api/domains/extensions';
+import { extensionsApi } from '../../api/domains/extensions';
 import { fileApi } from '../../api/domains/files';
 import { skillApi } from '../../api/domains/skills';
 import { showAppToast } from '../../components/AppDialogs';
@@ -27,10 +27,6 @@ function skillSourceLabel(t: ReturnType<typeof useTranslation>['t'], source?: st
     return t('agent.skills.sourceUrl', 'URL');
   }
   return source || t('agent.skills.sourceUnknown', 'Unknown source');
-}
-
-function pluginName(plugin: NonNullable<AgentExtensions['plugins']>[number]): string {
-  return plugin.plugin_key || plugin.id;
 }
 
 export function invalidateAgentSkillQueries(
@@ -67,8 +63,6 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
   });
 
   const installedSkills = agentExtensions?.skills ?? [];
-  const mcpServers = agentExtensions?.mcp_servers ?? [];
-  const plugins = agentExtensions?.plugins ?? [];
 
   return (
     <div>
@@ -119,8 +113,14 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
           'Active skill packages are governed by Skill promotion. Use imports and Evolution candidates instead of editing active skill files directly.',
         )}
       </div>
+      <div className="agent-skills-routing-note">
+        {t(
+          'agent.skills.extensionRoutingNotice',
+          'MCP servers and plugins are managed in the MCP & Plugins tab.',
+        )}
+      </div>
 
-      <div className="agent-skills-grid">
+      <div className="agent-skills-grid agent-skills-grid-single">
         <section className="agent-skills-panel">
           <h4 className="agent-skills-panel-title agent-skills-panel-title-tight">
             {t('agent.skills.installedTitle', 'Installed skills')}
@@ -148,62 +148,6 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
                   </span>
                   <span className="agent-skills-row-meta">
                     {skillSourceLabel(t, skill.source)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="agent-skills-panel">
-          <h4 className="agent-skills-panel-title">
-            {t('agent.skills.mcpBackedCapabilities', 'MCP-backed capabilities')}
-          </h4>
-          {agentExtensionsLoading ? (
-            <div className="agent-skills-panel-note">
-              {t('common.loading', 'Loading...')}
-            </div>
-          ) : mcpServers.length === 0 ? (
-            <div className="agent-skills-panel-note">
-              {t('agent.skills.noMcpCapabilities', 'No MCP-backed capabilities.')}
-            </div>
-          ) : (
-            <div className="agent-skills-list">
-              {mcpServers.map((server) => (
-                <div key={server.id || server.name} className="agent-skills-row">
-                  <span className="agent-skills-row-name">
-                    {server.name}
-                  </span>
-                  <span className={`agent-skills-row-meta${server.enabled ? ' is-active' : ''}`}>
-                    {server.status} · {server.tool_count} {t('agent.skills.toolsUnit', 'tools')}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="agent-skills-panel">
-          <h4 className="agent-skills-panel-title">
-            {t('agent.skills.plugins', 'Plugins')}
-          </h4>
-          {agentExtensionsLoading ? (
-            <div className="agent-skills-panel-note">
-              {t('common.loading', 'Loading...')}
-            </div>
-          ) : plugins.length === 0 ? (
-            <div className="agent-skills-panel-note">
-              {t('agent.skills.noPlugins', 'No plugins assigned.')}
-            </div>
-          ) : (
-            <div className="agent-skills-list">
-              {plugins.map((plugin) => (
-                <div key={plugin.id || plugin.plugin_key} className="agent-skills-row">
-                  <span className="agent-skills-row-name">
-                    {pluginName(plugin)}
-                  </span>
-                  <span className={`agent-skills-row-meta${plugin.enabled ? ' is-active' : ''}`}>
-                    {plugin.enabled ? t('agent.skills.enabled', 'Enabled') : t('agent.skills.disabled', 'Disabled')}
                   </span>
                 </div>
               ))}

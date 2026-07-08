@@ -727,7 +727,29 @@ Personal KB M1 完成必须满足：
 9. SAG 陪练 scorecard 可跑。
 10. 当前系统没有另起 shadow truth store。
 
+### 13.1 M1 闭环缺口修复清单（2026-07-08）
+
+本节作为当前修复轮的准入和验收口径。以下条目属于 M1 完成条件，不得再以 M2 后置名义挂账；每完成一项必须更新本节证据并单独 commit。
+
+| 原子项 | 当前判定 | 必须完成的实装边界 | 证据要求 |
+| --- | --- | --- | --- |
+| M1-G1 多跳 PPR 检索 | 未闭环 | `search_personal()` 的 graph channel 必须从命中实体出发构建 person-scope 子图，复用 `personalized_pagerank()` 做多跳扩散；结果仍经过 document/segment ACL 过滤并返回 `score_trace.channels.graph`。 | 单测覆盖二跳命中；Personal KB service 测试通过。 |
+| M1-G2 异步 ingestion job | 未闭环 | upload / URL / paste 入口先创建 `knowledge_index_jobs(status=queued)` 并返回 job；后台 worker 负责转换、切片、抽取、索引、失败重试和状态推进。同步 helper 只能作为 worker 内部执行器或测试便利路径。 | API 测试证明入口不阻塞抽取；service 测试覆盖 queued/running/ready/failed/degraded/retry；现有导入测试通过。 |
+| M1-G3 optional vector boundary | 未闭环 | Personal M1 不强依赖 pgvector，但必须有可插拔 vector provider 边界：未配置时可观测降级；配置后从 canonical segment 输入生成/查询 vector lane，且不成为 source of truth。 | 单测覆盖无 provider 降级和 provider 命中融合；迁移仍不强制 `CREATE EXTENSION vector`。 |
+| M1-G4 extractor 独立测试 | 未闭环 | `PersonalKnowledgeLLMExtractor` 的 JSON 提取、schema 解析、敏感级别跳过、空响应/坏 JSON 失败路径必须有独立测试文件。 | 新增 `test_personal_knowledge_extractor.py` 并通过。 |
+| M1-G5 SAG benchmark scorecard | 未闭环 | 新增 Hive-native vs SAG-trace 的轻量 benchmark harness；SAG 只作为陪练输入/对照，不进入生产 truth 或检索 provider。输出 recall@k、citation accuracy、ACL leakage、latency、cost 的 scorecard。 | 新增 scorecard 单测和可执行脚本/模块；文档记录命令与通过结果。 |
+
 ## 14. 实施证据
+
+### 14.0 M1 闭环缺口修复证据日志（2026-07-08）
+
+| 原子项 | 状态 | Commit | 证据 |
+| --- | --- | --- | --- |
+| M1-G1 多跳 PPR 检索 | 待修复 | - | - |
+| M1-G2 异步 ingestion job | 待修复 | - | - |
+| M1-G3 optional vector boundary | 待修复 | - | - |
+| M1-G4 extractor 独立测试 | 待修复 | - | - |
+| M1-G5 SAG benchmark scorecard | 待修复 | - | - |
 
 ### 14.1 数据面、迁移、RLS
 

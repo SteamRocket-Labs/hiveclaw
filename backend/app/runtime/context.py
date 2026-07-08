@@ -71,7 +71,6 @@ class RuntimeAssemblyState:
     runtime_decision_ledger: list[dict[str, Any]] = field(default_factory=list)
     agent_cycle_decision_ledger: list[dict[str, Any]] = field(default_factory=list)
     runtime_reminder_candidates: list[dict[str, Any]] = field(default_factory=list)
-    codex_optimization_ledger: dict[str, Any] = field(default_factory=dict)
     activation_query: dict[str, Any] = field(default_factory=dict)
     activation_lanes: list[str] = field(default_factory=list)
     activation_parse_trace: list[dict[str, Any]] = field(default_factory=list)
@@ -107,7 +106,6 @@ class RuntimeAssemblyState:
             runtime_reminder_candidates=[
                 dict(item) for item in _list_payload(payload.get("runtime_reminder_candidates"))
             ],
-            codex_optimization_ledger=_dict_payload(payload.get("codex_optimization_ledger")),
             activation_query=_dict_payload(payload.get("activation_query")),
             activation_lanes=_string_list_payload(payload.get("activation_lanes")),
             activation_parse_trace=_dict_list_payload(payload.get("activation_parse_trace")),
@@ -135,7 +133,6 @@ class RuntimeAssemblyState:
             "runtime_decision_ledger": [dict(item) for item in self.runtime_decision_ledger],
             "agent_cycle_decision_ledger": [dict(item) for item in self.agent_cycle_decision_ledger],
             "runtime_reminder_candidates": [dict(item) for item in self.runtime_reminder_candidates],
-            "codex_optimization_ledger": dict(self.codex_optimization_ledger),
             "activation_query": dict(self.activation_query),
             "activation_lanes": list(self.activation_lanes),
             "activation_parse_trace": [dict(item) for item in self.activation_parse_trace],
@@ -171,8 +168,6 @@ class RuntimeAssemblyState:
             metadata["agent_cycle_decision_ledger"] = [dict(item) for item in self.agent_cycle_decision_ledger]
         if self.runtime_reminder_candidates:
             metadata["runtime_reminder_candidates"] = [dict(item) for item in self.runtime_reminder_candidates]
-        if self.codex_optimization_ledger:
-            metadata["codex_optimization_ledger"] = dict(self.codex_optimization_ledger)
         if self.activation_query:
             metadata["activation_query"] = dict(self.activation_query)
         if self.activation_lanes:
@@ -242,10 +237,6 @@ class RuntimeAssemblyState:
         self.runtime_reminder_candidates.append(dict(candidate))
         if len(self.runtime_reminder_candidates) > limit:
             del self.runtime_reminder_candidates[: len(self.runtime_reminder_candidates) - limit]
-        self.persist()
-
-    def record_codex_optimization_ledger(self, ledger: dict[str, Any]) -> None:
-        self.codex_optimization_ledger = dict(ledger)
         self.persist()
 
     def record_activation_query(self, query: Any) -> None:
@@ -330,8 +321,6 @@ def ensure_runtime_assembly_state(session: SessionContext | None) -> RuntimeAsse
         state.runtime_reminder_candidates = [
             dict(item) for item in _list_payload(session.metadata.get("runtime_reminder_candidates"))
         ]
-    if not state.codex_optimization_ledger:
-        state.codex_optimization_ledger = _dict_payload(session.metadata.get("codex_optimization_ledger"))
     if not state.activation_query:
         state.activation_query = _dict_payload(session.metadata.get("activation_query"))
     if not state.activation_lanes:

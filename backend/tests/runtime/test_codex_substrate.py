@@ -165,10 +165,8 @@ def test_permissions_prompt_is_derived_from_effective_policy() -> None:
 
 
 def test_codex_optimization_ledger_keeps_codex_as_additive_control_plane() -> None:
-    from app.runtime.codex_optimization_ledger import (
-        build_codex_optimization_ledger,
-        codex_delta_can_override_semantics,
-    )
+    from app.runtime import codex_optimization_ledger
+    from app.runtime.codex_optimization_ledger import build_codex_optimization_ledger
 
     ledger = build_codex_optimization_ledger()
 
@@ -184,8 +182,7 @@ def test_codex_optimization_ledger_keeps_codex_as_additive_control_plane() -> No
         "memory_consolidation_worker",
     } <= capabilities
     assert "skill_progressive_disclosure" in ledger["forbidden_semantic_overrides"]
-    assert codex_delta_can_override_semantics("skill_progressive_disclosure") is False
-    assert codex_delta_can_override_semantics("approval_sandbox_decision_enum") is False
+    assert not hasattr(codex_optimization_ledger, "codex_delta_can_override_semantics")
 
 
 @pytest.mark.asyncio

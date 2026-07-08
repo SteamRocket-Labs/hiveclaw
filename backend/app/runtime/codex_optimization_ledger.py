@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 
-_FORBIDDEN_SEMANTIC_OVERRIDES = (
+FORBIDDEN_SEMANTIC_OVERRIDES = (
     "tool_discovery",
     "skill_progressive_disclosure",
     "subagent_context_semantics",
@@ -50,7 +50,7 @@ def build_codex_optimization_ledger() -> dict[str, Any]:
             "exec_policy": "/Users/rocky243/Context Engineering/codex/codex-rs/execpolicy/src/decision.rs",
             "codex_api_common": "/Users/rocky243/Context Engineering/codex/codex-rs/codex-api/src/common.rs",
         },
-        "forbidden_semantic_overrides": list(_FORBIDDEN_SEMANTIC_OVERRIDES),
+        "forbidden_semantic_overrides": list(FORBIDDEN_SEMANTIC_OVERRIDES),
         "adoptable_control_plane": [
             _entry(
                 capability="approval_sandbox_decision_enum",
@@ -128,23 +128,7 @@ def build_codex_optimization_ledger() -> dict[str, Any]:
     }
 
 
-def codex_delta_can_override_semantics(_surface: str) -> bool:
-    return False
-
-
-def append_codex_optimization_ledger(session_context: Any | None) -> dict[str, Any]:
-    ledger = build_codex_optimization_ledger()
-    if session_context is None:
-        return ledger
-
-    from app.runtime.context import ensure_runtime_assembly_state
-
-    ensure_runtime_assembly_state(session_context).record_codex_optimization_ledger(ledger)
-    return ledger
-
-
 __all__ = [
-    "append_codex_optimization_ledger",
     "build_codex_optimization_ledger",
-    "codex_delta_can_override_semantics",
+    "FORBIDDEN_SEMANTIC_OVERRIDES",
 ]

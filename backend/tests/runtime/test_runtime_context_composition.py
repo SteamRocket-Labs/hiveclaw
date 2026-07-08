@@ -301,14 +301,19 @@ def test_runtime_reminder_candidate_mirrors_into_runtime_assembly_state() -> Non
     assert session.metadata["runtime_assembly_state"]["runtime_reminder_candidates"] == [candidate]
 
 
-def test_codex_optimization_ledger_mirrors_into_runtime_assembly_state() -> None:
-    from app.runtime.codex_optimization_ledger import append_codex_optimization_ledger
+def test_codex_optimization_ledger_is_control_plane_only() -> None:
+    from app.runtime import codex_optimization_ledger
+    from app.runtime.codex_optimization_ledger import build_codex_optimization_ledger
+    from app.runtime.context import ensure_runtime_assembly_state
 
     session = SessionContext(session_id="codex-optimization-ledger")
 
-    ledger = append_codex_optimization_ledger(session)
+    ledger = build_codex_optimization_ledger()
+    state = ensure_runtime_assembly_state(session)
 
     assert ledger["schema"] == "hive.ccplus.codex_optimization_ledger.v1"
     assert ledger["semantic_baseline"] == "freecode_cc"
-    assert session.metadata["codex_optimization_ledger"] == ledger
-    assert session.metadata["runtime_assembly_state"]["codex_optimization_ledger"] == ledger
+    assert not hasattr(codex_optimization_ledger, "append_codex_optimization_ledger")
+    assert "codex_optimization_ledger" not in session.metadata
+    assert "codex_optimization_ledger" not in state.to_metadata()
+    assert "codex_optimization_ledger" not in session.metadata["runtime_assembly_state"]

@@ -146,6 +146,47 @@ class PersonalKnowledgeGrantSummary:
     created_at: Any
 
 
+@dataclass(frozen=True)
+class PersonalKnowledgeGraphEntity:
+    entity_id: uuid.UUID
+    canonical_name: str
+    entity_type: str
+    aliases: list[str]
+    description: str | None
+    confidence: float
+    source_refs: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class PersonalKnowledgeGraphLink:
+    link_id: uuid.UUID
+    from_kind: str
+    from_id: uuid.UUID
+    to_kind: str
+    to_id: uuid.UUID
+    relation: str
+    confidence: float
+    source_refs: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class PersonalKnowledgeGraphAssertion:
+    assertion_id: uuid.UUID
+    subject_text: str
+    predicate: str
+    object_text: str
+    confidence: float
+    status: str
+    source_refs: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class PersonalKnowledgeGraphSummary:
+    entities: list[PersonalKnowledgeGraphEntity]
+    links: list[PersonalKnowledgeGraphLink]
+    assertions: list[PersonalKnowledgeGraphAssertion]
+
+
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -1689,6 +1730,107 @@ class PersonalKnowledgeService:
         await session.delete(grant)
         await session.flush()
         return True
+
+    async def list_personal_graph(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+        limit: int = 100,
+    ) -> PersonalKnowledgeGraphSummary:
+        if current_user_id != owner_user_id:
+            return PersonalKnowledgeGraphSummary(entities=[], links=[], assertions=[])
+        clean_limit = max(1, min(300, int(limit or 100)))
+        entity_rows = (
+            await session.execute(
+                select(KnowledgeEntity)
+                .where(
+                    KnowledgeEntity.tenant_id == tenant_id,
+                    KnowledgeEntity.scope_type == "person",
+                    KnowledgeEntity.scope_id == owner_user_id,
+                    KnowledgeEntity.merged_into_entity_id.is_(None),
+                )
+                .order_by(KnowledgeEntity.confidence.desc(), KnowledgeEntity.updated_at.desc())
+                .limit(clean_limit)
+            )
+        ).all()
+        link_rows = (
+            await session.execute(
+                select(KnowledgeLink)
+                .where(
+                    KnowledgeLink.tenant_id == tenant_id,
+                    KnowledgeLink.scope_type == "person",
+                    KnowledgeLink.scope_id == owner_user_id,
+                )
+                .order_by(KnowledgeLink.confidence.desc(), KnowledgeLink.created_at.desc())
+                .limit(clean_limit * 2)
+            )
+        ).all()
+        assertion_rows = (
+            await session.execute(
+                select(KnowledgeAssertion)
+                .where(
+                    KnowledgeAssertion.tenant_id == tenant_id,
+                    KnowledgeAssertion.scope_type == "person",
+                    KnowledgeAssertion.scope_id == owner_user_id,
+                    KnowledgeAssertion.status == "active",
+                )
+                .order_by(KnowledgeAssertion.confidence.desc(), KnowledgeAssertion.updated_at.desc())
+                .limit(clean_limit)
+            )
+        ).all()
+        entities: list[PersonalKnowledgeGraphEntity] = []
+        for row in entity_rows:
+            entity = _row_first(row)
+            if not hasattr(entity, "canonical_name"):
+                continue
+            entities.append(
+                PersonalKnowledgeGraphEntity(
+                    entity_id=entity.id,
+                    canonical_name=str(entity.canonical_name or ""),
+                    entity_type=str(entity.entity_type or "freeform"),
+                    aliases=[str(alias) for alias in list(entity.aliases_json or []) if str(alias).strip()],
+                    description=entity.description,
+                    confidence=float(entity.confidence or 0.0),
+                    source_refs=[dict(ref) for ref in list(entity.source_refs_json or []) if isinstance(ref, dict)],
+                )
+            )
+        links: list[PersonalKnowledgeGraphLink] = []
+        for row in link_rows:
+            link = _row_first(row)
+            if not hasattr(link, "relation"):
+                continue
+            links.append(
+                PersonalKnowledgeGraphLink(
+                    link_id=link.id,
+                    from_kind=str(link.from_kind or ""),
+                    from_id=link.from_id,
+                    to_kind=str(link.to_kind or ""),
+                    to_id=link.to_id,
+                    relation=str(link.relation or ""),
+                    confidence=float(link.confidence or 0.0),
+                    source_refs=[dict(ref) for ref in list(link.source_refs_json or []) if isinstance(ref, dict)],
+                )
+            )
+        assertions: list[PersonalKnowledgeGraphAssertion] = []
+        for row in assertion_rows:
+            assertion = _row_first(row)
+            if not hasattr(assertion, "predicate"):
+                continue
+            assertions.append(
+                PersonalKnowledgeGraphAssertion(
+                    assertion_id=assertion.id,
+                    subject_text=str(assertion.subject_text or ""),
+                    predicate=str(assertion.predicate or ""),
+                    object_text=str(assertion.object_text or ""),
+                    confidence=float(assertion.confidence or 0.0),
+                    status=str(assertion.status or ""),
+                    source_refs=[dict(ref) for ref in list(assertion.source_refs_json or []) if isinstance(ref, dict)],
+                )
+            )
+        return PersonalKnowledgeGraphSummary(entities=entities, links=links, assertions=assertions)
 
     async def patch_personal_document(
         self,

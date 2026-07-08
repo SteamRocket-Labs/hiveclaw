@@ -448,6 +448,49 @@ def test_current_user_personal_knowledge_grant_routes_use_owner_scope(monkeypatc
         assert kwargs["current_user_id"] == owner_id
 
 
+def test_current_user_personal_knowledge_graph_route_uses_owner_scope(monkeypatch):
+    owner_id = uuid4()
+    entity_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    captured = []
+
+    class _FakeService:
+        async def list_personal_graph(self, session, **kwargs):
+            captured.append(kwargs)
+            return SimpleNamespace(
+                entities=[
+                    SimpleNamespace(
+                        entity_id=entity_id,
+                        canonical_name="Personal KB",
+                        entity_type="system",
+                        aliases=["PKB"],
+                        description="Owner scope knowledge",
+                        confidence=0.9,
+                        source_refs=[],
+                    )
+                ],
+                links=[],
+                assertions=[],
+            )
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, _fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    response = client.get("/knowledge/personal/graph")
+
+    assert response.status_code == 200
+    assert response.json()["entities"][0]["entity_id"] == str(entity_id)
+    assert response.json()["entities"][0]["canonical_name"] == "Personal KB"
+    assert captured == [
+        {
+            "tenant_id": user.tenant_id,
+            "owner_user_id": owner_id,
+            "current_user_id": owner_id,
+            "limit": 100,
+        }
+    ]
+
+
 def test_personal_knowledge_ingest_uses_agent_owner_and_commits(monkeypatch):
     owner_id = uuid4()
     agent_id = uuid4()

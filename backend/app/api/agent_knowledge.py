@@ -370,6 +370,23 @@ async def search_current_user_personal_documents(
     return {"results": [_dataclass_payload(result) for result in results]}
 
 
+@personal_router.get("/graph")
+async def get_current_user_personal_graph(
+    limit: int = Query(100, ge=1, le=300),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    graph = await service.list_personal_graph(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        current_user_id=uuid.UUID(str(current_user.id)),
+        limit=limit,
+    )
+    return _dataclass_payload(graph)
+
+
 @personal_router.get("/documents/{document_id}")
 async def get_current_user_personal_document(
     document_id: uuid.UUID,

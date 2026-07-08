@@ -605,3 +605,42 @@ commit：
 剩余风险：
 
 - `session_id/message_id` 在当前上传端点尚未生成；A9 先写入 origin/workspace_path/T0 refs 占位，后续若 chat send API 暴露 message id，可把同一 metadata 补强为具体 message ref。
+
+### 2026-07-08 A12 后端知识网 API
+
+改动文件：
+
+- `backend/app/api/agent_knowledge.py`
+- `backend/app/services/personal_knowledge_service.py`
+- `backend/tests/api/test_agent_personal_knowledge_api.py`
+- `backend/tests/services/test_personal_knowledge_service.py`
+- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+
+功能证据：
+
+- 新增 service `list_personal_graph()`，从 `knowledge_entities`、`knowledge_links`、`knowledge_assertions` 读取 owner-scope 图谱投影。
+- 新增 `GET /api/knowledge/personal/graph`，返回 entities、links、assertions。
+- graph read 当前限定 owner 自己读取，避免未来 grant 规则未展开前泄露图谱侧信道。
+- 返回字段保留 source refs，用于前端知识网展示证据链。
+
+测试命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/api/test_agent_personal_knowledge_api.py tests/services/test_personal_knowledge_service.py -q
+cd backend && source .venv/bin/activate && ruff check app/api/agent_knowledge.py app/services/personal_knowledge_service.py tests/api/test_agent_personal_knowledge_api.py tests/services/test_personal_knowledge_service.py
+```
+
+测试结果：
+
+```text
+32 passed in 0.41s
+All checks passed!
+```
+
+commit：
+
+- 本提交：`feat: expose personal kb graph read API`。
+
+剩余风险：
+
+- 前端 graph lane 在 A11/A12 UI 原子项完成后消费该 API；本提交只落后端唯一真相。

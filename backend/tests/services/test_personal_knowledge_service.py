@@ -843,3 +843,102 @@ async def test_ingest_audio_uses_transcription_provider_then_indexes_transcript(
     assert documents[-1].doc_metadata_json["media_provider"] == "fake_media_provider"
     assert documents[-1].doc_metadata_json["media_duration_seconds"] == 12.5
     assert "Personal KB should keep source refs" in segments[-1].content
+
+
+@pytest.mark.asyncio
+async def test_list_personal_graph_returns_entities_links_and_assertions(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    entity_a = KnowledgeEntity(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        scope_type="person",
+        scope_id=owner_id,
+        canonical_name="Open Notebook",
+        entity_type="project",
+        aliases_json=["OpenNotebook"],
+        description="Notebook source workflow",
+        confidence=0.9,
+        source_refs_json=[{"document_id": str(uuid.uuid4()), "segment_id": str(uuid.uuid4())}],
+    )
+    entity_b = KnowledgeEntity(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        scope_type="person",
+        scope_id=owner_id,
+        canonical_name="Personal KB",
+        entity_type="system",
+        aliases_json=[],
+        description=None,
+        confidence=0.8,
+        source_refs_json=[],
+    )
+    link = KnowledgeLink(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        scope_type="person",
+        scope_id=owner_id,
+        from_kind="entity",
+        from_id=entity_a.id,
+        to_kind="entity",
+        to_id=entity_b.id,
+        relation="inspires",
+        confidence=0.75,
+        source_refs_json=[{"segment_id": str(uuid.uuid4())}],
+    )
+    assertion = KnowledgeAssertion(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        scope_type="person",
+        scope_id=owner_id,
+        subject_text="Personal KB",
+        predicate="needs",
+        object_text="source refs",
+        confidence=0.95,
+        status="active",
+        source_refs_json=[{"segment_id": str(uuid.uuid4())}],
+    )
+    session = _QueuedSession([
+        [(entity_a,), (entity_b,)],
+        [(link,)],
+        [(assertion,)],
+    ])
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    graph = await service.list_personal_graph(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        limit=20,
+    )
+
+    assert graph.entities[0].canonical_name == "Open Notebook"
+    assert graph.entities[0].aliases == ["OpenNotebook"]
+    assert graph.links[0].relation == "inspires"
+    assert graph.links[0].from_id == entity_a.id
+    assert graph.assertions[0].predicate == "needs"
+    assert graph.assertions[0].object_text == "source refs"
+
+
+@pytest.mark.asyncio
+async def test_non_owner_personal_graph_returns_empty(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    session = _QueuedSession([[(SimpleNamespace(),)]])
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    graph = await service.list_personal_graph(
+        session,
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        current_user_id=uuid.uuid4(),
+        limit=20,
+    )
+
+    assert graph.entities == []
+    assert graph.links == []
+    assert graph.assertions == []
+    assert session.executed == []

@@ -13,7 +13,11 @@ from app.database import get_db
 
 
 class _FakeDB:
-    pass
+    def __init__(self):
+        self.session = None
+
+    async def execute(self, _stmt):
+        return SimpleNamespace(scalar_one_or_none=lambda: self.session)
 
 
 def _build_client():
@@ -76,3 +80,55 @@ def test_activate_external_extension_route_checks_agent_access_and_activates_sel
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "active"
+
+
+def test_try_external_extension_route_scopes_activation_to_chat_session(monkeypatch):
+    client, fake_db, current_user = _build_client()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    session_id = uuid4()
+    fake_db.session = SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=current_user.tenant_id)
+
+    async def fake_check(db_session, user, target_agent_id):
+        assert db_session is fake_db
+        assert user is current_user
+        assert target_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id), "manage"
+
+    async def fake_try(
+        db_session,
+        *,
+        tenant_id,
+        agent_id,
+        snapshot_id,
+        session_id,
+        workspace,
+        activated_by_user_id,
+        component_qualified_names,
+        credential_handles,
+        expires_in_minutes,
+    ):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        assert activated_by_user_id == current_user.id
+        assert str(workspace).endswith(str(agent_id))
+        assert component_qualified_names == ["docs-pack:skill:audit"]
+        assert credential_handles == {"docs_api_key": "credential-handle-123"}
+        assert expires_in_minutes == 30
+        return {"status": "active", "activation_scope": "session", "session_id": str(session_id)}
+
+    monkeypatch.setattr(external_mod, "check_agent_access", fake_check)
+    monkeypatch.setattr(external_mod, "try_external_extension_in_chat", fake_try)
+
+    resp = client.post(
+        f"/agents/{agent_id}/external-extensions/{snapshot_id}/try",
+        json={
+            "session_id": str(session_id),
+            "component_qualified_names": ["docs-pack:skill:audit"],
+            "credential_handles": {"docs_api_key": "credential-handle-123"},
+            "expires_in_minutes": 30,
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "active", "activation_scope": "session", "session_id": str(session_id)}

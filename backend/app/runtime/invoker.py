@@ -1521,6 +1521,11 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             request.agent_id,
             budget_profile=_resolve_context_budget(request),
             scenario_text=ranking_inputs["scenario_text"],
+            session_id=(
+                getattr(request.session_context, "session_id", None)
+                if request.session_context is not None
+                else request.memory_session_id
+            ),
             active_skill_names=ranking_inputs["active_skill_names"],
             path_triggered_skill_names=ranking_inputs["path_triggered_skill_names"],
             ranking_manifest=skill_catalog_ranking,

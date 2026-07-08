@@ -204,6 +204,23 @@ def test_load_skill_rejects_sibling_prefix_escape(tmp_path):
     assert "secret skill body" not in result
 
 
+def test_load_skill_allows_only_matching_session_extension_overlay(tmp_path):
+    from app.services.agent_tool_domains.workspace import _load_skill
+
+    ws = tmp_path / "agent"
+    skill_file = ws / "session_extensions" / "session-1" / "skills" / "trial" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text(
+        "---\nname: Trial Session Skill\ndescription: Only here\n---\n\nSession-only body.",
+        encoding="utf-8",
+    )
+
+    assert "Session-only body" not in _load_skill(ws, "Trial Session Skill")
+    assert "Session-only body" not in _load_skill(ws, "Trial Session Skill", session_id="session-2")
+    assert "Session-only body" in _load_skill(ws, "Trial Session Skill", session_id="session-1")
+    assert "Access denied" in _load_skill(ws, "session_extensions/session-1/skills/trial/SKILL.md")
+
+
 @pytest.mark.asyncio
 async def test_upload_image_rejects_sibling_prefix_escape(monkeypatch, tmp_path):
     from app.services.agent_tool_domains import image_upload

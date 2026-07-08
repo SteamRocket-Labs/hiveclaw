@@ -121,6 +121,12 @@ describe('extensions API adapter', () => {
       component_qualified_names: ['docs-pack:skill:audit'],
       credential_handles: { docs_api_key: 'credential-handle-123' },
     });
+    await extensionsApi.tryExternalExtensionInChat('agent-1', 'snapshot-1', {
+      session_id: 'session-1',
+      component_qualified_names: ['docs-pack:skill:audit'],
+      credential_handles: { docs_api_key: 'credential-handle-123' },
+      expires_in_minutes: 30,
+    });
 
     expect(post).toHaveBeenCalledWith('/enterprise/external-capabilities/reviews/review-1/reject', {
       reason: 'unsafe hook',
@@ -130,6 +136,12 @@ describe('extensions API adapter', () => {
     expect(post).toHaveBeenCalledWith('/agents/agent-1/external-extensions/snapshot-1/activate', {
       component_qualified_names: ['docs-pack:skill:audit'],
       credential_handles: { docs_api_key: 'credential-handle-123' },
+    });
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/external-extensions/snapshot-1/try', {
+      session_id: 'session-1',
+      component_qualified_names: ['docs-pack:skill:audit'],
+      credential_handles: { docs_api_key: 'credential-handle-123' },
+      expires_in_minutes: 30,
     });
   });
 });

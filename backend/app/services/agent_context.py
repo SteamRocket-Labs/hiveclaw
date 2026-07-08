@@ -115,6 +115,7 @@ def _load_skills_index(
     *,
     budget_chars: int = 8000,
     scenario_text: str | None = None,
+    session_id: object | None = None,
     active_skill_names: tuple[str, ...] = (),
     path_triggered_skill_names: tuple[str, ...] = (),
     ranking_manifest: list[dict] | None = None,
@@ -134,7 +135,7 @@ def _load_skills_index(
     loaded_skills = []
 
     for ws_root in [TOOL_WORKSPACE / str(agent_id), PERSISTENT_DATA / str(agent_id)]:
-        loaded_skills.extend(loader.load_from_workspace(ws_root))
+        loaded_skills.extend(loader.load_from_workspace(ws_root, session_id=session_id))
 
     rank_workspace = PERSISTENT_DATA / str(agent_id)
     if not rank_workspace.exists():
@@ -170,6 +171,7 @@ def build_skill_catalog_section_for_agent(
     *,
     budget_profile: ContextBudget | None = None,
     scenario_text: str | None = None,
+    session_id: object | None = None,
     active_skill_names: tuple[str, ...] = (),
     path_triggered_skill_names: tuple[str, ...] = (),
     ranking_manifest: list[dict] | None = None,
@@ -192,6 +194,7 @@ def build_skill_catalog_section_for_agent(
         agent_id,
         budget_chars=max(skill_budget, 800),
         scenario_text=scenario_text,
+        session_id=session_id,
         active_skill_names=active_skill_names,
         path_triggered_skill_names=path_triggered_skill_names,
         ranking_manifest=ranking_manifest,

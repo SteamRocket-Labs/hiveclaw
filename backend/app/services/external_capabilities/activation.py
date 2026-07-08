@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import datetime, timezone
 import re
 from typing import Any
 import uuid
@@ -51,12 +51,14 @@ async def activate_external_extension_for_agent(
         agent_id=agent_id,
         component_qualified_names=component_qualified_names,
         credential_handles=credential_handles,
+        activation_scope="agent",
     )
     activation = ExternalExtensionActivation(
         tenant_id=tenant_id,
         agent_id=agent_id,
         snapshot_id=snapshot_id,
         status="active",
+        activation_scope="agent",
         component_types_json=_component_type_counts(activated_components),
         selected_components_json=selected_component_names,
         credential_handles_json=used_credential_handles,
@@ -80,6 +82,78 @@ async def activate_external_extension_for_agent(
         raise
 
 
+async def try_external_extension_in_chat(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    session_id: uuid.UUID,
+    workspace: Path,
+    activated_by_user_id: uuid.UUID | None,
+    component_qualified_names: list[str] | None = None,
+    credential_handles: dict[str, str] | None = None,
+    expires_in_minutes: int = 60,
+) -> dict[str, Any]:
+    result = await db.execute(
+        select(ExternalCapabilitySnapshot).where(
+            ExternalCapabilitySnapshot.id == snapshot_id,
+            ExternalCapabilitySnapshot.tenant_id == tenant_id,
+            ExternalCapabilitySnapshot.status == "approved",
+        )
+    )
+    snapshot = result.scalar_one_or_none()
+    if snapshot is None:
+        raise ValueError("approved external capability snapshot not found")
+
+    ttl_minutes = max(1, min(int(expires_in_minutes or 60), 24 * 60))
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+    session_workspace = _session_extension_workspace(workspace, session_id)
+    activated_components, selected_component_names, used_credential_handles = await _activate_components(
+        snapshot=snapshot,
+        workspace=session_workspace,
+        agent_id=agent_id,
+        component_qualified_names=component_qualified_names,
+        credential_handles=credential_handles,
+        activation_scope="session",
+    )
+    activation = ExternalExtensionActivation(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        status="active",
+        activation_scope="session",
+        session_id=session_id,
+        expires_at=expires_at,
+        component_types_json=_component_type_counts(activated_components),
+        selected_components_json=selected_component_names,
+        credential_handles_json=used_credential_handles,
+        activation_result_json={
+            "components": activated_components,
+            "session_overlay": _session_overlay_relative_path(session_id),
+        },
+        activated_by_user_id=activated_by_user_id,
+    )
+    try:
+        db.add(activation)
+        await db.flush()
+        await db.commit()
+        return {
+            "id": str(activation.id),
+            "tenant_id": str(tenant_id),
+            "agent_id": str(agent_id),
+            "snapshot_id": str(snapshot_id),
+            "status": activation.status,
+            "activation_scope": activation.activation_scope,
+            "session_id": str(session_id),
+            "expires_at": expires_at.isoformat(),
+            "activated_components": activated_components,
+        }
+    except Exception:
+        await db.rollback()
+        raise
+
+
 async def deactivate_external_extension_for_agent(
     db: AsyncSession,
     *,
@@ -95,6 +169,7 @@ async def deactivate_external_extension_for_agent(
             ExternalExtensionActivation.agent_id == agent_id,
             ExternalExtensionActivation.snapshot_id == snapshot_id,
             ExternalExtensionActivation.status == "active",
+            ExternalExtensionActivation.activation_scope == "agent",
         )
     )
     activation = result.scalar_one_or_none()
@@ -135,6 +210,7 @@ async def _activate_components(
     agent_id: uuid.UUID,
     component_qualified_names: list[str] | None,
     credential_handles: dict[str, str] | None,
+    activation_scope: str,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, str]]:
     manifest = snapshot.component_manifest_json or {}
     components = manifest.get("components") or []
@@ -163,6 +239,7 @@ async def _activate_components(
                     component=component,
                     agent_id=agent_id,
                     credential_handles=component_credential_handles.get(_component_qualified_name(component), {}),
+                    activation_scope=activation_scope,
                 )
             )
             continue
@@ -187,6 +264,7 @@ async def _activate_mcp_component(
     component: dict[str, Any],
     agent_id: uuid.UUID,
     credential_handles: dict[str, str],
+    activation_scope: str,
 ) -> dict[str, Any]:
     runtime_projection = component.get("runtime_projection")
     runtime_projection = runtime_projection if isinstance(runtime_projection, dict) else {}
@@ -195,6 +273,14 @@ async def _activate_mcp_component(
     if credential_handles:
         config = {**(config or {}), "credential_handles": credential_handles}
     server_name = _optional_string(runtime_projection.get("server_name")) or _optional_string(component.get("local_name"))
+    if activation_scope == "session":
+        return {
+            "component_type": "mcp_server",
+            "name": server_name or _optional_string(runtime_projection.get("server_id")) or "mcp_server",
+            "status": "session_runtime_projection_pending",
+            **({"credential_handles": credential_handles} if credential_handles else {}),
+        }
+
     message = await import_mcp_for_agent_and_register(
         agent_id,
         server_id=_optional_string(runtime_projection.get("server_id")),
@@ -291,6 +377,21 @@ def _component_type_counts(components: list[dict[str, Any]]) -> dict[str, int]:
         key = str(component.get("component_type") or "unknown")
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def _session_extension_workspace(workspace: Path, session_id: uuid.UUID) -> Path:
+    return workspace / "session_extensions" / _safe_session_id(session_id)
+
+
+def _session_overlay_relative_path(session_id: uuid.UUID) -> str:
+    return f"session_extensions/{_safe_session_id(session_id)}"
+
+
+def _safe_session_id(session_id: uuid.UUID) -> str:
+    text = str(session_id).strip()
+    if not re.fullmatch(r"[0-9a-fA-F-]{32,36}", text):
+        raise ValueError("invalid session_id")
+    return text
 
 
 def _select_components(

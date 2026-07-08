@@ -11,6 +11,7 @@ from .types import ParsedSkill
 
 RESOURCE_DIRS = frozenset({"references", "scripts", "templates", "assets", "evals", "workflows", "subagents"})
 _SKILLS_DIR_NAME = "skills"
+_SESSION_EXTENSIONS_DIR_NAME = "session_extensions"
 _DISCOVERY_PRUNE_DIRS = frozenset(
     {
         ".git",
@@ -33,10 +34,10 @@ class WorkspaceSkillLoader:
     def __init__(self, parser: SkillParser | None = None) -> None:
         self.parser = parser or SkillParser()
 
-    def load_from_workspace(self, workspace: Path) -> list[ParsedSkill]:
+    def load_from_workspace(self, workspace: Path, *, session_id: object | None = None) -> list[ParsedSkill]:
         skills: list[ParsedSkill] = []
         workspace_root = workspace.resolve()
-        for skills_dir in self._discover_skill_dirs(workspace_root):
+        for skills_dir in self._discover_skill_dirs(workspace_root, session_id=session_id):
             skills.extend(self._load_from_skills_dir(workspace_root, skills_dir))
 
         return skills
@@ -116,18 +117,29 @@ class WorkspaceSkillLoader:
     def _normalize(name: str) -> str:
         return name.strip().lower().replace("_", "-").replace(" ", "-")
 
-    def _discover_skill_dirs(self, workspace_root: Path) -> tuple[Path, ...]:
+    def _discover_skill_dirs(self, workspace_root: Path, *, session_id: object | None = None) -> tuple[Path, ...]:
         if not workspace_root.exists():
             return ()
 
         discovered: list[Path] = []
         seen: set[Path] = set()
+        session_key = str(session_id).strip() if session_id is not None else ""
+
+        def allowed_session_path(path: Path) -> bool:
+            try:
+                parts = path.resolve().relative_to(workspace_root).parts
+            except ValueError:
+                return False
+            if _SESSION_EXTENSIONS_DIR_NAME not in parts:
+                return True
+            index = parts.index(_SESSION_EXTENSIONS_DIR_NAME)
+            return bool(session_key and len(parts) > index + 1 and parts[index + 1] == session_key)
 
         def add_candidate(path: Path) -> None:
             if not path.is_dir() or path.name != _SKILLS_DIR_NAME:
                 return
             resolved = path.resolve()
-            if resolved in seen or not self._is_inside_workspace(resolved, workspace_root):
+            if resolved in seen or not self._is_inside_workspace(resolved, workspace_root) or not allowed_session_path(resolved):
                 return
             seen.add(resolved)
             discovered.append(resolved)
@@ -143,6 +155,16 @@ class WorkspaceSkillLoader:
                 if dirname in _DISCOVERY_PRUNE_DIRS:
                     continue
                 candidate = root_path / dirname
+                try:
+                    candidate_parts = candidate.resolve().relative_to(workspace_root).parts
+                except ValueError:
+                    continue
+                if _SESSION_EXTENSIONS_DIR_NAME in candidate_parts:
+                    index = candidate_parts.index(_SESSION_EXTENSIONS_DIR_NAME)
+                    if not session_key:
+                        continue
+                    if len(candidate_parts) > index + 1 and candidate_parts[index + 1] != session_key:
+                        continue
                 if dirname == _SKILLS_DIR_NAME:
                     add_candidate(candidate)
                     continue

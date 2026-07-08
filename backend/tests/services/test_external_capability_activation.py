@@ -10,6 +10,7 @@ from app.services.external_capabilities import activation as activation_mod
 from app.services.external_capabilities.activation import (
     activate_external_extension_for_agent,
     deactivate_external_extension_for_agent,
+    try_external_extension_in_chat,
 )
 
 
@@ -281,6 +282,61 @@ async def test_activate_external_snapshot_selects_components_and_requires_creden
     ]
     assert mcp_db.added[0].selected_components_json == ["docs-pack:mcp:docs", "docs-pack:hook:pre-bash"]
     assert mcp_db.added[0].credential_handles_json == {"docs_api_key": "credential-handle-123"}
+
+
+@pytest.mark.asyncio
+async def test_try_external_extension_in_chat_creates_session_activation_overlay(tmp_path):
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    session_id = uuid4()
+    snapshot = SimpleNamespace(
+        id=snapshot_id,
+        tenant_id=tenant_id,
+        status="approved",
+        snapshot_key="cc_plugin:trial-pack:abc",
+        component_manifest_json={
+            "components": [
+                {
+                    "component_type": "skill",
+                    "local_name": "trial",
+                    "qualified_name": "trial-pack:skill:trial",
+                    "metadata": {
+                        "files": [
+                            {"path": "SKILL.md", "content": "---\nname: Trial\n---\n\nTrial only."},
+                        ]
+                    },
+                    "runtime_projection": {"folder_name": "trial"},
+                }
+            ]
+        },
+    )
+    db = _ActivationSession(snapshot)
+
+    result = await try_external_extension_in_chat(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        session_id=session_id,
+        workspace=tmp_path,
+        activated_by_user_id=uuid4(),
+        component_qualified_names=["trial-pack:skill:trial"],
+        credential_handles={},
+        expires_in_minutes=30,
+    )
+
+    assert result["status"] == "active"
+    assert result["activation_scope"] == "session"
+    assert result["session_id"] == str(session_id)
+    assert result["expires_at"]
+    assert (tmp_path / "session_extensions" / str(session_id) / "skills" / "trial" / "SKILL.md").exists()
+    assert not (tmp_path / "skills" / "trial" / "SKILL.md").exists()
+    activation = db.added[0]
+    assert activation.activation_scope == "session"
+    assert activation.session_id == session_id
+    assert activation.selected_components_json == ["trial-pack:skill:trial"]
+    assert activation.expires_at is not None
 
 
 @pytest.mark.asyncio

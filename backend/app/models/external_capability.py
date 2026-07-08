@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -187,7 +187,23 @@ class ExternalExtensionActivation(Base):
 
     __tablename__ = "external_extension_activations"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "agent_id", "snapshot_id", name="uq_external_extension_activation"),
+        Index(
+            "ix_external_extension_activation_agent_unique_active",
+            "tenant_id",
+            "agent_id",
+            "snapshot_id",
+            unique=True,
+            postgresql_where=text("activation_scope = 'agent' AND status = 'active'"),
+        ),
+        Index(
+            "ix_external_extension_activation_session_unique_active",
+            "tenant_id",
+            "agent_id",
+            "snapshot_id",
+            "session_id",
+            unique=True,
+            postgresql_where=text("activation_scope = 'session' AND status = 'active'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -201,6 +217,10 @@ class ExternalExtensionActivation(Base):
         UUID(as_uuid=True), ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active", index=True)
+    activation_scope: Mapped[str] = mapped_column(String(30), nullable=False, default="agent", index=True)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     component_types_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     selected_components_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     credential_handles_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
@@ -209,6 +229,7 @@ class ExternalExtensionActivation(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )

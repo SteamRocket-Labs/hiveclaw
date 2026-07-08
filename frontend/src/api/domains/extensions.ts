@@ -138,12 +138,16 @@ export interface ExternalExtensionActivationSummary {
   id: string;
   snapshot_id: string;
   status: string;
+  activation_scope?: string;
+  session_id?: string | null;
   normalized_name?: string;
   source_format?: string;
   source_uri?: string;
   component_types?: Record<string, unknown>;
+  selected_components?: string[];
   activation_result?: Record<string, unknown>;
   activated_at?: string;
+  expires_at?: string | null;
 }
 
 export interface ExternalExtensionActivationResult {
@@ -155,6 +159,11 @@ export interface ExternalExtensionActivationResult {
 export interface ExternalExtensionActivationRequest {
   component_qualified_names?: string[] | null;
   credential_handles?: Record<string, string>;
+}
+
+export interface ExternalExtensionTryInChatRequest extends ExternalExtensionActivationRequest {
+  session_id: string;
+  expires_in_minutes?: number;
 }
 
 export interface ExternalExtensionCatalogEntry {
@@ -246,6 +255,10 @@ export const extensionsApi = {
     body
       ? post<ExternalExtensionActivationResult>(`/agents/${agentId}/external-extensions/${snapshotId}/activate`, body)
       : post<ExternalExtensionActivationResult>(`/agents/${agentId}/external-extensions/${snapshotId}/activate`),
+
+  /** Agent owner/admin: temporarily activate one approved external snapshot inside one chat session. */
+  tryExternalExtensionInChat: (agentId: string, snapshotId: string, body: ExternalExtensionTryInChatRequest) =>
+    post<ExternalExtensionActivationResult>(`/agents/${agentId}/external-extensions/${snapshotId}/try`, body),
 
   /** Agent owner/admin: deactivate one active external snapshot for this agent. */
   deactivateExternalExtension: (agentId: string, snapshotId: string) =>

@@ -6,16 +6,19 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
+from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.external_capabilities.activation import (
     activate_external_extension_for_agent,
     deactivate_external_extension_for_agent,
+    try_external_extension_in_chat,
 )
 from app.services.external_capabilities.trust_gate import (
     approve_external_capability_snapshot,
@@ -87,6 +90,11 @@ class ExternalCapabilityRejectIn(BaseModel):
 class ExternalExtensionActivationIn(BaseModel):
     component_qualified_names: list[str] | None = None
     credential_handles: dict[str, str] = Field(default_factory=dict)
+
+
+class ExternalExtensionTryInChatIn(ExternalExtensionActivationIn):
+    session_id: uuid.UUID
+    expires_in_minutes: int = Field(default=60, ge=1, le=24 * 60)
 
 
 @router.get("/enterprise/external-capabilities/reviews")
@@ -221,6 +229,46 @@ async def activate_external_extension_route(
             activated_by_user_id=current_user.id,
             component_qualified_names=data.component_qualified_names if data else None,
             credential_handles=data.credential_handles if data else {},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/agents/{agent_id}/external-extensions/{snapshot_id}/try")
+async def try_external_extension_in_chat_route(
+    agent_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    data: ExternalExtensionTryInChatIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    tenant_id = getattr(agent, "tenant_id", None) or current_user.tenant_id
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    session_result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == data.session_id,
+            ChatSession.agent_id == agent_id,
+            ChatSession.tenant_id == tenant_id,
+        )
+    )
+    session = session_result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Chat session not found for this agent")
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    try:
+        return await try_external_extension_in_chat(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            snapshot_id=snapshot_id,
+            session_id=data.session_id,
+            workspace=workspace,
+            activated_by_user_id=current_user.id,
+            component_qualified_names=data.component_qualified_names,
+            credential_handles=data.credential_handles,
+            expires_in_minutes=data.expires_in_minutes,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

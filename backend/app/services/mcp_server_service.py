@@ -278,6 +278,7 @@ async def _list_agent_external_activations(
             ExternalExtensionActivation.tenant_id == tenant_id,
             ExternalExtensionActivation.agent_id == agent_id,
             ExternalExtensionActivation.status == "active",
+            ExternalExtensionActivation.activation_scope == "agent",
             ExternalCapabilitySnapshot.status == "approved",
         )
         .order_by(ExternalExtensionActivation.activated_at.desc())
@@ -287,12 +288,16 @@ async def _list_agent_external_activations(
             "id": str(activation.id),
             "snapshot_id": str(snapshot.id),
             "status": activation.status,
+            "activation_scope": getattr(activation, "activation_scope", None) or "agent",
+            "session_id": str(activation.session_id) if getattr(activation, "session_id", None) else None,
             "normalized_name": snapshot.normalized_name,
             "source_format": snapshot.source_format,
             "source_uri": snapshot.source_uri,
             "component_types": getattr(activation, "component_types_json", None) or {},
+            "selected_components": getattr(activation, "selected_components_json", None) or [],
             "activation_result": getattr(activation, "activation_result_json", None) or {},
             "activated_at": _isoformat_or_none(getattr(activation, "activated_at", None)),
+            "expires_at": _isoformat_or_none(getattr(activation, "expires_at", None)),
         }
         for activation, snapshot in result.all()
     ]

@@ -778,10 +778,13 @@
       "catalogActivateFailed": "Failed to activate extension",
       "catalogDeactivated": "Extension deactivated",
       "catalogDeactivateFailed": "Failed to deactivate extension",
+      "catalogTryActivated": "Extension enabled for this chat",
+      "catalogTryFailed": "Failed to try extension in chat",
       "catalogEmpty": "No approved optional extensions are available yet.",
       "catalogActive": "Active",
       "catalogAvailable": "Available",
       "catalogDeactivate": "Deactivate",
+      "catalogTryInChat": "Try in chat",
       "catalogInstall": "Install"
     },
     "detail": {

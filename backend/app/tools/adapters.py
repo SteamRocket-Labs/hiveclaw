@@ -44,7 +44,16 @@ async def adapt_and_call(
         case "agent_workspace_args":
             result = fn(request.context.agent_id, request.context.workspace, request.arguments)
         case "workspace_args":
-            result = fn(request.context.workspace, request.arguments, request.context.tenant_id)
+            signature = inspect.signature(fn)
+            if "session_id" in signature.parameters:
+                result = fn(
+                    request.context.workspace,
+                    request.arguments,
+                    request.context.tenant_id,
+                    session_id=request.context.session_id,
+                )
+            else:
+                result = fn(request.context.workspace, request.arguments, request.context.tenant_id)
         case _:
             raise ValueError(f"Unknown adapter type: {meta.adapter!r} for tool {meta.name!r}")
 

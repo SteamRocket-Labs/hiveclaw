@@ -341,9 +341,13 @@ async def test_get_agent_extensions_includes_external_snapshot_activations(monke
         id=activation_id,
         snapshot_id=snapshot_id,
         status="active",
+        activation_scope="agent",
+        session_id=None,
         component_types_json={"skill": 1, "mcp_server": 1},
+        selected_components_json=["secops-plugin:skill:secops"],
         activation_result_json={"activated_components": [{"type": "skill", "name": "secops"}]},
         activated_at=None,
+        expires_at=None,
     )
     snapshot = SimpleNamespace(
         id=snapshot_id,
@@ -368,12 +372,16 @@ async def test_get_agent_extensions_includes_external_snapshot_activations(monke
             "id": str(activation_id),
             "snapshot_id": str(snapshot_id),
             "status": "active",
+            "activation_scope": "agent",
+            "session_id": None,
             "normalized_name": "secops-plugin",
             "source_format": "cc_plugin",
             "source_uri": "https://github.com/acme/secops-plugin",
             "component_types": {"skill": 1, "mcp_server": 1},
+            "selected_components": ["secops-plugin:skill:secops"],
             "activation_result": {"activated_components": [{"type": "skill", "name": "secops"}]},
             "activated_at": None,
+            "expires_at": None,
         }
     ]
 

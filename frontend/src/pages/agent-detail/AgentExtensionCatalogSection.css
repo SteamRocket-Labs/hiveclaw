@@ -82,6 +82,12 @@
   min-width: 84px;
 }
 
+.agent-extension-catalog-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .agent-extension-catalog-readonly {
   flex: 0 0 auto;
   color: var(--text-tertiary);
@@ -96,6 +102,11 @@
   }
 
   .agent-extension-catalog-action {
+    width: 100%;
+  }
+
+  .agent-extension-catalog-actions {
+    flex-direction: column;
     width: 100%;
   }
 }

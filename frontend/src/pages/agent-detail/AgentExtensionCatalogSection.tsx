@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useLocation } from 'react-router-dom';
 
 import {
   extensionsApi,
@@ -33,10 +34,16 @@ function runtimeDescription(entry: ExternalExtensionCatalogEntry): string {
 
 export default function AgentExtensionCatalogSection({ agentId, canManage = false }: AgentExtensionCatalogSectionProps) {
   const { t } = useTranslation();
+  const location = useLocation();
   const [catalog, setCatalog] = useState<ExternalExtensionCatalogEntry[]>([]);
   const [activeSnapshotIds, setActiveSnapshotIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [busySnapshotId, setBusySnapshotId] = useState<string | null>(null);
+  const [busyActionId, setBusyActionId] = useState<string | null>(null);
+
+  const currentSessionId = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return params.get('session_id') || params.get('session') || '';
+  }, [location.search]);
 
   const loadCatalog = async () => {
     setLoading(true);
@@ -76,7 +83,7 @@ export default function AgentExtensionCatalogSection({ agentId, canManage = fals
   }, [catalog]);
 
   const activateEntry = async (entry: ExternalExtensionCatalogEntry) => {
-    setBusySnapshotId(entry.snapshot_id);
+    setBusyActionId(`activate:${entry.snapshot_id}`);
     try {
       await extensionsApi.activateExternalExtension(agentId, entry.snapshot_id);
       setActiveSnapshotIds((previous) => new Set(previous).add(entry.snapshot_id));
@@ -85,12 +92,30 @@ export default function AgentExtensionCatalogSection({ agentId, canManage = fals
       console.error(error);
       showAppToast(t('agent.extensions.catalogActivateFailed', 'Failed to activate extension'), 'error');
     } finally {
-      setBusySnapshotId(null);
+      setBusyActionId(null);
+    }
+  };
+
+  const tryEntryInChat = async (entry: ExternalExtensionCatalogEntry) => {
+    if (!currentSessionId) return;
+    setBusyActionId(`try:${entry.id}`);
+    try {
+      await extensionsApi.tryExternalExtensionInChat(agentId, entry.snapshot_id, {
+        session_id: currentSessionId,
+        component_qualified_names: [entry.qualified_name],
+        expires_in_minutes: 60,
+      });
+      showAppToast(t('agent.extensions.catalogTryActivated', 'Extension enabled for this chat'), 'success');
+    } catch (error) {
+      console.error(error);
+      showAppToast(t('agent.extensions.catalogTryFailed', 'Failed to try extension in chat'), 'error');
+    } finally {
+      setBusyActionId(null);
     }
   };
 
   const deactivateEntry = async (entry: ExternalExtensionCatalogEntry) => {
-    setBusySnapshotId(entry.snapshot_id);
+    setBusyActionId(`deactivate:${entry.snapshot_id}`);
     try {
       await extensionsApi.deactivateExternalExtension(agentId, entry.snapshot_id);
       setActiveSnapshotIds((previous) => {
@@ -103,7 +128,7 @@ export default function AgentExtensionCatalogSection({ agentId, canManage = fals
       console.error(error);
       showAppToast(t('agent.extensions.catalogDeactivateFailed', 'Failed to deactivate extension'), 'error');
     } finally {
-      setBusySnapshotId(null);
+      setBusyActionId(null);
     }
   };
 
@@ -126,6 +151,10 @@ export default function AgentExtensionCatalogSection({ agentId, canManage = fals
             <div className="agent-extension-catalog-grid">
               {entries.map((entry) => {
                 const isActive = activeSnapshotIds.has(entry.snapshot_id);
+                const isSaving =
+                  busyActionId === `activate:${entry.snapshot_id}` ||
+                  busyActionId === `deactivate:${entry.snapshot_id}` ||
+                  busyActionId === `try:${entry.id}`;
                 return (
                   <div key={entry.id} className="card agent-extension-catalog-card">
                     <div className="agent-extension-catalog-main">
@@ -138,18 +167,32 @@ export default function AgentExtensionCatalogSection({ agentId, canManage = fals
                       </div>
                     </div>
                     {canManage ? (
+                      <div className="agent-extension-catalog-actions">
+                        {currentSessionId && !isActive ? (
+                          <button
+                            type="button"
+                            className="btn btn-secondary agent-extension-catalog-action"
+                            disabled={isSaving}
+                            onClick={() => void tryEntryInChat(entry)}
+                          >
+                            {busyActionId === `try:${entry.id}`
+                              ? t('common.saving', 'Saving...')
+                              : t('agent.extensions.catalogTryInChat', 'Try in chat')}
+                          </button>
+                        ) : null}
                       <button
                         type="button"
                         className={`btn ${isActive ? 'btn-secondary' : 'btn-primary'} agent-extension-catalog-action`}
-                        disabled={busySnapshotId === entry.snapshot_id}
+                        disabled={isSaving}
                         onClick={() => void (isActive ? deactivateEntry(entry) : activateEntry(entry))}
                       >
-                        {busySnapshotId === entry.snapshot_id
+                        {isSaving && busyActionId !== `try:${entry.id}`
                           ? t('common.saving', 'Saving...')
                           : isActive
                             ? t('agent.extensions.catalogDeactivate', 'Deactivate')
                             : t('agent.extensions.catalogInstall', 'Install')}
                       </button>
+                      </div>
                     ) : (
                       <span className="agent-extension-catalog-readonly">
                         {isActive ? t('agent.extensions.catalogActive', 'Active') : t('agent.extensions.catalogAvailable', 'Available')}

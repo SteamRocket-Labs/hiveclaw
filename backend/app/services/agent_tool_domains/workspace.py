@@ -233,7 +233,7 @@ def _skill_scope_guidance(metadata) -> str:
     )
 
 
-def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str:
+def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, session_id: str | None = None) -> str:
     requested = (skill_name or "").strip()
     if not requested:
         return _workspace_error(tool_name, "bad_arguments", "Skill name cannot be empty.")
@@ -242,7 +242,11 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
     skills_dir = (ws / "skills").resolve()
 
     def _read_skill_file(path: Path) -> str:
-        if not _is_within_path(path, workspace_root) or not _is_skill_instruction_file(ws, path):
+        if (
+            not _is_within_path(path, workspace_root)
+            or not _is_skill_instruction_file(ws, path)
+            or not _session_extension_path_allowed(ws, path, session_id=session_id)
+        ):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
@@ -272,7 +276,7 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
                 logger.debug("[workspace] curator use bump (explicit) failed: %s", exc)
             return body
 
-    registry = _build_skill_registry(ws)
+    registry = _build_skill_registry(ws, session_id=session_id)
     try:
         # Step 9: resolve once so allowed-tools can be re-surfaced as scoped tool
         # guidance. The registry path strips frontmatter (where allowed-tools
@@ -309,11 +313,22 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
     return _workspace_error(tool_name, "not_found", f"Skill not found: {skill_name}")
 
 
-def _build_skill_registry(ws: Path) -> SkillRegistry:
+def _build_skill_registry(ws: Path, *, session_id: str | None = None) -> SkillRegistry:
     loader = WorkspaceSkillLoader()
     registry = SkillRegistry()
-    registry.register_many(loader.load_from_workspace(ws))
+    registry.register_many(loader.load_from_workspace(ws, session_id=session_id))
     return registry
+
+
+def _session_extension_path_allowed(ws: Path, path: Path, *, session_id: str | None = None) -> bool:
+    try:
+        parts = path.resolve().relative_to(ws.resolve()).parts
+    except ValueError:
+        return False
+    if "session_extensions" not in parts:
+        return True
+    index = parts.index("session_extensions")
+    return bool(session_id and len(parts) > index + 1 and parts[index + 1] == str(session_id))
 
 
 def _skill_slug_from_relative_path(relative_path: str) -> str | None:

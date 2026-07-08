@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -200,6 +201,177 @@ def test_current_user_personal_knowledge_ingest_never_accepts_browser_owner_id(m
     assert captured["tenant_id"] == user.tenant_id
     assert captured["owner_user_id"] == owner_id
     assert captured["created_by_user_id"] == owner_id
+
+
+def test_current_user_personal_knowledge_file_import_uses_owner_scope(monkeypatch):
+    owner_id = uuid4()
+    document_id = uuid4()
+    job_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    captured = {}
+
+    class _FakeService:
+        async def ingest_source_bytes(self, session, **kwargs):
+            captured.update({"session": session, **kwargs})
+            return SimpleNamespace(
+                document_id=document_id,
+                job_id=job_id,
+                source_sha256="c" * 64,
+                artifact_hash="d" * 64,
+                canonical_md_path="persons/owner/kb/doc.md",
+                segment_count=2,
+                status="ready",
+                warnings=[],
+            )
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    response = client.post(
+        "/knowledge/personal/imports",
+        data={"title": "Imported report", "agent_searchable": "true", "sensitivity": "internal"},
+        files={"file": ("report.html", io.BytesIO(b"<h1>Report</h1>"), "text/html")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["job_id"] == str(job_id)
+    assert fake_db.commit_count == 1
+    assert captured["tenant_id"] == user.tenant_id
+    assert captured["owner_user_id"] == owner_id
+    assert captured["filename"] == "report.html"
+    assert captured["source_kind"] == "upload"
+    assert captured["data"] == b"<h1>Report</h1>"
+
+
+def test_current_user_personal_knowledge_url_import_and_jobs(monkeypatch):
+    owner_id = uuid4()
+    document_id = uuid4()
+    job_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    captured = []
+
+    class _FakeService:
+        async def ingest_url(self, session, **kwargs):
+            captured.append(("url", kwargs))
+            return SimpleNamespace(
+                document_id=document_id,
+                job_id=job_id,
+                source_sha256="e" * 64,
+                artifact_hash="f" * 64,
+                canonical_md_path="persons/owner/kb/url.md",
+                segment_count=1,
+                status="ready",
+                warnings=[],
+            )
+
+        async def list_import_jobs(self, session, **kwargs):
+            captured.append(("jobs", kwargs))
+            return [
+                SimpleNamespace(
+                    job_id=job_id,
+                    document_id=document_id,
+                    stage="indexed",
+                    status="ready",
+                    artifact_hash="f" * 64,
+                    error_message=None,
+                    attempt_count=1,
+                    metadata={"source_kind": "url"},
+                    created_at=None,
+                    updated_at=None,
+                )
+            ]
+
+        async def retry_import_job(self, session, **kwargs):
+            captured.append(("retry", kwargs))
+            return SimpleNamespace(
+                document_id=document_id,
+                job_id=job_id,
+                source_sha256="e" * 64,
+                artifact_hash="f" * 64,
+                canonical_md_path="persons/owner/kb/url.md",
+                segment_count=1,
+                status="ready",
+                warnings=[],
+            )
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    imported = client.post(
+        "/knowledge/personal/import-url",
+        json={"url": "https://example.com/report.html", "title": "URL report", "agent_searchable": True},
+    )
+    listed = client.get("/knowledge/personal/import-jobs")
+    retried = client.post(f"/knowledge/personal/import-jobs/{job_id}/retry")
+
+    assert imported.status_code == 200
+    assert listed.status_code == 200
+    assert retried.status_code == 200
+    assert fake_db.commit_count == 2
+    assert [name for name, _kwargs in captured] == ["url", "jobs", "retry"]
+    for _name, kwargs in captured:
+        assert kwargs["tenant_id"] == user.tenant_id
+        assert kwargs["owner_user_id"] == owner_id
+
+
+def test_current_user_personal_knowledge_document_actions(monkeypatch):
+    owner_id = uuid4()
+    document_id = uuid4()
+    job_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    captured = []
+
+    class _FakeService:
+        async def patch_personal_document(self, session, **kwargs):
+            captured.append(("patch", kwargs))
+            return SimpleNamespace(
+                document_id=document_id,
+                title="Updated",
+                source_kind="paste",
+                source_uri=None,
+                source_sha256="a" * 64,
+                source_ref=f"kb://person/{owner_id}/documents/{document_id}",
+                canonical_md_path="persons/owner/kb/doc.md",
+                status="archived",
+                sensitivity="private",
+                agent_searchable=False,
+                segment_count=2,
+                created_at=None,
+                updated_at=None,
+                metadata={},
+            )
+
+        async def rebuild_personal_document_index(self, session, **kwargs):
+            captured.append(("rebuild", kwargs))
+            return SimpleNamespace(
+                document_id=document_id,
+                job_id=job_id,
+                source_sha256="a" * 64,
+                artifact_hash="b" * 64,
+                canonical_md_path="persons/owner/kb/doc.md",
+                segment_count=2,
+                status="ready",
+                warnings=[],
+            )
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    patched = client.patch(
+        f"/knowledge/personal/documents/{document_id}",
+        json={"agent_searchable": False, "sensitivity": "private", "status": "archived"},
+    )
+    rebuilt = client.post(f"/knowledge/personal/documents/{document_id}/rebuild-index")
+
+    assert patched.status_code == 200
+    assert patched.json()["status"] == "archived"
+    assert rebuilt.status_code == 200
+    assert rebuilt.json()["job_id"] == str(job_id)
+    assert fake_db.commit_count == 2
+    assert [name for name, _kwargs in captured] == ["patch", "rebuild"]
+    for _name, kwargs in captured:
+        assert kwargs["tenant_id"] == user.tenant_id
+        assert kwargs["owner_user_id"] == owner_id
 
 
 def test_personal_knowledge_ingest_uses_agent_owner_and_commits(monkeypatch):

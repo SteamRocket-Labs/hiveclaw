@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,19 @@ class PersonalKnowledgeIngestRequest(BaseModel):
     source_uri: str | None = None
     agent_searchable: bool = True
     sensitivity: str = Field("internal", min_length=1, max_length=30)
+
+
+class PersonalKnowledgeUrlImportRequest(BaseModel):
+    url: str = Field(..., min_length=1, max_length=2000)
+    title: str | None = Field(None, max_length=300)
+    agent_searchable: bool = True
+    sensitivity: str = Field("internal", min_length=1, max_length=30)
+
+
+class PersonalKnowledgeDocumentPatchRequest(BaseModel):
+    agent_searchable: bool | None = None
+    sensitivity: str | None = Field(None, min_length=1, max_length=30)
+    status: str | None = Field(None, min_length=1, max_length=40)
 
 
 def _data_root() -> Path:
@@ -163,6 +176,97 @@ async def ingest_current_user_personal_document(
     return _dataclass_payload(result)
 
 
+@personal_router.post("/imports")
+async def import_current_user_personal_file(
+    title: str | None = Form(None),
+    agent_searchable: bool = Form(True),
+    sensitivity: str = Form("internal"),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename")
+    data = await file.read()
+    service = PersonalKnowledgeService()
+    result = await service.ingest_source_bytes(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        filename=file.filename,
+        data=data,
+        title=title,
+        source_kind="upload",
+        source_uri=f"upload://{file.filename}",
+        source_mime_type=file.content_type,
+        created_by_user_id=uuid.UUID(str(current_user.id)),
+        agent_searchable=agent_searchable,
+        sensitivity=sensitivity,
+    )
+    await db.commit()
+    return _dataclass_payload(result)
+
+
+@personal_router.post("/import-url")
+async def import_current_user_personal_url(
+    body: PersonalKnowledgeUrlImportRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    try:
+        result = await service.ingest_url(
+            db,
+            tenant_id=_tenant_id_for_user(current_user),
+            owner_user_id=uuid.UUID(str(current_user.id)),
+            url=body.url,
+            title=body.title,
+            created_by_user_id=uuid.UUID(str(current_user.id)),
+            agent_searchable=body.agent_searchable,
+            sensitivity=body.sensitivity,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.commit()
+    return _dataclass_payload(result)
+
+
+@personal_router.get("/import-jobs")
+async def list_current_user_personal_import_jobs(
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    jobs = await service.list_import_jobs(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        limit=limit,
+    )
+    return {"jobs": [_dataclass_payload(job) for job in jobs]}
+
+
+@personal_router.post("/import-jobs/{job_id}/retry")
+async def retry_current_user_personal_import_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    result = await service.retry_import_job(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        job_id=job_id,
+        current_user_id=uuid.UUID(str(current_user.id)),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Personal knowledge import job not found")
+    await db.commit()
+    return _dataclass_payload(result)
+
+
 @personal_router.get("/search")
 async def search_current_user_personal_documents(
     q: str = Query(..., min_length=1),
@@ -201,6 +305,51 @@ async def get_current_user_personal_document(
     if document is None:
         raise HTTPException(status_code=404, detail="Personal knowledge document not found")
     return _dataclass_payload(document)
+
+
+@personal_router.patch("/documents/{document_id}")
+async def patch_current_user_personal_document(
+    document_id: uuid.UUID,
+    body: PersonalKnowledgeDocumentPatchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    document = await service.patch_personal_document(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        document_id=document_id,
+        current_user_id=uuid.UUID(str(current_user.id)),
+        agent_id=None,
+        agent_searchable=body.agent_searchable,
+        sensitivity=body.sensitivity,
+        status=body.status,
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Personal knowledge document not found")
+    await db.commit()
+    return _dataclass_payload(document)
+
+
+@personal_router.post("/documents/{document_id}/rebuild-index")
+async def rebuild_current_user_personal_document_index(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    result = await service.rebuild_personal_document_index(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        document_id=document_id,
+        current_user_id=uuid.UUID(str(current_user.id)),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Personal knowledge document not found")
+    await db.commit()
+    return _dataclass_payload(result)
 
 
 @router.get("/personal/documents")

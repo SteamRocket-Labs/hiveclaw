@@ -352,3 +352,44 @@ commit：
 剩余风险：
 
 - 无实现变更；后续原子项必须逐项清零。
+
+### 2026-07-08 A2/A3 多源导入 API 与真实 job 状态机骨架
+
+改动文件：
+
+- `backend/app/api/agent_knowledge.py`
+- `backend/app/services/personal_knowledge_service.py`
+- `backend/tests/api/test_agent_personal_knowledge_api.py`
+- `backend/tests/services/test_personal_knowledge_service.py`
+- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+
+功能证据：
+
+- 新增 owner-scoped `POST /api/knowledge/personal/imports`，接收 multipart 文件，后端读取 bytes 后进入 `PersonalKnowledgeService.ingest_source_bytes()`。
+- 新增 `POST /api/knowledge/personal/import-url`，后端 source acquisition 后进入同一 bytes ingestion。
+- 新增 `GET /api/knowledge/personal/import-jobs` 与 `POST /api/knowledge/personal/import-jobs/{job_id}/retry`。
+- 新增 `PATCH /api/knowledge/personal/documents/{document_id}` 与 `POST /api/knowledge/personal/documents/{document_id}/rebuild-index`。
+- `PersonalKnowledgeService` 支持可注入 `DocumentConversionService`，文件导入使用 `convert_bytes()` 生成 canonical Markdown。
+- unsupported file type 会创建 failed document + failed job，不伪装 ready。
+- `PersonalKnowledgeIngestResult` 返回 `job_id` 与 warnings，job metadata 记录 source kind、filename、conversion engine、warnings。
+
+测试命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/api/test_agent_personal_knowledge_api.py tests/services/test_personal_knowledge_service.py -q
+```
+
+测试结果：
+
+```text
+21 passed in 0.45s
+```
+
+commit：
+
+- 本提交：`feat: add personal kb import job endpoints`。
+
+剩余风险：
+
+- A2/A3 当前完成的是同步执行的 job 状态机骨架；A4/A5 会继续把 LLM extraction、graph writer、degraded 细分状态挂入同一 job。
+- EPUB、音频、视频、图片在 A13 统一处理；当前 supported import guard 只打开已由本地转换层稳定覆盖的文档格式。

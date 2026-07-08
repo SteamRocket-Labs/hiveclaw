@@ -54,6 +54,31 @@ class _FakeAsyncSession:
         return _ScalarResult()
 
 
+class _FakeConversionService:
+    def __init__(self, markdown: str = "# Imported\n\nConverted content.", warnings: tuple[str, ...] = ()) -> None:
+        self.markdown = markdown
+        self.warnings = warnings
+        self.calls: list[dict] = []
+
+    def convert_bytes(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            markdown=self.markdown,
+            plain_text=self.markdown.replace("# ", ""),
+            source_path="/tmp/source/report.html",
+            source_uri=kwargs.get("source_uri"),
+            source_sha256="c" * 64,
+            source_mime_type=kwargs.get("source_mime_type") or "text/html",
+            engine="fake_converter",
+            used_ocr=False,
+            used_vision=False,
+            page_count=None,
+            artifact_markdown_path="persons/owner/kb/.hive/document_conversions/content.md",
+            artifact_metadata_path="persons/owner/kb/.hive/document_conversions/metadata.json",
+            warnings=self.warnings,
+        )
+
+
 class _SearchSession:
     def __init__(self, rows) -> None:
         self.rows = rows
@@ -142,6 +167,111 @@ async def test_ingest_markdown_writes_artifact_document_segments_and_index_job(t
     assert len(jobs) == 1
     assert any(isinstance(statement, Delete) for statement in session.executed)
     assert any(isinstance(statement, Update) for statement in session.executed)
+
+
+@pytest.mark.asyncio
+async def test_ingest_source_bytes_converts_file_then_indexes_canonical_markdown(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    converter = _FakeConversionService(markdown="# Imported\n\nConverted through canonical MD.")
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path, conversion_service=converter)
+
+    result = await service.ingest_source_bytes(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        filename="report.html",
+        data=b"<h1>raw</h1>",
+        source_kind="upload",
+        source_uri="upload://report.html",
+        created_by_user_id=owner_id,
+        agent_searchable=True,
+        sensitivity="internal",
+    )
+
+    assert result.status == "ready"
+    assert result.job_id is not None
+    assert result.source_sha256 == "c" * 64
+    assert converter.calls[0]["filename"] == "report.html"
+    assert converter.calls[0]["workspace_root"] == tmp_path / "persons" / str(owner_id) / "kb"
+    assert (tmp_path / result.canonical_md_path).read_text(encoding="utf-8").startswith("# Imported")
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+    assert jobs[-1].status == "ready"
+    assert jobs[-1].stage == "indexed"
+    assert jobs[-1].job_metadata_json["source_kind"] == "upload"
+
+
+@pytest.mark.asyncio
+async def test_ingest_source_bytes_records_failed_job_for_unsupported_file(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    session = _FakeAsyncSession()
+    owner_id = uuid.uuid4()
+    service = PersonalKnowledgeService(data_root=tmp_path, conversion_service=_FakeConversionService())
+
+    result = await service.ingest_source_bytes(
+        session,
+        tenant_id=uuid.uuid4(),
+        owner_user_id=owner_id,
+        filename="archive.exe",
+        data=b"binary",
+        source_kind="upload",
+        created_by_user_id=owner_id,
+    )
+
+    assert result.status == "failed"
+    assert result.job_id is not None
+    documents = [obj for obj in session.added if isinstance(obj, KnowledgeDocument)]
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+    assert documents[-1].status == "failed"
+    assert jobs[-1].status == "failed"
+    assert "unsupported_file_type" in jobs[-1].error_message
+
+
+@pytest.mark.asyncio
+async def test_patch_and_rebuild_personal_document_index_update_existing_document(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    owner_id = uuid.uuid4()
+    document = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="Existing",
+        source_kind="paste",
+        source_uri=None,
+        source_sha256="a" * 64,
+        artifact_hash="b" * 64,
+        status="ready",
+        sensitivity="internal",
+        agent_searchable=True,
+        canonical_md_path="persons/owner/kb/doc.md",
+        canonical_md_sha256="b" * 64,
+        doc_metadata_json={},
+        created_by_user_id=owner_id,
+        created_at=None,
+        updated_at=None,
+    )
+    session = _FakeAsyncSession(existing_document=document)
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    patched = await service.patch_personal_document(
+        session,
+        tenant_id=uuid.uuid4(),
+        owner_user_id=owner_id,
+        document_id=document.id,
+        current_user_id=owner_id,
+        agent_id=None,
+        agent_searchable=False,
+        sensitivity="private",
+        status="archived",
+    )
+
+    assert patched is not None
+    assert document.agent_searchable is False
+    assert document.sensitivity == "private"
+    assert document.status == "archived"
 
 
 def test_owner_search_statement_uses_person_scope_without_grant_requirement() -> None:

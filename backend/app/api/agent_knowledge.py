@@ -14,14 +14,14 @@ from datetime import datetime
 from typing import Any
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
-from app.database import get_db
+from app.database import get_db, tenant_scoped_session
 from app.models.agent import Agent
 from app.models.user import User
 from app.services.personal_knowledge_service import PersonalKnowledgeService
@@ -112,6 +112,31 @@ def _dataclass_payload(value: Any) -> dict[str, Any]:
     return {key: _as_jsonable(item) for key, item in raw.items()}
 
 
+async def _process_current_user_personal_import_jobs(*, tenant_id: uuid.UUID, owner_user_id: uuid.UUID) -> None:
+    async with tenant_scoped_session(tenant_id) as db:
+        await PersonalKnowledgeService().process_import_jobs(
+            db,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            current_user_id=owner_user_id,
+            limit=5,
+            statuses=("queued",),
+        )
+
+
+def _schedule_personal_import_worker(
+    background_tasks: BackgroundTasks,
+    *,
+    tenant_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+) -> None:
+    background_tasks.add_task(
+        _process_current_user_personal_import_jobs,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+    )
+
+
 def _principal_stack_for_read(agent: Agent, current_user: User) -> PrincipalStack:
     owner_id = getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
     current_role = PrincipalRole.COMPANY_ADMIN if current_user.role == "org_admin" else PrincipalRole.CURRENT_USER
@@ -166,29 +191,34 @@ async def list_current_user_personal_documents(
 
 @personal_router.post("/documents")
 async def ingest_current_user_personal_document(
+    background_tasks: BackgroundTasks,
     body: PersonalKnowledgeIngestRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     service = PersonalKnowledgeService()
-    result = await service.ingest_markdown(
+    tenant_id = _tenant_id_for_user(current_user)
+    owner_user_id = uuid.UUID(str(current_user.id))
+    result = await service.queue_markdown_import(
         db,
-        tenant_id=_tenant_id_for_user(current_user),
-        owner_user_id=uuid.UUID(str(current_user.id)),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
         title=body.title,
         markdown=body.markdown,
         source_kind=body.source_kind,
         source_uri=body.source_uri,
-        created_by_user_id=uuid.UUID(str(current_user.id)),
+        created_by_user_id=owner_user_id,
         agent_searchable=body.agent_searchable,
         sensitivity=body.sensitivity,
     )
     await db.commit()
+    _schedule_personal_import_worker(background_tasks, tenant_id=tenant_id, owner_user_id=owner_user_id)
     return _dataclass_payload(result)
 
 
 @personal_router.post("/imports")
 async def import_current_user_personal_file(
+    background_tasks: BackgroundTasks,
     title: str | None = Form(None),
     agent_searchable: bool = Form(True),
     sensitivity: str = Form("internal"),
@@ -200,45 +230,52 @@ async def import_current_user_personal_file(
         raise HTTPException(status_code=400, detail="No filename")
     data = await file.read()
     service = PersonalKnowledgeService()
-    result = await service.ingest_source_bytes(
+    tenant_id = _tenant_id_for_user(current_user)
+    owner_user_id = uuid.UUID(str(current_user.id))
+    result = await service.queue_source_bytes_import(
         db,
-        tenant_id=_tenant_id_for_user(current_user),
-        owner_user_id=uuid.UUID(str(current_user.id)),
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
         filename=file.filename,
         data=data,
         title=title,
         source_kind="upload",
         source_uri=f"upload://{file.filename}",
         source_mime_type=file.content_type,
-        created_by_user_id=uuid.UUID(str(current_user.id)),
+        created_by_user_id=owner_user_id,
         agent_searchable=agent_searchable,
         sensitivity=sensitivity,
     )
     await db.commit()
+    _schedule_personal_import_worker(background_tasks, tenant_id=tenant_id, owner_user_id=owner_user_id)
     return _dataclass_payload(result)
 
 
 @personal_router.post("/import-url")
 async def import_current_user_personal_url(
+    background_tasks: BackgroundTasks,
     body: PersonalKnowledgeUrlImportRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     service = PersonalKnowledgeService()
+    tenant_id = _tenant_id_for_user(current_user)
+    owner_user_id = uuid.UUID(str(current_user.id))
     try:
-        result = await service.ingest_url(
+        result = await service.queue_url_import(
             db,
-            tenant_id=_tenant_id_for_user(current_user),
-            owner_user_id=uuid.UUID(str(current_user.id)),
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
             url=body.url,
             title=body.title,
-            created_by_user_id=uuid.UUID(str(current_user.id)),
+            created_by_user_id=owner_user_id,
             agent_searchable=body.agent_searchable,
             sensitivity=body.sensitivity,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await db.commit()
+    _schedule_personal_import_worker(background_tasks, tenant_id=tenant_id, owner_user_id=owner_user_id)
     return _dataclass_payload(result)
 
 
@@ -475,6 +512,7 @@ async def list_personal_documents(
 @router.post("/personal/documents")
 async def ingest_personal_document(
     agent_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     body: PersonalKnowledgeIngestRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -485,9 +523,10 @@ async def ingest_personal_document(
         raise HTTPException(status_code=403, detail="Only the personal knowledge owner can write this scope")
 
     service = PersonalKnowledgeService()
-    result = await service.ingest_markdown(
+    tenant_id = _tenant_id_for_agent(agent, current_user)
+    result = await service.queue_markdown_import(
         db,
-        tenant_id=_tenant_id_for_agent(agent, current_user),
+        tenant_id=tenant_id,
         owner_user_id=owner_user_id,
         title=body.title,
         markdown=body.markdown,
@@ -498,6 +537,7 @@ async def ingest_personal_document(
         sensitivity=body.sensitivity,
     )
     await db.commit()
+    _schedule_personal_import_worker(background_tasks, tenant_id=tenant_id, owner_user_id=owner_user_id)
     return _dataclass_payload(result)
 
 

@@ -166,20 +166,27 @@ def test_current_user_personal_knowledge_ingest_never_accepts_browser_owner_id(m
     document_id = uuid4()
     user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
     captured = {}
+    background_calls = []
 
     class _FakeService:
-        async def ingest_markdown(self, session, **kwargs):
+        async def queue_markdown_import(self, session, **kwargs):
             captured.update({"session": session, **kwargs})
             return SimpleNamespace(
                 document_id=document_id,
+                job_id=uuid4(),
                 source_sha256="a" * 64,
                 artifact_hash="b" * 64,
                 canonical_md_path="persons/owner/kb/doc.md",
-                segment_count=1,
-                status="ready",
+                segment_count=0,
+                status="queued",
+                warnings=[],
             )
 
+    async def fake_process_jobs(**kwargs):
+        background_calls.append(kwargs)
+
     monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    monkeypatch.setattr(agent_knowledge_api, "_process_current_user_personal_import_jobs", fake_process_jobs)
     client, fake_db, _user = _personal_client(monkeypatch, user=user)
 
     response = client.post(
@@ -197,10 +204,12 @@ def test_current_user_personal_knowledge_ingest_never_accepts_browser_owner_id(m
 
     assert response.status_code == 200
     assert response.json()["document_id"] == str(document_id)
+    assert response.json()["status"] == "queued"
     assert fake_db.commit_count == 1
     assert captured["tenant_id"] == user.tenant_id
     assert captured["owner_user_id"] == owner_id
     assert captured["created_by_user_id"] == owner_id
+    assert background_calls == [{"tenant_id": user.tenant_id, "owner_user_id": owner_id}]
 
 
 def test_current_user_personal_knowledge_file_import_uses_owner_scope(monkeypatch):
@@ -209,22 +218,27 @@ def test_current_user_personal_knowledge_file_import_uses_owner_scope(monkeypatc
     job_id = uuid4()
     user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
     captured = {}
+    background_calls = []
 
     class _FakeService:
-        async def ingest_source_bytes(self, session, **kwargs):
+        async def queue_source_bytes_import(self, session, **kwargs):
             captured.update({"session": session, **kwargs})
             return SimpleNamespace(
                 document_id=document_id,
                 job_id=job_id,
                 source_sha256="c" * 64,
                 artifact_hash="d" * 64,
-                canonical_md_path="persons/owner/kb/doc.md",
-                segment_count=2,
-                status="ready",
+                canonical_md_path="",
+                segment_count=0,
+                status="queued",
                 warnings=[],
             )
 
+    async def fake_process_jobs(**kwargs):
+        background_calls.append(kwargs)
+
     monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    monkeypatch.setattr(agent_knowledge_api, "_process_current_user_personal_import_jobs", fake_process_jobs)
     client, fake_db, _user = _personal_client(monkeypatch, user=user)
 
     response = client.post(
@@ -241,6 +255,8 @@ def test_current_user_personal_knowledge_file_import_uses_owner_scope(monkeypatc
     assert captured["filename"] == "report.html"
     assert captured["source_kind"] == "upload"
     assert captured["data"] == b"<h1>Report</h1>"
+    assert response.json()["status"] == "queued"
+    assert background_calls == [{"tenant_id": user.tenant_id, "owner_user_id": owner_id}]
 
 
 def test_current_user_personal_knowledge_url_import_and_jobs(monkeypatch):
@@ -249,18 +265,19 @@ def test_current_user_personal_knowledge_url_import_and_jobs(monkeypatch):
     job_id = uuid4()
     user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
     captured = []
+    background_calls = []
 
     class _FakeService:
-        async def ingest_url(self, session, **kwargs):
+        async def queue_url_import(self, session, **kwargs):
             captured.append(("url", kwargs))
             return SimpleNamespace(
                 document_id=document_id,
                 job_id=job_id,
                 source_sha256="e" * 64,
                 artifact_hash="f" * 64,
-                canonical_md_path="persons/owner/kb/url.md",
-                segment_count=1,
-                status="ready",
+                canonical_md_path="",
+                segment_count=0,
+                status="queued",
                 warnings=[],
             )
 
@@ -294,7 +311,11 @@ def test_current_user_personal_knowledge_url_import_and_jobs(monkeypatch):
                 warnings=[],
             )
 
+    async def fake_process_jobs(**kwargs):
+        background_calls.append(kwargs)
+
     monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    monkeypatch.setattr(agent_knowledge_api, "_process_current_user_personal_import_jobs", fake_process_jobs)
     client, fake_db, _user = _personal_client(monkeypatch, user=user)
 
     imported = client.post(
@@ -308,10 +329,12 @@ def test_current_user_personal_knowledge_url_import_and_jobs(monkeypatch):
     assert listed.status_code == 200
     assert retried.status_code == 200
     assert fake_db.commit_count == 2
+    assert imported.json()["status"] == "queued"
     assert [name for name, _kwargs in captured] == ["url", "jobs", "retry"]
     for _name, kwargs in captured:
         assert kwargs["tenant_id"] == user.tenant_id
         assert kwargs["owner_user_id"] == owner_id
+    assert background_calls == [{"tenant_id": user.tenant_id, "owner_user_id": owner_id}]
 
 
 def test_current_user_personal_knowledge_document_actions(monkeypatch):
@@ -504,20 +527,27 @@ def test_personal_knowledge_ingest_uses_agent_owner_and_commits(monkeypatch):
         creator_id=owner_id,
     )
     captured = {}
+    background_calls = []
 
     class _FakeService:
-        async def ingest_markdown(self, session, **kwargs):
+        async def queue_markdown_import(self, session, **kwargs):
             captured.update({"session": session, **kwargs})
             return SimpleNamespace(
                 document_id=document_id,
+                job_id=uuid4(),
                 source_sha256="a" * 64,
                 artifact_hash="b" * 64,
-                canonical_md_path="persons/owner/kb/doc.md",
-                segment_count=2,
-                status="ready",
+                canonical_md_path="",
+                segment_count=0,
+                status="queued",
+                warnings=[],
             )
 
+    async def fake_process_jobs(**kwargs):
+        background_calls.append(kwargs)
+
     monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    monkeypatch.setattr(agent_knowledge_api, "_process_current_user_personal_import_jobs", fake_process_jobs)
     client, fake_db, _user, _agent = _client(monkeypatch, user=user, agent=agent)
 
     response = client.post(
@@ -535,12 +565,14 @@ def test_personal_knowledge_ingest_uses_agent_owner_and_commits(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["document_id"] == str(document_id)
-    assert payload["segment_count"] == 2
+    assert payload["segment_count"] == 0
+    assert payload["status"] == "queued"
     assert fake_db.commit_count == 1
     assert captured["tenant_id"] == user.tenant_id
     assert captured["owner_user_id"] == owner_id
     assert captured["created_by_user_id"] == owner_id
     assert captured["title"] == "Taste notes"
+    assert background_calls == [{"tenant_id": user.tenant_id, "owner_user_id": owner_id}]
 
 
 def test_personal_knowledge_ingest_requires_current_owner(monkeypatch):
@@ -555,7 +587,7 @@ def test_personal_knowledge_ingest_requires_current_owner(monkeypatch):
     )
 
     class _UnexpectedService:
-        async def ingest_markdown(self, *args, **kwargs):  # pragma: no cover - must not be called
+        async def queue_markdown_import(self, *args, **kwargs):  # pragma: no cover - must not be called
             raise AssertionError("non-owner must not write personal KB")
 
     monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _UnexpectedService(), raising=False)

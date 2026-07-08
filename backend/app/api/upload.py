@@ -6,13 +6,13 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
 from app.config import get_settings
 from app.core.security import get_current_user
-from app.database import get_db
+from app.database import get_db, tenant_scoped_session
 from app.models.user import User
 from app.services.personal_knowledge_service import PersonalKnowledgeService
 
@@ -134,6 +134,7 @@ def _sanitize_upload_filename(filename: str) -> str:
 
 @router.post("/upload")
 async def upload_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     agent_id: uuid.UUID | None = Form(None),
     skip_personal_kb: bool = Form(False),
@@ -158,6 +159,7 @@ async def upload_file(
         personal_kb_enabled=not skip_personal_kb,
         owner_user_id=owner_user_id,
         skip_personal_kb=skip_personal_kb,
+        background_tasks=background_tasks,
     )
 
 
@@ -182,6 +184,18 @@ def _personal_kb_candidate_payload(result, *, origin: str) -> dict[str, object]:
     }
 
 
+async def _process_upload_personal_import_jobs(*, tenant_id: uuid.UUID, owner_user_id: uuid.UUID) -> None:
+    async with tenant_scoped_session(tenant_id) as session:
+        await PersonalKnowledgeService().process_import_jobs(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            current_user_id=owner_user_id,
+            limit=5,
+            statuses=("queued",),
+        )
+
+
 async def save_upload_for_agent(
     *,
     file: UploadFile,
@@ -192,6 +206,7 @@ async def save_upload_for_agent(
     personal_kb_enabled: bool = False,
     owner_user_id: uuid.UUID | None = None,
     skip_personal_kb: bool = False,
+    background_tasks: BackgroundTasks | None = None,
 ):
     """Save a chat upload for an already-authorized agent/user context."""
     if not file.filename:
@@ -306,7 +321,7 @@ async def save_upload_for_agent(
     if personal_kb_enabled and db is not None and tenant_id is not None and owner_user_id is not None:
         origin = f"agent:{agent_id}" if agent_id else f"user:{user_id}"
         try:
-            kb_result = await PersonalKnowledgeService().ingest_source_bytes(
+            kb_result = await PersonalKnowledgeService().queue_source_bytes_import(
                 db,
                 tenant_id=uuid.UUID(str(tenant_id)),
                 owner_user_id=uuid.UUID(str(owner_user_id)),
@@ -329,6 +344,12 @@ async def save_upload_for_agent(
             personal_kb_candidate = _personal_kb_candidate_payload(kb_result, origin=origin)
             if hasattr(db, "commit"):
                 await db.commit()
+            if background_tasks is not None:
+                background_tasks.add_task(
+                    _process_upload_personal_import_jobs,
+                    tenant_id=uuid.UUID(str(tenant_id)),
+                    owner_user_id=uuid.UUID(str(owner_user_id)),
+                )
         except Exception as exc:
             personal_kb_candidate = {
                 "skipped": False,

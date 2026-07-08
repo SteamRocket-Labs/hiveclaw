@@ -204,6 +204,13 @@ def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _validate_source_sha256(value: str) -> str:
+    clean = str(value or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", clean):
+        raise ValueError("source_sha256 must be a 64-character lowercase hex digest")
+    return clean
+
+
 def _normalize_markdown(markdown: str) -> str:
     clean = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     return f"{clean}\n" if clean else ""
@@ -261,14 +268,19 @@ def _merge_source_refs(existing: list[Any] | tuple[Any, ...] | None, additions: 
 def personal_knowledge_artifact_path(data_root: str | Path, owner_user_id: uuid.UUID, source_sha256: str) -> Path:
     """Return the canonical Markdown artifact path for one person-scope source."""
 
-    source_hash = str(source_sha256).strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", source_hash):
-        raise ValueError("source_sha256 must be a 64-character lowercase hex digest")
+    source_hash = _validate_source_sha256(source_sha256)
     return Path(data_root) / "persons" / str(owner_user_id) / "kb" / "documents" / source_hash[:2] / f"{source_hash}.md"
 
 
 def _personal_knowledge_root(data_root: str | Path, owner_user_id: uuid.UUID) -> Path:
     return Path(data_root) / "persons" / str(owner_user_id) / "kb"
+
+
+def personal_knowledge_import_spool_path(data_root: str | Path, owner_user_id: uuid.UUID, source_sha256: str, filename: str) -> Path:
+    """Return the durable payload spool path for an async personal import job."""
+
+    source_hash = _validate_source_sha256(source_sha256)
+    return Path(data_root) / "persons" / str(owner_user_id) / "kb" / "imports" / source_hash[:2] / _safe_filename(filename)
 
 
 def _safe_filename(filename: str) -> str:
@@ -1068,6 +1080,279 @@ class PersonalKnowledgeService:
         await session.flush()
         return warnings
 
+    async def _queue_import_job(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        title: str,
+        source_kind: str,
+        source_uri: str | None,
+        source_sha256: str,
+        artifact_hash: str,
+        canonical_md_path: str,
+        canonical_md_sha256: str | None,
+        created_by_user_id: uuid.UUID | None,
+        agent_searchable: bool,
+        sensitivity: str,
+        metadata: dict[str, Any],
+    ) -> PersonalKnowledgeIngestResult:
+        clean_source_sha256 = _validate_source_sha256(source_sha256)
+        clean_source_kind = _clean_title(source_kind).lower().replace(" ", "_")
+        clean_title = _clean_title(title)
+        existing_result = await session.execute(
+            select(KnowledgeDocument).where(
+                KnowledgeDocument.tenant_id == tenant_id,
+                KnowledgeDocument.scope_type == "person",
+                KnowledgeDocument.scope_id == owner_user_id,
+                KnowledgeDocument.source_sha256 == clean_source_sha256,
+            )
+        )
+        document = existing_result.scalar_one_or_none()
+        document_metadata = {
+            **(getattr(document, "doc_metadata_json", {}) or {}),
+            **metadata,
+            "queued_import_kind": metadata.get("queued_import_kind"),
+            "queued_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if document is None:
+            document = KnowledgeDocument(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                scope_type="person",
+                scope_id=owner_user_id,
+                owner_user_id=owner_user_id,
+                source_kind=clean_source_kind,
+                source_uri=source_uri,
+                source_sha256=clean_source_sha256,
+                artifact_hash=artifact_hash,
+                title=clean_title,
+                status="queued",
+                sensitivity=sensitivity,
+                agent_searchable=agent_searchable,
+                canonical_md_path=canonical_md_path,
+                canonical_md_sha256=canonical_md_sha256,
+                doc_metadata_json=document_metadata,
+                created_by_user_id=created_by_user_id,
+            )
+            session.add(document)
+        else:
+            document.source_kind = clean_source_kind
+            document.source_uri = source_uri
+            document.artifact_hash = artifact_hash
+            document.title = clean_title
+            document.status = "queued"
+            document.sensitivity = sensitivity
+            document.agent_searchable = agent_searchable
+            document.canonical_md_path = canonical_md_path
+            document.canonical_md_sha256 = canonical_md_sha256
+            document.doc_metadata_json = document_metadata
+            document.created_by_user_id = created_by_user_id or document.created_by_user_id
+        await session.flush()
+
+        job_result = await session.execute(
+            select(KnowledgeIndexJob).where(
+                KnowledgeIndexJob.tenant_id == tenant_id,
+                KnowledgeIndexJob.document_id == document.id,
+                KnowledgeIndexJob.artifact_hash == artifact_hash,
+            )
+        )
+        job = job_result.scalar_one_or_none()
+        job_metadata = {
+            **(getattr(job, "job_metadata_json", {}) or {}),
+            **metadata,
+            "source_kind": clean_source_kind,
+            "source_sha256": clean_source_sha256,
+            "warnings": [],
+        }
+        if job is None:
+            job = KnowledgeIndexJob(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                document_id=document.id,
+                scope_type="person",
+                scope_id=owner_user_id,
+                artifact_hash=artifact_hash,
+                stage="queued",
+                status="queued",
+                error_message=None,
+                attempt_count=0,
+                job_metadata_json=job_metadata,
+            )
+            session.add(job)
+        else:
+            job.stage = "queued"
+            job.status = "queued"
+            job.error_message = None
+            job.job_metadata_json = job_metadata
+        await session.flush()
+
+        return PersonalKnowledgeIngestResult(
+            document_id=document.id,
+            job_id=job.id,
+            source_sha256=clean_source_sha256,
+            artifact_hash=artifact_hash,
+            canonical_md_path=canonical_md_path,
+            segment_count=0,
+            status="queued",
+            warnings=[],
+        )
+
+    async def queue_markdown_import(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        title: str,
+        markdown: str,
+        source_kind: str,
+        source_uri: str | None = None,
+        created_by_user_id: uuid.UUID | None = None,
+        agent_searchable: bool = True,
+        sensitivity: str = "internal",
+        doc_metadata: dict[str, Any] | None = None,
+    ) -> PersonalKnowledgeIngestResult:
+        canonical_md = _normalize_markdown(markdown)
+        if not canonical_md:
+            raise ValueError("markdown must not be empty")
+        clean_source_kind = _clean_title(source_kind).lower().replace(" ", "_")
+        source_payload = "\n".join([clean_source_kind, source_uri or "", canonical_md])
+        source_hash = _sha256(source_payload)
+        artifact_hash = _sha256(canonical_md)
+        artifact_path = personal_knowledge_artifact_path(self.data_root, owner_user_id, source_hash)
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(canonical_md, encoding="utf-8")
+        canonical_md_path = artifact_path.relative_to(self.data_root).as_posix()
+        metadata = {
+            "queued_import_kind": "markdown",
+            "queued_markdown_path": canonical_md_path,
+            "title": _clean_title(title),
+            "source_kind": clean_source_kind,
+            "source_uri": source_uri,
+            "created_by_user_id": str(created_by_user_id) if created_by_user_id else None,
+            "agent_searchable": bool(agent_searchable),
+            "sensitivity": sensitivity,
+            "doc_metadata": dict(doc_metadata or {}),
+        }
+        return await self._queue_import_job(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            title=title,
+            source_kind=clean_source_kind,
+            source_uri=source_uri,
+            source_sha256=source_hash,
+            artifact_hash=artifact_hash,
+            canonical_md_path=canonical_md_path,
+            canonical_md_sha256=artifact_hash,
+            created_by_user_id=created_by_user_id,
+            agent_searchable=agent_searchable,
+            sensitivity=sensitivity,
+            metadata=metadata,
+        )
+
+    async def queue_source_bytes_import(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        filename: str,
+        data: bytes,
+        title: str | None = None,
+        source_kind: str = "upload",
+        source_uri: str | None = None,
+        created_by_user_id: uuid.UUID | None = None,
+        agent_searchable: bool = True,
+        sensitivity: str = "internal",
+        source_mime_type: str | None = None,
+        doc_metadata: dict[str, Any] | None = None,
+    ) -> PersonalKnowledgeIngestResult:
+        safe_name = _safe_filename(filename)
+        source_hash = _sha256_bytes(data)
+        spool_path = personal_knowledge_import_spool_path(self.data_root, owner_user_id, source_hash, safe_name)
+        spool_path.parent.mkdir(parents=True, exist_ok=True)
+        spool_path.write_bytes(data)
+        clean_source_kind = _clean_title(source_kind).lower().replace(" ", "_")
+        clean_title = title_from_filename_or_uri(safe_name, source_uri, title)
+        metadata = {
+            "queued_import_kind": "source_bytes",
+            "queued_source_path": spool_path.relative_to(self.data_root).as_posix(),
+            "source_filename": safe_name,
+            "title": clean_title,
+            "source_kind": clean_source_kind,
+            "source_uri": source_uri,
+            "source_mime_type": source_mime_type or mimetypes.guess_type(safe_name)[0] or "",
+            "created_by_user_id": str(created_by_user_id) if created_by_user_id else None,
+            "agent_searchable": bool(agent_searchable),
+            "sensitivity": sensitivity,
+            "doc_metadata": dict(doc_metadata or {}),
+        }
+        return await self._queue_import_job(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            title=clean_title,
+            source_kind=clean_source_kind,
+            source_uri=source_uri,
+            source_sha256=source_hash,
+            artifact_hash=source_hash,
+            canonical_md_path="",
+            canonical_md_sha256=None,
+            created_by_user_id=created_by_user_id,
+            agent_searchable=agent_searchable,
+            sensitivity=sensitivity,
+            metadata=metadata,
+        )
+
+    async def queue_url_import(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        url: str,
+        title: str | None = None,
+        created_by_user_id: uuid.UUID | None = None,
+        agent_searchable: bool = True,
+        sensitivity: str = "internal",
+    ) -> PersonalKnowledgeIngestResult:
+        clean_url = str(url or "").strip()
+        parsed = urlparse(clean_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("url must be an absolute http(s) URL")
+        filename = Path(parsed.path).name or "imported-url.html"
+        clean_title = title_from_filename_or_uri(filename, clean_url, title)
+        source_hash = _sha256("\n".join(["url", clean_url]))
+        metadata = {
+            "queued_import_kind": "url",
+            "title": clean_title,
+            "source_kind": "url",
+            "source_uri": clean_url,
+            "created_by_user_id": str(created_by_user_id) if created_by_user_id else None,
+            "agent_searchable": bool(agent_searchable),
+            "sensitivity": sensitivity,
+            "doc_metadata": {},
+        }
+        return await self._queue_import_job(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            title=clean_title,
+            source_kind="url",
+            source_uri=clean_url,
+            source_sha256=source_hash,
+            artifact_hash=source_hash,
+            canonical_md_path="",
+            canonical_md_sha256=None,
+            created_by_user_id=created_by_user_id,
+            agent_searchable=agent_searchable,
+            sensitivity=sensitivity,
+            metadata=metadata,
+        )
+
     async def ingest_markdown(
         self,
         session: Any,
@@ -1279,10 +1564,11 @@ class PersonalKnowledgeService:
         sensitivity: str = "internal",
         source_mime_type: str | None = None,
         doc_metadata: dict[str, Any] | None = None,
+        source_sha256: str | None = None,
     ) -> PersonalKnowledgeIngestResult:
         safe_name = _safe_filename(filename)
         ext = _extension_for_filename(safe_name)
-        source_hash = _sha256_bytes(data)
+        source_hash = _validate_source_sha256(source_sha256) if source_sha256 is not None else _sha256_bytes(data)
         artifact_hash = source_hash
         media_kind = _media_kind_for_extension(ext)
         if media_kind is not None:
@@ -1361,7 +1647,7 @@ class PersonalKnowledgeService:
             created_by_user_id=created_by_user_id,
             agent_searchable=agent_searchable,
             sensitivity=sensitivity,
-            source_sha256=getattr(conversion, "source_sha256", source_hash),
+            source_sha256=source_hash if source_sha256 is not None else getattr(conversion, "source_sha256", source_hash),
             doc_metadata=metadata,
             warnings=warnings,
         )
@@ -1549,6 +1835,7 @@ class PersonalKnowledgeService:
         created_by_user_id: uuid.UUID | None = None,
         agent_searchable: bool = True,
         sensitivity: str = "internal",
+        source_sha256: str | None = None,
     ) -> PersonalKnowledgeIngestResult:
         clean_url = str(url or "").strip()
         parsed = urlparse(clean_url)
@@ -1574,6 +1861,7 @@ class PersonalKnowledgeService:
             agent_searchable=agent_searchable,
             sensitivity=sensitivity,
             source_mime_type=response.headers.get("content-type"),
+            source_sha256=source_sha256,
         )
 
     async def list_import_jobs(
@@ -1974,6 +2262,14 @@ class PersonalKnowledgeService:
         job = result.scalar_one_or_none()
         if job is None:
             return None
+        if dict(job.job_metadata_json or {}).get("queued_import_kind"):
+            return await self._process_queued_import_job(
+                session,
+                job=job,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                current_user_id=current_user_id,
+            )
         return await self.rebuild_personal_document_index(
             session,
             tenant_id=tenant_id,
@@ -1981,6 +2277,119 @@ class PersonalKnowledgeService:
             document_id=job.document_id,
             current_user_id=current_user_id,
         )
+
+    async def _process_queued_import_job(
+        self,
+        session: Any,
+        *,
+        job: Any,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+    ) -> PersonalKnowledgeIngestResult | None:
+        if current_user_id != owner_user_id:
+            return None
+        metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+        queued_kind = str(metadata.get("queued_import_kind") or "").strip()
+        if not queued_kind:
+            return None
+
+        def _optional_uuid(value: Any) -> uuid.UUID | None:
+            if value in {None, ""}:
+                return None
+            return uuid.UUID(str(value))
+
+        source_hash = _validate_source_sha256(metadata.get("source_sha256") or getattr(job, "artifact_hash", ""))
+        job.stage = "processing"
+        job.status = "running"
+        job.error_message = None
+        job.attempt_count = int(getattr(job, "attempt_count", 0) or 0) + 1
+        await session.flush()
+
+        try:
+            if queued_kind == "markdown":
+                queued_path = self.data_root / str(metadata.get("queued_markdown_path") or "")
+                if not queued_path.exists():
+                    raise FileNotFoundError("queued_markdown_missing")
+                result = await self.ingest_markdown(
+                    session,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    title=str(metadata.get("title") or "Untitled knowledge document"),
+                    markdown=queued_path.read_text(encoding="utf-8"),
+                    source_kind=str(metadata.get("source_kind") or "paste"),
+                    source_uri=metadata.get("source_uri"),
+                    created_by_user_id=_optional_uuid(metadata.get("created_by_user_id")),
+                    agent_searchable=bool(metadata.get("agent_searchable", True)),
+                    sensitivity=str(metadata.get("sensitivity") or "internal"),
+                    source_sha256=source_hash,
+                    doc_metadata=dict(metadata.get("doc_metadata") or {}),
+                    force_reindex=True,
+                )
+            elif queued_kind == "source_bytes":
+                queued_path = self.data_root / str(metadata.get("queued_source_path") or "")
+                if not queued_path.exists():
+                    raise FileNotFoundError("queued_source_missing")
+                result = await self.ingest_source_bytes(
+                    session,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    filename=str(metadata.get("source_filename") or queued_path.name),
+                    data=queued_path.read_bytes(),
+                    title=metadata.get("title"),
+                    source_kind=str(metadata.get("source_kind") or "upload"),
+                    source_uri=metadata.get("source_uri"),
+                    created_by_user_id=_optional_uuid(metadata.get("created_by_user_id")),
+                    agent_searchable=bool(metadata.get("agent_searchable", True)),
+                    sensitivity=str(metadata.get("sensitivity") or "internal"),
+                    source_mime_type=metadata.get("source_mime_type"),
+                    doc_metadata=dict(metadata.get("doc_metadata") or {}),
+                    source_sha256=source_hash,
+                )
+            elif queued_kind == "url":
+                result = await self.ingest_url(
+                    session,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    url=str(metadata.get("source_uri") or ""),
+                    title=metadata.get("title"),
+                    created_by_user_id=_optional_uuid(metadata.get("created_by_user_id")),
+                    agent_searchable=bool(metadata.get("agent_searchable", True)),
+                    sensitivity=str(metadata.get("sensitivity") or "internal"),
+                    source_sha256=source_hash,
+                )
+            else:
+                raise ValueError(f"unknown_queued_import_kind:{queued_kind}")
+        except Exception as exc:
+            warning = f"queued_import_failed:{exc}"
+            job.stage = "processing"
+            job.status = "failed"
+            job.error_message = warning
+            job.job_metadata_json = {**metadata, "warnings": [warning]}
+            await session.flush()
+            return PersonalKnowledgeIngestResult(
+                document_id=job.document_id,
+                job_id=job.id,
+                source_sha256=source_hash,
+                artifact_hash=str(getattr(job, "artifact_hash", source_hash) or source_hash),
+                canonical_md_path="",
+                segment_count=0,
+                status="failed",
+                warnings=[warning],
+            )
+
+        job.stage = "indexed" if result.status in {"ready", "degraded"} else "failed"
+        job.status = result.status
+        job.error_message = None if result.status in {"ready", "degraded"} else ";".join(result.warnings or [])
+        job.job_metadata_json = {
+            **metadata,
+            "warnings": list(result.warnings or []),
+            "processed_result_job_id": str(result.job_id or job.id),
+            "processed_document_id": str(result.document_id),
+            "processed_canonical_md_path": result.canonical_md_path,
+        }
+        await session.flush()
+        return result
 
     async def process_import_jobs(
         self,
@@ -2024,13 +2433,22 @@ class PersonalKnowledgeService:
                 skipped += 1
                 results.append({"job_id": str(job_id or ""), "status": "skipped", "warnings": ["missing_document_id"]})
                 continue
-            result = await self.rebuild_personal_document_index(
-                session,
-                tenant_id=tenant_id,
-                owner_user_id=owner_user_id,
-                document_id=document_id,
-                current_user_id=current_user_id,
-            )
+            if dict(getattr(job, "job_metadata_json", {}) or {}).get("queued_import_kind"):
+                result = await self._process_queued_import_job(
+                    session,
+                    job=job,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    current_user_id=current_user_id,
+                )
+            else:
+                result = await self.rebuild_personal_document_index(
+                    session,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    document_id=document_id,
+                    current_user_id=current_user_id,
+                )
             if result is None:
                 skipped += 1
                 results.append({"job_id": str(job_id or ""), "status": "skipped", "warnings": ["job_not_rebuilt"]})

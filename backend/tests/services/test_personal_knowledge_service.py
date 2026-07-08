@@ -91,6 +91,11 @@ class _FakeConversionService:
         )
 
 
+class _FailingConversionService:
+    def convert_bytes(self, **kwargs):  # pragma: no cover - queue tests assert this is not called
+        raise AssertionError("queueing an import must not synchronously convert bytes")
+
+
 class _NoopKnowledgeExtractor:
     async def extract_segment(self, *args, **kwargs):  # pragma: no cover - existing tests do not inspect extraction
         from app.services.personal_knowledge_extractor import KnowledgeExtractionResult
@@ -190,12 +195,16 @@ class _QueuedSession:
     def __init__(self, results) -> None:
         self.results = list(results)
         self.executed: list[object] = []
+        self.flush_count = 0
 
     async def execute(self, statement):
         self.executed.append(statement)
         if not self.results:
             return _RowsResult([])
         return _RowsResult(self.results.pop(0))
+
+    async def flush(self) -> None:
+        self.flush_count += 1
 
 
 def test_personal_knowledge_artifact_path_is_person_scope_stable(tmp_path: Path) -> None:
@@ -303,6 +312,52 @@ async def test_ingest_source_bytes_converts_file_then_indexes_canonical_markdown
     assert jobs[-1].status == "ready"
     assert jobs[-1].stage == "indexed"
     assert jobs[-1].job_metadata_json["source_kind"] == "upload"
+
+
+@pytest.mark.asyncio
+async def test_queue_source_bytes_import_writes_spool_job_without_conversion(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(
+        data_root=tmp_path,
+        conversion_service=_FailingConversionService(),
+        extractor=_FailingKnowledgeExtractor(),
+    )
+
+    result = await service.queue_source_bytes_import(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        filename="report.pdf",
+        data=b"%PDF queued bytes",
+        title="Queued report",
+        source_kind="upload",
+        source_uri="upload://report.pdf",
+        source_mime_type="application/pdf",
+        created_by_user_id=owner_id,
+        agent_searchable=True,
+        sensitivity="internal",
+        doc_metadata={"source_context": "unit-test"},
+    )
+
+    documents = [obj for obj in session.added if isinstance(obj, KnowledgeDocument)]
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+    spool_path = tmp_path / jobs[-1].job_metadata_json["queued_source_path"]
+
+    assert result.status == "queued"
+    assert result.segment_count == 0
+    assert documents[-1].status == "queued"
+    assert documents[-1].source_sha256 == result.source_sha256
+    assert documents[-1].doc_metadata_json["queued_import_kind"] == "source_bytes"
+    assert jobs[-1].stage == "queued"
+    assert jobs[-1].status == "queued"
+    assert jobs[-1].attempt_count == 0
+    assert jobs[-1].job_metadata_json["queued_import_kind"] == "source_bytes"
+    assert jobs[-1].job_metadata_json["source_filename"] == "report.pdf"
+    assert spool_path.read_bytes() == b"%PDF queued bytes"
 
 
 @pytest.mark.asyncio
@@ -976,6 +1031,78 @@ async def test_process_import_jobs_consumes_queued_and_failed_personal_jobs(tmp_
     assert summary.failed == 1
     assert summary.results[0]["status"] == "ready"
     assert summary.results[1]["warnings"] == ["canonical_markdown_missing"]
+
+
+@pytest.mark.asyncio
+async def test_process_import_jobs_consumes_queued_source_bytes_payload(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeIngestResult, PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+    source_hash = "d" * 64
+    queued_path = tmp_path / "persons" / str(owner_id) / "kb" / "imports" / "dd" / "queued-report.md"
+    queued_path.parent.mkdir(parents=True)
+    queued_path.write_bytes(b"# queued source")
+    job = SimpleNamespace(
+        id=job_id,
+        document_id=document_id,
+        status="queued",
+        attempt_count=0,
+        job_metadata_json={
+            "queued_import_kind": "source_bytes",
+            "queued_source_path": queued_path.relative_to(tmp_path).as_posix(),
+            "source_filename": "queued-report.md",
+            "source_kind": "upload",
+            "source_uri": "upload://queued-report.md",
+            "source_mime_type": "text/markdown",
+            "title": "Queued report",
+            "agent_searchable": True,
+            "sensitivity": "internal",
+            "created_by_user_id": str(owner_id),
+            "doc_metadata": {"source_context": "unit-test"},
+            "source_sha256": source_hash,
+        },
+    )
+    session = _QueuedSession([[(job,)]])
+
+    class _WorkerService(PersonalKnowledgeService):
+        def __init__(self) -> None:
+            super().__init__(data_root=tmp_path)
+            self.ingest_calls: list[dict] = []
+
+        async def ingest_source_bytes(self, session, **kwargs):
+            self.ingest_calls.append(kwargs)
+            return PersonalKnowledgeIngestResult(
+                document_id=document_id,
+                job_id=job_id,
+                source_sha256=kwargs["source_sha256"],
+                artifact_hash="e" * 64,
+                canonical_md_path="persons/owner/kb/documents/dd.md",
+                segment_count=1,
+                status="ready",
+                warnings=[],
+            )
+
+    service = _WorkerService()
+
+    summary = await service.process_import_jobs(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        limit=5,
+    )
+
+    assert summary.attempted == 1
+    assert summary.succeeded == 1
+    assert service.ingest_calls[0]["filename"] == "queued-report.md"
+    assert service.ingest_calls[0]["data"] == b"# queued source"
+    assert service.ingest_calls[0]["source_sha256"] == source_hash
+    assert job.stage == "indexed"
+    assert job.status == "ready"
+    assert job.attempt_count == 1
 
 
 @pytest.mark.asyncio

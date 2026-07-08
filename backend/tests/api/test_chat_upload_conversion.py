@@ -32,6 +32,7 @@ async def test_chat_upload_routes_documents_through_conversion_service(monkeypat
     file = UploadFile(io.BytesIO(b"<h1>raw</h1>"), filename="report.html")
 
     result = await upload_api.upload_file(
+        background_tasks=None,
         file=file,
         agent_id=agent_id,
         current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4()),
@@ -66,16 +67,16 @@ async def test_chat_upload_default_registers_personal_kb_candidate(monkeypatch, 
         return SimpleNamespace(id=agent_id, owner_user_id=owner_id, tenant_id=tenant_id), "write"
 
     class _FakePersonalKnowledgeService:
-        async def ingest_source_bytes(self, session, **kwargs):
+        async def queue_source_bytes_import(self, session, **kwargs):
             captured.append(kwargs)
             return SimpleNamespace(
                 document_id=document_id,
                 job_id=job_id,
                 source_sha256="a" * 64,
                 artifact_hash="a" * 64,
-                canonical_md_path="persons/owner/kb/documents/aa.md",
-                segment_count=1,
-                status="ready",
+                canonical_md_path="",
+                segment_count=0,
+                status="queued",
                 warnings=[],
             )
 
@@ -94,6 +95,7 @@ async def test_chat_upload_default_registers_personal_kb_candidate(monkeypatch, 
     db = _FakeDB()
     file = UploadFile(io.BytesIO(b"# notes"), filename="notes.md")
     result = await upload_api.upload_file(
+        background_tasks=None,
         file=file,
         agent_id=agent_id,
         skip_personal_kb=False,
@@ -113,7 +115,7 @@ async def test_chat_upload_default_registers_personal_kb_candidate(monkeypatch, 
         "skipped": False,
         "document_id": str(document_id),
         "job_id": str(job_id),
-        "status": "ready",
+        "status": "queued",
         "warnings": [],
         "origin": f"agent:{agent_id}",
     }
@@ -127,8 +129,8 @@ async def test_chat_upload_skip_personal_kb_does_not_ingest(monkeypatch, tmp_pat
         return SimpleNamespace(id=agent_id, owner_user_id=current_user.id, tenant_id=current_user.tenant_id), "write"
 
     class _FailingPersonalKnowledgeService:
-        async def ingest_source_bytes(self, *args, **kwargs):
-            raise AssertionError("skip_personal_kb must not ingest")
+        async def queue_source_bytes_import(self, *args, **kwargs):
+            raise AssertionError("skip_personal_kb must not queue")
 
     _install_fake_markitdown(monkeypatch, "# Notes\n\nConverted markdown")
     monkeypatch.setattr(upload_api, "WORKSPACE_ROOT", tmp_path)
@@ -138,6 +140,7 @@ async def test_chat_upload_skip_personal_kb_does_not_ingest(monkeypatch, tmp_pat
     agent_id = uuid.uuid4()
     file = UploadFile(io.BytesIO(b"# notes"), filename="notes.md")
     result = await upload_api.upload_file(
+        background_tasks=None,
         file=file,
         agent_id=agent_id,
         skip_personal_kb=True,
@@ -156,8 +159,8 @@ async def test_chat_upload_rejects_oversized_file_before_workspace_or_personal_k
         return SimpleNamespace(id=agent_id, owner_user_id=current_user.id, tenant_id=current_user.tenant_id), "write"
 
     class _FailingPersonalKnowledgeService:
-        async def ingest_source_bytes(self, *args, **kwargs):
-            raise AssertionError("oversized upload must not ingest into Personal KB")
+        async def queue_source_bytes_import(self, *args, **kwargs):
+            raise AssertionError("oversized upload must not queue into Personal KB")
 
     monkeypatch.setattr(upload_api, "WORKSPACE_ROOT", tmp_path)
     monkeypatch.setattr(upload_api, "CHAT_UPLOAD_MAX_BYTES", 4)
@@ -168,6 +171,7 @@ async def test_chat_upload_rejects_oversized_file_before_workspace_or_personal_k
     file = UploadFile(io.BytesIO(b"12345"), filename="large.md")
     with pytest.raises(HTTPException) as exc:
         await upload_api.upload_file(
+            background_tasks=None,
             file=file,
             agent_id=agent_id,
             skip_personal_kb=False,

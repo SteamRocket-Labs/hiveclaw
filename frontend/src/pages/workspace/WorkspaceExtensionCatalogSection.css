@@ -102,6 +102,14 @@
   min-width: 92px;
 }
 
+.workspace-extension-catalog-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 @media (max-width: 640px) {
   .workspace-extension-catalog-row {
     align-items: stretch;
@@ -113,6 +121,10 @@
   }
 
   .workspace-extension-catalog-action {
+    width: 100%;
+  }
+
+  .workspace-extension-catalog-actions {
     width: 100%;
   }
 }

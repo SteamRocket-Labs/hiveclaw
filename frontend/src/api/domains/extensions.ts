@@ -215,6 +215,19 @@ export const extensionsApi = {
   approveExternalCapabilityReview: (reviewId: string) =>
     post<ExternalCapabilityReviewResult>(`/enterprise/external-capabilities/reviews/${reviewId}/approve`),
 
+  /** Company admin: reject one staged external capability review. */
+  rejectExternalCapabilityReview: (reviewId: string, body: { reason?: string | null } = {}) =>
+    post<{ review_id: string; status: string; reason?: string }>(
+      `/enterprise/external-capabilities/reviews/${reviewId}/reject`,
+      body,
+    ),
+
+  /** Company admin: revoke one approved external capability snapshot. */
+  revokeExternalCapabilitySnapshot: (snapshotId: string) =>
+    post<{ snapshot_id: string; status: string; catalog_entries_revoked?: number; activations_revoked?: number }>(
+      `/enterprise/external-capabilities/snapshots/${snapshotId}/revoke`,
+    ),
+
   /** Agent owner/admin: list approved catalog entries available to this agent. */
   listAgentExternalExtensionCatalog: (agentId: string) =>
     get<ExternalExtensionCatalogEntry[]>(`/agents/${agentId}/external-extensions/catalog`),
@@ -222,6 +235,10 @@ export const extensionsApi = {
   /** Agent owner/admin: activate one approved external snapshot for this agent. */
   activateExternalExtension: (agentId: string, snapshotId: string) =>
     post<ExternalExtensionActivationResult>(`/agents/${agentId}/external-extensions/${snapshotId}/activate`),
+
+  /** Agent owner/admin: deactivate one active external snapshot for this agent. */
+  deactivateExternalExtension: (agentId: string, snapshotId: string) =>
+    post<ExternalExtensionActivationResult>(`/agents/${agentId}/external-extensions/${snapshotId}/deactivate`),
 
   /** Company admin: delete one tenant MCP server record by its stable id. */
   deleteEnterpriseMcpServer: (serverId: string) =>

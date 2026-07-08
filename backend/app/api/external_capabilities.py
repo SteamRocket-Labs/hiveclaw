@@ -174,6 +174,7 @@ async def revoke_external_capability_snapshot_route(
             tenant_id=current_user.tenant_id,
             snapshot_id=snapshot_id,
             revoked_by_user_id=current_user.id,
+            agent_data_root=Path(get_settings().AGENT_DATA_DIR),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

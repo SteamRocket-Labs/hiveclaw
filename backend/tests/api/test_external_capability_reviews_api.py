@@ -126,11 +126,12 @@ def test_revoke_external_capability_snapshot_api_threads_admin(monkeypatch):
     client, fake_db, current_user = _build_client()
     expected = {"snapshot_id": str(target_snapshot_id), "status": "revoked", "catalog_entries_revoked": 1}
 
-    async def fake_revoke(db_session, *, tenant_id, snapshot_id, revoked_by_user_id):
+    async def fake_revoke(db_session, *, tenant_id, snapshot_id, revoked_by_user_id, agent_data_root):
         assert db_session is fake_db
         assert tenant_id == current_user.tenant_id
         assert snapshot_id == target_snapshot_id
         assert revoked_by_user_id == current_user.id
+        assert agent_data_root is not None
         return expected
 
     monkeypatch.setattr(external_mod, "revoke_external_capability_snapshot", fake_revoke)

@@ -346,6 +346,51 @@ async def test_revoke_external_capability_snapshot_marks_catalog_unavailable():
 
 
 @pytest.mark.asyncio
+async def test_revoke_external_capability_snapshot_revokes_active_agent_activations(tmp_path):
+    tenant_id = uuid4()
+    reviewer_id = uuid4()
+    agent_id = uuid4()
+    snapshot = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        status="approved",
+        revoked_by_user_id=None,
+        revoked_at=None,
+    )
+    catalog_entry = SimpleNamespace(status="available")
+    activation = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot.id,
+        status="active",
+        activation_result_json={"components": [{"component_type": "skill", "name": "audit"}]},
+    )
+    skill_dir = tmp_path / str(agent_id) / "skills" / "audit"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Audit", encoding="utf-8")
+    db = _TrustGateSession([snapshot, [catalog_entry], [activation]])
+
+    result = await revoke_external_capability_snapshot(
+        db,
+        tenant_id=tenant_id,
+        snapshot_id=snapshot.id,
+        revoked_by_user_id=reviewer_id,
+        agent_data_root=tmp_path,
+    )
+
+    assert result["status"] == "revoked"
+    assert result["catalog_entries_revoked"] == 1
+    assert result["activations_revoked"] == 1
+    assert activation.status == "revoked"
+    assert activation.activation_result_json["revocation"]["components"] == [
+        {"component_type": "skill", "name": "audit", "status": "removed"}
+    ]
+    assert not skill_dir.exists()
+    assert db.commit_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_stage_external_skill_package_review_maps_skill_guard_block_to_blocked_review():
     tenant_id = uuid4()
     user_id = uuid4()

@@ -36,7 +36,7 @@ export default function AgentExtensionCatalogSection({ agentId, canManage = fals
   const [catalog, setCatalog] = useState<ExternalExtensionCatalogEntry[]>([]);
   const [activeSnapshotIds, setActiveSnapshotIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [activatingSnapshotId, setActivatingSnapshotId] = useState<string | null>(null);
+  const [busySnapshotId, setBusySnapshotId] = useState<string | null>(null);
 
   const loadCatalog = async () => {
     setLoading(true);
@@ -76,7 +76,7 @@ export default function AgentExtensionCatalogSection({ agentId, canManage = fals
   }, [catalog]);
 
   const activateEntry = async (entry: ExternalExtensionCatalogEntry) => {
-    setActivatingSnapshotId(entry.snapshot_id);
+    setBusySnapshotId(entry.snapshot_id);
     try {
       await extensionsApi.activateExternalExtension(agentId, entry.snapshot_id);
       setActiveSnapshotIds((previous) => new Set(previous).add(entry.snapshot_id));
@@ -85,7 +85,25 @@ export default function AgentExtensionCatalogSection({ agentId, canManage = fals
       console.error(error);
       showAppToast(t('agent.extensions.catalogActivateFailed', 'Failed to activate extension'), 'error');
     } finally {
-      setActivatingSnapshotId(null);
+      setBusySnapshotId(null);
+    }
+  };
+
+  const deactivateEntry = async (entry: ExternalExtensionCatalogEntry) => {
+    setBusySnapshotId(entry.snapshot_id);
+    try {
+      await extensionsApi.deactivateExternalExtension(agentId, entry.snapshot_id);
+      setActiveSnapshotIds((previous) => {
+        const next = new Set(previous);
+        next.delete(entry.snapshot_id);
+        return next;
+      });
+      showAppToast(t('agent.extensions.catalogDeactivated', 'Extension deactivated'), 'success');
+    } catch (error) {
+      console.error(error);
+      showAppToast(t('agent.extensions.catalogDeactivateFailed', 'Failed to deactivate extension'), 'error');
+    } finally {
+      setBusySnapshotId(null);
     }
   };
 
@@ -122,14 +140,14 @@ export default function AgentExtensionCatalogSection({ agentId, canManage = fals
                     {canManage ? (
                       <button
                         type="button"
-                        className="btn btn-primary agent-extension-catalog-action"
-                        disabled={isActive || activatingSnapshotId === entry.snapshot_id}
-                        onClick={() => void activateEntry(entry)}
+                        className={`btn ${isActive ? 'btn-secondary' : 'btn-primary'} agent-extension-catalog-action`}
+                        disabled={busySnapshotId === entry.snapshot_id}
+                        onClick={() => void (isActive ? deactivateEntry(entry) : activateEntry(entry))}
                       >
-                        {isActive
-                          ? t('agent.extensions.catalogActive', 'Active')
-                          : activatingSnapshotId === entry.snapshot_id
-                            ? t('common.saving', 'Saving...')
+                        {busySnapshotId === entry.snapshot_id
+                          ? t('common.saving', 'Saving...')
+                          : isActive
+                            ? t('agent.extensions.catalogDeactivate', 'Deactivate')
                             : t('agent.extensions.catalogInstall', 'Install')}
                       </button>
                     ) : (

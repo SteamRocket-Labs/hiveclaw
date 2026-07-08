@@ -100,4 +100,28 @@ describe('extensions API adapter', () => {
       normalized_name: 'Example MCP',
     });
   });
+
+  it('routes external review rejection, snapshot revoke, and agent deactivation through Trust Gate endpoints', async () => {
+    vi.doMock('../core', async () => {
+      const actual = await vi.importActual<typeof import('../core')>('../core');
+      return {
+        ...actual,
+        post: vi.fn(),
+      };
+    });
+
+    const { extensionsApi } = await import('./extensions');
+    const { post } = await import('../core');
+    vi.mocked(post).mockResolvedValue({ status: 'ok' });
+
+    await extensionsApi.rejectExternalCapabilityReview('review-1', { reason: 'unsafe hook' });
+    await extensionsApi.revokeExternalCapabilitySnapshot('snapshot-1');
+    await extensionsApi.deactivateExternalExtension('agent-1', 'snapshot-1');
+
+    expect(post).toHaveBeenCalledWith('/enterprise/external-capabilities/reviews/review-1/reject', {
+      reason: 'unsafe hook',
+    });
+    expect(post).toHaveBeenCalledWith('/enterprise/external-capabilities/snapshots/snapshot-1/revoke');
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/external-extensions/snapshot-1/deactivate');
+  });
 });

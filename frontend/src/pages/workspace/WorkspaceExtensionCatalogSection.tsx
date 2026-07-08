@@ -20,6 +20,8 @@ export default function WorkspaceExtensionCatalogSection() {
   const [reviews, setReviews] = useState<ExternalCapabilityReviewSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [approvingReviewId, setApprovingReviewId] = useState<string | null>(null);
+  const [rejectingReviewId, setRejectingReviewId] = useState<string | null>(null);
+  const [revokingSnapshotId, setRevokingSnapshotId] = useState<string | null>(null);
 
   const loadCatalog = async () => {
     setLoading(true);
@@ -53,6 +55,34 @@ export default function WorkspaceExtensionCatalogSection() {
       showAppToast(t('enterprise.extensions.reviewApproveFailed', 'Failed to approve review'), 'error');
     } finally {
       setApprovingReviewId(null);
+    }
+  };
+
+  const rejectReview = async (review: ExternalCapabilityReviewSummary) => {
+    setRejectingReviewId(review.id);
+    try {
+      await extensionsApi.rejectExternalCapabilityReview(review.id, { reason: 'Rejected from workspace catalog review' });
+      showAppToast(t('enterprise.extensions.reviewRejected', 'Review rejected'), 'success');
+      await loadCatalog();
+    } catch (error) {
+      console.error(error);
+      showAppToast(t('enterprise.extensions.reviewRejectFailed', 'Failed to reject review'), 'error');
+    } finally {
+      setRejectingReviewId(null);
+    }
+  };
+
+  const revokeEntry = async (entry: ExternalExtensionCatalogEntry) => {
+    setRevokingSnapshotId(entry.snapshot_id);
+    try {
+      await extensionsApi.revokeExternalCapabilitySnapshot(entry.snapshot_id);
+      showAppToast(t('enterprise.extensions.snapshotRevoked', 'Snapshot revoked'), 'success');
+      await loadCatalog();
+    } catch (error) {
+      console.error(error);
+      showAppToast(t('enterprise.extensions.snapshotRevokeFailed', 'Failed to revoke snapshot'), 'error');
+    } finally {
+      setRevokingSnapshotId(null);
     }
   };
 
@@ -96,6 +126,16 @@ export default function WorkspaceExtensionCatalogSection() {
                   <span>{entry.policy}</span>
                   <span>{entry.status}</span>
                 </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary workspace-extension-catalog-action"
+                  disabled={revokingSnapshotId === entry.snapshot_id}
+                  onClick={() => void revokeEntry(entry)}
+                >
+                  {revokingSnapshotId === entry.snapshot_id
+                    ? t('common.saving', 'Saving...')
+                    : t('enterprise.extensions.revoke', 'Revoke')}
+                </button>
               </div>
             ))}
           </div>
@@ -120,16 +160,28 @@ export default function WorkspaceExtensionCatalogSection() {
                     {review.source_format} · {reviewComponentCount(review)} {t('enterprise.extensions.components', 'components')}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-primary workspace-extension-catalog-action"
-                  disabled={approvingReviewId === review.id}
-                  onClick={() => void approveReview(review)}
-                >
-                  {approvingReviewId === review.id
-                    ? t('common.saving', 'Saving...')
-                    : t('enterprise.extensions.approve', 'Approve')}
-                </button>
+                <div className="workspace-extension-catalog-actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary workspace-extension-catalog-action"
+                    disabled={rejectingReviewId === review.id || approvingReviewId === review.id}
+                    onClick={() => void rejectReview(review)}
+                  >
+                    {rejectingReviewId === review.id
+                      ? t('common.saving', 'Saving...')
+                      : t('enterprise.extensions.reject', 'Reject')}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary workspace-extension-catalog-action"
+                    disabled={approvingReviewId === review.id || rejectingReviewId === review.id}
+                    onClick={() => void approveReview(review)}
+                  >
+                    {approvingReviewId === review.id
+                      ? t('common.saving', 'Saving...')
+                      : t('enterprise.extensions.approve', 'Approve')}
+                  </button>
+                </div>
               </div>
             ))}
           </div>

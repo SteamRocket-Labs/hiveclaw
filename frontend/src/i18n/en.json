@@ -776,9 +776,12 @@
       "catalogLoadFailed": "Failed to load extension catalog",
       "catalogActivated": "Extension activated",
       "catalogActivateFailed": "Failed to activate extension",
+      "catalogDeactivated": "Extension deactivated",
+      "catalogDeactivateFailed": "Failed to deactivate extension",
       "catalogEmpty": "No approved optional extensions are available yet.",
       "catalogActive": "Active",
       "catalogAvailable": "Available",
+      "catalogDeactivate": "Deactivate",
       "catalogInstall": "Install"
     },
     "detail": {
@@ -2128,6 +2131,10 @@
       "catalogLoadFailed": "Failed to load extension catalog",
       "reviewApproved": "Review approved",
       "reviewApproveFailed": "Failed to approve review",
+      "reviewRejected": "Review rejected",
+      "reviewRejectFailed": "Failed to reject review",
+      "snapshotRevoked": "Snapshot revoked",
+      "snapshotRevokeFailed": "Failed to revoke snapshot",
       "catalogAvailable": "Available",
       "reviewQueue": "Review queue",
       "approvedCatalog": "Approved catalog",
@@ -2135,6 +2142,8 @@
       "pendingReviews": "Pending reviews",
       "noPendingReviews": "No external capability reviews are waiting.",
       "components": "components",
+      "reject": "Reject",
+      "revoke": "Revoke",
       "approve": "Approve"
     },
     "memory": {

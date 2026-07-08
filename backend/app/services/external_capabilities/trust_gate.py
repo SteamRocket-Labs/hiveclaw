@@ -6,6 +6,7 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -14,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.external_capability import (
     ExternalCapabilityReview,
     ExternalCapabilitySnapshot,
+    ExternalExtensionActivation,
     ExternalExtensionCatalogEntry,
 )
+from app.services.external_capabilities.activation_cleanup import deactivate_activation_components
 from app.services.external_capabilities.types import NormalizedExternalPluginBundle
 
 _BLOCKING_NOTE_CODES = {"component_path_escape", "missing_skill_md", "skill_guard_blocked"}
@@ -193,6 +196,7 @@ async def revoke_external_capability_snapshot(
     tenant_id: uuid.UUID,
     snapshot_id: uuid.UUID,
     revoked_by_user_id: uuid.UUID | None,
+    agent_data_root: Path | None = None,
 ) -> dict[str, Any]:
     """Revoke an approved snapshot and hide its catalog entries from future activation."""
     try:
@@ -221,16 +225,59 @@ async def revoke_external_capability_snapshot(
             for entry in catalog_entries:
                 entry.status = "revoked"
             catalog_entries_revoked = len(catalog_entries)
+        active_activation_result = await db.execute(
+            select(ExternalExtensionActivation).where(
+                ExternalExtensionActivation.tenant_id == tenant_id,
+                ExternalExtensionActivation.snapshot_id == snapshot_id,
+                ExternalExtensionActivation.status == "active",
+            )
+        )
+        active_activations = list(active_activation_result.scalars().all())
+        for activation in active_activations:
+            activation_payload = dict(activation.activation_result_json or {})
+            workspace = agent_data_root / str(activation.agent_id) if agent_data_root is not None else None
+            revoked_components = (
+                deactivate_activation_components(activation_payload.get("components"), workspace=workspace)
+                if workspace is not None
+                else _db_only_revoked_components(activation_payload.get("components"))
+            )
+            activation.status = "revoked"
+            activation.activation_result_json = {
+                **activation_payload,
+                "revocation": {
+                    "components": revoked_components,
+                    "revoked_by_user_id": str(revoked_by_user_id) if revoked_by_user_id else None,
+                    "revoked_at": datetime.now(timezone.utc).isoformat(),
+                },
+            }
         await db.flush()
         await db.commit()
         return {
             "snapshot_id": str(snapshot_id),
             "status": "revoked",
             "catalog_entries_revoked": catalog_entries_revoked,
+            "activations_revoked": len(active_activations),
         }
     except Exception:
         await db.rollback()
         raise
+
+
+def _db_only_revoked_components(components: Any) -> list[dict[str, Any]]:
+    if not isinstance(components, list):
+        return []
+    revoked: list[dict[str, Any]] = []
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        revoked.append(
+            {
+                "component_type": str(component.get("component_type") or "unknown"),
+                "name": str(component.get("name") or component.get("qualified_name") or "unknown"),
+                "status": "db_revoked_artifact_cleanup_not_attempted",
+            }
+        )
+    return revoked
 
 
 async def list_external_capability_reviews(db: AsyncSession, *, tenant_id: uuid.UUID) -> list[dict[str, Any]]:

@@ -21,6 +21,7 @@
 | 2026-07-08 | P1-7 RTD agent-cycle/context-artifact read surface | ✅ 已闭环 | Red: `context-usage` omitted `agent_cycle_decision_ledger` and `context_artifacts`; Workbench did not read either field. Green: `cd backend && source .venv/bin/activate && pytest tests/api/test_chat_sessions_permissions.py::test_get_session_context_usage_returns_context_diagnostics -q` → `1 passed`; `cd frontend && npm test -- --run src/api/domains/ccParity.test.ts src/pages/session-workbench/SessionNativeControls.test.tsx src/pages/session-workbench/timelineModel.test.ts` → `3 passed / 36 tests`; `cd frontend && npm run build` → success |
 | 2026-07-08 | P1-8 QKV MemoryRetriever dead gather API retirement | ✅ 已闭环 | Red: `test_memory_retriever_exposes_only_live_retrieval_entrypoints` failed while `retrieve_candidates` existed. Green: `cd backend && source .venv/bin/activate && pytest tests/memory/test_retrieval_pipeline.py -q` → `12 passed`; `ruff check app/memory/retriever.py tests/memory/test_retrieval_pipeline.py` → passed; graph/`rg` confirmed removed `retrieve_candidates` / `gather_*` symbols have no remaining code nodes or references |
 | 2026-07-08 | P1-9 External capability reject + version supersede | ✅ 已闭环 | Red: missing `reject_external_capability_review`; approve did not supersede older approved snapshot/catalog. Green: `cd backend && source .venv/bin/activate && pytest tests/services/test_external_capability_trust_gate.py tests/services/test_external_capability_activation.py tests/api/test_external_capability_reviews_api.py -q` → `19 passed`; `pytest tests/services/test_plugin_install_service.py -q` → `16 passed` confirms legacy `/enterprise/plugins/install` remains builtin/local pack projection, not external-source trust-gate bypass |
+| 2026-07-08 | P1-10 Personal KB autonomous owner-scope agent grant | ✅ 已闭环 | Red: `test_ensure_agent_identity_seeds_owner_scope_personal_knowledge_grant` found no `KnowledgeGrant`. Green: `cd backend && source .venv/bin/activate && pytest tests/services/test_agent_identity_lifecycle.py -q` → `5 passed`; `pytest tests/services/test_personal_knowledge_service.py -q` → `24 passed`; new agent identity bootstrap now seeds owner-scope `search` grant for the agent when tenant + owner exist |
 
 ---
 
@@ -33,7 +34,7 @@
 | ② QKV Attention Control | ⚠️ **半接线脚手架 / 收缩中** | 能稳定运行（fail-open + cache 正确）但未承载真实激活；T0 原始 activation event 泄漏已堵；空 hints 与 MemoryRetriever dead gather 已删，剩余为 Q 侧接活或继续收缩决策 |
 | ③ Plugin：CC 市场适配 | ❌ **≈15%** | marketplace/source 拉取/materialize/`${CLAUDE_PLUGIN_ROOT}` 全零；adapter 是孤儿代码 |
 | ③ Plugin：trust gate | ✅ 当前 trust chain 已闭环 / ⚠️ 市场适配未做 | skill/MCP import→stage→approve/reject→snapshot/catalog→activate/deactivate/revoke 真接线；新版本 approve 会 supersede 旧 snapshot/catalog；legacy plugins/install 复核为 builtin/local pack projection，不是 external-source trust-gate bypass |
-| ④ Personal KB | ⚠️ owner 面 ~95% / ✅ deterministic gaps 已修 | `search_personal_kb` 已注册 `agent.knowledge.read`；owner 搜索不再被 `agent_searchable` 误过滤；上传有硬上限；`KnowledgeIndexJob` 有批量消费入口；自主态 grant 仍需权限产品拍板 |
+| ④ Personal KB | ✅ 上线前硬断点已闭环 / ⚠️ 产品增强债仍在 | `search_personal_kb` 已注册 `agent.knowledge.read`；owner 搜索不再被 `agent_searchable` 误过滤；上传有硬上限；`KnowledgeIndexJob` 有批量消费入口；新 agent 自动获得 owner-scope Personal KB `search` grant 供自主态使用 |
 | ⑤ HR Agent | ✅ P0 已闭环 | HR v5 模板已同步 Personal KB、work ledger、workflow/subagent 路由；旧 `memory/t3/` source attribution 示例已迁；现有 HR diff 已回归验证 |
 | ⑥ Loop | ② 部分实现 | trigger 覆盖 cron 内核；缺模型自节奏 self-pace 链与 `/loop` 命令层 |
 | ⑥ Target Mode | **CC 侧不存在此功能**（Fact） | Hive Goal Mode 是 Codex-inspired 原生 delta，单次续跑防 runaway，缺"模型自判完成"闭环 |
@@ -154,7 +155,7 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 - **B1〔CRITICAL·执行铁证〕`search_personal_kb` 被 capability gate 拒**：工具在 registry.py:70 的 `_MEMORY` 运行时组但**不在 CAPABILITY_MAP**，governance.py:1014 无条件 check_capability，STRICT_CAPABILITY_MAPPING=True 下 fail-closed 拒绝（audit_capability_mapping() 原话确认）。整个 spec §5.2 agent 消费路径死；invoker.py:444 还在注入"用 search_personal_kb"提示词=自相矛盾。owner Web UI 端点直调 service 不受影响。**修法一行**（注册 CAPABILITY_MAP 如 agent.knowledge.read）。两个工具测试绕 governance 直调 handler 故 CI 没抓——应补一条真走 governance 的集成测试当修复门。
 - **B2〔高〕管线同步内联非异步**：无 worker 消费 KnowledgeIndexJob；upload.py:302 在聊天上传请求内 await ingest（含逐段 LLM 抽取）→ 大文档阻塞请求；KB 路径无独立大小上限。
 - **B3〔中〕owner 搜自己 KB 被 agent_searchable 误过滤**（search statement :418 无条件过滤，不分 owner）——文库列表能见、搜索不见，不一致。
-- **B4〔中〕自主态无自动授权**：ACL 谓词仅 current_user==owner 放行（service:316）；heartbeat/trigger（user_id=None）需显式 agent grant 而无种植机制 → 即便 B1 修好自主 agent 检索仍得空。与 HR 审计的"创建时不种 grant"同根因，合并为一个拍板点。
+- **B4 ✅ 已闭环** 自主态无自动授权：`ensure_agent_identity()` 会在 agent 有 tenant + owner/creator 时幂等种 `KnowledgeGrant(scope_type="person", resource_type="scope", grantee_type="agent", permission="search")`，heartbeat/trigger（user_id=None）可沿既有 agent grant 谓词读取 owner-scope Personal KB；无 tenant/owner 的旧对象不动。
 
 ### 4.2 缺失与债
 
@@ -203,7 +204,7 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 5. **QKV 收缩**：✅ S1 删恒空 hints 注入（kb_hint 已够，builder 仅在有 actionable skill/tool/subagent hint 时写 ledger）；✅ S2 dead gather 函数已退役；activation_keys derived index 是否继续收缩需按 reference_index/source-ref/repair-script 合约单独处理，或拍板接活（接活先修 LLM parser + scoring 回归模型判断）。
 6. ✅ **RTD T3 六项死写入**：context-usage 死观测面已接前端（Session-native controls + Chat header chip fallback）；`codex_optimization_ledger` dead append / 恒 False override 已删，保留 Workbench builder；`cache_decision_ledger`、`agent_cycle_decision_ledger`、`context_artifacts` 已接 context-usage + Workbench；`workflow_decision_entry` 与 `execution_shape_decision` 复核为误判（已有运行时/返回 payload 读者）。剩余只属于文件组织瘦身，不再是行为死写入。
 7. ✅ **Plugin trust gate 下半场**：snapshot revoke/deactivate/rollback 已补（catalog 隐藏，agent activation inactive，本地 skill/subagent 文件清理，MCP 标记 `manual_revoke_required`）；admin reject + rejected review approval block + version supersede 已补；legacy `/enterprise/plugins/install` 复核为 builtin/local pack projection，不是 external-source trust-gate bypass。剩余 Plugin 大项仅属于 CC marketplace/source/materialize 能力建设，不再是当前 trust-gate 安全缺口。
-8. **Personal KB B2-B4**：✅ B2 deterministic 部分：`process_import_jobs` 批量消费 queued/failed `KnowledgeIndexJob`，聊天上传新增 `HIVE_CHAT_UPLOAD_MAX_BYTES`/`HIVE_CHAT_IMAGE_UPLOAD_MAX_BYTES` 硬上限；✅ B3 owner 搜索去 `agent_searchable` 过滤，agent/非 owner 搜索仍过滤；B4 自主态 grant 需要权限产品拍板后实现。
+8. ✅ **Personal KB B2-B4**：B2 deterministic 部分已补：`process_import_jobs` 批量消费 queued/failed `KnowledgeIndexJob`，聊天上传新增 `HIVE_CHAT_UPLOAD_MAX_BYTES`/`HIVE_CHAT_IMAGE_UPLOAD_MAX_BYTES` 硬上限；B3 owner 搜索去 `agent_searchable` 过滤，agent/非 owner 搜索仍过滤；B4 新 agent identity bootstrap 自动种 owner-scope agent `search` grant。
 9. ✅ **HR 模板 sweep**（B1 落后）：O1 stale t3 例子 + M1 KB 引导 + M2/M3 能力路由，已随 P0-3 同批 bump 到 HR v5。
 10. **瘦身**：~1,990 LOC test-only 死模块退役（cc_plugin_adapter 等三个 external_capabilities 文件除外——若 Plugin 主线拍板接线则留）。
 
@@ -214,7 +215,6 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 14. Plugin CC 市场主线：marketplace.json 解析 + source 拉取 + materialize + ${CLAUDE_PLUGIN_ROOT} + adapter 接线（文档 §0.1 已排序）。
 
 ### Owner 拍板点
-- **KB day-one 自主访问**：新 agent 创建时是否种 owner-scope grant（HR 审计 Medium + KB B4 同根因）。
 - **QKV 走向**：接活成真承载（需先修 Q 侧 LLM parser、scoring 让位模型）vs 收缩到"契约 + kb_hint + 治理 sidecar"。
 - **无人值守持续自主**（Loop self-pace + Goal 多步续跑）：要不要这个产品形态；要则 budget control plane 前置。
 - **Plugin 市场主线**：15% 的市场适配是否本期推进（决定 cc_plugin_adapter 等孤儿是接线还是暂留）。

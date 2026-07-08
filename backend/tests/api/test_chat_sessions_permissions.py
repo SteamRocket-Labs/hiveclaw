@@ -641,6 +641,7 @@ async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch
                     "sections": [{"candidate_id": "dynamic:skill:skill_catalog", "selected": True}],
                 },
                 "tool_result_ledger": [{"tool_name": "read_file", "result_kind": "evidence"}],
+                "cache_decision_ledger": [{"cache_surface": "prompt_prefix", "decision": "hit"}],
             }
         },
     )
@@ -669,12 +670,14 @@ async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch
     assert result["suppressed_contexts"][0]["id"] == "ctx:permissions:permissions_context"
     assert result["dynamic_context_sections"][0]["candidate_id"] == "dynamic:skill:skill_catalog"
     assert result["tool_result_ledger"][0]["tool_name"] == "read_file"
+    assert result["cache_decision_ledger"][0]["cache_surface"] == "prompt_prefix"
     assert result["counts"] == {
         "categories": 2,
         "context_candidates": 1,
         "selected_contexts": 1,
         "suppressed_contexts": 1,
         "dynamic_context_sections": 1,
+        "cache_decisions": 1,
         "tools": 1,
         "deferred_tools": 1,
         "skills": 1,

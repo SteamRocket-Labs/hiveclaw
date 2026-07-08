@@ -201,6 +201,7 @@ export interface SessionContextUsage {
   suppressed_contexts?: unknown[];
   dynamic_context_sections?: unknown[];
   tool_result_ledger?: unknown[];
+  cache_decision_ledger?: unknown[];
   active_tool_names?: unknown[];
   deferred_tool_names?: unknown[];
   loaded_skills?: unknown[];

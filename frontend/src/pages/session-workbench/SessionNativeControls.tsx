@@ -76,6 +76,7 @@ export default function SessionNativeControls({
   });
   const contextUsage = asObject(contextUsageQuery.data);
   const contextUsageCounts = asObject(contextUsage?.counts);
+  const cacheDecisionCount = Array.isArray(contextUsage?.cache_decision_ledger) ? contextUsage.cache_decision_ledger.length : 0;
 
   const hooksQuery = useQuery({
     queryKey: ['session-workbench-hooks', agentId],
@@ -193,6 +194,10 @@ export default function SessionNativeControls({
           <div>
             {t('sessionWorkbench.deferredTools', 'deferred tools')}: {numericValue(contextUsageCounts?.deferred_tools)} · {t('sessionWorkbench.loadedSkills', 'skills')}:{' '}
             {numericValue(contextUsageCounts?.skills)}
+          </div>
+          <div>
+            {t('sessionWorkbench.cacheDecisions', 'cache decisions')}: {cacheDecisionCount} · {t('sessionWorkbench.toolResults', 'tool results')}:{' '}
+            {Array.isArray(contextUsage?.tool_result_ledger) ? contextUsage.tool_result_ledger.length : 0}
           </div>
         </div>
       </div>

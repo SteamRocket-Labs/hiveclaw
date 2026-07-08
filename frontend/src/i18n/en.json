@@ -16,6 +16,8 @@
     "selectedContexts": "selected",
     "deferredTools": "deferred tools",
     "loadedSkills": "skills",
+    "cacheDecisions": "cache decisions",
+    "toolResults": "tool results",
     "activeRun": "run",
     "inspectorTitle": "Session context",
     "events": "events",

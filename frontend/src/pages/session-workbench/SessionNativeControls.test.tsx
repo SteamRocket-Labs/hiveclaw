@@ -19,6 +19,8 @@ describe('SessionNativeControls Agent Team contract', () => {
     expect(controlsSource).toContain('ccParityApi.getSessionContextUsage');
     expect(controlsSource).toContain('sessionWorkbench.contextUsage');
     expect(controlsSource).toContain('contextUsageCounts');
+    expect(controlsSource).toContain('sessionWorkbench.cacheDecisions');
+    expect(controlsSource).toContain('cache_decision_ledger');
   });
 
   it('keeps Team creation container-only and discovers teammates through spawn_subagent', async () => {

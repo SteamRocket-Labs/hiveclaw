@@ -16,6 +16,8 @@
     "selectedContexts": "已选上下文",
     "deferredTools": "延迟工具",
     "loadedSkills": "Skill",
+    "cacheDecisions": "缓存决策",
+    "toolResults": "工具结果",
     "activeRun": "运行",
     "inspectorTitle": "会话上下文",
     "events": "事件",

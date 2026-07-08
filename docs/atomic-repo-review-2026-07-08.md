@@ -17,6 +17,7 @@
 | 2026-07-08 | P1-3 External capability trust gate revoke/deactivate | ✅ 已闭环 | Red: missing `revoke_external_capability_snapshot` / `deactivate_external_extension_for_agent` services and routes; Green: `cd backend && source .venv/bin/activate && pytest tests/services/test_external_capability_trust_gate.py tests/services/test_external_capability_activation.py tests/api/test_external_capability_reviews_api.py -q` → `16 passed` |
 | 2026-07-08 | P1-4 RTD context-usage observability wiring | ✅ 已闭环 | Red: missing frontend `getSessionContextUsage`, Workbench query, and context chip projection; Green: `cd frontend && npm test -- --run src/api/domains/ccParity.test.ts src/pages/session-workbench/SessionNativeControls.test.tsx src/pages/session-workbench/timelineModel.test.ts` → `3 passed / 36 tests` |
 | 2026-07-08 | P1-5 RTD Codex optimization dead append shrink | ✅ 已闭环 | Red: `append_codex_optimization_ledger` / `codex_delta_can_override_semantics` still exported and persisted session metadata; Green: `cd backend && source .venv/bin/activate && pytest tests/runtime/test_runtime_context_composition.py::test_codex_optimization_ledger_is_control_plane_only tests/runtime/test_codex_substrate.py::test_codex_optimization_ledger_keeps_codex_as_additive_control_plane tests/services/test_session_control_plane.py::test_session_workbench_aggregates_turn_runtime_goal_and_team_state -q` → `3 passed` |
+| 2026-07-08 | P1-6 RTD cache decision read surface | ✅ 已闭环 | Red: `context-usage` omitted `cache_decision_ledger`; Workbench panel did not read cache decisions. Green: `cd backend && source .venv/bin/activate && pytest tests/api/test_chat_sessions_permissions.py::test_get_session_context_usage_returns_context_diagnostics -q` → `1 passed`; `cd frontend && npm test -- --run src/api/domains/ccParity.test.ts src/pages/session-workbench/SessionNativeControls.test.tsx src/pages/session-workbench/timelineModel.test.ts` → `3 passed / 36 tests`; `cd frontend && npm run build` → success |
 
 ---
 
@@ -56,11 +57,11 @@
 
 **T3 只写不读（死写入，核心技术债，6 项）**：
 1. `decision_ledger.py` agent_cycle_decision_ledger 字段 — 零读取（RTD-37）
-2. `cache_decision_ledger.py` — 零读取（RTD-21）
+2. ✅ `cache_decision_ledger.py` 已接 `context-usage` payload + Session-native controls cache decision count（RTD-21）
 3. `context_engine.py` record_prompt_manifest_context_artifacts — engine.py:3712 死写零 reader
 4. ✅ `codex_optimization_ledger.py` append 路径已删除；`codex_delta_can_override_semantics` 恒 False 死函数已删除；Workbench 仍通过 `build_codex_optimization_ledger()` 输出 control-plane read model（RTD-36）
-5. `dynamic_workflow.py` 内嵌 workflow_decision_entry — 零消费者（RTD-29）
-6. `context_budget.py:346` build_tool_execution_shape_decision dict — 无人读（真门在 workflow_admission）（RTD-30）
+5. ✅ `dynamic_workflow.py` 内嵌 workflow_decision_entry 复核为误判：workflow runtime completion 会读写并更新 outcome/repair（`workflow_runtime_service.py`），不是零消费者（RTD-29）
+6. ✅ `context_budget.py:346` build_tool_execution_shape_decision 复核为误判：`start_workflow` / `spawn_subagent` 返回 payload 直接暴露给模型/用户，并有工具测试钉死 warning/recommendation（RTD-30）
 
 **T2 可观测非驱动（10 项）**：runtime_decision / schedule_decision / authorization_decision / failure_policy（纯遥测，真失败分支靠异常类型，真消费者是另一模块 llm_error_policy.py:129）/ runtime_reminder_candidate / subagent_decision_entry / subagent_return_contract / compaction_trace / tool_result_ledger / deferred_tools sink。
 
@@ -197,7 +198,7 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 
 ### P1 — 结构性技术债（要么接活要么退役，禁半接线常态化）
 5. **QKV 收缩**：✅ S1 删恒空 hints 注入（kb_hint 已够，builder 仅在有 actionable skill/tool/subagent hint 时写 ledger）；S2 退役只写不读 K 侧回路与死 gather 函数——除非拍板接活（接活先修 LLM parser + scoring 回归模型判断）。
-6. **RTD T3 六项死写入**：✅ context-usage 死观测面已接前端（Session-native controls + Chat header chip fallback）；✅ `codex_optimization_ledger` dead append / 恒 False override 已删，保留 Workbench builder；剩余：五项 ledger 逐项决定接读者或删写入，台账工厂 7 文件合并 ~645→300L。
+6. **RTD T3 六项死写入**：✅ context-usage 死观测面已接前端（Session-native controls + Chat header chip fallback）；✅ `codex_optimization_ledger` dead append / 恒 False override 已删，保留 Workbench builder；✅ `cache_decision_ledger` 已接 context-usage + Workbench；✅ `workflow_decision_entry` 与 `execution_shape_decision` 复核为误判（已有运行时/返回 payload 读者）；剩余：`agent_cycle_decision_ledger` 与 `record_prompt_manifest_context_artifacts` 继续收缩/接读。
 7. **Plugin trust gate 下半场**：✅ snapshot revoke/deactivate/rollback 已补（catalog 隐藏，agent activation inactive，本地 skill/subagent 文件清理，MCP 标记 `manual_revoke_required`）；剩余：被拒清理 + 版本 supersede；legacy plugins/install 双轨收敛（改走 trust gate 或真退役含删表 migration）。
 8. **Personal KB B2-B4**：✅ B2 deterministic 部分：`process_import_jobs` 批量消费 queued/failed `KnowledgeIndexJob`，聊天上传新增 `HIVE_CHAT_UPLOAD_MAX_BYTES`/`HIVE_CHAT_IMAGE_UPLOAD_MAX_BYTES` 硬上限；✅ B3 owner 搜索去 `agent_searchable` 过滤，agent/非 owner 搜索仍过滤；B4 自主态 grant 需要权限产品拍板后实现。
 9. ✅ **HR 模板 sweep**（B1 落后）：O1 stale t3 例子 + M1 KB 引导 + M2/M3 能力路由，已随 P0-3 同批 bump 到 HR v5。

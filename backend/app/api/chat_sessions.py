@@ -328,6 +328,9 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
     selected_contexts = _metadata_list(prompt_manifest.get("selected_contexts"))
     suppressed_contexts = _metadata_list(prompt_manifest.get("suppressed_contexts"))
     dynamic_context_sections = _metadata_list(dynamic_context_section_ledger.get("sections"))
+    cache_decisions = _metadata_list(
+        metadata.get("cache_decision_ledger") or assembly_state.get("cache_decision_ledger")
+    )
     active_tools = _metadata_list(prompt_manifest.get("active_tool_names") or metadata.get("active_tool_names"))
     deferred_tools = _metadata_list(
         prompt_manifest.get("available_deferred_tools")
@@ -350,6 +353,7 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
         "tool_result_ledger": _metadata_list(
             metadata.get("tool_result_ledger") or assembly_state.get("tool_result_ledger")
         ),
+        "cache_decision_ledger": cache_decisions,
         "active_tool_names": active_tools,
         "deferred_tool_names": deferred_tools,
         "loaded_skills": loaded_skills,
@@ -361,6 +365,7 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
             "selected_contexts": len(selected_contexts),
             "suppressed_contexts": len(suppressed_contexts),
             "dynamic_context_sections": len(dynamic_context_sections),
+            "cache_decisions": len(cache_decisions),
             "tools": len(active_tools),
             "deferred_tools": len(deferred_tools),
             "skills": len(loaded_skills),

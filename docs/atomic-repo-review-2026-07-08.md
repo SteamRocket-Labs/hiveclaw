@@ -12,6 +12,7 @@
 | 2026-07-08 | P0-1 Personal KB capability gate | ✅ 已闭环 | `cd backend && source .venv/bin/activate && pytest tests/services/test_capability_gate_policy_surface.py -q` → `11 passed`; `audit_capability_mapping()` → `{'unmapped': [], 'stale': []}` |
 | 2026-07-08 | P0-2 QKV activation_events T0 truth-surface leak | ✅ 已闭环 | `cd backend && source .venv/bin/activate && pytest tests/runtime/test_t0_to_t2_session_close.py tests/runtime/test_activation_events.py -q` → `20 passed` |
 | 2026-07-08 | P0-3 HR red test + template sweep + existing HR diff | ✅ 已闭环 | Red: 3 targeted tests failed for v4/template/tool-set equality; Green: `cd backend && source .venv/bin/activate && pytest tests/tools/test_hr_handler.py tests/api/test_hr_agent_endpoint.py tests/services/test_agent_identity_lifecycle.py tests/services/test_prompt_contracts.py -q` → `70 passed` |
+| 2026-07-08 | P1-1 QKV empty activation hints shrink | ✅ 已闭环 | Red: `test_dynamic_suffix_omits_empty_activation_hints_from_ledger` failed on empty `dynamic:activation:hints`; Green: `cd backend && source .venv/bin/activate && pytest tests/runtime/test_prompt_builder.py::test_dynamic_suffix_injects_activation_hints_and_records_ledger tests/runtime/test_prompt_builder.py::test_dynamic_suffix_omits_empty_activation_hints_from_ledger tests/runtime/test_activation_hints_section.py -q` → `4 passed` |
 
 ---
 
@@ -191,7 +192,7 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 4. ✅ **HR diff**：已完成并回归验证；HR v5 模板同步 Personal KB / ledger / workflow / subagent 路由，旧 `memory/t3/` 示例已清除。
 
 ### P1 — 结构性技术债（要么接活要么退役，禁半接线常态化）
-5. **QKV 收缩**：S1 删恒空 hints 注入（kb_hint 已够）；S2 退役只写不读 K 侧回路与死 gather 函数——除非拍板接活（接活先修 LLM parser + scoring 回归模型判断）。
+5. **QKV 收缩**：✅ S1 删恒空 hints 注入（kb_hint 已够，builder 仅在有 actionable skill/tool/subagent hint 时写 ledger）；S2 退役只写不读 K 侧回路与死 gather 函数——除非拍板接活（接活先修 LLM parser + scoring 回归模型判断）。
 6. **RTD T3 六项死写入**：逐项决定接读者或删写入；台账工厂 7 文件合并 ~645→300L；死观测面 context-usage 接前端或删端点。
 7. **Plugin trust gate 下半场**：revoke/deactivate/rollback + 被拒清理 + 版本 supersede；legacy plugins/install 双轨收敛（改走 trust gate 或真退役含删表 migration）。
 8. **Personal KB B2-B4**：异步 worker 消费 KnowledgeIndexJob + 上传大小上限；owner 搜索去 agent_searchable 过滤；自主态 grant 拍板后实现。

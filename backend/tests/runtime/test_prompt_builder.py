@@ -227,6 +227,27 @@ def test_dynamic_suffix_injects_activation_hints_and_records_ledger() -> None:
     assert decisions["dynamic:activation:hints"]["source_ref"] == "runtime.activation_router"
 
 
+def test_dynamic_suffix_omits_empty_activation_hints_from_ledger() -> None:
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    ledger: list[dict] = []
+    suffix = build_dynamic_prompt_suffix(
+        activation_router_output={
+            "top_activation_candidates": [
+                {
+                    "candidate_kind": "agent_memory",
+                    "key_features": {"name": ["private-memory"]},
+                    "value_pointer": {"loader": "knowledge_page", "source": "memory/private.md"},
+                }
+            ]
+        },
+        context_section_ledger=ledger,
+    )
+
+    assert "## Activation Hints" not in suffix
+    assert not any(item["candidate_id"] == "dynamic:activation:hints" for item in ledger)
+
+
 def test_hook_additional_context_is_recorded_as_hook_context_candidate() -> None:
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 

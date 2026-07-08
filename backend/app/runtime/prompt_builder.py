@@ -862,17 +862,19 @@ def build_dynamic_prompt_suffix(
         enforce_budget=True,
     )
 
-    add_candidate(
-        candidate_id="dynamic:activation:hints",
-        kind="activation_hints",
-        name="activation_hints",
-        content=build_activation_hints_section(activation_router_output),
-        budget_key="activation_hints_chars",
-        budget_chars=min(tool_groups_budget, 1200),
-        enforce_budget=True,
-        source_ref="runtime.activation_router",
-        reason="activation_router_selected_actionable_candidates",
-    )
+    activation_hints_section = build_activation_hints_section(activation_router_output)
+    if activation_hints_section:
+        add_candidate(
+            candidate_id="dynamic:activation:hints",
+            kind="activation_hints",
+            name="activation_hints",
+            content=activation_hints_section,
+            budget_key="activation_hints_chars",
+            budget_chars=min(tool_groups_budget, 1200),
+            enforce_budget=True,
+            source_ref="runtime.activation_router",
+            reason="activation_router_selected_actionable_candidates",
+        )
 
     knowledge = build_knowledge_section(retrieval_context, budget_chars=retrieval_budget) if retrieval_context else ""
     add_candidate(

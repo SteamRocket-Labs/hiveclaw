@@ -331,6 +331,10 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
     cache_decisions = _metadata_list(
         metadata.get("cache_decision_ledger") or assembly_state.get("cache_decision_ledger")
     )
+    agent_cycle_decisions = _metadata_list(
+        metadata.get("agent_cycle_decision_ledger") or assembly_state.get("agent_cycle_decision_ledger")
+    )
+    context_artifacts = _metadata_list(metadata.get("context_artifacts") or assembly_state.get("context_artifacts"))
     active_tools = _metadata_list(prompt_manifest.get("active_tool_names") or metadata.get("active_tool_names"))
     deferred_tools = _metadata_list(
         prompt_manifest.get("available_deferred_tools")
@@ -354,6 +358,8 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
             metadata.get("tool_result_ledger") or assembly_state.get("tool_result_ledger")
         ),
         "cache_decision_ledger": cache_decisions,
+        "agent_cycle_decision_ledger": agent_cycle_decisions,
+        "context_artifacts": context_artifacts,
         "active_tool_names": active_tools,
         "deferred_tool_names": deferred_tools,
         "loaded_skills": loaded_skills,
@@ -366,6 +372,8 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
             "suppressed_contexts": len(suppressed_contexts),
             "dynamic_context_sections": len(dynamic_context_sections),
             "cache_decisions": len(cache_decisions),
+            "agent_cycle_decisions": len(agent_cycle_decisions),
+            "context_artifacts": len(context_artifacts),
             "tools": len(active_tools),
             "deferred_tools": len(deferred_tools),
             "skills": len(loaded_skills),

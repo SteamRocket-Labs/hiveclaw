@@ -642,7 +642,9 @@ async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch
                 },
                 "tool_result_ledger": [{"tool_name": "read_file", "result_kind": "evidence"}],
                 "cache_decision_ledger": [{"cache_surface": "prompt_prefix", "decision": "hit"}],
-            }
+                "agent_cycle_decision_ledger": [{"subsystem": "workflow", "decision": "run_or_preview"}],
+            },
+            "context_artifacts": [{"kind": "knowledge_relevant", "source": "prompt_manifest"}],
         },
     )
     current_user = SimpleNamespace(id=owner_id, role="member")
@@ -671,6 +673,8 @@ async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch
     assert result["dynamic_context_sections"][0]["candidate_id"] == "dynamic:skill:skill_catalog"
     assert result["tool_result_ledger"][0]["tool_name"] == "read_file"
     assert result["cache_decision_ledger"][0]["cache_surface"] == "prompt_prefix"
+    assert result["agent_cycle_decision_ledger"][0]["subsystem"] == "workflow"
+    assert result["context_artifacts"][0]["kind"] == "knowledge_relevant"
     assert result["counts"] == {
         "categories": 2,
         "context_candidates": 1,
@@ -678,6 +682,8 @@ async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch
         "suppressed_contexts": 1,
         "dynamic_context_sections": 1,
         "cache_decisions": 1,
+        "agent_cycle_decisions": 1,
+        "context_artifacts": 1,
         "tools": 1,
         "deferred_tools": 1,
         "skills": 1,

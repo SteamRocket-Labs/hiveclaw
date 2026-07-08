@@ -18,6 +18,8 @@
     "loadedSkills": "skills",
     "cacheDecisions": "cache decisions",
     "toolResults": "tool results",
+    "agentCycleDecisions": "agent cycle decisions",
+    "contextArtifacts": "context artifacts",
     "activeRun": "run",
     "inspectorTitle": "Session context",
     "events": "events",

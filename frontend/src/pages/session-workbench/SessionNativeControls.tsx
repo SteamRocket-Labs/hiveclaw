@@ -77,6 +77,10 @@ export default function SessionNativeControls({
   const contextUsage = asObject(contextUsageQuery.data);
   const contextUsageCounts = asObject(contextUsage?.counts);
   const cacheDecisionCount = Array.isArray(contextUsage?.cache_decision_ledger) ? contextUsage.cache_decision_ledger.length : 0;
+  const agentCycleDecisionCount = Array.isArray(contextUsage?.agent_cycle_decision_ledger)
+    ? contextUsage.agent_cycle_decision_ledger.length
+    : 0;
+  const contextArtifactCount = Array.isArray(contextUsage?.context_artifacts) ? contextUsage.context_artifacts.length : 0;
 
   const hooksQuery = useQuery({
     queryKey: ['session-workbench-hooks', agentId],
@@ -198,6 +202,10 @@ export default function SessionNativeControls({
           <div>
             {t('sessionWorkbench.cacheDecisions', 'cache decisions')}: {cacheDecisionCount} · {t('sessionWorkbench.toolResults', 'tool results')}:{' '}
             {Array.isArray(contextUsage?.tool_result_ledger) ? contextUsage.tool_result_ledger.length : 0}
+          </div>
+          <div>
+            {t('sessionWorkbench.agentCycleDecisions', 'agent cycle decisions')}: {agentCycleDecisionCount} · {t('sessionWorkbench.contextArtifacts', 'context artifacts')}:{' '}
+            {contextArtifactCount}
           </div>
         </div>
       </div>

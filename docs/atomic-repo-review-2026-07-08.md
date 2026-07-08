@@ -18,6 +18,7 @@
 | 2026-07-08 | P1-4 RTD context-usage observability wiring | ✅ 已闭环 | Red: missing frontend `getSessionContextUsage`, Workbench query, and context chip projection; Green: `cd frontend && npm test -- --run src/api/domains/ccParity.test.ts src/pages/session-workbench/SessionNativeControls.test.tsx src/pages/session-workbench/timelineModel.test.ts` → `3 passed / 36 tests` |
 | 2026-07-08 | P1-5 RTD Codex optimization dead append shrink | ✅ 已闭环 | Red: `append_codex_optimization_ledger` / `codex_delta_can_override_semantics` still exported and persisted session metadata; Green: `cd backend && source .venv/bin/activate && pytest tests/runtime/test_runtime_context_composition.py::test_codex_optimization_ledger_is_control_plane_only tests/runtime/test_codex_substrate.py::test_codex_optimization_ledger_keeps_codex_as_additive_control_plane tests/services/test_session_control_plane.py::test_session_workbench_aggregates_turn_runtime_goal_and_team_state -q` → `3 passed` |
 | 2026-07-08 | P1-6 RTD cache decision read surface | ✅ 已闭环 | Red: `context-usage` omitted `cache_decision_ledger`; Workbench panel did not read cache decisions. Green: `cd backend && source .venv/bin/activate && pytest tests/api/test_chat_sessions_permissions.py::test_get_session_context_usage_returns_context_diagnostics -q` → `1 passed`; `cd frontend && npm test -- --run src/api/domains/ccParity.test.ts src/pages/session-workbench/SessionNativeControls.test.tsx src/pages/session-workbench/timelineModel.test.ts` → `3 passed / 36 tests`; `cd frontend && npm run build` → success |
+| 2026-07-08 | P1-7 RTD agent-cycle/context-artifact read surface | ✅ 已闭环 | Red: `context-usage` omitted `agent_cycle_decision_ledger` and `context_artifacts`; Workbench did not read either field. Green: `cd backend && source .venv/bin/activate && pytest tests/api/test_chat_sessions_permissions.py::test_get_session_context_usage_returns_context_diagnostics -q` → `1 passed`; `cd frontend && npm test -- --run src/api/domains/ccParity.test.ts src/pages/session-workbench/SessionNativeControls.test.tsx src/pages/session-workbench/timelineModel.test.ts` → `3 passed / 36 tests`; `cd frontend && npm run build` → success |
 
 ---
 
@@ -26,7 +27,7 @@
 | 领域 | 判定 | 一句话 |
 |---|---|---|
 | ① kernel 主循环 CC 对齐 | **✅ 扎实 CCPlus** | 5 维度全对齐或合规增强，无 CC 语义违背；债在 RTD 遥测台账层非内核 |
-| ① RTD 决策台账层 | ⚠️ 6 项只写不读；context-usage 已接前端 | "决策台账"是记录器非决策者，多数不读回驱动行为；死观测端点已接 Workbench/Chat header |
+| ① RTD 决策台账层 | ✅ T3 死写入已闭环 | `context-usage`/Workbench 已读回核心 ledger；Codex dead append 已删；workflow/execution-shape 两项复核为误判 |
 | ② QKV Attention Control | ⚠️ **半接线脚手架** | 能稳定运行（fail-open + cache 正确）但未承载真实激活；T0 原始 activation event 泄漏已堵，剩余为收缩/接活决策 |
 | ③ Plugin：CC 市场适配 | ❌ **≈15%** | marketplace/source 拉取/materialize/`${CLAUDE_PLUGIN_ROOT}` 全零；adapter 是孤儿代码 |
 | ③ Plugin：trust gate | ⚠️ ≈75% / ✅ revoke-deactivate 已修 | skill/MCP import→approve→activate 真接线；snapshot revoke、catalog 隐藏、agent deactivate、本地 skill/subagent rollback 已补；legacy plugins/install 双轨旁路仍待收敛 |
@@ -55,10 +56,10 @@
 
 **T1 真机制（误名"ledger"，实际驱动运行时）**：`context_budget.py`（召回条数/prompt 段上限/工具结果预算/模型路由全由它驱动）、`ccplus_contracts.py`（ContextPolicyV1 驱动压缩阈值 engine.py:76/80/85；PermissionProfileV1 驱动真权限）、`recovery_manifest.py`（主路径无条件 hydrate engine.py:3470 + 重放 pending tool frames :4220）、`workflow_admission.py`（越限 raise 即 run 不创建）、`context_candidates.py`（激活反向索引 join 键）。
 
-**T3 只写不读（死写入，核心技术债，6 项）**：
-1. `decision_ledger.py` agent_cycle_decision_ledger 字段 — 零读取（RTD-37）
+**T3 只写不读（原审 6 项，当前均已闭环或修正）**：
+1. ✅ `decision_ledger.py` agent_cycle_decision_ledger 字段已接 `context-usage` payload + Session-native controls agent cycle decision count（RTD-37）
 2. ✅ `cache_decision_ledger.py` 已接 `context-usage` payload + Session-native controls cache decision count（RTD-21）
-3. `context_engine.py` record_prompt_manifest_context_artifacts — engine.py:3712 死写零 reader
+3. ✅ `context_engine.py` record_prompt_manifest_context_artifacts 已接 `context-usage` payload + Session-native controls context artifact count（RTD context artifacts）
 4. ✅ `codex_optimization_ledger.py` append 路径已删除；`codex_delta_can_override_semantics` 恒 False 死函数已删除；Workbench 仍通过 `build_codex_optimization_ledger()` 输出 control-plane read model（RTD-36）
 5. ✅ `dynamic_workflow.py` 内嵌 workflow_decision_entry 复核为误判：workflow runtime completion 会读写并更新 outcome/repair（`workflow_runtime_service.py`），不是零消费者（RTD-29）
 6. ✅ `context_budget.py:346` build_tool_execution_shape_decision 复核为误判：`start_workflow` / `spawn_subagent` 返回 payload 直接暴露给模型/用户，并有工具测试钉死 warning/recommendation（RTD-30）
@@ -198,7 +199,7 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 
 ### P1 — 结构性技术债（要么接活要么退役，禁半接线常态化）
 5. **QKV 收缩**：✅ S1 删恒空 hints 注入（kb_hint 已够，builder 仅在有 actionable skill/tool/subagent hint 时写 ledger）；S2 退役只写不读 K 侧回路与死 gather 函数——除非拍板接活（接活先修 LLM parser + scoring 回归模型判断）。
-6. **RTD T3 六项死写入**：✅ context-usage 死观测面已接前端（Session-native controls + Chat header chip fallback）；✅ `codex_optimization_ledger` dead append / 恒 False override 已删，保留 Workbench builder；✅ `cache_decision_ledger` 已接 context-usage + Workbench；✅ `workflow_decision_entry` 与 `execution_shape_decision` 复核为误判（已有运行时/返回 payload 读者）；剩余：`agent_cycle_decision_ledger` 与 `record_prompt_manifest_context_artifacts` 继续收缩/接读。
+6. ✅ **RTD T3 六项死写入**：context-usage 死观测面已接前端（Session-native controls + Chat header chip fallback）；`codex_optimization_ledger` dead append / 恒 False override 已删，保留 Workbench builder；`cache_decision_ledger`、`agent_cycle_decision_ledger`、`context_artifacts` 已接 context-usage + Workbench；`workflow_decision_entry` 与 `execution_shape_decision` 复核为误判（已有运行时/返回 payload 读者）。剩余只属于文件组织瘦身，不再是行为死写入。
 7. **Plugin trust gate 下半场**：✅ snapshot revoke/deactivate/rollback 已补（catalog 隐藏，agent activation inactive，本地 skill/subagent 文件清理，MCP 标记 `manual_revoke_required`）；剩余：被拒清理 + 版本 supersede；legacy plugins/install 双轨收敛（改走 trust gate 或真退役含删表 migration）。
 8. **Personal KB B2-B4**：✅ B2 deterministic 部分：`process_import_jobs` 批量消费 queued/failed `KnowledgeIndexJob`，聊天上传新增 `HIVE_CHAT_UPLOAD_MAX_BYTES`/`HIVE_CHAT_IMAGE_UPLOAD_MAX_BYTES` 硬上限；✅ B3 owner 搜索去 `agent_searchable` 过滤，agent/非 owner 搜索仍过滤；B4 自主态 grant 需要权限产品拍板后实现。
 9. ✅ **HR 模板 sweep**（B1 落后）：O1 stale t3 例子 + M1 KB 引导 + M2/M3 能力路由，已随 P0-3 同批 bump 到 HR v5。

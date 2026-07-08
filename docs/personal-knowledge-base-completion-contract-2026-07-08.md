@@ -528,3 +528,41 @@ commit：
 剩余风险：
 
 - 授权 UI 在 A12 完成；当前 A10 是后端唯一真相入口。
+
+### 2026-07-08 A13 音频、视频与图片摄取边界
+
+改动文件：
+
+- `backend/app/services/personal_knowledge_service.py`
+- `backend/tests/services/test_personal_knowledge_service.py`
+- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+
+功能证据：
+
+- `PersonalKnowledgeService` 新增 `media_provider` 注入点，媒体智能步骤必须由明确 provider 执行。
+- 支持识别 audio：`mp3/wav/m4a/ogg`，video：`mp4/mov/webm`，image：`png/jpg/jpeg/webp`。
+- 没有 provider 时不再落入普通 `unsupported_file_type`，而是创建 document + job，状态为 `failed`，stage 为 `transcribing`，error 为 `unsupported_or_unconfigured:media_transcription_provider`。
+- 有 provider 时调用 `transcribe_media()`，把 transcript 作为 canonical Markdown 进入现有 `ingest_markdown()`，因此复用 segments、LLM extraction、graph writer 和 fused retrieval。
+- media metadata 写入 source filename、mime、media kind、provider、duration、cost、warnings；UI/API 能展示真实状态与未配置原因。
+
+测试命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_personal_knowledge_service.py -q
+cd backend && source .venv/bin/activate && ruff check app/services/personal_knowledge_service.py tests/services/test_personal_knowledge_service.py
+```
+
+测试结果：
+
+```text
+20 passed in 0.17s
+All checks passed!
+```
+
+commit：
+
+- 本提交：`feat: add personal kb media ingestion boundary`。
+
+剩余风险：
+
+- 当前仓库没有生产级 transcription/OCR credential，因此生产默认会返回 `unsupported_or_unconfigured`，这是有意的可观测边界，不是伪 ready。

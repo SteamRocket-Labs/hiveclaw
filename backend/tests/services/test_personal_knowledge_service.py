@@ -162,6 +162,20 @@ class _FailingKnowledgeExtractor:
         raise ValueError("malformed extractor output")
 
 
+class _FakeMediaTranscriptionProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def transcribe_media(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            markdown="# Audio transcript\n\nFounder says Personal KB should keep source refs.",
+            warnings=["fake_transcription"],
+            metadata={"duration_seconds": 12.5, "cost_usd": 0.03},
+            provider="fake_media_provider",
+        )
+
+
 class _SearchSession:
     def __init__(self, rows) -> None:
         self.rows = rows
@@ -760,3 +774,72 @@ async def test_non_owner_cannot_create_personal_grant(tmp_path: Path) -> None:
 
     assert grant is None
     assert [obj for obj in session.added if isinstance(obj, KnowledgeGrant)] == []
+
+
+@pytest.mark.asyncio
+async def test_ingest_media_records_failed_job_when_provider_unconfigured(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path, extractor=None)
+
+    result = await service.ingest_source_bytes(
+        session,
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        filename="meeting.mp3",
+        data=b"fake audio",
+        source_kind="upload",
+        source_mime_type="audio/mpeg",
+    )
+
+    documents = [obj for obj in session.added if isinstance(obj, KnowledgeDocument)]
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+    assert result.status == "failed"
+    assert result.segment_count == 0
+    assert result.warnings == ["unsupported_or_unconfigured:media_transcription_provider"]
+    assert documents[-1].status == "failed"
+    assert documents[-1].doc_metadata_json["media_kind"] == "audio"
+    assert documents[-1].doc_metadata_json["error"] == "unsupported_or_unconfigured"
+    assert jobs[-1].stage == "transcribing"
+    assert jobs[-1].status == "failed"
+    assert jobs[-1].error_message == "unsupported_or_unconfigured:media_transcription_provider"
+
+
+@pytest.mark.asyncio
+async def test_ingest_audio_uses_transcription_provider_then_indexes_transcript(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    provider = _FakeMediaTranscriptionProvider()
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(
+        data_root=tmp_path,
+        extractor=_NoopKnowledgeExtractor(),
+        media_provider=provider,
+    )
+
+    result = await service.ingest_source_bytes(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        filename="meeting.mp3",
+        data=b"fake audio",
+        title="Meeting recording",
+        source_kind="upload",
+        source_mime_type="audio/mpeg",
+    )
+
+    documents = [obj for obj in session.added if isinstance(obj, KnowledgeDocument)]
+    segments = [obj for obj in session.added if isinstance(obj, KnowledgeSegment)]
+    assert result.status == "ready"
+    assert provider.calls[0]["media_kind"] == "audio"
+    assert provider.calls[0]["tenant_id"] == tenant_id
+    assert provider.calls[0]["owner_user_id"] == owner_id
+    assert documents[-1].title == "Meeting recording"
+    assert documents[-1].source_kind == "upload"
+    assert documents[-1].doc_metadata_json["media_kind"] == "audio"
+    assert documents[-1].doc_metadata_json["media_provider"] == "fake_media_provider"
+    assert documents[-1].doc_metadata_json["media_duration_seconds"] == 12.5
+    assert "Personal KB should keep source refs" in segments[-1].content

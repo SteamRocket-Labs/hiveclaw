@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import mimetypes
@@ -42,6 +43,10 @@ _SUPPORTED_IMPORT_EXTENSIONS = {
     ".xlsx",
     ".pptx",
 }
+_AUDIO_IMPORT_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
+_VIDEO_IMPORT_EXTENSIONS = {".mp4", ".mov", ".webm"}
+_IMAGE_IMPORT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+_MEDIA_IMPORT_EXTENSIONS = _AUDIO_IMPORT_EXTENSIONS | _VIDEO_IMPORT_EXTENSIONS | _IMAGE_IMPORT_EXTENSIONS
 _DEFAULT_EXTRACTOR = object()
 _SENSITIVE_EXTRACTION_BLOCKLIST = {"private", "secret", "restricted", "pl3", "pl4", "credential"}
 
@@ -226,6 +231,16 @@ def _safe_filename(filename: str) -> str:
 
 def _extension_for_filename(filename: str) -> str:
     return Path(filename).suffix.lower()
+
+
+def _media_kind_for_extension(ext: str) -> str | None:
+    if ext in _AUDIO_IMPORT_EXTENSIONS:
+        return "audio"
+    if ext in _VIDEO_IMPORT_EXTENSIONS:
+        return "video"
+    if ext in _IMAGE_IMPORT_EXTENSIONS:
+        return "image"
+    return None
 
 
 def _title_from_url(url: str) -> str:
@@ -523,10 +538,12 @@ class PersonalKnowledgeService:
         data_root: str | Path | None = None,
         conversion_service: Any | None = None,
         extractor: Any = _DEFAULT_EXTRACTOR,
+        media_provider: Any | None = None,
     ) -> None:
         self.data_root = Path(data_root) if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
         self.conversion_service = conversion_service
         self.extractor = extractor
+        self.media_provider = media_provider
 
     def _conversion_service(self) -> Any:
         if self.conversion_service is not None:
@@ -543,6 +560,9 @@ class PersonalKnowledgeService:
         from app.services.personal_knowledge_extractor import PersonalKnowledgeLLMExtractor
 
         return PersonalKnowledgeLLMExtractor()
+
+    def _media_transcription_provider(self) -> Any | None:
+        return self.media_provider
 
     def _document_summary(
         self,
@@ -1197,57 +1217,52 @@ class PersonalKnowledgeService:
         agent_searchable: bool = True,
         sensitivity: str = "internal",
         source_mime_type: str | None = None,
+        doc_metadata: dict[str, Any] | None = None,
     ) -> PersonalKnowledgeIngestResult:
         safe_name = _safe_filename(filename)
         ext = _extension_for_filename(safe_name)
         source_hash = _sha256_bytes(data)
         artifact_hash = source_hash
-        if ext not in _SUPPORTED_IMPORT_EXTENSIONS:
-            document = KnowledgeDocument(
-                id=uuid.uuid4(),
+        media_kind = _media_kind_for_extension(ext)
+        if media_kind is not None:
+            return await self._ingest_media_bytes(
+                session,
                 tenant_id=tenant_id,
-                scope_type="person",
-                scope_id=owner_user_id,
+                owner_user_id=owner_user_id,
+                filename=safe_name,
+                data=data,
+                title=title,
+                source_kind=source_kind,
+                source_uri=source_uri,
+                created_by_user_id=created_by_user_id,
+                agent_searchable=agent_searchable,
+                sensitivity=sensitivity,
+                source_mime_type=source_mime_type,
+                source_hash=source_hash,
+                media_kind=media_kind,
+                doc_metadata=doc_metadata,
+            )
+        if ext not in _SUPPORTED_IMPORT_EXTENSIONS:
+            return await self._record_failed_import(
+                session,
+                tenant_id=tenant_id,
                 owner_user_id=owner_user_id,
                 source_kind=source_kind,
                 source_uri=source_uri,
-                source_sha256=source_hash,
+                source_hash=source_hash,
                 artifact_hash=artifact_hash,
                 title=_clean_title(safe_name),
-                status="failed",
                 sensitivity=sensitivity,
                 agent_searchable=agent_searchable,
-                canonical_md_path="",
-                canonical_md_sha256=None,
-                doc_metadata_json={"source_filename": safe_name, "error": "unsupported_file_type"},
                 created_by_user_id=created_by_user_id,
-            )
-            session.add(document)
-            await session.flush()
-            job = KnowledgeIndexJob(
-                id=uuid.uuid4(),
-                tenant_id=tenant_id,
-                document_id=document.id,
-                scope_type="person",
-                scope_id=owner_user_id,
-                artifact_hash=artifact_hash,
                 stage="converting",
-                status="failed",
                 error_message=f"unsupported_file_type:{ext or 'unknown'}",
-                attempt_count=1,
-                job_metadata_json={"source_kind": source_kind, "source_filename": safe_name},
-            )
-            session.add(job)
-            await session.flush()
-            return PersonalKnowledgeIngestResult(
-                document_id=document.id,
-                job_id=job.id,
-                source_sha256=source_hash,
-                artifact_hash=artifact_hash,
-                canonical_md_path="",
-                segment_count=0,
-                status="failed",
-                warnings=[job.error_message or "unsupported_file_type"],
+                metadata={
+                    "source_filename": safe_name,
+                    "source_mime_type": source_mime_type or "",
+                    "error": "unsupported_file_type",
+                    **(doc_metadata or {}),
+                },
             )
 
         workspace_root = _personal_knowledge_root(self.data_root, owner_user_id)
@@ -1272,6 +1287,7 @@ class PersonalKnowledgeService:
             "conversion_markdown_path": getattr(conversion, "artifact_markdown_path", ""),
             "conversion_metadata_path": getattr(conversion, "artifact_metadata_path", ""),
             "source_mime_type": getattr(conversion, "source_mime_type", source_mime_type or ""),
+            **(doc_metadata or {}),
         }
         return await self.ingest_markdown(
             session,
@@ -1286,6 +1302,178 @@ class PersonalKnowledgeService:
             sensitivity=sensitivity,
             source_sha256=getattr(conversion, "source_sha256", source_hash),
             doc_metadata=metadata,
+            warnings=warnings,
+        )
+
+    async def _record_failed_import(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        source_kind: str,
+        source_uri: str | None,
+        source_hash: str,
+        artifact_hash: str,
+        title: str,
+        sensitivity: str,
+        agent_searchable: bool,
+        created_by_user_id: uuid.UUID | None,
+        stage: str,
+        error_message: str,
+        metadata: dict[str, Any],
+    ) -> PersonalKnowledgeIngestResult:
+        document = KnowledgeDocument(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            scope_type="person",
+            scope_id=owner_user_id,
+            owner_user_id=owner_user_id,
+            source_kind=source_kind,
+            source_uri=source_uri,
+            source_sha256=source_hash,
+            artifact_hash=artifact_hash,
+            title=title,
+            status="failed",
+            sensitivity=sensitivity,
+            agent_searchable=agent_searchable,
+            canonical_md_path="",
+            canonical_md_sha256=None,
+            doc_metadata_json=dict(metadata),
+            created_by_user_id=created_by_user_id,
+        )
+        session.add(document)
+        await session.flush()
+        job = KnowledgeIndexJob(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            document_id=document.id,
+            scope_type="person",
+            scope_id=owner_user_id,
+            artifact_hash=artifact_hash,
+            stage=stage,
+            status="failed",
+            error_message=error_message,
+            attempt_count=1,
+            job_metadata_json={
+                "source_kind": source_kind,
+                "source_sha256": source_hash,
+                "warnings": [error_message],
+                **dict(metadata),
+            },
+        )
+        session.add(job)
+        await session.flush()
+        return PersonalKnowledgeIngestResult(
+            document_id=document.id,
+            job_id=job.id,
+            source_sha256=source_hash,
+            artifact_hash=artifact_hash,
+            canonical_md_path="",
+            segment_count=0,
+            status="failed",
+            warnings=[error_message],
+        )
+
+    async def _ingest_media_bytes(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        filename: str,
+        data: bytes,
+        title: str | None,
+        source_kind: str,
+        source_uri: str | None,
+        created_by_user_id: uuid.UUID | None,
+        agent_searchable: bool,
+        sensitivity: str,
+        source_mime_type: str | None,
+        source_hash: str,
+        media_kind: str,
+        doc_metadata: dict[str, Any] | None,
+    ) -> PersonalKnowledgeIngestResult:
+        provider = self._media_transcription_provider()
+        base_metadata = {
+            "source_filename": filename,
+            "source_kind": source_kind,
+            "source_mime_type": source_mime_type or mimetypes.guess_type(filename)[0] or "",
+            "media_kind": media_kind,
+            **(doc_metadata or {}),
+        }
+        if provider is None:
+            return await self._record_failed_import(
+                session,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                source_kind=source_kind,
+                source_uri=source_uri,
+                source_hash=source_hash,
+                artifact_hash=source_hash,
+                title=title_from_filename_or_uri(filename, source_uri, title),
+                sensitivity=sensitivity,
+                agent_searchable=agent_searchable,
+                created_by_user_id=created_by_user_id,
+                stage="transcribing",
+                error_message="unsupported_or_unconfigured:media_transcription_provider",
+                metadata={**base_metadata, "error": "unsupported_or_unconfigured"},
+            )
+
+        call = provider.transcribe_media(
+            data=data,
+            filename=filename,
+            source_mime_type=base_metadata["source_mime_type"],
+            source_uri=source_uri,
+            source_kind=source_kind,
+            media_kind=media_kind,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            created_by_user_id=created_by_user_id,
+        )
+        transcript = await call if inspect.isawaitable(call) else call
+        markdown = str(getattr(transcript, "markdown", None) or getattr(transcript, "transcript", "") or "").strip()
+        if not markdown:
+            return await self._record_failed_import(
+                session,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                source_kind=source_kind,
+                source_uri=source_uri,
+                source_hash=source_hash,
+                artifact_hash=source_hash,
+                title=title_from_filename_or_uri(filename, source_uri, title),
+                sensitivity=sensitivity,
+                agent_searchable=agent_searchable,
+                created_by_user_id=created_by_user_id,
+                stage="transcribing",
+                error_message="media_transcription_empty",
+                metadata={**base_metadata, "error": "media_transcription_empty"},
+            )
+
+        transcript_metadata = dict(getattr(transcript, "metadata", {}) or {})
+        warnings = list(getattr(transcript, "warnings", ()) or [])
+        media_metadata = {
+            **base_metadata,
+            **transcript_metadata,
+            "media_provider": str(getattr(transcript, "provider", "") or provider.__class__.__name__),
+            "media_duration_seconds": transcript_metadata.get("duration_seconds"),
+            "media_cost_usd": transcript_metadata.get("cost_usd"),
+            "media_warnings": warnings,
+        }
+        return await self.ingest_markdown(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            title=title_from_filename_or_uri(filename, source_uri, title),
+            markdown=markdown,
+            source_kind=source_kind,
+            source_uri=source_uri,
+            created_by_user_id=created_by_user_id,
+            agent_searchable=agent_searchable,
+            sensitivity=sensitivity,
+            source_sha256=source_hash,
+            doc_metadata=media_metadata,
             warnings=warnings,
         )
 

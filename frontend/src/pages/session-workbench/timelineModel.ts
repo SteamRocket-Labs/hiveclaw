@@ -1376,7 +1376,7 @@ function getContextWindowProjection(sessionWorkbench?: SessionWorkbench | null):
   title: string | null;
 } {
   const contextWindow = sessionWorkbench?.context_window;
-  if (!contextWindow) return { label: null, title: null };
+  if (!contextWindow) return getContextUsageProjection(sessionWorkbench);
   const latestStatus = contextWindow.latest_status || null;
   const latestSkipped = contextWindow.latest_skipped || null;
   const latestBudget = contextWindow.latest_tool_result_budget || null;
@@ -1403,6 +1403,37 @@ function getContextWindowProjection(sessionWorkbench?: SessionWorkbench | null):
     tokensUntil !== null ? `${compactTokenCount(tokensUntil)} tokens until compaction` : null,
     cumulative !== null ? `run total ${compactTokenCount(cumulative)} tokens` : null,
     reason ? `latest decision: ${reason}` : null,
+  ].filter(Boolean);
+
+  return {
+    label,
+    title: titleParts.length ? titleParts.join(' · ') : null,
+  };
+}
+
+function getContextUsageProjection(sessionWorkbench?: SessionWorkbench | null): {
+  label: string | null;
+  title: string | null;
+} {
+  const usage = sessionWorkbench?.context_usage;
+  if (!usage) return { label: null, title: null };
+  const usedTokens = finiteNumber(usage.used_tokens);
+  const freeTokens = finiteNumber(usage.free_space_tokens);
+  const windowTokens = finiteNumber(usage.model_window_tokens);
+  const counts = usage.counts && typeof usage.counts === 'object' ? usage.counts : {};
+  const contextCandidates = finiteNumber(counts.context_candidates);
+  const selectedContexts = finiteNumber(counts.selected_contexts);
+  const deferredTools = finiteNumber(counts.deferred_tools);
+  const skills = finiteNumber(counts.skills);
+
+  const label = usedTokens !== null ? `${compactTokenCount(usedTokens)} used` : null;
+  const titleParts = [
+    windowTokens !== null ? `window ${compactTokenCount(windowTokens)} tokens` : null,
+    freeTokens !== null ? `free ${compactTokenCount(freeTokens)} tokens` : null,
+    contextCandidates !== null ? `${contextCandidates} candidates` : null,
+    selectedContexts !== null ? `${selectedContexts} selected` : null,
+    deferredTools !== null ? `${deferredTools} deferred tools` : null,
+    skills !== null ? `${skills} skills` : null,
   ].filter(Boolean);
 
   return {

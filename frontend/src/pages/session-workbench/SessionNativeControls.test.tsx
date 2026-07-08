@@ -9,6 +9,18 @@ async function readSource(relativePath: string): Promise<string> {
 }
 
 describe('SessionNativeControls Agent Team contract', () => {
+  it('keeps context usage diagnostics connected to a real workbench query', async () => {
+    const controlsSource = await readSource('./SessionNativeControls.tsx');
+    const apiSource = await readSource('../../api/domains/ccParity.ts');
+
+    expect(apiSource).toContain('getSessionContextUsage');
+    expect(apiSource).toContain('/context-usage');
+    expect(controlsSource).toContain("['session-workbench-context-usage'");
+    expect(controlsSource).toContain('ccParityApi.getSessionContextUsage');
+    expect(controlsSource).toContain('sessionWorkbench.contextUsage');
+    expect(controlsSource).toContain('contextUsageCounts');
+  });
+
   it('keeps Team creation container-only and discovers teammates through spawn_subagent', async () => {
     const controlsSource = await readSource('./SessionNativeControls.tsx');
     const apiSource = await readSource('../../api/domains/ccParity.ts');

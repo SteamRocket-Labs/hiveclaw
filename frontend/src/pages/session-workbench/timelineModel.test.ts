@@ -384,6 +384,48 @@ describe('session workbench timeline model', () => {
     expect(model.inspector.latestCheckpointLabel).toBe('user_turn_stop');
   });
 
+  it('projects context usage diagnostics into the context chip when window decisions are absent', () => {
+    const sessionWorkbench = {
+      schema: 'hive.ccplus.session_workbench.v1',
+      agent_id: 'agent-1',
+      session: {},
+      context_usage: {
+        schema: 'hive.ccplus.session_context_usage.v1',
+        used_tokens: 96_000,
+        free_space_tokens: 32_000,
+        model_window_tokens: 128_000,
+        counts: {
+          context_candidates: 4,
+          selected_contexts: 2,
+          deferred_tools: 3,
+          skills: 1,
+        },
+      },
+      turn: { truth_source: 'transcript', event_count: 3 },
+      controls: {},
+      runtime_tasks: [],
+      goals: [],
+      teams: [],
+    } as unknown as SessionWorkbench;
+
+    const model = buildThreadTimeline({
+      messages: [],
+      activeSession: { id: 'session-1', title: 'Context usage' },
+      sessionWorkbench,
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    expect(model.header.contextWindowStatusLabel).toBe('96.0K used');
+    expect(model.header.contextWindowTitle).toContain('window 128.0K tokens');
+    expect(model.header.contextWindowTitle).toContain('free 32.0K tokens');
+    expect(model.header.contextWindowTitle).toContain('4 candidates');
+    expect(model.header.contextWindowTitle).toContain('2 selected');
+    expect(model.header.contextWindowTitle).toContain('3 deferred tools');
+    expect(model.header.contextWindowTitle).toContain('1 skills');
+  });
+
   it('projects background completion wakes into a compact UI model', () => {
     const model = buildCompletionWakeModel({
       completion_wake_summary: {

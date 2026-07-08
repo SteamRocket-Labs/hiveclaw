@@ -51,7 +51,7 @@ import {
   type ThreadTimelineModel,
 } from '../session-workbench/timelineModel';
 import { chatApi, type RecordSessionFeedbackInput } from '../../api/domains/chat';
-import { ccParityApi, type SessionWorkbench } from '../../api/domains/ccParity';
+import { ccParityApi, type SessionContextUsage, type SessionWorkbench } from '../../api/domains/ccParity';
 import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
 import { cancelWorkflowRun, promoteWorkflowRun, repairWorkflowRun } from '../../api/domains/workflows';
@@ -3461,6 +3461,13 @@ function AgentChatSection({
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
+  const { data: sessionContextUsageData } = useQuery({
+    queryKey: ['chat-session-context-usage', effectiveAgentId, activeSessionId],
+    queryFn: () => ccParityApi.getSessionContextUsage(effectiveAgentId!, activeSessionId!),
+    enabled: Boolean(effectiveAgentId && activeSessionId),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
   const { data: gitLineAxisSessionIndexData, isLoading: gitLineAxisSessionIndexLoading } = useQuery({
     queryKey: ['chat-session-index', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis'],
     queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, gitLineAxisSessionId!),
@@ -3487,7 +3494,18 @@ function AgentChatSection({
     refetchOnWindowFocus: false,
   });
   const sessionIndex = sessionIndexData && !Array.isArray(sessionIndexData) ? sessionIndexData : null;
-  const sessionWorkbench = sessionWorkbenchData && !Array.isArray(sessionWorkbenchData) ? sessionWorkbenchData : null;
+  const sessionWorkbenchBase = sessionWorkbenchData && !Array.isArray(sessionWorkbenchData) ? sessionWorkbenchData : null;
+  const sessionContextUsage = sessionContextUsageData && !Array.isArray(sessionContextUsageData)
+    ? sessionContextUsageData as SessionContextUsage
+    : null;
+  const sessionWorkbench = React.useMemo<SessionWorkbench | null>(() => {
+    if (!sessionWorkbenchBase) return null;
+    if (!sessionContextUsage) return sessionWorkbenchBase;
+    return {
+      ...sessionWorkbenchBase,
+      context_usage: sessionContextUsage,
+    };
+  }, [sessionContextUsage, sessionWorkbenchBase]);
   const gitLineAxisSessionIndex = gitLineAxisSessionIndexData && !Array.isArray(gitLineAxisSessionIndexData)
     ? gitLineAxisSessionIndexData
     : null;

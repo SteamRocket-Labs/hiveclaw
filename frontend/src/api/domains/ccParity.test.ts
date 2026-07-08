@@ -173,22 +173,25 @@ describe('ccParityApi', () => {
     expect(requestOf(2).init.method).toBe('POST');
   });
 
-  it('loads CCPlus session workbench, hook management, JSON export, and team workbench surfaces', async () => {
+  it('loads CCPlus session workbench, context usage, hook management, JSON export, and team workbench surfaces', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ schema: 'hive.ccplus.session_workbench.v1' }))
+      .mockResolvedValueOnce(jsonResponse({ schema: 'hive.ccplus.session_context_usage.v1' }))
       .mockResolvedValueOnce(jsonResponse({ schema: 'hive.ccplus.session_export.v1' }))
       .mockResolvedValueOnce(jsonResponse({ schema: 'hive.ccplus.hooks_control_plane.v1', events: [] }))
       .mockResolvedValueOnce(jsonResponse({ schema: 'hive.ccplus.agent_team_workbench.v1' }));
 
     await ccParityApi.getSessionWorkbench('agent-1', 'session-1');
+    await ccParityApi.getSessionContextUsage('agent-1', 'session-1');
     await ccParityApi.exportSessionJson('agent-1', 'session-1');
     await ccParityApi.listHooks('agent-1');
     await ccParityApi.getTeamWorkbench('agent-1', 'team-1');
 
     expect(requestOf(0).url).toBe('/api/agents/agent-1/sessions/session-1/workbench');
-    expect(requestOf(1).url).toBe('/api/agents/agent-1/sessions/session-1/export');
-    expect(requestOf(2).url).toBe('/api/agents/agent-1/hooks');
-    expect(requestOf(3).url).toBe('/api/agents/agent-1/agent-teams/team-1/workbench');
+    expect(requestOf(1).url).toBe('/api/agents/agent-1/sessions/session-1/context-usage');
+    expect(requestOf(2).url).toBe('/api/agents/agent-1/sessions/session-1/export');
+    expect(requestOf(3).url).toBe('/api/agents/agent-1/hooks');
+    expect(requestOf(4).url).toBe('/api/agents/agent-1/agent-teams/team-1/workbench');
   });
 
   it('updates hook runtime config by stable hook key', async () => {

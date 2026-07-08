@@ -165,6 +165,7 @@ export interface SessionWorkbench {
     latest_tool_result_budget?: Record<string, unknown> | null;
     decisions?: Record<string, unknown>[];
   };
+  context_usage?: SessionContextUsage;
   branches?: Record<string, unknown>[];
   permission_profile?: Record<string, unknown>;
   context_policy?: Record<string, unknown>;
@@ -185,6 +186,27 @@ export interface SessionWorkbench {
   teams: AgentTeam[];
   session_index?: Record<string, unknown> | null;
   links?: Record<string, string>;
+}
+
+export interface SessionContextUsage {
+  schema: string;
+  session_id: string;
+  agent_id: string;
+  model_window_tokens?: number | null;
+  used_tokens?: number | null;
+  free_space_tokens?: number | null;
+  categories?: unknown[];
+  context_candidates?: unknown[];
+  selected_contexts?: unknown[];
+  suppressed_contexts?: unknown[];
+  dynamic_context_sections?: unknown[];
+  tool_result_ledger?: unknown[];
+  active_tool_names?: unknown[];
+  deferred_tool_names?: unknown[];
+  loaded_skills?: unknown[];
+  prompt_manifest_schema?: string | null;
+  runtime_assembly_state_schema?: string | null;
+  counts?: Record<string, number>;
 }
 
 export interface SessionJsonExport {
@@ -288,6 +310,10 @@ export const ccParityApi = {
 
   getSessionWorkbench(agentId: string, sessionId: string): Promise<SessionWorkbench> {
     return get<SessionWorkbench>(`/agents/${agentId}/sessions/${sessionId}/workbench`);
+  },
+
+  getSessionContextUsage(agentId: string, sessionId: string): Promise<SessionContextUsage> {
+    return get<SessionContextUsage>(`/agents/${agentId}/sessions/${sessionId}/context-usage`);
   },
 
   exportSessionJson(agentId: string, sessionId: string): Promise<SessionJsonExport> {

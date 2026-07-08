@@ -1,7 +1,7 @@
 import React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { IconBellRinging, IconDownload, IconGitCommit, IconHierarchy, IconSettings, IconTargetArrow, IconUsersGroup } from '@tabler/icons-react';
+import { IconBellRinging, IconDatabase, IconDownload, IconGitCommit, IconHierarchy, IconSettings, IconTargetArrow, IconUsersGroup } from '@tabler/icons-react';
 
 import './SessionNativeControls.css';
 import { ccParityApi, type AgentTeam } from '../../api/domains/ccParity';
@@ -37,6 +37,10 @@ function downloadJson(data: unknown, sessionId: string) {
   window.URL.revokeObjectURL(url);
 }
 
+function numericValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
 export default function SessionNativeControls({
   agentId,
   sessionId,
@@ -63,6 +67,15 @@ export default function SessionNativeControls({
     staleTime: 10_000,
   });
   const sessionWorkbench = asObject(workbenchQuery.data);
+
+  const contextUsageQuery = useQuery({
+    queryKey: ['session-workbench-context-usage', agentId, sessionId],
+    queryFn: () => ccParityApi.getSessionContextUsage(agentId!, sessionId!),
+    enabled,
+    staleTime: 10_000,
+  });
+  const contextUsage = asObject(contextUsageQuery.data);
+  const contextUsageCounts = asObject(contextUsage?.counts);
 
   const hooksQuery = useQuery({
     queryKey: ['session-workbench-hooks', agentId],
@@ -164,6 +177,24 @@ export default function SessionNativeControls({
         <button type="button" className="session-native-btn" disabled={!enabled || exportJson.isPending} onClick={() => exportJson.mutate()}>
           {t('sessionWorkbench.exportJson', 'Export JSON')}
         </button>
+      </div>
+
+      <div className="session-native-panel">
+        <PanelTitle icon={<IconDatabase size={14} />} title={t('sessionWorkbench.contextUsage', 'Context usage')} />
+        <div className="session-native-stats">
+          <div>
+            {t('sessionWorkbench.usedTokens', 'used tokens')}: {numericValue(contextUsage?.used_tokens)} · {t('sessionWorkbench.freeTokens', 'free tokens')}:{' '}
+            {numericValue(contextUsage?.free_space_tokens)}
+          </div>
+          <div>
+            {t('sessionWorkbench.contextCandidates', 'candidates')}: {numericValue(contextUsageCounts?.context_candidates)} · {t('sessionWorkbench.selectedContexts', 'selected')}:{' '}
+            {numericValue(contextUsageCounts?.selected_contexts)}
+          </div>
+          <div>
+            {t('sessionWorkbench.deferredTools', 'deferred tools')}: {numericValue(contextUsageCounts?.deferred_tools)} · {t('sessionWorkbench.loadedSkills', 'skills')}:{' '}
+            {numericValue(contextUsageCounts?.skills)}
+          </div>
+        </div>
       </div>
 
       <div className="session-native-panel">

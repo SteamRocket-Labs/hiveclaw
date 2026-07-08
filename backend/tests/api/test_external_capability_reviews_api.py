@@ -169,6 +169,63 @@ def test_list_external_extension_catalog_entries_api_uses_tenant(monkeypatch):
     assert resp.json() == expected
 
 
+def test_marketplace_source_routes_thread_admin_and_tenant(monkeypatch):
+    source_id = uuid4()
+    entry_id = uuid4()
+    client, fake_db, current_user = _build_client()
+    source = {"id": str(source_id), "name": "Workspace Marketplace", "source_type": "manual"}
+    entry = {"id": str(entry_id), "source_id": str(source_id), "display_name": "Review Pack"}
+
+    async def fake_list_sources(db_session, *, tenant_id):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        return [source]
+
+    async def fake_create_source(db_session, *, tenant_id, created_by_user_id, data):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        assert created_by_user_id == current_user.id
+        assert data["name"] == "Workspace Marketplace"
+        return source
+
+    async def fake_sync_source(db_session, *, tenant_id, source_id):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        return {"source_id": str(source_id), "entries_seen": 1}
+
+    async def fake_list_entries(db_session, *, tenant_id, source_id=None, status=None):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        assert source_id is None
+        assert status is None
+        return [entry]
+
+    async def fake_submit(db_session, *, tenant_id, entry_id, submitted_by_user_id):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        assert submitted_by_user_id == current_user.id
+        return {"entry": entry, "review": {"id": str(uuid4()), "status": "review_required"}}
+
+    monkeypatch.setattr(external_mod, "list_marketplace_sources", fake_list_sources)
+    monkeypatch.setattr(external_mod, "create_marketplace_source", fake_create_source)
+    monkeypatch.setattr(external_mod, "sync_marketplace_source", fake_sync_source)
+    monkeypatch.setattr(external_mod, "list_marketplace_entries", fake_list_entries)
+    monkeypatch.setattr(external_mod, "submit_marketplace_entry_for_review", fake_submit)
+
+    assert client.get("/enterprise/external-capabilities/marketplace-sources").json() == [source]
+    create_resp = client.post(
+        "/enterprise/external-capabilities/marketplace-sources",
+        json={"name": "Workspace Marketplace", "source_type": "manual", "source_uri": "manual://workspace"},
+    )
+    assert create_resp.status_code == 200
+    assert create_resp.json() == source
+    assert client.post(f"/enterprise/external-capabilities/marketplace-sources/{source_id}/sync").json()["entries_seen"] == 1
+    assert client.get("/enterprise/external-capabilities/marketplace-entries").json() == [entry]
+    submit_resp = client.post(f"/enterprise/external-capabilities/marketplace-entries/{entry_id}/submit-review")
+    assert submit_resp.status_code == 200
+    assert submit_resp.json()["review"]["status"] == "review_required"
+
+
 def test_deactivate_agent_external_extension_checks_agent_access(monkeypatch):
     agent_id = uuid4()
     snapshot_id = uuid4()

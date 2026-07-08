@@ -50,6 +50,34 @@
   gap: 10px;
 }
 
+.workspace-extension-marketplace-form {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.4fr) auto;
+  gap: 10px;
+}
+
+.workspace-extension-marketplace-form input,
+.workspace-extension-marketplace-form textarea {
+  min-width: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.workspace-extension-marketplace-form input {
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+.workspace-extension-marketplace-form textarea {
+  grid-column: 1 / -1;
+  min-height: 88px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
 .workspace-extension-catalog-row {
   display: flex;
   align-items: center;
@@ -126,5 +154,9 @@
 
   .workspace-extension-catalog-actions {
     width: 100%;
+  }
+
+  .workspace-extension-marketplace-form {
+    grid-template-columns: 1fr;
   }
 }

@@ -180,6 +180,43 @@ export interface ExternalExtensionCatalogEntry {
   metadata?: Record<string, unknown>;
 }
 
+export interface ExternalMarketplaceSource {
+  id: string;
+  name: string;
+  source_type: string;
+  source_uri: string;
+  status: string;
+  sync_status?: string;
+  last_sync_error?: string | null;
+  config?: Record<string, unknown>;
+  last_sync_at?: string | null;
+}
+
+export interface ExternalMarketplaceSourceRequest {
+  name: string;
+  source_type: string;
+  source_uri: string;
+  status?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface ExternalMarketplaceEntry {
+  id: string;
+  source_id: string | null;
+  external_key: string;
+  display_name: string;
+  description?: string | null;
+  source_format: string;
+  source_uri: string;
+  source_ref?: string | null;
+  status: string;
+  manifest?: Record<string, unknown>;
+  compatibility?: Record<string, unknown>;
+  review_id?: string | null;
+  snapshot_id?: string | null;
+  last_seen_at?: string | null;
+}
+
 export const extensionsApi = {
   /** Agent Detail source of truth: skills + MCP servers for one agent. */
   getAgentExtensions: (agentId: string) => get<AgentExtensions>(`/agents/${agentId}/extensions`),
@@ -224,6 +261,30 @@ export const extensionsApi = {
   /** Company admin: list approved external capability catalog entries. */
   listExternalExtensionCatalog: () =>
     get<ExternalExtensionCatalogEntry[]>('/enterprise/external-capabilities/catalog'),
+
+  /** Company admin: list discovery sources. Marketplace sources never activate runtime directly. */
+  listMarketplaceSources: () =>
+    get<ExternalMarketplaceSource[]>('/enterprise/external-capabilities/marketplace-sources'),
+
+  /** Company admin: create one discovery source. */
+  createMarketplaceSource: (body: ExternalMarketplaceSourceRequest) =>
+    post<ExternalMarketplaceSource>('/enterprise/external-capabilities/marketplace-sources', body),
+
+  /** Company admin: sync one discovery source into marketplace entries. */
+  syncMarketplaceSource: (sourceId: string) =>
+    post<{ source_id: string; sync_status?: string; entries_seen?: number; entries_created?: number; entries_updated?: number }>(
+      `/enterprise/external-capabilities/marketplace-sources/${sourceId}/sync`,
+    ),
+
+  /** Company admin: list discoverable marketplace entries. */
+  listMarketplaceEntries: () =>
+    get<ExternalMarketplaceEntry[]>('/enterprise/external-capabilities/marketplace-entries'),
+
+  /** Company admin: submit one marketplace entry into Trust Gate review. */
+  submitMarketplaceEntryForReview: (entryId: string) =>
+    post<{ entry: ExternalMarketplaceEntry; review: ExternalCapabilityReviewSummary }>(
+      `/enterprise/external-capabilities/marketplace-entries/${entryId}/submit-review`,
+    ),
 
   /** Company admin: approve one staged external capability snapshot. */
   approveExternalCapabilityReview: (reviewId: string) =>

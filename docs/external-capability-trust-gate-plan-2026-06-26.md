@@ -2,7 +2,7 @@
 
 日期：2026-06-26
 更新：2026-07-09，按当前 checkout 复核后收敛状态：核心骨架已实装，完整闭环未完成
-状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、session-scoped try activation、component-level selected activation substrate、credential handle binding、external component/hook evidence tables、quarantine-only Materialize、revoke/deactivate 后端入口、Agent/Workspace Extensions 入口已落地；install-time sandbox worker、Marketplace、Capability Factor Intake、Legacy migration 仍未完成；hook/slash/app connector runtime activation 仍 fail-closed
+状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、session-scoped try activation、component-level selected activation substrate、credential handle binding、external component/hook evidence tables、quarantine-only Materialize、revoke/deactivate 后端入口、Marketplace manual discovery source 管理、Agent/Workspace Extensions 入口已落地；install-time sandbox worker、远程 Git/GitHub/npm marketplace materializer、Capability Factor Intake、Legacy migration 仍未完成；hook/slash/app connector runtime activation 仍 fail-closed
 范围：外部 Plugin/Extension 的发现、检验、审批、安装、激活、撤销与审计；Skill、MCP Server、Subagent、Hook 是 Plugin components，也保留单组件快捷导入入口
 上位文档：
 - `docs/agent-extension-surface-skill-mcp.md`
@@ -35,7 +35,7 @@ External Capability Trust Gate
 
 当前代码现实必须分清：
 
-- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、Codex plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` / `external_extension_catalog_entries` / `external_extension_components` / `external_extension_hook_registrations` / `external_extension_activations` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve / catalog API、agent-scoped catalog API、agent durable activation API 的 selected component / credential handle contract、agent session-scoped try API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging、standalone MCP import 的 Trust Gate staging、approved Skill snapshot -> existing Skill runtime activation、approved Skill snapshot -> session overlay Skill catalog / load_skill activation、approved MCP snapshot -> existing MCP server-first runtime activation、approved Subagent snapshot -> sanitized agent definition activation、approved Hook snapshot -> pending hook approval evidence、approved external snapshot activation 在 `/agents/{agent_id}/extensions` 的 read model 可见、Agent Detail 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions` 且默认显示可安装 Catalog 和 `Try in chat`、Workspace Settings 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions` 且默认显示 Catalog / Review queue，旧路径 redirect。
+- 已有：`SkillGuard` 静态扫描、Skill active installer、MCP server-first 管理、MCP tool policy、legacy plugin install/projection、`/agents/{agent_id}/extensions` read model、`ToolRuntimeService` / `CapabilityGate` / `ActionPreflightService` 运行时治理、CC plugin normalized adapter、Codex plugin normalized adapter、`external_capability_reviews` / `external_capability_snapshots` / `external_extension_catalog_entries` / `external_extension_components` / `external_extension_hook_registrations` / `external_extension_activations` Trust Gate substrate、`admission_class` / `governance_projection_json` 落库、enterprise review stage / approve / catalog API、agent-scoped catalog API、agent durable activation API 的 selected component / credential handle contract、agent session-scoped try API、manual marketplace source / entry / submit-review API、外部 Skill URL / ClawHub / skills.sh / code execution sandbox / MCP prompt -> Skill 入口的 Trust Gate staging、standalone MCP import 的 Trust Gate staging、approved Skill snapshot -> existing Skill runtime activation、approved Skill snapshot -> session overlay Skill catalog / load_skill activation、approved MCP snapshot -> existing MCP server-first runtime activation、approved Subagent snapshot -> sanitized agent definition activation、approved Hook snapshot -> pending hook approval evidence、approved external snapshot activation 在 `/agents/{agent_id}/extensions` 的 read model 可见、Agent Detail 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions` 且默认显示可安装 Catalog 和 `Try in chat`、Workspace Settings 顶层 `Tools / Skills / Subagents` 已收敛为 `Extensions` 且默认显示 Catalog / Review queue / Marketplace sources / Marketplace entries，旧路径 redirect。
 - 显式 fail-closed：CC/Codex 的 hook、slash command、app connector、LSP、output style 等子能力会进入 adapter report / unsupported components 或 activation unsupported result；在 Hive 有对应受治理 runtime binding 前，不进入 prompt、tool surface、hook dispatcher 或 connector runtime。
 - 因此本文档既是设计契约，也是当前实现证据；后续不得把 Trust Gate 误读为第二套 runtime，也不得把 unsupported 子能力静默当作已激活。
 
@@ -55,9 +55,10 @@ External Capability Trust Gate
 - `backend/app/services/external_capabilities/trust_gate.py`：stage review、approve snapshot、publish catalog entries、persist component evidence、persist pending hook registrations。
 - `backend/app/services/external_capabilities/activation.py`：approved snapshot durable activation 到 existing Skill / MCP / Subagent runtime surface。
 - `backend/app/services/external_capabilities/activation.py`：支持 selected component activation、session-scoped try activation、credential handle preflight/binding、Hook fail-closed pending activation result。
-- `backend/app/models/external_capability.py` + migrations：`external_capability_reviews`、`external_capability_snapshots`、`external_extension_catalog_entries`、`external_extension_components`、`external_extension_hook_registrations`、`external_extension_activations` 六张表。
-- `backend/app/api/external_capabilities.py`：reviews、catalog、approve、agent catalog、durable activate API、session try API。
-- `frontend/src/pages/agent-detail/AgentExtensionsSection.tsx` 与 `frontend/src/pages/workspace/WorkspaceExtensionsSection.tsx`：Agent / Workspace 的 Extensions 入口与 Catalog 子页。
+- `backend/app/services/external_capabilities/marketplace_sources.py`：manual marketplace source sync、entry cache、entry submit -> Trust Gate review。
+- `backend/app/models/external_capability.py` + migrations：`external_capability_reviews`、`external_capability_snapshots`、`external_extension_catalog_entries`、`external_extension_components`、`external_extension_hook_registrations`、`external_extension_activations`、`external_marketplace_sources`、`external_marketplace_entries`。
+- `backend/app/api/external_capabilities.py`：reviews、catalog、approve、agent catalog、durable activate API、session try API、workspace marketplace source/entry API。
+- `frontend/src/pages/agent-detail/AgentExtensionsSection.tsx` 与 `frontend/src/pages/workspace/WorkspaceExtensionsSection.tsx` / `WorkspaceExtensionCatalogSection.tsx`：Agent / Workspace 的 Extensions 入口、Catalog、Review queue、Marketplace source/entry 子面。
 
 已核实缺失的闭环能力：
 
@@ -67,7 +68,7 @@ External Capability Trust Gate
 4. `component-level activation substrate` 已有，但产品闭环未完成：service/API 已能只启用 selected Skill/MCP/Subagent/Hook，并要求 credential handle；Agent Catalog UI 仍没有组件选择器、credential binding prompt、per-component installed state。
 5. `HiveExtensionManifestAdapter` / `LegacyPackAdapter` 缺失。当前只有 Skill、MCP、CC、Codex 四类 adapter；legacy pack 仍只是兼容 backing store，没有 migration-only normalized report。
 6. Hook 目前只有 snapshot/component provenance 和 `pending_approval` fail-closed registration；还没有 hook allowlist approval route，也没有投影到 existing hook dispatcher 的 runtime binding。
-7. Marketplace source 管理、Capability Factor Intake、自进化因子入库、production dry-run sweep 未实现。
+7. Marketplace source 管理已有 manual discovery source / entry cache / submit review 闭环；仍缺 Git/GitHub/npm/CC/Codex marketplace 远程 refresh worker。Capability Factor Intake、自进化因子入库、production dry-run sweep 未实现。
 
 当前安全边界是 fail-closed：远程 source 和不支持的 component 不会静默进入 runtime。这是正确的安全姿态，但它也意味着远程插件安装主线还没有完全打通。
 
@@ -77,7 +78,7 @@ External Capability Trust Gate
 2. revoke / deactivate 审计闭环与 MCP assignment 自动禁用。
 3. component-level activation 的前端选择器、credential binding prompt、hook allowlist approval route。
 4. MCP session try projection、Subagent session resolver。
-5. Marketplace source 管理。
+5. Git/GitHub/npm/CC/Codex marketplace 远程 refresh worker。
 6. Capability Factor Intake。
 7. LegacyPackAdapter migration + production dry-run sweep。
 
@@ -2748,13 +2749,75 @@ Round 4 完成标准：
 - 公司收录必须单独 catalog promotion。
 - 管理员可以看到从 marketplace source 到 trusted snapshot 的完整证据链。
 
-Round 4 当前状态（2026-07-08 复核）：
+Round 4 当前状态（2026-07-09 实装）：
 
-- 未实现 marketplace source model / migration。
-- 未实现 marketplace sync service。
-- 未实现 Workspace Settings -> Marketplaces 页面。
-- 未实现从 marketplace browse -> submit for review 的闭环。
-- 当前 Workspace Catalog 是 approved snapshot / pending review 展示面，不是 marketplace source 管理面。
+已落地的是 discovery-only marketplace 管理闭环：
+
+- `backend/alembic/versions/external_marketplace_sources_0709.py`：新增 `external_marketplace_sources`、`external_marketplace_entries`，并纳入 tenant RLS。
+- `backend/app/models/external_capability.py`：新增 `ExternalMarketplaceSource`、`ExternalMarketplaceEntry`。
+- `backend/app/services/external_capabilities/marketplace_sources.py`：支持 manual source sync -> entry cache；entry submit -> `stage_external_capability_review()`；不创建 catalog，不写 agent runtime。
+- `backend/app/api/external_capabilities.py`：新增 `/enterprise/external-capabilities/marketplace-sources`、`/sync`、`/marketplace-entries`、`/submit-review`。
+- `frontend/src/api/domains/extensions.ts`：新增 marketplace source/entry API adapter。
+- `frontend/src/pages/workspace/WorkspaceExtensionCatalogSection.tsx`：Workspace Extensions 的 Catalog 子页展示 `Marketplace sources`、`Marketplace entries`，支持 source 创建、sync、entry submit review，同时保留 approved catalog / pending review queue。
+- `frontend/src/i18n/en.json`、`frontend/src/i18n/zh.json`：补齐 marketplace source/entry 文案。
+
+仍未完成的边界：
+
+- GitHub repo source、CC marketplace repo、Codex/OpenAI marketplace source 的远程 refresh worker 仍未实现。
+- 远程 marketplace refresh 必须复用 Trust Gate materializer worker / sandbox / sidecar，不允许在 Agent runtime 或 ordinary backend request path 里执行 `git clone`、`npm`、`npx`。
+- 当前 UI 的 source 创建只支持 `manual` source config JSON；它用于后台预置和测试发现流，不代表已经支持直接拉取 CC/GitHub/npm marketplace。
+
+Round 4 实装证据（2026-07-09）：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_external_marketplace_sources.py \
+  tests/api/test_external_capability_reviews_api.py::test_marketplace_source_routes_thread_admin_and_tenant -q
+# 3 passed, 4 warnings in 2.39s
+
+ruff check app/models/external_capability.py \
+  app/services/external_capabilities/marketplace_sources.py \
+  app/api/external_capabilities.py \
+  app/db_bootstrap.py \
+  tests/services/test_external_marketplace_sources.py \
+  tests/api/test_external_capability_reviews_api.py \
+  alembic/versions/external_marketplace_sources_0709.py
+# All checks passed!
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run test -- src/api/domains/extensions.test.ts src/pages/workspace/WorkspaceExtensionsSection.test.tsx
+# Test Files 2 passed (2); Tests 6 passed (6)
+
+npm run build
+# tsc && vite build -> built in 2.77s
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_external_capability_trust_gate.py \
+  tests/services/test_external_capability_materializer.py \
+  tests/services/test_external_capability_activation.py \
+  tests/services/test_agent_context_session_extensions.py \
+  tests/services/test_external_marketplace_sources.py \
+  tests/services/test_external_cc_plugin_adapter.py \
+  tests/services/test_external_codex_plugin_adapter.py \
+  tests/services/test_external_mcp_source_adapter.py \
+  tests/api/test_external_capability_reviews_api.py \
+  tests/api/test_external_capability_activation_api.py \
+  tests/api/test_mcp_servers_api.py::test_import_route_stages_trust_gate_review \
+  tests/tools/test_workspace.py::test_load_skill_rejects_sibling_prefix_escape \
+  tests/tools/test_workspace.py::test_load_skill_allows_only_matching_session_extension_overlay -q
+# 40 passed, 4 warnings in 2.55s
+
+alembic heads
+# external_marketplace_sources_0709 (head)
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run test -- src/api/domains/extensions.test.ts \
+  src/pages/agent-detail/AgentExtensionsSection.test.tsx \
+  src/pages/workspace/WorkspaceExtensionsSection.test.tsx
+# Test Files 3 passed (3); Tests 7 passed (7)
+```
 
 ### Round 5：Capability Factor Intake 与自进化系统接入
 

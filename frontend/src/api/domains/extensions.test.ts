@@ -144,4 +144,40 @@ describe('extensions API adapter', () => {
       expires_in_minutes: 30,
     });
   });
+
+  it('routes marketplace source and entry operations through discovery-only endpoints', async () => {
+    vi.doMock('../core', async () => {
+      const actual = await vi.importActual<typeof import('../core')>('../core');
+      return {
+        ...actual,
+        get: vi.fn(),
+        post: vi.fn(),
+      };
+    });
+
+    const { extensionsApi } = await import('./extensions');
+    const { get, post } = await import('../core');
+    vi.mocked(get).mockResolvedValue([]);
+    vi.mocked(post).mockResolvedValue({ status: 'ok' });
+
+    await extensionsApi.listMarketplaceSources();
+    await extensionsApi.createMarketplaceSource({
+      name: 'Workspace Marketplace',
+      source_type: 'manual',
+      source_uri: 'manual://workspace',
+    });
+    await extensionsApi.syncMarketplaceSource('source-1');
+    await extensionsApi.listMarketplaceEntries();
+    await extensionsApi.submitMarketplaceEntryForReview('entry-1');
+
+    expect(get).toHaveBeenCalledWith('/enterprise/external-capabilities/marketplace-sources');
+    expect(post).toHaveBeenCalledWith('/enterprise/external-capabilities/marketplace-sources', {
+      name: 'Workspace Marketplace',
+      source_type: 'manual',
+      source_uri: 'manual://workspace',
+    });
+    expect(post).toHaveBeenCalledWith('/enterprise/external-capabilities/marketplace-sources/source-1/sync');
+    expect(get).toHaveBeenCalledWith('/enterprise/external-capabilities/marketplace-entries');
+    expect(post).toHaveBeenCalledWith('/enterprise/external-capabilities/marketplace-entries/entry-1/submit-review');
+  });
 });

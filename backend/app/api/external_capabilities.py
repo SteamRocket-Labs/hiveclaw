@@ -20,6 +20,13 @@ from app.services.external_capabilities.activation import (
     deactivate_external_extension_for_agent,
     try_external_extension_in_chat,
 )
+from app.services.external_capabilities.marketplace_sources import (
+    create_marketplace_source,
+    list_marketplace_entries,
+    list_marketplace_sources,
+    submit_marketplace_entry_for_review,
+    sync_marketplace_source,
+)
 from app.services.external_capabilities.trust_gate import (
     approve_external_capability_snapshot,
     list_external_capability_reviews,
@@ -95,6 +102,14 @@ class ExternalExtensionActivationIn(BaseModel):
 class ExternalExtensionTryInChatIn(ExternalExtensionActivationIn):
     session_id: uuid.UUID
     expires_in_minutes: int = Field(default=60, ge=1, le=24 * 60)
+
+
+class ExternalMarketplaceSourceIn(BaseModel):
+    name: str
+    source_type: str = "manual"
+    source_uri: str
+    status: str = "enabled"
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.get("/enterprise/external-capabilities/reviews")
@@ -269,6 +284,80 @@ async def try_external_extension_in_chat_route(
             component_qualified_names=data.component_qualified_names,
             credential_handles=data.credential_handles,
             expires_in_minutes=data.expires_in_minutes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/enterprise/external-capabilities/marketplace-sources")
+async def list_marketplace_sources_route(
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    return await list_marketplace_sources(db, tenant_id=current_user.tenant_id)
+
+
+@router.post("/enterprise/external-capabilities/marketplace-sources")
+async def create_marketplace_source_route(
+    data: ExternalMarketplaceSourceIn,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    try:
+        return await create_marketplace_source(
+            db,
+            tenant_id=current_user.tenant_id,
+            created_by_user_id=current_user.id,
+            data=data.model_dump(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/enterprise/external-capabilities/marketplace-sources/{source_id}/sync")
+async def sync_marketplace_source_route(
+    source_id: uuid.UUID,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    try:
+        return await sync_marketplace_source(db, tenant_id=current_user.tenant_id, source_id=source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/enterprise/external-capabilities/marketplace-entries")
+async def list_marketplace_entries_route(
+    source_id: uuid.UUID | None = None,
+    status: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    return await list_marketplace_entries(db, tenant_id=current_user.tenant_id, source_id=source_id, status=status)
+
+
+@router.post("/enterprise/external-capabilities/marketplace-entries/{entry_id}/submit-review")
+async def submit_marketplace_entry_for_review_route(
+    entry_id: uuid.UUID,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    try:
+        return await submit_marketplace_entry_for_review(
+            db,
+            tenant_id=current_user.tenant_id,
+            entry_id=entry_id,
+            submitted_by_user_id=current_user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

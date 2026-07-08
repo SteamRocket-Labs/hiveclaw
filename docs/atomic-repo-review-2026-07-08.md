@@ -104,12 +104,12 @@ FreeCode 全仓 attention/activation/router 零命中（Fact）——CC 无此�
 ### 2.2 断点（全 grep 证实）
 
 - **B1** LLM Query Parser seam 死：maybe_parse_activation_query_with_llm（activation_query.py:157,183）零调用。Q 侧 100% 机械 regex，`concepts` 恒 []（:151）。
-- **B2** hints 区恒渲染空：route_activation_candidates 全仓仅 1 调用点（invoker.py:411）且只喂 KB 候选；build_activation_hints_section 只渲染 skill/tool/subagent（activation_hints.py:73-78）→ 恒返回 ""。
+- **B2 ✅ 已闭环** hints 区恒渲染空：dynamic suffix builder 仅在存在 actionable skill/tool/subagent hint 时写 `dynamic:activation:hints` ledger，Personal KB 继续走 `kb_hint` 旁路，不再渲染空 hints 段。
 - **B3** router→memory 读桥死：plane_read.load_selected_memory_values（:228）零调用。
 - **B4 ✅ 已闭环** memory 候选生产者全死：`retrieve_candidates` / `gather_t2_evidence_candidates` / `gather_t3_plane_candidates` / `gather_explicit_overlay_candidates` 已从 `MemoryRetriever` 退役；图谱与 `rg` 均确认删后无剩余符号/引用。
 - **B5** K 侧 activation_keys 仍未承载 `MemoryRetriever.retrieve()`：B4 死读桥已删，`reference_index.py` 的 activation_keys 表仍作为 derived index / source-ref / repair script 合约存在；若要继续收缩，必须单独评估并迁移这些索引测试与维护脚本，而不是随 dead gather 一并误删。
 - **B6-B8** tool/subagent 候选生产者死；qkv trace 构建器零调用；两个 credit 环只写不读（工具 activation events 零读者 hooks_setup.py:775；heat_delta/decay_signal 无消费者 session_feedback.py:202）。
-- **B9 ⚠️ 治理级泄漏**：invoker.py:1697 把原始 activation_events 注入 _hook_metadata → TURN_STOP → _t0_turn_stop（hooks_setup.py:447-457）→ seal_t0_session_segment，_clean_metadata 保留 list/dict（ledger.py:892）→ 原始 events 写入 `memory/t0/.../events.jsonl` segment_boundary。而 memory/t0/ 正是其自己声明的 forbidden_truth_surfaces（activation_events.py:187）。触发面：非 web 默认路径有 open segment 时（trigger/delegation/heartbeat/一次性）。
+- **B9 ✅ 已闭环** 原始 activation_events T0 truth-surface 泄漏：T0 boundary 只保留 `activation_feedback_summary`，原始 `activation_events` 已在 seal 前剥离；非 web 默认路径 open segment 不再把原始 router telemetry 写入 `memory/t0/.../events.jsonl`。
 
 ### 2.3 AI-Native 四问判决
 
@@ -119,7 +119,7 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 
 - **S1** hints 死注入与 KB 旁路二选一：kb_hint 已够用，删空注入（prompt_builder.py:865-875 + activation_hints.py）。
 - **S2** 退役 K 侧只写不读回路：✅ dead gather 函数已删；activation_keys 表投影仍保留为 derived index / source-ref / repair script 合约，后续若继续退役必须先拆 reference_index 合约与测试，若接读侧则必须先修 B1（LLM parser）+ 让 scoring 语义判断回归模型。
-- **S4（治理级，立即）**：T0 seal 前 strip 原始 activation_events（只留 summary）堵 B9；policy dict 接入真实写前校验或删除。
+- **S4（治理级）✅ 已闭环**：T0 seal 前 strip 原始 activation_events（只留 summary）堵 B9；policy dict 不再作为原始 activation event 进入 T0 truth surface。
 - **S5** 若保留 SQLite 索引：加 busy_timeout + build-to-temp + atomic-rename（当前双进程可 database is locked，连接不 close 泄漏句柄）。
 - 性能注记：KB 激活每 invocation 无条件 ~2 个 PG 查询（invoker.py:1623），热路径无同步 embedding ✅；reference_index 每写全量 DROP+CREATE 却无读者（为死读侧付全量写代价）。
 
@@ -152,9 +152,9 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 
 ### 4.1 断点
 
-- **B1〔CRITICAL·执行铁证〕`search_personal_kb` 被 capability gate 拒**：工具在 registry.py:70 的 `_MEMORY` 运行时组但**不在 CAPABILITY_MAP**，governance.py:1014 无条件 check_capability，STRICT_CAPABILITY_MAPPING=True 下 fail-closed 拒绝（audit_capability_mapping() 原话确认）。整个 spec §5.2 agent 消费路径死；invoker.py:444 还在注入"用 search_personal_kb"提示词=自相矛盾。owner Web UI 端点直调 service 不受影响。**修法一行**（注册 CAPABILITY_MAP 如 agent.knowledge.read）。两个工具测试绕 governance 直调 handler 故 CI 没抓——应补一条真走 governance 的集成测试当修复门。
-- **B2〔高〕管线同步内联非异步**：无 worker 消费 KnowledgeIndexJob；upload.py:302 在聊天上传请求内 await ingest（含逐段 LLM 抽取）→ 大文档阻塞请求；KB 路径无独立大小上限。
-- **B3〔中〕owner 搜自己 KB 被 agent_searchable 误过滤**（search statement :418 无条件过滤，不分 owner）——文库列表能见、搜索不见，不一致。
+- **B1 ✅ 已闭环** `search_personal_kb` capability gate 拒绝：已注册 `search_personal_kb -> agent.knowledge.read`，并补 capability audit / governance surface 测试；STRICT_CAPABILITY_MAPPING 下不再 fail-closed 拒绝。
+- **B2 ✅ deterministic 部分已闭环 / ⚠️ UX 异步增强未做**：`process_import_jobs` 已能批量消费 queued/failed `KnowledgeIndexJob`；聊天上传新增 `HIVE_CHAT_UPLOAD_MAX_BYTES` / `HIVE_CHAT_IMAGE_UPLOAD_MAX_BYTES` 硬上限。剩余是产品体验层的后台 worker/队列化上传增强，不再是“无消费入口/无上限”的上线硬断点。
+- **B3 ✅ 已闭环** owner 搜自己 KB 被 `agent_searchable` 误过滤：owner search statement 已去掉 `agent_searchable` 过滤；agent/非 owner 搜索仍保留该过滤。
 - **B4 ✅ 已闭环** 自主态无自动授权：`ensure_agent_identity()` 会在 agent 有 tenant + owner/creator 时幂等种 `KnowledgeGrant(scope_type="person", resource_type="scope", grantee_type="agent", permission="search")`，heartbeat/trigger（user_id=None）可沿既有 agent grant 谓词读取 owner-scope Personal KB；无 tenant/owner 的旧对象不动。
 
 ### 4.2 缺失与债

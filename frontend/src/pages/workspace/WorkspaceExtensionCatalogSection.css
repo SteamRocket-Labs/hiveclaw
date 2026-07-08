@@ -78,6 +78,46 @@
   resize: vertical;
 }
 
+.workspace-extension-legacy-migration {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(280px, 2fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.workspace-extension-legacy-migration-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.workspace-extension-legacy-migration-main span,
+.workspace-extension-legacy-migration-stats span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.workspace-extension-legacy-migration-main strong,
+.workspace-extension-legacy-migration-stats strong {
+  color: var(--text-primary);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.workspace-extension-legacy-migration-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(72px, 1fr));
+  gap: 8px;
+}
+
+.workspace-extension-legacy-migration-stats div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
 .workspace-extension-catalog-row {
   display: flex;
   align-items: center;
@@ -158,5 +198,13 @@
 
   .workspace-extension-marketplace-form {
     grid-template-columns: 1fr;
+  }
+
+  .workspace-extension-legacy-migration {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-extension-legacy-migration-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

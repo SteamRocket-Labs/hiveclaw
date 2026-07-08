@@ -7,6 +7,7 @@ import {
   type ExternalExtensionCatalogEntry,
   type ExternalMarketplaceEntry,
   type ExternalMarketplaceSource,
+  type LegacyPackMigrationReport,
 } from '../../api/domains/extensions';
 import { showAppToast } from '../../components/AppDialogs';
 import './WorkspaceExtensionCatalogSection.css';
@@ -26,12 +27,69 @@ function parseSourceConfig(value: string): Record<string, unknown> {
 
 const EMPTY_MANUAL_SOURCE_CONFIG = '{\n  "entries": []\n}';
 
+interface LegacyPackMigrationPanelProps {
+  report: LegacyPackMigrationReport | null;
+  running: boolean;
+  onDryRun: () => void | Promise<void>;
+}
+
+export function LegacyPackMigrationPanel({ report, running, onDryRun }: LegacyPackMigrationPanelProps) {
+  const { t } = useTranslation();
+  const runtimeWrites = report?.runtime_writes?.length ?? 0;
+  const counts = report?.counts ?? { plugins: 0, assignments: 0, enabled_assignments: 0 };
+
+  return (
+    <section className="workspace-extension-catalog-panel" data-testid="legacy-pack-migration-panel">
+      <div className="workspace-extension-catalog-heading">
+        {t('enterprise.extensions.legacyMigrationTitle', 'Legacy migration dry-run')}
+      </div>
+      <div className="card workspace-extension-legacy-migration">
+        <div className="workspace-extension-legacy-migration-main">
+          <span>{t('enterprise.extensions.legacyMigrationMode', 'migration-only')}</span>
+          <strong>
+            {report?.blocks_new_entrypoint
+              ? t('enterprise.extensions.legacyMigrationBlocksEntrypoint', 'Blocks new entrypoint')
+              : t('enterprise.extensions.legacyMigrationReadOnly', 'Read-only projection')}
+          </strong>
+        </div>
+        <div className="workspace-extension-legacy-migration-stats">
+          <div>
+            <span>{t('enterprise.extensions.legacyPlugins', 'Plugins')}</span>
+            <strong>{counts.plugins}</strong>
+          </div>
+          <div>
+            <span>{t('enterprise.extensions.legacyAssignments', 'Assignments')}</span>
+            <strong>{counts.assignments}</strong>
+          </div>
+          <div>
+            <span>{t('enterprise.extensions.legacyEnabledAssignments', 'Enabled')}</span>
+            <strong>{counts.enabled_assignments}</strong>
+          </div>
+          <div>
+            <span>{t('enterprise.extensions.legacyRuntimeWrites', 'Runtime writes')}</span>
+            <strong>{runtimeWrites}</strong>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="btn btn-secondary workspace-extension-catalog-action"
+          disabled={running}
+          onClick={() => void onDryRun()}
+        >
+          {running ? t('common.loading', 'Loading...') : t('enterprise.extensions.runDryRun', 'Run dry-run')}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export default function WorkspaceExtensionCatalogSection() {
   const { t } = useTranslation();
   const [catalog, setCatalog] = useState<ExternalExtensionCatalogEntry[]>([]);
   const [reviews, setReviews] = useState<ExternalCapabilityReviewSummary[]>([]);
   const [marketplaceSources, setMarketplaceSources] = useState<ExternalMarketplaceSource[]>([]);
   const [marketplaceEntries, setMarketplaceEntries] = useState<ExternalMarketplaceEntry[]>([]);
+  const [legacyMigrationReport, setLegacyMigrationReport] = useState<LegacyPackMigrationReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [approvingReviewId, setApprovingReviewId] = useState<string | null>(null);
   const [rejectingReviewId, setRejectingReviewId] = useState<string | null>(null);
@@ -39,6 +97,7 @@ export default function WorkspaceExtensionCatalogSection() {
   const [creatingSource, setCreatingSource] = useState(false);
   const [syncingSourceId, setSyncingSourceId] = useState<string | null>(null);
   const [submittingEntryId, setSubmittingEntryId] = useState<string | null>(null);
+  const [runningLegacyMigrationDryRun, setRunningLegacyMigrationDryRun] = useState(false);
   const [sourceName, setSourceName] = useState('');
   const [sourceUri, setSourceUri] = useState('manual://workspace');
   const [sourceConfigJson, setSourceConfigJson] = useState(EMPTY_MANUAL_SOURCE_CONFIG);
@@ -46,16 +105,24 @@ export default function WorkspaceExtensionCatalogSection() {
   const loadCatalog = async () => {
     setLoading(true);
     try {
-      const [catalogEntries, reviewEntries, marketplaceSourceEntries, marketplaceCandidateEntries] = await Promise.all([
+      const [
+        catalogEntries,
+        reviewEntries,
+        marketplaceSourceEntries,
+        marketplaceCandidateEntries,
+        legacyMigrationDryRun,
+      ] = await Promise.all([
         extensionsApi.listExternalExtensionCatalog(),
         extensionsApi.listExternalCapabilityReviews(),
         extensionsApi.listMarketplaceSources(),
         extensionsApi.listMarketplaceEntries(),
+        extensionsApi.dryRunLegacyPackMigration(),
       ]);
       setCatalog(catalogEntries);
       setReviews(reviewEntries);
       setMarketplaceSources(marketplaceSourceEntries);
       setMarketplaceEntries(marketplaceCandidateEntries);
+      setLegacyMigrationReport(legacyMigrationDryRun);
     } catch (error) {
       console.error(error);
       showAppToast(t('enterprise.extensions.catalogLoadFailed', 'Failed to load extension catalog'), 'error');
@@ -67,6 +134,19 @@ export default function WorkspaceExtensionCatalogSection() {
   useEffect(() => {
     void loadCatalog();
   }, []);
+
+  const runLegacyMigrationDryRun = async () => {
+    setRunningLegacyMigrationDryRun(true);
+    try {
+      setLegacyMigrationReport(await extensionsApi.dryRunLegacyPackMigration());
+      showAppToast(t('enterprise.extensions.legacyMigrationDryRunComplete', 'Legacy migration dry-run complete'), 'success');
+    } catch (error) {
+      console.error(error);
+      showAppToast(t('enterprise.extensions.legacyMigrationDryRunFailed', 'Legacy migration dry-run failed'), 'error');
+    } finally {
+      setRunningLegacyMigrationDryRun(false);
+    }
+  };
 
   const createMarketplaceSource = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -207,6 +287,12 @@ export default function WorkspaceExtensionCatalogSection() {
           <strong>{marketplaceEntries.length}</strong>
         </div>
       </div>
+
+      <LegacyPackMigrationPanel
+        report={legacyMigrationReport}
+        running={runningLegacyMigrationDryRun}
+        onDryRun={runLegacyMigrationDryRun}
+      />
 
       <section className="workspace-extension-catalog-panel">
         <div className="workspace-extension-catalog-heading">

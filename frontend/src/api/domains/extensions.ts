@@ -291,6 +291,21 @@ export interface PromotionDecisionRequest {
   resulting_snapshot_id?: string | null;
 }
 
+export interface LegacyPackMigrationReport {
+  migration_only: boolean;
+  blocks_new_entrypoint?: boolean;
+  runtime_writes?: Array<Record<string, unknown>>;
+  counts: {
+    plugins: number;
+    assignments: number;
+    enabled_assignments: number;
+  };
+  catalog_projections?: Array<Record<string, unknown>>;
+  activation_projections?: Array<Record<string, unknown>>;
+  normalized_bundles?: Array<Record<string, unknown>>;
+  notes?: Array<Record<string, unknown>>;
+}
+
 export const extensionsApi = {
   /** Agent Detail source of truth: skills + MCP servers for one agent. */
   getAgentExtensions: (agentId: string) => get<AgentExtensions>(`/agents/${agentId}/extensions`),
@@ -417,6 +432,10 @@ export const extensionsApi = {
     post<{ snapshot_id: string; status: string; catalog_entries_revoked?: number; activations_revoked?: number }>(
       `/enterprise/external-capabilities/snapshots/${snapshotId}/revoke`,
     ),
+
+  /** Company admin: read-only legacy pack migration report. */
+  dryRunLegacyPackMigration: () =>
+    get<LegacyPackMigrationReport>('/enterprise/external-capabilities/legacy-pack-migration/dry-run'),
 
   /** Agent owner/admin: list approved catalog entries available to this agent. */
   listAgentExternalExtensionCatalog: (agentId: string) =>

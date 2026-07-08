@@ -1,8 +1,8 @@
 # External Capability Trust Gate Plan
 
 日期：2026-06-26
-更新：2026-07-09，按当前 checkout 复核后收敛状态：核心骨架已实装，完整闭环未完成
-状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、session-scoped try activation、component-level selected activation substrate、credential handle binding、external component/hook evidence tables、quarantine-only Materialize、revoke/deactivate 后端入口、Marketplace manual discovery source 管理、Capability Factor Intake / promotion proposal substrate、Agent/Workspace Extensions 入口已落地；install-time sandbox worker、远程 Git/GitHub/npm marketplace materializer、Legacy migration 仍未完成；hook/slash/app connector runtime activation 仍 fail-closed
+更新：2026-07-09，按当前 checkout 复核后收敛状态：核心骨架、准入门、Agent/Workspace 前端入口、Capability Factor Intake、Legacy migration dry-run 均已实装；完整远程安装闭环仍未完成
+状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、session-scoped try activation、component-level selected activation substrate、credential handle binding、external component/hook evidence tables、quarantine-only Materialize、revoke/deactivate 后端入口、Marketplace manual discovery source 管理、Capability Factor Intake / promotion proposal substrate、LegacyPackAdapter migration-only report、legacy pack migration dry-run API / Workspace UI、Agent/Workspace Extensions 入口已落地；install-time sandbox worker、远程 Git/GitHub/npm marketplace materializer、HiveExtensionManifestAdapter、production dry-run 执行与正式 backfill 仍未完成；hook/slash/app connector runtime activation 仍 fail-closed
 范围：外部 Plugin/Extension 的发现、检验、审批、安装、激活、撤销与审计；Skill、MCP Server、Subagent、Hook 是 Plugin components，也保留单组件快捷导入入口
 上位文档：
 - `docs/agent-extension-surface-skill-mcp.md`
@@ -56,11 +56,12 @@ External Capability Trust Gate
 - `backend/app/services/external_capabilities/activation.py`：approved snapshot durable activation 到 existing Skill / MCP / Subagent runtime surface。
 - `backend/app/services/external_capabilities/activation.py`：支持 selected component activation、session-scoped try activation、credential handle preflight/binding、Hook fail-closed pending activation result。
 - `backend/app/services/external_capabilities/marketplace_sources.py`：manual marketplace source sync、entry cache、entry submit -> Trust Gate review。
+- `backend/app/services/external_capabilities/legacy_pack_adapter.py`：`TenantInstalledPlugin` / `AgentPluginAssignment` -> migration-only normalized bundle / catalog projection / activation projection dry-run report；不写 catalog、activation 或 runtime。
 - `backend/app/models/external_capability.py` + migrations：`external_capability_reviews`、`external_capability_snapshots`、`external_extension_catalog_entries`、`external_extension_components`、`external_extension_hook_registrations`、`external_extension_activations`、`external_marketplace_sources`、`external_marketplace_entries`。
 - `backend/app/models/capability_factor.py` + `capability_factor_intake_0709.py`：`capability_factors`、`capability_factor_reviews`、`capability_promotion_proposals`。
-- `backend/app/api/external_capabilities.py`：reviews、catalog、approve、agent catalog、durable activate API、session try API、workspace marketplace source/entry API。
+- `backend/app/api/external_capabilities.py`：reviews、catalog、approve、agent catalog、durable activate API、session try API、workspace marketplace source/entry API、legacy pack migration dry-run API。
 - `backend/app/api/capabilities.py`：agent factor capture/list、enterprise factor intake、promotion proposal create/approve/reject/archive API。
-- `frontend/src/pages/agent-detail/AgentExtensionsSection.tsx` 与 `frontend/src/pages/workspace/WorkspaceExtensionsSection.tsx` / `WorkspaceExtensionCatalogSection.tsx` / `AgentCapabilityFactorsSection.tsx` / `WorkspaceCapabilityFactorsSection.tsx`：Agent / Workspace 的 Extensions 入口、Catalog、Review queue、Marketplace source/entry、Capability Factor Intake 子面。
+- `frontend/src/pages/agent-detail/AgentExtensionsSection.tsx` 与 `frontend/src/pages/workspace/WorkspaceExtensionsSection.tsx` / `WorkspaceExtensionCatalogSection.tsx` / `AgentCapabilityFactorsSection.tsx` / `WorkspaceCapabilityFactorsSection.tsx`：Agent / Workspace 的 Extensions 入口、Catalog、Review queue、Marketplace source/entry、Legacy migration dry-run、Capability Factor Intake 子面。
 
 已核实缺失的闭环能力：
 
@@ -68,9 +69,9 @@ External Capability Trust Gate
 2. `revoke / deactivate` 已有后端与前端入口：review reject、snapshot revoke、agent activation deactivate 已有 service/API；Agent Catalog 可停用 active snapshot，Workspace Catalog 可 reject/revoke。snapshot revoke 会撤 catalog、标记 active activation 为 `revoked`，并在能定位 workspace 时清理 Skill/Subagent artifact。仍缺 audit event 和 MCP assignment 级自动禁用。
 3. `try in chat / session-scoped activation` substrate 已有：activation 记录 `activation_scope=session`、`session_id`、`expires_at`，API 为 `/try`，Agent Catalog 有按钮；Skill component 会写入 session overlay，并只在对应 session 的 Skill catalog / `load_skill` 中可见。MCP session tool projection 和 Subagent session resolver 仍未投影，保持 fail-closed / metadata-only。
 4. `component-level activation substrate` 已有，但产品闭环未完成：service/API 已能只启用 selected Skill/MCP/Subagent/Hook，并要求 credential handle；Agent Catalog UI 仍没有组件选择器、credential binding prompt、per-component installed state。
-5. `HiveExtensionManifestAdapter` / `LegacyPackAdapter` 缺失。当前只有 Skill、MCP、CC、Codex 四类 adapter；legacy pack 仍只是兼容 backing store，没有 migration-only normalized report。
+5. `LegacyPackAdapter` 已有 migration-only dry-run report；`HiveExtensionManifestAdapter` 仍未实现。legacy pack 仍只能作为兼容 backing store / migration projection，不能成为新生态 manifest。
 6. Hook 目前只有 snapshot/component provenance 和 `pending_approval` fail-closed registration；还没有 hook allowlist approval route，也没有投影到 existing hook dispatcher 的 runtime binding。
-7. Marketplace source 管理已有 manual discovery source / entry cache / submit review 闭环；Capability Factor Intake 已有 capture / review / proposal / approve / reject / archive substrate。仍缺 Git/GitHub/npm/CC/Codex marketplace 远程 refresh worker、自产候选自动采集 hook、approved fork -> trusted snapshot 生成、production dry-run sweep。
+7. Marketplace source 管理已有 manual discovery source / entry cache / submit review 闭环；Capability Factor Intake 已有 capture / review / proposal / approve / reject / archive substrate；legacy pack migration dry-run API / UI 已有。仍缺 Git/GitHub/npm/CC/Codex marketplace 远程 refresh worker、自产候选自动采集 hook、approved fork -> trusted snapshot 生成、production dry-run 实际执行与正式 backfill。
 
 当前安全边界是 fail-closed：远程 source 和不支持的 component 不会静默进入 runtime。这是正确的安全姿态，但它也意味着远程插件安装主线还没有完全打通。
 
@@ -82,7 +83,7 @@ External Capability Trust Gate
 4. MCP session try projection、Subagent session resolver。
 5. Git/GitHub/npm/CC/Codex marketplace 远程 refresh worker。
 6. 自产候选自动采集 hook 与 approved fork -> trusted snapshot 生成。
-7. LegacyPackAdapter migration + production dry-run sweep。
+7. production dry-run execution + legacy backfill apply gate。
 
 核心原则：
 
@@ -937,10 +938,10 @@ Adapter 列表：
 
 | 现象 | 债务类型 | 是否阻断当前落地 | 处理方式 |
 |---|---|---:|---|
-| `pack.yaml`、`TenantInstalledPlugin`、`AgentPluginAssignment` 仍作为兼容记录存在 | 迁移债 | 否 | 保留为 migration-compatible backing store，通过 `LegacyPackAdapter` backfill 到 review/snapshot/catalog/activation。 |
+| `pack.yaml`、`TenantInstalledPlugin`、`AgentPluginAssignment` 仍作为兼容记录存在 | 迁移债 | 否 | 保留为 migration-compatible backing store，通过 `LegacyPackAdapter` 生成 migration-only report；正式 backfill 必须另走 dry-run + confirmation gate。 |
 | runtime 代码通过 capability-group facade 读取 legacy pack policy backing store | 迁移债 | 否 | 允许暂存，但产品面和新 API 不能暴露 pack/package 字段。 |
 | 旧 pack/package 仍作为新能力入口、统一 UI 入口或 `/agents/{agent_id}/extensions` 的产品概念 | 运行时债 | 是 | 必须收口到 Plugin/Extension Catalog + Activation，不得继续宣传 pack。 |
-| URL / ClawHub / HR external skill import 经 SkillGuard 后直接写 active skill package | 入口一致性债 | 是 | 改为 `SkillSourceAdapter -> stage/review/snapshot -> activation`，保留现有入口但返回 `review_required` 或投影到 Trust Gate。 |
+| URL / ClawHub / HR external skill import 经 SkillGuard 后直接写 active skill package | 入口一致性债 | 是 | 已收口为 `SkillSourceAdapter -> stage/review/snapshot -> activation`；保留现有入口但返回 `review_required` / `blocked`，不再直接写 active runtime。 |
 | `npx skills add` 或 sandbox HOME 产物被直接装入 active `skills/` | 入口一致性债 | 是 | 改为 materializer sandbox 产出 staged artifact，禁止未经 approved snapshot 的 active install。 |
 
 当前代码证据支持这个分级：
@@ -948,7 +949,8 @@ Adapter 列表：
 - `backend/app/services/capability_group_policy_service.py` 已声明 persisted storage 仍是 legacy pack policy，但 runtime callers 应依赖 capability groups。
 - `backend/app/services/agent_tools.py` 的 `is_pack_enabled` 只是 compatibility shim；MCP discovery / reachability 已明确不靠 legacy `mcp_server:*` pseudo-pack。
 - `backend/app/services/mcp_server_service.py` 的 extension surface 声明 public DTO 不携带 `pack` / `pack_name`，但仍会读取 `TenantInstalledPlugin` / `AgentPluginAssignment` 作为兼容 plugin assignment。
-- `backend/app/api/files.py` 的 `/import-from-url` 和 `/import-from-clawhub` 仍会调用 `install_active_skill_package`，而 `backend/app/services/skill_installation.py` 会在 SkillGuard 通过后直接写入 `workspace/skills/<folder>`。这正是必须迁移的 direct import bypass。
+- `backend/app/api/files.py`、`backend/app/api/skills.py`、`backend/app/tools/handlers/hr.py`、`backend/app/services/agent_tool_domains/code_exec.py`、`backend/app/services/mcp_prompt_trust.py` 的外部 Skill 入口已收口为 Trust Gate staging；`install_active_skill_package()` 仍保留给平台内部 trusted path、registry copy 和 approved activation projection。
+- `backend/app/services/external_capabilities/legacy_pack_adapter.py` 只输出 `migration_only=true`、`blocks_new_entrypoint=true`、`runtime_writes=[]` 的 dry-run report，不把 legacy pack 转成 active manifest。
 
 因此迁移原则是：
 
@@ -957,7 +959,8 @@ Adapter 列表：
 
 旧 pack/package compatibility
   -> LegacyPackAdapter
-  -> review/snapshot backfill
+  -> dry-run migration report
+  -> confirmed review/snapshot backfill
   -> catalog / activation projection
 
 旧 direct skill import
@@ -2204,10 +2207,10 @@ Round 2 当前未完成项（2026-07-09 复核）：
 - `approve_external_capability_snapshot()` 目前把 publish-to-catalog 合并在 approve 内部；没有独立 `publish-to-catalog` API。
 - reject / revoke API 和前端操作面已有；snapshot revoke 会标记 active activation 并清理可定位的 Skill/Subagent artifact。仍缺 audit event 和 MCP assignment 自动禁用。
 - `external_extension_components` / `external_extension_hook_registrations` 已补齐；Hook 仍只停在 `pending_approval` 证据层，还没有 allowlist approval API 或 runtime dispatcher projection。
-- `HiveExtensionManifestAdapter` 和 `LegacyPackAdapter` 未实现。
+- `LegacyPackAdapter` migration-only report 已实现；`HiveExtensionManifestAdapter` 未实现。
 - 当前 external Skill URL / ClawHub import 已经收口到 `review_required`，并通过 quarantine-only materializer 记录 materialization evidence；远程 fetch 仍是入口自身完成，不是真正 isolated materializer worker。
 
-因此 Round 2 只能标记为：Trust Gate substrate / selected adapters / component evidence / hook pending evidence / quarantine-only materializer 已实装；完整 canonical substrate 仍缺 install-time sandbox worker、独立 publish API、audit event、MCP assignment revoke closure 和 legacy adapter。
+因此 Round 2 只能标记为：Trust Gate substrate / selected adapters / component evidence / hook pending evidence / quarantine-only materializer / legacy migration-only adapter 已实装；完整 canonical substrate 仍缺 install-time sandbox worker、独立 publish API、audit event、MCP assignment revoke closure 和 Hive-native manifest adapter。
 
 ### Round 3：Agent runtime visibility / activation layer 与 Agent Detail 前端收敛
 
@@ -2977,12 +2980,87 @@ Round 6 完成标准：
 - 全量 targeted backend + frontend tests 通过。
 - 完成生产 dry-run sweep 后再允许正式迁移。
 
-Round 6 当前状态（2026-07-08 复核）：
+Round 6 当前状态（2026-07-09 实装后复核）：
 
-- `LegacyPackAdapter` 未实现；`TenantInstalledPlugin` / `AgentPluginAssignment` / `pack.yaml` 还没有 migration-only normalized report。
-- 没有生产 dry-run sweep 输出现有 Skill/MCP/Plugin/Extension 的 backfill review status。
+- `LegacyPackAdapter` 已实现 migration-only normalized report；`TenantInstalledPlugin` / `AgentPluginAssignment` 可生成 catalog projection、agent activation projection 和 `runtime_writes=[]` dry-run 证据。
+- 企业后台已有只读 dry-run API：`GET /enterprise/external-capabilities/legacy-pack-migration/dry-run`。
+- Workspace Extensions Catalog 已展示 Legacy migration dry-run 面板，初次加载和手动按钮都会读取 dry-run report；前端只展示 counts / runtime write 数，不把 legacy pack 作为可安装运行项。
+- 生产 dry-run sweep 的执行动作尚未在生产数据上运行；正式 backfill 仍必须走 dry-run + confirmation gate，不能自动改变现有 agent runtime。
 - Legacy compatibility layer 可以继续保留为迁移 backing store；它不应作为新能力入口、产品主字段或 Trust Gate bypass。
 - runtime 收口的正确方向不是重写 AgentKernel / ToolRuntimeService / MCP client / Subagent engine，而是让 active component projection 只读取 approved snapshot / activation。
+
+Round 6 Legacy migration dry-run 实装证据（2026-07-09）：
+
+- 新增 `backend/app/services/external_capabilities/legacy_pack_adapter.py`：
+  - `normalize_legacy_installed_plugin()`：把 legacy installed plugin 转成 `source_format=legacy_pack` 的 migration-only bundle。
+  - `build_legacy_pack_migration_report()`：输出 catalog projection、activation projection、normalized bundle summaries、`blocks_new_entrypoint=true` 和 `runtime_writes=[]`。
+  - `sweep_legacy_pack_migration_dry_run()`：按 tenant 只读扫描 `TenantInstalledPlugin` / `AgentPluginAssignment`。
+- 修改 `backend/app/api/external_capabilities.py`：
+  - `GET /enterprise/external-capabilities/legacy-pack-migration/dry-run` 走 admin tenant，只返回 dry-run report。
+- 修改 `frontend/src/api/domains/extensions.ts`：
+  - 新增 `LegacyPackMigrationReport` 与 `dryRunLegacyPackMigration()`。
+- 修改 `frontend/src/pages/workspace/WorkspaceExtensionCatalogSection.tsx`：
+  - 新增 `LegacyPackMigrationPanel`，展示 migration-only、plugins、assignments、enabled assignments、runtime writes。
+  - Catalog 初次加载同步读取 dry-run report；按钮可手动刷新。
+- 新增/更新测试：
+  - `backend/tests/services/test_legacy_pack_adapter.py`
+  - `backend/tests/api/test_external_capability_reviews_api.py::test_legacy_pack_migration_dry_run_threads_admin_and_tenant`
+  - `frontend/src/api/domains/extensions.test.ts`
+  - `frontend/src/pages/workspace/WorkspaceExtensionCatalogSection.test.tsx`
+- 验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_legacy_pack_adapter.py \
+  tests/api/test_external_capability_reviews_api.py::test_legacy_pack_migration_dry_run_threads_admin_and_tenant -q
+# 4 passed, 4 warnings in 1.98s
+
+cd frontend && npm run test -- \
+  src/pages/workspace/WorkspaceExtensionCatalogSection.test.tsx \
+  src/api/domains/extensions.test.ts \
+  src/pages/workspace/WorkspaceExtensionsSection.test.tsx
+# Test Files 3 passed (3); Tests 9 passed (9)
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/external_capabilities/legacy_pack_adapter.py \
+  app/api/external_capabilities.py \
+  tests/services/test_legacy_pack_adapter.py \
+  tests/api/test_external_capability_reviews_api.py
+# All checks passed!
+
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_external_capability_trust_gate.py \
+  tests/services/test_external_capability_materializer.py \
+  tests/services/test_external_capability_activation.py \
+  tests/services/test_agent_context_session_extensions.py \
+  tests/services/test_external_marketplace_sources.py \
+  tests/services/test_capability_factor_intake.py \
+  tests/services/test_legacy_pack_adapter.py \
+  tests/services/test_external_cc_plugin_adapter.py \
+  tests/services/test_external_codex_plugin_adapter.py \
+  tests/services/test_external_mcp_source_adapter.py \
+  tests/api/test_external_capability_reviews_api.py \
+  tests/api/test_external_capability_activation_api.py \
+  tests/api/test_capabilities_api.py::test_capability_factor_api_threads_agent_access_and_tenant \
+  tests/api/test_capabilities_api.py::test_capability_promotion_api_threads_admin_decision \
+  tests/api/test_mcp_servers_api.py::test_import_route_stages_trust_gate_review \
+  tests/tools/test_workspace.py::test_load_skill_rejects_sibling_prefix_escape \
+  tests/tools/test_workspace.py::test_load_skill_allows_only_matching_session_extension_overlay -q
+# 48 passed, 4 warnings in 1.85s
+
+cd frontend && npm run test -- \
+  src/pages/workspace/WorkspaceExtensionCatalogSection.test.tsx \
+  src/api/domains/extensions.test.ts \
+  src/pages/agent-detail/AgentExtensionsSection.test.tsx \
+  src/pages/workspace/WorkspaceExtensionsSection.test.tsx
+# Test Files 4 passed (4); Tests 10 passed (10)
+
+cd frontend && npm run build
+# tsc && vite build -> built in 2.54s
+
+cd backend && source .venv/bin/activate && alembic heads
+# capability_factor_intake_0709 (head)
+```
 
 ### 总体落地标准
 

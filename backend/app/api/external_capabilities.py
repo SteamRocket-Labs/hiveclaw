@@ -20,6 +20,7 @@ from app.services.external_capabilities.activation import (
     deactivate_external_extension_for_agent,
     try_external_extension_in_chat,
 )
+from app.services.external_capabilities.legacy_pack_adapter import sweep_legacy_pack_migration_dry_run
 from app.services.external_capabilities.marketplace_sources import (
     create_marketplace_source,
     list_marketplace_entries,
@@ -130,6 +131,16 @@ async def list_external_extension_catalog_route(
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant assigned")
     return await list_external_extension_catalog_entries(db, tenant_id=current_user.tenant_id)
+
+
+@router.get("/enterprise/external-capabilities/legacy-pack-migration/dry-run")
+async def dry_run_legacy_pack_migration_route(
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    return await sweep_legacy_pack_migration_dry_run(db, tenant_id=current_user.tenant_id)
 
 
 @router.post("/enterprise/external-capabilities/reviews")

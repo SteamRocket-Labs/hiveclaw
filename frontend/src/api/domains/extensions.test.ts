@@ -238,4 +238,22 @@ describe('extensions API adapter', () => {
     });
     expect(post).toHaveBeenCalledWith('/enterprise/capability-factors/factor-1/archive');
   });
+
+  it('routes legacy pack migration dry-run through a read-only enterprise endpoint', async () => {
+    vi.doMock('../core', async () => {
+      const actual = await vi.importActual<typeof import('../core')>('../core');
+      return {
+        ...actual,
+        get: vi.fn(),
+      };
+    });
+
+    const { extensionsApi } = await import('./extensions');
+    const { get } = await import('../core');
+    vi.mocked(get).mockResolvedValue({ migration_only: true });
+
+    await extensionsApi.dryRunLegacyPackMigration();
+
+    expect(get).toHaveBeenCalledWith('/enterprise/external-capabilities/legacy-pack-migration/dry-run');
+  });
 });

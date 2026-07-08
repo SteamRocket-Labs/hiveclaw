@@ -226,6 +226,23 @@ def test_marketplace_source_routes_thread_admin_and_tenant(monkeypatch):
     assert submit_resp.json()["review"]["status"] == "review_required"
 
 
+def test_legacy_pack_migration_dry_run_threads_admin_and_tenant(monkeypatch):
+    client, fake_db, current_user = _build_client()
+    expected = {"migration_only": True, "counts": {"plugins": 1, "assignments": 0, "enabled_assignments": 0}}
+
+    async def fake_dry_run(db_session, *, tenant_id):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        return expected
+
+    monkeypatch.setattr(external_mod, "sweep_legacy_pack_migration_dry_run", fake_dry_run)
+
+    resp = client.get("/enterprise/external-capabilities/legacy-pack-migration/dry-run")
+
+    assert resp.status_code == 200
+    assert resp.json() == expected
+
+
 def test_deactivate_agent_external_extension_checks_agent_access(monkeypatch):
     agent_id = uuid4()
     snapshot_id = uuid4()

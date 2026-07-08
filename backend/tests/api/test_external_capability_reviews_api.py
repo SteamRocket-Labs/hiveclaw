@@ -97,6 +97,30 @@ def test_approve_external_capability_review_api_returns_snapshot(monkeypatch):
     assert resp.json() == expected
 
 
+def test_reject_external_capability_review_api_threads_admin(monkeypatch):
+    target_review_id = uuid4()
+    client, fake_db, current_user = _build_client()
+    expected = {"review_id": str(target_review_id), "status": "rejected"}
+
+    async def fake_reject(db_session, *, tenant_id, review_id, rejected_by_user_id, reason):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        assert review_id == target_review_id
+        assert rejected_by_user_id == current_user.id
+        assert reason == "unsafe hook"
+        return expected
+
+    monkeypatch.setattr(external_mod, "reject_external_capability_review", fake_reject)
+
+    resp = client.post(
+        f"/enterprise/external-capabilities/reviews/{target_review_id}/reject",
+        json={"reason": "unsafe hook"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == expected
+
+
 def test_revoke_external_capability_snapshot_api_threads_admin(monkeypatch):
     target_snapshot_id = uuid4()
     client, fake_db, current_user = _build_client()

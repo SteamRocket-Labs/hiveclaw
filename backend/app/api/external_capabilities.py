@@ -21,6 +21,7 @@ from app.services.external_capabilities.trust_gate import (
     approve_external_capability_snapshot,
     list_external_capability_reviews,
     list_external_extension_catalog_entries,
+    reject_external_capability_review,
     revoke_external_capability_snapshot,
     stage_external_capability_review,
 )
@@ -79,6 +80,10 @@ class ExternalCapabilityReviewIn(BaseModel):
         )
 
 
+class ExternalCapabilityRejectIn(BaseModel):
+    reason: str | None = None
+
+
 @router.get("/enterprise/external-capabilities/reviews")
 async def list_external_capability_reviews_route(
     current_user: User = Depends(get_current_admin),
@@ -129,6 +134,27 @@ async def approve_external_capability_review_route(
             tenant_id=current_user.tenant_id,
             review_id=review_id,
             approved_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/enterprise/external-capabilities/reviews/{review_id}/reject")
+async def reject_external_capability_review_route(
+    review_id: uuid.UUID,
+    data: ExternalCapabilityRejectIn,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    try:
+        return await reject_external_capability_review(
+            db,
+            tenant_id=current_user.tenant_id,
+            review_id=review_id,
+            rejected_by_user_id=current_user.id,
+            reason=data.reason,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

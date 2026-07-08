@@ -79,6 +79,35 @@ async def approve_external_capability_snapshot(
             raise ValueError("external capability review not found")
         if review.admission_class == "blocked" or review.status == "blocked":
             raise ValueError("blocked external capability review cannot be approved")
+        if review.status != "review_required":
+            raise ValueError("external capability review must be review_required before approval")
+
+        superseded_result = await db.execute(
+            select(ExternalCapabilitySnapshot).where(
+                ExternalCapabilitySnapshot.tenant_id == tenant_id,
+                ExternalCapabilitySnapshot.source_format == review.source_format,
+                ExternalCapabilitySnapshot.normalized_name == review.normalized_name,
+                ExternalCapabilitySnapshot.status == "approved",
+            )
+        )
+        superseded_snapshots = list(superseded_result.scalars().all())
+        for old_snapshot in superseded_snapshots:
+            old_snapshot.status = "superseded"
+
+        catalog_entries_superseded = 0
+        if superseded_snapshots:
+            superseded_snapshot_ids = [old_snapshot.id for old_snapshot in superseded_snapshots]
+            superseded_catalog_result = await db.execute(
+                select(ExternalExtensionCatalogEntry).where(
+                    ExternalExtensionCatalogEntry.tenant_id == tenant_id,
+                    ExternalExtensionCatalogEntry.snapshot_id.in_(superseded_snapshot_ids),
+                    ExternalExtensionCatalogEntry.status == "available",
+                )
+            )
+            superseded_catalog_entries = list(superseded_catalog_result.scalars().all())
+            for entry in superseded_catalog_entries:
+                entry.status = "superseded"
+            catalog_entries_superseded = len(superseded_catalog_entries)
 
         snapshot = ExternalCapabilitySnapshot(
             tenant_id=tenant_id,
@@ -105,7 +134,53 @@ async def approve_external_capability_snapshot(
         if catalog_entries:
             await db.flush()
         await db.commit()
-        return _snapshot_to_dict(snapshot, catalog_entries=catalog_entries)
+        payload = _snapshot_to_dict(snapshot, catalog_entries=catalog_entries)
+        payload["superseded_snapshots"] = [str(old_snapshot.id) for old_snapshot in superseded_snapshots]
+        payload["catalog_entries_superseded"] = catalog_entries_superseded
+        return payload
+    except Exception:
+        await db.rollback()
+        raise
+
+
+async def reject_external_capability_review(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    review_id: uuid.UUID,
+    rejected_by_user_id: uuid.UUID | None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Mark a staged review rejected so it cannot later mint an approved snapshot."""
+    try:
+        result = await db.execute(
+            select(ExternalCapabilityReview).where(
+                ExternalCapabilityReview.id == review_id,
+                ExternalCapabilityReview.tenant_id == tenant_id,
+            )
+        )
+        review = result.scalar_one_or_none()
+        if review is None:
+            raise ValueError("external capability review not found")
+        if review.status == "approved":
+            raise ValueError("approved external capability review cannot be rejected")
+
+        normalized_reason = str(reason or "").strip()
+        admission_report = dict(review.admission_report_json or {})
+        admission_report["rejection"] = {
+            "reason": normalized_reason,
+            "rejected_by_user_id": str(rejected_by_user_id) if rejected_by_user_id else None,
+            "rejected_at": datetime.now(timezone.utc).isoformat(),
+        }
+        review.admission_report_json = admission_report
+        review.status = "rejected"
+        await db.flush()
+        await db.commit()
+        return {
+            "review_id": str(review_id),
+            "status": "rejected",
+            "reason": normalized_reason,
+        }
     except Exception:
         await db.rollback()
         raise

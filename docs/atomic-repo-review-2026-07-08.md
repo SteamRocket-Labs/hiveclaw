@@ -20,6 +20,7 @@
 | 2026-07-08 | P1-6 RTD cache decision read surface | ✅ 已闭环 | Red: `context-usage` omitted `cache_decision_ledger`; Workbench panel did not read cache decisions. Green: `cd backend && source .venv/bin/activate && pytest tests/api/test_chat_sessions_permissions.py::test_get_session_context_usage_returns_context_diagnostics -q` → `1 passed`; `cd frontend && npm test -- --run src/api/domains/ccParity.test.ts src/pages/session-workbench/SessionNativeControls.test.tsx src/pages/session-workbench/timelineModel.test.ts` → `3 passed / 36 tests`; `cd frontend && npm run build` → success |
 | 2026-07-08 | P1-7 RTD agent-cycle/context-artifact read surface | ✅ 已闭环 | Red: `context-usage` omitted `agent_cycle_decision_ledger` and `context_artifacts`; Workbench did not read either field. Green: `cd backend && source .venv/bin/activate && pytest tests/api/test_chat_sessions_permissions.py::test_get_session_context_usage_returns_context_diagnostics -q` → `1 passed`; `cd frontend && npm test -- --run src/api/domains/ccParity.test.ts src/pages/session-workbench/SessionNativeControls.test.tsx src/pages/session-workbench/timelineModel.test.ts` → `3 passed / 36 tests`; `cd frontend && npm run build` → success |
 | 2026-07-08 | P1-8 QKV MemoryRetriever dead gather API retirement | ✅ 已闭环 | Red: `test_memory_retriever_exposes_only_live_retrieval_entrypoints` failed while `retrieve_candidates` existed. Green: `cd backend && source .venv/bin/activate && pytest tests/memory/test_retrieval_pipeline.py -q` → `12 passed`; `ruff check app/memory/retriever.py tests/memory/test_retrieval_pipeline.py` → passed; graph/`rg` confirmed removed `retrieve_candidates` / `gather_*` symbols have no remaining code nodes or references |
+| 2026-07-08 | P1-9 External capability reject + version supersede | ✅ 已闭环 | Red: missing `reject_external_capability_review`; approve did not supersede older approved snapshot/catalog. Green: `cd backend && source .venv/bin/activate && pytest tests/services/test_external_capability_trust_gate.py tests/services/test_external_capability_activation.py tests/api/test_external_capability_reviews_api.py -q` → `19 passed`; `pytest tests/services/test_plugin_install_service.py -q` → `16 passed` confirms legacy `/enterprise/plugins/install` remains builtin/local pack projection, not external-source trust-gate bypass |
 
 ---
 
@@ -31,7 +32,7 @@
 | ① RTD 决策台账层 | ✅ T3 死写入已闭环 | `context-usage`/Workbench 已读回核心 ledger；Codex dead append 已删；workflow/execution-shape 两项复核为误判 |
 | ② QKV Attention Control | ⚠️ **半接线脚手架 / 收缩中** | 能稳定运行（fail-open + cache 正确）但未承载真实激活；T0 原始 activation event 泄漏已堵；空 hints 与 MemoryRetriever dead gather 已删，剩余为 Q 侧接活或继续收缩决策 |
 | ③ Plugin：CC 市场适配 | ❌ **≈15%** | marketplace/source 拉取/materialize/`${CLAUDE_PLUGIN_ROOT}` 全零；adapter 是孤儿代码 |
-| ③ Plugin：trust gate | ⚠️ ≈75% / ✅ revoke-deactivate 已修 | skill/MCP import→approve→activate 真接线；snapshot revoke、catalog 隐藏、agent deactivate、本地 skill/subagent rollback 已补；legacy plugins/install 双轨旁路仍待收敛 |
+| ③ Plugin：trust gate | ✅ 当前 trust chain 已闭环 / ⚠️ 市场适配未做 | skill/MCP import→stage→approve/reject→snapshot/catalog→activate/deactivate/revoke 真接线；新版本 approve 会 supersede 旧 snapshot/catalog；legacy plugins/install 复核为 builtin/local pack projection，不是 external-source trust-gate bypass |
 | ④ Personal KB | ⚠️ owner 面 ~95% / ✅ deterministic gaps 已修 | `search_personal_kb` 已注册 `agent.knowledge.read`；owner 搜索不再被 `agent_searchable` 误过滤；上传有硬上限；`KnowledgeIndexJob` 有批量消费入口；自主态 grant 仍需权限产品拍板 |
 | ⑤ HR Agent | ✅ P0 已闭环 | HR v5 模板已同步 Personal KB、work ledger、workflow/subagent 路由；旧 `memory/t3/` source attribution 示例已迁；现有 HR diff 已回归验证 |
 | ⑥ Loop | ② 部分实现 | trigger 覆盖 cron 内核；缺模型自节奏 self-pace 链与 `/loop` 命令层 |
@@ -129,7 +130,7 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 
 **A. CC 插件市场适配 ≈15%（Fact）**：定义 CC 插件"市场"的四大能力——marketplace.json 索引解析、plugin source 拉取（github/npm/pip/git）、materialize 物化、`${CLAUDE_PLUGIN_ROOT}` 替换——**全部零实现**（grep 全仓 0 命中）。唯一能解析 `.claude-plugin/plugin.json` + 五类组件的 `cc_plugin_adapter.py` 是**带单测的孤儿代码**（load_cc_plugin_bundle 零运行时调用者）。设计文档 docs/external-capability-trust-gate-plan-2026-06-26.md §0.1 自己诚实列出了未完成项，唯一淡化处是未点破 adapter 无调用者。
 
-**B. trust gate 权限链 ≈60%**：import→stage→approve→snapshot→catalog→activate 对单个 Skill 和 MCP server **真实接线**（trust_gate.py:23/61/101 → activation.py:24；skill 走 SkillGuard 二次扫描 skill_installation.py:71，MCP 走 mcp_authz ✅）。三段权限分离正确：任意 user 可 stage（不落盘）→ 仅 admin approve → 有 agent 权限者 activate。
+**B. trust gate 权限链 ✅ 当前链路闭环**：import→stage→approve/reject→snapshot→catalog→activate/deactivate/revoke 对单个 Skill 和 MCP server **真实接线**（trust_gate.py + activation.py；skill 走 SkillGuard 二次扫描 skill_installation.py，MCP 走 mcp_authz ✅）。三段权限分离正确：任意 user 可 stage（不落盘）→ 仅 admin approve/reject → 有 agent 权限者 activate/deactivate；新版本 approve 会 supersede 同 tenant/source/name 的旧 approved snapshot 与 catalog。
 
 ### 3.2 格式覆盖矩阵要点（基线 schemas.ts）
 
@@ -137,10 +138,10 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 
 ### 3.3 生命周期缺环 + 权限风险
 
-1. **无 revoke/deactivate/rollback**：model 有 revoked_* 列（external_capability.py:82-85）但全仓无代码写它——**能装不能卸**（治理硬伤）。
+1. ✅ **revoke/deactivate/rollback 已闭环**：snapshot revoke 会隐藏 catalog；agent deactivate 会 inactive activation 并清理本地 skill/subagent 投影，MCP 标记 `manual_revoke_required`。
 2. command/hook 激活 fail-closed unsupported（activation.py:80-99 else 分支）——解析了、catalog 了、永不接入运行时，用户会困惑"装了没用"。
-3. 无被拒 import 清理、无版本 supersede（新 snapshot 不收敛旧 activation，重激活同 snapshot 抛唯一约束错）。
-4. **【中危】legacy 双轨旁路**：`POST /api/enterprise/plugins/install`（plugins.py:52-65）直写 tenant_installed_plugins + 注册 hook，**全程无 trust_gate**。限 builtin/local + admin-gated，非 RCE，但"跳过治理评审"成立。两个"退役"提交（eea1cd5fe/3844767f1）实为**改名不退役**：前端删干净，backend 四端点+service+表全活。
+3. ✅ **被拒 import 清理 + 版本 supersede 已闭环**：review 可被 admin reject，rejected review 不能再 approve；approve 新版本会将同 tenant/source/name 的旧 approved snapshot 与旧 catalog entry 标记 `superseded`。
+4. ✅ **legacy 双轨旁路复核为误判**：`POST /api/enterprise/plugins/install` 只接 `plugin_key`，服务端 `load_manifest()` 仅读本地 pack manifests，`_assert_installable()` 只允许 `builtin/local` 且 remote source fail-closed；它是 legacy builtin/local pack projection，不是 external capability source/import 通道。命名仍旧，但不是 trust-gate bypass。
 5. 【低】通用 POST /reviews 信任客户端 admission_notes（external_capabilities.py:63→trust_gate.py:149），客户端省略 note 可逃 blocked 判定；缓解=admin-gated + 前端不走此端点。
 6. hook custom executor 修复（56539a934）**验证正确**（invoker.py:1038 传 emit_runtime_hooks=False，修复前 2 failed 后 2 passed，非绿洗）；残留脆弱点=靠 executor 签名约定，建议按 tool_call_id 跨-emit 去重升级为结构保证。
 
@@ -201,7 +202,7 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 ### P1 — 结构性技术债（要么接活要么退役，禁半接线常态化）
 5. **QKV 收缩**：✅ S1 删恒空 hints 注入（kb_hint 已够，builder 仅在有 actionable skill/tool/subagent hint 时写 ledger）；✅ S2 dead gather 函数已退役；activation_keys derived index 是否继续收缩需按 reference_index/source-ref/repair-script 合约单独处理，或拍板接活（接活先修 LLM parser + scoring 回归模型判断）。
 6. ✅ **RTD T3 六项死写入**：context-usage 死观测面已接前端（Session-native controls + Chat header chip fallback）；`codex_optimization_ledger` dead append / 恒 False override 已删，保留 Workbench builder；`cache_decision_ledger`、`agent_cycle_decision_ledger`、`context_artifacts` 已接 context-usage + Workbench；`workflow_decision_entry` 与 `execution_shape_decision` 复核为误判（已有运行时/返回 payload 读者）。剩余只属于文件组织瘦身，不再是行为死写入。
-7. **Plugin trust gate 下半场**：✅ snapshot revoke/deactivate/rollback 已补（catalog 隐藏，agent activation inactive，本地 skill/subagent 文件清理，MCP 标记 `manual_revoke_required`）；剩余：被拒清理 + 版本 supersede；legacy plugins/install 双轨收敛（改走 trust gate 或真退役含删表 migration）。
+7. ✅ **Plugin trust gate 下半场**：snapshot revoke/deactivate/rollback 已补（catalog 隐藏，agent activation inactive，本地 skill/subagent 文件清理，MCP 标记 `manual_revoke_required`）；admin reject + rejected review approval block + version supersede 已补；legacy `/enterprise/plugins/install` 复核为 builtin/local pack projection，不是 external-source trust-gate bypass。剩余 Plugin 大项仅属于 CC marketplace/source/materialize 能力建设，不再是当前 trust-gate 安全缺口。
 8. **Personal KB B2-B4**：✅ B2 deterministic 部分：`process_import_jobs` 批量消费 queued/failed `KnowledgeIndexJob`，聊天上传新增 `HIVE_CHAT_UPLOAD_MAX_BYTES`/`HIVE_CHAT_IMAGE_UPLOAD_MAX_BYTES` 硬上限；✅ B3 owner 搜索去 `agent_searchable` 过滤，agent/非 owner 搜索仍过滤；B4 自主态 grant 需要权限产品拍板后实现。
 9. ✅ **HR 模板 sweep**（B1 落后）：O1 stale t3 例子 + M1 KB 引导 + M2/M3 能力路由，已随 P0-3 同批 bump 到 HR v5。
 10. **瘦身**：~1,990 LOC test-only 死模块退役（cc_plugin_adapter 等三个 external_capabilities 文件除外——若 Plugin 主线拍板接线则留）。

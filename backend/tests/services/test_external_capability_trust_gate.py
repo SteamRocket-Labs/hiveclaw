@@ -7,6 +7,7 @@ import pytest
 
 from app.services.external_capabilities.trust_gate import (
     approve_external_capability_snapshot,
+    reject_external_capability_review,
     revoke_external_capability_snapshot,
     stage_external_capability_review,
 )
@@ -138,6 +139,45 @@ async def test_stage_external_capability_review_blocks_path_escape_and_cannot_ap
 
 
 @pytest.mark.asyncio
+async def test_reject_external_capability_review_terminally_blocks_approval():
+    tenant_id = uuid4()
+    reviewer_id = uuid4()
+    review = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        status="review_required",
+        admission_class="governed_runtime",
+        admission_report_json={"notes": []},
+    )
+    reject_db = _TrustGateSession([review])
+
+    result = await reject_external_capability_review(
+        reject_db,
+        tenant_id=tenant_id,
+        review_id=review.id,
+        rejected_by_user_id=reviewer_id,
+        reason="unsafe hook",
+    )
+
+    assert result["status"] == "rejected"
+    assert result["review_id"] == str(review.id)
+    assert review.status == "rejected"
+    assert review.admission_report_json["rejection"]["reason"] == "unsafe hook"
+    assert review.admission_report_json["rejection"]["rejected_by_user_id"] == str(reviewer_id)
+    assert reject_db.commit_calls == 1
+
+    approve_db = _TrustGateSession([review])
+    with pytest.raises(ValueError, match="review_required"):
+        await approve_external_capability_snapshot(
+            approve_db,
+            tenant_id=tenant_id,
+            review_id=review.id,
+            approved_by_user_id=reviewer_id,
+        )
+    assert approve_db.rollback_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_approve_external_capability_review_creates_approved_snapshot_only():
     tenant_id = uuid4()
     reviewer_id = uuid4()
@@ -173,6 +213,57 @@ async def test_approve_external_capability_review_creates_approved_snapshot_only
     assert created.approved_by_user_id == reviewer_id
     assert created.component_manifest_json == {"components": [{"qualified_name": "review-pack:check"}]}
     assert db.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_approve_external_capability_review_supersedes_previous_snapshot_and_catalog():
+    tenant_id = uuid4()
+    reviewer_id = uuid4()
+    review = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        source_format="cc_plugin",
+        source_uri="github:acme/review-pack",
+        source_hash="manifest-hash-v2",
+        normalized_name="review-pack",
+        status="review_required",
+        admission_class="governed_runtime",
+        admission_report_json={"notes": []},
+        governance_projection_json={"runtime_governance": "existing_governance_after_activation"},
+        normalized_manifest_json={
+            "components": [
+                {
+                    "component_type": "skill",
+                    "local_name": "audit",
+                    "qualified_name": "review-pack:audit",
+                    "runtime_projection": {"description": "Audit code v2"},
+                }
+            ]
+        },
+    )
+    old_snapshot = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        status="approved",
+        source_format="cc_plugin",
+        normalized_name="review-pack",
+    )
+    old_catalog_entry = SimpleNamespace(status="available")
+    db = _TrustGateSession([review, [old_snapshot], [old_catalog_entry]])
+
+    snapshot = await approve_external_capability_snapshot(
+        db,
+        tenant_id=tenant_id,
+        review_id=review.id,
+        approved_by_user_id=reviewer_id,
+    )
+
+    assert snapshot["status"] == "approved"
+    assert snapshot["superseded_snapshots"] == [str(old_snapshot.id)]
+    assert snapshot["catalog_entries_superseded"] == 1
+    assert old_snapshot.status == "superseded"
+    assert old_catalog_entry.status == "superseded"
+    assert snapshot["catalog_entries"][0]["qualified_name"] == "review-pack:audit"
 
 
 @pytest.mark.asyncio

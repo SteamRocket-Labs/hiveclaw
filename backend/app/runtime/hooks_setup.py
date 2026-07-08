@@ -126,6 +126,12 @@ def _session_memory_metadata(ctx: HookContext) -> dict:
     return metadata
 
 
+def _t0_safe_metadata(metadata: dict | None) -> dict:
+    safe = dict(metadata or {})
+    safe.pop("activation_events", None)
+    return safe
+
+
 async def _update_session_memory_projection(ctx: HookContext, agent_id: uuid.UUID, messages: list[dict]) -> None:
     payload = await build_session_memory_payload_with_llm(
         messages,
@@ -238,7 +244,7 @@ async def _project_on_pre_compaction(ctx: HookContext) -> None:
         session_id=str(ctx.session_id),
         reason=f"pre_compaction:{trigger}",
         metadata={
-            **ctx.metadata,
+            **_t0_safe_metadata(ctx.metadata),
             "source": ctx.source or "web",
             "trigger": trigger,
             "checkpoint_kind": ctx.metadata.get("checkpoint_kind") or "pre_compaction_checkpoint",
@@ -330,6 +336,7 @@ def _append_and_seal_runtime_t0_event(
 ) -> tuple[str, str | None]:
     session_id = _runtime_event_session_id(ctx, event_type)
     source = ctx.source or event_type
+    metadata = {**_t0_safe_metadata(ctx.metadata), "source": source, "hook_event": str(ctx.event)}
     append_t0_session_event(
         agent_id=agent_id,
         session_id=session_id,
@@ -338,13 +345,13 @@ def _append_and_seal_runtime_t0_event(
         content=_runtime_event_content(ctx.messages, fallback_content) if include_messages else fallback_content,
         actor_id=agent_id,
         source=source,
-        metadata={**ctx.metadata, "source": source, "hook_event": str(ctx.event)},
+        metadata=metadata,
     )
     sealed = seal_t0_session_segment(
         agent_id=agent_id,
         session_id=session_id,
         reason=boundary_reason,
-        metadata={**ctx.metadata, "source": source, "hook_event": str(ctx.event)},
+        metadata=metadata,
     )
     return session_id, sealed.segment_id if sealed else None
 
@@ -370,7 +377,7 @@ def _seal_existing_runtime_t0_segment(
         agent_id=agent_id,
         session_id=session_id,
         reason=boundary_reason,
-        metadata={**ctx.metadata, "source": source, "hook_event": str(ctx.event)},
+        metadata={**_t0_safe_metadata(ctx.metadata), "source": source, "hook_event": str(ctx.event)},
     )
     if not sealed:
         logger.warning(
@@ -445,7 +452,7 @@ async def _t0_turn_stop(ctx: HookContext) -> None:
     if not ctx.session_id:
         return
     metadata = {
-        **ctx.metadata,
+        **_t0_safe_metadata(ctx.metadata),
         "source": ctx.source or "web",
         "checkpoint_kind": ctx.metadata.get("checkpoint_kind") or "user_turn_stop",
         "semantic_memory_eligible": ctx.metadata.get("semantic_memory_eligible", True),
@@ -479,7 +486,7 @@ async def _t0_turn_abort(ctx: HookContext) -> None:
     reason = str(ctx.metadata.get("reason") or ctx.error or "turn_abort")
     logger.info("[Hooks] TURN_ABORT: agent=%s reason=%s", ctx.agent_id, reason)
     metadata = {
-        **ctx.metadata,
+        **_t0_safe_metadata(ctx.metadata),
         "source": ctx.source or "web",
         "checkpoint_kind": ctx.metadata.get("checkpoint_kind") or "turn_abort",
         "semantic_memory_eligible": False,
@@ -516,7 +523,7 @@ async def _t0_session_close(ctx: HookContext) -> None:
             session_id=str(ctx.session_id),
             reason=str(reason or "session_close"),
             metadata={
-                **ctx.metadata,
+                **_t0_safe_metadata(ctx.metadata),
                 "source": ctx.source or "web",
                 "checkpoint_kind": ctx.metadata.get("checkpoint_kind") or "session_close_fallback",
             },
@@ -567,7 +574,7 @@ async def _t0_session_idle(ctx: HookContext) -> None:
         session_id=str(ctx.session_id),
         reason="session_idle",
         metadata={
-            **ctx.metadata,
+            **_t0_safe_metadata(ctx.metadata),
             "source": ctx.source or "web",
             "idle_seconds": idle_s,
             "checkpoint_kind": ctx.metadata.get("checkpoint_kind") or "session_idle_fallback",

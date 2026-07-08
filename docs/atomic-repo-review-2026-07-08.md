@@ -10,6 +10,7 @@
 | 时间 | 项目 | 状态 | 验证 |
 |---|---|---|---|
 | 2026-07-08 | P0-1 Personal KB capability gate | ✅ 已闭环 | `cd backend && source .venv/bin/activate && pytest tests/services/test_capability_gate_policy_surface.py -q` → `11 passed`; `audit_capability_mapping()` → `{'unmapped': [], 'stale': []}` |
+| 2026-07-08 | P0-2 QKV activation_events T0 truth-surface leak | ✅ 已闭环 | `cd backend && source .venv/bin/activate && pytest tests/runtime/test_t0_to_t2_session_close.py tests/runtime/test_activation_events.py -q` → `20 passed` |
 
 ---
 
@@ -19,7 +20,7 @@
 |---|---|---|
 | ① kernel 主循环 CC 对齐 | **✅ 扎实 CCPlus** | 5 维度全对齐或合规增强，无 CC 语义违背；债在 RTD 遥测台账层非内核 |
 | ① RTD 决策台账层 | ⚠️ 6 项只写不读 + 死观测面 | "决策台账"是记录器非决策者，多数不读回驱动行为 |
-| ② QKV Attention Control | ⚠️ **半接线脚手架** | 能稳定运行（fail-open + cache 正确）但未承载真实激活；含 1 项治理级泄漏 |
+| ② QKV Attention Control | ⚠️ **半接线脚手架** | 能稳定运行（fail-open + cache 正确）但未承载真实激活；T0 原始 activation event 泄漏已堵，剩余为收缩/接活决策 |
 | ③ Plugin：CC 市场适配 | ❌ **≈15%** | marketplace/source 拉取/materialize/`${CLAUDE_PLUGIN_ROOT}` 全零；adapter 是孤儿代码 |
 | ③ Plugin：trust gate | ⚠️ ≈60% | skill/MCP import→approve→activate 真接线；缺 revoke/rollback 下半场 + legacy 双轨旁路 |
 | ④ Personal KB | ⚠️ owner 面 ~85% / ✅ agent gate 已修 | `search_personal_kb` 已注册 `agent.knowledge.read`；剩余债务转向异步索引、owner 搜索过滤、自主态 grant |
@@ -184,7 +185,7 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 
 ### P0 — 生产断点 / 治理级（立即）
 1. ✅ **Personal KB B1**：search_personal_kb 注册 CAPABILITY_MAP（一行）+ 补真走 governance 的集成测试当修复门。上线前置。已闭环：`search_personal_kb -> agent.knowledge.read`，capability audit 无 drift。
-2. **QKV B9**：T0 seal 前 strip 原始 activation_events，堵 truth-surface 泄漏；policy dict 接真实校验或删。
+2. ✅ **QKV B9**：T0 seal 前 strip 原始 activation_events，堵 truth-surface 泄漏；policy dict 接真实校验或删。已闭环：T0 boundary 只保留 `activation_feedback_summary`，不落原始 `activation_events`。
 3. **HR 既存红测**：test_hr_tool_included_in_hr_tools_set 改 superset 断言（当前 CI 红）。
 4. **HR diff**：直接 commit（已评审通过）。
 

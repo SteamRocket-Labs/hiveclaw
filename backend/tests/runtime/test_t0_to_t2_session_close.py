@@ -547,6 +547,68 @@ async def test_turn_stop_summarizes_activation_feedback_before_t0_seal() -> None
 
 
 @pytest.mark.asyncio
+async def test_turn_stop_seals_activation_feedback_summary_without_raw_events(monkeypatch, tmp_path) -> None:
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = "session-activation-summary"
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="Use the web search candidate.",
+        data_root=tmp_path,
+    )
+
+    async def fake_build(**kwargs):
+        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id=kwargs["job_id"], issues=())
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fake_build)
+
+    ctx = HookContext(
+        event=HookEvent.TURN_STOP,
+        agent_id=str(agent_id),
+        session_id=session_id,
+        source="runtime",
+        messages=[],
+        metadata={
+            "tenant_id": str(tenant_id),
+            "reason": "invoke_complete",
+            "activation_events": [
+                {
+                    "event_type": "tool_success",
+                    "query_id": "aq:summary",
+                    "candidate_id": "tool_schema:web_search:v1/test",
+                    "candidate_ref": {"candidate_id": "tool_schema:web_search:v1/test"},
+                    "feedback": {"signal": "tool_success", "credit": 0.6},
+                }
+            ],
+        },
+    )
+
+    await _summarize_activation_feedback_on_turn_stop(ctx)
+    await _t0_turn_stop(ctx)
+
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    boundary_metadata = events[-1].metadata
+    summary = boundary_metadata["activation_feedback_summary"]
+    assert summary["event_count"] == 1
+    assert set(summary) == {
+        "schema",
+        "event_count",
+        "tool_success_count",
+        "tool_failure_count",
+        "credit_total",
+        "candidate_ids",
+        "query_ids",
+        "event_ids",
+    }
+    assert "activation_events" not in boundary_metadata
+
+
+@pytest.mark.asyncio
 async def test_response_and_pre_compaction_do_not_call_legacy_extractor(monkeypatch, tmp_path) -> None:
     from app.runtime import hooks_setup
 

@@ -13,6 +13,7 @@ from app.models.knowledge import (
     KnowledgeAssertion,
     KnowledgeDocument,
     KnowledgeEntity,
+    KnowledgeGrant,
     KnowledgeIndexJob,
     KnowledgeLink,
     KnowledgeSegment,
@@ -45,6 +46,7 @@ class _FakeAsyncSession:
     def __init__(self, existing_document=None) -> None:
         self.existing_document = existing_document
         self.added: list[object] = []
+        self.deleted: list[object] = []
         self.executed: list[object] = []
         self.flush_count = 0
 
@@ -53,6 +55,9 @@ class _FakeAsyncSession:
 
     async def flush(self) -> None:
         self.flush_count += 1
+
+    async def delete(self, obj) -> None:
+        self.deleted.append(obj)
 
     async def execute(self, statement):
         self.executed.append(statement)
@@ -696,3 +701,62 @@ async def test_search_personal_fuses_entity_and_graph_channels_with_score_trace(
     assert hits[0].score_trace["boosts"]["heat"] > 0
     assert hits[1].score_trace["channels"]["graph"]["rank"] == 1
     assert hits[0].score >= hits[1].score
+
+
+@pytest.mark.asyncio
+async def test_create_personal_grant_writes_owner_scope_grant(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    grant = await service.create_personal_grant(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        resource_type="scope",
+        resource_id=owner_id,
+        document_id=None,
+        grantee_type="agent",
+        grantee_id=agent_id,
+        permission="search",
+        grant_metadata={"reason": "research"},
+    )
+
+    added_grants = [obj for obj in session.added if isinstance(obj, KnowledgeGrant)]
+    assert grant is not None
+    assert grant.grantee_id == agent_id
+    assert grant.permission == "search"
+    assert added_grants[-1].scope_type == "person"
+    assert added_grants[-1].scope_id == owner_id
+    assert added_grants[-1].resource_type == "scope"
+    assert added_grants[-1].resource_id == owner_id
+    assert added_grants[-1].grant_metadata_json == {"reason": "research"}
+
+
+@pytest.mark.asyncio
+async def test_non_owner_cannot_create_personal_grant(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    grant = await service.create_personal_grant(
+        session,
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        current_user_id=uuid.uuid4(),
+        resource_type="scope",
+        resource_id=uuid.uuid4(),
+        document_id=None,
+        grantee_type="agent",
+        grantee_id=uuid.uuid4(),
+        permission="search",
+    )
+
+    assert grant is None
+    assert [obj for obj in session.added if isinstance(obj, KnowledgeGrant)] == []

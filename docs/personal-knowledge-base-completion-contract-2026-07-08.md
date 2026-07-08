@@ -488,3 +488,43 @@ commit：
 
 - 当前 Personal KB 仍未引入向量库；这是符合薄内核路线的选择。企业 KB 阶段再决定 pgvector/Ontology 深化。
 - UI 还需要在 A11/A12 展示 `score_trace`、graph lane 和真实授权入口。
+
+### 2026-07-08 A10 授权管理 API
+
+改动文件：
+
+- `backend/app/api/agent_knowledge.py`
+- `backend/app/services/personal_knowledge_service.py`
+- `backend/tests/api/test_agent_personal_knowledge_api.py`
+- `backend/tests/services/test_personal_knowledge_service.py`
+- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+
+功能证据：
+
+- 新增 owner-scoped `GET /api/knowledge/personal/grants`，返回当前 owner personal scope 下的 grant 列表。
+- 新增 `POST /api/knowledge/personal/grants`，支持 `resource_type=scope/document`、`grantee_type=user/agent/session`、`permission=read/search/manage`、`expires_at` 与 metadata。
+- 新增 `DELETE /api/knowledge/personal/grants/{grant_id}`，owner 可撤销 personal grant。
+- service 层统一校验 owner 边界；非 owner 不创建 grant。
+- grant upsert 会复用同一 tenant/scope/resource/grantee/permission 组合，避免重复授权记录。
+
+测试命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/api/test_agent_personal_knowledge_api.py tests/services/test_personal_knowledge_service.py -q
+cd backend && source .venv/bin/activate && ruff check app/api/agent_knowledge.py app/services/personal_knowledge_service.py tests/api/test_agent_personal_knowledge_api.py tests/services/test_personal_knowledge_service.py
+```
+
+测试结果：
+
+```text
+27 passed in 0.46s
+All checks passed!
+```
+
+commit：
+
+- 本提交：`feat: add personal kb grant management`。
+
+剩余风险：
+
+- 授权 UI 在 A12 完成；当前 A10 是后端唯一真相入口。

@@ -127,6 +127,20 @@ class PersonalKnowledgeJobSummary:
     updated_at: Any
 
 
+@dataclass(frozen=True)
+class PersonalKnowledgeGrantSummary:
+    grant_id: uuid.UUID
+    resource_type: str
+    resource_id: uuid.UUID
+    document_id: uuid.UUID | None
+    grantee_type: str
+    grantee_id: uuid.UUID
+    permission: str
+    expires_at: Any
+    metadata: dict[str, Any]
+    created_at: Any
+
+
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -1351,6 +1365,142 @@ class PersonalKnowledgeService:
                 )
             )
         return jobs
+
+    def _grant_summary(self, grant: Any) -> PersonalKnowledgeGrantSummary:
+        return PersonalKnowledgeGrantSummary(
+            grant_id=grant.id,
+            resource_type=str(grant.resource_type or "scope"),
+            resource_id=grant.resource_id,
+            document_id=grant.document_id,
+            grantee_type=str(grant.grantee_type or ""),
+            grantee_id=grant.grantee_id,
+            permission=str(grant.permission or ""),
+            expires_at=grant.expires_at,
+            metadata=dict(grant.grant_metadata_json or {}),
+            created_at=grant.created_at,
+        )
+
+    async def list_personal_grants(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+        limit: int = 100,
+    ) -> list[PersonalKnowledgeGrantSummary]:
+        if current_user_id != owner_user_id:
+            return []
+        rows = (
+            await session.execute(
+                select(KnowledgeGrant)
+                .where(
+                    KnowledgeGrant.tenant_id == tenant_id,
+                    KnowledgeGrant.scope_type == "person",
+                    KnowledgeGrant.scope_id == owner_user_id,
+                )
+                .order_by(KnowledgeGrant.created_at.desc())
+                .limit(max(1, int(limit or 100)))
+            )
+        ).all()
+        grants: list[PersonalKnowledgeGrantSummary] = []
+        for row in rows:
+            grant = _row_first(row)
+            if isinstance(grant, KnowledgeGrant) or hasattr(grant, "grant_metadata_json"):
+                grants.append(self._grant_summary(grant))
+        return grants
+
+    async def create_personal_grant(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+        resource_type: str,
+        resource_id: uuid.UUID | None,
+        document_id: uuid.UUID | None,
+        grantee_type: str,
+        grantee_id: uuid.UUID,
+        permission: str,
+        expires_at: datetime | None = None,
+        grant_metadata: dict[str, Any] | None = None,
+    ) -> PersonalKnowledgeGrantSummary | None:
+        if current_user_id != owner_user_id:
+            return None
+        clean_resource_type = str(resource_type or "scope").strip().lower()
+        clean_grantee_type = str(grantee_type or "").strip().lower()
+        clean_permission = str(permission or "search").strip().lower()
+        if clean_resource_type not in {"scope", "document"}:
+            raise ValueError("resource_type must be scope or document")
+        if clean_grantee_type not in {"user", "agent", "session"}:
+            raise ValueError("grantee_type must be user, agent, or session")
+        if clean_permission not in {"read", "search", "manage"}:
+            raise ValueError("permission must be read, search, or manage")
+        resolved_resource_id = document_id if clean_resource_type == "document" else owner_user_id
+        if resource_id is not None:
+            resolved_resource_id = resource_id
+        if resolved_resource_id is None:
+            raise ValueError("resource_id is required")
+
+        result = await session.execute(
+            select(KnowledgeGrant).where(
+                KnowledgeGrant.tenant_id == tenant_id,
+                KnowledgeGrant.scope_type == "person",
+                KnowledgeGrant.scope_id == owner_user_id,
+                KnowledgeGrant.resource_type == clean_resource_type,
+                KnowledgeGrant.resource_id == resolved_resource_id,
+                KnowledgeGrant.grantee_type == clean_grantee_type,
+                KnowledgeGrant.grantee_id == grantee_id,
+                KnowledgeGrant.permission == clean_permission,
+            )
+        )
+        grant = result.scalar_one_or_none()
+        if not isinstance(grant, KnowledgeGrant):
+            grant = KnowledgeGrant(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                scope_type="person",
+                scope_id=owner_user_id,
+                resource_type=clean_resource_type,
+                resource_id=resolved_resource_id,
+                document_id=document_id if clean_resource_type == "document" else None,
+                grantee_type=clean_grantee_type,
+                grantee_id=grantee_id,
+                permission=clean_permission,
+                created_by_user_id=current_user_id,
+            )
+            session.add(grant)
+        grant.expires_at = expires_at
+        grant.grant_metadata_json = dict(grant_metadata or {})
+        await session.flush()
+        return self._grant_summary(grant)
+
+    async def delete_personal_grant(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+        grant_id: uuid.UUID,
+    ) -> bool:
+        if current_user_id != owner_user_id:
+            return False
+        result = await session.execute(
+            select(KnowledgeGrant).where(
+                KnowledgeGrant.tenant_id == tenant_id,
+                KnowledgeGrant.scope_type == "person",
+                KnowledgeGrant.scope_id == owner_user_id,
+                KnowledgeGrant.id == grant_id,
+            )
+        )
+        grant = result.scalar_one_or_none()
+        if grant is None:
+            return False
+        await session.delete(grant)
+        await session.flush()
+        return True
 
     async def patch_personal_document(
         self,

@@ -374,6 +374,80 @@ def test_current_user_personal_knowledge_document_actions(monkeypatch):
         assert kwargs["owner_user_id"] == owner_id
 
 
+def test_current_user_personal_knowledge_grant_routes_use_owner_scope(monkeypatch):
+    owner_id = uuid4()
+    grant_id = uuid4()
+    agent_grantee_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    captured = []
+
+    class _FakeService:
+        async def list_personal_grants(self, session, **kwargs):
+            captured.append(("list_grants", kwargs))
+            return [
+                SimpleNamespace(
+                    grant_id=grant_id,
+                    resource_type="scope",
+                    resource_id=owner_id,
+                    document_id=None,
+                    grantee_type="agent",
+                    grantee_id=agent_grantee_id,
+                    permission="search",
+                    expires_at=None,
+                    metadata={"reason": "research agent"},
+                    created_at=None,
+                )
+            ]
+
+        async def create_personal_grant(self, session, **kwargs):
+            captured.append(("create_grant", kwargs))
+            return SimpleNamespace(
+                grant_id=grant_id,
+                resource_type=kwargs["resource_type"],
+                resource_id=kwargs["resource_id"],
+                document_id=kwargs["document_id"],
+                grantee_type=kwargs["grantee_type"],
+                grantee_id=kwargs["grantee_id"],
+                permission=kwargs["permission"],
+                expires_at=kwargs["expires_at"],
+                metadata=kwargs["grant_metadata"],
+                created_at=None,
+            )
+
+        async def delete_personal_grant(self, session, **kwargs):
+            captured.append(("delete_grant", kwargs))
+            return True
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    listed = client.get("/knowledge/personal/grants")
+    created = client.post(
+        "/knowledge/personal/grants",
+        json={
+            "resource_type": "scope",
+            "grantee_type": "agent",
+            "grantee_id": str(agent_grantee_id),
+            "permission": "search",
+            "metadata": {"reason": "research agent"},
+        },
+    )
+    deleted = client.delete(f"/knowledge/personal/grants/{grant_id}")
+
+    assert listed.status_code == 200
+    assert listed.json()["grants"][0]["grant_id"] == str(grant_id)
+    assert created.status_code == 200
+    assert created.json()["grantee_id"] == str(agent_grantee_id)
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert fake_db.commit_count == 2
+    assert [name for name, _kwargs in captured] == ["list_grants", "create_grant", "delete_grant"]
+    for _name, kwargs in captured:
+        assert kwargs["tenant_id"] == user.tenant_id
+        assert kwargs["owner_user_id"] == owner_id
+        assert kwargs["current_user_id"] == owner_id
+
+
 def test_personal_knowledge_ingest_uses_agent_owner_and_commits(monkeypatch):
     owner_id = uuid4()
     agent_id = uuid4()

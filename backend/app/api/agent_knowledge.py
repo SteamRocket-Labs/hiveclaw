@@ -55,6 +55,17 @@ class PersonalKnowledgeDocumentPatchRequest(BaseModel):
     status: str | None = Field(None, min_length=1, max_length=40)
 
 
+class PersonalKnowledgeGrantRequest(BaseModel):
+    resource_type: str = Field("scope", pattern="^(scope|document)$")
+    resource_id: uuid.UUID | None = None
+    document_id: uuid.UUID | None = None
+    grantee_type: str = Field(..., pattern="^(user|agent|session)$")
+    grantee_id: uuid.UUID
+    permission: str = Field("search", pattern="^(read|search|manage)$")
+    expires_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 def _data_root() -> Path:
     return Path(get_settings().AGENT_DATA_DIR)
 
@@ -265,6 +276,78 @@ async def retry_current_user_personal_import_job(
         raise HTTPException(status_code=404, detail="Personal knowledge import job not found")
     await db.commit()
     return _dataclass_payload(result)
+
+
+@personal_router.get("/grants")
+async def list_current_user_personal_grants(
+    limit: int = Query(100, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    grants = await service.list_personal_grants(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        current_user_id=uuid.UUID(str(current_user.id)),
+        limit=limit,
+    )
+    return {"grants": [_dataclass_payload(grant) for grant in grants]}
+
+
+@personal_router.post("/grants")
+async def create_current_user_personal_grant(
+    body: PersonalKnowledgeGrantRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    resource_id = body.resource_id
+    if body.resource_type == "scope" and resource_id is None:
+        resource_id = uuid.UUID(str(current_user.id))
+    if body.resource_type == "document" and resource_id is None:
+        resource_id = body.document_id
+    service = PersonalKnowledgeService()
+    try:
+        grant = await service.create_personal_grant(
+            db,
+            tenant_id=_tenant_id_for_user(current_user),
+            owner_user_id=uuid.UUID(str(current_user.id)),
+            current_user_id=uuid.UUID(str(current_user.id)),
+            resource_type=body.resource_type,
+            resource_id=resource_id,
+            document_id=body.document_id,
+            grantee_type=body.grantee_type,
+            grantee_id=body.grantee_id,
+            permission=body.permission,
+            expires_at=body.expires_at,
+            grant_metadata=body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if grant is None:
+        raise HTTPException(status_code=403, detail="Only the personal knowledge owner can manage grants")
+    await db.commit()
+    return _dataclass_payload(grant)
+
+
+@personal_router.delete("/grants/{grant_id}")
+async def delete_current_user_personal_grant(
+    grant_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    deleted = await service.delete_personal_grant(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        current_user_id=uuid.UUID(str(current_user.id)),
+        grant_id=grant_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Personal knowledge grant not found")
+    await db.commit()
+    return {"deleted": True}
 
 
 @personal_router.get("/search")

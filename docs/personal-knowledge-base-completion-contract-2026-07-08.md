@@ -566,3 +566,42 @@ commit：
 剩余风险：
 
 - 当前仓库没有生产级 transcription/OCR credential，因此生产默认会返回 `unsupported_or_unconfigured`，这是有意的可观测边界，不是伪 ready。
+
+### 2026-07-08 A9 聊天附件顺流入库
+
+改动文件：
+
+- `backend/app/api/upload.py`
+- `backend/tests/api/test_chat_upload_conversion.py`
+- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+
+功能证据：
+
+- `/api/chat/upload` 新增 `skip_personal_kb` form 参数；默认 `false`，单条上传可排除 Personal KB。
+- 默认上传会在保存 agent workspace 文件后调用 `PersonalKnowledgeService.ingest_source_bytes()`，复用统一 ingestion、conversion、media boundary、job 和 graph pipeline。
+- owner scope 从 agent 的 `owner_user_id/sponsor_user_id/creator_id` 推导；无 agent 时回落到 current user。
+- `source_kind=chat_attachment`，`source_uri=agent:<id>:workspace/uploads/<file>`，metadata 写入 origin、workspace_path、source_context、T0 refs 占位。
+- 上传响应新增 `personal_kb_candidate`，包含 skipped/document_id/job_id/status/warnings/origin 或失败原因。
+- 原有 workspace upload、conversion preview、vision image data URL 语义保持不变。
+
+测试命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/api/test_chat_upload_conversion.py tests/api/test_security_regressions.py::test_upload_requires_agent_access tests/api/test_security_regressions.py::test_upload_sanitizes_workspace_filename -q
+cd backend && source .venv/bin/activate && ruff check app/api/upload.py tests/api/test_chat_upload_conversion.py tests/api/test_security_regressions.py
+```
+
+测试结果：
+
+```text
+5 passed in 1.49s
+All checks passed!
+```
+
+commit：
+
+- 本提交：`feat: route chat uploads into personal kb`。
+
+剩余风险：
+
+- `session_id/message_id` 在当前上传端点尚未生成；A9 先写入 origin/workspace_path/T0 refs 占位，后续若 chat send API 暴露 message id，可把同一 metadata 补强为具体 message ref。

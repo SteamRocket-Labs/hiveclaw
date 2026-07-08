@@ -229,126 +229,17 @@ async def test_rerank_config_is_ignored_reads_run_zero_llm(
     assert any("salary planning" in item.content for item in items)
 
 
-@pytest.mark.asyncio
-async def test_memory_retriever_projects_agent_memory_activation_candidates(
-    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever
-) -> None:
-    source_ref = "t0://session/s1/segment/seg-1#seq=1..2"
-    _write_overlay_entry(
-        data_root,
-        agent_id,
-        entry_id="ex-candidate",
-        content="Salary planning must be handled with owner-first evidence.",
-        metadata={"category": "constraint", "target_hint": "worker", "source_refs": source_ref},
-    )
-
-    candidates = await retriever.retrieve_candidates(agent_id, "salary planning", session_id=None, tenant_id=None)
-
-    assert len(candidates) == 1
-    manifest = candidates[0].to_manifest()
-    assert manifest["candidate_kind"] == "agent_memory"
-    assert manifest["candidate_ref"]["source_type"] == "explicit_overlay"
-    assert manifest["key_features"]["category"] == ["constraint"]
-    assert manifest["value_pointer"]["loader"] == "explicit_overlay_entry"
-    assert manifest["surface"]["surface_kind"] == "memory_item"
-    assert source_ref in manifest["source_refs"]
-    assert manifest["score"]["head_scores"]["retrieval"] == 0.98
-
-
-def test_memory_retriever_gathers_t2_evidence_candidates(data_root: Path, agent_id: uuid.UUID) -> None:
-    from app.memory.reference_index import rebuild_reference_index
-
-    short_ref = _write_t2_package(data_root, agent_id)
-    rebuild_reference_index(agent_id=agent_id, data_root=data_root)
+def test_memory_retriever_exposes_only_live_retrieval_entrypoints(data_root: Path) -> None:
     retriever = MemoryRetriever(data_root=data_root)
 
-    candidates = retriever.gather_t2_evidence_candidates(
-        agent_id,
-        keys={"risk_flag": ["privacy_sensitive"], "system": ["memory"]},
-    )
-
-    assert len(candidates) == 1
-    manifest = candidates[0].to_manifest()
-    assert manifest["candidate_kind"] == "agent_memory"
-    assert manifest["candidate_ref"]["candidate_id"] == f"agent_memory:t2_package:{short_ref}"
-    assert manifest["candidate_ref"]["source_type"] == "t2_package"
-    assert manifest["key_features"]["risk_flag"] == ["privacy_sensitive"]
-    assert manifest["key_features"]["system"] == ["memory"]
-    assert manifest["value_pointer"]["loader"] == "t2_package"
-    assert manifest["value_pointer"]["ref"] == short_ref
-    assert manifest["surface"]["surface_kind"] == "evidence_pointer"
-    assert manifest["source_refs"] == [short_ref]
-
-
-def test_memory_retriever_gathers_t3_profile_and_knowledge_candidates(
-    data_root: Path, agent_id: uuid.UUID
-) -> None:
-    from app.memory.reference_index import rebuild_reference_index
-
-    profile_dir = data_root / str(agent_id) / "memory" / "profiles"
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    (profile_dir / "owner.md").write_text(
-        """## Preferences
-
-### Writing Taste
-<!-- id: owner-writing-taste -->
-aliases: [tone, voice]
-tags: [writing, taste]
-lifecycle: active
-- Prefers concise architecture explanations.
-""",
-        encoding="utf-8",
-    )
-    knowledge_dir = data_root / str(agent_id) / "memory" / "knowledge"
-    knowledge_dir.mkdir(parents=True, exist_ok=True)
-    (knowledge_dir / "memory-runtime.md").write_text(
-        """---
-title: Memory Runtime
-status: active
-aliases: [Attention Router, QKV Runtime]
-tags: [memory, runtime]
-lifecycle: active
----
-## Claim
-Runtime activation routes memory candidates.
-""",
-        encoding="utf-8",
-    )
-    rebuild_reference_index(agent_id=agent_id, data_root=data_root)
-    retriever = MemoryRetriever(data_root=data_root)
-
-    profile = retriever.gather_t3_plane_candidates(agent_id, keys={"alias": ["tone"]}, scopes=("t3_profile",))
-    knowledge = retriever.gather_t3_plane_candidates(agent_id, keys={"tag": ["memory"]}, scopes=("t3_knowledge",))
-
-    assert profile[0].to_manifest()["candidate_ref"]["candidate_id"] == "agent_memory:t3_profile:owner-writing-taste"
-    assert profile[0].to_manifest()["value_pointer"]["loader"] == "profile_entry"
-    assert profile[0].to_manifest()["value_pointer"]["source"] == "memory/profiles/owner.md"
-    assert knowledge[0].to_manifest()["candidate_ref"]["candidate_id"] == "agent_memory:t3_knowledge:memory-runtime"
-    assert knowledge[0].to_manifest()["value_pointer"]["loader"] == "knowledge_page"
-    assert knowledge[0].to_manifest()["value_pointer"]["source"] == "memory/knowledge/memory-runtime.md"
-
-
-def test_memory_retriever_gathers_explicit_overlay_candidates(data_root: Path, agent_id: uuid.UUID) -> None:
-    source_ref = "t0://session/s1/segment/seg-1#seq=1..2"
-    _write_overlay_entry(
-        data_root,
-        agent_id,
-        entry_id="ex-explicit",
-        content="User explicitly wants red tests before implementation.",
-        metadata={"category": "constraint", "target_hint": "worker", "source_refs": source_ref},
-    )
-    retriever = MemoryRetriever(data_root=data_root)
-
-    candidates = retriever.gather_explicit_overlay_candidates(agent_id, query="red tests")
-
-    assert len(candidates) == 1
-    manifest = candidates[0].to_manifest()
-    assert manifest["candidate_ref"]["candidate_id"] == "agent_memory:explicit_overlay:ex-explicit"
-    assert manifest["candidate_ref"]["source_type"] == "explicit_overlay"
-    assert manifest["key_features"]["category"] == ["constraint"]
-    assert manifest["value_pointer"]["loader"] == "explicit_overlay_entry"
-    assert manifest["surface"]["surface_kind"] == "memory_item"
-    assert manifest["source_refs"] == [source_ref]
+    assert callable(retriever.retrieve)
+    for dead_api in (
+        "retrieve_candidates",
+        "gather_explicit_overlay_candidates",
+        "gather_t2_evidence_candidates",
+        "gather_t3_plane_candidates",
+    ):
+        assert not hasattr(retriever, dead_api)
 
 
 def test_load_selected_memory_values_reads_only_router_top_candidates(

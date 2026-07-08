@@ -180,4 +180,62 @@ describe('extensions API adapter', () => {
     expect(get).toHaveBeenCalledWith('/enterprise/external-capabilities/marketplace-entries');
     expect(post).toHaveBeenCalledWith('/enterprise/external-capabilities/marketplace-entries/entry-1/submit-review');
   });
+
+  it('routes capability factor intake and promotion proposals without touching runtime activation', async () => {
+    vi.doMock('../core', async () => {
+      const actual = await vi.importActual<typeof import('../core')>('../core');
+      return {
+        ...actual,
+        get: vi.fn(),
+        post: vi.fn(),
+      };
+    });
+
+    const { extensionsApi } = await import('./extensions');
+    const { get, post } = await import('../core');
+    vi.mocked(get).mockResolvedValue([]);
+    vi.mocked(post).mockResolvedValue({ status: 'ok' });
+
+    await extensionsApi.listAgentCapabilityFactors('agent-1');
+    await extensionsApi.captureAgentCapabilityFactor('agent-1', {
+      factor_kind: 'skill_candidate',
+      display_name: 'Research Skill',
+      summary: 'Agent generated a reusable skill.',
+    });
+    await extensionsApi.listEnterpriseCapabilityFactors();
+    await extensionsApi.listCapabilityPromotionProposals();
+    await extensionsApi.createCapabilityPromotionProposal('factor-1', {
+      proposed_snapshot_kind: 'skill',
+      proposed_catalog_scope: 'workspace',
+      proposed_activation_policy: 'requestable',
+    });
+    await extensionsApi.approveCapabilityPromotionProposal('proposal-1', {
+      reason: 'approved after review',
+    });
+    await extensionsApi.rejectCapabilityPromotionProposal('proposal-2', {
+      reason: 'not reusable',
+    });
+    await extensionsApi.archiveCapabilityFactor('factor-1');
+
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/capability-factors');
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/capability-factors', {
+      factor_kind: 'skill_candidate',
+      display_name: 'Research Skill',
+      summary: 'Agent generated a reusable skill.',
+    });
+    expect(get).toHaveBeenCalledWith('/enterprise/capability-factors');
+    expect(get).toHaveBeenCalledWith('/enterprise/capability-promotion-proposals');
+    expect(post).toHaveBeenCalledWith('/enterprise/capability-factors/factor-1/promotion-proposals', {
+      proposed_snapshot_kind: 'skill',
+      proposed_catalog_scope: 'workspace',
+      proposed_activation_policy: 'requestable',
+    });
+    expect(post).toHaveBeenCalledWith('/enterprise/capability-promotion-proposals/proposal-1/approve', {
+      reason: 'approved after review',
+    });
+    expect(post).toHaveBeenCalledWith('/enterprise/capability-promotion-proposals/proposal-2/reject', {
+      reason: 'not reusable',
+    });
+    expect(post).toHaveBeenCalledWith('/enterprise/capability-factors/factor-1/archive');
+  });
 });

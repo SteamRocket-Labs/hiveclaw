@@ -8,6 +8,7 @@ vi.mock('./WorkspaceExtensionCatalogSection', () => ({ default: () => null }));
 vi.mock('./WorkspaceToolsSection', () => ({ default: () => null }));
 vi.mock('./WorkspaceSkillsSection', () => ({ default: () => null }));
 vi.mock('./WorkspaceSubagentsSection', () => ({ default: () => null }));
+vi.mock('./WorkspaceCapabilityFactorsSection', () => ({ default: () => null }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -24,6 +25,7 @@ describe('WorkspaceExtensionsSection', () => {
     expect(html).toContain('MCP &amp; Plugins');
     expect(html).toContain('Skills');
     expect(html).toContain('Sub-agents');
+    expect(html).toContain('Factor Intake');
     expect(html).toContain('data-testid="workspace-extensions-catalog-view"');
   });
 });

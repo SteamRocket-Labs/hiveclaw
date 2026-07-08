@@ -16,6 +16,14 @@ from app.models.chat_session import ChatSession
 from app.models.capability_policy import CapabilityPolicy
 from app.models.user import User
 from app.services.capability_gate import get_all_capabilities
+from app.services.capability_factor_intake import (
+    archive_capability_factor,
+    capture_capability_factor,
+    create_promotion_proposal,
+    decide_promotion_proposal,
+    list_capability_factors,
+    list_promotion_proposals,
+)
 from app.services.pack_service import get_capability_summary, get_session_runtime_summary
 
 logger = logging.getLogger(__name__)
@@ -40,6 +48,37 @@ class CapabilityPolicyOut(BaseModel):
     conditions: dict
 
     model_config = {"from_attributes": True}
+
+
+class CapabilityFactorIn(BaseModel):
+    factor_kind: str
+    display_name: str
+    summary: str | None = None
+    source_refs: list[dict] = []
+    trace_refs: list[dict] = []
+    artifact_ref: str | None = None
+    artifact_sha256: str | None = None
+    upstream_source_ref: str | None = None
+    upstream_content_sha256: str | None = None
+    license_report: dict = {}
+    authoring_contract: dict = {}
+    declared_components: dict = {}
+    declared_permissions: dict = {}
+    sensitivity_report: dict = {}
+    reuse_score: dict = {}
+    suggested_scope: str | None = None
+
+
+class PromotionProposalIn(BaseModel):
+    proposed_snapshot_kind: str
+    proposed_catalog_scope: str = "workspace"
+    proposed_activation_policy: str = "requestable"
+    proposed_selector: dict = {}
+
+
+class PromotionDecisionIn(BaseModel):
+    reason: str | None = None
+    resulting_snapshot_id: uuid.UUID | None = None
 
 
 @router.get("/enterprise/capabilities/definitions")
@@ -156,6 +195,143 @@ async def delete_capability_policy(
     return {"status": "deleted"}
 
 
+@router.get("/agents/{agent_id}/capability-factors")
+async def list_agent_capability_factors(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_agent_access(db, current_user, agent_id)
+    tenant_id = _require_user_tenant_id(current_user)
+    return await list_capability_factors(db, tenant_id=tenant_id, agent_id=agent_id)
+
+
+@router.post("/agents/{agent_id}/capability-factors")
+async def create_agent_capability_factor(
+    agent_id: uuid.UUID,
+    data: CapabilityFactorIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_agent_access(db, current_user, agent_id)
+    tenant_id = _require_user_tenant_id(current_user)
+    try:
+        return await capture_capability_factor(
+            db,
+            tenant_id=tenant_id,
+            originating_agent_id=agent_id,
+            originating_user_id=current_user.id,
+            data=data.model_dump(exclude_none=True),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/enterprise/capability-factors")
+async def list_enterprise_capability_factors(
+    status: str | None = None,
+    factor_kind: str | None = None,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await list_capability_factors(db, tenant_id=target_tenant_id, status=status, factor_kind=factor_kind)
+
+
+@router.post("/enterprise/capability-factors/{factor_id}/archive")
+async def archive_enterprise_capability_factor(
+    factor_id: uuid.UUID,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        return await archive_capability_factor(db, tenant_id=target_tenant_id, factor_id=factor_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/enterprise/capability-promotion-proposals")
+async def list_enterprise_capability_promotion_proposals(
+    factor_id: uuid.UUID | None = None,
+    decision: str | None = None,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return await list_promotion_proposals(db, tenant_id=target_tenant_id, factor_id=factor_id, decision=decision)
+
+
+@router.post("/enterprise/capability-factors/{factor_id}/promotion-proposals")
+async def create_capability_promotion_proposal(
+    factor_id: uuid.UUID,
+    data: PromotionProposalIn,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        return await create_promotion_proposal(
+            db,
+            tenant_id=target_tenant_id,
+            factor_id=factor_id,
+            requested_by_user_id=current_user.id,
+            data=data.model_dump(exclude_none=True),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/enterprise/capability-promotion-proposals/{proposal_id}/approve")
+async def approve_capability_promotion_proposal(
+    proposal_id: uuid.UUID,
+    data: PromotionDecisionIn,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        return await decide_promotion_proposal(
+            db,
+            tenant_id=target_tenant_id,
+            proposal_id=proposal_id,
+            approver_id=current_user.id,
+            decision="approved",
+            reason=data.reason,
+            resulting_snapshot_id=data.resulting_snapshot_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/enterprise/capability-promotion-proposals/{proposal_id}/reject")
+async def reject_capability_promotion_proposal(
+    proposal_id: uuid.UUID,
+    data: PromotionDecisionIn,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        return await decide_promotion_proposal(
+            db,
+            tenant_id=target_tenant_id,
+            proposal_id=proposal_id,
+            approver_id=current_user.id,
+            decision="rejected",
+            reason=data.reason,
+            resulting_snapshot_id=data.resulting_snapshot_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/agents/{agent_id}/capability-summary")
 async def get_agent_capability_summary(
     agent_id: uuid.UUID,
@@ -180,3 +356,10 @@ async def get_session_runtime(
         raise HTTPException(status_code=404, detail="Session not found")
     await check_agent_access(db, current_user, session.agent_id)
     return await get_session_runtime_summary(db, session_id)
+
+
+def _require_user_tenant_id(current_user: User) -> uuid.UUID:
+    tenant_id = getattr(current_user, "tenant_id", None)
+    if tenant_id is None:
+        raise HTTPException(status_code=400, detail="tenant_id is required")
+    return tenant_id

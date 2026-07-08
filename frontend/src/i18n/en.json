@@ -769,7 +769,8 @@
         "catalog": "Catalog",
         "mcp": "MCP & Plugins",
         "skills": "Skills",
-        "subagents": "Sub-agents"
+        "subagents": "Sub-agents",
+        "factors": "Self-grown"
       },
       "externalSnapshots": "Approved External Snapshots",
       "noExternalSnapshots": "No approved external snapshots activated",
@@ -785,7 +786,21 @@
       "catalogAvailable": "Available",
       "catalogDeactivate": "Deactivate",
       "catalogTryInChat": "Try in chat",
-      "catalogInstall": "Install"
+      "catalogInstall": "Install",
+      "factorsLoadFailed": "Failed to load capability factors",
+      "factorNameRequired": "Factor name is required",
+      "factorCaptured": "Capability factor captured",
+      "factorCaptureFailed": "Failed to capture capability factor",
+      "factorNamePlaceholder": "Candidate name",
+      "factorSummaryPlaceholder": "Why this is reusable",
+      "captureFactor": "Capture",
+      "selfGrownCandidates": "Self-grown candidates",
+      "noCapabilityFactors": "No self-grown capability candidates have been captured yet.",
+      "factorKind": {
+        "skill_candidate": "Skill candidate",
+        "subagent_candidate": "Sub-agent candidate",
+        "external_usage_factor": "External usage"
+      }
     },
     "detail": {
       "loading": "Loading...",
@@ -2129,7 +2144,8 @@
         "catalog": "Catalog",
         "mcp": "MCP & Plugins",
         "skills": "Skills",
-        "subagents": "Sub-agents"
+        "subagents": "Sub-agents",
+        "factors": "Factor Intake"
       },
       "catalogLoadFailed": "Failed to load extension catalog",
       "reviewApproved": "Review approved",
@@ -2163,6 +2179,20 @@
       "syncSource": "Sync",
       "submitReview": "Submit review",
       "reviewLinked": "review linked",
+      "factorIntake": "Capability Factor Intake",
+      "factorLoadFailed": "Failed to load capability factor intake",
+      "noFactors": "No capability factors have been captured yet.",
+      "proposalCreated": "Promotion proposal created",
+      "proposalCreateFailed": "Failed to create promotion proposal",
+      "factorArchived": "Capability factor archived",
+      "factorArchiveFailed": "Failed to archive capability factor",
+      "proposalApproved": "Promotion proposal approved",
+      "proposalRejected": "Promotion proposal rejected",
+      "proposalDecisionFailed": "Failed to update promotion proposal",
+      "promotionProposals": "Promotion proposals",
+      "noPromotionProposals": "No promotion proposals are waiting.",
+      "promote": "Promote",
+      "archive": "Archive",
       "components": "components",
       "reject": "Reject",
       "revoke": "Revoke",

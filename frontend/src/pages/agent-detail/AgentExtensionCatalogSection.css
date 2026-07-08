@@ -41,6 +41,19 @@
   min-width: 0;
 }
 
+.agent-extension-catalog-main input,
+.agent-extension-catalog-main select {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+}
+
 .agent-extension-catalog-name {
   overflow: hidden;
   color: var(--text-primary);

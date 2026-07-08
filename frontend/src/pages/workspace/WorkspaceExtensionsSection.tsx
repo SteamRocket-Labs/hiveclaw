@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import WorkspaceCapabilityFactorsSection from './WorkspaceCapabilityFactorsSection';
 import WorkspaceExtensionCatalogSection from './WorkspaceExtensionCatalogSection';
 import WorkspaceSkillsSection from './WorkspaceSkillsSection';
 import WorkspaceSubagentsSection from './WorkspaceSubagentsSection';
@@ -11,7 +12,7 @@ type WorkspaceExtensionsSectionProps = {
   selectedTenantId: string;
 };
 
-type WorkspaceExtensionSubview = 'catalog' | 'mcp' | 'skills' | 'subagents';
+type WorkspaceExtensionSubview = 'catalog' | 'mcp' | 'skills' | 'subagents' | 'factors';
 
 const WORKSPACE_EXTENSION_SUBVIEWS: Array<{
   id: WorkspaceExtensionSubview;
@@ -22,6 +23,7 @@ const WORKSPACE_EXTENSION_SUBVIEWS: Array<{
   { id: 'mcp', labelKey: 'enterprise.extensions.tabs.mcp', fallback: 'MCP & Plugins' },
   { id: 'skills', labelKey: 'enterprise.extensions.tabs.skills', fallback: 'Skills' },
   { id: 'subagents', labelKey: 'enterprise.extensions.tabs.subagents', fallback: 'Sub-agents' },
+  { id: 'factors', labelKey: 'enterprise.extensions.tabs.factors', fallback: 'Factor Intake' },
 ];
 
 export default function WorkspaceExtensionsSection({ selectedTenantId }: WorkspaceExtensionsSectionProps) {
@@ -69,6 +71,11 @@ export default function WorkspaceExtensionsSection({ selectedTenantId }: Workspa
         {activeSubview === 'subagents' && (
           <div data-testid="workspace-extensions-subagents-view">
             <WorkspaceSubagentsSection />
+          </div>
+        )}
+        {activeSubview === 'factors' && (
+          <div data-testid="workspace-extensions-factors-view">
+            <WorkspaceCapabilityFactorsSection />
           </div>
         )}
       </div>

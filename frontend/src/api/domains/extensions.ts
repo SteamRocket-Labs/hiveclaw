@@ -217,6 +217,80 @@ export interface ExternalMarketplaceEntry {
   last_seen_at?: string | null;
 }
 
+export interface CapabilityFactor {
+  id: string;
+  tenant_id?: string;
+  originating_agent_id?: string | null;
+  originating_user_id?: string | null;
+  factor_kind: string;
+  display_name: string;
+  summary?: string | null;
+  source_refs?: Array<Record<string, unknown>>;
+  trace_refs?: Array<Record<string, unknown>>;
+  artifact_ref?: string | null;
+  artifact_sha256?: string | null;
+  upstream_source_ref?: string | null;
+  upstream_content_sha256?: string | null;
+  license_report?: Record<string, unknown>;
+  authoring_contract?: Record<string, unknown>;
+  declared_components?: Record<string, unknown>;
+  declared_permissions?: Record<string, unknown>;
+  sensitivity_report?: Record<string, unknown>;
+  reuse_score?: Record<string, unknown>;
+  suggested_scope?: string | null;
+  status: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface CapabilityFactorRequest {
+  factor_kind: string;
+  display_name: string;
+  summary?: string | null;
+  source_refs?: Array<Record<string, unknown>>;
+  trace_refs?: Array<Record<string, unknown>>;
+  artifact_ref?: string | null;
+  artifact_sha256?: string | null;
+  upstream_source_ref?: string | null;
+  upstream_content_sha256?: string | null;
+  license_report?: Record<string, unknown>;
+  authoring_contract?: Record<string, unknown>;
+  declared_components?: Record<string, unknown>;
+  declared_permissions?: Record<string, unknown>;
+  sensitivity_report?: Record<string, unknown>;
+  reuse_score?: Record<string, unknown>;
+  suggested_scope?: string | null;
+}
+
+export interface CapabilityPromotionProposal {
+  id: string;
+  tenant_id?: string;
+  factor_id: string;
+  review_id?: string | null;
+  proposed_snapshot_kind: string;
+  proposed_catalog_scope: string;
+  proposed_activation_policy: string;
+  proposed_selector?: Record<string, unknown>;
+  approver_id?: string | null;
+  decision: string;
+  decision_reason?: string | null;
+  resulting_snapshot_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface PromotionProposalRequest {
+  proposed_snapshot_kind: string;
+  proposed_catalog_scope?: string;
+  proposed_activation_policy?: string;
+  proposed_selector?: Record<string, unknown>;
+}
+
+export interface PromotionDecisionRequest {
+  reason?: string | null;
+  resulting_snapshot_id?: string | null;
+}
+
 export const extensionsApi = {
   /** Agent Detail source of truth: skills + MCP servers for one agent. */
   getAgentExtensions: (agentId: string) => get<AgentExtensions>(`/agents/${agentId}/extensions`),
@@ -285,6 +359,47 @@ export const extensionsApi = {
     post<{ entry: ExternalMarketplaceEntry; review: ExternalCapabilityReviewSummary }>(
       `/enterprise/external-capabilities/marketplace-entries/${entryId}/submit-review`,
     ),
+
+  /** Agent owner/admin: list capability factors captured from one agent. */
+  listAgentCapabilityFactors: (agentId: string) =>
+    get<CapabilityFactor[]>(`/agents/${agentId}/capability-factors`),
+
+  /** Agent owner/admin: capture one self-grown or external usage factor. */
+  captureAgentCapabilityFactor: (agentId: string, body: CapabilityFactorRequest) =>
+    post<{ factor: CapabilityFactor; review?: Record<string, unknown> }>(`/agents/${agentId}/capability-factors`, body),
+
+  /** Company admin: list all capability factors in the workspace intake queue. */
+  listEnterpriseCapabilityFactors: () =>
+    get<CapabilityFactor[]>('/enterprise/capability-factors'),
+
+  /** Company admin: list promotion proposals created from factors. */
+  listCapabilityPromotionProposals: () =>
+    get<CapabilityPromotionProposal[]>('/enterprise/capability-promotion-proposals'),
+
+  /** Company admin: create a catalog promotion proposal from a reviewed factor. */
+  createCapabilityPromotionProposal: (factorId: string, body: PromotionProposalRequest) =>
+    post<{ proposal: CapabilityPromotionProposal; factor: CapabilityFactor }>(
+      `/enterprise/capability-factors/${factorId}/promotion-proposals`,
+      body,
+    ),
+
+  /** Company admin: approve a promotion proposal. This does not bypass Trust Gate snapshot/catalog publishing. */
+  approveCapabilityPromotionProposal: (proposalId: string, body: PromotionDecisionRequest = {}) =>
+    post<{ proposal: CapabilityPromotionProposal; factor: CapabilityFactor }>(
+      `/enterprise/capability-promotion-proposals/${proposalId}/approve`,
+      body,
+    ),
+
+  /** Company admin: reject a promotion proposal. */
+  rejectCapabilityPromotionProposal: (proposalId: string, body: PromotionDecisionRequest = {}) =>
+    post<{ proposal: CapabilityPromotionProposal; factor: CapabilityFactor }>(
+      `/enterprise/capability-promotion-proposals/${proposalId}/reject`,
+      body,
+    ),
+
+  /** Company admin: archive a factor without publishing it. */
+  archiveCapabilityFactor: (factorId: string) =>
+    post<{ factor: CapabilityFactor }>(`/enterprise/capability-factors/${factorId}/archive`),
 
   /** Company admin: approve one staged external capability snapshot. */
   approveExternalCapabilityReview: (reviewId: string) =>

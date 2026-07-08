@@ -8,6 +8,7 @@ vi.mock('./AgentExtensionCatalogSection', () => ({ default: () => null }));
 vi.mock('./ToolsManager', () => ({ default: () => null }));
 vi.mock('./AgentSkillsSection', () => ({ default: () => null }));
 vi.mock('./AgentSubagentsSection', () => ({ default: () => null }));
+vi.mock('./AgentCapabilityFactorsSection', () => ({ default: () => null }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -24,6 +25,7 @@ describe('AgentExtensionsSection', () => {
     expect(html).toContain('MCP &amp; Plugins');
     expect(html).toContain('Skills');
     expect(html).toContain('Sub-agents');
+    expect(html).toContain('Self-grown');
     expect(html).toContain('data-testid="agent-extensions-catalog-view"');
   });
 });

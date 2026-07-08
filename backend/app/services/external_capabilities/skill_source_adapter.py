@@ -8,6 +8,7 @@ from typing import Any
 import uuid
 
 from app.database import tenant_scoped_session
+from app.services.external_capabilities.materializer import materialize_file_bundle
 from app.services.external_capabilities.trust_gate import stage_external_capability_review
 from app.services.external_capabilities.types import ExternalCapabilityComponent, NormalizedExternalPluginBundle
 from app.services.skill_guard import scan_skill_files
@@ -20,10 +21,16 @@ def build_external_skill_bundle(
     folder_name: str,
     files: Sequence[Mapping[str, Any]],
     source_format: str,
-) -> tuple[NormalizedExternalPluginBundle, dict[str, Any]]:
-    normalized_files = _normalized_files(files)
+) -> tuple[NormalizedExternalPluginBundle, dict[str, Any], dict[str, Any]]:
+    materialized = materialize_file_bundle(
+        source_format=source_format,
+        source_uri=source_uri,
+        package_name=folder_name,
+        files=files,
+    )
+    normalized_files = materialized.files
     guard_report = scan_skill_files(normalized_files, source=source_uri)
-    notes: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = list(materialized.blocking_notes)
     if not guard_report.allowed:
         notes.append(
             {
@@ -39,22 +46,28 @@ def build_external_skill_bundle(
         local_name=folder_name,
         qualified_name=f"skill:{folder_name}",
         source_path="SKILL.md",
-        content_sha256=_files_sha256(normalized_files),
+        content_sha256=materialized.artifact_sha256,
         runtime_projection={
             "folder_name": folder_name,
             "file_count": len(normalized_files),
         },
-        metadata={"files": normalized_files},
+        metadata={"files": normalized_files, "materialization": materialized.report},
     )
     bundle = NormalizedExternalPluginBundle(
         source_format=source_format,
         source_uri=source_uri,
         plugin_name=folder_name,
+        source_ref=materialized.resolved_ref,
+        resolved_ref=materialized.resolved_ref,
+        artifact_sha256=materialized.artifact_sha256,
         manifest_sha256=component.content_sha256,
+        materialization_report=materialized.report,
+        sandbox_report=dict(materialized.report.get("sandbox") or {}),
+        lockfile={"files": [{"path": item["path"], "sha256": _text_sha256(item["content"])} for item in normalized_files]},
         components=[component],
         admission_notes=notes,
     )
-    return bundle, guard_report.to_dict()
+    return bundle, guard_report.to_dict(), materialized.report
 
 
 async def stage_external_skill_package_review(
@@ -67,7 +80,7 @@ async def stage_external_skill_package_review(
     files: Sequence[Mapping[str, Any]],
     source_format: str,
 ) -> dict[str, Any]:
-    bundle, guard_report = build_external_skill_bundle(
+    bundle, guard_report, materialization_report = build_external_skill_bundle(
         source_uri=source_uri,
         folder_name=folder_name,
         files=files,
@@ -84,6 +97,7 @@ async def stage_external_skill_package_review(
         source_uri=source_uri,
         review=review,
         skill_guard=guard_report,
+        materialization=materialization_report,
     )
 
 
@@ -96,7 +110,7 @@ async def stage_external_skill_package_review_for_tenant(
     files: Sequence[Mapping[str, Any]],
     source_format: str,
 ) -> dict[str, Any]:
-    bundle, guard_report = build_external_skill_bundle(
+    bundle, guard_report, materialization_report = build_external_skill_bundle(
         source_uri=source_uri,
         folder_name=folder_name,
         files=files,
@@ -122,6 +136,7 @@ async def stage_external_skill_package_review_for_tenant(
         source_uri=source_uri,
         review=review,
         skill_guard=guard_report,
+        materialization=materialization_report,
     )
 
 
@@ -155,6 +170,7 @@ def _review_required_payload(
     source_uri: str,
     review: dict[str, Any],
     skill_guard: dict[str, Any],
+    materialization: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "status": "blocked" if review.get("admission_class") == "blocked" else "review_required",
@@ -164,6 +180,7 @@ def _review_required_payload(
         "review_id": review.get("id"),
         "review": review,
         "skill_guard": skill_guard,
+        "materialization": materialization,
         "source_uri": source_uri,
     }
 
@@ -206,3 +223,7 @@ def _files_sha256(files: Sequence[Mapping[str, Any]]) -> str:
     payload = [{"path": str(item.get("path") or ""), "content": str(item.get("content") or "")} for item in files]
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _text_sha256(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()

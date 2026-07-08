@@ -25,7 +25,13 @@ class NormalizedExternalPluginBundle:
     plugin_name: str
     version: str | None = None
     description: str | None = None
+    source_ref: str | None = None
+    resolved_ref: str | None = None
+    artifact_sha256: str | None = None
     manifest_sha256: str | None = None
+    materialization_report: dict[str, Any] = field(default_factory=dict)
+    sandbox_report: dict[str, Any] = field(default_factory=dict)
+    lockfile: dict[str, Any] = field(default_factory=dict)
     components: list[ExternalCapabilityComponent] = field(default_factory=list)
     unsupported_components: list[dict[str, Any]] = field(default_factory=list)
     credential_requirements: list[dict[str, Any]] = field(default_factory=list)
@@ -36,4 +42,3 @@ class NormalizedExternalPluginBundle:
             if component.qualified_name == qualified_name:
                 return component
         raise KeyError(qualified_name)
-

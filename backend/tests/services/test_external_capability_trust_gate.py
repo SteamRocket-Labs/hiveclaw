@@ -375,3 +375,35 @@ async def test_stage_external_skill_package_review_maps_skill_guard_block_to_blo
     assert row.admission_report_json["notes"][0]["code"] == "skill_guard_blocked"
     component = row.normalized_manifest_json["components"][0]
     assert component["metadata"]["files"][0]["path"] == "SKILL.md"
+
+
+@pytest.mark.asyncio
+async def test_stage_external_skill_package_review_records_materialization_report():
+    tenant_id = uuid4()
+    user_id = uuid4()
+    db = _TrustGateSession()
+
+    result = await stage_external_skill_package_review(
+        db,
+        tenant_id=tenant_id,
+        created_by_user_id=user_id,
+        source_uri="https://github.com/acme/skills/tree/main/research",
+        folder_name="research",
+        files=[
+            {
+                "path": "SKILL.md",
+                "content": "---\nname: Research\n---\n\nUse sources carefully.",
+            }
+        ],
+        source_format="external_skill_url",
+    )
+
+    assert result["status"] == "review_required"
+    assert result["materialization"]["status"] == "quarantined"
+    assert result["materialization"]["sandbox"]["network"] == "deny"
+    row = db.added[0]
+    assert row.source_ref == result["materialization"]["resolved_ref"]
+    assert row.admission_report_json["materialization"]["artifact_sha256"]
+    assert row.admission_report_json["materialization"]["sandbox"]["host_home_mounted"] is False
+    component = row.normalized_manifest_json["components"][0]
+    assert component["metadata"]["materialization"]["artifact_sha256"] == result["materialization"]["artifact_sha256"]

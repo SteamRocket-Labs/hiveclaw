@@ -2,7 +2,7 @@
 
 日期：2026-06-26
 更新：2026-07-08，按当前 checkout 复核后收敛状态：核心骨架已实装，完整闭环未完成
-状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、Agent/Workspace Extensions 入口已落地；Materialize/Sandbox、revoke/deactivate、try-in-chat/session activation、component-level activation、Marketplace、Capability Factor Intake、Legacy migration 仍未完成；hook/slash/app connector activation 仍按 unsupported fail-closed 处理
+状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、quarantine-only Materialize、revoke/deactivate 后端入口、Agent/Workspace Extensions 入口已落地；install-time sandbox worker、try-in-chat/session activation、component-level activation、Marketplace、Capability Factor Intake、Legacy migration 仍未完成；hook/slash/app connector activation 仍按 unsupported fail-closed 处理
 范围：外部 Plugin/Extension 的发现、检验、审批、安装、激活、撤销与审计；Skill、MCP Server、Subagent、Hook 是 Plugin components，也保留单组件快捷导入入口
 上位文档：
 - `docs/agent-extension-surface-skill-mcp.md`
@@ -60,8 +60,8 @@ External Capability Trust Gate
 
 已核实缺失的闭环能力：
 
-1. `Materialize / Sandbox / Quarantine` 缺失。当前没有统一 materializer、隔离 workspace、network-deny install worker、dependency lock、smoke test、sandbox report。ClawHub/GitHub Skill 入口会 fetch 文件并 stage review，但这不是 canonical materialize sandbox，也不能安全承载 `npm` / `npx` / install-time command。
-2. `revoke / deactivate` 缺失。`ExternalCapabilitySnapshot` 有 `revoked_at` 字段，但没有 service/API 写入 revoke，也没有把已有 `ExternalExtensionActivation` 置为 disabled/revoked 的路径。
+1. `Materialize / Sandbox / Quarantine` 已有 quarantine-only file-bundle materializer：它能为外部文件包生成 resolved ref、artifact hash、sandbox/quarantine report，并把 install-time command fail-closed 进 blocking notes。仍缺真正隔离 worker、dependency install、smoke test、network policy enforcement。
+2. `revoke / deactivate` 后端入口已出现：review reject、snapshot revoke、agent activation deactivate 已有 service/API。仍缺完整前端入口、audit event、MCP assignment 级禁用、revoked snapshot 对所有新旧 activation 的强一致阻断验证。
 3. `try in chat / session-scoped activation` 缺失。当前只有 durable activation，没有 session id、expires_at、activation_scope，也没有 `/try` API 或前端按钮。
 4. `component-level activation` 缺失。当前 activation 会遍历 snapshot manifest 的全部 component；不能只启用某个 Skill、某个 MCP server 或某个 Subagent。hook 单独审批和 credential handle 绑定也未落地。
 5. `HiveExtensionManifestAdapter` / `LegacyPackAdapter` 缺失。当前只有 Skill、MCP、CC、Codex 四类 adapter；legacy pack 仍只是兼容 backing store，没有 migration-only normalized report。
@@ -72,8 +72,8 @@ External Capability Trust Gate
 
 下一步实现顺序必须先补闭环内缺口：
 
-1. Materialize Sandbox / Quarantine。
-2. revoke / deactivate。
+1. install-time sandbox worker / smoke test。
+2. revoke / deactivate 前端与审计闭环。
 3. component-level activation + credential handle + hook allowlist approval。
 4. try-in-chat / session-scoped activation。
 5. Marketplace source 管理。
@@ -2194,16 +2194,16 @@ rg -n "import_and_register" backend/app/api/mcp_servers.py backend/tests/api/tes
 # no matches
 ```
 
-Round 2 当前未完成项（2026-07-08 复核）：
+Round 2 当前未完成项（2026-07-09 复核）：
 
-- `materialize` / `analyze` 不是独立阶段；没有统一 artifact/quarantine storage、resolved ref、lockfile、sandbox smoke test report。
+- `materialize` 已有 quarantine-only file-bundle 实现；仍没有真正 install-time sandbox worker、dependency lock 生成器、sandbox smoke test runner。
 - `approve_external_capability_snapshot()` 目前把 publish-to-catalog 合并在 approve 内部；没有独立 `publish-to-catalog` API。
-- 没有 reject / revoke API；snapshot model 虽有 `revoked_at`，但当前没有 service/route 写入，也没有阻止新 activation 的 revoke 判定路径。
+- reject / revoke API 已有；仍缺 audit event、前端操作面、以及 revoked snapshot 对所有 runtime projection 的完整验收。
 - 没有 `external_extension_components` / `external_extension_hook_registrations` 两张表；component provenance 还没有独立 relational surface。
 - `HiveExtensionManifestAdapter` 和 `LegacyPackAdapter` 未实现。
-- 当前 external Skill URL / ClawHub import 已经收口到 `review_required`，但它们的远程 fetch 仍是入口自身完成，不是统一 materializer sandbox。
+- 当前 external Skill URL / ClawHub import 已经收口到 `review_required`，并通过 quarantine-only materializer 记录 materialization evidence；远程 fetch 仍是入口自身完成，不是真正 isolated materializer worker。
 
-因此 Round 2 只能标记为：Trust Gate substrate / selected adapters 已实装；完整 canonical substrate 未完成。
+因此 Round 2 只能标记为：Trust Gate substrate / selected adapters / quarantine-only materializer 已实装；完整 canonical substrate 未完成。
 
 ### Round 3：Agent runtime visibility / activation layer 与 Agent Detail 前端收敛
 
@@ -2768,18 +2768,21 @@ Round 6 当前状态（2026-07-08 复核）：
 
 文档变更不需要 TDD。实现时必须 TDD。
 
-当前已实现骨架回归（2026-07-08 复核）：
+当前已实现骨架回归（2026-07-09 复核）：
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_external_capability_trust_gate.py \
+  tests/services/test_external_capability_materializer.py \
   tests/services/test_external_cc_plugin_adapter.py \
   tests/services/test_external_codex_plugin_adapter.py \
+  tests/services/test_external_mcp_source_adapter.py \
   tests/services/test_external_capability_activation.py \
   tests/api/test_external_capability_reviews_api.py \
-  tests/api/test_external_capability_activation_api.py -q
-# 16 passed, 4 warnings in 2.37s
+  tests/api/test_external_capability_activation_api.py \
+  tests/api/test_mcp_servers_api.py::test_import_route_stages_trust_gate_review -q
+# 29 passed, 4 warnings in 2.24s
 ```
 
 完整落地后的后端目标测试：

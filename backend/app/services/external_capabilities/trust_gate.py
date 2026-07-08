@@ -34,12 +34,13 @@ async def stage_external_capability_review(
     admission_class = admission_report["admission_class"]
     governance_projection = _build_governance_projection(bundle, admission_class=admission_class)
     status = "blocked" if admission_class == "blocked" else "review_required"
-    source_hash = bundle.manifest_sha256 or _stable_digest(manifest)
+    source_hash = bundle.artifact_sha256 or bundle.manifest_sha256 or _stable_digest(manifest)
 
     row = ExternalCapabilityReview(
         tenant_id=tenant_id,
         source_format=bundle.source_format,
         source_uri=bundle.source_uri,
+        source_ref=bundle.resolved_ref or bundle.source_ref,
         source_hash=source_hash,
         normalized_name=bundle.plugin_name,
         status=status,
@@ -260,7 +261,13 @@ def _bundle_manifest(bundle: NormalizedExternalPluginBundle) -> dict[str, Any]:
         "plugin_name": bundle.plugin_name,
         "version": bundle.version,
         "description": bundle.description,
+        "source_ref": bundle.source_ref,
+        "resolved_ref": bundle.resolved_ref,
+        "artifact_sha256": bundle.artifact_sha256,
         "manifest_sha256": bundle.manifest_sha256,
+        "materialization": dict(bundle.materialization_report or {}),
+        "sandbox": dict(bundle.sandbox_report or {}),
+        "lockfile": dict(bundle.lockfile or {}),
         "components": [asdict(component) for component in bundle.components],
         "unsupported_components": list(bundle.unsupported_components),
         "credential_requirements": list(bundle.credential_requirements),
@@ -286,6 +293,8 @@ def _build_admission_report(bundle: NormalizedExternalPluginBundle) -> dict[str,
         "notes": notes,
         "unsupported_components": list(bundle.unsupported_components),
         "credential_requirements": list(bundle.credential_requirements),
+        "materialization": dict(bundle.materialization_report or {}),
+        "sandbox": dict(bundle.sandbox_report or {}),
     }
 
 

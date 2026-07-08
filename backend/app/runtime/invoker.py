@@ -373,16 +373,16 @@ async def _record_knowledge_activation_for_request(
     activation_query: dict[str, Any],
     *,
     provider: Any | None = None,
-) -> None:
+) -> str | None:
     if request.session_context is None or request.agent_id is None:
-        return
+        return None
     metadata = _ensure_turn_metadata(request)
     tenant_id = metadata.get("tenant_id")
     owner_user_id = metadata.get("owner_user_id") or metadata.get("owner_id") or request.user_id
     current_user_id = request.user_id
     prompt_text = str(activation_query.get("raw_prompt") or _latest_user_prompt(request.messages) or "").strip()
     if not tenant_id or not prompt_text:
-        return
+        return None
 
     from app.runtime.activation_router import ActivationRouterContext, route_activation_candidates
     from app.runtime.context import ensure_runtime_assembly_state
@@ -404,7 +404,7 @@ async def _record_knowledge_activation_for_request(
         limit=10,
     )
     if not candidates:
-        return
+        return None
 
     assembly_state = ensure_runtime_assembly_state(request.session_context)
     assembly_state.record_activation_candidates(candidates)
@@ -420,6 +420,44 @@ async def _record_knowledge_activation_for_request(
         ),
     )
     assembly_state.record_activation_router_output(router_output)
+    return _format_personal_kb_prompt_hint(candidates)
+
+
+def _trim_kb_hint_text(value: Any, *, limit: int) -> str:
+    clean = " ".join(str(value or "").split())
+    if len(clean) <= limit:
+        return clean
+    return f"{clean[: max(0, limit - 1)].rstrip()}…"
+
+
+def _format_personal_kb_prompt_hint(candidates: list[Any] | tuple[Any, ...], *, limit: int = 3) -> str:
+    usable = [candidate for candidate in candidates if getattr(candidate, "candidate_kind", "") == "knowledge_base"]
+    if not usable:
+        return ""
+    ranked = sorted(
+        usable,
+        key=lambda candidate: float(getattr(getattr(candidate, "score", None), "total_score", 0.0) or 0.0),
+        reverse=True,
+    )[: max(1, min(3, int(limit or 3)))]
+    lines = [
+        "## Personal Knowledge Hint",
+        "Relevant owner KB records were found. Use `search_personal_kb` for full snippets before quoting details.",
+    ]
+    for candidate in ranked:
+        metadata = dict(getattr(candidate, "metadata", {}) or {})
+        title = _trim_kb_hint_text(metadata.get("title") or "Personal KB record", limit=80)
+        source_refs = list(getattr(candidate, "source_refs", ()) or [])
+        source_ref = _trim_kb_hint_text(source_refs[0] if source_refs else metadata.get("source_ref", ""), limit=120)
+        preview = _trim_kb_hint_text(getattr(getattr(candidate, "surface", None), "preview", ""), limit=90)
+        score = float(getattr(getattr(candidate, "score", None), "total_score", 0.0) or 0.0)
+        line = f"- {title}"
+        if source_ref:
+            line += f" [{source_ref}]"
+        line += f" score={score:.2f}"
+        if preview:
+            line += f"; why: {preview}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _format_hook_additional_contexts(contexts: list[str]) -> str:
@@ -1588,7 +1626,11 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
 
             activation_query = _build_activation_query_for_request(request)
             ensure_runtime_assembly_state(request.session_context).record_activation_query(activation_query)
-            await _record_knowledge_activation_for_request(request, activation_query)
+            kb_hint = await _record_knowledge_activation_for_request(request, activation_query)
+            if kb_hint:
+                kernel_request.system_prompt_suffix = "\n\n".join(
+                    part for part in (kernel_request.system_prompt_suffix, kb_hint) if part
+                )
     except Exception as _activation_err:
         logging.getLogger(__name__).debug("[Invoker] ActivationQuery build failed (non-fatal): %s", _activation_err)
 

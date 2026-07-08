@@ -98,6 +98,7 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
                     "heading_path": hit.heading_path,
                     "sensitivity": hit.sensitivity,
                     "metadata": hit.metadata,
+                    "score_trace": hit.score_trace,
                 }
                 for hit in hits
             ],

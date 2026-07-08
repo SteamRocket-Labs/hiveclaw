@@ -165,6 +165,47 @@ async def test_invoke_agent_builds_activation_query_after_user_prompt_submit_bef
 
 
 @pytest.mark.asyncio
+async def test_invoke_agent_injects_personal_kb_hint_before_kernel(monkeypatch):
+    from app.kernel import InvocationResult
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    session = SessionContext(
+        session_id="session-kb",
+        source="web_chat",
+        metadata={"request_id": "request-kb", "tenant_id": str(uuid4()), "owner_user_id": str(uuid4())},
+    )
+    seen_suffixes: list[str] = []
+
+    async def fake_record_knowledge_activation(_request, _activation_query):
+        return "## Personal Knowledge Hint\n- Retrieval notes [kb://person/owner/documents/doc#segment=seg]"
+
+    class FakeKernel:
+        async def handle(self, request):
+            seen_suffixes.append(request.system_prompt_suffix)
+            return InvocationResult(content="done")
+
+    monkeypatch.setattr("app.runtime.invoker._record_knowledge_activation_for_request", fake_record_knowledge_activation)
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "查一下我的 source refs notes"}],
+            agent_name="Agent",
+            role_description="Runtime engineer",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_context=session,
+        )
+    )
+
+    assert result.content == "done"
+    assert len(seen_suffixes) == 1
+    assert "## Personal Knowledge Hint" in seen_suffixes[0]
+    assert "Retrieval notes" in seen_suffixes[0]
+
+
+@pytest.mark.asyncio
 async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _build_system_prompt
 

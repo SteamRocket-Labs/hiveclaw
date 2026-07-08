@@ -50,9 +50,13 @@ async def test_invoker_records_personal_kb_candidates_through_activation_router(
     )
     activation_query = _build_activation_query_for_request(request)
 
-    await _record_knowledge_activation_for_request(request, activation_query, provider=_Provider())
+    hint = await _record_knowledge_activation_for_request(request, activation_query, provider=_Provider())
 
     state = session_context.metadata["runtime_assembly_state"]
     assert state["activation_candidates"][0]["candidate_kind"] == "knowledge_base"
     assert state["top_activation_candidates"][0]["candidate_kind"] == "knowledge_base"
     assert state["activation_router_output"]["query_id"] == activation_query["query_id"]
+    assert hint is not None
+    assert "## Personal Knowledge Hint" in hint
+    assert "Retrieval notes" in hint
+    assert "kb://person/owner/documents/doc#segment=seg" in hint

@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import mimetypes
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from sqlalchemy import and_, delete, desc, exists, false, func, or_, select, true, update
+from sqlalchemy import Text, and_, cast, delete, desc, exists, false, func, or_, select, true, update
 
 from app.config import get_settings
 from app.models.knowledge import (
@@ -108,6 +110,7 @@ class KnowledgeSearchHit:
     heading_path: list[str]
     sensitivity: str
     metadata: dict[str, Any]
+    score_trace: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -341,7 +344,7 @@ def build_personal_knowledge_search_statement(
             KnowledgeDocument.tenant_id == tenant_id,
             KnowledgeDocument.scope_type == "person",
             KnowledgeDocument.scope_id == owner_user_id,
-            KnowledgeDocument.status == "ready",
+            KnowledgeDocument.status.in_(("ready", "degraded")),
             KnowledgeDocument.agent_searchable.is_(True),
             KnowledgeSegment.tenant_id == tenant_id,
             KnowledgeSegment.scope_type == "person",
@@ -454,6 +457,47 @@ def segment_markdown(markdown: str, *, max_segment_chars: int = 3600, overlap_ch
             token_count=_rough_token_count(fallback),
         )
     ]
+
+
+def _row_first(row: Any) -> Any:
+    if isinstance(row, tuple):
+        return row[0]
+    try:
+        return row[0]
+    except (TypeError, KeyError, IndexError):
+        return row
+
+
+def _source_ref_segment_ids(refs: Any) -> list[uuid.UUID]:
+    segment_ids: list[uuid.UUID] = []
+    for ref in refs or []:
+        if not isinstance(ref, dict):
+            continue
+        raw_id = ref.get("segment_id")
+        try:
+            segment_ids.append(uuid.UUID(str(raw_id)))
+        except (TypeError, ValueError):
+            continue
+    return segment_ids
+
+
+def _freshness_boost(updated_at: Any) -> float:
+    if not isinstance(updated_at, datetime):
+        return 0.0
+    timestamp = updated_at
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (datetime.now(timezone.utc) - timestamp).total_seconds() / 86400.0)
+    return min(0.03, 0.03 / (1.0 + age_days / 30.0))
+
+
+def _heat_boost(metadata: dict[str, Any]) -> float:
+    raw = metadata.get("citation_count", metadata.get("usage_count", metadata.get("reference_count", 0)))
+    try:
+        count = max(0.0, float(raw or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    return min(0.05, math.log1p(count) * 0.01)
 
 
 class PersonalKnowledgeService:
@@ -1449,34 +1493,190 @@ class PersonalKnowledgeService:
         agent_id: uuid.UUID | None = None,
         limit: int = 5,
     ) -> list[KnowledgeSearchHit]:
-        statement = build_personal_knowledge_search_statement(
+        clean_query = _WHITESPACE_RE.sub(" ", str(query or "").strip())
+        if not clean_query:
+            raise ValueError("query must not be empty")
+        result_limit = max(1, int(limit or 5))
+        candidate_limit = max(result_limit * 3, 10)
+
+        candidates: dict[uuid.UUID, dict[str, Any]] = {}
+
+        def add_candidate(
+            *,
+            segment: Any,
+            document: Any,
+            channel: str,
+            rank: int,
+            raw_score: float,
+        ) -> None:
+            segment_id = segment.id
+            document_metadata = dict(getattr(document, "doc_metadata_json", None) or {})
+            source_ref = f"kb://person/{owner_user_id}/documents/{document.id}#segment={segment.id}"
+            entry = candidates.setdefault(
+                segment_id,
+                {
+                    "segment": segment,
+                    "document": document,
+                    "source_ref": source_ref,
+                    "channels": {},
+                    "rrf": 0.0,
+                    "boosts": {
+                        "heat": _heat_boost(document_metadata),
+                        "freshness": _freshness_boost(getattr(document, "updated_at", None)),
+                    },
+                },
+            )
+            channel_trace = entry["channels"].setdefault(channel, {"rank": rank, "raw_score": raw_score})
+            channel_trace["rank"] = min(int(channel_trace["rank"]), int(rank))
+            channel_trace["raw_score"] = max(float(channel_trace["raw_score"]), float(raw_score or 0.0))
+            entry["rrf"] += 1.0 / (60.0 + max(1, int(rank)))
+
+        text_statement = build_personal_knowledge_search_statement(
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
-            query=query,
+            query=clean_query,
             current_user_id=current_user_id,
             agent_id=agent_id,
-            limit=limit,
+            limit=candidate_limit,
         )
-        rows = (await session.execute(statement)).all()
-        hits: list[KnowledgeSearchHit] = []
-        for row in rows:
+        text_rows = (await session.execute(text_statement)).all()
+        for rank, row in enumerate(text_rows, start=1):
             segment, document, score = row[0], row[1], row[2]
-            source_ref = f"kb://person/{owner_user_id}/documents/{document.id}#segment={segment.id}"
+            add_candidate(segment=segment, document=document, channel="text", rank=rank, raw_score=float(score or 0.0))
+
+        like_query = f"%{_escape_like(clean_query)}%"
+        entity_rows = (
+            await session.execute(
+                select(KnowledgeEntity)
+                .where(
+                    KnowledgeEntity.tenant_id == tenant_id,
+                    KnowledgeEntity.scope_type == "person",
+                    KnowledgeEntity.scope_id == owner_user_id,
+                    KnowledgeEntity.merged_into_entity_id.is_(None),
+                    or_(
+                        KnowledgeEntity.canonical_name.ilike(like_query, escape="\\"),
+                        cast(KnowledgeEntity.aliases_json, Text).ilike(like_query, escape="\\"),
+                    ),
+                )
+                .order_by(KnowledgeEntity.confidence.desc(), KnowledgeEntity.updated_at.desc())
+                .limit(candidate_limit)
+            )
+        ).all()
+        entities = [entity for row in entity_rows if isinstance((entity := _row_first(row)), KnowledgeEntity) or hasattr(entity, "source_refs_json")]
+        entity_segment_ids: list[uuid.UUID] = []
+        for entity in entities:
+            entity_segment_ids.extend(_source_ref_segment_ids(getattr(entity, "source_refs_json", None)))
+
+        graph_segment_ids: list[uuid.UUID] = []
+        if entities:
+            entity_ids = [entity.id for entity in entities if getattr(entity, "id", None) is not None]
+            if entity_ids:
+                graph_rows = (
+                    await session.execute(
+                        select(KnowledgeLink)
+                        .where(
+                            KnowledgeLink.tenant_id == tenant_id,
+                            KnowledgeLink.scope_type == "person",
+                            KnowledgeLink.scope_id == owner_user_id,
+                            or_(KnowledgeLink.from_id.in_(entity_ids), KnowledgeLink.to_id.in_(entity_ids)),
+                        )
+                        .order_by(KnowledgeLink.confidence.desc())
+                        .limit(candidate_limit)
+                    )
+                ).all()
+                for row in graph_rows:
+                    link = _row_first(row)
+                    if not hasattr(link, "source_refs_json"):
+                        continue
+                    graph_segment_ids.extend(_source_ref_segment_ids(getattr(link, "source_refs_json", None)))
+
+        fetch_segment_ids = list(dict.fromkeys([*entity_segment_ids, *graph_segment_ids]))
+        if fetch_segment_ids:
+            segment_rows = (
+                await session.execute(
+                    select(KnowledgeSegment, KnowledgeDocument)
+                    .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeSegment.document_id)
+                    .where(
+                        KnowledgeDocument.tenant_id == tenant_id,
+                        KnowledgeDocument.scope_type == "person",
+                        KnowledgeDocument.scope_id == owner_user_id,
+                        KnowledgeDocument.status.in_(("ready", "degraded")),
+                        KnowledgeDocument.agent_searchable.is_(True),
+                        KnowledgeSegment.tenant_id == tenant_id,
+                        KnowledgeSegment.scope_type == "person",
+                        KnowledgeSegment.scope_id == owner_user_id,
+                        KnowledgeSegment.id.in_(fetch_segment_ids),
+                        _personal_knowledge_access_predicate(
+                            tenant_id=tenant_id,
+                            owner_user_id=owner_user_id,
+                            current_user_id=current_user_id,
+                            agent_id=agent_id,
+                        ),
+                    )
+                )
+            ).all()
+            entity_rank_by_segment = {segment_id: rank for rank, segment_id in enumerate(entity_segment_ids, start=1)}
+            graph_rank_by_segment = {segment_id: rank for rank, segment_id in enumerate(graph_segment_ids, start=1)}
+            for row in segment_rows:
+                segment, document = row[0], row[1]
+                if segment.id in entity_rank_by_segment:
+                    add_candidate(
+                        segment=segment,
+                        document=document,
+                        channel="entity",
+                        rank=entity_rank_by_segment[segment.id],
+                        raw_score=1.0,
+                    )
+                if segment.id in graph_rank_by_segment:
+                    add_candidate(
+                        segment=segment,
+                        document=document,
+                        channel="graph",
+                        rank=graph_rank_by_segment[segment.id],
+                        raw_score=1.0,
+                    )
+
+        hits: list[KnowledgeSearchHit] = []
+        ranked_entries = sorted(
+            candidates.values(),
+            key=lambda entry: (
+                float(entry["rrf"]) + float(entry["boosts"]["heat"]) + float(entry["boosts"]["freshness"]),
+                max((trace["raw_score"] for trace in entry["channels"].values()), default=0.0),
+            ),
+            reverse=True,
+        )[:result_limit]
+        for entry in ranked_entries:
+            segment, document = entry["segment"], entry["document"]
+            boosts = dict(entry["boosts"])
+            final_score = float(entry["rrf"]) + float(boosts["heat"]) + float(boosts["freshness"])
             content = str(segment.content or "").strip()
             snippet = content[:500]
+            document_metadata = dict(getattr(document, "doc_metadata_json", None) or {})
             hits.append(
                 KnowledgeSearchHit(
                     document_id=document.id,
                     segment_id=segment.id,
                     title=str(document.title or "Untitled knowledge document"),
                     snippet=snippet,
-                    source_ref=source_ref,
-                    score=float(score or 0.0),
+                    source_ref=entry["source_ref"],
+                    score=final_score,
                     heading_path=list(segment.heading_path_json or []),
                     sensitivity=str(document.sensitivity or "internal"),
                     metadata={
                         "canonical_md_path": document.canonical_md_path,
                         "source_sha256": document.source_sha256,
+                    },
+                    score_trace={
+                        "channels": dict(entry["channels"]),
+                        "rrf": float(entry["rrf"]),
+                        "boosts": boosts,
+                        "final": final_score,
+                        "document_status": str(getattr(document, "status", "ready") or "ready"),
+                        "document_metadata": {
+                            key: document_metadata[key]
+                            for key in ("citation_count", "usage_count", "reference_count")
+                            if key in document_metadata
+                        },
                     },
                 )
             )

@@ -438,3 +438,53 @@ commit：
 
 - A6 会把这些图谱投影接入检索融合；当前 search 仍主要走全文通道。
 - A13 会补 media source 的真实 transcription/OCR provider；当前 A4/A5 只处理 canonical Markdown segment 的知识抽取。
+
+### 2026-07-08 A6/A7/A8 融合检索、Runtime KB hint 与工具统一入口
+
+改动文件：
+
+- `backend/app/services/personal_knowledge_service.py`
+- `backend/app/tools/handlers/knowledge.py`
+- `backend/app/runtime/retrieval/personal_knowledge_provider.py`
+- `backend/app/runtime/invoker.py`
+- `backend/tests/services/test_personal_knowledge_service.py`
+- `backend/tests/tools/test_personal_knowledge_tool.py`
+- `backend/tests/runtime/test_personal_knowledge_provider.py`
+- `backend/tests/runtime/test_personal_knowledge_activation.py`
+- `backend/tests/runtime/test_invoker.py`
+- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+
+功能证据：
+
+- `PersonalKnowledgeService.search_personal()` 不再只跑全文单通道；现在执行全文、实体、图扩散三类候选，按 RRF 融合排序。
+- 全文通道继续使用 `tsvector + ilike/title fallback`，并允许 `ready/degraded` 文档参与搜索，因为 degraded 仍有 canonical MD 与 segments。
+- 实体通道读取 `knowledge_entities.canonical_name/aliases_json`，通过 `source_refs_json.segment_id` 回到段落。
+- 图扩散通道从实体命中的 `knowledge_links.from_id/to_id` 出发，通过 link source refs 回到相关段落。
+- 返回 `score_trace`：每个 channel 的 rank/raw_score、RRF、heat/freshness boost、final score、document status。
+- `search_personal_kb` 工具复用同一 search service，并返回 `score_trace`。
+- Runtime `PersonalKnowledgeCandidateProvider` 把 `score_trace` 写入 candidate metadata，保留召回证据。
+- `_record_knowledge_activation_for_request()` 现在返回 top-3 `## Personal Knowledge Hint`，包含 title、source_ref、score、短 preview，不注入正文。
+- `invoke_agent()` 在 kernel 调用前把 KB hint 追加到 `kernel_request.system_prompt_suffix`，因此模型实际可见；空召回不注入。
+
+测试命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_personal_knowledge_service.py tests/tools/test_personal_knowledge_tool.py tests/runtime/test_personal_knowledge_provider.py tests/runtime/test_personal_knowledge_activation.py tests/runtime/test_invoker.py::test_invoke_agent_builds_activation_query_after_user_prompt_submit_before_kernel tests/runtime/test_invoker.py::test_invoke_agent_injects_personal_kb_hint_before_kernel -q
+cd backend && source .venv/bin/activate && ruff check app/services/personal_knowledge_service.py app/runtime/invoker.py app/runtime/retrieval/personal_knowledge_provider.py app/tools/handlers/knowledge.py tests/services/test_personal_knowledge_service.py tests/tools/test_personal_knowledge_tool.py tests/runtime/test_personal_knowledge_activation.py tests/runtime/test_invoker.py
+```
+
+测试结果：
+
+```text
+23 passed, 4 warnings in 0.39s
+All checks passed!
+```
+
+commit：
+
+- 本提交：`feat: fuse personal kb retrieval into runtime`。
+
+剩余风险：
+
+- 当前 Personal KB 仍未引入向量库；这是符合薄内核路线的选择。企业 KB 阶段再决定 pgvector/Ontology 深化。
+- UI 还需要在 A11/A12 展示 `score_trace`、graph lane 和真实授权入口。

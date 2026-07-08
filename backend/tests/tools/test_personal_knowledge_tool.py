@@ -76,6 +76,7 @@ async def test_search_personal_kb_tool_uses_agent_owner_and_returns_json(monkeyp
         heading_path=["Retrieval"],
         sensitivity="internal",
         metadata={"source_sha256": "d" * 64},
+        score_trace={"channels": {"text": {"rank": 1, "raw_score": 0.91}}, "rrf": 0.016, "final": 0.91},
     )
     service = _FakeSearchService(hit)
     agent = SimpleNamespace(id=agent_id, owner_user_id=owner_id, sponsor_user_id=None, creator_id=user_id)
@@ -101,5 +102,6 @@ async def test_search_personal_kb_tool_uses_agent_owner_and_returns_json(monkeyp
     assert payload["results"][0]["document_id"] == str(document_id)
     assert payload["results"][0]["segment_id"] == str(segment_id)
     assert payload["results"][0]["source_ref"] == hit.source_ref
+    assert payload["results"][0]["score_trace"]["channels"]["text"]["rank"] == 1
     assert service.calls[0]["owner_user_id"] == owner_id
     assert service.calls[0]["agent_id"] == agent_id

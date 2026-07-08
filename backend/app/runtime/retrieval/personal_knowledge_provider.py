@@ -101,6 +101,7 @@ def _hit_to_record(hit: KnowledgeSearchHit) -> KnowledgeCandidateRecord:
             "segment_id": str(hit.segment_id),
             "heading_path": list(hit.heading_path),
             "sensitivity": hit.sensitivity,
+            "score_trace": dict(hit.score_trace),
             **dict(hit.metadata),
         },
     )

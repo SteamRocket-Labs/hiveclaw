@@ -634,5 +634,65 @@ async def test_search_personal_maps_rows_to_source_ref_hits(tmp_path: Path) -> N
     assert hits[0].segment_id == segment.id
     assert hits[0].title == "Retrieval notes"
     assert hits[0].source_ref == f"kb://person/{owner_id}/documents/{document.id}#segment={segment.id}"
-    assert hits[0].score == pytest.approx(0.87)
+    assert hits[0].score > 0
+    assert hits[0].score_trace["channels"]["text"]["raw_score"] == pytest.approx(0.87)
+    assert hits[0].score_trace["channels"]["text"]["rank"] == 1
     assert session.executed
+
+
+@pytest.mark.asyncio
+async def test_search_personal_fuses_entity_and_graph_channels_with_score_trace(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    entity_segment = SimpleNamespace(
+        id=uuid.uuid4(),
+        heading_path_json=["Crypto x AI"],
+        content="Crypto x AI notes mention MEV strategy.",
+    )
+    graph_segment = SimpleNamespace(
+        id=uuid.uuid4(),
+        heading_path_json=["MEV"],
+        content="MEV is connected to builder/searcher workflows.",
+    )
+    document = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="Crypto AI memo",
+        source_sha256="d" * 64,
+        canonical_md_path="persons/owner/kb/doc.md",
+        sensitivity="internal",
+        doc_metadata_json={"citation_count": 3},
+        updated_at=None,
+    )
+    entity = SimpleNamespace(
+        id=uuid.uuid4(),
+        canonical_name="Crypto x AI",
+        aliases_json=["CryptoAI"],
+        source_refs_json=[{"segment_id": str(entity_segment.id), "document_id": str(document.id)}],
+    )
+    link = SimpleNamespace(
+        id=uuid.uuid4(),
+        from_id=entity.id,
+        to_id=uuid.uuid4(),
+        relation="related_to",
+        source_refs_json=[{"segment_id": str(graph_segment.id), "document_id": str(document.id)}],
+    )
+    session = _QueuedSession(results=[[], [entity], [link], [(entity_segment, document), (graph_segment, document)]])
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    hits = await service.search_personal(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        query="CryptoAI MEV",
+        current_user_id=owner_id,
+        agent_id=uuid.uuid4(),
+        limit=5,
+    )
+
+    assert [hit.segment_id for hit in hits] == [entity_segment.id, graph_segment.id]
+    assert hits[0].score_trace["channels"]["entity"]["rank"] == 1
+    assert hits[0].score_trace["boosts"]["heat"] > 0
+    assert hits[1].score_trace["channels"]["graph"]["rank"] == 1
+    assert hits[0].score >= hits[1].score

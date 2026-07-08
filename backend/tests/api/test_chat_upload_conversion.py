@@ -6,7 +6,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 
 
 def _install_fake_markitdown(monkeypatch, output: str) -> None:
@@ -146,3 +146,34 @@ async def test_chat_upload_skip_personal_kb_does_not_ingest(monkeypatch, tmp_pat
     )
 
     assert result["personal_kb_candidate"] == {"skipped": True, "reason": "user_skip"}
+
+
+@pytest.mark.asyncio
+async def test_chat_upload_rejects_oversized_file_before_workspace_or_personal_kb(monkeypatch, tmp_path):
+    import app.api.upload as upload_api
+
+    async def fake_check_agent_access(db, current_user, agent_id):
+        return SimpleNamespace(id=agent_id, owner_user_id=current_user.id, tenant_id=current_user.tenant_id), "write"
+
+    class _FailingPersonalKnowledgeService:
+        async def ingest_source_bytes(self, *args, **kwargs):
+            raise AssertionError("oversized upload must not ingest into Personal KB")
+
+    monkeypatch.setattr(upload_api, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(upload_api, "CHAT_UPLOAD_MAX_BYTES", 4)
+    monkeypatch.setattr(upload_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(upload_api, "PersonalKnowledgeService", lambda: _FailingPersonalKnowledgeService(), raising=False)
+
+    agent_id = uuid.uuid4()
+    file = UploadFile(io.BytesIO(b"12345"), filename="large.md")
+    with pytest.raises(HTTPException) as exc:
+        await upload_api.upload_file(
+            file=file,
+            agent_id=agent_id,
+            skip_personal_kb=False,
+            current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4()),
+            db=object(),
+        )
+
+    assert exc.value.status_code == 413
+    assert list(tmp_path.rglob("*")) == []

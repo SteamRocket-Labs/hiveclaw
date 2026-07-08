@@ -475,6 +475,7 @@ def test_owner_search_statement_uses_person_scope_without_grant_requirement() ->
     assert "knowledge_documents.scope_id" in compiled
     assert "knowledge_segments.tsv @@ plainto_tsquery" in compiled
     assert "knowledge_grants" not in compiled
+    assert "knowledge_documents.agent_searchable IS true" not in compiled
 
 
 def test_external_search_statement_requires_matching_user_or_agent_grant() -> None:
@@ -494,6 +495,7 @@ def test_external_search_statement_requires_matching_user_or_agent_grant() -> No
     assert "knowledge_grants.grantee_type" in compiled
     assert "knowledge_grants.resource_type" in compiled
     assert "knowledge_grants.permission IN" in compiled
+    assert "knowledge_documents.agent_searchable IS true" in compiled
 
 
 def test_personal_document_list_statement_requires_grant_for_non_owner() -> None:
@@ -843,6 +845,65 @@ async def test_ingest_audio_uses_transcription_provider_then_indexes_transcript(
     assert documents[-1].doc_metadata_json["media_provider"] == "fake_media_provider"
     assert documents[-1].doc_metadata_json["media_duration_seconds"] == 12.5
     assert "Personal KB should keep source refs" in segments[-1].content
+
+
+@pytest.mark.asyncio
+async def test_process_import_jobs_consumes_queued_and_failed_personal_jobs(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeIngestResult, PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    job_a = SimpleNamespace(id=uuid.uuid4(), document_id=uuid.uuid4(), status="queued")
+    job_b = SimpleNamespace(id=uuid.uuid4(), document_id=uuid.uuid4(), status="failed")
+    session = _QueuedSession([[(job_a,), (job_b,)]])
+
+    class _BatchService(PersonalKnowledgeService):
+        def __init__(self) -> None:
+            super().__init__(data_root=tmp_path)
+            self.rebuild_calls: list[uuid.UUID] = []
+            self.results = [
+                PersonalKnowledgeIngestResult(
+                    document_id=job_a.document_id,
+                    job_id=job_a.id,
+                    source_sha256="a" * 64,
+                    artifact_hash="a" * 64,
+                    canonical_md_path="a.md",
+                    segment_count=2,
+                    status="ready",
+                    warnings=[],
+                ),
+                PersonalKnowledgeIngestResult(
+                    document_id=job_b.document_id,
+                    job_id=job_b.id,
+                    source_sha256="b" * 64,
+                    artifact_hash="b" * 64,
+                    canonical_md_path="b.md",
+                    segment_count=0,
+                    status="failed",
+                    warnings=["canonical_markdown_missing"],
+                ),
+            ]
+
+        async def rebuild_personal_document_index(self, session, **kwargs):
+            self.rebuild_calls.append(kwargs["document_id"])
+            return self.results.pop(0)
+
+    service = _BatchService()
+
+    summary = await service.process_import_jobs(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        limit=5,
+    )
+
+    assert service.rebuild_calls == [job_a.document_id, job_b.document_id]
+    assert summary.attempted == 2
+    assert summary.succeeded == 1
+    assert summary.failed == 1
+    assert summary.results[0]["status"] == "ready"
+    assert summary.results[1]["warnings"] == ["canonical_markdown_missing"]
 
 
 @pytest.mark.asyncio

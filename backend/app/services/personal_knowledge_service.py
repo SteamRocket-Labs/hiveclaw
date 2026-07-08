@@ -133,6 +133,15 @@ class PersonalKnowledgeJobSummary:
 
 
 @dataclass(frozen=True)
+class PersonalKnowledgeJobProcessSummary:
+    attempted: int
+    succeeded: int
+    failed: int
+    skipped: int
+    results: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
 class PersonalKnowledgeGrantSummary:
     grant_id: uuid.UUID
     resource_type: str
@@ -343,6 +352,14 @@ def _personal_knowledge_access_predicate(
     )
 
 
+def _personal_knowledge_agent_visibility_predicate(
+    *, owner_user_id: uuid.UUID, current_user_id: uuid.UUID | None
+):
+    if current_user_id == owner_user_id:
+        return true()
+    return KnowledgeDocument.agent_searchable.is_(True)
+
+
 def build_personal_knowledge_document_list_statement(
     *,
     tenant_id: uuid.UUID,
@@ -415,7 +432,10 @@ def build_personal_knowledge_search_statement(
             KnowledgeDocument.scope_type == "person",
             KnowledgeDocument.scope_id == owner_user_id,
             KnowledgeDocument.status.in_(("ready", "degraded")),
-            KnowledgeDocument.agent_searchable.is_(True),
+            _personal_knowledge_agent_visibility_predicate(
+                owner_user_id=owner_user_id,
+                current_user_id=current_user_id,
+            ),
             KnowledgeSegment.tenant_id == tenant_id,
             KnowledgeSegment.scope_type == "person",
             KnowledgeSegment.scope_id == owner_user_id,
@@ -1962,6 +1982,81 @@ class PersonalKnowledgeService:
             current_user_id=current_user_id,
         )
 
+    async def process_import_jobs(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+        limit: int = 10,
+        statuses: tuple[str, ...] = ("queued", "failed"),
+    ) -> PersonalKnowledgeJobProcessSummary:
+        if current_user_id != owner_user_id:
+            return PersonalKnowledgeJobProcessSummary(attempted=0, succeeded=0, failed=0, skipped=0, results=[])
+        clean_statuses = tuple(
+            status
+            for status in (str(item or "").strip().lower() for item in statuses)
+            if status in {"queued", "failed"}
+        ) or ("queued", "failed")
+        rows = (
+            await session.execute(
+                select(KnowledgeIndexJob)
+                .where(
+                    KnowledgeIndexJob.tenant_id == tenant_id,
+                    KnowledgeIndexJob.scope_type == "person",
+                    KnowledgeIndexJob.scope_id == owner_user_id,
+                    KnowledgeIndexJob.status.in_(clean_statuses),
+                )
+                .order_by(KnowledgeIndexJob.updated_at.asc(), KnowledgeIndexJob.created_at.asc())
+                .limit(max(1, int(limit or 10)))
+            )
+        ).all()
+        results: list[dict[str, Any]] = []
+        succeeded = 0
+        failed = 0
+        skipped = 0
+        for row in rows:
+            job = _row_first(row)
+            job_id = getattr(job, "id", None)
+            document_id = getattr(job, "document_id", None)
+            if document_id is None:
+                skipped += 1
+                results.append({"job_id": str(job_id or ""), "status": "skipped", "warnings": ["missing_document_id"]})
+                continue
+            result = await self.rebuild_personal_document_index(
+                session,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                document_id=document_id,
+                current_user_id=current_user_id,
+            )
+            if result is None:
+                skipped += 1
+                results.append({"job_id": str(job_id or ""), "status": "skipped", "warnings": ["job_not_rebuilt"]})
+                continue
+            terminal_status = str(result.status or "")
+            if terminal_status in {"ready", "degraded"}:
+                succeeded += 1
+            else:
+                failed += 1
+            results.append(
+                {
+                    "job_id": str(job_id or result.job_id or ""),
+                    "document_id": str(result.document_id),
+                    "status": terminal_status,
+                    "segment_count": result.segment_count,
+                    "warnings": list(result.warnings or []),
+                }
+            )
+        return PersonalKnowledgeJobProcessSummary(
+            attempted=len(rows),
+            succeeded=succeeded,
+            failed=failed,
+            skipped=skipped,
+            results=results,
+        )
+
     async def search_personal(
         self,
         session: Any,
@@ -2081,7 +2176,10 @@ class PersonalKnowledgeService:
                         KnowledgeDocument.scope_type == "person",
                         KnowledgeDocument.scope_id == owner_user_id,
                         KnowledgeDocument.status.in_(("ready", "degraded")),
-                        KnowledgeDocument.agent_searchable.is_(True),
+                        _personal_knowledge_agent_visibility_predicate(
+                            owner_user_id=owner_user_id,
+                            current_user_id=current_user_id,
+                        ),
                         KnowledgeSegment.tenant_id == tenant_id,
                         KnowledgeSegment.scope_type == "person",
                         KnowledgeSegment.scope_id == owner_user_id,

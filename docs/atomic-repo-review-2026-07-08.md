@@ -13,6 +13,7 @@
 | 2026-07-08 | P0-2 QKV activation_events T0 truth-surface leak | ✅ 已闭环 | `cd backend && source .venv/bin/activate && pytest tests/runtime/test_t0_to_t2_session_close.py tests/runtime/test_activation_events.py -q` → `20 passed` |
 | 2026-07-08 | P0-3 HR red test + template sweep + existing HR diff | ✅ 已闭环 | Red: 3 targeted tests failed for v4/template/tool-set equality; Green: `cd backend && source .venv/bin/activate && pytest tests/tools/test_hr_handler.py tests/api/test_hr_agent_endpoint.py tests/services/test_agent_identity_lifecycle.py tests/services/test_prompt_contracts.py -q` → `70 passed` |
 | 2026-07-08 | P1-1 QKV empty activation hints shrink | ✅ 已闭环 | Red: `test_dynamic_suffix_omits_empty_activation_hints_from_ledger` failed on empty `dynamic:activation:hints`; Green: `cd backend && source .venv/bin/activate && pytest tests/runtime/test_prompt_builder.py::test_dynamic_suffix_injects_activation_hints_and_records_ledger tests/runtime/test_prompt_builder.py::test_dynamic_suffix_omits_empty_activation_hints_from_ledger tests/runtime/test_activation_hints_section.py -q` → `4 passed` |
+| 2026-07-08 | P1-2 Personal KB deterministic closure | ✅ 已闭环 | Red: owner search wrongly emitted `knowledge_documents.agent_searchable IS true`; oversized upload lacked `CHAT_UPLOAD_MAX_BYTES`; queued job worker method absent. Green: `cd backend && source .venv/bin/activate && pytest tests/services/test_personal_knowledge_service.py tests/api/test_chat_upload_conversion.py -q` → `28 passed` |
 
 ---
 
@@ -25,7 +26,7 @@
 | ② QKV Attention Control | ⚠️ **半接线脚手架** | 能稳定运行（fail-open + cache 正确）但未承载真实激活；T0 原始 activation event 泄漏已堵，剩余为收缩/接活决策 |
 | ③ Plugin：CC 市场适配 | ❌ **≈15%** | marketplace/source 拉取/materialize/`${CLAUDE_PLUGIN_ROOT}` 全零；adapter 是孤儿代码 |
 | ③ Plugin：trust gate | ⚠️ ≈60% | skill/MCP import→approve→activate 真接线；缺 revoke/rollback 下半场 + legacy 双轨旁路 |
-| ④ Personal KB | ⚠️ owner 面 ~85% / ✅ agent gate 已修 | `search_personal_kb` 已注册 `agent.knowledge.read`；剩余债务转向异步索引、owner 搜索过滤、自主态 grant |
+| ④ Personal KB | ⚠️ owner 面 ~95% / ✅ deterministic gaps 已修 | `search_personal_kb` 已注册 `agent.knowledge.read`；owner 搜索不再被 `agent_searchable` 误过滤；上传有硬上限；`KnowledgeIndexJob` 有批量消费入口；自主态 grant 仍需权限产品拍板 |
 | ⑤ HR Agent | ✅ P0 已闭环 | HR v5 模板已同步 Personal KB、work ledger、workflow/subagent 路由；旧 `memory/t3/` source attribution 示例已迁；现有 HR diff 已回归验证 |
 | ⑥ Loop | ② 部分实现 | trigger 覆盖 cron 内核；缺模型自节奏 self-pace 链与 `/loop` 命令层 |
 | ⑥ Target Mode | **CC 侧不存在此功能**（Fact） | Hive Goal Mode 是 Codex-inspired 原生 delta，单次续跑防 runaway，缺"模型自判完成"闭环 |
@@ -195,7 +196,7 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 5. **QKV 收缩**：✅ S1 删恒空 hints 注入（kb_hint 已够，builder 仅在有 actionable skill/tool/subagent hint 时写 ledger）；S2 退役只写不读 K 侧回路与死 gather 函数——除非拍板接活（接活先修 LLM parser + scoring 回归模型判断）。
 6. **RTD T3 六项死写入**：逐项决定接读者或删写入；台账工厂 7 文件合并 ~645→300L；死观测面 context-usage 接前端或删端点。
 7. **Plugin trust gate 下半场**：revoke/deactivate/rollback + 被拒清理 + 版本 supersede；legacy plugins/install 双轨收敛（改走 trust gate 或真退役含删表 migration）。
-8. **Personal KB B2-B4**：异步 worker 消费 KnowledgeIndexJob + 上传大小上限；owner 搜索去 agent_searchable 过滤；自主态 grant 拍板后实现。
+8. **Personal KB B2-B4**：✅ B2 deterministic 部分：`process_import_jobs` 批量消费 queued/failed `KnowledgeIndexJob`，聊天上传新增 `HIVE_CHAT_UPLOAD_MAX_BYTES`/`HIVE_CHAT_IMAGE_UPLOAD_MAX_BYTES` 硬上限；✅ B3 owner 搜索去 `agent_searchable` 过滤，agent/非 owner 搜索仍过滤；B4 自主态 grant 需要权限产品拍板后实现。
 9. ✅ **HR 模板 sweep**（B1 落后）：O1 stale t3 例子 + M1 KB 引导 + M2/M3 能力路由，已随 P0-3 同批 bump 到 HR v5。
 10. **瘦身**：~1,990 LOC test-only 死模块退役（cc_plugin_adapter 等三个 external_capabilities 文件除外——若 Plugin 主线拍板接线则留）。
 

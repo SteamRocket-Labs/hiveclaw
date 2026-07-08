@@ -20,6 +20,11 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 _settings = get_settings()
 WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
+CHAT_UPLOAD_MAX_BYTES = int(os.getenv("HIVE_CHAT_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024)))
+CHAT_IMAGE_UPLOAD_MAX_BYTES = min(
+    CHAT_UPLOAD_MAX_BYTES,
+    int(os.getenv("HIVE_CHAT_IMAGE_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024))),
+)
 
 # Supported extensions and their text extraction method
 TEXT_EXTENSIONS = {
@@ -196,6 +201,10 @@ async def save_upload_for_agent(
     ext = os.path.splitext(safe_filename)[1].lower()
 
     content = await file.read()
+    if len(content) > CHAT_UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"File too large (max {CHAT_UPLOAD_MAX_BYTES} bytes)")
+    if ext in IMAGE_EXTENSIONS and len(content) > CHAT_IMAGE_UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"Image too large (max {CHAT_IMAGE_UPLOAD_MAX_BYTES} bytes)")
 
     # Determine save directory
     workspace_path = ""
@@ -238,8 +247,6 @@ async def save_upload_for_agent(
     preview_text = ""
     if is_image:
         # For images: generate base64 data URL for vision models
-        if len(content) > 10 * 1024 * 1024:  # 10MB limit
-            raise HTTPException(status_code=400, detail="Image too large (max 10MB)")
         mime = MIME_MAP.get(ext, "image/png")
         b64 = base64.b64encode(content).decode("ascii")
         image_data_url = f"data:{mime};base64,{b64}"

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
 import re
+import shutil
 from typing import Any
 import uuid
 
@@ -68,6 +70,54 @@ async def activate_external_extension_for_agent(
         raise
 
 
+async def deactivate_external_extension_for_agent(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    workspace: Path,
+    deactivated_by_user_id: uuid.UUID | None,
+) -> dict[str, Any]:
+    result = await db.execute(
+        select(ExternalExtensionActivation).where(
+            ExternalExtensionActivation.tenant_id == tenant_id,
+            ExternalExtensionActivation.agent_id == agent_id,
+            ExternalExtensionActivation.snapshot_id == snapshot_id,
+            ExternalExtensionActivation.status == "active",
+        )
+    )
+    activation = result.scalar_one_or_none()
+    if activation is None:
+        raise ValueError("active external extension activation not found")
+
+    activation_payload = dict(activation.activation_result_json or {})
+    deactivated_components = _deactivate_components(activation_payload.get("components"), workspace=workspace)
+    activation.status = "inactive"
+    activation.activation_result_json = {
+        **activation_payload,
+        "deactivation": {
+            "components": deactivated_components,
+            "deactivated_by_user_id": str(deactivated_by_user_id) if deactivated_by_user_id else None,
+            "deactivated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    try:
+        await db.flush()
+        await db.commit()
+        return {
+            "id": str(activation.id),
+            "tenant_id": str(tenant_id),
+            "agent_id": str(agent_id),
+            "snapshot_id": str(snapshot_id),
+            "status": activation.status,
+            "deactivated_components": deactivated_components,
+        }
+    except Exception:
+        await db.rollback()
+        raise
+
+
 async def _activate_components(
     *,
     snapshot: ExternalCapabilitySnapshot,
@@ -98,6 +148,37 @@ async def _activate_components(
             }
         )
     return activated
+
+
+def _deactivate_components(components: Any, *, workspace: Path) -> list[dict[str, Any]]:
+    if not isinstance(components, list):
+        return []
+    deactivated: list[dict[str, Any]] = []
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        component_type = str(component.get("component_type") or "unknown")
+        name = _optional_string(component.get("name")) or _optional_string(component.get("qualified_name")) or "unknown"
+        if component_type == "skill":
+            status = _remove_activation_path(workspace / "skills" / name)
+        elif component_type == "subagent":
+            status = _remove_activation_path(workspace / "subagents" / f"{name}.md")
+        elif component_type == "mcp_server":
+            status = "manual_revoke_required"
+        else:
+            status = "unsupported_deactivation_component"
+        deactivated.append({"component_type": component_type, "name": name, "status": status})
+    return deactivated
+
+
+def _remove_activation_path(path: Path) -> str:
+    if not path.exists():
+        return "already_absent"
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    return "removed"
 
 
 async def _activate_mcp_component(*, component: dict[str, Any], agent_id: uuid.UUID) -> dict[str, Any]:

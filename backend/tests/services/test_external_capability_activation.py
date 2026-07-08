@@ -7,7 +7,10 @@ import pytest
 
 from app.agents.subagent_definition import parse_subagent_definition
 from app.services.external_capabilities import activation as activation_mod
-from app.services.external_capabilities.activation import activate_external_extension_for_agent
+from app.services.external_capabilities.activation import (
+    activate_external_extension_for_agent,
+    deactivate_external_extension_for_agent,
+)
 
 
 class _ScalarResult:
@@ -221,3 +224,53 @@ Review code carefully.
     assert spec.permission_mode is None
     assert spec.hooks is None
     assert spec.mcp_servers == ()
+
+
+@pytest.mark.asyncio
+async def test_deactivate_external_extension_removes_files_and_marks_mcp_manual_revoke(tmp_path):
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    activation_id = uuid4()
+    skill_dir = tmp_path / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Demo", encoding="utf-8")
+    subagent_file = tmp_path / "subagents" / "reviewer.md"
+    subagent_file.parent.mkdir(parents=True)
+    subagent_file.write_text("---\nname: reviewer\n---\n\nReview.", encoding="utf-8")
+    activation = SimpleNamespace(
+        id=activation_id,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        status="active",
+        activation_result_json={
+            "components": [
+                {"component_type": "skill", "name": "demo"},
+                {"component_type": "subagent", "name": "reviewer"},
+                {"component_type": "mcp_server", "name": "Docs MCP"},
+            ]
+        },
+    )
+    db = _ActivationSession(activation)
+
+    result = await deactivate_external_extension_for_agent(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        workspace=tmp_path,
+        deactivated_by_user_id=uuid4(),
+    )
+
+    assert result["status"] == "inactive"
+    assert activation.status == "inactive"
+    assert not skill_dir.exists()
+    assert not subagent_file.exists()
+    assert result["deactivated_components"] == [
+        {"component_type": "skill", "name": "demo", "status": "removed"},
+        {"component_type": "subagent", "name": "reviewer", "status": "removed"},
+        {"component_type": "mcp_server", "name": "Docs MCP", "status": "manual_revoke_required"},
+    ]
+    assert activation.activation_result_json["deactivation"]["components"] == result["deactivated_components"]
+    assert db.commit_calls == 1

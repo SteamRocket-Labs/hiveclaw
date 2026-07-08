@@ -97,6 +97,26 @@ def test_approve_external_capability_review_api_returns_snapshot(monkeypatch):
     assert resp.json() == expected
 
 
+def test_revoke_external_capability_snapshot_api_threads_admin(monkeypatch):
+    target_snapshot_id = uuid4()
+    client, fake_db, current_user = _build_client()
+    expected = {"snapshot_id": str(target_snapshot_id), "status": "revoked", "catalog_entries_revoked": 1}
+
+    async def fake_revoke(db_session, *, tenant_id, snapshot_id, revoked_by_user_id):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        assert snapshot_id == target_snapshot_id
+        assert revoked_by_user_id == current_user.id
+        return expected
+
+    monkeypatch.setattr(external_mod, "revoke_external_capability_snapshot", fake_revoke)
+
+    resp = client.post(f"/enterprise/external-capabilities/snapshots/{target_snapshot_id}/revoke")
+
+    assert resp.status_code == 200
+    assert resp.json() == expected
+
+
 def test_list_external_extension_catalog_entries_api_uses_tenant(monkeypatch):
     client, fake_db, current_user = _build_client()
     expected = [
@@ -119,6 +139,34 @@ def test_list_external_extension_catalog_entries_api_uses_tenant(monkeypatch):
     monkeypatch.setattr(external_mod, "list_external_extension_catalog_entries", fake_list_catalog)
 
     resp = client.get("/enterprise/external-capabilities/catalog")
+
+    assert resp.status_code == 200
+    assert resp.json() == expected
+
+
+def test_deactivate_agent_external_extension_checks_agent_access(monkeypatch):
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    client, fake_db, current_user = _build_client()
+    expected = {"snapshot_id": str(snapshot_id), "status": "inactive", "deactivated_components": []}
+
+    async def fake_check_agent_access(db_session, user, requested_agent_id):
+        assert db_session is fake_db
+        assert user is current_user
+        assert requested_agent_id == agent_id
+        return SimpleNamespace(tenant_id=current_user.tenant_id), "owner"
+
+    async def fake_deactivate(db_session, *, tenant_id, agent_id, snapshot_id, workspace, deactivated_by_user_id):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        assert deactivated_by_user_id == current_user.id
+        assert str(workspace).endswith(str(agent_id))
+        return expected
+
+    monkeypatch.setattr(external_mod, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(external_mod, "deactivate_external_extension_for_agent", fake_deactivate)
+
+    resp = client.post(f"/agents/{agent_id}/external-extensions/{snapshot_id}/deactivate")
 
     assert resp.status_code == 200
     assert resp.json() == expected

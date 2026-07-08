@@ -7,6 +7,7 @@ import pytest
 
 from app.services.external_capabilities.trust_gate import (
     approve_external_capability_snapshot,
+    revoke_external_capability_snapshot,
     stage_external_capability_review,
 )
 from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review
@@ -221,6 +222,36 @@ async def test_approve_external_capability_review_publishes_components_to_catalo
     assert entry.policy == "optional"
     assert entry.status == "available"
     assert entry.metadata_json["runtime_projection"] == {"description": "Audit code"}
+
+
+@pytest.mark.asyncio
+async def test_revoke_external_capability_snapshot_marks_catalog_unavailable():
+    tenant_id = uuid4()
+    reviewer_id = uuid4()
+    snapshot = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        status="approved",
+        revoked_by_user_id=None,
+        revoked_at=None,
+    )
+    catalog_entry = SimpleNamespace(status="available")
+    db = _TrustGateSession([snapshot, [catalog_entry]])
+
+    result = await revoke_external_capability_snapshot(
+        db,
+        tenant_id=tenant_id,
+        snapshot_id=snapshot.id,
+        revoked_by_user_id=reviewer_id,
+    )
+
+    assert result["status"] == "revoked"
+    assert result["catalog_entries_revoked"] == 1
+    assert snapshot.status == "revoked"
+    assert snapshot.revoked_by_user_id == reviewer_id
+    assert snapshot.revoked_at is not None
+    assert catalog_entry.status == "revoked"
+    assert db.commit_calls == 1
 
 
 @pytest.mark.asyncio

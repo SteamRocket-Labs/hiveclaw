@@ -13,11 +13,15 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 from app.models.user import User
-from app.services.external_capabilities.activation import activate_external_extension_for_agent
+from app.services.external_capabilities.activation import (
+    activate_external_extension_for_agent,
+    deactivate_external_extension_for_agent,
+)
 from app.services.external_capabilities.trust_gate import (
     approve_external_capability_snapshot,
     list_external_capability_reviews,
     list_external_extension_catalog_entries,
+    revoke_external_capability_snapshot,
     stage_external_capability_review,
 )
 from app.services.external_capabilities.types import ExternalCapabilityComponent, NormalizedExternalPluginBundle
@@ -130,6 +134,25 @@ async def approve_external_capability_review_route(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/enterprise/external-capabilities/snapshots/{snapshot_id}/revoke")
+async def revoke_external_capability_snapshot_route(
+    snapshot_id: uuid.UUID,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    try:
+        return await revoke_external_capability_snapshot(
+            db,
+            tenant_id=current_user.tenant_id,
+            snapshot_id=snapshot_id,
+            revoked_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/agents/{agent_id}/external-extensions/catalog")
 async def list_agent_external_extension_catalog_route(
     agent_id: uuid.UUID,
@@ -163,6 +186,31 @@ async def activate_external_extension_route(
             snapshot_id=snapshot_id,
             workspace=workspace,
             activated_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/agents/{agent_id}/external-extensions/{snapshot_id}/deactivate")
+async def deactivate_external_extension_route(
+    agent_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    tenant_id = getattr(agent, "tenant_id", None) or current_user.tenant_id
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    try:
+        return await deactivate_external_extension_for_agent(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            snapshot_id=snapshot_id,
+            workspace=workspace,
+            deactivated_by_user_id=current_user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

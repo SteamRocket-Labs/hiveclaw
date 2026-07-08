@@ -5,6 +5,7 @@ from dataclasses import asdict
 import hashlib
 import json
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -105,6 +106,52 @@ async def approve_external_capability_snapshot(
             await db.flush()
         await db.commit()
         return _snapshot_to_dict(snapshot, catalog_entries=catalog_entries)
+    except Exception:
+        await db.rollback()
+        raise
+
+
+async def revoke_external_capability_snapshot(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    revoked_by_user_id: uuid.UUID | None,
+) -> dict[str, Any]:
+    """Revoke an approved snapshot and hide its catalog entries from future activation."""
+    try:
+        result = await db.execute(
+            select(ExternalCapabilitySnapshot).where(
+                ExternalCapabilitySnapshot.id == snapshot_id,
+                ExternalCapabilitySnapshot.tenant_id == tenant_id,
+            )
+        )
+        snapshot = result.scalar_one_or_none()
+        if snapshot is None:
+            raise ValueError("external capability snapshot not found")
+        if snapshot.status == "revoked":
+            catalog_entries_revoked = 0
+        else:
+            snapshot.status = "revoked"
+            snapshot.revoked_by_user_id = revoked_by_user_id
+            snapshot.revoked_at = datetime.now(timezone.utc)
+            catalog_result = await db.execute(
+                select(ExternalExtensionCatalogEntry).where(
+                    ExternalExtensionCatalogEntry.tenant_id == tenant_id,
+                    ExternalExtensionCatalogEntry.snapshot_id == snapshot_id,
+                )
+            )
+            catalog_entries = list(catalog_result.scalars().all())
+            for entry in catalog_entries:
+                entry.status = "revoked"
+            catalog_entries_revoked = len(catalog_entries)
+        await db.flush()
+        await db.commit()
+        return {
+            "snapshot_id": str(snapshot_id),
+            "status": "revoked",
+            "catalog_entries_revoked": catalog_entries_revoked,
+        }
     except Exception:
         await db.rollback()
         raise

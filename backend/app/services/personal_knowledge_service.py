@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 import re
 import uuid
@@ -14,7 +15,15 @@ from urllib.parse import urlparse
 from sqlalchemy import and_, delete, desc, exists, false, func, or_, select, true, update
 
 from app.config import get_settings
-from app.models.knowledge import KnowledgeDocument, KnowledgeGrant, KnowledgeIndexJob, KnowledgeSegment
+from app.models.knowledge import (
+    KnowledgeAssertion,
+    KnowledgeDocument,
+    KnowledgeEntity,
+    KnowledgeGrant,
+    KnowledgeIndexJob,
+    KnowledgeLink,
+    KnowledgeSegment,
+)
 
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
@@ -31,6 +40,8 @@ _SUPPORTED_IMPORT_EXTENSIONS = {
     ".xlsx",
     ".pptx",
 }
+_DEFAULT_EXTRACTOR = object()
+_SENSITIVE_EXTRACTION_BLOCKLIST = {"private", "secret", "restricted", "pl3", "pl4", "credential"}
 
 
 @dataclass(frozen=True)
@@ -133,6 +144,46 @@ def _clean_title(title: str) -> str:
 
 def _rough_token_count(text: str) -> int:
     return max(1, len(_WHITESPACE_RE.findall(text)) + 1) if text.strip() else 0
+
+
+def _clean_graph_text(value: Any, *, max_len: int = 300) -> str:
+    return _WHITESPACE_RE.sub(" ", str(value or "").strip())[:max_len]
+
+
+def _coerce_confidence(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.0, min(1.0, number))
+
+
+def _merge_unique_strings(existing: list[Any] | tuple[Any, ...] | None, additions: list[Any] | tuple[Any, ...]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in [*(existing or []), *additions]:
+        clean = _clean_graph_text(value)
+        key = clean.lower()
+        if not clean or key in seen:
+            continue
+        seen.add(key)
+        merged.append(clean)
+    return merged
+
+
+def _merge_source_refs(existing: list[Any] | tuple[Any, ...] | None, additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in [*(existing or []), *additions]:
+        if not isinstance(ref, dict):
+            continue
+        clean_ref = {str(key): value for key, value in ref.items() if value is not None}
+        key = json.dumps(clean_ref, ensure_ascii=False, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(clean_ref)
+    return merged
 
 
 def personal_knowledge_artifact_path(data_root: str | Path, owner_user_id: uuid.UUID, source_sha256: str) -> Path:
@@ -408,9 +459,16 @@ def segment_markdown(markdown: str, *, max_segment_chars: int = 3600, overlap_ch
 class PersonalKnowledgeService:
     """Write person-scope canonical Markdown into the Knowledge Core tables."""
 
-    def __init__(self, *, data_root: str | Path | None = None, conversion_service: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        data_root: str | Path | None = None,
+        conversion_service: Any | None = None,
+        extractor: Any = _DEFAULT_EXTRACTOR,
+    ) -> None:
         self.data_root = Path(data_root) if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
         self.conversion_service = conversion_service
+        self.extractor = extractor
 
     def _conversion_service(self) -> Any:
         if self.conversion_service is not None:
@@ -418,6 +476,15 @@ class PersonalKnowledgeService:
         from app.services.document_conversion import DocumentConversionService
 
         return DocumentConversionService()
+
+    def _knowledge_extractor(self) -> Any | None:
+        if self.extractor is None:
+            return None
+        if self.extractor is not _DEFAULT_EXTRACTOR:
+            return self.extractor
+        from app.services.personal_knowledge_extractor import PersonalKnowledgeLLMExtractor
+
+        return PersonalKnowledgeLLMExtractor()
 
     def _document_summary(
         self,
@@ -519,6 +586,349 @@ class PersonalKnowledgeService:
         summary = self._document_summary(owner_user_id=owner_user_id, document=document, segment_count=segment_count)
         return PersonalKnowledgeDocumentDetail(**summary.__dict__, segments=segments)
 
+    async def _upsert_index_job(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        document_id: uuid.UUID,
+        artifact_hash: str,
+        source_kind: str,
+        warnings: list[str],
+        stage: str,
+        status: str,
+        error_message: str | None = None,
+        channels: list[str] | None = None,
+        attempt_increment: int = 1,
+    ) -> KnowledgeIndexJob:
+        result = await session.execute(
+            select(KnowledgeIndexJob).where(
+                KnowledgeIndexJob.tenant_id == tenant_id,
+                KnowledgeIndexJob.document_id == document_id,
+                KnowledgeIndexJob.artifact_hash == artifact_hash,
+            )
+        )
+        job = result.scalar_one_or_none()
+        if not isinstance(job, KnowledgeIndexJob):
+            job = KnowledgeIndexJob(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                document_id=document_id,
+                scope_type="person",
+                scope_id=owner_user_id,
+                artifact_hash=artifact_hash,
+                attempt_count=max(1, int(attempt_increment or 1)),
+            )
+            session.add(job)
+        else:
+            job.attempt_count = int(job.attempt_count or 0) + max(1, int(attempt_increment or 1))
+        job.stage = stage
+        job.status = status
+        job.error_message = error_message
+        job.job_metadata_json = {
+            **(job.job_metadata_json or {}),
+            "channels": channels or ["tsvector", "segments"],
+            "source_kind": source_kind,
+            "warnings": list(warnings),
+        }
+        await session.flush()
+        return job
+
+    async def _clear_document_graph_projection(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        document_id: uuid.UUID,
+    ) -> None:
+        document_ref = [{"document_id": str(document_id)}]
+        await session.execute(
+            delete(KnowledgeAssertion).where(
+                KnowledgeAssertion.tenant_id == tenant_id,
+                KnowledgeAssertion.scope_type == "person",
+                KnowledgeAssertion.scope_id == owner_user_id,
+                KnowledgeAssertion.source_document_id == document_id,
+            )
+        )
+        await session.execute(
+            delete(KnowledgeLink).where(
+                KnowledgeLink.tenant_id == tenant_id,
+                KnowledgeLink.scope_type == "person",
+                KnowledgeLink.scope_id == owner_user_id,
+                KnowledgeLink.source_refs_json.contains(document_ref),
+            )
+        )
+
+    async def _upsert_entity(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        canonical_name: str,
+        entity_type: str,
+        aliases: list[str],
+        description: str | None,
+        confidence: float,
+        source_ref: dict[str, Any],
+    ) -> KnowledgeEntity | None:
+        clean_name = _clean_graph_text(canonical_name)
+        clean_type = _clean_graph_text(entity_type, max_len=80) or "freeform"
+        if not clean_name:
+            return None
+        result = await session.execute(
+            select(KnowledgeEntity).where(
+                KnowledgeEntity.tenant_id == tenant_id,
+                KnowledgeEntity.scope_type == "person",
+                KnowledgeEntity.scope_id == owner_user_id,
+                KnowledgeEntity.entity_type == clean_type,
+                KnowledgeEntity.canonical_name == clean_name,
+            )
+        )
+        entity = result.scalar_one_or_none()
+        if not isinstance(entity, KnowledgeEntity):
+            entity = KnowledgeEntity(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                scope_type="person",
+                scope_id=owner_user_id,
+                canonical_name=clean_name,
+                entity_type=clean_type,
+                aliases_json=[],
+                source_refs_json=[],
+            )
+            session.add(entity)
+        entity.aliases_json = _merge_unique_strings(entity.aliases_json, aliases)
+        entity.description = description or entity.description
+        entity.confidence = max(_coerce_confidence(entity.confidence), _coerce_confidence(confidence))
+        entity.source_refs_json = _merge_source_refs(entity.source_refs_json, [source_ref])
+        await session.flush()
+
+        for alias in entity.aliases_json:
+            alias_result = await session.execute(
+                select(KnowledgeEntity).where(
+                    KnowledgeEntity.tenant_id == tenant_id,
+                    KnowledgeEntity.scope_type == "person",
+                    KnowledgeEntity.scope_id == owner_user_id,
+                    KnowledgeEntity.entity_type == clean_type,
+                    KnowledgeEntity.canonical_name == alias,
+                    KnowledgeEntity.id != entity.id,
+                )
+            )
+            alias_entity = alias_result.scalar_one_or_none()
+            if isinstance(alias_entity, KnowledgeEntity):
+                alias_entity.merged_into_entity_id = entity.id
+                alias_entity.source_refs_json = _merge_source_refs(alias_entity.source_refs_json, [source_ref])
+        return entity
+
+    async def _upsert_assertion(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        document_id: uuid.UUID,
+        subject_text: str,
+        predicate: str,
+        object_text: str,
+        confidence: float,
+        source_ref: dict[str, Any],
+        entity_by_name: dict[str, KnowledgeEntity],
+    ) -> KnowledgeAssertion | None:
+        subject = _clean_graph_text(subject_text)
+        pred = _clean_graph_text(predicate, max_len=120)
+        obj = _clean_graph_text(object_text, max_len=2000)
+        if not subject or not pred or not obj:
+            return None
+        result = await session.execute(
+            select(KnowledgeAssertion).where(
+                KnowledgeAssertion.tenant_id == tenant_id,
+                KnowledgeAssertion.scope_type == "person",
+                KnowledgeAssertion.scope_id == owner_user_id,
+                KnowledgeAssertion.subject_text == subject,
+                KnowledgeAssertion.predicate == pred,
+                KnowledgeAssertion.object_text == obj,
+            )
+        )
+        assertion = result.scalar_one_or_none()
+        subject_entity = entity_by_name.get(subject.lower())
+        object_entity = entity_by_name.get(obj.lower())
+        if not isinstance(assertion, KnowledgeAssertion):
+            assertion = KnowledgeAssertion(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                scope_type="person",
+                scope_id=owner_user_id,
+                source_document_id=document_id,
+                subject_text=subject,
+                predicate=pred,
+                object_text=obj,
+                source_refs_json=[],
+            )
+            session.add(assertion)
+        assertion.source_document_id = document_id
+        assertion.subject_entity_id = subject_entity.id if subject_entity else assertion.subject_entity_id
+        assertion.object_entity_id = object_entity.id if object_entity else assertion.object_entity_id
+        assertion.confidence = max(_coerce_confidence(assertion.confidence), _coerce_confidence(confidence))
+        assertion.status = "active"
+        assertion.source_refs_json = _merge_source_refs(assertion.source_refs_json, [source_ref])
+        return assertion
+
+    async def _upsert_link(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        relation: str,
+        confidence: float,
+        source_ref: dict[str, Any],
+        from_entity: KnowledgeEntity,
+        to_entity: KnowledgeEntity,
+    ) -> KnowledgeLink | None:
+        clean_relation = _clean_graph_text(relation, max_len=80)
+        if not clean_relation:
+            return None
+        result = await session.execute(
+            select(KnowledgeLink).where(
+                KnowledgeLink.tenant_id == tenant_id,
+                KnowledgeLink.scope_type == "person",
+                KnowledgeLink.scope_id == owner_user_id,
+                KnowledgeLink.from_kind == "entity",
+                KnowledgeLink.from_id == from_entity.id,
+                KnowledgeLink.to_kind == "entity",
+                KnowledgeLink.to_id == to_entity.id,
+                KnowledgeLink.relation == clean_relation,
+            )
+        )
+        link = result.scalar_one_or_none()
+        if not isinstance(link, KnowledgeLink):
+            link = KnowledgeLink(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                scope_type="person",
+                scope_id=owner_user_id,
+                from_kind="entity",
+                from_id=from_entity.id,
+                to_kind="entity",
+                to_id=to_entity.id,
+                relation=clean_relation,
+                source_refs_json=[],
+            )
+            session.add(link)
+        link.confidence = max(_coerce_confidence(link.confidence), _coerce_confidence(confidence))
+        link.source_refs_json = _merge_source_refs(link.source_refs_json, [source_ref])
+        return link
+
+    async def _extract_and_write_graph(
+        self,
+        session: Any,
+        *,
+        extractor: Any,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        document: KnowledgeDocument,
+        segments: list[KnowledgeSegment],
+        sensitivity: str,
+    ) -> list[str]:
+        warnings: list[str] = []
+        entity_by_name: dict[str, KnowledgeEntity] = {}
+        for segment in segments:
+            source_ref = {
+                "document_id": str(document.id),
+                "segment_id": str(segment.id),
+                "seg_hash": str(segment.segment_hash),
+                "heading_path": list(segment.heading_path_json or []),
+                "position": int(segment.position),
+            }
+            extraction = await extractor.extract_segment(
+                segment=segment,
+                document=document,
+                source_ref=source_ref,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                sensitivity=sensitivity,
+            )
+            warnings.extend([str(warning) for warning in getattr(extraction, "warnings", ()) or []])
+
+            for extracted_entity in getattr(extraction, "entities", ()) or []:
+                entity = await self._upsert_entity(
+                    session,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    canonical_name=getattr(extracted_entity, "canonical_name", ""),
+                    entity_type=getattr(extracted_entity, "entity_type", "freeform"),
+                    aliases=list(getattr(extracted_entity, "aliases", ()) or []),
+                    description=getattr(extracted_entity, "description", None),
+                    confidence=getattr(extracted_entity, "confidence", 1.0),
+                    source_ref=source_ref,
+                )
+                if entity is None:
+                    continue
+                entity_by_name[entity.canonical_name.lower()] = entity
+                for alias in entity.aliases_json:
+                    entity_by_name[alias.lower()] = entity
+
+            for extracted_assertion in getattr(extraction, "assertions", ()) or []:
+                await self._upsert_assertion(
+                    session,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    document_id=document.id,
+                    subject_text=getattr(extracted_assertion, "subject_text", ""),
+                    predicate=getattr(extracted_assertion, "predicate", ""),
+                    object_text=getattr(extracted_assertion, "object_text", ""),
+                    confidence=getattr(extracted_assertion, "confidence", 1.0),
+                    source_ref=source_ref,
+                    entity_by_name=entity_by_name,
+                )
+
+            for extracted_link in getattr(extraction, "links", ()) or []:
+                from_entity = entity_by_name.get(_clean_graph_text(getattr(extracted_link, "from_name", "")).lower())
+                if from_entity is None:
+                    from_entity = await self._upsert_entity(
+                        session,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        canonical_name=getattr(extracted_link, "from_name", ""),
+                        entity_type=getattr(extracted_link, "from_type", "freeform"),
+                        aliases=[],
+                        description=None,
+                        confidence=getattr(extracted_link, "confidence", 1.0),
+                        source_ref=source_ref,
+                    )
+                to_entity = entity_by_name.get(_clean_graph_text(getattr(extracted_link, "to_name", "")).lower())
+                if to_entity is None:
+                    to_entity = await self._upsert_entity(
+                        session,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        canonical_name=getattr(extracted_link, "to_name", ""),
+                        entity_type=getattr(extracted_link, "to_type", "freeform"),
+                        aliases=[],
+                        description=None,
+                        confidence=getattr(extracted_link, "confidence", 1.0),
+                        source_ref=source_ref,
+                    )
+                if from_entity is None or to_entity is None:
+                    continue
+                entity_by_name[from_entity.canonical_name.lower()] = from_entity
+                entity_by_name[to_entity.canonical_name.lower()] = to_entity
+                await self._upsert_link(
+                    session,
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    relation=getattr(extracted_link, "relation", ""),
+                    confidence=getattr(extracted_link, "confidence", 1.0),
+                    source_ref=source_ref,
+                    from_entity=from_entity,
+                    to_entity=to_entity,
+                )
+        await session.flush()
+        return warnings
+
     async def ingest_markdown(
         self,
         session: Any,
@@ -605,50 +1015,103 @@ class PersonalKnowledgeService:
         await session.execute(delete(KnowledgeSegment).where(KnowledgeSegment.document_id == document.id))
 
         segment_drafts = segment_markdown(canonical_md)
+        segment_objects: list[KnowledgeSegment] = []
         for draft in segment_drafts:
-            session.add(
-                KnowledgeSegment(
-                    id=uuid.uuid4(),
-                    tenant_id=tenant_id,
-                    document_id=document.id,
-                    scope_type="person",
-                    scope_id=owner_user_id,
-                    position=draft.position,
-                    segment_hash=draft.segment_hash,
-                    heading_path_json=draft.heading_path,
-                    content=draft.content,
-                    token_count=draft.token_count,
-                    segment_metadata_json={},
-                )
-            )
-
-        job_id: uuid.UUID | None = None
-        if previous_artifact_hash != artifact_hash or force_reindex:
-            job = KnowledgeIndexJob(
+            segment = KnowledgeSegment(
                 id=uuid.uuid4(),
                 tenant_id=tenant_id,
                 document_id=document.id,
                 scope_type="person",
                 scope_id=owner_user_id,
-                artifact_hash=artifact_hash,
-                stage="indexed",
-                status="ready",
-                attempt_count=1,
-                job_metadata_json={
-                    "channels": ["tsvector", "segments"],
-                    "source_kind": clean_source_kind,
-                    "warnings": list(warnings or []),
-                },
+                position=draft.position,
+                segment_hash=draft.segment_hash,
+                heading_path_json=draft.heading_path,
+                content=draft.content,
+                token_count=draft.token_count,
+                segment_metadata_json={},
             )
-            session.add(job)
-            job_id = job.id
+            session.add(segment)
+            segment_objects.append(segment)
         await session.flush()
+
+        job_id: uuid.UUID | None = None
+        job: KnowledgeIndexJob | None = None
+        all_warnings = list(warnings or [])
+        final_status = "ready"
+        final_stage = "indexed"
+        final_error: str | None = None
+        channels = ["tsvector", "segments"]
+        if previous_artifact_hash != artifact_hash or force_reindex:
+            job = await self._upsert_index_job(
+                session,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                document_id=document.id,
+                artifact_hash=artifact_hash,
+                source_kind=clean_source_kind,
+                warnings=all_warnings,
+                stage="segmenting",
+                status="running",
+                channels=channels,
+            )
+            job_id = job.id
+
+        extractor = self._knowledge_extractor()
+        if extractor is not None:
+            if str(sensitivity or "").lower() in _SENSITIVE_EXTRACTION_BLOCKLIST:
+                final_status = "degraded"
+                final_stage = "extracting"
+                final_error = "knowledge_extraction_skipped_sensitive"
+                all_warnings.append(final_error)
+            else:
+                try:
+                    await self._clear_document_graph_projection(
+                        session,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        document_id=document.id,
+                    )
+                    extraction_warnings = await self._extract_and_write_graph(
+                        session,
+                        extractor=extractor,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        document=document,
+                        segments=segment_objects,
+                        sensitivity=sensitivity,
+                    )
+                    all_warnings.extend(extraction_warnings)
+                    channels = ["tsvector", "segments", "graph"]
+                except Exception as exc:
+                    final_status = "degraded"
+                    final_stage = "extracting"
+                    final_error = f"knowledge_extraction_failed:{exc}"
+                    all_warnings.append(final_error)
+
+        document.status = final_status
+        document.doc_metadata_json = {
+            **(document.doc_metadata_json or {}),
+            "ingest_format": "canonical_markdown",
+            "warnings": all_warnings,
+            **(doc_metadata or {}),
+        }
+        if job is not None:
+            job.stage = final_stage
+            job.status = final_status
+            job.error_message = final_error
+            job.job_metadata_json = {
+                **(job.job_metadata_json or {}),
+                "channels": channels,
+                "source_kind": clean_source_kind,
+                "warnings": all_warnings,
+            }
 
         await session.execute(
             update(KnowledgeSegment)
             .where(KnowledgeSegment.document_id == document.id)
             .values(tsv=func.to_tsvector("simple", KnowledgeSegment.content))
         )
+        await session.flush()
 
         return PersonalKnowledgeIngestResult(
             document_id=document.id,
@@ -657,8 +1120,8 @@ class PersonalKnowledgeService:
             artifact_hash=artifact_hash,
             canonical_md_path=canonical_md_path,
             segment_count=len(segment_drafts),
-            status="ready",
-            warnings=list(warnings or []),
+            status=final_status,
+            warnings=all_warnings,
         )
 
     async def ingest_source_bytes(

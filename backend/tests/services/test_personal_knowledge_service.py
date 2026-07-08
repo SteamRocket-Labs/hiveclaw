@@ -9,7 +9,14 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.dml import Delete, Update
 from sqlalchemy.sql.selectable import Select
 
-from app.models.knowledge import KnowledgeDocument, KnowledgeIndexJob, KnowledgeSegment
+from app.models.knowledge import (
+    KnowledgeAssertion,
+    KnowledgeDocument,
+    KnowledgeEntity,
+    KnowledgeIndexJob,
+    KnowledgeLink,
+    KnowledgeSegment,
+)
 
 
 class _ScalarResult:
@@ -79,6 +86,77 @@ class _FakeConversionService:
         )
 
 
+class _NoopKnowledgeExtractor:
+    async def extract_segment(self, *args, **kwargs):  # pragma: no cover - existing tests do not inspect extraction
+        from app.services.personal_knowledge_extractor import KnowledgeExtractionResult
+
+        return KnowledgeExtractionResult()
+
+
+class _GraphKnowledgeExtractor:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def extract_segment(self, *, segment, document, source_ref, tenant_id, owner_user_id, sensitivity):
+        from app.services.personal_knowledge_extractor import (
+            KnowledgeExtractionAssertion,
+            KnowledgeExtractionEntity,
+            KnowledgeExtractionLink,
+            KnowledgeExtractionResult,
+        )
+
+        self.calls.append(
+            {
+                "segment_id": segment.id,
+                "document_id": document.id,
+                "source_ref": source_ref,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+                "sensitivity": sensitivity,
+            }
+        )
+        return KnowledgeExtractionResult(
+            entities=[
+                KnowledgeExtractionEntity(
+                    canonical_name="Crypto x AI",
+                    entity_type="topic",
+                    aliases=("CryptoAI",),
+                    description="Intersection of crypto and artificial intelligence.",
+                    confidence=0.92,
+                ),
+                KnowledgeExtractionEntity(
+                    canonical_name="MEV",
+                    entity_type="concept",
+                    aliases=("Maximal Extractable Value",),
+                    confidence=0.88,
+                ),
+            ],
+            assertions=[
+                KnowledgeExtractionAssertion(
+                    subject_text="Crypto x AI",
+                    predicate="includes",
+                    object_text="MEV opportunity analysis",
+                    confidence=0.84,
+                )
+            ],
+            links=[
+                KnowledgeExtractionLink(
+                    from_name="Crypto x AI",
+                    from_type="topic",
+                    to_name="MEV",
+                    to_type="concept",
+                    relation="related_to",
+                    confidence=0.79,
+                )
+            ],
+        )
+
+
+class _FailingKnowledgeExtractor:
+    async def extract_segment(self, *args, **kwargs):
+        raise ValueError("malformed extractor output")
+
+
 class _SearchSession:
     def __init__(self, rows) -> None:
         self.rows = rows
@@ -134,7 +212,7 @@ async def test_ingest_markdown_writes_artifact_document_segments_and_index_job(t
     owner_id = uuid.uuid4()
     user_id = owner_id
     session = _FakeAsyncSession()
-    service = PersonalKnowledgeService(data_root=tmp_path)
+    service = PersonalKnowledgeService(data_root=tmp_path, extractor=_NoopKnowledgeExtractor())
 
     result = await service.ingest_markdown(
         session,
@@ -177,7 +255,11 @@ async def test_ingest_source_bytes_converts_file_then_indexes_canonical_markdown
     owner_id = uuid.uuid4()
     converter = _FakeConversionService(markdown="# Imported\n\nConverted through canonical MD.")
     session = _FakeAsyncSession()
-    service = PersonalKnowledgeService(data_root=tmp_path, conversion_service=converter)
+    service = PersonalKnowledgeService(
+        data_root=tmp_path,
+        conversion_service=converter,
+        extractor=_NoopKnowledgeExtractor(),
+    )
 
     result = await service.ingest_source_bytes(
         session,
@@ -210,7 +292,11 @@ async def test_ingest_source_bytes_records_failed_job_for_unsupported_file(tmp_p
 
     session = _FakeAsyncSession()
     owner_id = uuid.uuid4()
-    service = PersonalKnowledgeService(data_root=tmp_path, conversion_service=_FakeConversionService())
+    service = PersonalKnowledgeService(
+        data_root=tmp_path,
+        conversion_service=_FakeConversionService(),
+        extractor=_NoopKnowledgeExtractor(),
+    )
 
     result = await service.ingest_source_bytes(
         session,
@@ -229,6 +315,82 @@ async def test_ingest_source_bytes_records_failed_job_for_unsupported_file(tmp_p
     assert documents[-1].status == "failed"
     assert jobs[-1].status == "failed"
     assert "unsupported_file_type" in jobs[-1].error_message
+
+
+@pytest.mark.asyncio
+async def test_ingest_markdown_writes_extracted_graph_with_source_refs(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    extractor = _GraphKnowledgeExtractor()
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path, extractor=extractor)
+
+    result = await service.ingest_markdown(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        title="Crypto AI notes",
+        markdown="# Crypto x AI\n\nMEV is one of the recurring opportunity areas.",
+        source_kind="paste",
+        created_by_user_id=owner_id,
+    )
+
+    entities = [obj for obj in session.added if isinstance(obj, KnowledgeEntity)]
+    assertions = [obj for obj in session.added if isinstance(obj, KnowledgeAssertion)]
+    links = [obj for obj in session.added if isinstance(obj, KnowledgeLink)]
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+
+    assert result.status == "ready"
+    assert extractor.calls
+    assert len(entities) == 2
+    assert {entity.canonical_name for entity in entities} == {"Crypto x AI", "MEV"}
+    assert entities[0].source_refs_json[0]["document_id"] == str(result.document_id)
+    assert entities[0].source_refs_json[0]["segment_id"] == str(extractor.calls[0]["segment_id"])
+    assert len(assertions) == 1
+    assert assertions[0].source_document_id == result.document_id
+    assert assertions[0].source_refs_json[0]["seg_hash"]
+    assert len(links) == 1
+    assert links[0].relation == "related_to"
+    assert links[0].source_refs_json[0]["heading_path"] == ["Crypto x AI"]
+    assert jobs[-1].stage == "indexed"
+    assert jobs[-1].status == "ready"
+    assert "graph" in jobs[-1].job_metadata_json["channels"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_markdown_marks_document_degraded_when_extraction_fails(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path, extractor=_FailingKnowledgeExtractor())
+
+    result = await service.ingest_markdown(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        title="Broken extraction",
+        markdown="# Source\n\nThe canonical markdown and search segment must remain available.",
+        source_kind="paste",
+        created_by_user_id=owner_id,
+    )
+
+    documents = [obj for obj in session.added if isinstance(obj, KnowledgeDocument)]
+    segments = [obj for obj in session.added if isinstance(obj, KnowledgeSegment)]
+    entities = [obj for obj in session.added if isinstance(obj, KnowledgeEntity)]
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+
+    assert result.status == "degraded"
+    assert "knowledge_extraction_failed:malformed extractor output" in result.warnings
+    assert documents[-1].status == "degraded"
+    assert segments
+    assert entities == []
+    assert jobs[-1].stage == "extracting"
+    assert jobs[-1].status == "degraded"
+    assert "malformed extractor output" in jobs[-1].error_message
 
 
 @pytest.mark.asyncio
@@ -254,7 +416,7 @@ async def test_patch_and_rebuild_personal_document_index_update_existing_documen
         updated_at=None,
     )
     session = _FakeAsyncSession(existing_document=document)
-    service = PersonalKnowledgeService(data_root=tmp_path)
+    service = PersonalKnowledgeService(data_root=tmp_path, extractor=_NoopKnowledgeExtractor())
 
     patched = await service.patch_personal_document(
         session,

@@ -393,3 +393,48 @@ commit：
 
 - A2/A3 当前完成的是同步执行的 job 状态机骨架；A4/A5 会继续把 LLM extraction、graph writer、degraded 细分状态挂入同一 job。
 - EPUB、音频、视频、图片在 A13 统一处理；当前 supported import guard 只打开已由本地转换层稳定覆盖的文档格式。
+
+### 2026-07-08 A4/A5 LLM 知识抽取与图谱 writer
+
+改动文件：
+
+- `backend/app/services/personal_knowledge_extractor.py`
+- `backend/app/services/personal_knowledge_service.py`
+- `backend/tests/services/test_personal_knowledge_service.py`
+- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+
+功能证据：
+
+- 新增 `PersonalKnowledgeLLMExtractor`，生产默认复用租户 summary/default model 配置，并通过 `create_llm_client_from_config()` 走现有 LLM client/usage metering。
+- extractor 输入是完整 segment content + document metadata + source_ref；输出 strict JSON schema：entities、assertions、links、warnings。
+- `ingest_markdown()` 现在会在写入 canonical MD 和 segments 后执行 graph extraction，并写入 `knowledge_entities`、`knowledge_assertions`、`knowledge_links`。
+- 每条图谱投影都带 source refs：`document_id`、`segment_id`、`seg_hash`、`heading_path`、`position`。
+- entity 按 tenant/scope/type/canonical_name upsert；aliases 合并，并对 alias 既有实体写 `merged_into_entity_id` tombstone。
+- assertions 按 subject/predicate/object upsert，并写 `source_document_id`。
+- links 按 from/to/relation upsert，并保留 source refs。
+- 同一文档重建前会清理 assertions/links 旧投影；entity 作为 person-scope canonical projection 保留并合并 source refs。
+- LLM/抽取失败时 document/job/result 进入 `degraded`，全文 segment 和 tsvector 仍可用，不再伪 ready。
+- 高敏 `private/secret/restricted/pl3/pl4/credential` 默认跳过外部抽取并 degraded，避免把高敏内容发给未确认的外部模型。
+
+测试命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_personal_knowledge_service.py -q
+cd backend && source .venv/bin/activate && pytest tests/api/test_agent_personal_knowledge_api.py tests/services/test_personal_knowledge_service.py -q
+```
+
+测试结果：
+
+```text
+15 passed in 0.16s
+23 passed in 0.44s
+```
+
+commit：
+
+- 本提交：`feat: extract personal kb graph projections`。
+
+剩余风险：
+
+- A6 会把这些图谱投影接入检索融合；当前 search 仍主要走全文通道。
+- A13 会补 media source 的真实 transcription/OCR provider；当前 A4/A5 只处理 canonical Markdown segment 的知识抽取。

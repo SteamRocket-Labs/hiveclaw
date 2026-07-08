@@ -644,3 +644,51 @@ commit：
 剩余风险：
 
 - 前端 graph lane 在 A11/A12 UI 原子项完成后消费该 API；本提交只落后端唯一真相。
+
+### 2026-07-08 A11/A12 前端导入中心、文库详情、知识网与授权 UI
+
+改动文件：
+
+- `frontend/src/api/domains/knowledge.ts`
+- `frontend/src/api/domains/knowledge.test.ts`
+- `frontend/src/pages/PersonalKnowledge.tsx`
+- `frontend/src/pages/PersonalKnowledge.css`
+- `frontend/src/pages/PersonalKnowledge.test.tsx`
+- `frontend/src/i18n/en.json`
+- `frontend/src/i18n/zh.json`
+- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+
+功能证据：
+
+- `/knowledge` 保持全局入口和横向 tabs，不把 Personal KB 写入口放回 Agent Detail。
+- 收集箱新增真实导入中心：文件选择/拖拽、格式卡、URL 导入、Markdown paste、导入 job 列表、failed/degraded retry。
+- 文件导入调用 `POST /knowledge/personal/imports`；URL 调用 `POST /knowledge/personal/import-url`；job 调用 `GET /import-jobs` 与 `POST /import-jobs/{id}/retry`。
+- 文库详情按钮不再是死按钮：重建索引调用 `/documents/{id}/rebuild-index`，Agent 检索开关和归档调用 `PATCH /documents/{id}`。
+- 知识网 lane 调用 `/knowledge/personal/graph`，展示 entity/link/assertion 计数与实体列表；空状态明确以后端为空为准。
+- 授权 lane 调用 `/knowledge/personal/grants`，支持 agent/user/session grant 创建与撤销。
+- Agent Detail 的 Personal KB lane 保持只读搜索/查看，不提供 ingest 输入，避免入口分散。
+- 中英文 i18n 已同步，旧的“上传和 URL 后面再打开”占位文案已删除。
+
+测试命令：
+
+```bash
+cd frontend && npm test -- src/api/domains/knowledge.test.ts src/pages/PersonalKnowledge.test.tsx src/pages/agent-detail/AgentKnowledgeSection.test.tsx
+cd frontend && npm test -- src/pages/agent-detail/AgentDetailSections.test.tsx
+cd frontend && npm run build
+```
+
+测试结果：
+
+```text
+3 passed / 10 tests passed
+1 passed / 91 tests passed
+tsc && vite build -> exit 0, 7044 modules transformed
+```
+
+commit：
+
+- 本提交：`feat: complete personal kb workbench UI`。
+
+剩余风险：
+
+- 前端不提供假 media provider；音频、视频、图片无 provider 时会显示后端 failed/unconfigured job，这是 A13 约定的真实状态。

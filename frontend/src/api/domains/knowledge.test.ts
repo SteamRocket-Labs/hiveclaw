@@ -130,4 +130,53 @@ describe('knowledgeApi personal KB endpoints', () => {
     expect(requestOf(3).url).toBe('/api/knowledge/personal/documents');
     expect(JSON.parse(String(requestOf(3).init.body)).owner_user_id).toBeUndefined();
   });
+
+  it('routes personal KB import jobs, document actions, graph, and grants to backend truth endpoints', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ document_id: 'doc-upload', status: 'ready' }))
+      .mockResolvedValueOnce(jsonResponse({ document_id: 'doc-url', status: 'ready' }))
+      .mockResolvedValueOnce(jsonResponse({ jobs: [] }))
+      .mockResolvedValueOnce(jsonResponse({ document_id: 'doc-retry', status: 'ready' }))
+      .mockResolvedValueOnce(jsonResponse({ document_id: 'doc-1', agent_searchable: false }))
+      .mockResolvedValueOnce(jsonResponse({ document_id: 'doc-1', status: 'ready' }))
+      .mockResolvedValueOnce(jsonResponse({ entities: [], links: [], assertions: [] }))
+      .mockResolvedValueOnce(jsonResponse({ grants: [] }))
+      .mockResolvedValueOnce(jsonResponse({ grant_id: 'grant-1' }))
+      .mockResolvedValueOnce(jsonResponse({ deleted: true }));
+
+    const file = new File(['# Upload'], 'upload.md', { type: 'text/markdown' });
+    await knowledgeApi.myPersonalImportFile(file, { title: 'Upload', sensitivity: 'internal' });
+    await knowledgeApi.myPersonalImportUrl({ url: 'https://example.com/page', title: 'Page' });
+    await knowledgeApi.myPersonalImportJobs();
+    await knowledgeApi.myPersonalRetryImportJob('job-1');
+    await knowledgeApi.myPersonalPatchDocument('doc-1', { agent_searchable: false });
+    await knowledgeApi.myPersonalRebuildDocument('doc-1');
+    await knowledgeApi.myPersonalGraph();
+    await knowledgeApi.myPersonalGrants();
+    await knowledgeApi.myPersonalCreateGrant({
+      resource_type: 'scope',
+      grantee_type: 'agent',
+      grantee_id: 'agent-1',
+      permission: 'search',
+      metadata: { reason: 'research' },
+    });
+    await knowledgeApi.myPersonalDeleteGrant('grant-1');
+
+    expect(requestOf(0).url).toBe('/api/knowledge/personal/imports');
+    expect(requestOf(0).init.method).toBe('POST');
+    expect(requestOf(0).init.body).toBeInstanceOf(FormData);
+    expect(requestOf(1).url).toBe('/api/knowledge/personal/import-url');
+    expect(JSON.parse(String(requestOf(1).init.body)).url).toBe('https://example.com/page');
+    expect(requestOf(2).url).toBe('/api/knowledge/personal/import-jobs');
+    expect(requestOf(3).url).toBe('/api/knowledge/personal/import-jobs/job-1/retry');
+    expect(requestOf(4).url).toBe('/api/knowledge/personal/documents/doc-1');
+    expect(requestOf(4).init.method).toBe('PATCH');
+    expect(requestOf(5).url).toBe('/api/knowledge/personal/documents/doc-1/rebuild-index');
+    expect(requestOf(6).url).toBe('/api/knowledge/personal/graph');
+    expect(requestOf(7).url).toBe('/api/knowledge/personal/grants');
+    expect(requestOf(8).url).toBe('/api/knowledge/personal/grants');
+    expect(requestOf(8).init.method).toBe('POST');
+    expect(requestOf(9).url).toBe('/api/knowledge/personal/grants/grant-1');
+    expect(requestOf(9).init.method).toBe('DELETE');
+  });
 });

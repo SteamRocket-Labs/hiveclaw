@@ -1,4 +1,4 @@
-import { get, post } from '../core';
+import { del, get, patch, post, upload } from '../core';
 
 // Knowledge read model (backend spec §11 / P7) — structured views over the
 // agent's memory engine. The Knowledge plane consumes these instead of
@@ -188,6 +188,7 @@ export interface PersonalKnowledgeSearchResult {
   heading_path: string[];
   sensitivity: string;
   metadata: Record<string, unknown>;
+  score_trace?: Record<string, unknown>;
 }
 
 export interface PersonalKnowledgeIngestRequest {
@@ -201,11 +202,106 @@ export interface PersonalKnowledgeIngestRequest {
 
 export interface PersonalKnowledgeIngestResponse {
   document_id: string;
+  job_id?: string | null;
   source_sha256: string;
   artifact_hash: string;
   canonical_md_path: string;
   segment_count: number;
   status: string;
+  warnings?: string[];
+}
+
+export interface PersonalKnowledgeImportFileOptions {
+  title?: string;
+  agent_searchable?: boolean;
+  sensitivity?: string;
+}
+
+export interface PersonalKnowledgeUrlImportRequest {
+  url: string;
+  title?: string;
+  agent_searchable?: boolean;
+  sensitivity?: string;
+}
+
+export interface PersonalKnowledgeJobSummary {
+  job_id: string;
+  document_id: string;
+  stage: string;
+  status: string;
+  artifact_hash: string;
+  error_message: string | null;
+  attempt_count: number;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PersonalKnowledgeDocumentPatchRequest {
+  agent_searchable?: boolean;
+  sensitivity?: string;
+  status?: string;
+}
+
+export interface PersonalKnowledgeGraphEntity {
+  entity_id: string;
+  canonical_name: string;
+  entity_type: string;
+  aliases: string[];
+  description: string | null;
+  confidence: number;
+  source_refs: Record<string, unknown>[];
+}
+
+export interface PersonalKnowledgeGraphLink {
+  link_id: string;
+  from_kind: string;
+  from_id: string;
+  to_kind: string;
+  to_id: string;
+  relation: string;
+  confidence: number;
+  source_refs: Record<string, unknown>[];
+}
+
+export interface PersonalKnowledgeGraphAssertion {
+  assertion_id: string;
+  subject_text: string;
+  predicate: string;
+  object_text: string;
+  confidence: number;
+  status: string;
+  source_refs: Record<string, unknown>[];
+}
+
+export interface PersonalKnowledgeGraphSummary {
+  entities: PersonalKnowledgeGraphEntity[];
+  links: PersonalKnowledgeGraphLink[];
+  assertions: PersonalKnowledgeGraphAssertion[];
+}
+
+export interface PersonalKnowledgeGrantSummary {
+  grant_id: string;
+  resource_type: string;
+  resource_id: string;
+  document_id: string | null;
+  grantee_type: 'user' | 'agent' | 'session' | string;
+  grantee_id: string;
+  permission: 'read' | 'search' | 'manage' | string;
+  expires_at: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+}
+
+export interface PersonalKnowledgeGrantRequest {
+  resource_type: 'scope' | 'document';
+  resource_id?: string;
+  document_id?: string;
+  grantee_type: 'user' | 'agent' | 'session';
+  grantee_id: string;
+  permission?: 'read' | 'search' | 'manage';
+  expires_at?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export const knowledgeApi = {
@@ -241,4 +337,29 @@ export const knowledgeApi = {
   },
   myPersonalDocument: (documentId: string) =>
     get<PersonalKnowledgeDocumentDetail>(`/knowledge/personal/documents/${documentId}`),
+  myPersonalImportFile: (file: File, options: PersonalKnowledgeImportFileOptions = {}) => {
+    const fields: Record<string, string> = {};
+    if (options.title) fields.title = options.title;
+    if (options.agent_searchable !== undefined) fields.agent_searchable = String(options.agent_searchable);
+    if (options.sensitivity) fields.sensitivity = options.sensitivity;
+    return upload<PersonalKnowledgeIngestResponse>('/knowledge/personal/imports', file, fields);
+  },
+  myPersonalImportUrl: (body: PersonalKnowledgeUrlImportRequest) =>
+    post<PersonalKnowledgeIngestResponse>('/knowledge/personal/import-url', body),
+  myPersonalImportJobs: () =>
+    get<{ jobs: PersonalKnowledgeJobSummary[] }>('/knowledge/personal/import-jobs'),
+  myPersonalRetryImportJob: (jobId: string) =>
+    post<PersonalKnowledgeIngestResponse>(`/knowledge/personal/import-jobs/${jobId}/retry`),
+  myPersonalPatchDocument: (documentId: string, body: PersonalKnowledgeDocumentPatchRequest) =>
+    patch<PersonalKnowledgeDocumentDetail>(`/knowledge/personal/documents/${documentId}`, body),
+  myPersonalRebuildDocument: (documentId: string) =>
+    post<PersonalKnowledgeIngestResponse>(`/knowledge/personal/documents/${documentId}/rebuild-index`),
+  myPersonalGraph: () =>
+    get<PersonalKnowledgeGraphSummary>('/knowledge/personal/graph'),
+  myPersonalGrants: () =>
+    get<{ grants: PersonalKnowledgeGrantSummary[] }>('/knowledge/personal/grants'),
+  myPersonalCreateGrant: (body: PersonalKnowledgeGrantRequest) =>
+    post<PersonalKnowledgeGrantSummary>('/knowledge/personal/grants', body),
+  myPersonalDeleteGrant: (grantId: string) =>
+    del<{ deleted: boolean }>(`/knowledge/personal/grants/${grantId}`),
 };

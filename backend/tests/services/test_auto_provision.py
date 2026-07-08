@@ -103,15 +103,21 @@ async def test_creates_main_agent_from_dept_template():
         result = await ensure_main_agent(db, _USER_WITH_DEPT)
 
     assert result is not None
-    assert len(db.added) == 2
-    agent = db.added[0]
+    assert len(db.added) == 3
+    agent = next(obj for obj in db.added if obj.__class__.__name__ == "Agent")
+    participant = next(obj for obj in db.added if obj.__class__.__name__ == "Participant")
+    grant = next(obj for obj in db.added if obj.__class__.__name__ == "KnowledgeGrant")
     assert agent.agent_kind == "main"
     assert agent.owner_user_id == _USER_ID
     assert agent.sponsor_user_id == _USER_ID
-    assert agent.participant_id == db.added[1].id
+    assert agent.participant_id == participant.id
     assert agent.name == "研发助理"
     assert agent.template_id == _TEMPLATE_ID
     assert agent.channel_perms is True
+    assert grant.scope_type == "person"
+    assert grant.scope_id == _USER_ID
+    assert grant.grantee_type == "agent"
+    assert grant.grantee_id == agent.id
 
 
 @pytest.mark.asyncio
@@ -123,7 +129,8 @@ async def test_falls_back_to_default_template():
         result = await ensure_main_agent(db, _USER_NO_DEPT)
 
     assert result is not None
-    assert db.added[0].name == "默认助理"
+    agent = next(obj for obj in db.added if obj.__class__.__name__ == "Agent")
+    assert agent.name == "默认助理"
 
 
 @pytest.mark.asyncio

@@ -52,6 +52,9 @@ async def test_import_from_url_stages_high_risk_skill_review_before_db_save(monk
     async def fake_token(_tenant_id):
         return ""
 
+    async def fake_find_existing(*_args, **_kwargs):
+        return None
+
     async def fake_stage_for_tenant(*, tenant_id, created_by_user_id, source_uri, folder_name, files, source_format):
         assert source_uri == "https://github.com/acme/skills/tree/main/risky"
         assert folder_name == "risky"
@@ -68,6 +71,7 @@ async def test_import_from_url_stages_high_risk_skill_review_before_db_save(monk
 
     monkeypatch.setattr(skills_api, "_fetch_github_directory", fake_fetch)
     monkeypatch.setattr(skills_api, "_get_github_token", fake_token)
+    monkeypatch.setattr(skills_api, "_find_existing_skill_by_folder_name", fake_find_existing)
     monkeypatch.setattr(skills_api, "_save_skill_to_db", fail_save)
     monkeypatch.setattr(skills_api, "stage_external_skill_package_review_for_tenant", fake_stage_for_tenant)
 

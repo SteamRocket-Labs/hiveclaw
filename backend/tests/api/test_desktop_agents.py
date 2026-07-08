@@ -134,8 +134,14 @@ def test_create_sub_agent_success():
     assert data["name"] == "代码助手"
     assert data["execution_mode"] == "coordinator"
     assert data["smart_model_routing"] == {"enabled": True, "max_simple_chars": 120, "max_simple_words": 18}
-    assert len(fake_db.added) == 1
-    assert fake_db.added[0].parent_agent_id == _MAIN_AGENT_ID
+    assert len(fake_db.added) == 2
+    agent = next(obj for obj in fake_db.added if obj.__class__.__name__ == "Agent")
+    grant = next(obj for obj in fake_db.added if obj.__class__.__name__ == "KnowledgeGrant")
+    assert agent.parent_agent_id == _MAIN_AGENT_ID
+    assert grant.scope_type == "person"
+    assert grant.scope_id == _USER_ID
+    assert grant.grantee_type == "agent"
+    assert grant.grantee_id == agent.id
 
 
 def test_create_agent_succeeds_without_existing_agents():
@@ -149,7 +155,8 @@ def test_create_agent_succeeds_without_existing_agents():
         resp = client.post("/desktop/agents", json={"name": "测试", "role_description": "test"})
     assert resp.status_code == 201
     assert resp.json()["name"] == "测试"
-    assert fake_db.added[0].parent_agent_id == _MAIN_AGENT_ID
+    agent = next(obj for obj in fake_db.added if obj.__class__.__name__ == "Agent")
+    assert agent.parent_agent_id == _MAIN_AGENT_ID
 
 
 # ─── PATCH /desktop/agents/{id} (update sub-agent) ─────

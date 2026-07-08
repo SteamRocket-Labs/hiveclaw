@@ -172,6 +172,7 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     "member_name",
     "app_id",
     "app_secret",
+    "source_refs",
     # Enum-ish / values
     "running",
     "completed",
@@ -189,6 +190,8 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     "approved",
     "rejected",
     "pending",
+    "research_paper",
+    "unknown_or_needs_company_source",
     # File names / paths / common dir names
     "relationships",
     "focus",

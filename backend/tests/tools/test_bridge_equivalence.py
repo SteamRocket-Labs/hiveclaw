@@ -118,6 +118,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "retire_memory",
         "run_skill_tool",
         "save_memory",
+        "search_personal_kb",
         "search_clawhub",
         "search_memory",
         "send_channel_file",

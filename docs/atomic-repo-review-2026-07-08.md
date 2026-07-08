@@ -22,6 +22,7 @@
 | 2026-07-08 | P1-8 QKV MemoryRetriever dead gather API retirement | ✅ 已闭环 | Red: `test_memory_retriever_exposes_only_live_retrieval_entrypoints` failed while `retrieve_candidates` existed. Green: `cd backend && source .venv/bin/activate && pytest tests/memory/test_retrieval_pipeline.py -q` → `12 passed`; `ruff check app/memory/retriever.py tests/memory/test_retrieval_pipeline.py` → passed; graph/`rg` confirmed removed `retrieve_candidates` / `gather_*` symbols have no remaining code nodes or references |
 | 2026-07-08 | P1-9 External capability reject + version supersede | ✅ 已闭环 | Red: missing `reject_external_capability_review`; approve did not supersede older approved snapshot/catalog. Green: `cd backend && source .venv/bin/activate && pytest tests/services/test_external_capability_trust_gate.py tests/services/test_external_capability_activation.py tests/api/test_external_capability_reviews_api.py -q` → `19 passed`; `pytest tests/services/test_plugin_install_service.py -q` → `16 passed` confirms legacy `/enterprise/plugins/install` remains builtin/local pack projection, not external-source trust-gate bypass |
 | 2026-07-08 | P1-10 Personal KB autonomous owner-scope agent grant | ✅ 已闭环 | Red: `test_ensure_agent_identity_seeds_owner_scope_personal_knowledge_grant` found no `KnowledgeGrant`. Green: `cd backend && source .venv/bin/activate && pytest tests/services/test_agent_identity_lifecycle.py -q` → `5 passed`; `pytest tests/services/test_personal_knowledge_service.py -q` → `24 passed`; new agent identity bootstrap now seeds owner-scope `search` grant for the agent when tenant + owner exist |
+| 2026-07-08 | P1-11 Full regression contract sync | ✅ 已闭环 | Full backend: `cd backend && source .venv/bin/activate && pytest tests -q --tb=short` → `5513 passed, 206 skipped, 4 warnings`; backend ruff on changed files → `All checks passed!`; frontend targeted tests → `3 passed / 36 tests`; frontend build → success; `git diff --check` → clean |
 
 ---
 
@@ -223,4 +224,4 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 
 ## 8. 审计方法与证据
 
-六路后台 agent 并行（部分自带子 agent 三层展开），全程 Grep/Read/Bash 直查源码 + 执行级验证（audit_capability_mapping() 实跑、测试套件实跑：external_capability 19 passed、HR 相关 7 passed）；FreeCode/claude-code-org/codex-rs 三基线交叉；每结论 file:line 可复核。详细分报告：QKV 完整版存于审计 agent scratchpad（qkv-audit-final-report.md），其余以本文档为准。
+六路后台 agent 并行（部分自带子 agent 三层展开），全程 Grep/Read/Bash 直查源码 + 执行级验证（audit_capability_mapping() 实跑、测试套件实跑：external_capability 19 passed、HR 相关 70 passed、最终全后端 5513 passed / 206 skipped）；FreeCode/claude-code-org/codex-rs 三基线交叉；每结论 file:line 可复核。详细分报告：QKV 完整版存于审计 agent scratchpad（qkv-audit-final-report.md），其余以本文档为准。

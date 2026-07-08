@@ -52,6 +52,10 @@ class _FakeSession:
         else:
             self._results = [_FakeQueryResult(row_or_results)]
         self.executed_statements: list = []
+        self.added: list = []
+        self.flushed = False
+        self.committed = False
+        self.rolled_back = False
 
     async def execute(self, stmt):
         # RLS 阶段1: tenant_scoped_session issues `SET LOCAL app.current_tenant_id`
@@ -64,6 +68,18 @@ class _FakeSession:
             result = self._results.pop(0)
             return result if isinstance(result, _FakeQueryResult) else _FakeQueryResult(result)
         return _FakeQueryResult(None, scalars=[])
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def flush(self):
+        self.flushed = True
+
+    async def commit(self):
+        self.committed = True
+
+    async def rollback(self):
+        self.rolled_back = True
 
     async def __aenter__(self):
         return self
@@ -113,6 +129,14 @@ def install_fake_session(monkeypatch):
         )
         monkeypatch.setattr(
             "app.services.agent_tool_domains.web_mcp.resolve_tenant_for_agent",
+            _fake_resolve_tenant_for_agent,
+        )
+        monkeypatch.setattr(
+            "app.services.external_capabilities.skill_source_adapter.tenant_scoped_session",
+            _fake_tenant_scoped_session,
+        )
+        monkeypatch.setattr(
+            "app.services.external_capabilities.skill_source_adapter.resolve_tenant_for_agent",
             _fake_resolve_tenant_for_agent,
         )
         return session
@@ -423,7 +447,9 @@ async def test_mcp_get_prompt_uses_live_prompts_get(install_fake_session, patch_
 
 
 @pytest.mark.asyncio
-async def test_mcp_get_prompt_import_as_skill_runs_skill_guard(install_fake_session, patch_mcp_client, monkeypatch, tmp_path):
+async def test_mcp_get_prompt_import_as_skill_stages_blocked_skill_guard_review(
+    install_fake_session, patch_mcp_client, monkeypatch, tmp_path
+):
     row = SimpleNamespace(
         name="weather",
         enabled=True,
@@ -450,7 +476,9 @@ async def test_mcp_get_prompt_import_as_skill_runs_skill_guard(install_fake_sess
 
     out = await mcp_get_prompt(uuid.uuid4(), {"prompt_name": "review", "import_as_skill": True})
 
-    assert "skill_guard_blocked" in out
+    assert "MCP Prompt Skill Review Required" in out
+    assert "- status: blocked" in out
+    assert "- skill_guard: critical" in out
     assert not list(tmp_path.rglob("SKILL.md"))
 
 

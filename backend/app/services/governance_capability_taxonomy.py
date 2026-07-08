@@ -292,6 +292,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "request_plan_mode": "agent.plan.request",
     "search_memory": "agent.memory.read",
     "load_memory": "agent.memory.read",
+    "search_personal_kb": "agent.knowledge.read",
     "save_memory": "agent.memory.write",
     "update_memory": "agent.memory.write",
     "retire_memory": "agent.memory.write",

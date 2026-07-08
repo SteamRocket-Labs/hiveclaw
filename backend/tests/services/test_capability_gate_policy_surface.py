@@ -122,6 +122,10 @@ def test_capability_map_covers_memory_write_controls():
     assert CAPABILITY_MAP.get("retire_memory") == "agent.memory.write"
 
 
+def test_capability_map_covers_personal_kb_runtime_search():
+    assert CAPABILITY_MAP.get("search_personal_kb") == "agent.knowledge.read"
+
+
 def test_capability_definitions_expose_policy_capabilities_for_frontend():
     definitions = {item["capability"]: set(item["tools"]) for item in get_all_capabilities()}
 

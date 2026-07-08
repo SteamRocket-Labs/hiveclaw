@@ -942,3 +942,20 @@ async def test_non_owner_personal_graph_returns_empty(tmp_path: Path) -> None:
     assert graph.links == []
     assert graph.assertions == []
     assert session.executed == []
+
+
+def test_personal_knowledge_access_predicate_filters_expired_grants() -> None:
+    from app.services.personal_knowledge_service import build_personal_knowledge_search_statement
+
+    statement = build_personal_knowledge_search_statement(
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        query="source refs",
+        current_user_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        limit=5,
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
+
+    assert "knowledge_grants.expires_at IS NULL" in compiled
+    assert "knowledge_grants.expires_at > now()" in compiled

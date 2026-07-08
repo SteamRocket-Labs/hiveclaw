@@ -692,3 +692,48 @@ commit：
 剩余风险：
 
 - 前端不提供假 media provider；音频、视频、图片无 provider 时会显示后端 failed/unconfigured job，这是 A13 约定的真实状态。
+
+### 2026-07-08 A14 效果验收与三轮复查
+
+改动文件：
+
+- `backend/tests/services/test_personal_knowledge_service.py`
+- `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
+
+补充测试：
+
+- 新增 `test_personal_knowledge_access_predicate_filters_expired_grants`，显式验证非 owner 搜索语句包含 `knowledge_grants.expires_at IS NULL` 与 `knowledge_grants.expires_at > now()`，避免 grant 过期规则只停留在实现印象里。
+
+回归命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/api/test_agent_personal_knowledge_api.py tests/services/test_personal_knowledge_service.py tests/tools/test_personal_knowledge_tool.py tests/runtime/test_personal_knowledge_provider.py tests/runtime/test_personal_knowledge_activation.py tests/runtime/test_invoker.py::test_invoke_agent_builds_activation_query_after_user_prompt_submit_before_kernel tests/runtime/test_invoker.py::test_invoke_agent_injects_personal_kb_hint_before_kernel tests/api/test_chat_upload_conversion.py tests/api/test_security_regressions.py::test_upload_requires_agent_access tests/api/test_security_regressions.py::test_upload_sanitizes_workspace_filename -q
+cd backend && source .venv/bin/activate && ruff check app/api/agent_knowledge.py app/api/upload.py app/services/personal_knowledge_service.py app/tools/handlers/knowledge.py app/runtime/invoker.py app/runtime/retrieval/personal_knowledge_provider.py tests/api/test_agent_personal_knowledge_api.py tests/api/test_chat_upload_conversion.py tests/services/test_personal_knowledge_service.py tests/tools/test_personal_knowledge_tool.py tests/runtime/test_personal_knowledge_provider.py tests/runtime/test_personal_knowledge_activation.py tests/runtime/test_invoker.py
+cd frontend && npm test -- src/api/domains/knowledge.test.ts src/pages/PersonalKnowledge.test.tsx src/pages/agent-detail/AgentKnowledgeSection.test.tsx src/pages/agent-detail/AgentDetailSections.test.tsx
+cd frontend && npm run build
+git diff --check
+```
+
+测试结果：
+
+```text
+backend pytest: 45 passed, 4 warnings in 1.18s
+backend ruff: All checks passed!
+frontend vitest: 4 passed / 101 tests passed
+frontend build: tsc && vite build -> exit 0, 7044 modules transformed
+git diff --check: no output
+```
+
+三轮复查：
+
+1. Spec/code grep：`PersonalKnowledgePlaceholder`、旧上传/URL 占位文案、Agent Detail 写入口、`Add to Personal KB`、`Paste Markdown or notes here` 未出现在实现代码；旧文案仅保留在测试反断言和本文证据里。
+2. API/UI route walkthrough：后端 Personal KB 路由覆盖 `documents`、`imports`、`import-url`、`import-jobs`、`retry`、`grants`、`search`、`graph`、`patch`、`rebuild-index`；前端 API domain 与 `/knowledge` 页面逐项调用这些后端入口。
+3. Regression/build：后端 service/API/tool/runtime/chat upload 回归、前端 API/page/Agent Detail sections 回归、前端 build、diff whitespace check 全部通过；`.ultra/*` 和 agent-detail 既有未提交文件未纳入本轮 stage。
+
+commit：
+
+- 本提交：`test: close personal kb completion review`。
+
+剩余风险：
+
+- 生产级 audio/video/image provider 需要 credential 后启用；当前无 provider 的 failed/unconfigured 状态已闭环，不伪装 ready。

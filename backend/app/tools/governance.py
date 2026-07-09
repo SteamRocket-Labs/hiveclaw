@@ -1467,10 +1467,13 @@ async def _run_tenant_governance_hooks(
         spec_matches,
     )
 
-    if deps.load_governance_hooks is None:
+    # getattr: dependency objects are duck-typed in parts of the test surface;
+    # an absent field means the hook lane is simply not wired for this caller.
+    load_governance_hooks = getattr(deps, "load_governance_hooks", None)
+    if load_governance_hooks is None:
         return None
     try:
-        specs = await _maybe_await(deps.load_governance_hooks(context.tenant_id, context.agent_id, context.tool_name))
+        specs = await _maybe_await(load_governance_hooks(context.tenant_id, context.agent_id, context.tool_name))
     except Exception as exc:
         # D1 fail-closed: an unreadable hook registry cannot prove the call is
         # allowed under tenant policy — deny rather than silently skip the layer.
@@ -1507,8 +1510,9 @@ async def _run_tenant_governance_hooks(
                     "detail": {"tool_name": context.tool_name, "hooks": len(command_specs)},
                 },
             )
+        run_command_hook = getattr(deps, "run_command_hook", None)
         for spec in command_specs:
-            if deps.run_command_hook is None:
+            if run_command_hook is None:
                 verdicts.append(
                     HookVerdict(
                         decision="deny",
@@ -1520,7 +1524,7 @@ async def _run_tenant_governance_hooks(
                 )
                 continue
             try:
-                verdict = await _maybe_await(deps.run_command_hook(spec, _governance_hook_payload(context, spec)))
+                verdict = await _maybe_await(run_command_hook(spec, _governance_hook_payload(context, spec)))
             except Exception as exc:
                 # D1 fail-closed: a crashed/timed-out governing hook denies the call.
                 logger.warning(

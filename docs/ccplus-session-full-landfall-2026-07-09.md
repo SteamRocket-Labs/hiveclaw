@@ -469,10 +469,11 @@ cd backend && source .venv/bin/activate && ruff check \
 
 日期：2026-07-09
 
-状态：实施中。原因是 `session-timeline-projection-contract-2026-07-04.md` 的体验目标 2.1 / 2.2 仍有两处没有完全落地：
+状态：已完成。原因是 `session-timeline-projection-contract-2026-07-04.md` 的体验目标 2.1 / 2.2 仍有三类断点没有完全落地：
 
-1. final summary 提到的本轮文档没有稳定 po 成 artifact delivery；旧逻辑只认 `DELIVERABLE:` / `交付物:` marker。
-2. Workspace rail 仍暴露 historical / unattributed 组，默认体验像 agent workspace 浏览器，不是当前 session projection。
+1. Run process cell 仍可携带并渲染 final answer，结构上没有做到“只折叠过程，不折叠结果”。
+2. final summary 提到的本轮文档没有稳定 po 成 artifact delivery；旧逻辑只认 `DELIVERABLE:` / `交付物:` marker。
+3. Workspace rail 仍暴露 historical / unattributed 组，默认体验像 agent workspace 浏览器，不是当前 session projection。
 
 ### G1. Final summary delivery hardening
 
@@ -571,4 +572,40 @@ cd frontend && npm test -- --run \
   src/pages/agent-detail/AgentDetailSections.test.tsx \
   src/pages/session-workbench/timelineModel.test.ts
 # 122 passed
+```
+
+### G4. 二次闭环最终验证
+
+状态：已完成
+
+提交：
+
+- `21827b886 docs: close session projection gaps`
+- `d1fa6decf session: split run process from final answer`
+- `a50fde720 session: attach final summary artifacts`
+- `f91be3f11 session: scope workspace rail to current deliverables`
+
+最终验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_web_chat_runtime.py::test_terminal_artifact_paths_require_current_turn_provenance \
+  tests/services/test_web_chat_runtime.py::test_terminal_artifact_paths_accept_final_summary_mentions_and_single_doc_fallback \
+  tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables \
+  tests/services/test_web_chat_runtime.py::test_finalize_web_chat_run_records_file_changes_side_channel \
+  -q
+# 4 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/web_chat_runtime.py \
+  tests/services/test_web_chat_runtime.py
+# All checks passed!
+
+cd frontend && npm test -- --run \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  src/pages/session-workbench/timelineModel.test.ts
+# 122 passed
+
+cd frontend && npm run build
+# tsc && vite build passed
 ```

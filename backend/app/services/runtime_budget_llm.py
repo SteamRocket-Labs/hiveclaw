@@ -80,6 +80,7 @@ class RuntimeBudgetedLLMClient(LLMClient):
         runtime_task_id: uuid.UUID | None = None,
         default_llm_call_token_reservation: int = 50_000,
         service: RuntimeBudgetService | None = None,
+        summary_lane: bool = False,
     ) -> None:
         super().__init__(
             api_key=getattr(inner, "api_key", ""),
@@ -92,6 +93,9 @@ class RuntimeBudgetedLLMClient(LLMClient):
         self._runtime_task_id = runtime_task_id
         self._default_llm_call_token_reservation = max(0, int(default_llm_call_token_reservation or 0))
         self._service = service or RuntimeBudgetService()
+        # §2 finalization lane: marks this invocation's provider calls as the
+        # single summarizing turn so a summary_only run admits them.
+        self._summary_lane = bool(summary_lane)
 
     async def complete(
         self,
@@ -163,6 +167,7 @@ class RuntimeBudgetedLLMClient(LLMClient):
                     "model": self.model,
                     "has_tools": bool(tools),
                     "prompt_estimate_tokens": prompt_estimate,
+                    **({"budget_summary_turn": True} if self._summary_lane else {}),
                 },
             )
         )

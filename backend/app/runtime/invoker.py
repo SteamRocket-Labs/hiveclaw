@@ -1285,6 +1285,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             client,
             budget_run_id=budget_run_id,
             runtime_task_id=_uuid_or_none(metadata.get("runtime_task_id") or metadata.get("request_id")),
+            summary_lane=bool(metadata.get("budget_summary_turn")),
         )
 
     async def _kernel_execute_tool(

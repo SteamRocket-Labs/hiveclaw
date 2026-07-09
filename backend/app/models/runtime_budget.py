@@ -136,6 +136,9 @@ class RuntimeBudgetRun(Base):
     parent_invocations: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     policy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # §2 finalization lane state (summary_turn_state / summary_run_id / ...)
+    # and other run-scoped control metadata.
+    metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

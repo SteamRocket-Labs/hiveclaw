@@ -76,3 +76,31 @@ def objective_updated_prompt(goal: ThreadGoalPromptState) -> str:
         "The active session goal was updated by the user. Re-orient to the latest objective before continuing.\n"
         f"{_common(goal)}"
     )
+
+
+def budget_summary_contract_prompt(goal: ThreadGoalPromptState) -> str:
+    """§2 finalization contract for the single summarizing turn.
+
+    Issued after the runtime budget plane degrades to summary-only. The model
+    must see its own state (budget exhausted, lane closes after this turn) to
+    finalize with dignity instead of dying silently.
+    """
+    return (
+        "The runtime budget for this work is exhausted and the budget plane has entered "
+        "summary-only mode. This is your single finalization turn: the lane exists exactly "
+        "once and closes permanently when this turn ends.\n"
+        f"{_common(goal)}\n"
+        "Hard rules for this finalization turn:\n"
+        "1. Do NOT start new work. No subagents, no delegations, no team sessions, no "
+        "background tasks, no new workflows — the budget plane rejects all work "
+        "amplification in this state.\n"
+        "2. Write the finalization report: what was accomplished (grounded in artifacts, "
+        "Work Ledger entries, and other verifiable evidence from this session), what "
+        "remains undone, known risks, and the recommended next steps for the owner.\n"
+        '3. Record the goal terminal state: call update_goal(status="complete", summary=...) '
+        "only if the objective is verifiably met; otherwise call "
+        'update_goal(status="blocked", summary=...) — running out of budget counts as '
+        "blocked, and the summary should say what more budget would buy.\n"
+        "4. End your turn with the finalization report as your final message. Nothing else "
+        "runs after this turn."
+    )

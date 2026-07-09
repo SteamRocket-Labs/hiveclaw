@@ -639,6 +639,39 @@ async def test_execute_web_chat_run_emits_failed_phase_on_exception(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_execute_web_chat_run_summary_turn_holds_summarizing_phase(monkeypatch):
+    """§2: the budget finalization turn holds `summarizing` for its whole
+    duration — thinking/chunk/tool events must not cycle the phase."""
+    import app.services.web_chat_runtime as runtime
+
+    run_id, agent, user, llm_model, runtime_task = _phase_run_fixtures()
+    runtime_task.metadata_json["budget_summary_turn"] = True
+    events: list[dict] = []
+
+    async def fake_invoke(request):
+        assert request.session_context.metadata.get("budget_summary_turn") is True
+        await request.on_thinking("wrapping up")
+        await request.on_chunk("Final report: ...")
+        return SimpleNamespace(content="Final report.", reasoning_signature=None, tokens_used=1)
+
+    _patch_phase_run(
+        monkeypatch,
+        runtime,
+        runtime_task=runtime_task,
+        agent=agent,
+        user=user,
+        llm_model=llm_model,
+        fake_invoke=fake_invoke,
+        events=events,
+    )
+
+    await runtime.execute_web_chat_run(run_id)
+
+    phase_events = [event for event in events if event.get("type") == "phase"]
+    assert [event["phase"] for event in phase_events] == ["summarizing", "done"]
+
+
+@pytest.mark.asyncio
 async def test_execute_web_chat_run_awaiting_approval_phase_survives_run_release(monkeypatch):
     """A session-permission pause parks the phase at awaiting_approval, not done."""
     import app.services.web_chat_runtime as runtime

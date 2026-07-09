@@ -7,6 +7,7 @@ T0, tool governance, or web-chat runtime accounting.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,9 +21,11 @@ from app.models.user import User
 from app.runtime.prompts.goals import (
     ThreadGoalPromptState,
     budget_limit_prompt,
+    budget_summary_contract_prompt,
     continuation_prompt,
     objective_updated_prompt,
 )
+from app.runtime.runtime_phase import RuntimePhase, build_phase_event
 from app.services.session_goal_runtime import (
     RETRIABLE_TERMINAL_REASONS,
     GoalContinuationDecision,
@@ -33,7 +36,7 @@ from app.services.session_goal_runtime import (
     mark_goal_blocked_if_repeated,
     should_continue_goal,
 )
-from app.services.web_chat_runtime import start_web_chat_run
+from app.services.web_chat_runtime import broadcast_web_chat_event, start_web_chat_run
 
 # A6: how many consecutive retriable terminal errors before a goal is Blocked.
 _BLOCKED_THRESHOLD = 3
@@ -241,6 +244,246 @@ async def continue_session_goal(
     return {"ok": True, "goal_id": str(goal.id), "decision": decision_payload, "run": run}
 
 
+def _summary_goal_prompt_state(goal: AgentSessionGoal | None) -> ThreadGoalPromptState:
+    if goal is None:
+        return ThreadGoalPromptState(objective="(no active session goal)")
+    return _prompt_state(goal)
+
+
+async def _finalize_goal_after_summary(
+    db: AsyncSession,
+    *,
+    goal_id: Any,
+    outcome: str,
+) -> None:
+    """Backstop: if the summarizing turn did not record a terminal goal state via
+    update_goal, park the goal at BUDGET_LIMITED so the autonomous loop stays shut."""
+    if not goal_id:
+        return
+    result = await db.execute(select(AgentSessionGoal).where(AgentSessionGoal.id == goal_id).limit(1))
+    goal = result.scalar_one_or_none()
+    if goal is None:
+        return
+    metadata = dict(goal.metadata_json or {})
+    metadata["budget_summary_outcome"] = outcome
+    if str(goal.status or "") == GoalStatus.ACTIVE.value:
+        goal.status = GoalStatus.BUDGET_LIMITED.value
+        metadata["budget_limit_prompt"] = budget_limit_prompt(_prompt_state(goal))
+    goal.metadata_json = metadata
+    await db.flush()
+
+
+async def _handle_budget_summary_turn_completion(
+    *,
+    db: AsyncSession,
+    agent_id: Any,
+    session_id: Any,
+    user_id: Any,
+    completed_status: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """State machine for a finished summarizing turn (§2).
+
+    completed  -> seal the lane: summary_only -> hard_stopped.
+    failed x1  -> retry the finalization turn exactly once.
+    failed x2  -> seal the lane, record summary_failed, tell the user.
+    """
+    from app.services.runtime_budget_service import RuntimeBudgetService
+
+    budget_run_id_raw = metadata.get("budget_run_id")
+    tenant_id_raw = metadata.get("budget_summary_tenant_id")
+    goal_id = metadata.get("goal_id")
+    try:
+        budget_run_id = uuid.UUID(str(budget_run_id_raw))
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "summary_turn_missing_budget_run"}
+    tenant_id = None
+    try:
+        tenant_id = uuid.UUID(str(tenant_id_raw)) if tenant_id_raw else None
+    except (TypeError, ValueError):
+        tenant_id = None
+
+    service = RuntimeBudgetService()
+
+    if str(completed_status or "") == "completed":
+        await service.mark_summary_turn_state(
+            tenant_id=tenant_id,
+            budget_run_id=budget_run_id,
+            expected_states=("issued", "retried"),
+            new_state="completed",
+        )
+        await service.hard_stop_run(
+            tenant_id=tenant_id,
+            budget_run_id=budget_run_id,
+            reason="budget_summary_completed",
+            actor="goal_continuation_summary",
+        )
+        await _finalize_goal_after_summary(db, goal_id=goal_id, outcome="summary_completed")
+        return {"ok": True, "reason": "budget_summary_completed", "budget_run_id": str(budget_run_id)}
+
+    # The finalization turn itself failed/was killed.
+    retried = await service.mark_summary_turn_state(
+        tenant_id=tenant_id,
+        budget_run_id=budget_run_id,
+        expected_states=("issued",),
+        new_state="retried",
+    )
+    if retried:
+        agent_result = await db.execute(select(Agent).where(Agent.id == agent_id).limit(1))
+        agent = agent_result.scalar_one_or_none()
+        session_result = await db.execute(select(ChatSession).where(ChatSession.id == session_id).limit(1))
+        session = session_result.scalar_one_or_none()
+        user_result = await db.execute(select(User).where(User.id == user_id).limit(1))
+        user = user_result.scalar_one_or_none()
+        goal = None
+        if goal_id:
+            goal_result = await db.execute(select(AgentSessionGoal).where(AgentSessionGoal.id == goal_id).limit(1))
+            goal = goal_result.scalar_one_or_none()
+        if agent is None or session is None or user is None:
+            # Cannot rebuild the turn context: seal the lane instead of leaking it.
+            await service.mark_summary_turn_state(
+                tenant_id=tenant_id,
+                budget_run_id=budget_run_id,
+                expected_states=("retried",),
+                new_state="failed",
+            )
+            await service.hard_stop_run(
+                tenant_id=tenant_id,
+                budget_run_id=budget_run_id,
+                reason="budget_summary_failed",
+                actor="goal_continuation_summary",
+            )
+            await _finalize_goal_after_summary(db, goal_id=goal_id, outcome="summary_failed")
+            return {"ok": False, "reason": "summary_retry_context_missing"}
+        run = await start_web_chat_run(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content=budget_summary_contract_prompt(_summary_goal_prompt_state(goal)),
+            display_content="",
+            file_name="",
+            append_user_message=False,
+            runtime_task_type="goal_continuation",
+            extra_metadata={
+                "source": "goal_continuation",
+                "budget_summary_turn": True,
+                "budget_summary_tenant_id": str(tenant_id) if tenant_id else None,
+                "budget_run_id": str(budget_run_id),
+                "goal_id": str(goal_id) if goal_id else None,
+                "summary_attempt": 2,
+            },
+        )
+        return {"ok": True, "reason": "budget_summary_retry", "run": run}
+
+    # Second failure: seal the lane and surface the failure to the session.
+    sealed = await service.mark_summary_turn_state(
+        tenant_id=tenant_id,
+        budget_run_id=budget_run_id,
+        expected_states=("retried",),
+        new_state="failed",
+    )
+    if sealed:
+        await service.hard_stop_run(
+            tenant_id=tenant_id,
+            budget_run_id=budget_run_id,
+            reason="budget_summary_failed",
+            actor="goal_continuation_summary",
+        )
+        await _finalize_goal_after_summary(db, goal_id=goal_id, outcome="summary_failed")
+        await broadcast_web_chat_event(
+            agent_id,
+            session_id,
+            {
+                "type": "runtime_action_failed",
+                "status": "summary_failed",
+                "message": "The budget finalization summary could not be generated.",
+            },
+        )
+    return {"ok": False, "reason": "budget_summary_failed", "budget_run_id": str(budget_run_id)}
+
+
+async def _maybe_issue_budget_summary_turn(
+    *,
+    db: AsyncSession,
+    agent: Agent,
+    user: User,
+    session: ChatSession,
+    goal: AgentSessionGoal,
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    """§2 finalization wake: when the budget plane degraded this session's run to
+    summary_only, schedule exactly one summarizing turn instead of a normal
+    continuation. Returns None when the budget run is healthy (normal path)."""
+    from app.services.runtime_budget_service import RuntimeBudgetService
+
+    budget_run_id_raw = metadata.get("budget_run_id")
+    if not budget_run_id_raw:
+        return None
+    try:
+        budget_run_id = uuid.UUID(str(budget_run_id_raw))
+    except (TypeError, ValueError):
+        return None
+
+    service = RuntimeBudgetService()
+    run = await service.get_run(tenant_id=agent.tenant_id, budget_run_id=budget_run_id)
+    if run is None or run.status != "summary_only":
+        return None
+
+    issued = await service.mark_summary_turn_state(
+        tenant_id=agent.tenant_id,
+        budget_run_id=budget_run_id,
+        expected_states=(None,),
+        new_state="issued",
+        extra={"summary_goal_id": str(goal.id)},
+    )
+    if not issued:
+        # A finalization turn was already issued (or already settled): the lane
+        # is spoken for. Never fall through to a normal continuation on a
+        # summary_only run.
+        return {
+            "ok": False,
+            "reason": "budget_summary_already_issued",
+            "budget_run_id": str(budget_run_id),
+        }
+
+    await broadcast_web_chat_event(
+        agent.id,
+        str(session.id),
+        build_phase_event(RuntimePhase.AWAITING_BUDGET, detail={"budget_run_id": str(budget_run_id)}),
+    )
+    summary_run = await start_web_chat_run(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content=budget_summary_contract_prompt(_summary_goal_prompt_state(goal)),
+        display_content="",
+        file_name="",
+        append_user_message=False,
+        runtime_task_type="goal_continuation",
+        extra_metadata={
+            "source": "goal_continuation",
+            "budget_summary_turn": True,
+            "budget_summary_tenant_id": str(agent.tenant_id) if agent.tenant_id else None,
+            "budget_run_id": str(budget_run_id),
+            "goal_id": str(goal.id),
+            "summary_attempt": 1,
+        },
+    )
+    goal_metadata = dict(goal.metadata_json or {})
+    goal_metadata["budget_summary_run_id"] = summary_run.get("run_id")
+    goal_metadata["budget_summary_issued_at"] = datetime.now(timezone.utc).isoformat()
+    goal.metadata_json = goal_metadata
+    await db.flush()
+    return {
+        "ok": True,
+        "reason": "budget_summary_issued",
+        "budget_run_id": str(budget_run_id),
+        "run": summary_run,
+    }
+
+
 async def maybe_continue_session_goal_after_turn(
     *,
     db: AsyncSession,
@@ -266,10 +509,23 @@ async def maybe_continue_session_goal_after_turn(
 
     if str(completed_task_type or "") not in {"web_chat_turn", "goal_continuation"}:
         return {"ok": False, "reason": "unsupported_task_type"}
-    if str(completed_status or "") != "completed":
-        return {"ok": False, "reason": "non_completed_turn"}
 
     metadata = dict(metadata_json or {})
+
+    # §2: a finished finalization turn runs its own state machine (it must also
+    # observe failed/killed outcomes, so it sits before the completed-status gate).
+    if metadata.get("budget_summary_turn"):
+        return await _handle_budget_summary_turn_completion(
+            db=db,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+            completed_status=completed_status,
+            metadata=metadata,
+        )
+
+    if str(completed_status or "") != "completed":
+        return {"ok": False, "reason": "non_completed_turn"}
 
     goal_result = await db.execute(
         select(AgentSessionGoal)
@@ -295,6 +551,19 @@ async def maybe_continue_session_goal_after_turn(
     missing = [name for name, value in (("agent", agent), ("session", session), ("user", user)) if value is None]
     if missing:
         return {"ok": False, "reason": "missing_context", "missing": missing, "goal_id": str(goal.id)}
+
+    # §2 finalization wake: a summary_only budget run schedules exactly one
+    # summarizing turn instead of a normal continuation.
+    summary_wake = await _maybe_issue_budget_summary_turn(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        goal=goal,
+        metadata=metadata,
+    )
+    if summary_wake is not None:
+        return summary_wake
 
     return await continue_session_goal(
         db=db,

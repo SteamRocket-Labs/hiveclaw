@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator, Mapping
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 import uuid
 
 from sqlalchemy import Select, select, update
@@ -571,6 +572,35 @@ class RuntimeBudgetService:
                 await db.commit()
                 raise RuntimeBudgetDenied(str(event.reason), budget_run_id=run.id)
 
+            # §2 finalization lane: the single summarizing turn is admitted on a
+            # summary_only run even though its token dimensions are exhausted —
+            # otherwise "leave a lane for one final summarizing invocation" is a
+            # dead comment. Work amplification was already rejected above, and
+            # exactly-once issuance is enforced by mark_summary_turn_state.
+            # Usage still settles honestly for accounting.
+            if run.status == "summary_only" and bool((reservation.metadata or {}).get("budget_summary_turn")):
+                self._increment_reserved(run, amounts)
+                db.add(
+                    self._event(
+                        run,
+                        event_type="reservation",
+                        reservation_key=reservation.reservation_key,
+                        allowed=True,
+                        would_deny=True,
+                        reason="budget_summary_turn_lane",
+                        amounts=amounts,
+                        runtime_task_id=reservation.runtime_task_id,
+                        metadata=reservation.metadata,
+                    )
+                )
+                await db.commit()
+                return RuntimeBudgetReservationResult(
+                    allowed=True,
+                    would_deny=True,
+                    idempotent=False,
+                    budget_run_id=run.id,
+                )
+
             denied_dimensions = self._denied_dimensions(run, amounts)
             would_deny = bool(denied_dimensions)
             allowed = run.enforcement_mode == "observe" or not would_deny
@@ -984,6 +1014,53 @@ class RuntimeBudgetService:
             await db.refresh(run)
             return run
 
+    async def mark_summary_turn_state(
+        self,
+        *,
+        tenant_id: uuid.UUID | None,
+        budget_run_id: uuid.UUID,
+        expected_states: tuple[str | None, ...],
+        new_state: str,
+        extra: dict[str, Any] | None = None,
+    ) -> bool:
+        """Row-locked CAS on ``metadata_json.summary_turn_state`` (§2 exactly-once).
+
+        Returns True when the transition was applied; False when the current
+        state is not in ``expected_states`` (a concurrent issuer already won).
+        """
+        async with self._budget_session("mark_summary_turn_state") as db:
+            result = await db.execute(
+                select(RuntimeBudgetRun)
+                .where(RuntimeBudgetRun.id == budget_run_id, RuntimeBudgetRun.tenant_id == tenant_id)
+                .with_for_update()
+            )
+            run = result.scalar_one_or_none()
+            if run is None:
+                return False
+            metadata = dict(run.metadata_json or {})
+            current = metadata.get("summary_turn_state")
+            if current not in expected_states:
+                return False
+            metadata["summary_turn_state"] = new_state
+            metadata["summary_turn_state_at"] = datetime.now(UTC).isoformat()
+            for key, value in (extra or {}).items():
+                metadata[key] = value
+            run.metadata_json = metadata
+            db.add(
+                self._event(
+                    run,
+                    event_type="summary_turn",
+                    reservation_key=None,
+                    allowed=None,
+                    would_deny=False,
+                    reason=f"summary_turn_state:{new_state}",
+                    amounts={},
+                    metadata={"from": current, "to": new_state, **(extra or {})},
+                )
+            )
+            await db.commit()
+            return True
+
     async def hard_stop_run(
         self,
         *,
@@ -1002,7 +1079,9 @@ class RuntimeBudgetService:
             run = result.scalar_one_or_none()
             if run is None:
                 return None
-            if run.status != "active":
+            # summary_only is a legal precursor: after the finalization turn the
+            # lane is sealed by transitioning summary_only -> hard_stopped (§2).
+            if run.status not in {"active", "summary_only"}:
                 return run
             run.status = "hard_stopped"
             run.terminal_reason = reason

@@ -3253,7 +3253,16 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             lambda event: broadcast_web_chat_event(agent.id, session_id, event),
             run_id=run_key,
         )
-        await phase_emitter.transition(RuntimePhase.STARTING)
+        # §2: the budget finalization turn holds the `summarizing` phase for its
+        # whole duration instead of cycling thinking/responding/tool phases.
+        summary_turn_mode = bool(
+            (runtime_task.metadata_json or {}).get("budget_summary_turn")
+            if isinstance(runtime_task.metadata_json, dict)
+            else False
+        )
+        await phase_emitter.transition(
+            RuntimePhase.SUMMARIZING if summary_turn_mode else RuntimePhase.STARTING
+        )
         conversation = conversation_from_history_messages(history_messages)
         prompt = runtime_task.prompt or ""
         metadata = _merge_runtime_permission_metadata(
@@ -3282,6 +3291,12 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             runtime_session_context.metadata["budget_run_id"] = str(
                 getattr(runtime_task, "budget_run_id", None) or metadata.get("budget_run_id")
             )
+        if summary_turn_mode:
+            # §2: mark the invocation so the budgeted LLM client reserves its
+            # provider calls through the finalization lane.
+            runtime_session_context.metadata["budget_summary_turn"] = True
+        else:
+            runtime_session_context.metadata.pop("budget_summary_turn", None)
         runtime_session_context.metadata["request_id"] = str(run_uuid)
         runtime_session_context.metadata["turn_id"] = str(metadata.get("turn_id") or f"turn-{run_uuid.hex}")
         runtime_session_context.metadata["intent_id"] = str(
@@ -3384,14 +3399,14 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 streamed_chunks.clear()
                 await stream_batcher.reset_chunk()
                 return
-            if phase_emitter is not None:
+            if phase_emitter is not None and not summary_turn_mode:
                 await phase_emitter.transition(RuntimePhase.RESPONDING)
             streamed_chunks.append(text)
             await stream_batcher.emit_chunk(text)
 
         async def thinking_to_ws(text: str) -> None:
             assert stream_batcher is not None
-            if phase_emitter is not None:
+            if phase_emitter is not None and not summary_turn_mode:
                 await phase_emitter.transition(RuntimePhase.THINKING)
             thinking_content.append(text)
             await stream_batcher.emit_thinking(text)
@@ -3403,7 +3418,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 await stream_batcher.reset_chunk()
                 return
             event_type = str(data.get("type") or data.get("event_type") or "")
-            if phase_emitter is not None:
+            if phase_emitter is not None and not summary_turn_mode:
                 if event_type == "compaction_started":
                     await phase_emitter.transition(RuntimePhase.COMPACTING)
                 elif event_type in {"compaction_completed", "compaction_skipped"}:
@@ -3569,7 +3584,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             nonlocal interactive_pause_summary, plan_mode_submitted
             if terminal_tool_card_finalized:
                 return
-            if phase_emitter is not None:
+            if phase_emitter is not None and not summary_turn_mode:
                 if data.get("status") != "done":
                     await phase_emitter.transition(
                         RuntimePhase.TOOL_RUNNING,

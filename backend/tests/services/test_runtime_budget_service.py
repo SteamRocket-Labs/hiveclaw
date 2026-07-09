@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 
 
 async def _seed_tenant(owner_sessionmaker, *, name: str = "Runtime Budget Tenant") -> uuid.UUID:
@@ -216,18 +216,26 @@ async def test_policy_resolution_chooses_most_specific_enabled_policy(owner_sess
         )
         await db.commit()
 
-    policy = await service.resolve_policy(
-        RuntimeBudgetPolicyLookup(
-            tenant_id=tenant_id,
-            source="scheduled",
-            profile="scheduled",
-            agent_id=agent_id,
-            trigger_id=trigger_id,
+    try:
+        policy = await service.resolve_policy(
+            RuntimeBudgetPolicyLookup(
+                tenant_id=tenant_id,
+                source="scheduled",
+                profile="scheduled",
+                agent_id=agent_id,
+                trigger_id=trigger_id,
+            )
         )
-    )
 
-    assert policy.name == "agent-trigger"
-    assert policy.max_subagents == 5
+        assert policy.name == "agent-trigger"
+        assert policy.max_subagents == 5
+    finally:
+        # Shared PG container: leaked enabled policies would shadow the builtin
+        # fallback for later tests in the same session (assert 1 == 24 class of
+        # order-dependent failures). Polluter cleans up.
+        async with owner_sessionmaker() as db:
+            await db.execute(sa_delete(RuntimeBudgetPolicy))
+            await db.commit()
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -353,21 +361,30 @@ async def test_interactive_company_policy_matches_web_chat_lookup(owner_sessionm
 
     tenant_id = await _seed_tenant(owner_sessionmaker)
     service = RuntimeBudgetService(session_factory=owner_sessionmaker)
-    await service.create_policy(
-        tenant_id=tenant_id,
-        name="interactive override",
-        scope_type="source_profile",
-        source="interactive",
-        profile="interactive",
-        max_subagents=7,
-    )
+    try:
+        await service.create_policy(
+            tenant_id=tenant_id,
+            name="interactive override",
+            scope_type="source_profile",
+            source="interactive",
+            profile="interactive",
+            max_subagents=7,
+        )
 
-    policy = await service.resolve_policy(
-        RuntimeBudgetPolicyLookup(tenant_id=tenant_id, source="web", profile="web_chat_turn")
-    )
+        policy = await service.resolve_policy(
+            RuntimeBudgetPolicyLookup(tenant_id=tenant_id, source="web", profile="web_chat_turn")
+        )
 
-    assert policy.name == "interactive override"
-    assert policy.max_subagents == 7
+        assert policy.name == "interactive override"
+        assert policy.max_subagents == 7
+    finally:
+        # Polluter cleans up: leaked policies shadow the builtin fallback for
+        # later tests sharing the session-scoped PG container.
+        from app.models.runtime_budget import RuntimeBudgetPolicy
+
+        async with owner_sessionmaker() as db:
+            await db.execute(sa_delete(RuntimeBudgetPolicy))
+            await db.commit()
 
 
 def test_reservation_estimate_uses_default_prompt_and_observed_floor():
@@ -922,3 +939,171 @@ def test_budget_service_failure_modes():
     assert interactive.disable_work_amplifying_tools is True
     assert foreground_subagent.fail_closed is True
     assert scheduled.fail_closed is True
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_summary_lane_admits_finalization_provider_call_despite_exhausted_tokens(owner_sessionmaker):
+    """§2 finalization lane: a summary_only run admits the summarizing turn's
+    provider calls even when the token dimension is exhausted; usage still settles."""
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetDenied,
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlement,
+    )
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(service, tenant_id, fail_mode="summary_only", max_tokens=1_000)
+
+    # Exhaust the token dimension: the run trips into summary_only.
+    await service.reserve(
+        RuntimeBudgetReservation(
+            budget_run_id=run.id, reservation_key="burn", tokens=1_000, reason="burn"
+        )
+    )
+    with pytest.raises(RuntimeBudgetDenied):
+        await service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=run.id, reservation_key="over", tokens=100, reason="over budget"
+            )
+        )
+    async with owner_sessionmaker() as db:
+        stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
+    assert stored.status == "summary_only"
+
+    # A plain provider call is still denied (tokens exhausted, no lane marker)...
+    with pytest.raises(RuntimeBudgetDenied):
+        await service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=run.id, reservation_key="plain-call", tokens=100, provider_calls=1, reason="plain"
+            )
+        )
+
+    # ...but the summarizing turn's call carries the lane marker and is admitted.
+    lane_result = await service.reserve(
+        RuntimeBudgetReservation(
+            budget_run_id=run.id,
+            reservation_key="summary-call",
+            tokens=100,
+            provider_calls=1,
+            reason="provider_call_start",
+            metadata={"budget_summary_turn": True},
+        )
+    )
+    assert lane_result.allowed is True
+
+    # Work amplification stays denied even with the lane marker.
+    with pytest.raises(RuntimeBudgetDenied):
+        await service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=run.id,
+                reservation_key="summary-fanout",
+                subagents=1,
+                reason="fanout in summary turn",
+                metadata={"budget_summary_turn": True},
+            )
+        )
+
+    # Usage still settles honestly for accounting.
+    await service.settle(
+        RuntimeBudgetSettlement(
+            budget_run_id=run.id,
+            reservation_key="summary-call",
+            actual_tokens=80,
+            actual_provider_calls=1,
+            reason="provider_call_completed",
+        )
+    )
+    async with owner_sessionmaker() as db:
+        events = (
+            await db.execute(
+                select(RuntimeBudgetEvent)
+                .where(RuntimeBudgetEvent.budget_run_id == run.id, RuntimeBudgetEvent.reservation_key == "summary-call")
+                .order_by(RuntimeBudgetEvent.created_at)
+            )
+        ).scalars().all()
+    assert [event.event_type for event in events] == ["reservation", "settlement"]
+    assert events[0].reason == "budget_summary_turn_lane"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_hard_stop_run_closes_summary_only_lane(owner_sessionmaker):
+    """§2: after the finalization turn the summary_only lane is sealed for good."""
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetDenied,
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+    )
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(service, tenant_id, fail_mode="summary_only", max_tokens=1_000)
+    with pytest.raises(RuntimeBudgetDenied):
+        await service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=run.id, reservation_key="trip", tokens=5_000, reason="trip"
+            )
+        )
+
+    stopped = await service.hard_stop_run(
+        tenant_id=tenant_id, budget_run_id=run.id, reason="budget_summary_completed"
+    )
+    assert stopped is not None
+    assert stopped.status == "hard_stopped"
+
+    # Even the lane marker cannot reopen a hard-stopped run.
+    with pytest.raises(RuntimeBudgetDenied):
+        await service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=run.id,
+                reservation_key="after-stop",
+                tokens=10,
+                reason="post-stop",
+                metadata={"budget_summary_turn": True},
+            )
+        )
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_mark_summary_turn_state_is_a_single_winner_cas(owner_sessionmaker):
+    """§2 exactly-once: only the first transition from empty wins; repeats lose."""
+    from app.models.runtime_budget import RuntimeBudgetRun
+    from app.services.runtime_budget_service import RuntimeBudgetService
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(service, tenant_id, fail_mode="summary_only")
+
+    first = await service.mark_summary_turn_state(
+        tenant_id=tenant_id,
+        budget_run_id=run.id,
+        expected_states=(None,),
+        new_state="issued",
+        extra={"summary_run_id": "run-a"},
+    )
+    assert first is True
+    # A concurrent second issuer loses the CAS.
+    second = await service.mark_summary_turn_state(
+        tenant_id=tenant_id,
+        budget_run_id=run.id,
+        expected_states=(None,),
+        new_state="issued",
+        extra={"summary_run_id": "run-b"},
+    )
+    assert second is False
+    # Legal follow-up transition: issued -> retried.
+    retried = await service.mark_summary_turn_state(
+        tenant_id=tenant_id,
+        budget_run_id=run.id,
+        expected_states=("issued",),
+        new_state="retried",
+    )
+    assert retried is True
+
+    async with owner_sessionmaker() as db:
+        stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
+    metadata = dict(stored.metadata_json or {})
+    assert metadata.get("summary_turn_state") == "retried"
+    assert metadata.get("summary_run_id") == "run-a"

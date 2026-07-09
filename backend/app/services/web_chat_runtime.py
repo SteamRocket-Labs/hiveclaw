@@ -161,6 +161,7 @@ _TERMINAL_ARTIFACT_DECLARATION_RE = re.compile(
     r"(?i)\b(deliverable|deliverables|artifact|artifacts|final file|final files)\b|交付物|最终文件|最终交付"
 )
 _TERMINAL_ARTIFACT_PATH_RE = re.compile(r"(?:workspace|runtime_artifacts)/[^\s`'\"<>)\]，。；;]+")
+_TERMINAL_ARTIFACT_TRAILING_PUNCTUATION = ".,，。；;:："
 _WEB_CHAT_STREAM_BATCH_INTERVAL_SECONDS = 0.05
 _WEB_CHAT_STREAM_BATCH_MAX_CHARS = 1200
 
@@ -532,26 +533,78 @@ def _terminal_file_change_paths_for_turn(runtime_session_context: Any) -> list[s
     return _unique_paths([str(path) for path in (getattr(runtime_session_context, "current_turn_writes", []) or [])])
 
 
+def _normalize_terminal_artifact_path(path: str) -> str:
+    return str(path or "").strip().strip("`'\"").rstrip(_TERMINAL_ARTIFACT_TRAILING_PUNCTUATION)
+
+
 def _declared_terminal_artifact_paths(content: str) -> list[str]:
     """Extract model-declared final deliverables from explicit declaration lines."""
     declared: list[str] = []
     for line in str(content or "").splitlines():
         if not _TERMINAL_ARTIFACT_DECLARATION_RE.search(line):
             continue
-        declared.extend(match.group(0).rstrip(".,，。；;:：") for match in _TERMINAL_ARTIFACT_PATH_RE.finditer(line))
+        declared.extend(_normalize_terminal_artifact_path(match.group(0)) for match in _TERMINAL_ARTIFACT_PATH_RE.finditer(line))
     return _unique_paths(declared)
 
 
+def _mentioned_terminal_artifact_paths(content: str) -> list[str]:
+    """Extract workspace paths mentioned in the final answer without treating them as proven deliverables."""
+    return _unique_paths([
+        _normalize_terminal_artifact_path(match.group(0))
+        for match in _TERMINAL_ARTIFACT_PATH_RE.finditer(str(content or ""))
+    ])
+
+
+def _is_user_visible_terminal_artifact_path(path: str) -> bool:
+    normalized = _normalize_terminal_artifact_path(path)
+    if not normalized:
+        return False
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or parts[0] not in {"workspace", "runtime_artifacts"}:
+        return False
+    lowered_parts = [part.lower() for part in parts]
+    if any(part.startswith(".") for part in lowered_parts):
+        return False
+    basename = lowered_parts[-1]
+    if basename.startswith(("scratch", "tmp", "temp")):
+        return False
+    if any(part in {"scratch", "tmp", "temp", "logs", "debug"} for part in lowered_parts[1:-1]):
+        return False
+    if basename.endswith(".log"):
+        return False
+    return True
+
+
+def _terminal_artifact_candidate_paths(content: str) -> list[str]:
+    return _unique_paths([*_declared_terminal_artifact_paths(content), *_mentioned_terminal_artifact_paths(content)])
+
+
 def _terminal_artifact_paths_for_turn(runtime_session_context: Any, content: str = "") -> list[str]:
-    """Return model-declared final artifacts that the platform can prove were written this turn."""
-    current_turn_writes = set(_terminal_file_change_paths_for_turn(runtime_session_context))
-    return [path for path in _declared_terminal_artifact_paths(content) if path in current_turn_writes]
+    """Return final artifacts that the platform can prove were written this turn."""
+    current_turn_write_paths = _terminal_file_change_paths_for_turn(runtime_session_context)
+    current_turn_writes = set(current_turn_write_paths)
+    candidates = _terminal_artifact_candidate_paths(content)
+    attached = [
+        path
+        for path in candidates
+        if path in current_turn_writes and _is_user_visible_terminal_artifact_path(path)
+    ]
+    if attached:
+        return attached
+    if candidates:
+        return []
+    visible_writes = [path for path in current_turn_write_paths if _is_user_visible_terminal_artifact_path(path)]
+    return visible_writes if len(visible_writes) == 1 else []
 
 
 def _rejected_terminal_artifact_paths_for_turn(runtime_session_context: Any, content: str = "") -> list[str]:
-    """Return declared artifacts rejected because they are not current-turn writes."""
+    """Return final-answer artifact candidates rejected by current-turn provenance or visibility."""
     current_turn_writes = set(_terminal_file_change_paths_for_turn(runtime_session_context))
-    return [path for path in _declared_terminal_artifact_paths(content) if path not in current_turn_writes]
+    return [
+        path
+        for path in _terminal_artifact_candidate_paths(content)
+        if path not in current_turn_writes or not _is_user_visible_terminal_artifact_path(path)
+    ]
 
 
 def _terminal_artifact_prompt_suffix_for_turn() -> str:

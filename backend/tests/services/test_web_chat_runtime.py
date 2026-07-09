@@ -345,7 +345,7 @@ def test_conversation_reload_surfaces_malformed_tool_call_record() -> None:
     ]
 
 
-def test_terminal_artifact_paths_require_model_declared_current_turn_writes():
+def test_terminal_artifact_paths_require_current_turn_provenance():
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import SessionContext
 
@@ -373,6 +373,41 @@ def test_terminal_artifact_paths_require_model_declared_current_turn_writes():
             ]
         ),
     ) == ["workspace/new.md"]
+
+    assert runtime._terminal_artifact_paths_for_turn(
+        context,
+        "完成，最终文档在 `workspace/scratch.md`。",
+    ) == []
+
+
+def test_terminal_artifact_paths_accept_final_summary_mentions_and_single_doc_fallback():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import SessionContext
+
+    context = SessionContext()
+    context.begin_turn()
+    context.track_file_write("workspace/report.md")
+    context.track_file_write(".ultra/debug/subagent-log.jsonl")
+    context.track_file_write("workspace/scratch.md")
+
+    assert runtime._terminal_artifact_paths_for_turn(
+        context,
+        "已完成，最终文档见 `workspace/report.md`；旧稿在 workspace/old.md。",
+    ) == ["workspace/report.md"]
+    assert runtime._rejected_terminal_artifact_paths_for_turn(
+        context,
+        "已完成，最终文档见 `workspace/report.md`；旧稿在 workspace/old.md。",
+    ) == ["workspace/old.md"]
+
+    single_doc_context = SessionContext()
+    single_doc_context.begin_turn()
+    single_doc_context.track_file_write("workspace/final-report.md")
+    single_doc_context.track_file_write(".ultra/compact-snapshot.md")
+    single_doc_context.track_file_write("workspace/scratch-notes.md")
+
+    assert runtime._terminal_artifact_paths_for_turn(single_doc_context, "已完成。") == [
+        "workspace/final-report.md"
+    ]
 
 
 @pytest.mark.asyncio

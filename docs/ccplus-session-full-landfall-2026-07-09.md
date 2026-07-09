@@ -476,6 +476,8 @@ cd backend && source .venv/bin/activate && ruff check \
 
 ### G1. Final summary delivery hardening
 
+状态：已完成
+
 裁决：
 
 - artifact delivery 的来源扩展为 `explicit marker OR final answer mentioned current-turn workspace path OR final-summary single-document fallback`。
@@ -487,6 +489,28 @@ cd backend && source .venv/bin/activate && ruff check \
 - `workspace/report.md` 是本 turn 写入，final answer 只写“见 workspace/report.md”时，必须产生 `artifact_delivery`。
 - final answer 没有路径但本 turn 只写入一个用户文档时，必须产生 artifact delivery。
 - final answer 提到旧文件时，必须进入 rejected list，不能变成 current session deliverable。
+
+文件：
+
+- `backend/app/services/web_chat_runtime.py`
+- `backend/tests/services/test_web_chat_runtime.py`
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_web_chat_runtime.py::test_terminal_artifact_paths_require_current_turn_provenance \
+  tests/services/test_web_chat_runtime.py::test_terminal_artifact_paths_accept_final_summary_mentions_and_single_doc_fallback \
+  tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables \
+  tests/services/test_web_chat_runtime.py::test_finalize_web_chat_run_records_file_changes_side_channel \
+  -q
+# 4 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/web_chat_runtime.py \
+  tests/services/test_web_chat_runtime.py
+# All checks passed!
+```
 
 ### G2. Run process projection hardening
 

@@ -60,21 +60,20 @@ def test_no_second_semantic_truth_sources_are_writable() -> None:
 
     assert not (_P("app/memory/understanding_store.py").exists())
     understanding_store = 'record() is disabled contradict() writes are disabled'  # retired module contract
-    extract_queue_replay = _read("app/services/extract_queue_replay.py")
     extract_agent = _read("app/services/extract_agent.py")
     heartbeat = _read("app/services/heartbeat.py")
-    self_evolution_audit = _read("app/services/self_evolution_audit.py")
     retriever = _read("app/memory/retriever.py")
 
     assert "record() is disabled" in understanding_store
     assert "contradict()" in understanding_store
     assert "writes are disabled" in understanding_store
-    assert "HIVE_ENABLE_LEGACY_EXTRACT_REPLAY" in extract_queue_replay
+    # Retired outright in the F slimming pass — nonexistence is the guarantee.
+    assert not _P("app/services/extract_queue_replay.py").exists()
+    assert not _P("app/services/self_evolution_audit.py").exists()
     assert "HIVE_ENABLE_LEGACY_T2_BACKFILL" in extract_agent
     assert "schedule_extract disabled" in extract_agent
     assert "canonical T2 uses Segment Packages" in extract_agent
     assert "load_t2_entries" not in heartbeat
-    assert "load_t2_entries" not in self_evolution_audit
     assert "include_derived_sources" not in retriever  # derived wiki opt-in retired at C7
     assert "source_type\": \"understanding_store\"" not in retriever
 
@@ -93,9 +92,8 @@ def test_skill_creation_has_single_candidate_package_path() -> None:
 
 
 def test_charter_approval_stages_soul_candidate_instead_of_direct_soul_write() -> None:
-    charter_proposals = _read("app/services/charter_proposals.py")
+    # The charter-proposals service was retired in the F slimming pass; the
+    # strongest direct-soul-write guarantee it can give is nonexistence.
+    from pathlib import Path as _P
 
-    assert '"memory" / ".staging" / "soul_candidates"' in charter_proposals
-    assert "pending_soul_writer" in charter_proposals
-    assert "soul_path.write_text" not in charter_proposals
-    assert "soul.md` directly" in charter_proposals
+    assert not _P("app/services/charter_proposals.py").exists()

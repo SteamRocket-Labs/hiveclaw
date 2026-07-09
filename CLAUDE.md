@@ -346,7 +346,7 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 | Session calibration | `services/session_feedback.py`, `models/session_feedback.py`, `api/chat_sessions.py` | Useful/misleading session feedback is persisted and re-enters durable memory only through governed write paths. |
 | Memory hygiene | `memory/hygiene.py`, `tools/workspace.py`, `scripts/repair_memory_hygiene.py` | Legacy shadow stores, dead stubs, and missing lifecycle metadata are repaired through reversible shared reports. |
 | Coordination runtime | `agents/coordination.py`, `agents/orchestrator.py` | Delegation uses Lease/Signal; confirm-first actions create Checkpoint; Sentinel emits Signal or Checkpoint for trigger-like open loops. |
-| Proactive steward loop | `services/proactive_employee_loop.py`, `services/heartbeat.py` | Heartbeat may prepare low-risk artifacts; external-visible actions require Checkpoint. |
+| Proactive steward loop | `services/heartbeat.py` | Heartbeat may prepare low-risk artifacts; external-visible actions require Checkpoint. |
 
 **Key files:**
 

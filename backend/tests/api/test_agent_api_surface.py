@@ -12,7 +12,6 @@ def test_agent_and_template_api_surface_no_longer_exposes_legacy_autonomy_fields
     advanced_api_source = (project_root / "backend/app/api/advanced.py").read_text()
     model_source = (project_root / "backend/app/models/agent.py").read_text()
     main_source = (project_root / "backend/app/main.py").read_text()
-    template_seeder_source = (project_root / "backend/app/services/template_seeder.py").read_text()
     approval_service_path = project_root / "backend/app/services/approval_service.py"
     autonomy_service_path = project_root / "backend/app/services/autonomy_service.py"
     bootstrap_service_path = project_root / "backend/app/services/agent_bootstrap_service.py"
@@ -25,7 +24,7 @@ def test_agent_and_template_api_surface_no_longer_exposes_legacy_autonomy_fields
     assert "if data.autonomy_policy" not in agents_api_source
     assert "autonomy_policy" not in model_source
     assert "default_autonomy_policy" not in model_source
-    assert "default_autonomy_policy" not in template_seeder_source
+    assert not (project_root / "backend/app/services/template_seeder.py").exists()
     assert approval_service_path.exists()
     assert not autonomy_service_path.exists()
     assert 'agent_type: str = "native"' not in agent_create_source

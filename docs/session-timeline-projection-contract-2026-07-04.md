@@ -714,9 +714,97 @@ Historical / unattributed = diagnostic only, 默认隐藏，不进入主 Workspa
 5. Workflow tab 按 workflow root + step/leaf tree 显示。
 6. Activity tab 只保留审计/通知/raw run，不承载主要对象操作。
 
-## 9. 验收标准
+## 9. Source-Checked Durable Stream Step Contract
 
-### 9.1 运行中
+本节是 2026-07-09 对线上缺口的补充修正：用户在运行完成后只能看到 `已处理` 和工具卡，运行中出现过的 assistant 中间文本消失。这不是 UI 文案问题，而是 durable replay contract 漏项。
+
+### 9.1 CC / FreeCode baseline
+
+源代码核对：
+
+- `/Users/rocky243/vc-saas/free-code-main/src/QueryEngine.ts`
+  - accepted user prompt 在进入 query loop 前写入 transcript。
+  - query loop 对 `assistant` / `user` / `compact_boundary` 写 transcript。
+  - assistant message fire-and-forget 写入，但仍进入同一个 ordered message chain。
+- `/Users/rocky243/vc-saas/free-code-main/src/utils/messages.ts`
+  - assistant message 的多个 content block 会拆成多个 normalized message，保持 `text` / `thinking` / `tool_use` 的相对顺序。
+- `/Users/rocky243/vc-saas/free-code-main/src/components/messages/*`
+  - assistant text、assistant thinking、assistant tool use 是独立渲染单元，而不是只显示工具调用。
+
+结论：CC 的语义不是“工具调用记录 + 最终答案”，而是完整 assistant/tool/result 消息链。中间 assistant text 或 thinking 只要进入 provider message stream，就必须能被 transcript replay 还原。
+
+### 9.2 Codex baseline
+
+源代码核对：
+
+- `/tmp/openai-codex/codex-rs/app-server-protocol/src/protocol/common.rs`
+  - app-server protocol 明确定义 `item/agentMessage/delta`、`item/reasoning/textDelta`、`item/reasoning/summaryTextDelta`、`item/started`、`item/completed`。
+- `/tmp/openai-codex/codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+  - persisted rollout replay 和 running thread rejoin 共用 reducer。
+  - `AgentMessage` 进入 `ThreadItem::AgentMessage`。
+  - `AgentReasoning` / `AgentReasoningRawContent` 进入 `ThreadItem::Reasoning`。
+  - `ExecCommandBegin/End` 等工具事件进入对应 command/tool item，按 turn_id/upsert 保持原始 turn 归属。
+- `/tmp/openai-codex/codex-rs/tui/src/thread_transcript.rs`
+  - `ThreadItem::AgentMessage` 渲染为 `AgentMarkdownCell`。
+  - `ThreadItem::Reasoning` 渲染为 `ReasoningSummaryCell`。
+  - command/tool/file/search 等 item 走 fallback 或专用 history cell。
+- `/tmp/openai-codex/codex-rs/tui/src/history_cell/mod.rs`
+  - `HistoryCell` 是 committed transcript 和 streaming active cell 的共同显示单位。
+
+结论：Codex 的精致化不是隐藏中间过程，而是把 provider/runtime event 降维成 typed turn items，再由 history cell 展示。live streaming 和 replay transcript 必须共享同一套 item 语义。
+
+### 9.3 Hive current gap
+
+当前 Hive 已有：
+
+- `web_chat_runtime._WebChatStreamMicroBatcher` 把 `chunk` / `thinking` 合并后发 websocket。
+- `chatRuntime.applyTranscriptEvent` 能消费 `thinking` / `chunk`。
+- `chatDisclosureReducer` 能把带 `thinking` 的 assistant message 投影成 run process step。
+
+缺口：
+
+1. 后端 `send_stream_event()` 只 broadcast `chunk` / `thinking`，没有写 `chat_transcript_events`。
+2. 工具调用和 file changes 已持久化，所以 completed replay 只剩工具卡。
+3. 前端只会封存“空 content + thinking”的 streaming placeholder；普通 assistant text delta 在工具调用前不会转成 durable process step。
+4. final answer 与 pre-tool assistant narration 缺少明确边界，导致运行中看见、完成后消失。
+
+### 9.4 Required fix
+
+后端：
+
+1. `chunk` / `thinking` 必须在 micro-batcher flush 后写入 `chat_transcript_events`。
+2. 这些事件必须：
+   - `actor_type=assistant`
+   - `role=assistant`
+   - `event_type=chunk|thinking`
+   - `materialize_chat_message=false`
+   - `run_id/runtime_task_id` 绑定当前 run
+   - `parts` 使用现有 `text_delta` / `reasoning` 结构
+3. reset tombstone 只用于 live retry，不进入 durable transcript。
+4. 持久化失败必须记录 warning，但不能让 websocket live stream 或 runtime run 失败。
+
+前端：
+
+1. transcript replay 遇到 `chunk` 时继续创建 streaming assistant placeholder。
+2. 当下一个 tool/event step 到来时，如果末尾 assistant placeholder 有非空 `content`，必须把 `content` 转入 `thinking`/process-note，并移除 `_streaming`。
+3. final `assistant_message` / `done` 到来时，末尾 streaming assistant 仍由 final answer 替换，避免把最终回答 delta 复制成过程 step。
+4. `thinking -> tool -> chunk -> tool -> final answer` 必须投影为：
+   - run process step: thinking/process-note
+   - run process step: tool
+   - run process step: process-note
+   - run process step: tool
+   - separate final answer cell
+
+### 9.5 Non-goals
+
+1. 不展示 provider raw chain-of-thought。
+2. 不把最终回答 delta 复制成过程 step。
+3. 不把 tool raw output 展开成默认正文。
+4. 不改变 CC/FreeCode 消息链语义，只补 Hive replay/presentation 的断点。
+
+## 10. 验收标准
+
+### 10.1 运行中
 
 1. 用户发起请求后，run process 默认展开。
 2. Thinking 以 step 形式出现在最上方，并在 tool call 后仍留存。
@@ -724,7 +812,7 @@ Historical / unattributed = diagnostic only, 默认隐藏，不进入主 Workspa
 4. 工具调用按 step 出现，不挤占 final answer。
 5. 右侧 Runtime rail 显示 active state。
 
-### 9.2 完成后
+### 10.2 完成后
 
 1. run process 默认折叠为 `已处理 1分52秒 >`。
 2. 展开后完整 `run_process.steps[]` sequence 仍在：`Thinking A -> Tool A -> Thinking B -> Tool B` 的顺序不能变化。
@@ -733,7 +821,7 @@ Historical / unattributed = diagnostic only, 默认隐藏，不进入主 Workspa
 5. File Changes card 在有文件改动时显示在最终回答区域，不随 run process 折叠消失；无改动时不显示。
 6. 右侧 Workspace 显示相同 current session deliverables。
 
-### 9.3 交付物
+### 10.3 交付物
 
 1. final answer 里的 `DELIVERABLE:` 文本不会被前端 regex 伪装成链接。
 2. 只有 artifact part 可点击。
@@ -741,7 +829,7 @@ Historical / unattributed = diagnostic only, 默认隐藏，不进入主 Workspa
 4. 点击非 previewable artifact 走下载/新 tab。
 5. 历史文件不进入 current session deliverables。
 
-### 9.4 文档预览
+### 10.4 文档预览
 
 1. 中间 artifact card 与右栏 Workspace row 打开同一个 inspector。
 2. inspector 有下载、新 tab 打开、复制 reference、关闭。
@@ -749,7 +837,7 @@ Historical / unattributed = diagnostic only, 默认隐藏，不进入主 Workspa
 4. snapshot 可用时打开交付快照。
 5. current-file fallback 被明确标注。
 
-### 9.5 右侧 Runtime 对象
+### 10.5 右侧 Runtime 对象
 
 1. 普通 sub-agent worker 只显示 Inspect/detail，不显示 Continue；无 `child_session_id` 时也不显示 Enter。
 2. Agent Team member 有 `chat_session_id` 时可以进入 child session/window。
@@ -757,7 +845,7 @@ Historical / unattributed = diagnostic only, 默认隐藏，不进入主 Workspa
 4. Dynamic Workflow leaf 无 `child_session_id` 时只显示 View detail。
 5. Team / Workers / Workflow / Activity 的对象职责不混用。
 
-### 9.6 回归命令
+### 10.6 回归命令
 
 ```bash
 cd frontend
@@ -780,7 +868,7 @@ source .venv/bin/activate
 pytest tests/services/test_web_chat_runtime.py -q -k "artifact or file_changes or thinking"
 ```
 
-## 10. 非目标
+## 11. 非目标
 
 1. 本文不要求把 agent workspace 全目录浏览器塞进右侧 rail。
 2. 本文不要求展示 provider raw chain-of-thought。
@@ -789,7 +877,7 @@ pytest tests/services/test_web_chat_runtime.py -q -k "artifact or file_changes o
 5. 本文不处理性能优化；性能优化见 `docs/session-rendering-overhaul-plan-2026-07-03.md`。
 6. 本文不把 Dynamic Workflow leaf 强行改造成 ChatSession；除非后端显式提供 `child_session_id`。
 
-## 11. 相关文档
+## 12. 相关文档
 
 1. `docs/ccplus-session-ux-contract-2026-06-26.md`
    - Session UX 总契约：工作判断优先、工具折叠、artifact inspector。

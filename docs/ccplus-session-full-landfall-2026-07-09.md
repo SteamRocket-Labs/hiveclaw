@@ -2,7 +2,7 @@
 
 日期：2026-07-09
 
-状态：落地中。本文是本轮唯一总控文档；所有实现提交必须回填本文的状态、代码证据和验证命令。
+状态：已完成。本文是本轮唯一总控文档；所有实现提交已回填状态、代码证据和验证命令。
 
 范围：Session 从上下文组装、Agent Loop 启动、provider request、streaming、tool call、tool result、cache、token ledger、compaction、final answer、transcript/T0、resume/replay、Workbench 观测，到 Session 结束的完整链路。
 
@@ -418,7 +418,7 @@ cd backend && source .venv/bin/activate && ruff check \
 
 ### Commit F：全链路回归
 
-状态：待落地
+状态：已完成
 
 验收：
 
@@ -432,6 +432,26 @@ cd backend && source .venv/bin/activate && pytest \
   tests/services/test_web_chat_runtime.py \
   tests/services/test_session_control_plane.py \
   -q
+# 128 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/runtime/provider_prompt_ledger.py \
+  app/runtime/tool_evidence_ledger.py \
+  app/kernel/final_answer_evidence.py \
+  app/kernel/engine.py \
+  app/kernel/loop_guard.py \
+  app/services/runtime_budget_llm.py \
+  app/services/session_control_plane.py \
+  app/services/web_chat_runtime.py \
+  tests/runtime/test_provider_prompt_ledger.py \
+  tests/runtime/test_tool_evidence_ledger.py \
+  tests/runtime/test_session_context_controller.py \
+  tests/kernel/test_tool_evidence_honesty.py \
+  tests/kernel/test_loop_guard.py \
+  tests/services/test_runtime_budget_llm.py \
+  tests/services/test_session_control_plane.py \
+  tests/services/test_web_chat_runtime.py
+# All checks passed!
 ```
 
 ## 6. 落地日志
@@ -443,4 +463,4 @@ cd backend && source .venv/bin/activate && pytest \
 | C | 已完成 | ToolEvidenceLedger + final answer verifier；`engine.py` final path 从 `collected_parts` 构建结构化工具证据 summary，不再依赖 prompt-export 例外补丁 | `pytest tests/kernel/test_tool_evidence_honesty.py tests/runtime/test_tool_evidence_ledger.py -q` -> `8 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | D | 已完成 | malformed `tool_call` replay 变成 visible repair system message；LoopGuard 增加 provider-call 成本/cache 压力观测；engine preflight 不再默认豁免 `web_search/web_fetch` 大结果 | targeted pytest -> `19 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | E | 已完成 | kernel 发出 `provider_call_ledger` session-context event；web runtime 持久化；Workbench 聚合 latest/calls，展示 projected input、tool schema tokens、cache read/write/miss 和 tool count | `pytest tests/services/test_session_control_plane.py -q` -> `17 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
-| F | 待落地 | 全链路回归 | 待补 |
+| F | 已完成 | 全链路回归；覆盖 provider prompt ledger、tool evidence、session context controller、runtime budget、web chat replay、Workbench provider-call ledger | `pytest ... -q` -> `128 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |

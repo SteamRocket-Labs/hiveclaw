@@ -8,7 +8,7 @@ amplify.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,7 +50,17 @@ _POLICY_SCOPE_RANK = {
     "platform_default": 100,
 }
 
-_BUILTIN_PROFILE_DEFAULTS: dict[str, dict[str, int | str]] = {
+# §10 breaker defaults are calibrated from the Ivy incident thresholds that were
+# previously hardcoded in subagent_wake_consumer (needs_reconciliation=3,
+# failures=5, child_failure_ratio=0.5). §9.1 does not tabulate these three, so
+# they carry the incident-calibrated values across every profile; max_parent_invocations
+# follows the §9.1 column (interactive/scheduled=16, workflow=64, agent_team=24).
+_BUILTIN_BREAKER_MAX_FAILURES = 5
+_BUILTIN_BREAKER_MAX_NEEDS_RECONCILIATION = 3
+_BUILTIN_BREAKER_MAX_CHILD_FAILURE_RATIO = 0.5
+_MIN_CHILDREN_FOR_FAILURE_RATIO = 8
+
+_BUILTIN_PROFILE_DEFAULTS: dict[str, dict[str, int | float | str]] = {
     "interactive": {
         "max_tokens": 50_000_000,
         "max_cache_miss_tokens": 10_000_000,
@@ -60,6 +70,10 @@ _BUILTIN_PROFILE_DEFAULTS: dict[str, dict[str, int | str]] = {
         "max_background_tasks": 24,
         "max_continuation_wakes": 64,
         "max_provider_calls": 300,
+        "max_parent_invocations": 16,
+        "max_failures": _BUILTIN_BREAKER_MAX_FAILURES,
+        "max_needs_reconciliation": _BUILTIN_BREAKER_MAX_NEEDS_RECONCILIATION,
+        "max_child_failure_ratio": _BUILTIN_BREAKER_MAX_CHILD_FAILURE_RATIO,
         "default_child_token_reservation": 200_000,
         "default_llm_call_token_reservation": 200_000,
         "fail_mode": "require_confirmation",
@@ -73,6 +87,10 @@ _BUILTIN_PROFILE_DEFAULTS: dict[str, dict[str, int | str]] = {
         "max_background_tasks": 32,
         "max_continuation_wakes": 64,
         "max_provider_calls": 240,
+        "max_parent_invocations": 16,
+        "max_failures": _BUILTIN_BREAKER_MAX_FAILURES,
+        "max_needs_reconciliation": _BUILTIN_BREAKER_MAX_NEEDS_RECONCILIATION,
+        "max_child_failure_ratio": _BUILTIN_BREAKER_MAX_CHILD_FAILURE_RATIO,
         "default_child_token_reservation": 250_000,
         "default_llm_call_token_reservation": 250_000,
         "fail_mode": "summary_only",
@@ -86,6 +104,10 @@ _BUILTIN_PROFILE_DEFAULTS: dict[str, dict[str, int | str]] = {
         "max_background_tasks": 256,
         "max_continuation_wakes": 512,
         "max_provider_calls": 2_000,
+        "max_parent_invocations": 64,
+        "max_failures": _BUILTIN_BREAKER_MAX_FAILURES,
+        "max_needs_reconciliation": _BUILTIN_BREAKER_MAX_NEEDS_RECONCILIATION,
+        "max_child_failure_ratio": _BUILTIN_BREAKER_MAX_CHILD_FAILURE_RATIO,
         "default_child_token_reservation": 300_000,
         "default_llm_call_token_reservation": 300_000,
         "fail_mode": "hard_stop",
@@ -99,6 +121,10 @@ _BUILTIN_PROFILE_DEFAULTS: dict[str, dict[str, int | str]] = {
         "max_background_tasks": 16,
         "max_continuation_wakes": 96,
         "max_provider_calls": 500,
+        "max_parent_invocations": 24,
+        "max_failures": _BUILTIN_BREAKER_MAX_FAILURES,
+        "max_needs_reconciliation": _BUILTIN_BREAKER_MAX_NEEDS_RECONCILIATION,
+        "max_child_failure_ratio": _BUILTIN_BREAKER_MAX_CHILD_FAILURE_RATIO,
         "default_child_token_reservation": 250_000,
         "default_llm_call_token_reservation": 250_000,
         "fail_mode": "require_confirmation",
@@ -163,6 +189,10 @@ class RuntimeBudgetRunCreate:
     max_background_tasks: int | None = None
     max_continuation_wakes: int | None = None
     max_provider_calls: int | None = None
+    max_failures: int | None = None
+    max_needs_reconciliation: int | None = None
+    max_child_failure_ratio: float | None = None
+    max_parent_invocations: int | None = None
     expires_at: datetime | None = None
     policy_snapshot: dict | None = None
 
@@ -262,6 +292,81 @@ def decide_budget_service_failure(context: BudgetFailureContext) -> BudgetFailur
     )
 
 
+# §10 circuit breaker: child terminal statuses used to materialize the failure /
+# reconciliation counters from ground truth at the parent-wake boundary.
+_BREAKER_CHILD_TERMINAL_STATUSES = ("completed", "failed", "killed", "needs_reconciliation")
+_BREAKER_FAILED_STATUSES = ("failed", "killed")
+
+
+def evaluate_circuit_breaker(
+    *,
+    used: Mapping[str, int],
+    reserved: Mapping[str, int],
+    maxes: Mapping[str, float | int | None],
+    failures: int,
+    needs_reconciliation_count: int,
+    parent_invocations: int,
+    child_failure_ratio: float | None = None,
+    total_children: int = 0,
+    min_children_for_ratio: int = _MIN_CHILDREN_FOR_FAILURE_RATIO,
+) -> list[str]:
+    """Pure §10 circuit-breaker decision.
+
+    Returns the list of tripped dimension reasons (empty when the run is still
+    within budget). Token dimensions count ``used + reserved`` risk; count
+    dimensions count ``used`` only. ``child_failure_ratio`` is evaluated only
+    when the caller supplies it (parent-wake path) and enough children have
+    reached a terminal state to make the ratio statistically meaningful.
+    """
+
+    tripped: list[str] = []
+    for dimension in _DIMENSIONS:
+        max_value = maxes.get(dimension)
+        if max_value is None:
+            continue
+        consumed = int(used.get(dimension, 0) or 0)
+        if dimension in ("tokens", "cache_miss_tokens"):
+            consumed += int(reserved.get(dimension, 0) or 0)
+        if consumed >= max_value:
+            tripped.append(f"{dimension}:{consumed}>={int(max_value)}")
+
+    max_parent = maxes.get("parent_invocations")
+    if max_parent is not None and parent_invocations >= max_parent:
+        tripped.append(f"parent_invocations:{parent_invocations}>={int(max_parent)}")
+
+    max_failures = maxes.get("failures")
+    if max_failures is not None and failures >= max_failures:
+        tripped.append(f"failures:{failures}>={int(max_failures)}")
+
+    max_needs = maxes.get("needs_reconciliation")
+    if max_needs is not None and needs_reconciliation_count >= max_needs:
+        tripped.append(f"needs_reconciliation:{needs_reconciliation_count}>={int(max_needs)}")
+
+    max_ratio = maxes.get("child_failure_ratio")
+    if (
+        max_ratio is not None
+        and child_failure_ratio is not None
+        and total_children >= min_children_for_ratio
+        and child_failure_ratio >= max_ratio
+    ):
+        tripped.append(f"child_failure_ratio:{child_failure_ratio:.3f}>={max_ratio}")
+
+    return tripped
+
+
+def _breaker_status_for_fail_mode(fail_mode: str | None) -> str:
+    """Map a policy fail_mode to the run status a tripped breaker transitions to.
+
+    ``summary_only`` and ``require_confirmation`` pause work amplification but
+    leave a lane for one final summarizing invocation / approval; every other
+    mode (``hard_stop`` and the ``fail_closed`` default) hard-stops the run.
+    """
+
+    if fail_mode in ("summary_only", "require_confirmation"):
+        return "summary_only"
+    return "hard_stopped"
+
+
 def _positive_amounts(payload: RuntimeBudgetReservation | RuntimeBudgetSettlement) -> dict[str, int]:
     if isinstance(payload, RuntimeBudgetSettlement):
         values = {
@@ -333,6 +438,10 @@ def _builtin_policy(lookup: RuntimeBudgetPolicyLookup) -> RuntimeBudgetPolicy:
         max_background_tasks=int(defaults["max_background_tasks"]),
         max_continuation_wakes=int(defaults["max_continuation_wakes"]),
         max_provider_calls=int(defaults["max_provider_calls"]),
+        max_failures=int(defaults["max_failures"]),
+        max_needs_reconciliation=int(defaults["max_needs_reconciliation"]),
+        max_child_failure_ratio=float(defaults["max_child_failure_ratio"]),
+        max_parent_invocations=int(defaults["max_parent_invocations"]),
         default_child_token_reservation=int(defaults["default_child_token_reservation"]),
         default_llm_call_token_reservation=int(defaults["default_llm_call_token_reservation"]),
         policy_json={"source": "built_in_fallback", "profile": profile, "requested_profile": requested_profile},
@@ -407,6 +516,10 @@ class RuntimeBudgetService:
                 max_background_tasks=payload.max_background_tasks,
                 max_continuation_wakes=payload.max_continuation_wakes,
                 max_provider_calls=payload.max_provider_calls,
+                max_failures=payload.max_failures,
+                max_needs_reconciliation=payload.max_needs_reconciliation,
+                max_child_failure_ratio=payload.max_child_failure_ratio,
+                max_parent_invocations=payload.max_parent_invocations,
                 expires_at=payload.expires_at,
                 policy_snapshot=policy_snapshot,
             )
@@ -544,6 +657,11 @@ class RuntimeBudgetService:
                     metadata=settlement.metadata,
                 )
             )
+            # §10 breaker: after real usage is applied, stop/summary-only the run
+            # if any accumulation or counter dimension is now at/over its cap.
+            tripped = self._breaker_tripped(run)
+            if tripped:
+                await self._apply_breaker(db, run, tripped, actor="settlement", source=settlement.reason)
             await db.commit()
 
     async def reap_expired_runs(self, *, now: datetime | None = None, limit: int = 100) -> int:
@@ -912,6 +1030,57 @@ class RuntimeBudgetService:
             await db.refresh(run)
             return run
 
+    async def evaluate_wake_breaker(
+        self,
+        *,
+        tenant_id: uuid.UUID | None,
+        budget_run_id: uuid.UUID,
+    ) -> str | None:
+        """Parent-wake §10 breaker (enforcement point ②).
+
+        Materializes the child failure / reconciliation counters from ground
+        truth, counts this parent invocation, then trips the policy-driven
+        breaker if any dimension is exhausted. Returns the circuit-break reason
+        when the wake must not proceed, else ``None`` (parent may continue).
+
+        Thresholds come from the run's policy snapshot (``max_failures`` /
+        ``max_needs_reconciliation`` / ``max_child_failure_ratio`` /
+        ``max_parent_invocations``), not hardcoded constants.
+        """
+
+        async with self._budget_session("evaluate_wake_breaker") as db:
+            run = await self._lock_run(db, budget_run_id)
+            if tenant_id is not None and run.tenant_id is not None and run.tenant_id != tenant_id:
+                return None
+            if run.status != "active":
+                return run.terminal_reason or f"budget run is {run.status}"
+            rows = (
+                await db.execute(
+                    select(RuntimeTask.status).where(
+                        RuntimeTask.budget_run_id == budget_run_id,
+                        RuntimeTask.task_type == "subagent",
+                        RuntimeTask.status.in_(_BREAKER_CHILD_TERMINAL_STATUSES),
+                    )
+                )
+            ).all()
+            statuses = [str(row[0]) for row in rows]
+            total_children = len(statuses)
+            failed = sum(1 for status in statuses if status in _BREAKER_FAILED_STATUSES)
+            needs_reconciliation = sum(1 for status in statuses if status == "needs_reconciliation")
+            # Real write points: materialize breaker counters from ground truth
+            # and count this parent invocation before evaluating the breaker.
+            run.failures = failed
+            run.needs_reconciliation_count = needs_reconciliation
+            run.parent_invocations = (run.parent_invocations or 0) + 1
+            ratio = (failed / total_children) if total_children else None
+            tripped = self._breaker_tripped(run, child_failure_ratio=ratio, total_children=total_children)
+            if not tripped:
+                await db.commit()
+                return None
+            await self._apply_breaker(db, run, tripped, actor="subagent_wake_consumer", source="parent_wake")
+            await db.commit()
+            return "runtime_budget_circuit_break:" + ",".join(tripped)
+
     async def set_tenant_enforcement_mode(
         self,
         *,
@@ -1049,6 +1218,87 @@ class RuntimeBudgetService:
                 result_summary=result_summary,
             )
         )
+
+    def _breaker_tripped(
+        self,
+        run: RuntimeBudgetRun,
+        *,
+        child_failure_ratio: float | None = None,
+        total_children: int = 0,
+    ) -> list[str]:
+        """Read the §10 breaker dimensions off the run row and return trips."""
+
+        used = {dimension: getattr(run, f"used_{dimension}", 0) or 0 for dimension in _DIMENSIONS}
+        reserved = {
+            dimension: getattr(run, f"reserved_{dimension}", 0) or 0 for dimension in ("tokens", "cache_miss_tokens")
+        }
+        maxes: dict[str, float | int | None] = {
+            dimension: getattr(run, f"max_{dimension}", None) for dimension in _DIMENSIONS
+        }
+        maxes["parent_invocations"] = run.max_parent_invocations
+        maxes["failures"] = run.max_failures
+        maxes["needs_reconciliation"] = run.max_needs_reconciliation
+        maxes["child_failure_ratio"] = run.max_child_failure_ratio
+        return evaluate_circuit_breaker(
+            used=used,
+            reserved=reserved,
+            maxes=maxes,
+            failures=run.failures or 0,
+            needs_reconciliation_count=run.needs_reconciliation_count or 0,
+            parent_invocations=run.parent_invocations or 0,
+            child_failure_ratio=child_failure_ratio,
+            total_children=total_children,
+        )
+
+    async def _apply_breaker(
+        self,
+        db: AsyncSession,
+        run: RuntimeBudgetRun,
+        tripped: list[str],
+        *,
+        actor: str,
+        source: str | None = None,
+    ) -> str | None:
+        """Transition a tripped run per fail_mode, cancel queued work, log event."""
+
+        if run.status != "active":
+            return None
+        target = _breaker_status_for_fail_mode(run.fail_mode)
+        reason = "runtime_budget_circuit_break:" + ",".join(tripped)
+        run.status = target
+        run.terminal_reason = reason
+        run.completed_at = datetime.now(UTC)
+        if target == "hard_stopped":
+            self._clear_reserved(run)
+        await self._cancel_pending_unclaimed_tasks(
+            db,
+            run,
+            terminal_reason=reason,
+            result_summary=(
+                "Runtime budget circuit breaker moved this run to summary-only before this work was claimed."
+                if target == "summary_only"
+                else "Runtime budget circuit breaker stopped this work before it was claimed."
+            ),
+        )
+        db.add(
+            self._event(
+                run,
+                event_type="circuit_break",
+                reservation_key=None,
+                allowed=False,
+                would_deny=True,
+                reason=reason,
+                amounts={},
+                metadata={
+                    "actor": actor,
+                    "source": source,
+                    "fail_mode": run.fail_mode,
+                    "target_status": target,
+                    "tripped_dimensions": tripped,
+                },
+            )
+        )
+        return target
 
     async def _existing_event(
         self,

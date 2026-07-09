@@ -813,6 +813,10 @@ class WorkflowRuntimeService:
                     max_background_tasks=getattr(policy, "max_background_tasks", None),
                     max_continuation_wakes=getattr(policy, "max_continuation_wakes", None),
                     max_provider_calls=getattr(policy, "max_provider_calls", None),
+                    max_failures=getattr(policy, "max_failures", None),
+                    max_needs_reconciliation=getattr(policy, "max_needs_reconciliation", None),
+                    max_child_failure_ratio=getattr(policy, "max_child_failure_ratio", None),
+                    max_parent_invocations=getattr(policy, "max_parent_invocations", None),
                     policy_snapshot={
                         "policy_id": str(getattr(policy, "id", "")),
                         "scope_type": getattr(policy, "scope_type", None),

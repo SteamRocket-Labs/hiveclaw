@@ -30,12 +30,6 @@ from app.services.runtime_budget_service import (
 logger = logging.getLogger(__name__)
 
 _ACTIVE_PARENT_RUN_STATUSES = ("pending", "running", "suspended")
-_CHILD_TERMINAL_STATUSES = ("completed", "failed", "killed", "needs_reconciliation")
-_BREAKER_FAILED_STATUSES = ("failed", "killed")
-_MAX_NEEDS_RECONCILIATION_BEFORE_STOP = 3
-_MAX_FAILURES_BEFORE_STOP = 5
-_MIN_CHILDREN_FOR_FAILURE_RATIO = 8
-_MAX_CHILD_FAILURE_RATIO = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,38 +118,20 @@ async def _trip_child_failure_breaker_if_needed(
     budget_run_id: uuid.UUID,
     session_factory: Any = None,
 ) -> str | None:
-    async with tenant_scoped_session(str(tenant_id), session_factory=session_factory) as session:
-        rows = (
-            await session.execute(
-                select(RuntimeTask.status).where(
-                    RuntimeTask.budget_run_id == budget_run_id,
-                    RuntimeTask.task_type == "subagent",
-                    RuntimeTask.status.in_(_CHILD_TERMINAL_STATUSES),
-                )
-            )
-        ).all()
-    statuses = [str(row[0]) for row in rows]
-    if not statuses:
-        return None
-    total = len(statuses)
-    needs_reconciliation = statuses.count("needs_reconciliation")
-    failed = sum(1 for status in statuses if status in _BREAKER_FAILED_STATUSES)
-    failure_ratio = failed / total if total else 0
-    reason: str | None = None
-    if needs_reconciliation >= _MAX_NEEDS_RECONCILIATION_BEFORE_STOP:
-        reason = f"runtime_child_needs_reconciliation_breaker:{needs_reconciliation}"
-    elif failed >= _MAX_FAILURES_BEFORE_STOP and total >= _MIN_CHILDREN_FOR_FAILURE_RATIO and failure_ratio >= _MAX_CHILD_FAILURE_RATIO:
-        reason = f"runtime_child_failure_ratio_breaker:{failed}/{total}"
-    if reason is None:
-        return None
+    """Policy-driven §10 parent-wake breaker (enforcement point ②).
+
+    Delegates to ``RuntimeBudgetService.evaluate_wake_breaker`` so the failure /
+    reconciliation / child-failure-ratio / parent-invocation thresholds come
+    from the run's policy snapshot instead of hardcoded module constants, and so
+    the run's ``failures`` / ``needs_reconciliation_count`` / ``parent_invocations``
+    counters are materialized from ground truth at the wake boundary.
+    """
+
     service_kwargs = {"session_factory": session_factory} if session_factory is not None else {}
-    stopped = await RuntimeBudgetService(**service_kwargs).hard_stop_run(
+    return await RuntimeBudgetService(**service_kwargs).evaluate_wake_breaker(
         tenant_id=tenant_id,
         budget_run_id=budget_run_id,
-        reason=reason,
-        actor="subagent_wake_consumer",
     )
-    return reason if stopped is not None else None
 
 
 def _parent_session_id_from_wake_thread(thread_id: str | None) -> uuid.UUID | None:

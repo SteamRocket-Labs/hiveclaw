@@ -94,8 +94,10 @@ class RuntimeTask(Base):
     budget_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("runtime_budget_runs.id"), nullable=True, index=True
     )
+    root_runtime_task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     budget_reservation_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
     budget_admission_status: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    budget_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     budget_terminal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Metadata

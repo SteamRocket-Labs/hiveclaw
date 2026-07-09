@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -47,6 +47,12 @@ class RuntimeBudgetPolicy(Base):
     max_background_tasks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_continuation_wakes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_provider_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # §10 circuit-breaker dimensions (failure / reconciliation / parent-wake guards)
+    max_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_needs_reconciliation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_child_failure_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_parent_invocations: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     default_child_token_reservation: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=50_000, server_default="50000"
@@ -100,6 +106,12 @@ class RuntimeBudgetRun(Base):
     max_continuation_wakes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_provider_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # §10 circuit-breaker dimensions, snapshotted from policy at run creation
+    max_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_needs_reconciliation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_child_failure_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_parent_invocations: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     reserved_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     used_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     reserved_cache_miss_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
@@ -116,6 +128,11 @@ class RuntimeBudgetRun(Base):
     used_continuation_wakes: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     reserved_provider_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     used_provider_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+    # §10 breaker counters with real write points (child failure / reconciliation / parent wake)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    needs_reconciliation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    parent_invocations: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     policy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

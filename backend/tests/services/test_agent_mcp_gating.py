@@ -115,10 +115,9 @@ def _patch_environment(monkeypatch, module, session_factory):
     monkeypatch.setattr(module, "_agent_has_feishu", no_feishu_channel)
     monkeypatch.setattr(module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
     monkeypatch.setattr(module, "_filter_unavailable_tools", passthrough_available_tools)
-    # get_tenant_pack_policies is left real (consumes the queued _ScalarResult(None),
-    # mirroring test_agent_tools.py). MCP server packs aren't in the manifest, so force
-    # the orthogonal pack gate open to isolate the new assignment-table gating.
-    monkeypatch.setattr(module, "is_pack_enabled", lambda _policies, _pack: True)
+    # The legacy is_pack_enabled shim was retired with the F slimming pass —
+    # runtime tool visibility gates on capability-group policy, so there is no
+    # orthogonal pack gate left to force open here.
 
 
 @pytest.mark.asyncio

@@ -97,7 +97,7 @@ def _override(*, agent_id, server_id, tool_name, mode):
 
 
 def _patch_pack_open(monkeypatch, module):
-    monkeypatch.setattr(module, "is_pack_enabled", lambda _policies, _pack: True)
+    # Legacy is_pack_enabled shim retired (F slimming); nothing to force open.
 
     # RLS 阶段1: list_agent_mcp_deferred_tools / get_agent_tools_for_llm now
     # resolve the agent's tenant and open a tenant-scoped session. Route

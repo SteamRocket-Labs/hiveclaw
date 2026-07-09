@@ -102,7 +102,7 @@ CC semantic baseline
 
 2026-07-09 实装证据：
 
-- `backend/app/services/skill_distiller.py`：`write_skill_candidate_package()` 后通过 `_capture_skill_candidate_package_factor()` 自动写入 `skill_candidate` factor；失败只 warning，不阻断 distiller。
+- `backend/app/services/skill_distiller.py`：`write_skill_candidate_package()` 后通过 `_capture_skill_candidate_package_factor()` 自动写入 `skill_candidate` factor；失败只 warning，不阻断 distiller。2026-07-09 回归修正：该 bridge 只在上游显式传入 `tenant_id` 时写入 intake，不再从 distiller loop 内隐式 `resolve_tenant_for_agent()` 或打开 RLS bypass/session；离线/单测路径保留本地 candidate package，生产 `evolution_daemon` 仍传入 tenant 并保持自产 factor 采集接通。
 - `backend/app/agents/subagent_evolution.py`：`maybe_nominate()` 保存 pending proposal 后通过 `_capture_subagent_candidate_factor()` 自动写入 `subagent_candidate` factor；proposal approval 仍是唯一写 definition 的路径。
 - 验证命令：
 
@@ -113,6 +113,17 @@ pytest tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_pr
   tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_promotes_high_confidence_candidate \
   tests/services/test_capability_factor_intake.py -q
 # 4 passed, 4 warnings in 2.17s
+
+pytest tests/services/test_skill_distiller.py -q
+# 33 passed, 4 warnings in 1.71s
+
+pytest tests/services/test_skill_distiller.py \
+  tests/services/test_capability_factor_intake.py \
+  tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_proposal -q
+# 36 passed, 4 warnings in 2.43s
+
+ruff check app/services/skill_distiller.py tests/services/test_skill_distiller.py
+# All checks passed!
 ```
 
 闭环项 2：远程 source materializer。
@@ -3055,7 +3066,7 @@ Round 5 当前状态（2026-07-09 实装）：
 - `backend/alembic/versions/capability_factor_intake_0709.py`：新增 `capability_factors`、`capability_factor_reviews`、`capability_promotion_proposals`，并纳入 tenant RLS。
 - `backend/app/services/capability_factor_intake.py`：支持 agent/owner capture factor、自动创建 pending review、enterprise proposal、approve/reject/archive。`external_usage_factor` / `external_fork_candidate` 会被强制标记为 `self_evolution_eligible=false`，不会进入自进化 patch chain。
 - `backend/app/api/capabilities.py`：新增 `/agents/{agent_id}/capability-factors`、`/enterprise/capability-factors`、`/enterprise/capability-factors/{factor_id}/promotion-proposals`、`/enterprise/capability-promotion-proposals/{proposal_id}/approve|reject`、archive API。
-- `backend/app/services/skill_distiller.py`：Skill distiller 产出 `evolution/skill_candidates/<candidate_id>/` package 后自动生成 `skill_candidate` factor，写入 intake/review 队列；这不是 catalog publish，也不是 runtime activation。
+- `backend/app/services/skill_distiller.py`：Skill distiller 产出 `evolution/skill_candidates/<candidate_id>/` package 后自动生成 `skill_candidate` factor，写入 intake/review 队列；这不是 catalog publish，也不是 runtime activation。该 bridge 要求调用方显式传入 `tenant_id`，避免在 distiller 主链内隐式解析 tenant 或污染 DB/RLS session 边界。
 - `backend/app/agents/subagent_evolution.py`：Subagent evolution nomination 产出 pending proposal 后自动生成 `subagent_candidate` factor；proposal apply/reject 仍走原有 owner approval gate。
 - `frontend/src/pages/agent-detail/AgentCapabilityFactorsSection.tsx`：Agent Detail -> Extensions -> `Self-grown`，展示和捕获自产/外部使用因子。
 - `frontend/src/pages/workspace/WorkspaceCapabilityFactorsSection.tsx`：Workspace Extensions -> `Factor Intake`，展示 factors、promotion proposals，并支持 promote / approve / reject / archive。
@@ -3075,6 +3086,17 @@ pytest tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_pr
   tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_promotes_high_confidence_candidate \
   tests/services/test_capability_factor_intake.py -q
 # 4 passed, 4 warnings in 2.17s
+
+pytest tests/services/test_skill_distiller.py -q
+# 33 passed, 4 warnings in 1.71s
+
+pytest tests/services/test_skill_distiller.py \
+  tests/services/test_capability_factor_intake.py \
+  tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_proposal -q
+# 36 passed, 4 warnings in 2.43s
+
+ruff check app/services/skill_distiller.py tests/services/test_skill_distiller.py
+# All checks passed!
 
 pytest tests/services/test_capability_factor_intake.py \
   tests/api/test_capabilities_api.py::test_capability_factor_api_threads_agent_access_and_tenant \

@@ -467,6 +467,44 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
 
 
 @pytest.mark.asyncio
+async def test_skill_candidate_factor_capture_requires_explicit_tenant(monkeypatch) -> None:
+    from app.services.skill_distiller import DistilledSkillDraft, _capture_skill_candidate_package_factor
+
+    async def fail_tenant_resolution(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("factor capture must not resolve tenant implicitly from the distiller loop")
+
+    monkeypatch.setattr("app.services.skill_distiller.resolve_tenant_for_agent", fail_tenant_resolution)
+
+    result = await _capture_skill_candidate_package_factor(
+        tenant_id=None,
+        agent_id=uuid4(),
+        manifest={
+            "skill_name": "Market Research Loop",
+            "candidate_id": "candidate-1",
+            "package_type": "promote",
+            "target_path": "skills/market-research-loop/SKILL.md",
+        },
+        draft=DistilledSkillDraft(
+            decision="promote",
+            confidence=0.91,
+            name="Market Research Loop",
+            description="Run a bounded research workflow.",
+            instructions_markdown="Search, fetch, and summarize.",
+            declared_tools=("web_search", "web_fetch", "write_file"),
+            declared_packs=("web_pack",),
+            reason="Repeated successful workflow.",
+            skill_markdown=None,
+        ),
+        evidence=[],
+        workflow_signature="web_search>web_fetch>write_file",
+        distillation_intent="promote",
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_distiller_consumes_skill_candidate_package_without_session_evidence(
     monkeypatch, tmp_path: Path
 ) -> None:

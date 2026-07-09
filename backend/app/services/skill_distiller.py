@@ -825,16 +825,19 @@ async def _capture_skill_candidate_package_factor(
 ) -> dict[str, Any] | None:
     """Best-effort bridge from self-grown Skill packages into Capability Factor Intake."""
 
-    effective_tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
-    if effective_tenant_id is None:
+    if tenant_id is None:
+        logger.debug(
+            "[skill_distiller] skip capability factor capture for candidate %s because tenant_id was not provided",
+            manifest.get("candidate_id"),
+        )
         return None
     try:
         from app.services.capability_factor_intake import capture_capability_factor
 
-        async with tenant_scoped_session(effective_tenant_id) as db:
+        async with tenant_scoped_session(tenant_id) as db:
             return await capture_capability_factor(
                 db,
-                tenant_id=effective_tenant_id,
+                tenant_id=tenant_id,
                 originating_agent_id=agent_id,
                 originating_user_id=None,
                 data=_skill_candidate_factor_payload(

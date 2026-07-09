@@ -287,7 +287,7 @@ Office editing is a first-class runtime:
 
 Stateless LLM loop with dependency injection. Zero DB imports — all I/O goes through `KernelDependencies` callbacks.
 
-- Max 200 tool rounds per invocation (`Agent.max_tool_rounds`); heartbeat overrides to 40
+- Max 200 tool rounds per invocation (`Agent.max_tool_rounds`); heartbeat no longer enters the full agent tool loop and instead runs the direct T3 core without tool-round budget semantics
 - Semantic loop detection via `LoopGuard` (`kernel/loop_guard.py`, wired in `engine.py`)
 - Proactive compaction at 75% utilization (`_MIDLOOP_COMPACT_THRESHOLD`); microcompact pressure at 60%; reactive compaction on prompt-too-long
 - Tool result eviction: 50KB/result, 200KB/round

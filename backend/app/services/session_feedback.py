@@ -140,10 +140,6 @@ def _feedback_heat_delta(label: str) -> float:
     return 1.0 if label == "useful" else -1.0
 
 
-def _feedback_decay_signal(label: str) -> str:
-    return "reinforce" if label == "useful" else "decay"
-
-
 def _build_owner_feedback_activation_event(
     *,
     agent: Agent,
@@ -199,8 +195,8 @@ def _write_feedback_activation_sidecar(
     path = Path(data_root) / str(agent_id) / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     heat_delta = _feedback_heat_delta(label)
-    # M3 FeedbackCredit (design §4.3): the heat/decay signal is no longer
-    # write-only — it lands as bounded credit on the lifecycle-sidecar entries
+    # M3 FeedbackCredit (design §4.3): owner feedback lands as bounded
+    # credit on the lifecycle-sidecar entries
     # activated during this session. Mechanical bookkeeping only; MD prose and
     # the Memory Gate write surfaces stay untouched. The session working set
     # (M4) will narrow "activated during this session" to precise W_t members.
@@ -223,7 +219,6 @@ def _write_feedback_activation_sidecar(
         "session_id": str(session_id),
         "label": label,
         "heat_delta": heat_delta,
-        "decay_signal": _feedback_decay_signal(label),
         "credited_entry_ids": credited_entry_ids,
         "source_refs": list(source_refs),
         "activation_event": activation_event,
@@ -235,7 +230,6 @@ def _write_feedback_activation_sidecar(
         "schema": "hive.ccplus.activation_feedback_sidecar.v1",
         "path": str(relative),
         "heat_delta": payload["heat_delta"],
-        "decay_signal": payload["decay_signal"],
         "credited_entry_ids": credited_entry_ids,
         "event_id": activation_event.get("event_id", ""),
     }

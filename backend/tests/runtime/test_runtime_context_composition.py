@@ -252,6 +252,8 @@ def test_codex_optimization_ledger_is_control_plane_only() -> None:
 
     assert ledger["schema"] == "hive.ccplus.codex_optimization_ledger.v1"
     assert ledger["semantic_baseline"] == "freecode_cc"
+    assert "/Users/" not in repr(ledger)
+    assert all(not source.startswith("/") for source in ledger["source_snapshot"].values())
     assert not hasattr(codex_optimization_ledger, "append_codex_optimization_ledger")
     assert "codex_optimization_ledger" not in session.metadata
     assert "codex_optimization_ledger" not in state.to_metadata()

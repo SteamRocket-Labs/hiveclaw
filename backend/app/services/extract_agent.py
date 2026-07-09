@@ -130,7 +130,7 @@ Include *why* so future self can judge edge cases.
 
 <container_candidate>
 Each atom may carry a `container` hint — your routing evidence for where this
-atom could eventually live. Vocabulary (shared with the PromotionRouter):
+atom could eventually live. Vocabulary (shared by memory governance lanes):
 
 | container           | when to hint it                                                    |
 |---------------------|--------------------------------------------------------------------|

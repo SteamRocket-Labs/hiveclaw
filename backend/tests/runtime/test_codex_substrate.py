@@ -173,6 +173,8 @@ def test_codex_optimization_ledger_keeps_codex_as_additive_control_plane() -> No
     assert ledger["schema"] == "hive.ccplus.codex_optimization_ledger.v1"
     assert ledger["semantic_baseline"] == "freecode_cc"
     assert ledger["codex_role"] == "additive_control_plane"
+    assert "/Users/" not in repr(ledger)
+    assert all(not source.startswith("/") for source in ledger["source_snapshot"].values())
     capabilities = {entry["capability"] for entry in ledger["adoptable_control_plane"]}
     assert {
         "approval_sandbox_decision_enum",

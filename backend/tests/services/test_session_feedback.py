@@ -76,7 +76,7 @@ async def test_record_useful_session_feedback_persists_event_audit_and_t3(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_record_session_feedback_writes_activation_heat_decay_sidecar(tmp_path) -> None:
+async def test_record_session_feedback_writes_activation_credit_sidecar(tmp_path) -> None:
     from types import SimpleNamespace as T3AppendResult
     from app.services.session_feedback import record_session_feedback
 
@@ -117,9 +117,11 @@ async def test_record_session_feedback_writes_activation_heat_decay_sidecar(tmp_
     assert activation_event["feedback"]["credit"] < 0
     assert sidecar["schema"] == "hive.ccplus.activation_feedback_sidecar.v1"
     assert sidecar["heat_delta"] < 0
-    assert sidecar["decay_signal"] == "decay"
+    assert "decay_signal" not in sidecar
     assert sidecar_path.exists()
-    assert "owner_feedback_misleading" in sidecar_path.read_text(encoding="utf-8")
+    sidecar_line = sidecar_path.read_text(encoding="utf-8")
+    assert "owner_feedback_misleading" in sidecar_line
+    assert "decay_signal" not in sidecar_line
     assert not (tmp_path / str(agent_id) / "memory" / "t0").exists()
     assert not (tmp_path / str(agent_id) / "memory" / "t2").exists()
     assert not (tmp_path / str(agent_id) / "memory" / "t3").exists()
@@ -264,7 +266,7 @@ async def test_record_misleading_session_feedback_marks_harmful_calibration(tmp_
 async def test_feedback_credit_reaches_recently_activated_sidecar_entries(tmp_path) -> None:
     """M3 FeedbackCredit: owner feedback must move the lifecycle-sidecar credit
     of memories activated during this session — and only those — closing the
-    heat_delta/decay_signal write-only loop. Sidecar-only: no MD prose touched."""
+    heat_delta write-only loop. Sidecar-only: no MD prose touched."""
     from datetime import UTC, datetime, timedelta
     from types import SimpleNamespace as T3AppendResult
 

@@ -603,6 +603,50 @@ pytest \
   -q
 ```
 
+### 7.5 E 包完成证据（2026-07-09）
+
+落地结果：
+
+1. `codex_optimization_ledger` 的 `source_snapshot` 已从本机绝对路径改为 `codex-rs/...` 相对 source id；`tests/runtime/test_runtime_context_composition.py` 与 `tests/runtime/test_codex_substrate.py` 均断言 ledger 不含 `/Users/` 且 source 不以 `/` 开头。
+2. heartbeat 选择“删除 stale 40 rounds 契约”：当前 heartbeat 是 direct T3 core，不进入完整 agent tool loop；`AGENTS.md`、`CLAUDE.md`、`docs/plan-mode-path-unification.md`、`docs/ccplus-freecode-00-08-deep-verification-2026-06-24.md`、`docs/agent-framework-cc-sota-atomic-audit-2026-06-15.md` 已同步。
+3. `promotion_router.py` 经 `rg` + codebase graph 确认无 runtime consumer：`route_promotion_signal` inbound `callers=[]`，`fast_path_route` 只被同一孤儿模块调用。已删除 `backend/app/memory/promotion_router.py` 和旧自证测试，新增 `tests/memory/test_promotion_router_retirement.py` guard，当前 spec 改为 live promotion gates。
+4. `activation_feedback.jsonl` 不退役：保留 writer、activation event、lifecycle credit、turn-stop summary/T0 sealing。仅退役无独立消费者的 `decay_signal` 字段；可消费事实收敛为 `heat_delta`、`credited_entry_ids`、`activation_event.feedback.credit`。
+
+验证：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest \
+  tests/runtime/test_runtime_context_composition.py \
+  tests/runtime/test_codex_substrate.py \
+  tests/services/test_session_control_plane.py \
+  tests/services/test_session_feedback.py \
+  tests/memory/test_promotion_router_retirement.py \
+  tests/services/test_container_candidate_contracts.py \
+  tests/services/test_heartbeat.py \
+  tests/tools/test_audit.py \
+  -q
+# 92 passed, 4 warnings
+
+ruff check \
+  app/runtime/codex_optimization_ledger.py \
+  app/services/session_feedback.py \
+  app/memory/types.py \
+  app/services/extract_agent.py \
+  tests/runtime/test_runtime_context_composition.py \
+  tests/runtime/test_codex_substrate.py \
+  tests/services/test_session_feedback.py \
+  tests/memory/test_promotion_router_retirement.py \
+  tests/services/test_container_candidate_contracts.py
+# All checks passed!
+```
+
+残留说明：
+
+- `rg` 当前只在退役证据文本和 guard 测试中命中 `promotion_router` / `fast_path_route`，不再有 runtime import/call。
+- `decay_signal` 当前只在测试断言“不应出现”处命中，不再由代码写入 payload。
+
 ## 8. 施工包 F：现有 Personal KB 与 Dynamic 注入清债
 
 第一部分只清现有 Personal KB 和 Dynamic 注入的债，不开发 Company KB。

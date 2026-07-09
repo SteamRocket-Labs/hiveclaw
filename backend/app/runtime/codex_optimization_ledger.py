@@ -44,11 +44,11 @@ def build_codex_optimization_ledger() -> dict[str, Any]:
         "semantic_baseline": "freecode_cc",
         "codex_role": "additive_control_plane",
         "source_snapshot": {
-            "schema_rs": "/Users/rocky243/Context Engineering/codex/codex-rs/hooks/src/schema.rs",
-            "compact_hooks": "/Users/rocky243/Context Engineering/codex/codex-rs/hooks/src/events/compact.rs",
-            "analytics_events": "/Users/rocky243/Context Engineering/codex/codex-rs/analytics/src/events.rs",
-            "exec_policy": "/Users/rocky243/Context Engineering/codex/codex-rs/execpolicy/src/decision.rs",
-            "codex_api_common": "/Users/rocky243/Context Engineering/codex/codex-rs/codex-api/src/common.rs",
+            "schema_rs": "codex-rs/hooks/src/schema.rs",
+            "compact_hooks": "codex-rs/hooks/src/events/compact.rs",
+            "analytics_events": "codex-rs/analytics/src/events.rs",
+            "exec_policy": "codex-rs/execpolicy/src/decision.rs",
+            "codex_api_common": "codex-rs/codex-api/src/common.rs",
         },
         "forbidden_semantic_overrides": list(FORBIDDEN_SEMANTIC_OVERRIDES),
         "adoptable_control_plane": [

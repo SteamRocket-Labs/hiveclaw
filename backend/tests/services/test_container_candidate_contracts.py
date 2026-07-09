@@ -35,7 +35,7 @@ def test_extractor_prompt_is_atom_extraction_not_promotion() -> None:
     assert "candidate" in prompt
     # Authority boundary: extraction never promotes to soul/skill/workflow.
     assert "do not promote" in prompt
-    # Container vocabulary is shared with PromotionRouter (spec §6).
+    # Container vocabulary is shared by live memory governance gates (spec §6).
     assert "container" in prompt
     assert "memory_append" in prompt
     assert "soul_candidate" in prompt

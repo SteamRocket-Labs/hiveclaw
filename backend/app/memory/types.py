@@ -53,8 +53,8 @@ MEMORY_CATEGORIES = frozenset(
 )
 
 # Container-candidate vocabulary (docs/agent-memory-md-first-spec.md §6).
-# Shared between the Extractor prompt contract, T2 entry metadata, and the
-# PromotionRouter. A hint is advisory routing evidence — never a final write.
+# Shared between the Extractor prompt contract, T2 entry metadata, and concrete
+# governance lanes. A hint is advisory routing evidence — never a final write.
 CONTAINER_CANDIDATES = frozenset(
     {
         "memory_append",

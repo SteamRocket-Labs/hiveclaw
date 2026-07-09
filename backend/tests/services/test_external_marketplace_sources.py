@@ -106,6 +106,139 @@ async def test_sync_manual_marketplace_source_upserts_entries_without_review():
 
 
 @pytest.mark.asyncio
+async def test_sync_github_marketplace_source_fetches_entries_manifest():
+    tenant_id = uuid4()
+    source_id = uuid4()
+    source = SimpleNamespace(
+        id=source_id,
+        tenant_id=tenant_id,
+        source_type="github",
+        source_uri="https://raw.githubusercontent.com/acme/hive-marketplace/main/marketplace.json",
+        status="enabled",
+        sync_status="never_synced",
+        last_sync_error=None,
+        config_json={},
+    )
+    db = _MarketplaceSession([source, ("rows", [])])
+
+    async def fake_fetch_text(uri: str):
+        assert uri == source.source_uri
+        return """
+        {
+          "entries": [
+            {
+              "external_key": "review-pack",
+              "display_name": "Review Pack",
+              "source_format": "cc_plugin",
+              "source_uri": "https://github.com/acme/review-pack",
+              "manifest": {
+                "plugin_name": "review-pack",
+                "components": [
+                  {
+                    "component_type": "skill",
+                    "local_name": "audit",
+                    "qualified_name": "review-pack:skill:audit",
+                    "source_path": "skills/audit/SKILL.md",
+                    "content_sha256": "skill-sha"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+        """
+
+    result = await sync_marketplace_source(db, tenant_id=tenant_id, source_id=source_id, fetch_text=fake_fetch_text)
+
+    assert result["entries_seen"] == 1
+    assert result["entries_created"] == 1
+    entry = db.added[0]
+    assert entry.external_key == "review-pack"
+    assert entry.source_format == "cc_plugin"
+    assert entry.compatibility_json["marketplace_source_type"] == "github"
+    assert entry.manifest_json["plugin_name"] == "review-pack"
+
+
+@pytest.mark.asyncio
+async def test_sync_cc_and_codex_marketplace_sources_map_plugin_manifests():
+    tenant_id = uuid4()
+    cc_source_id = uuid4()
+    codex_source_id = uuid4()
+    cc_source = SimpleNamespace(
+        id=cc_source_id,
+        tenant_id=tenant_id,
+        source_type="cc_marketplace",
+        source_uri="https://github.com/acme/cc-marketplace/tree/main",
+        status="enabled",
+        sync_status="never_synced",
+        last_sync_error=None,
+        config_json={"manifest_path": "plugins.json"},
+    )
+    codex_source = SimpleNamespace(
+        id=codex_source_id,
+        tenant_id=tenant_id,
+        source_type="codex_marketplace",
+        source_uri="https://github.com/acme/codex-marketplace",
+        status="enabled",
+        sync_status="never_synced",
+        last_sync_error=None,
+        config_json={},
+    )
+
+    async def fake_fetch_text(uri: str):
+        if "cc-marketplace" in uri:
+            assert uri == "https://raw.githubusercontent.com/acme/cc-marketplace/main/plugins.json"
+            return """
+            {
+              "plugins": [
+                {
+                  "name": "office-tools",
+                  "description": "Office helpers",
+                  "source_uri": "https://github.com/acme/office-tools",
+                  "components": [
+                    {
+                      "component_type": "skill",
+                      "local_name": "doc",
+                      "qualified_name": "office-tools:skill:doc",
+                      "source_path": "skills/doc/SKILL.md",
+                      "content_sha256": "doc-sha"
+                    }
+                  ]
+                }
+              ]
+            }
+            """
+        assert uri == "https://raw.githubusercontent.com/acme/codex-marketplace/main/marketplace.json"
+        return """
+        {
+          "plugins": [
+            {
+              "name": "github",
+              "description": "GitHub connector",
+              "source_uri": "https://github.com/acme/codex-github",
+              "source_format": "codex_plugin"
+            }
+          ]
+        }
+        """
+
+    cc_db = _MarketplaceSession([cc_source, ("rows", [])])
+    codex_db = _MarketplaceSession([codex_source, ("rows", [])])
+
+    cc_result = await sync_marketplace_source(cc_db, tenant_id=tenant_id, source_id=cc_source_id, fetch_text=fake_fetch_text)
+    codex_result = await sync_marketplace_source(
+        codex_db, tenant_id=tenant_id, source_id=codex_source_id, fetch_text=fake_fetch_text
+    )
+
+    assert cc_result["entries_created"] == 1
+    assert codex_result["entries_created"] == 1
+    assert cc_db.added[0].source_format == "cc_plugin"
+    assert cc_db.added[0].manifest_json["components"][0]["qualified_name"] == "office-tools:skill:doc"
+    assert codex_db.added[0].source_format == "codex_plugin"
+    assert codex_db.added[0].manifest_json["plugin_name"] == "github"
+
+
+@pytest.mark.asyncio
 async def test_submit_marketplace_entry_for_review_creates_trust_gate_review(monkeypatch):
     tenant_id = uuid4()
     user_id = uuid4()

@@ -26,6 +26,39 @@ function parseSourceConfig(value: string): Record<string, unknown> {
 }
 
 const EMPTY_MANUAL_SOURCE_CONFIG = '{\n  "entries": []\n}';
+const EMPTY_REMOTE_SOURCE_CONFIG = '{\n  "manifest_path": "marketplace.json"\n}';
+
+export const MARKETPLACE_SOURCE_TYPE_OPTIONS = [
+  { value: 'manual', labelKey: 'enterprise.extensions.marketplaceSourceTypeManual', fallback: 'Manual' },
+  { value: 'github', labelKey: 'enterprise.extensions.marketplaceSourceTypeGithub', fallback: 'GitHub manifest' },
+  { value: 'cc_marketplace', labelKey: 'enterprise.extensions.marketplaceSourceTypeCc', fallback: 'CC marketplace' },
+  { value: 'codex_marketplace', labelKey: 'enterprise.extensions.marketplaceSourceTypeCodex', fallback: 'Codex marketplace' },
+] as const;
+
+export function marketplaceSourceDefaults(sourceType: string): { uri: string; config: string } {
+  if (sourceType === 'github') {
+    return {
+      uri: 'https://raw.githubusercontent.com/org/repo/main/marketplace.json',
+      config: EMPTY_REMOTE_SOURCE_CONFIG,
+    };
+  }
+  if (sourceType === 'cc_marketplace') {
+    return {
+      uri: 'https://github.com/org/cc-marketplace',
+      config: EMPTY_REMOTE_SOURCE_CONFIG,
+    };
+  }
+  if (sourceType === 'codex_marketplace') {
+    return {
+      uri: 'https://github.com/org/codex-marketplace',
+      config: EMPTY_REMOTE_SOURCE_CONFIG,
+    };
+  }
+  return {
+    uri: 'manual://workspace',
+    config: EMPTY_MANUAL_SOURCE_CONFIG,
+  };
+}
 
 interface LegacyPackMigrationPanelProps {
   report: LegacyPackMigrationReport | null;
@@ -98,6 +131,7 @@ export default function WorkspaceExtensionCatalogSection() {
   const [syncingSourceId, setSyncingSourceId] = useState<string | null>(null);
   const [submittingEntryId, setSubmittingEntryId] = useState<string | null>(null);
   const [runningLegacyMigrationDryRun, setRunningLegacyMigrationDryRun] = useState(false);
+  const [sourceType, setSourceType] = useState('manual');
   const [sourceName, setSourceName] = useState('');
   const [sourceUri, setSourceUri] = useState('manual://workspace');
   const [sourceConfigJson, setSourceConfigJson] = useState(EMPTY_MANUAL_SOURCE_CONFIG);
@@ -170,15 +204,16 @@ export default function WorkspaceExtensionCatalogSection() {
     try {
       await extensionsApi.createMarketplaceSource({
         name,
-        source_type: 'manual',
+        source_type: sourceType,
         source_uri: uri,
         status: 'enabled',
         config,
       });
       showAppToast(t('enterprise.extensions.marketplaceSourceCreated', 'Marketplace source created'), 'success');
       setSourceName('');
-      setSourceUri('manual://workspace');
-      setSourceConfigJson(EMPTY_MANUAL_SOURCE_CONFIG);
+      setSourceType('manual');
+      setSourceUri(marketplaceSourceDefaults('manual').uri);
+      setSourceConfigJson(marketplaceSourceDefaults('manual').config);
       await loadCatalog();
     } catch (error) {
       console.error(error);
@@ -186,6 +221,13 @@ export default function WorkspaceExtensionCatalogSection() {
     } finally {
       setCreatingSource(false);
     }
+  };
+
+  const changeMarketplaceSourceType = (nextType: string) => {
+    setSourceType(nextType);
+    const defaults = marketplaceSourceDefaults(nextType);
+    setSourceUri(defaults.uri);
+    setSourceConfigJson(defaults.config);
   };
 
   const syncMarketplaceSource = async (source: ExternalMarketplaceSource) => {
@@ -299,6 +341,17 @@ export default function WorkspaceExtensionCatalogSection() {
           {t('enterprise.extensions.marketplaceSources', 'Marketplace sources')}
         </div>
         <form className="card workspace-extension-marketplace-form" onSubmit={createMarketplaceSource}>
+          <select
+            value={sourceType}
+            onChange={(event) => changeMarketplaceSourceType(event.target.value)}
+            aria-label={t('enterprise.extensions.marketplaceSourceType', 'Marketplace source type')}
+          >
+            {MARKETPLACE_SOURCE_TYPE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {t(option.labelKey, option.fallback)}
+              </option>
+            ))}
+          </select>
           <input
             type="text"
             value={sourceName}

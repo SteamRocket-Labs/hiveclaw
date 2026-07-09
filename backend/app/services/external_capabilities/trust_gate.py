@@ -562,9 +562,9 @@ def _component_record_to_dict(row: ExternalExtensionComponent) -> dict[str, Any]
         "metadata": row.metadata_json or {},
     }
     if row.component_type == "hook":
-        # Explicit installed-list state: hooks are catalogued but their runtime
-        # execution chain is not wired yet (aligns with A2A `not_exposed`).
-        payload["runtime_execution"] = "not_yet_supported"
+        # §1 (2026-07-09): the hook runtime chain is wired — approved PreToolUse
+        # registrations feed run_tool_governance's declarative/command lanes.
+        payload["runtime_execution"] = "governance_preflight"
     return payload
 
 

@@ -267,7 +267,7 @@ async def test_activate_external_snapshot_selects_components_and_requires_creden
             "name": "docs-pack:hook:pre-bash",
             "status": "pending_hook_approval",
             "event": "PreToolUse",
-            "runtime_execution": "not_yet_supported",
+            "runtime_execution": "governance_preflight",
         },
     ]
     assert calls == [
@@ -508,10 +508,10 @@ async def test_activate_slash_command_projects_command_as_skill_package(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_activate_hook_component_is_explicitly_marked_runtime_unsupported(tmp_path):
-    # C6-hook: hook runtime execution is not wired; the activation summary must
-    # say so explicitly (runtime_execution=not_yet_supported) rather than
-    # silently appearing installed-but-inert.
+async def test_activate_hook_component_reports_governance_preflight_wiring(tmp_path):
+    # C6-hook closure (§1 2026-07-09): approved PreToolUse registrations feed
+    # run_tool_governance's hook lanes; activation reports the wiring while
+    # keeping the fail-closed pending_hook_approval status.
     tenant_id = uuid4()
     agent_id = uuid4()
     snapshot_id = uuid4()
@@ -546,7 +546,7 @@ async def test_activate_hook_component_is_explicitly_marked_runtime_unsupported(
     hook = result["activated_components"][0]
     assert hook["component_type"] == "hook"
     assert hook["status"] == "pending_hook_approval"
-    assert hook["runtime_execution"] == "not_yet_supported"
+    assert hook["runtime_execution"] == "governance_preflight"
 
 
 @pytest.mark.asyncio

@@ -199,6 +199,12 @@ class GovernanceDependencies:
     # preflight so the post-approval replay path (execute_approved skips
     # governance) cannot loop back into a fresh approval request.
     resolve_mcp_tool_mode: Callable[[uuid.UUID, str, dict], Awaitable[str | None] | str | None] | None = None
+    # §1 tenant governance hooks (2026-07-09 unified design). Loads the approved
+    # hook specs for (tenant_id, agent_id, tool_name); None disables the lane.
+    load_governance_hooks: Callable[[str | None, uuid.UUID, str], Awaitable[list[Any]] | list[Any]] | None = None
+    # Slow-lane executor: runs one command hook in the code-execution sandbox and
+    # returns a HookVerdict. Injected so the pipeline stays pure and testable.
+    run_command_hook: Callable[[Any, dict[str, Any]], Awaitable[Any]] | None = None
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -370,7 +376,9 @@ def _teaching_block_message(
 
 def _permission_mode_for_context(context: ToolGovernanceContext) -> PermissionMode:
     profile = context.permission_profile
-    return normalize_permission_mode(getattr(profile, "mode", None)) if profile is not None else PermissionProfileV1().mode
+    return (
+        normalize_permission_mode(getattr(profile, "mode", None)) if profile is not None else PermissionProfileV1().mode
+    )
 
 
 def _session_no_policy_action(context: ToolGovernanceContext) -> str:
@@ -1250,8 +1258,7 @@ async def _run_governance_inner(
                                 resource_id=None,
                                 details={
                                     "tool": context.tool_name,
-                                    "capability": getattr(dangerous_result, "capability", None)
-                                    or dangerous_capability,
+                                    "capability": getattr(dangerous_result, "capability", None) or dangerous_capability,
                                 },
                             )
                         )
@@ -1262,8 +1269,7 @@ async def _run_governance_inner(
                                 "tool_name": context.tool_name,
                                 "status": "capability_denied",
                                 "message": message,
-                                "capability": getattr(dangerous_result, "capability", None)
-                                or dangerous_capability,
+                                "capability": getattr(dangerous_result, "capability", None) or dangerous_capability,
                             },
                         )
                         return message
@@ -1417,4 +1423,172 @@ async def _run_governance_inner(
         if message is not None:
             return message
 
+    # §1 tenant governance hooks: the last layer, after every platform gate has
+    # allowed the call. Shrink-only — hooks may deny or escalate to ask, never
+    # widen what the gates above decided (design 2026-07-09, decisions 1.7-a..d).
+    hook_message = await _run_tenant_governance_hooks(context, deps, event_callback=event_callback)
+    if hook_message is not None:
+        return hook_message
+
+    return None
+
+
+def _governance_hook_payload(context: ToolGovernanceContext, spec: Any) -> dict[str, Any]:
+    """stdin JSON payload for the slow-lane command hook (CC hook-input parity)."""
+    return {
+        "event": "PreToolUse",
+        "hook_key": getattr(spec, "key", None),
+        "tool_name": context.tool_name,
+        "tool_args": dict(context.arguments or {}),
+        "agent_id": str(context.agent_id),
+        "session_id": context.session_id,
+        "tenant_id": context.tenant_id,
+        "turn_id": context.turn_id,
+        "tool_call_id": context.tool_call_id,
+    }
+
+
+async def _run_tenant_governance_hooks(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    *,
+    event_callback: EventCallback | None = None,
+) -> str | None:
+    """Evaluate the two governance-hook swim lanes (§1.4/§1.5).
+
+    Fast lane (declarative) runs first — in-process, zero sandbox cost. A fast
+    deny short-circuits before any command hook spends a sandbox cold start
+    (decision 1.7-d). Slow-lane (command) failures are fail-closed (D1).
+    """
+    from app.tools.hook_governance import (
+        HookVerdict,
+        aggregate_verdicts,
+        evaluate_declarative,
+        spec_matches,
+    )
+
+    if deps.load_governance_hooks is None:
+        return None
+    try:
+        specs = await _maybe_await(deps.load_governance_hooks(context.tenant_id, context.agent_id, context.tool_name))
+    except Exception as exc:
+        # D1 fail-closed: an unreadable hook registry cannot prove the call is
+        # allowed under tenant policy — deny rather than silently skip the layer.
+        logger.warning(
+            "[Governance] Hook registry unavailable for tool %s — blocking (fail-closed): %s",
+            context.tool_name,
+            exc,
+        )
+        return f"🔒 Tool '{context.tool_name}' blocked — governance hook registry unavailable. Please retry."
+
+    matched = [spec for spec in (specs or []) if spec_matches(spec, context.tool_name, context.arguments)]
+    if not matched:
+        return None
+
+    verdicts: list[HookVerdict] = []
+    for spec in matched:
+        if spec.kind != "declarative":
+            continue
+        verdict = evaluate_declarative(spec, context.tool_name, context.arguments)
+        if verdict is not None:
+            verdicts.append(verdict)
+
+    fast = aggregate_verdicts(verdicts)
+    if fast.outcome != "deny":
+        command_specs = [spec for spec in matched if spec.kind == "command"]
+        if command_specs:
+            # §3.3: the slow lane is the only hook path worth a visible phase —
+            # each sandboxed hook is a real cold start the user should see.
+            await _emit_event(
+                event_callback,
+                {
+                    "type": "phase",
+                    "phase": "hook_evaluating",
+                    "detail": {"tool_name": context.tool_name, "hooks": len(command_specs)},
+                },
+            )
+        for spec in command_specs:
+            if deps.run_command_hook is None:
+                verdicts.append(
+                    HookVerdict(
+                        decision="deny",
+                        reason="command governance hook is configured but no sandbox executor is wired",
+                        hook_key=spec.key,
+                        layer=spec.layer,
+                        source="failure",
+                    )
+                )
+                continue
+            try:
+                verdict = await _maybe_await(deps.run_command_hook(spec, _governance_hook_payload(context, spec)))
+            except Exception as exc:
+                # D1 fail-closed: a crashed/timed-out governing hook denies the call.
+                logger.warning(
+                    "[Governance] Command hook %s failed for tool %s — blocking (fail-closed): %s",
+                    spec.key,
+                    context.tool_name,
+                    exc,
+                )
+                verdict = HookVerdict(
+                    decision="deny",
+                    reason=f"governance hook '{spec.key}' failed ({type(exc).__name__})",
+                    hook_key=spec.key,
+                    layer=spec.layer,
+                    source="failure",
+                )
+            if verdict is not None:
+                verdicts.append(verdict)
+
+    final = aggregate_verdicts(verdicts)
+    if final.outcome == "deny":
+        message = _teaching_block_message(
+            context.tool_name,
+            reason=f"a tenant governance hook denied it ({final.reason})",
+            next_steps=[
+                "continue with tools this policy allows",
+                "ask a workspace admin to adjust the governance hook if this action should be permitted",
+            ],
+        )
+        await _maybe_await(
+            deps.write_audit_event(
+                event_type="governance_hook.denied",
+                severity="warn",
+                actor_type="agent",
+                actor_id=context.agent_id,
+                tenant_id=uuid.UUID(context.tenant_id) if context.tenant_id else None,
+                action="governance_hook_denied",
+                resource_type="tool",
+                resource_id=None,
+                details={
+                    "tool": context.tool_name,
+                    "hook_key": final.hook_key,
+                    "layer": final.layer,
+                    "reason": final.reason,
+                },
+            )
+        )
+        await _emit_event(
+            event_callback,
+            {
+                "type": "permission",
+                "tool_name": context.tool_name,
+                "status": "governance_hook_denied",
+                "message": message,
+                "reason": final.reason,
+                "hook_key": final.hook_key,
+            },
+        )
+        return message
+
+    if final.outcome == "ask":
+        return await _emit_session_no_policy_result(
+            context,
+            capability=f"governance_hook:{final.hook_key}",
+            reason=final.reason,
+            action="ask",
+            event_callback=event_callback,
+        )
+
+    # allow_grant (managed) and no_opinion both fall through: the platform
+    # gates already allowed this call; hooks added no further restriction.
     return None

@@ -342,9 +342,10 @@ def _activate_hook_component(*, component: dict[str, Any]) -> dict[str, Any]:
         "name": _component_qualified_name(component),
         "status": "pending_hook_approval",
         "event": _optional_string(runtime_projection.get("event")) or "unknown",
-        # Hook runtime execution (registration -> executor) is not wired yet; be
-        # explicit rather than let an activated hook read as installed-but-inert.
-        "runtime_execution": "not_yet_supported",
+        # §1 (2026-07-09): approved PreToolUse registrations are consumed by
+        # run_tool_governance (declarative fast lane / sandboxed command lane).
+        # Activation still gates on approval — fail-closed until then.
+        "runtime_execution": "governance_preflight",
     }
 
 

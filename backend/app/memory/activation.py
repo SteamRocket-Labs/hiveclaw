@@ -21,6 +21,9 @@ class ActivationContext:
     # Injectable clock for deterministic scoring (evals, replay); None → wall
     # clock. BaseLevel decay is the only time-dependent term.
     now: datetime | None = None
+    # Session working set W_t (design §4.2): (ref, strength) pointers to the
+    # memories this session already activated. Pointers only — never bodies.
+    working_set: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +38,10 @@ class ActivationPolicy:
     # frequency + power-law recency + feedback credit, promoted to a real
     # (but still bounded, non-hijacking) weight alongside goal/owner pressure.
     base_level_weight: float = 0.2
+    # ContextBoost (design §4.2): session-working-set diffusion over the
+    # relation graph. Small and bounded — context warms neighbors, it never
+    # hijacks literal relevance.
+    context_boost_weight: float = 0.15
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +102,10 @@ class ActivationScorer:
         if base_level > 0:
             score += base_level * policy.base_level_weight
             reasons.append("base_level")
+        context_boost = _float_meta(item, "context_boost")
+        if context_boost > 0:
+            score += min(1.0, context_boost) * policy.context_boost_weight
+            reasons.append("context_boost")
 
         return ActivationDecision(
             item=item,

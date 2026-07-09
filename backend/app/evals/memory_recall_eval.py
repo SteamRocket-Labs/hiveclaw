@@ -65,8 +65,9 @@ status: active
 tags: checklist, verification
 ---
 
-Archive upload order, status polling and health verification steps for a
-rollout. Confirm freshness before announcing completion.
+Release checklist steps: archive upload order, status polling and health
+verification steps, then a final checklist review before announcing
+completion of the checklist.
 
 ## Relations
 - part_of [[Railway Deployment]]
@@ -138,6 +139,22 @@ tags: retention
 ---
 
 Retention windows for committed records and evidence bundles.
+""",
+    ),
+    (
+        "knowledge/gate-review-checklist.md",
+        """---
+title: Gate Review Checklist
+status: active
+tags: checklist
+---
+
+Review checklist steps before a gate decision is recorded. The committee
+walks the evidence bundle, confirms provenance annotations on every block,
+and then files the final disposition into the register with its rationale.
+
+## Relations
+- part_of [[Platform Gate]]
 """,
     ),
     (
@@ -281,9 +298,18 @@ _DEFAULT_CASES: tuple[MemoryRecallCase, ...] = (
         expected_page_ids=("knowledge/api-timeout-runbook",),
         k=1,
     ),
-    # Hard case (ContextBoost headroom, M5): the retention page shares no
-    # term with the query and sits two hops from the lexical seed
-    # (memory-gate -> platform-gate -> audit-retention-policy).
+    # Hard case (ContextBoost headroom, M5): two checklist pages tie on the
+    # query terms; only the session context (already about platform-gate)
+    # can disambiguate toward the governance-cluster checklist.
+    MemoryRecallCase(
+        id="context-disambiguation-headroom",
+        query="review checklist steps",
+        expected_page_ids=("knowledge/gate-review-checklist",),
+        k=1,
+    ),
+    # Non-hijack guard: the retention page shares no term with the query while
+    # a competitor carries a real lexical hit — a bounded context boost must
+    # NOT push the zero-overlap page past genuine relevance (recall stays 2/3).
     MemoryRecallCase(
         id="governance-2hop-headroom",
         query="memory gate governance rubric",
@@ -417,20 +443,27 @@ async def run_retriever_pipeline_eval(
     *,
     cases: tuple[MemoryRecallCase, ...] | None = None,
     now: datetime | None = None,
+    working_sets: dict[str, tuple[tuple[str, float], ...]] | None = None,
 ) -> dict:
     """Rank fixture pages through the full retriever + activation pipeline.
 
     Sources are memory-relative markdown paths (``memory/<dir>/<slug>.md``);
     expected page ids are mapped onto that shape for scoring so the same
     cases drive both runners. ``now`` pins the BaseLevel decay clock for
-    deterministic scoring against seeded telemetry.
+    deterministic scoring against seeded telemetry; ``working_sets`` supplies
+    a per-case session working set for the M5 ContextBoost comparison run.
     """
     active_cases = cases or _DEFAULT_CASES
     retriever = MemoryRetriever(data_root=data_root)
     ranked_by_case: dict[str, list[str]] = {}
     scores_by_case: dict[str, list[float]] = {}
     for case in active_cases:
-        context = ActivationContext(query=case.query, principal_stack=PrincipalStack(), now=now)
+        context = ActivationContext(
+            query=case.query,
+            principal_stack=PrincipalStack(),
+            now=now,
+            working_set=(working_sets or {}).get(case.id, ()),
+        )
         # Cases are independent query scenarios: retrieval's own access bumps
         # must not leak usage history from one case into the next, so the
         # sidecar is restored after each case (seeded telemetry stays fixed).

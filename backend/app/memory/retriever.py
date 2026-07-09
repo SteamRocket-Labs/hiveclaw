@@ -181,6 +181,7 @@ class MemoryRetriever:
         from app.memory.access_log import bump_access
 
         items = self._join_access_telemetry(items, agent_id=agent_id)
+        items = self._join_context_boost(items, agent_id=agent_id, working_set=context.working_set)
         scorer = ActivationScorer()
         activated: list[MemoryItem] = []
         for item in items:
@@ -217,6 +218,64 @@ class MemoryRetriever:
         # Rank on the unclamped score: the display score saturates at 1.0,
         # which would erase ordering between highly-relevant items.
         return sorted(activated, key=lambda item: float(item.metadata.get("activation_raw_score") or item.score), reverse=True)
+
+    def _join_context_boost(
+        self,
+        items: list[MemoryItem],
+        *,
+        agent_id: uuid.UUID,
+        working_set: tuple[tuple[str, float], ...],
+    ) -> list[MemoryItem]:
+        """ContextBoost (design §4.2): diffuse session working-set strength
+        over the relation graph and stamp each item's boost factor.
+
+        The working set's strongest members seed Personalized PageRank on the
+        knowledge/milestones link network, so pages graph-adjacent to what the
+        session already touched warm up even with zero query-term overlap.
+        Refs outside the graph (explicit entries, episodic) self-boost only.
+        """
+        if not items or not working_set:
+            return items
+        try:
+            from app.memory.relation_graph import KNOWLEDGE_PAGE_DIRS, build_relation_graph, personalized_pagerank
+
+            graph = build_relation_graph(self.data_root, agent_id, page_dirs=KNOWLEDGE_PAGE_DIRS)
+            adjacency = graph.adjacency()
+            seeds = {ref: max(0.0, strength) for ref, strength in working_set if ref in adjacency}
+            diffusion = personalized_pagerank(adjacency, seeds) if seeds else {}
+            # Normalize against the hottest NON-seed node: seeds dominate raw
+            # PPR mass, which would crush every neighbor toward zero. Working
+            # set members are directly hot at their own strength anyway.
+            spread = {node: score for node, score in diffusion.items() if node not in seeds and score > 0}
+            peak = max(spread.values(), default=0.0)
+            boost: dict[str, float] = (
+                {node: min(1.0, score / peak) for node, score in spread.items()} if peak > 0 else {}
+            )
+            for ref, strength in working_set:
+                if strength > 0:
+                    boost[ref] = max(boost.get(ref, 0.0), min(1.0, strength))
+        except (OSError, ValueError) as exc:
+            logger.warning("[retriever] context boost failed: %s", exc)
+            return items
+        if not boost:
+            return items
+        joined: list[MemoryItem] = []
+        for item in items:
+            ref = str(item.metadata.get("entry_id") or item.metadata.get("page_id") or "")
+            factor = boost.get(ref, 0.0)
+            if factor <= 0:
+                joined.append(item)
+                continue
+            joined.append(
+                MemoryItem(
+                    kind=item.kind,
+                    content=item.content,
+                    score=item.score,
+                    source=item.source,
+                    metadata={**item.metadata, "context_boost": round(factor, 6)},
+                )
+            )
+        return joined
 
     def _join_access_telemetry(self, items: list[MemoryItem], *, agent_id: uuid.UUID) -> list[MemoryItem]:
         """Join lifecycle-sidecar telemetry onto retrieved items (design §4.3).

@@ -98,7 +98,8 @@ async def build_memory_context(
         active_pack_count=0,
     )
     try:
-        retriever = MemoryRetriever(data_root=Path(get_settings().AGENT_DATA_DIR))
+        data_root_settings = Path(get_settings().AGENT_DATA_DIR)
+        retriever = MemoryRetriever(data_root=data_root_settings)
         retrieve_kwargs = {
             "limit": max(50, retrieval_profile.semantic_limit * 2),
         }
@@ -122,6 +123,18 @@ async def build_memory_context(
                 current_user_id=current_user_id,
                 current_user_name=current_user_name,
             )
+        # Session working set W_t (design §4.2): load the evolving activation
+        # state for this session so ContextBoost sees what the conversation is
+        # already about; advanced + persisted after retrieval below.
+        working_set_state = None
+        if session_id and activation_context is not None:
+            from dataclasses import replace as _dc_replace
+
+            from app.memory.session_working_set import load_working_set
+
+            working_set_state = load_working_set(data_root_settings, agent_id, str(session_id))
+            if working_set_state.items:
+                activation_context = _dc_replace(activation_context, working_set=working_set_state.as_pairs())
         if not legacy_compatibility and activation_context is None:
             logger.warning(
                 "Memory activation principal unresolved; suppressing prompt memory for agent %s",
@@ -164,6 +177,23 @@ async def build_memory_context(
             str(tenant_id) if tenant_id else None,
             **retrieve_kwargs,
         )
+        if working_set_state is not None:
+            from app.memory.session_working_set import advance_working_set, save_working_set
+
+            activated_refs: list[str] = []
+            for item in items:
+                item_metadata = getattr(item, "metadata", None)
+                if not isinstance(item_metadata, dict):
+                    continue
+                ref = str(item_metadata.get("entry_id") or item_metadata.get("page_id") or "").strip()
+                if ref:
+                    activated_refs.append(ref)
+            save_working_set(
+                data_root_settings,
+                agent_id,
+                str(session_id),
+                advance_working_set(working_set_state, activated_refs),
+            )
         if resident.text:
             # Overlay entries already sit in the resident block — drop the
             # retriever's duplicate explicit-overlay items for this assembly.

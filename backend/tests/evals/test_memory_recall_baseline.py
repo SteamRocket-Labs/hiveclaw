@@ -43,8 +43,8 @@ FIXTURE_AGENT_ID = uuid.UUID("00000000-0000-4000-8000-0000000000e0")
 # re-anchor deliberately, with the delta recorded as evidence).
 # ---------------------------------------------------------------------------
 
-BASELINE_RECALL_AT_K = 0.833333
-BASELINE_MRR = 0.857143
+BASELINE_RECALL_AT_K = 0.740741
+BASELINE_MRR = 0.75
 
 WIKI_PPR_RANKED = {
     "railway-deploy": [
@@ -65,6 +65,7 @@ WIKI_PPR_RANKED = {
         "knowledge/memory-gate",
         "knowledge/platform-gate",
         "milestones/2026-05-memory-two-planes",
+        "knowledge/gate-review-checklist",
         "knowledge/audit-retention-policy",
     ],
     "feishu-channel": [
@@ -78,6 +79,9 @@ WIKI_PPR_RANKED = {
     ],
     "api-timeout-headroom": [
         "knowledge/api-timeout-postmortem-archive",
+    ],
+    "context-disambiguation-headroom": [
+        "knowledge/railway-deployment",
     ],
     "governance-2hop-headroom": [
         "knowledge/memory-gate",
@@ -106,6 +110,7 @@ RETRIEVER_PIPELINE_RANKED = {
         "memory/knowledge/memory-gate.md",
         "memory/knowledge/platform-gate.md",
         "memory/milestones/2026-05-memory-two-planes.md",
+        "memory/knowledge/gate-review-checklist.md",
         "memory/knowledge/audit-retention-policy.md",
     ],
     "feishu-channel": [
@@ -124,10 +129,18 @@ RETRIEVER_PIPELINE_RANKED = {
         "memory/knowledge/vercel-sandbox.md",
         "memory/knowledge/release-checklist.md",
     ],
+    "context-disambiguation-headroom": [
+        "memory/knowledge/release-checklist.md",
+        "memory/knowledge/gate-review-checklist.md",
+        "memory/knowledge/railway-deployment.md",
+        "memory/knowledge/platform-gate.md",
+        "memory/knowledge/vercel-sandbox.md",
+    ],
     "governance-2hop-headroom": [
         "memory/knowledge/memory-gate.md",
         "memory/knowledge/platform-gate.md",
         "memory/milestones/2026-05-memory-two-planes.md",
+        "memory/knowledge/gate-review-checklist.md",
         "memory/knowledge/audit-retention-policy.md",
     ],
     "negative-topic": [],
@@ -149,6 +162,7 @@ def test_fixture_and_cases_are_stable(fixture_root: Path) -> None:
         "feishu-channel",
         "postgres-pool",
         "api-timeout-headroom",
+        "context-disambiguation-headroom",
         "governance-2hop-headroom",
         "negative-topic",
     ]
@@ -156,7 +170,7 @@ def test_fixture_and_cases_are_stable(fixture_root: Path) -> None:
         str(path.relative_to(fixture_root / str(FIXTURE_AGENT_ID) / "memory"))
         for path in (fixture_root / str(FIXTURE_AGENT_ID) / "memory").rglob("*.md")
     )
-    assert len(pages) == 14
+    assert len(pages) == 15
 
 
 def test_wiki_ppr_baseline_is_deterministic_and_anchored(fixture_root: Path) -> None:
@@ -166,7 +180,7 @@ def test_wiki_ppr_baseline_is_deterministic_and_anchored(fixture_root: Path) -> 
 
     assert first["benchmark"] == "memory_recall_baseline"
     assert first["method"] == "ppr"
-    assert first["case_count"] == 8
+    assert first["case_count"] == 9
     ranked = {case_id: report["ranked_page_ids"] for case_id, report in first["cases"].items()}
     assert ranked == WIKI_PPR_RANKED
     assert first["recall_at_k"] == pytest.approx(BASELINE_RECALL_AT_K)
@@ -189,6 +203,7 @@ def test_component_headroom_is_reserved_for_dynamic_recall_layer(fixture_root: P
     the proof surface for M2 (BaseLevel) and M5 (ContextBoost)."""
     report = run_memory_recall_eval(fixture_root, FIXTURE_AGENT_ID, method="ppr")
     assert report["cases"]["api-timeout-headroom"]["recall_at_k"] == 0.0
+    assert report["cases"]["context-disambiguation-headroom"]["recall_at_k"] == 0.0
     assert report["cases"]["governance-2hop-headroom"]["recall_at_k"] == pytest.approx(2 / 3)
     assert report["recall_at_k"] < 1.0
 
@@ -208,7 +223,7 @@ async def test_retriever_pipeline_baseline_is_deterministic_and_anchored(tmp_pat
     assert first == second, "pipeline eval must be deterministic across fresh fixture roots"
 
     assert first["benchmark"] == "memory_retriever_pipeline_baseline"
-    assert first["case_count"] == 8
+    assert first["case_count"] == 9
     ranked = {case_id: report["ranked_sources"] for case_id, report in first["cases"].items()}
     assert ranked == RETRIEVER_PIPELINE_RANKED
     assert first["recall_at_k"] == pytest.approx(BASELINE_RECALL_AT_K)

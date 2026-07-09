@@ -694,3 +694,69 @@ async def test_build_memory_context_uses_adaptive_budget_profile(monkeypatch, tm
     assert captured["budget_chars"] >= 24000
     assert captured["retrieval_profile"].semantic_limit >= 12
     assert captured["retrieval_profile"].rerank_max_select >= 8
+
+
+@pytest.mark.asyncio
+async def test_build_memory_context_evolves_session_working_set(monkeypatch, tmp_path):
+    """M4 wiring: each turn loads W_t into the activation context and advances
+    it with the refs actually activated — the working set must not be an
+    orphan mechanism."""
+    from app.memory.activation import ActivationContext
+    from app.memory.session_working_set import load_working_set
+    from app.services import memory_service
+    from app.services.principal_context import PrincipalStack
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = "11111111-2222-4333-8444-555555555555"
+
+    memory_dir = tmp_path / str(agent_id) / "memory" / "knowledge"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "railway-deployment.md").write_text(
+        "---\ntitle: Railway Deployment\nstatus: active\n---\n\nRailway production deploy notes.",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        memory_service,
+        "get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), MEMORY_RESIDENT_BUDGET_CHARS=24_000),
+    )
+
+    seen_working_sets: list[tuple] = []
+
+    async def fake_resolver(**kwargs):
+        return ActivationContext(query=kwargs.get("query", ""), principal_stack=PrincipalStack())
+
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", fake_resolver)
+
+    import functools
+
+    from app.memory.retriever import MemoryRetriever
+
+    original_retrieve = MemoryRetriever.retrieve
+
+    @functools.wraps(original_retrieve)
+    async def spying_retrieve(self, *args, **kwargs):
+        context = kwargs.get("activation_context")
+        seen_working_sets.append(context.working_set if context else None)
+        return await original_retrieve(self, *args, **kwargs)
+
+    monkeypatch.setattr(MemoryRetriever, "retrieve", spying_retrieve)
+
+    first = await memory_service.build_memory_context(
+        agent_id, tenant_id, session_id=session_id, query="railway production deploy"
+    )
+    assert "Railway" in first
+
+    state = load_working_set(tmp_path, agent_id, session_id)
+    assert state.turn_index == 1
+    assert any(item["ref"] == "knowledge/railway-deployment" for item in state.items)
+
+    await memory_service.build_memory_context(
+        agent_id, tenant_id, session_id=session_id, query="railway production deploy"
+    )
+
+    assert seen_working_sets[0] == ()
+    assert ("knowledge/railway-deployment", 1.0) in (seen_working_sets[1] or ())
+    assert load_working_set(tmp_path, agent_id, session_id).turn_index == 2

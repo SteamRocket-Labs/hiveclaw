@@ -392,11 +392,20 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
     monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
+    captured_factor_calls: list[dict] = []
+
+    async def fake_capture_factor(**kwargs):
+        captured_factor_calls.append(kwargs)
+        return {"factor": {"id": str(uuid4()), "status": "captured"}, "review": {"decision": "pending"}}
+
+    monkeypatch.setattr("app.services.skill_distiller._capture_skill_candidate_package_factor", fake_capture_factor)
+    agent_id = uuid4()
+    tenant_id = uuid4()
 
     result = await run_skill_distillation_cycle(
-        agent_id=uuid4(),
+        agent_id=agent_id,
         workspace=workspace,
-        tenant_id=None,
+        tenant_id=tenant_id,
         runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
@@ -446,6 +455,13 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     assert "regression_report" not in promotion_decisions[-1]["metadata"]
     assert captured_draft_kwargs["skill_candidate_drafts"][0]["candidate_id"] == "flywheel-candidate-1"
     assert "Build, migrate, restart" in captured_draft_kwargs["skill_candidate_drafts"][0]["content"]
+    assert captured_factor_calls
+    captured_factor = captured_factor_calls[-1]
+    assert captured_factor["tenant_id"] == tenant_id
+    assert captured_factor["agent_id"] == agent_id
+    assert captured_factor["manifest"]["candidate_id"] == candidate_id
+    assert captured_factor["manifest"]["draft_path"] == f"evolution/skill_candidates/{candidate_id}/SKILL.md.draft"
+    assert captured_factor["draft"].name == "Market Research Loop"
     assert "Market Research Loop" in review
     assert "[provisional]" in review
 

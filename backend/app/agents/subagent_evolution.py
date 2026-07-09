@@ -235,6 +235,138 @@ def _memory_store(agent_id: object, agent_data_dir: Path | str | None) -> Subage
     return memory_store_for_agent(agent_id, agent_data_dir=agent_data_dir)
 
 
+def _coerce_uuid(value: object | None) -> uuid_mod.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid_mod.UUID):
+        return value
+    try:
+        return uuid_mod.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _subagent_candidate_factor_payload(
+    *,
+    agent_id: object,
+    spec_name: str,
+    proposal: EvolutionProposal,
+    proposal_path: Path,
+    agent_data_dir: Path | str | None,
+    active_memory: str,
+) -> dict[str, object]:
+    workspace = _agent_workspace(agent_id, agent_data_dir)
+    try:
+        artifact_ref = proposal_path.resolve().relative_to(workspace.resolve()).as_posix()
+    except ValueError:
+        artifact_ref = proposal_path.as_posix()
+    artifact_sha256 = hashlib.sha256(proposal_path.read_bytes()).hexdigest() if proposal_path.exists() else None
+    active_entry_count = len(_active_entry_ids(active_memory))
+    return {
+        "factor_kind": "subagent_candidate",
+        "display_name": spec_name,
+        "summary": proposal.rationale or "Subagent evolution produced a reusable definition improvement proposal.",
+        "source_refs": [
+            {
+                "type": "subagent_proposal",
+                "proposal_id": proposal.proposal_id,
+                "spec_name": spec_name,
+                "proposal_path": artifact_ref,
+            },
+            {
+                "type": "subagent_memory_absorption",
+                "absorbed_entry_ids": list(proposal.absorbed_entry_ids),
+                "active_entry_count": active_entry_count,
+            },
+        ],
+        "trace_refs": [
+            {
+                "type": "subagent_evolution_nomination",
+                "proposal_id": proposal.proposal_id,
+                "spec_name": spec_name,
+            }
+        ],
+        "artifact_ref": artifact_ref,
+        "artifact_sha256": artifact_sha256,
+        "authoring_contract": {
+            "self_evolution_eligible": True,
+            "authoring_source": "subagent_evolution",
+            "promotion_requires_review": True,
+        },
+        "declared_components": {
+            "subagents": [spec_name],
+            "proposal_id": proposal.proposal_id,
+            "base_definition_sha": proposal.base_definition_sha,
+            "absorbed_entry_ids": list(proposal.absorbed_entry_ids),
+        },
+        "declared_permissions": {},
+        "sensitivity_report": {
+            "status": "pending_review",
+            "source": "subagent_evolution",
+        },
+        "reuse_score": {
+            "absorbed_entry_count": len(proposal.absorbed_entry_ids),
+            "active_entry_count": active_entry_count,
+        },
+        "suggested_scope": "workspace",
+        "eval_report": {
+            "status": "proposal_captured",
+            "producer": "subagent_evolution",
+        },
+    }
+
+
+async def _capture_subagent_candidate_factor(
+    *,
+    tenant_id: object | None,
+    agent_id: object,
+    spec_name: str,
+    proposal: EvolutionProposal,
+    proposal_path: Path,
+    agent_data_dir: Path | str | None,
+    active_memory: str,
+) -> dict[str, object] | None:
+    """Best-effort bridge from Subagent evolution proposals into Capability Factor Intake."""
+
+    effective_tenant_id = _coerce_uuid(tenant_id)
+    if effective_tenant_id is None:
+        try:
+            from app.services.tenant_resolver import resolve_tenant_for_agent
+
+            effective_tenant_id = _coerce_uuid(await resolve_tenant_for_agent(agent_id))
+        except Exception:  # noqa: BLE001 - factor intake must not block nomination
+            effective_tenant_id = None
+    if effective_tenant_id is None:
+        return None
+    effective_agent_id = _coerce_uuid(agent_id)
+    try:
+        from app.database import tenant_scoped_session
+        from app.services.capability_factor_intake import capture_capability_factor
+
+        async with tenant_scoped_session(effective_tenant_id) as db:
+            return await capture_capability_factor(
+                db,
+                tenant_id=effective_tenant_id,
+                originating_agent_id=effective_agent_id,
+                originating_user_id=None,
+                data=_subagent_candidate_factor_payload(
+                    agent_id=agent_id,
+                    spec_name=spec_name,
+                    proposal=proposal,
+                    proposal_path=proposal_path,
+                    agent_data_dir=agent_data_dir,
+                    active_memory=active_memory,
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001 - intake failure must not block the evolution loop
+        logger.warning(
+            "[SubagentEvolution] failed to capture capability factor for proposal %s: %s",
+            proposal.proposal_id,
+            exc,
+        )
+        return None
+
+
 def apply_proposal(
     agent_id: object,
     spec_name: str,
@@ -478,7 +610,16 @@ async def maybe_nominate(
             proposal_id=uuid_mod.uuid4().hex[:12],
             body=draft["body"],
         )
-        proposal_store.save(proposal)
+        proposal_path = proposal_store.save(proposal)
+        await _capture_subagent_candidate_factor(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            spec_name=spec_name,
+            proposal=proposal,
+            proposal_path=proposal_path,
+            agent_data_dir=agent_data_dir,
+            active_memory=active_memory,
+        )
         logger.info(
             "[SubagentEvolution] proposal %s nominated: agent=%s name=%s absorbed=%d",
             proposal.proposal_id,

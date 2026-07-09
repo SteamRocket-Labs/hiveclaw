@@ -2,7 +2,7 @@
 
 日期：2026-06-26
 更新：2026-07-09，按当前 checkout 复核后进入完整闭环施工：核心骨架、准入门、Agent/Workspace 前端入口、Capability Factor Intake、Legacy migration dry-run 均已实装；本轮必须补齐外部/自产能力真实输入通道
-状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、session-scoped try activation、component-level selected activation substrate、credential handle binding、external component/hook evidence tables、quarantine-only Materialize、revoke/deactivate 后端入口、Marketplace manual discovery source 管理、Capability Factor Intake / promotion proposal substrate、LegacyPackAdapter migration-only report、legacy pack migration dry-run API / Workspace UI、Agent/Workspace Extensions 入口已落地；本轮闭环项为：自产能力自动进入 Capability Factor Intake、远程 Git/GitHub/npm/skills.sh source 进入 materializer boundary、GitHub/CC/Codex marketplace manifest refresh 进入 entry cache；hook/slash/app connector runtime activation 仍 fail-closed
+状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、session-scoped try activation、component-level selected activation substrate、credential handle binding、external component/hook evidence tables、quarantine-only Materialize、revoke/deactivate 后端入口、Marketplace manual discovery source 管理、Capability Factor Intake / promotion proposal substrate、Skill/Subagent 自产候选自动进入 Factor Intake、LegacyPackAdapter migration-only report、legacy pack migration dry-run API / Workspace UI、Agent/Workspace Extensions 入口已落地；本轮剩余闭环项为：远程 Git/GitHub/npm/skills.sh source 进入 materializer boundary、GitHub/CC/Codex marketplace manifest refresh 进入 entry cache；hook/slash/app connector runtime activation 仍 fail-closed
 范围：外部 Plugin/Extension 的发现、检验、审批、安装、激活、撤销与审计；Skill、MCP Server、Subagent、Hook 是 Plugin components，也保留单组件快捷导入入口
 上位文档：
 - `docs/agent-extension-surface-skill-mcp.md`
@@ -98,6 +98,21 @@ CC semantic baseline
   - 单测证明真实产出路径调用 factor intake，而不是只靠手动 API。
   - 外部 upstream / external usage factor 默认 `self_evolution_eligible=false`。
   - approved proposal 仍只产生 promotion decision，不绕过 Trust Gate snapshot。
+
+2026-07-09 实装证据：
+
+- `backend/app/services/skill_distiller.py`：`write_skill_candidate_package()` 后通过 `_capture_skill_candidate_package_factor()` 自动写入 `skill_candidate` factor；失败只 warning，不阻断 distiller。
+- `backend/app/agents/subagent_evolution.py`：`maybe_nominate()` 保存 pending proposal 后通过 `_capture_subagent_candidate_factor()` 自动写入 `subagent_candidate` factor；proposal approval 仍是唯一写 definition 的路径。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_proposal \
+  tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_promotes_high_confidence_candidate \
+  tests/services/test_capability_factor_intake.py -q
+# 4 passed, 4 warnings in 2.17s
+```
 
 闭环项 2：远程 source materializer。
 
@@ -2930,12 +2945,14 @@ Round 5 当前状态（2026-07-09 实装）：
 - `backend/alembic/versions/capability_factor_intake_0709.py`：新增 `capability_factors`、`capability_factor_reviews`、`capability_promotion_proposals`，并纳入 tenant RLS。
 - `backend/app/services/capability_factor_intake.py`：支持 agent/owner capture factor、自动创建 pending review、enterprise proposal、approve/reject/archive。`external_usage_factor` / `external_fork_candidate` 会被强制标记为 `self_evolution_eligible=false`，不会进入自进化 patch chain。
 - `backend/app/api/capabilities.py`：新增 `/agents/{agent_id}/capability-factors`、`/enterprise/capability-factors`、`/enterprise/capability-factors/{factor_id}/promotion-proposals`、`/enterprise/capability-promotion-proposals/{proposal_id}/approve|reject`、archive API。
+- `backend/app/services/skill_distiller.py`：Skill distiller 产出 `evolution/skill_candidates/<candidate_id>/` package 后自动生成 `skill_candidate` factor，写入 intake/review 队列；这不是 catalog publish，也不是 runtime activation。
+- `backend/app/agents/subagent_evolution.py`：Subagent evolution nomination 产出 pending proposal 后自动生成 `subagent_candidate` factor；proposal apply/reject 仍走原有 owner approval gate。
 - `frontend/src/pages/agent-detail/AgentCapabilityFactorsSection.tsx`：Agent Detail -> Extensions -> `Self-grown`，展示和捕获自产/外部使用因子。
 - `frontend/src/pages/workspace/WorkspaceCapabilityFactorsSection.tsx`：Workspace Extensions -> `Factor Intake`，展示 factors、promotion proposals，并支持 promote / approve / reject / archive。
 
 仍未完成的边界：
 
-- Skill distiller / skill candidate package、Subagent proposal、external usage telemetry 还没有自动写入 `capability_factors`；当前先提供显式 capture/API/UI。
+- external usage telemetry 尚未自动写入 `capability_factors`；外部能力默认仍只能通过显式 capture/API/UI 或后续 usage telemetry 进入 intake，并且默认 `self_evolution_eligible=false`。
 - Promotion proposal approval 不直接发布 catalog、不直接生成 trusted snapshot；真正进入 workspace catalog 仍必须接 Trust Gate snapshot generation / approval 链路。
 - `external_fork_candidate` 只能进入 intake/proposal；approved fork -> Hive-authored snapshot -> self-evolution eligible 的转换尚未实现。
 
@@ -2944,6 +2961,11 @@ Round 5 实装证据（2026-07-09）：
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
+pytest tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_proposal \
+  tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_promotes_high_confidence_candidate \
+  tests/services/test_capability_factor_intake.py -q
+# 4 passed, 4 warnings in 2.17s
+
 pytest tests/services/test_capability_factor_intake.py \
   tests/api/test_capabilities_api.py::test_capability_factor_api_threads_agent_access_and_tenant \
   tests/api/test_capabilities_api.py::test_capability_promotion_api_threads_admin_decision -q

@@ -135,8 +135,15 @@ async def test_nominate_creates_pending_proposal(tmp_path, monkeypatch):
     async def fake_notify(agent_id, spec_name, proposal_id, **kwargs):
         notified.append((spec_name, proposal_id))
 
+    captured_factor_calls: list[dict] = []
+
+    async def fake_capture_factor(**kwargs):
+        captured_factor_calls.append(kwargs)
+        return {"factor": {"id": str(uuid.uuid4()), "status": "captured"}, "review": {"decision": "pending"}}
+
     monkeypatch.setattr(evo_mod, "chat_complete", fake_chat_complete)
     monkeypatch.setattr(evo_mod, "_notify_owner", fake_notify)
+    monkeypatch.setattr(evo_mod, "_capture_subagent_candidate_factor", fake_capture_factor)
 
     proposal = await maybe_nominate(
         agent_id=agent_id,
@@ -155,6 +162,13 @@ async def test_nominate_creates_pending_proposal(tmp_path, monkeypatch):
     assert notified == [("scout", proposal.proposal_id)]
     # persisted
     assert proposal_store_for_agent(agent_id, agent_data_dir=tmp_path).load_pending("scout") is not None
+    assert captured_factor_calls
+    captured_factor = captured_factor_calls[-1]
+    assert captured_factor["agent_id"] == agent_id
+    assert captured_factor["tenant_id"] is None
+    assert captured_factor["spec_name"] == "scout"
+    assert captured_factor["proposal"].proposal_id == proposal.proposal_id
+    assert captured_factor["proposal"].absorbed_entry_ids == [ids[0], ids[1]]
 
 
 @pytest.mark.asyncio

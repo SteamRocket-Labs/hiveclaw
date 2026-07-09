@@ -743,6 +743,117 @@ def _promotion_gate_metadata(
     }
 
 
+def _skill_candidate_factor_payload(
+    *,
+    manifest: dict[str, Any],
+    draft: DistilledSkillDraft,
+    evidence: list[SessionWorkflowEvidence],
+    workflow_signature: str | None,
+    distillation_intent: str,
+) -> dict[str, Any]:
+    source_refs: list[dict[str, Any]] = [
+        {
+            "type": "skill_candidate_package",
+            "candidate_id": manifest.get("candidate_id"),
+            "manifest_path": manifest.get("manifest_path"),
+            "draft_path": manifest.get("draft_path") or manifest.get("candidate_signal_path"),
+        }
+    ]
+    source_refs.extend(
+        {
+            "type": "session_evidence",
+            "session_id": item.session_id,
+            "source": item.source,
+            "occurred_at": item.occurred_at,
+            "status": item.status,
+        }
+        for item in evidence
+    )
+    declared_tools = list(manifest.get("declared_tools") or draft.declared_tools)
+    declared_packs = list(manifest.get("declared_packs") or draft.declared_packs)
+    return {
+        "factor_kind": "skill_candidate",
+        "display_name": str(manifest.get("skill_name") or draft.name),
+        "summary": draft.reason or "Skill distiller produced a reusable skill candidate.",
+        "source_refs": source_refs,
+        "trace_refs": [
+            {
+                "type": "skill_distiller",
+                "workflow_signature": workflow_signature,
+                "distillation_intent": distillation_intent,
+                "candidate_id": manifest.get("candidate_id"),
+            }
+        ],
+        "artifact_ref": manifest.get("draft_path") or manifest.get("candidate_signal_path"),
+        "artifact_sha256": manifest.get("draft_sha256"),
+        "authoring_contract": manifest.get("authoring_contract") if isinstance(manifest.get("authoring_contract"), dict) else {},
+        "declared_components": {
+            "skills": [str(manifest.get("skill_name") or draft.name)],
+            "package_type": manifest.get("package_type"),
+            "target_path": manifest.get("target_path"),
+            "candidate_id": manifest.get("candidate_id"),
+        },
+        "declared_permissions": {
+            "tools": declared_tools,
+            "packs": declared_packs,
+        },
+        "sensitivity_report": {
+            "status": "pending_review",
+            "source": "skill_distiller",
+        },
+        "reuse_score": {
+            "confidence": draft.confidence,
+            "evidence_count": len(evidence),
+        },
+        "suggested_scope": "workspace",
+        "eval_report": {
+            "status": "candidate_captured",
+            "producer": "skill_distiller",
+        },
+    }
+
+
+async def _capture_skill_candidate_package_factor(
+    *,
+    tenant_id: uuid.UUID | None,
+    agent_id: uuid.UUID,
+    manifest: dict[str, Any],
+    draft: DistilledSkillDraft,
+    evidence: list[SessionWorkflowEvidence],
+    workflow_signature: str | None,
+    distillation_intent: str,
+) -> dict[str, Any] | None:
+    """Best-effort bridge from self-grown Skill packages into Capability Factor Intake."""
+
+    effective_tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
+    if effective_tenant_id is None:
+        return None
+    try:
+        from app.services.capability_factor_intake import capture_capability_factor
+
+        async with tenant_scoped_session(effective_tenant_id) as db:
+            return await capture_capability_factor(
+                db,
+                tenant_id=effective_tenant_id,
+                originating_agent_id=agent_id,
+                originating_user_id=None,
+                data=_skill_candidate_factor_payload(
+                    manifest=manifest,
+                    draft=draft,
+                    evidence=evidence,
+                    workflow_signature=workflow_signature,
+                    distillation_intent=distillation_intent,
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001 - intake failure must not block the distiller loop
+        logger.warning(
+            "[skill_distiller] failed to capture capability factor for candidate %s: %s",
+            manifest.get("candidate_id"),
+            exc,
+        )
+        return None
+
+
 def resolve_existing_skill_conflict(*, workspace: Path, draft: DistilledSkillDraft) -> SkillConflictResolution:
     existing_skills = _existing_skills(workspace)
     normalized_name = draft.name.strip().lower()
@@ -1793,7 +1904,7 @@ async def run_skill_distillation_cycle(
                 "evidence_contrast": render_skill_evidence_contrast(evidence_for_candidate),
             },
         )
-        write_skill_candidate_package(
+        candidate_manifest = write_skill_candidate_package(
             workspace=workspace,
             candidate_id=candidate["candidate_id"],
             rendered_markdown=rendered,
@@ -1809,6 +1920,15 @@ async def run_skill_distillation_cycle(
             or infer_static_runtime_tool_group_names(list(effective_draft.declared_tools)),
             status="candidate",
             extra_metadata={"workflow_signature": record.workflow_signature},
+        )
+        await _capture_skill_candidate_package_factor(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            manifest=candidate_manifest,
+            draft=effective_draft,
+            evidence=evidence_for_candidate,
+            workflow_signature=record.workflow_signature,
+            distillation_intent=distillation_intent,
         )
         verification_report = run_evolution_verification(
             workspace=workspace,
@@ -2068,7 +2188,7 @@ async def run_skill_distillation_cycle(
     rollback_ref = f"skills/{_normalize_skill_folder_name(draft.name)}/SKILL.md"
     from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED
 
-    write_skill_candidate_package(
+    candidate_manifest = write_skill_candidate_package(
         workspace=workspace,
         candidate_id=candidate["candidate_id"],
         rendered_markdown=rendered,
@@ -2083,6 +2203,15 @@ async def run_skill_distillation_cycle(
         declared_packs=draft.declared_packs or infer_static_runtime_tool_group_names(list(draft.declared_tools)),
         status="candidate",
         extra_metadata={"workflow_signature": record.workflow_signature},
+    )
+    await _capture_skill_candidate_package_factor(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        manifest=candidate_manifest,
+        draft=draft,
+        evidence=evidence_for_candidate,
+        workflow_signature=record.workflow_signature,
+        distillation_intent=distillation_intent,
     )
     verification_report = run_evolution_verification(
         workspace=workspace,

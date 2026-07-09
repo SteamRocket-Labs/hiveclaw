@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.memory.t3_platform_gate import LEGACY_T3_FILES
 from app.services.skill_curator import STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE, load_skill_usage
 from app.services.skill_evolution_registry import registry_rel_path
 
@@ -41,10 +42,13 @@ def _empty_view() -> dict[str, Any]:
             "t0_raw_evidence": "memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl",
             "t0_readable_projection": "memory/t0/sessions/<session_id>/segments/<segment_id>/source.md",
             "t2_segment_packages": "memory/t2/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}",
-            "t3_episodes": "memory/t3/episodes.md",
-            "t3_user": "memory/t3/user.md",
-            "t3_worker": "memory/t3/worker.md",
-            "t3_capabilities": "memory/t3/capabilities.md",
+            "t3_profile_self": "memory/self/self.md",
+            "t3_profile_owner": "memory/profiles/owner.md",
+            "t3_profile_collaborators": "memory/profiles/collaborators.md",
+            "t3_profile_domain": "memory/profiles/domain.md",
+            "t3_knowledge_pages": "memory/knowledge/<slug>.md",
+            "t3_milestone_pages": "memory/milestones/<slug>.md",
+            "legacy_flat_t3_quarantine": "memory/.archive/legacy_t3/<timestamp>/",
             "soul": "soul.md",
             "t3_staging": "memory/.staging/t3_jobs/<job_id>/",
             "soul_staging": "memory/.staging/soul_candidates/<candidate_id>/",
@@ -98,15 +102,35 @@ def _count_lines(path: Path) -> int:
         return 0
 
 
+def _count_directory_lines(directory: Path) -> int:
+    if not directory.exists():
+        return 0
+    return sum(_count_lines(path) for path in sorted(directory.glob("*.md")))
+
+
 def _build_memory_learning(workspace: Path) -> dict[str, Any]:
     memory = workspace / "memory"
     targets = {
-        "episodes": {"path": "memory/t3/episodes.md", "line_count": _count_lines(memory / "t3" / "episodes.md")},
-        "user": {"path": "memory/t3/user.md", "line_count": _count_lines(memory / "t3" / "user.md")},
-        "worker": {"path": "memory/t3/worker.md", "line_count": _count_lines(memory / "t3" / "worker.md")},
-        "capabilities": {
-            "path": "memory/t3/capabilities.md",
-            "line_count": _count_lines(memory / "t3" / "capabilities.md"),
+        "self": {"path": "memory/self/self.md", "line_count": _count_lines(memory / "self" / "self.md")},
+        "owner_profile": {
+            "path": "memory/profiles/owner.md",
+            "line_count": _count_lines(memory / "profiles" / "owner.md"),
+        },
+        "collaborator_profiles": {
+            "path": "memory/profiles/collaborators.md",
+            "line_count": _count_lines(memory / "profiles" / "collaborators.md"),
+        },
+        "domain_profile": {
+            "path": "memory/profiles/domain.md",
+            "line_count": _count_lines(memory / "profiles" / "domain.md"),
+        },
+        "knowledge_pages": {
+            "path": "memory/knowledge/<slug>.md",
+            "line_count": _count_directory_lines(memory / "knowledge"),
+        },
+        "milestone_pages": {
+            "path": "memory/milestones/<slug>.md",
+            "line_count": _count_directory_lines(memory / "milestones"),
         },
     }
     return {
@@ -179,6 +203,7 @@ def _build_skill_tuning(workspace: Path) -> dict[str, Any]:
 
 def _build_legacy_audit(workspace: Path) -> dict[str, Any]:
     detected = [rel for rel in _LEGACY_EVOLUTION_FILES if (workspace / rel).exists()]
+    detected.extend(rel for rel in LEGACY_T3_FILES if (workspace / rel).exists())
     return {"detected_legacy_files": detected}
 
 

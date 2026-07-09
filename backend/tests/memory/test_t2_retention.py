@@ -101,6 +101,16 @@ def _write_t3_block_with_ref(tmp_path: Path, agent_id, *, ref: str, target: str 
         handle.write("\n" + block)
 
 
+def _write_profile_entry_with_ref(tmp_path: Path, agent_id, *, ref: str, entry_id: str = "owner-evidence") -> None:
+    owner = _mem_dir(tmp_path, agent_id) / "profiles" / "owner.md"
+    owner.parent.mkdir(parents=True, exist_ok=True)
+    owner.write_text(
+        f"## Owner Profile\n\n### Evidence-backed preference\n<!-- id: {entry_id} -->\n"
+        f"User prefers evidence-backed changes.\n- evidence: {ref}\n",
+        encoding="utf-8",
+    )
+
+
 def _write_explicit_entry_with_ref(
     tmp_path: Path, agent_id, *, entry_id: str, ref: str, status: str = "active"
 ) -> None:
@@ -164,7 +174,7 @@ def test_rebuild_counts_t3_explicit_and_episode_references(tmp_path: Path) -> No
     _write_segment_package(tmp_path, agent_id, segment_id="seg-a", package_id="t2pkg-seg-a")
     _write_segment_package(tmp_path, agent_id, segment_id="seg-b", package_id="t2pkg-seg-b")
     _write_segment_package(tmp_path, agent_id, segment_id="seg-none", package_id="t2pkg-seg-none")
-    _write_t3_block_with_ref(tmp_path, agent_id, ref=ref_a)
+    _write_profile_entry_with_ref(tmp_path, agent_id, ref=ref_a)
     _write_explicit_entry_with_ref(tmp_path, agent_id, entry_id="ex-1", ref=ref_a)
     _write_episode_package_referencing(tmp_path, agent_id, source_package_ids=["t2pkg-seg-b"])
 
@@ -182,7 +192,7 @@ def test_rebuild_is_derived_and_idempotent(tmp_path: Path) -> None:
     agent_id = uuid4()
     ref = _seg_ref("sess-1", "seg-a")
     _write_segment_package(tmp_path, agent_id, segment_id="seg-a")
-    _write_t3_block_with_ref(tmp_path, agent_id, ref=ref)
+    _write_profile_entry_with_ref(tmp_path, agent_id, ref=ref)
 
     rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
     first = reference_count(agent_id=agent_id, data_root=tmp_path, ref=ref)
@@ -192,6 +202,19 @@ def test_rebuild_is_derived_and_idempotent(tmp_path: Path) -> None:
     second = reference_count(agent_id=agent_id, data_root=tmp_path, ref=ref)
 
     assert first == second == 1
+
+
+def test_legacy_flat_t3_blocks_do_not_count_as_active_referrers(tmp_path: Path) -> None:
+    from app.memory.reference_index import rebuild_reference_index, reference_count
+
+    agent_id = uuid4()
+    ref = _seg_ref("sess-1", "seg-a")
+    _write_segment_package(tmp_path, agent_id, segment_id="seg-a")
+    _write_t3_block_with_ref(tmp_path, agent_id, ref=ref)
+
+    rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
+
+    assert reference_count(agent_id=agent_id, data_root=tmp_path, ref=ref) == 0
 
 
 def test_inactive_explicit_entries_do_not_count(tmp_path: Path) -> None:
@@ -230,7 +253,7 @@ async def test_referenced_package_is_never_archived(tmp_path: Path) -> None:
 
     agent_id = uuid4()
     package_dir = _write_segment_package(tmp_path, agent_id, segment_id="seg-hot", created_days_ago=365.0)
-    _write_t3_block_with_ref(tmp_path, agent_id, ref=_seg_ref("sess-1", "seg-hot"))
+    _write_profile_entry_with_ref(tmp_path, agent_id, ref=_seg_ref("sess-1", "seg-hot"))
 
     report = await run_t2_retention(agent_id=agent_id, data_root=tmp_path, now=NOW, archive_after_days=30.0)
 

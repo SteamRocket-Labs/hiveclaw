@@ -40,7 +40,7 @@ def _build_client():
 def _seed_workspace(ws: Path) -> None:
     (ws / "skills").mkdir(parents=True, exist_ok=True)
     (ws / "evolution").mkdir(parents=True, exist_ok=True)
-    (ws / "memory" / "t3").mkdir(parents=True, exist_ok=True)
+    (ws / "memory" / "knowledge").mkdir(parents=True, exist_ok=True)
     usage = {
         "weekly-report": {
             "created_by": "agent",
@@ -86,8 +86,8 @@ def _seed_workspace(ws: Path) -> None:
         ),
         encoding="utf-8",
     )
-    (ws / "memory" / "t3" / "capabilities.md").write_text(
-        "- [2026-05-20] weekly report package pattern\n",
+    (ws / "memory" / "knowledge" / "weekly-report.md").write_text(
+        "---\ntitle: Weekly Report\nstatus: active\n---\n\n## Current Claim\nWeekly report package pattern.\n",
         encoding="utf-8",
     )
     (ws / "evolution" / "skill_review.md").write_text(
@@ -134,13 +134,14 @@ async def test_get_agent_evolution_returns_structured_view(monkeypatch, tmp_path
     assert response.status_code == 200
     payload = response.json()
     assert payload["schema"] == "agent_evolution_view.v2"
-    assert payload["path_contract"]["t3_capabilities"] == "memory/t3/capabilities.md"
+    assert payload["path_contract"]["t3_knowledge_pages"] == "memory/knowledge/<slug>.md"
+    assert "t3_capabilities" not in payload["path_contract"]
     assert payload["skill_ecosystem"]["summary"]["active"] == 1
     assert payload["skill_ecosystem"]["summary"]["archived"] == 1
     assert payload["skill_ecosystem"]["summary"]["evolvable"] == 2
     assert payload["skill_ecosystem"]["skills"][0]["skill_name"] == "weekly-report"
     assert payload["skill_ecosystem"]["skills"][0]["skill_origin"] == "user_skill_creator"
-    assert payload["memory_learning"]["t3_targets"]["capabilities"]["line_count"] == 1
+    assert payload["memory_learning"]["t3_targets"]["knowledge_pages"]["line_count"] > 0
 
 
 @pytest.mark.asyncio

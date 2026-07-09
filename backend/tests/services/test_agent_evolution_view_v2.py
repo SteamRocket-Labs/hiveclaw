@@ -13,9 +13,20 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
     from app.services.agent_evolution_view import build_agent_evolution_view
 
     memory = tmp_path / "memory"
-    (memory / "t3").mkdir(parents=True)
-    (memory / "t3" / "capabilities.md").write_text(
-        "- [2026-06-20] recurring launch checklist [container=skill_candidate]\n",
+    (memory / "self").mkdir(parents=True)
+    (memory / "profiles").mkdir(parents=True)
+    (memory / "knowledge").mkdir(parents=True)
+    (memory / "self" / "self.md").write_text(
+        "## Capabilities\n\n### Incident response\n<!-- id: self-incident-response -->\n"
+        "Recurring launch checklist [container=skill_candidate].\n",
+        encoding="utf-8",
+    )
+    (memory / "profiles" / "owner.md").write_text(
+        "## Owner Profile\n\n### Cadence\n<!-- id: owner-cadence -->\nDaily status summaries.\n",
+        encoding="utf-8",
+    )
+    (memory / "knowledge" / "launch-checklist.md").write_text(
+        "---\ntitle: Launch Checklist\nstatus: active\n---\n\n## Current Claim\nUse the recurring launch checklist.\n",
         encoding="utf-8",
     )
     _write_json(
@@ -33,7 +44,7 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
             "schema": "soul_candidate.v1",
             "candidate_id": "soul-1",
             "status": "candidate",
-            "source_refs": ["memory/t3/worker.md"],
+            "source_refs": ["memory/self/self.md"],
         },
     )
 
@@ -76,7 +87,7 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
             "status": "patch",
             "skill_origin": "user_skill_creator",
             "evolvable": True,
-            "source_refs": ["evolution/skill_usage.jsonl", "memory/t3/capabilities.md"],
+            "source_refs": ["evolution/skill_usage.jsonl", "memory/knowledge/launch-checklist.md"],
         },
     )
     (evolution / "scorecard.md").write_text("# legacy\n", encoding="utf-8")
@@ -93,9 +104,14 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
         view["path_contract"]["t2_segment_packages"]
         == "memory/t2/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}"
     )
-    assert view["path_contract"]["t3_capabilities"] == "memory/t3/capabilities.md"
+    assert view["path_contract"]["t3_profile_self"] == "memory/self/self.md"
+    assert view["path_contract"]["t3_profile_owner"] == "memory/profiles/owner.md"
+    assert view["path_contract"]["t3_knowledge_pages"] == "memory/knowledge/<slug>.md"
+    assert "t3_capabilities" not in view["path_contract"]
     assert view["path_contract"]["skill_registry"] == "evolution/skill_registry.json"
     assert view["memory_learning"]["pending_t3_jobs"][0]["job_id"] == "job-1"
+    assert view["memory_learning"]["t3_targets"]["self"]["line_count"] > 0
+    assert view["memory_learning"]["t3_targets"]["knowledge_pages"]["line_count"] > 0
     assert view["soul"]["pending_candidates"][0]["candidate_id"] == "soul-1"
     assert view["skill_ecosystem"]["summary"]["by_origin"]["user_skill_creator"] == 1
     assert view["skill_ecosystem"]["summary"]["by_origin"]["system_builtin"] == 1

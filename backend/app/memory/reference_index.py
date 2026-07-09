@@ -1,8 +1,8 @@
 """Reverse-reference index over T2 evidence (C9-3, spec §4.1; C8 minimal set).
 
 SQLite is a derived accelerator ONLY: every row is rebuilt from Markdown/JSONL
-truth (T3 accepted blocks, active explicit overlay entries, episode manifests,
-live + archived package directories, the archive log). Deleting
+truth (two-plane T3 entries/pages, active explicit overlay entries, episode
+manifests, live + archived package directories, the archive log). Deleting
 ``memory/indexes/index.sqlite`` loses nothing — ``rebuild_reference_index`` is
 the single writer.
 
@@ -25,15 +25,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.memory.explicit_overlay import load_explicit_overlay_entries
-from app.memory.md_store import extract_t3_xml_blocks, parse_t3_xml_block
 
 logger = logging.getLogger(__name__)
 
 INDEX_DB_FILENAME = "index.sqlite"
 ARCHIVE_LOG_RELATIVE = Path(".archive") / "t2" / "archive_log.jsonl"
-
-_T3_FILENAMES = ("episodes.md", "user.md", "worker.md", "capabilities.md")
-
 
 @dataclass(frozen=True, slots=True)
 class ReferenceIndexRebuildReport:
@@ -82,7 +78,6 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
     }
 
     rows: list[tuple[str, str, str]] = []
-    rows.extend(_t3_reference_rows(root, agent_id))
     rows.extend(_plane_reference_rows(root, agent_id, short_id_to_ref))
     rows.extend(_explicit_reference_rows(root, agent_id))
     rows.extend(_episode_reference_rows(packages, package_id_to_ref))
@@ -333,30 +328,6 @@ def _scan_packages(root: Path, agent_id: uuid.UUID | str) -> list[dict]:
                     }
                 )
     return packages
-
-
-def _t3_reference_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str, str, str]]:
-    rows: list[tuple[str, str, str]] = []
-    t3_dir = root / str(agent_id) / "memory" / "t3"
-    if not t3_dir.exists():
-        return rows
-    for filename in _T3_FILENAMES:
-        path = t3_dir / filename
-        if not path.exists():
-            continue
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            logger.warning("Reference index skipped unreadable T3 file %s: %s", path, exc)
-            continue
-        for block in extract_t3_xml_blocks(content):
-            parsed = parse_t3_xml_block(block)
-            if parsed is None:
-                continue
-            referrer = f"t3:{filename}#{parsed.block_id}"
-            for ref in _split_refs(parsed.metadata.get("source_refs")):
-                rows.append((ref, referrer, "t3_block"))
-    return rows
 
 
 _EVIDENCE_REF_RE = re.compile(r"t2://[^\s\)\]\"',，;；]+|\b(?:t2|ex|fb)-[0-9a-zA-Z][0-9a-zA-Z_-]{3,}\b")

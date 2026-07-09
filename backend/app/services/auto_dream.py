@@ -1541,7 +1541,14 @@ _heartbeat_ticks_since_dream: dict[str, int] = {}
 
 # ── T3 MD read/write/dedup functions (Phase 6) ──
 
-_T3_FILES = ["t3/episodes.md", "t3/user.md", "t3/worker.md", "t3/capabilities.md"]
+_T3_FILES = [
+    "memory/self/self.md",
+    "memory/profiles/owner.md",
+    "memory/profiles/collaborators.md",
+    "memory/profiles/domain.md",
+    "memory/knowledge/<slug>.md",
+    "memory/milestones/<slug>.md",
+]
 _T3_MAX_ENTRIES_PER_FILE = 50
 
 

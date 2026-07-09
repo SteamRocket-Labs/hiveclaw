@@ -483,6 +483,79 @@ pytest \
   -q
 ```
 
+### 6.4 实装证据（2026-07-09）
+
+状态：已完成并准备独立提交。
+
+实装范围：
+
+1. `backend/app/memory/reference_index.py`：移除 active scan `memory/t3/{episodes,user,worker,capabilities}.md` 的 `_t3_reference_rows` 路径；reference index 只从 two-plane profile/knowledge/milestone、explicit overlay、T2/T2.5 packages 派生。
+2. `backend/app/services/auto_dream.py`：`_T3_FILES` 改为 two-plane manifest：`memory/self/self.md`、`memory/profiles/*.md`、`memory/knowledge/<slug>.md`、`memory/milestones/<slug>.md`。
+3. `backend/app/services/agent_evolution_view.py`：path contract 与 `t3_targets` 切到 two-plane；legacy flat T3 只进入 `legacy_audit.detected_legacy_files`。
+4. `docs/memory-vault-path-contract-2026-06-23.md`：把 legacy flat T3 从 accepted ownership 表移到 read-only migration/quarantine 语义。
+5. `backend/app/memory/t3_platform_gate.py::LEGACY_T3_FILES` 保留为唯一 app 层 legacy flat T3 常量，用于 migration/quarantine 命名，不作为 accepted write target。
+
+红测证据：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/memory/test_t2_retention.py::test_legacy_flat_t3_blocks_do_not_count_as_active_referrers \
+  tests/services/test_dream_phase6.py::TestT3ReadWriteBoundary::test_dream_t3_file_manifest_uses_two_plane_paths \
+  tests/services/test_agent_evolution_view_v2.py::test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths \
+  tests/api/test_agent_evolution_api.py::test_get_agent_evolution_returns_structured_view -q
+```
+
+红测失败点：
+
+```text
+legacy flat T3 ref still counted as active referrer
+auto_dream._T3_FILES still listed t3/episodes.md, t3/user.md, t3/worker.md, t3/capabilities.md
+agent_evolution_view path_contract still exposed t3_capabilities=memory/t3/capabilities.md
+```
+
+绿测证据：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/memory/test_t2_retention.py tests/memory/test_c8_derived_tables.py tests/memory/test_source_ref_system.py tests/memory/test_retrieval_pipeline.py tests/memory/test_two_plane_migration.py tests/services/test_dream_phase6.py tests/services/test_agent_evolution_view_v2.py tests/api/test_agent_evolution_api.py tests/scripts/test_rebuild_reference_index.py -q
+```
+
+结果：
+
+```text
+78 passed
+```
+
+Prompt/path 合同回归：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/runtime/test_dream_template.py tests/runtime/test_t3_prompt_contracts.py tests/runtime/test_memory_section.py tests/memory/test_t3_file_boundary.py tests/memory/test_t3_gate_four_planes.py -q
+```
+
+结果：
+
+```text
+41 passed, 4 warnings
+```
+
+静态检查：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+ruff check app/memory/reference_index.py app/services/auto_dream.py app/services/agent_evolution_view.py tests/memory/test_t2_retention.py tests/services/test_dream_phase6.py tests/services/test_agent_evolution_view_v2.py tests/api/test_agent_evolution_api.py
+```
+
+结果：
+
+```text
+All checks passed!
+```
+
 ## 7. 施工包 E：控制面脆弱点与孤儿清理
 
 ### 7.1 `codex_optimization_ledger` 本机路径

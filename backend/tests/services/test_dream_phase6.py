@@ -10,6 +10,7 @@ import pytest
 
 from app.services.auto_dream import (
     MIN_HEARTBEAT_TICKS_SINCE_DREAM,
+    _T3_FILES,
     _consolidate_t3_files,
     _heartbeat_ticks_since_dream,
     _programmatic_dedup,
@@ -52,6 +53,13 @@ class TestProgrammaticDedup:
 
 
 class TestT3ReadWriteBoundary:
+    def test_dream_t3_file_manifest_uses_two_plane_paths(self) -> None:
+        assert "memory/self/self.md" in _T3_FILES
+        assert "memory/profiles/owner.md" in _T3_FILES
+        assert "memory/knowledge/<slug>.md" in _T3_FILES
+        assert "memory/milestones/<slug>.md" in _T3_FILES
+        assert all("memory/t3/" not in path and not path.startswith("t3/") for path in _T3_FILES)
+
     def test_reads_two_plane_t3_documents(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         memory_dir = tmp_agent_dir / str(agent_id) / "memory"
         (memory_dir / "self").mkdir(parents=True, exist_ok=True)
@@ -144,9 +152,17 @@ class TestTruncateT2:
 
 class TestUpdateIndexMd:
     def test_generates_wiki_map_from_canonical_t3(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        memory_dir = tmp_agent_dir / str(agent_id) / "memory" / "t3"
-        (memory_dir / "user.md").write_text("# T3 User\n- [2026-04-06] user fact\n", encoding="utf-8")
-        (memory_dir / "capabilities.md").write_text("# T3 Capabilities\n- [2026-04-06] capability fact\n", encoding="utf-8")
+        memory_dir = tmp_agent_dir / str(agent_id) / "memory"
+        (memory_dir / "profiles").mkdir(parents=True, exist_ok=True)
+        (memory_dir / "knowledge").mkdir(parents=True, exist_ok=True)
+        (memory_dir / "profiles" / "owner.md").write_text(
+            "## Owner Profile\n\n### User fact\n<!-- id: usr-fact -->\nUser prefers concise evidence.\n",
+            encoding="utf-8",
+        )
+        (memory_dir / "knowledge" / "capability-pattern.md").write_text(
+            "---\ntitle: Capability Pattern\nstatus: active\n---\n\n## Current Claim\nWeekly report package pattern.\n",
+            encoding="utf-8",
+        )
 
         with patch("app.services.auto_dream.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)

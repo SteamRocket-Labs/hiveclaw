@@ -97,6 +97,9 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "update_trigger",
         "cancel_trigger",
         "list_triggers",
+        # B2 (CC /loop self-pace parity): dynamic-pacing wakeups are a core
+        # rhythm primitive, same tier as the trigger tools they build on.
+        "schedule_wakeup",
         "send_message_to_agent",
         "send_agent_session_message",
         "delegate_to_agent",

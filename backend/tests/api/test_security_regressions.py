@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
@@ -164,6 +164,7 @@ async def test_upload_requires_agent_access(monkeypatch, tmp_path):
 
     with pytest.raises(HTTPException) as exc:
         await upload_api.upload_file(
+            background_tasks=BackgroundTasks(),
             file=file,
             agent_id=uuid.uuid4(),
             current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4()),
@@ -189,6 +190,7 @@ async def test_upload_sanitizes_workspace_filename(monkeypatch, tmp_path):
     file = UploadFile(io.BytesIO(b"hello"), filename="../evil.txt")
 
     result = await upload_api.upload_file(
+        background_tasks=BackgroundTasks(),
         file=file,
         agent_id=agent_id,
         current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4()),

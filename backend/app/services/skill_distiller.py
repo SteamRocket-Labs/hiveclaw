@@ -14,13 +14,15 @@ import logging
 import re
 import uuid
 import hashlib
+from contextlib import AbstractAsyncContextManager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import tenant_scoped_session
 from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -813,6 +815,14 @@ def _skill_candidate_factor_payload(
     }
 
 
+# Session provider indirection (default: the real tenant-scoped session). Callers —
+# and tests — can inject their own provider so the capability-factor write runs
+# against a controllable session instead of the global engine. This is what lets
+# the capture path be covered directly, rather than mocked away or hidden behind a
+# missing tenant_id.
+FactorSessionProvider = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
+
+
 async def _capture_skill_candidate_package_factor(
     *,
     tenant_id: uuid.UUID | None,
@@ -822,6 +832,7 @@ async def _capture_skill_candidate_package_factor(
     evidence: list[SessionWorkflowEvidence],
     workflow_signature: str | None,
     distillation_intent: str,
+    session_provider: FactorSessionProvider | None = None,
 ) -> dict[str, Any] | None:
     """Best-effort bridge from self-grown Skill packages into Capability Factor Intake."""
 
@@ -834,7 +845,8 @@ async def _capture_skill_candidate_package_factor(
     try:
         from app.services.capability_factor_intake import capture_capability_factor
 
-        async with tenant_scoped_session(tenant_id) as db:
+        provider = session_provider or tenant_scoped_session
+        async with provider(tenant_id) as db:
             return await capture_capability_factor(
                 db,
                 tenant_id=tenant_id,
@@ -1627,6 +1639,7 @@ async def run_skill_distillation_cycle(
     runtime_config: Any,
     model: Any | None = None,
     current_session_id: str | None = None,
+    factor_session_provider: FactorSessionProvider | None = None,
 ) -> dict[str, Any]:
     if not getattr(runtime_config, "skill_candidate_loop_enabled", False):
         return {"status": "disabled", "processed_sessions": 0}
@@ -1932,6 +1945,7 @@ async def run_skill_distillation_cycle(
             evidence=evidence_for_candidate,
             workflow_signature=record.workflow_signature,
             distillation_intent=distillation_intent,
+            session_provider=factor_session_provider,
         )
         verification_report = run_evolution_verification(
             workspace=workspace,
@@ -2215,6 +2229,7 @@ async def run_skill_distillation_cycle(
         evidence=evidence_for_candidate,
         workflow_signature=record.workflow_signature,
         distillation_intent=distillation_intent,
+        session_provider=factor_session_provider,
     )
     verification_report = run_evolution_verification(
         workspace=workspace,

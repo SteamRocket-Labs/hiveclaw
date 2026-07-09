@@ -102,25 +102,24 @@ CC semantic baseline
 
 2026-07-09 实装证据：
 
-- `backend/app/services/skill_distiller.py`：`write_skill_candidate_package()` 后通过 `_capture_skill_candidate_package_factor()` 自动写入 `skill_candidate` factor；失败只 warning，不阻断 distiller。2026-07-09 回归修正：该 bridge 只在上游显式传入 `tenant_id` 时写入 intake，不再从 distiller loop 内隐式 `resolve_tenant_for_agent()` 或打开 RLS bypass/session；离线/单测路径保留本地 candidate package，生产 `evolution_daemon` 仍传入 tenant 并保持自产 factor 采集接通。
-- `backend/app/agents/subagent_evolution.py`：`maybe_nominate()` 保存 pending proposal 后通过 `_capture_subagent_candidate_factor()` 自动写入 `subagent_candidate` factor；proposal approval 仍是唯一写 definition 的路径。
+- `backend/app/services/skill_distiller.py`：`write_skill_candidate_package()` 后通过 `_capture_skill_candidate_package_factor()` 自动写入 `skill_candidate` factor；失败只 warning，不阻断 distiller。
+- 2026-07-09 回归修正分两步：
+  1. tenant-explicit：bridge 只在上游显式传入 `tenant_id` 时写入 intake，不再从 distiller loop 内隐式 `resolve_tenant_for_agent()` 或打开 RLS bypass/session。
+  2. session 可注入（本次真修）：`_capture_skill_candidate_package_factor()` 与 `run_skill_distillation_cycle()` 新增可选 `session_provider` / `factor_session_provider`，默认仍是真实 `tenant_scoped_session`。此前 capture 的 DB 写入硬编码全局 engine 自开连接，真实写入路径无法被测试直接覆盖——只能被 mock，或在 `tenant_id=None` 时跳过；`test_skill_distiller.py` 整文件批量运行还会因跨 event loop 复用全局 asyncpg pool 抛 `another operation in progress`。上一步的 tenant-explicit 修正让测试转绿，靠的正是既有 cycle 测试传 `tenant_id=None` 走跳过分支——真实 capture 写入并未被覆盖。改为可注入 provider 后，新增 `test_capture_skill_candidate_factor_writes_through_injected_session`：用真实 `tenant_id` + 注入的 in-loop fake session，真实执行 `capture_capability_factor`（写入 `CapabilityFactor` + `CapabilityFactorReview` 并 commit），断言 provider 收到显式 tenant，不 mock capture、不隐式 resolve tenant、不走 `tenant_id=None` 跳过分支。生产 `evolution_daemon` 仍传真实 tenant、走默认 `tenant_scoped_session`，自产 factor 采集保持接通。
+- `backend/app/agents/subagent_evolution.py`：`maybe_nominate()` 保存 pending proposal 后通过 `_capture_subagent_candidate_factor()` 自动写入 `subagent_candidate` factor；proposal approval 仍是唯一写 definition 的路径。该 bridge 存在**同型的 `tenant_scoped_session` 自开模式**，应按同样的 `session_provider` 注入方式收口；本轮未改，因为 `tests/agents/test_subagent_evolution.py` 当前被并行的 `activation_candidates`（QKV 退役）改动导致 collection error（`NameError: ActivationHardMask`），无法验证——待该工作稳定后同法修复。
 - 验证命令：
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
-pytest tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_proposal \
-  tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_promotes_high_confidence_candidate \
-  tests/services/test_capability_factor_intake.py -q
-# 4 passed, 4 warnings in 2.17s
 
-pytest tests/services/test_skill_distiller.py -q
-# 33 passed, 4 warnings in 1.71s
+# 真实覆盖：真 tenant + 注入 session，capture 真跑（不 mock / 不隐式 resolve / 不走 tenant_id=None 跳过）
+pytest tests/services/test_skill_distiller.py::test_capture_skill_candidate_factor_writes_through_injected_session -q
+# 1 passed
 
-pytest tests/services/test_skill_distiller.py \
-  tests/services/test_capability_factor_intake.py \
-  tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_proposal -q
-# 36 passed, 4 warnings in 2.43s
+# 整文件转绿（上一轮同文件批量运行曾 6 failed）+ factor intake
+pytest tests/services/test_skill_distiller.py tests/services/test_capability_factor_intake.py -q
+# 36 passed（其中 test_skill_distiller.py 34 passed，含新增真实覆盖测试）
 
 ruff check app/services/skill_distiller.py tests/services/test_skill_distiller.py
 # All checks passed!

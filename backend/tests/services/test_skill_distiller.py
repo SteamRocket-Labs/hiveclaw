@@ -4,7 +4,7 @@ import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -502,6 +502,94 @@ async def test_skill_candidate_factor_capture_requires_explicit_tenant(monkeypat
     )
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_capture_skill_candidate_factor_writes_through_injected_session(monkeypatch) -> None:
+    """tenant_id present -> the bridge really runs capture through the injected session.
+
+    Regression guard for the tenant-explicit fix: with a real tenant the capture
+    must run end-to-end (not mocked away, not skipped via a missing tenant_id, not
+    resolved implicitly) and the write must go through the caller-provided session
+    rather than the global engine.
+    """
+    from contextlib import asynccontextmanager
+
+    from app.models.capability_factor import CapabilityFactor, CapabilityFactorReview
+    from app.services.skill_distiller import DistilledSkillDraft, _capture_skill_candidate_package_factor
+
+    async def fail_tenant_resolution(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("capture must use the explicit tenant, never resolve it from the distiller loop")
+
+    monkeypatch.setattr("app.services.skill_distiller.resolve_tenant_for_agent", fail_tenant_resolution)
+
+    added: list[object] = []
+    commit_calls = 0
+
+    class _FakeIntakeSession:
+        def add(self, row: object) -> None:
+            added.append(row)
+
+        async def flush(self) -> None:
+            for row in added:
+                if getattr(row, "id", None) is None:
+                    setattr(row, "id", uuid4())
+
+        async def commit(self) -> None:
+            nonlocal commit_calls
+            commit_calls += 1
+
+        async def rollback(self) -> None:  # pragma: no cover - defensive
+            pass
+
+    provided_tenants: list[UUID] = []
+
+    @asynccontextmanager
+    async def provider(tenant_id: UUID):
+        provided_tenants.append(tenant_id)
+        yield _FakeIntakeSession()
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    result = await _capture_skill_candidate_package_factor(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        manifest={
+            "skill_name": "Market Research Loop",
+            "candidate_id": "candidate-1",
+            "package_type": "promote",
+            "target_path": "skills/market-research-loop/SKILL.md",
+        },
+        draft=DistilledSkillDraft(
+            decision="promote",
+            confidence=0.91,
+            name="Market Research Loop",
+            description="Run a bounded research workflow.",
+            instructions_markdown="Search, fetch, and summarize.",
+            declared_tools=("web_search", "web_fetch", "write_file"),
+            declared_packs=("web_pack",),
+            reason="Repeated successful workflow.",
+            skill_markdown=None,
+        ),
+        evidence=[],
+        workflow_signature="web_search>web_fetch>write_file",
+        distillation_intent="promote",
+        session_provider=provider,  # type: ignore[arg-type]  # fake in-loop session stands in for AsyncSession
+    )
+
+    # The injected provider was used with the explicit tenant (never the global engine).
+    assert provided_tenants == [tenant_id]
+    # capture_capability_factor really ran end-to-end (not mocked): factor + review committed.
+    factor = next(row for row in added if isinstance(row, CapabilityFactor))
+    assert factor.tenant_id == tenant_id
+    assert factor.originating_agent_id == agent_id
+    assert factor.factor_kind == "skill_candidate"
+    assert factor.display_name == "Market Research Loop"
+    assert any(isinstance(row, CapabilityFactorReview) for row in added)
+    assert commit_calls == 1
+    assert result is not None
+    assert result["factor"]["id"] == str(factor.id)
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,21 @@ _MIGRATION = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "ext
 _STRICT_MIGRATION = (
     Path(__file__).resolve().parents[2] / "alembic" / "versions" / "external_capability_strict_rls_0709.py"
 )
+_TRUST_GATE_MIGRATION = (
+    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "external_capability_trust_gate_0707.py"
+)
+_EXTENSION_ACTIVATION_MIGRATION = (
+    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "external_extension_activation_0707.py"
+)
+_EXTENSION_CATALOG_MIGRATION = (
+    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "external_extension_catalog_entries_0707.py"
+)
+_PERSONAL_KNOWLEDGE_MIGRATION = (
+    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "personal_knowledge_core_0707.py"
+)
+_EXTENSION_SESSION_MIGRATION = (
+    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "external_extension_session_try_0709.py"
+)
 
 
 _STRICT_EXTERNAL_TABLES = (
@@ -44,10 +59,7 @@ def test_external_capability_rls_predicate_does_not_allow_null_tenant_rows() -> 
     predicate = module._tenant_predicate("external_capability_reviews")
 
     assert "current_setting('app.current_tenant_id', true) = 'BYPASS'" in predicate
-    assert (
-        "external_capability_reviews.tenant_id::text = current_setting('app.current_tenant_id', true)"
-        in predicate
-    )
+    assert "external_capability_reviews.tenant_id::text = current_setting('app.current_tenant_id', true)" in predicate
     assert "tenant_id IS NULL" not in predicate
 
 
@@ -62,3 +74,27 @@ def test_external_capability_strict_rls_repairs_already_applied_policy_names() -
     assert "DROP POLICY IF EXISTS tenant_isolation_{table} ON {table}" in src
     assert "CREATE POLICY {policy_name} ON {table}" in src
     assert "tenant_id IS NULL" not in module._tenant_predicate("external_capability_reviews")
+
+
+def test_external_capability_table_migrations_are_resume_safe() -> None:
+    for path in (
+        _TRUST_GATE_MIGRATION,
+        _EXTENSION_ACTIVATION_MIGRATION,
+        _EXTENSION_CATALOG_MIGRATION,
+        _PERSONAL_KNOWLEDGE_MIGRATION,
+    ):
+        src = path.read_text(encoding="utf-8")
+        assert "op.create_table(" in src
+        assert "if_not_exists=True" in src
+        assert "op.create_index(" in src
+        assert src.count("if_not_exists=True") >= src.count("op.create_table(")
+
+
+def test_external_extension_session_migration_resumes_after_partial_column_application() -> None:
+    src = _EXTENSION_SESSION_MIGRATION.read_text(encoding="utf-8")
+
+    assert "op.drop_constraint(" in src
+    assert '"uq_external_extension_activation"' in src
+    assert "if_exists=True" in src
+    assert src.count("if_not_exists=True") >= 3
+    assert "def _foreign_key_exists(" in src

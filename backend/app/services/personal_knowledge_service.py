@@ -124,6 +124,13 @@ class PersonalKnowledgeDocumentDetail(PersonalKnowledgeDocumentSummary):
 
 
 @dataclass(frozen=True)
+class PersonalKnowledgeSourcePreview:
+    filename: str
+    mime_type: str
+    content: bytes
+
+
+@dataclass(frozen=True)
 class KnowledgeSearchHit:
     document_id: uuid.UUID
     segment_id: uuid.UUID
@@ -901,6 +908,79 @@ class PersonalKnowledgeService:
             )
         summary = self._document_summary(owner_user_id=owner_user_id, document=document, segment_count=segment_count)
         return PersonalKnowledgeDocumentDetail(**summary.__dict__, segments=segments)
+
+    def _source_preview_from_metadata(self, metadata: dict[str, Any]) -> PersonalKnowledgeSourcePreview | None:
+        source_path = str(metadata.get("queued_source_path") or "").strip()
+        if not source_path:
+            return None
+        filename = _safe_filename(str(metadata.get("source_filename") or Path(source_path).name))
+        mime_type = str(metadata.get("source_mime_type") or mimetypes.guess_type(filename)[0] or "").strip().lower()
+        media_kind = str(metadata.get("media_kind") or "").strip().lower()
+        if not (mime_type.startswith("image/") or media_kind == "image"):
+            return None
+
+        root = self.data_root.resolve()
+        candidate = (root / source_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+        if not candidate.is_file():
+            return None
+        return PersonalKnowledgeSourcePreview(
+            filename=filename,
+            mime_type=mime_type or "application/octet-stream",
+            content=candidate.read_bytes(),
+        )
+
+    async def get_personal_document_source_preview(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        document_id: uuid.UUID,
+        current_user_id: uuid.UUID | None,
+        agent_id: uuid.UUID | None = None,
+    ) -> PersonalKnowledgeSourcePreview | None:
+        statement = build_personal_knowledge_document_list_statement(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            current_user_id=current_user_id,
+            agent_id=agent_id,
+            limit=1,
+            document_id=document_id,
+        )
+        rows = (await session.execute(statement)).all()
+        if not rows:
+            return None
+        document = rows[0][0]
+        preview = self._source_preview_from_metadata(dict(getattr(document, "doc_metadata_json", {}) or {}))
+        if preview is not None:
+            return preview
+
+        job_rows = (
+            await session.execute(
+                select(KnowledgeIndexJob)
+                .where(
+                    KnowledgeIndexJob.tenant_id == tenant_id,
+                    KnowledgeIndexJob.scope_type == "person",
+                    KnowledgeIndexJob.scope_id == owner_user_id,
+                    KnowledgeIndexJob.document_id == document_id,
+                )
+                .order_by(KnowledgeIndexJob.updated_at.desc(), KnowledgeIndexJob.created_at.desc())
+                .limit(5)
+            )
+        ).all()
+        for row in job_rows:
+            try:
+                job = row[0]
+            except (TypeError, KeyError):
+                job = row
+            preview = self._source_preview_from_metadata(dict(getattr(job, "job_metadata_json", {}) or {}))
+            if preview is not None:
+                return preview
+        return None
 
     async def _upsert_index_job(
         self,

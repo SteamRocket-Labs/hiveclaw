@@ -44,35 +44,71 @@ def upgrade() -> None:
     op.create_table(
         "external_marketplace_sources",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("name", sa.String(length=200), nullable=False),
         sa.Column("source_type", sa.String(length=60), server_default="manual", nullable=False),
         sa.Column("source_uri", sa.Text(), nullable=False),
         sa.Column("status", sa.String(length=30), server_default="enabled", nullable=False),
         sa.Column("sync_status", sa.String(length=30), server_default="never_synced", nullable=False),
         sa.Column("last_sync_error", sa.Text(), nullable=True),
-        sa.Column("config_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("created_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "config_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "created_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("last_sync_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("tenant_id", "source_uri", name="uq_external_marketplace_source_uri"),
+        if_not_exists=True,
     )
-    op.create_index(op.f("ix_external_marketplace_sources_tenant_id"), "external_marketplace_sources", ["tenant_id"])
-    op.create_index(op.f("ix_external_marketplace_sources_source_type"), "external_marketplace_sources", ["source_type"])
-    op.create_index(op.f("ix_external_marketplace_sources_status"), "external_marketplace_sources", ["status"])
-    op.create_index(op.f("ix_external_marketplace_sources_sync_status"), "external_marketplace_sources", ["sync_status"])
+    op.create_index(
+        op.f("ix_external_marketplace_sources_tenant_id"),
+        "external_marketplace_sources",
+        ["tenant_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_marketplace_sources_source_type"),
+        "external_marketplace_sources",
+        ["source_type"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_marketplace_sources_status"),
+        "external_marketplace_sources",
+        ["status"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_marketplace_sources_sync_status"),
+        "external_marketplace_sources",
+        ["sync_status"],
+        if_not_exists=True,
+    )
     op.create_index(
         op.f("ix_external_marketplace_sources_created_by_user_id"),
         "external_marketplace_sources",
         ["created_by_user_id"],
+        if_not_exists=True,
     )
     _enable_rls("external_marketplace_sources")
 
     op.create_table(
         "external_marketplace_entries",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column(
             "source_id",
             postgresql.UUID(as_uuid=True),
@@ -86,8 +122,18 @@ def upgrade() -> None:
         sa.Column("source_uri", sa.Text(), nullable=False),
         sa.Column("source_ref", sa.String(length=300), nullable=True),
         sa.Column("status", sa.String(length=30), server_default="available", nullable=False),
-        sa.Column("manifest_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("compatibility_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+        sa.Column(
+            "manifest_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "compatibility_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
         sa.Column(
             "review_id",
             postgresql.UUID(as_uuid=True),
@@ -104,13 +150,44 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("tenant_id", "source_id", "external_key", name="uq_external_marketplace_entry_key"),
+        if_not_exists=True,
     )
-    op.create_index(op.f("ix_external_marketplace_entries_tenant_id"), "external_marketplace_entries", ["tenant_id"])
-    op.create_index(op.f("ix_external_marketplace_entries_source_id"), "external_marketplace_entries", ["source_id"])
-    op.create_index(op.f("ix_external_marketplace_entries_source_format"), "external_marketplace_entries", ["source_format"])
-    op.create_index(op.f("ix_external_marketplace_entries_status"), "external_marketplace_entries", ["status"])
-    op.create_index(op.f("ix_external_marketplace_entries_review_id"), "external_marketplace_entries", ["review_id"])
-    op.create_index(op.f("ix_external_marketplace_entries_snapshot_id"), "external_marketplace_entries", ["snapshot_id"])
+    op.create_index(
+        op.f("ix_external_marketplace_entries_tenant_id"),
+        "external_marketplace_entries",
+        ["tenant_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_marketplace_entries_source_id"),
+        "external_marketplace_entries",
+        ["source_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_marketplace_entries_source_format"),
+        "external_marketplace_entries",
+        ["source_format"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_marketplace_entries_status"),
+        "external_marketplace_entries",
+        ["status"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_marketplace_entries_review_id"),
+        "external_marketplace_entries",
+        ["review_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_marketplace_entries_snapshot_id"),
+        "external_marketplace_entries",
+        ["snapshot_id"],
+        if_not_exists=True,
+    )
     _enable_rls("external_marketplace_entries")
 
 

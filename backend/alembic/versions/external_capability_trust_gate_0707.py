@@ -47,7 +47,9 @@ def upgrade() -> None:
     op.create_table(
         "external_capability_reviews",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("source_format", sa.String(length=60), nullable=False),
         sa.Column("source_uri", sa.Text(), nullable=False),
         sa.Column("source_ref", sa.String(length=300), nullable=True),
@@ -55,26 +57,86 @@ def upgrade() -> None:
         sa.Column("normalized_name", sa.String(length=200), nullable=False),
         sa.Column("status", sa.String(length=30), server_default="review_required", nullable=False),
         sa.Column("admission_class", sa.String(length=40), server_default="governed_runtime", nullable=False),
-        sa.Column("admission_report_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("governance_projection_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("normalized_manifest_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("created_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "admission_report_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "governance_projection_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "normalized_manifest_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "created_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.UniqueConstraint("tenant_id", "source_format", "source_uri", "source_hash", name="uq_external_review_source"),
+        sa.UniqueConstraint(
+            "tenant_id", "source_format", "source_uri", "source_hash", name="uq_external_review_source"
+        ),
+        if_not_exists=True,
     )
-    op.create_index(op.f("ix_external_capability_reviews_tenant_id"), "external_capability_reviews", ["tenant_id"])
-    op.create_index(op.f("ix_external_capability_reviews_source_format"), "external_capability_reviews", ["source_format"])
-    op.create_index(op.f("ix_external_capability_reviews_source_hash"), "external_capability_reviews", ["source_hash"])
-    op.create_index(op.f("ix_external_capability_reviews_normalized_name"), "external_capability_reviews", ["normalized_name"])
-    op.create_index(op.f("ix_external_capability_reviews_status"), "external_capability_reviews", ["status"])
-    op.create_index(op.f("ix_external_capability_reviews_admission_class"), "external_capability_reviews", ["admission_class"])
-    op.create_index(op.f("ix_external_capability_reviews_created_by_user_id"), "external_capability_reviews", ["created_by_user_id"])
+    op.create_index(
+        op.f("ix_external_capability_reviews_tenant_id"),
+        "external_capability_reviews",
+        ["tenant_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_reviews_source_format"),
+        "external_capability_reviews",
+        ["source_format"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_reviews_source_hash"),
+        "external_capability_reviews",
+        ["source_hash"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_reviews_normalized_name"),
+        "external_capability_reviews",
+        ["normalized_name"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_reviews_status"),
+        "external_capability_reviews",
+        ["status"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_reviews_admission_class"),
+        "external_capability_reviews",
+        ["admission_class"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_reviews_created_by_user_id"),
+        "external_capability_reviews",
+        ["created_by_user_id"],
+        if_not_exists=True,
+    )
 
     op.create_table(
         "external_capability_snapshots",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column(
             "review_id",
             postgresql.UUID(as_uuid=True),
@@ -89,24 +151,90 @@ def upgrade() -> None:
         sa.Column("normalized_name", sa.String(length=200), nullable=False),
         sa.Column("status", sa.String(length=30), server_default="approved", nullable=False),
         sa.Column("admission_class", sa.String(length=40), nullable=False),
-        sa.Column("admission_report_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("governance_projection_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("component_manifest_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("approved_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "admission_report_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "governance_projection_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "component_manifest_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "approved_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("approved_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("revoked_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "revoked_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("tenant_id", "snapshot_key", name="uq_external_snapshot_key"),
+        if_not_exists=True,
     )
-    op.create_index(op.f("ix_external_capability_snapshots_tenant_id"), "external_capability_snapshots", ["tenant_id"])
-    op.create_index(op.f("ix_external_capability_snapshots_review_id"), "external_capability_snapshots", ["review_id"])
-    op.create_index(op.f("ix_external_capability_snapshots_source_format"), "external_capability_snapshots", ["source_format"])
-    op.create_index(op.f("ix_external_capability_snapshots_source_hash"), "external_capability_snapshots", ["source_hash"])
-    op.create_index(op.f("ix_external_capability_snapshots_normalized_name"), "external_capability_snapshots", ["normalized_name"])
-    op.create_index(op.f("ix_external_capability_snapshots_status"), "external_capability_snapshots", ["status"])
-    op.create_index(op.f("ix_external_capability_snapshots_admission_class"), "external_capability_snapshots", ["admission_class"])
-    op.create_index(op.f("ix_external_capability_snapshots_approved_by_user_id"), "external_capability_snapshots", ["approved_by_user_id"])
+    op.create_index(
+        op.f("ix_external_capability_snapshots_tenant_id"),
+        "external_capability_snapshots",
+        ["tenant_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_snapshots_review_id"),
+        "external_capability_snapshots",
+        ["review_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_snapshots_source_format"),
+        "external_capability_snapshots",
+        ["source_format"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_snapshots_source_hash"),
+        "external_capability_snapshots",
+        ["source_hash"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_snapshots_normalized_name"),
+        "external_capability_snapshots",
+        ["normalized_name"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_snapshots_status"),
+        "external_capability_snapshots",
+        ["status"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_snapshots_admission_class"),
+        "external_capability_snapshots",
+        ["admission_class"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_capability_snapshots_approved_by_user_id"),
+        "external_capability_snapshots",
+        ["approved_by_user_id"],
+        if_not_exists=True,
+    )
 
     for table in _TABLES:
         _enable_rls(table)

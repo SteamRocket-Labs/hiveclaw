@@ -49,6 +49,7 @@ def upgrade() -> None:
             server_default=sa.text("'[]'::jsonb"),
             nullable=False,
         ),
+        if_not_exists=True,
     )
     op.add_column(
         "external_extension_activations",
@@ -58,12 +59,15 @@ def upgrade() -> None:
             server_default=sa.text("'{}'::jsonb"),
             nullable=False,
         ),
+        if_not_exists=True,
     )
 
     op.create_table(
         "external_extension_components",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column(
             "snapshot_id",
             postgresql.UUID(as_uuid=True),
@@ -76,24 +80,67 @@ def upgrade() -> None:
         sa.Column("source_path", sa.Text(), nullable=True),
         sa.Column("content_sha256", sa.String(length=128), nullable=True),
         sa.Column("status", sa.String(length=30), server_default="approved", nullable=False),
-        sa.Column("runtime_projection_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("metadata_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+        sa.Column(
+            "runtime_projection_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "metadata_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("tenant_id", "snapshot_id", "qualified_name", name="uq_external_component_snapshot_name"),
+        if_not_exists=True,
     )
-    op.create_index(op.f("ix_external_extension_components_tenant_id"), "external_extension_components", ["tenant_id"])
-    op.create_index(op.f("ix_external_extension_components_snapshot_id"), "external_extension_components", ["snapshot_id"])
-    op.create_index(op.f("ix_external_extension_components_component_type"), "external_extension_components", ["component_type"])
-    op.create_index(op.f("ix_external_extension_components_component_name"), "external_extension_components", ["component_name"])
-    op.create_index(op.f("ix_external_extension_components_content_sha256"), "external_extension_components", ["content_sha256"])
-    op.create_index(op.f("ix_external_extension_components_status"), "external_extension_components", ["status"])
+    op.create_index(
+        op.f("ix_external_extension_components_tenant_id"),
+        "external_extension_components",
+        ["tenant_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_extension_components_snapshot_id"),
+        "external_extension_components",
+        ["snapshot_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_extension_components_component_type"),
+        "external_extension_components",
+        ["component_type"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_extension_components_component_name"),
+        "external_extension_components",
+        ["component_name"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_extension_components_content_sha256"),
+        "external_extension_components",
+        ["content_sha256"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_extension_components_status"),
+        "external_extension_components",
+        ["status"],
+        if_not_exists=True,
+    )
     _enable_rls("external_extension_components")
 
     op.create_table(
         "external_extension_hook_registrations",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column(
             "snapshot_id",
             postgresql.UUID(as_uuid=True),
@@ -110,38 +157,54 @@ def upgrade() -> None:
         sa.Column("event", sa.String(length=80), nullable=False),
         sa.Column("handler", sa.String(length=200), nullable=False),
         sa.Column("mode", sa.String(length=30), server_default="observe", nullable=False),
-        sa.Column("matcher_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+        sa.Column(
+            "matcher_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
         sa.Column("approval_required", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column("status", sa.String(length=30), server_default="pending_approval", nullable=False),
-        sa.Column("approval_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+        sa.Column(
+            "approval_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("tenant_id", "snapshot_id", "qualified_name", name="uq_external_hook_snapshot_name"),
+        if_not_exists=True,
     )
     op.create_index(
         op.f("ix_external_extension_hook_registrations_tenant_id"),
         "external_extension_hook_registrations",
         ["tenant_id"],
+        if_not_exists=True,
     )
     op.create_index(
         op.f("ix_external_extension_hook_registrations_snapshot_id"),
         "external_extension_hook_registrations",
         ["snapshot_id"],
+        if_not_exists=True,
     )
     op.create_index(
         op.f("ix_external_extension_hook_registrations_component_id"),
         "external_extension_hook_registrations",
         ["component_id"],
+        if_not_exists=True,
     )
     op.create_index(
         op.f("ix_external_extension_hook_registrations_event"),
         "external_extension_hook_registrations",
         ["event"],
+        if_not_exists=True,
     )
     op.create_index(
         op.f("ix_external_extension_hook_registrations_status"),
         "external_extension_hook_registrations",
         ["status"],
+        if_not_exists=True,
     )
     _enable_rls("external_extension_hook_registrations")
 

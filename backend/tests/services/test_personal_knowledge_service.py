@@ -291,6 +291,75 @@ def test_personal_knowledge_artifact_path_is_person_scope_stable(tmp_path: Path)
     assert path == tmp_path / "persons" / str(owner_id) / "kb" / "documents" / "aa" / f"{source_hash}.md"
 
 
+@pytest.mark.asyncio
+async def test_get_personal_document_source_preview_reads_queued_image(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    source_rel = Path("persons") / str(owner_id) / "kb" / "imports" / "aa" / "112233.png"
+    source_path = tmp_path / source_rel
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(b"\x89PNG\r\nsource")
+    document = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_sha256="a" * 64,
+        doc_metadata_json={
+            "queued_source_path": source_rel.as_posix(),
+            "source_filename": "112233.png",
+            "source_mime_type": "image/png",
+            "media_kind": "image",
+        },
+    )
+    session = _QueuedSession([[(document, 0)]])
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    preview = await service.get_personal_document_source_preview(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        document_id=document.id,
+        current_user_id=owner_id,
+        agent_id=None,
+    )
+
+    assert preview is not None
+    assert preview.filename == "112233.png"
+    assert preview.mime_type == "image/png"
+    assert preview.content == b"\x89PNG\r\nsource"
+
+
+@pytest.mark.asyncio
+async def test_get_personal_document_source_preview_rejects_path_escape(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    document = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_sha256="a" * 64,
+        doc_metadata_json={
+            "queued_source_path": "../secret.png",
+            "source_filename": "secret.png",
+            "source_mime_type": "image/png",
+            "media_kind": "image",
+        },
+    )
+    session = _QueuedSession([[(document, 0)], []])
+    service = PersonalKnowledgeService(data_root=tmp_path)
+
+    preview = await service.get_personal_document_source_preview(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        document_id=document.id,
+        current_user_id=owner_id,
+        agent_id=None,
+    )
+
+    assert preview is None
+
+
 def test_segment_markdown_preserves_heading_path_and_stable_hashes() -> None:
     from app.services.personal_knowledge_service import segment_markdown
 

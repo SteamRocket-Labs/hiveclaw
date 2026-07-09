@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useMemo, useState } from 'react';
+import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -65,6 +65,17 @@ function formatDate(value: string | null): string {
 function documentTags(document: PersonalKnowledgeDocumentSummary): string[] {
   const raw = document.metadata?.tags;
   return Array.isArray(raw) ? raw.map((tag) => String(tag)).filter(Boolean).slice(0, 4) : [];
+}
+
+function sourceImagePreview(document?: PersonalKnowledgeDocumentDetail): { filename: string; mimeType: string } | null {
+  const metadata = document?.metadata ?? {};
+  const mimeType = typeof metadata.source_mime_type === 'string' ? metadata.source_mime_type.trim().toLowerCase() : '';
+  const mediaKind = typeof metadata.media_kind === 'string' ? metadata.media_kind.trim().toLowerCase() : '';
+  if (!mimeType.startsWith('image/') && mediaKind !== 'image') return null;
+  const filename = typeof metadata.source_filename === 'string' && metadata.source_filename.trim()
+    ? metadata.source_filename.trim()
+    : document?.title || 'source image';
+  return { filename, mimeType: mimeType || 'image/*' };
 }
 
 function EmptyBlock({ children }: { children: string }) {
@@ -439,6 +450,26 @@ function DocumentDetail({
   patchPending: boolean;
 }) {
   const { t } = useTranslation();
+  const imagePreview = sourceImagePreview(document);
+  const imagePreviewQuery = useQuery({
+    queryKey: ['personal-knowledge-source-preview', document?.document_id],
+    queryFn: () => knowledgeApi.myPersonalDocumentSourcePreview(document?.document_id ?? ''),
+    enabled: !!document && !!imagePreview,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!imagePreviewQuery.data || typeof URL === 'undefined') {
+      setImagePreviewUrl(null);
+      return undefined;
+    }
+    const objectUrl = URL.createObjectURL(imagePreviewQuery.data);
+    setImagePreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [imagePreviewQuery.data]);
+
   if (!document) {
     return (
       <aside className="personal-kb-detail">
@@ -456,6 +487,21 @@ function DocumentDetail({
         </div>
         <span className="ui-chip">{document.status}</span>
       </div>
+      {imagePreview && (
+        <div className="personal-kb-source-preview">
+          <div className="personal-kb-preview-title">{t('personalKnowledge.sourceImagePreview', '源图片预览')}</div>
+          {imagePreviewUrl ? (
+            <img src={imagePreviewUrl} alt={imagePreview.filename} />
+          ) : (
+            <div className="personal-kb-source-preview-placeholder">
+              {imagePreviewQuery.isError
+                ? t('personalKnowledge.sourceImagePreviewUnavailable', '源图片暂不可预览')
+                : t('personalKnowledge.sourceImagePreviewLoading', '正在加载源图片...')}
+            </div>
+          )}
+          <small>{imagePreview.filename}</small>
+        </div>
+      )}
       <div className="personal-kb-preview">
         <div className="personal-kb-preview-title">{t('personalKnowledge.mdPreview', 'MD 预览')}</div>
         {document.segments.slice(0, 4).map((segment) => (

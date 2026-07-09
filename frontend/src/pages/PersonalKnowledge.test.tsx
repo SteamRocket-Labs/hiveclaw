@@ -61,7 +61,12 @@ vi.mock('@tanstack/react-query', () => ({
           segment_count: 14,
           created_at: '2026-07-01T00:00:00Z',
           updated_at: null,
-          metadata: { tags: ['CryptoAI', 'MEV'] },
+          metadata: {
+            tags: ['CryptoAI', 'MEV'],
+            media_kind: 'image',
+            source_filename: '112233.png',
+            source_mime_type: 'image/png',
+          },
           segments: [
             {
               segment_id: 'seg-1',
@@ -213,6 +218,8 @@ describe('PersonalKnowledge', () => {
     expect(html).toContain('Vitalik: Crypto x AI 应用的前景与挑战');
     expect(html).toContain('kb://person/user-1/documents/doc-1');
     expect(html).toContain('预测市场是 Crypto x AI 里信息聚合的样板。');
+    expect(html).toContain('源图片预览');
+    expect(html).toContain('112233.png');
     expect(html).not.toContain('/agents/agent-1/knowledge/personal');
   });
 });

@@ -44,8 +44,12 @@ def upgrade() -> None:
     op.create_table(
         "external_extension_activations",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("agent_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agents.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        ),
+        sa.Column(
+            "agent_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column(
             "snapshot_id",
             postgresql.UUID(as_uuid=True),
@@ -53,26 +57,65 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("status", sa.String(length=30), server_default="active", nullable=False),
-        sa.Column("component_types_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("activation_result_json", postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("activated_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "component_types_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "activation_result_json",
+            postgresql.JSONB(astext_type=sa.Text()),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+        sa.Column(
+            "activated_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("activated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("tenant_id", "agent_id", "snapshot_id", name="uq_external_extension_activation"),
+        if_not_exists=True,
     )
-    op.create_index(op.f("ix_external_extension_activations_tenant_id"), "external_extension_activations", ["tenant_id"])
-    op.create_index(op.f("ix_external_extension_activations_agent_id"), "external_extension_activations", ["agent_id"])
-    op.create_index(op.f("ix_external_extension_activations_snapshot_id"), "external_extension_activations", ["snapshot_id"])
-    op.create_index(op.f("ix_external_extension_activations_status"), "external_extension_activations", ["status"])
+    op.create_index(
+        op.f("ix_external_extension_activations_tenant_id"),
+        "external_extension_activations",
+        ["tenant_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_extension_activations_agent_id"),
+        "external_extension_activations",
+        ["agent_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_extension_activations_snapshot_id"),
+        "external_extension_activations",
+        ["snapshot_id"],
+        if_not_exists=True,
+    )
+    op.create_index(
+        op.f("ix_external_extension_activations_status"),
+        "external_extension_activations",
+        ["status"],
+        if_not_exists=True,
+    )
     op.create_index(
         op.f("ix_external_extension_activations_activated_by_user_id"),
         "external_extension_activations",
         ["activated_by_user_id"],
+        if_not_exists=True,
     )
     _enable_rls("external_extension_activations")
 
 
 def downgrade() -> None:
-    op.execute("DROP POLICY IF EXISTS tenant_isolation_external_extension_activations ON external_extension_activations")
+    op.execute(
+        "DROP POLICY IF EXISTS tenant_isolation_external_extension_activations ON external_extension_activations"
+    )
     op.execute("ALTER TABLE external_extension_activations DISABLE ROW LEVEL SECURITY")
     op.drop_table("external_extension_activations")

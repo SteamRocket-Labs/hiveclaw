@@ -397,6 +397,36 @@ def test_current_user_personal_knowledge_document_actions(monkeypatch):
         assert kwargs["owner_user_id"] == owner_id
 
 
+def test_current_user_personal_knowledge_source_preview_streams_owner_image(monkeypatch):
+    owner_id = uuid4()
+    document_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    captured = []
+
+    class _FakeService:
+        async def get_personal_document_source_preview(self, session, **kwargs):
+            captured.append(kwargs)
+            return SimpleNamespace(filename="112233.png", mime_type="image/png", content=b"\x89PNG\r\nsource")
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, _fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    response = client.get(f"/knowledge/personal/documents/{document_id}/source-preview")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/png")
+    assert response.content == b"\x89PNG\r\nsource"
+    assert captured == [
+        {
+            "tenant_id": user.tenant_id,
+            "owner_user_id": owner_id,
+            "document_id": document_id,
+            "current_user_id": owner_id,
+            "agent_id": None,
+        }
+    ]
+
+
 def test_current_user_personal_knowledge_grant_routes_use_owner_scope(monkeypatch):
     owner_id = uuid4()
     grant_id = uuid4()

@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -110,6 +110,18 @@ def _as_jsonable(value: Any) -> Any:
 def _dataclass_payload(value: Any) -> dict[str, Any]:
     raw = asdict(value) if is_dataclass(value) else vars(value)
     return {key: _as_jsonable(item) for key, item in raw.items()}
+
+
+def _source_preview_response(preview: Any) -> Response:
+    filename = str(getattr(preview, "filename", "source")).replace('"', "")
+    return Response(
+        content=getattr(preview, "content", b""),
+        media_type=str(getattr(preview, "mime_type", "application/octet-stream")),
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
+    )
 
 
 async def _process_current_user_personal_import_jobs(*, tenant_id: uuid.UUID, owner_user_id: uuid.UUID) -> None:
@@ -444,6 +456,26 @@ async def get_current_user_personal_document(
     return _dataclass_payload(document)
 
 
+@personal_router.get("/documents/{document_id}/source-preview")
+async def get_current_user_personal_document_source_preview(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = PersonalKnowledgeService()
+    preview = await service.get_personal_document_source_preview(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=uuid.UUID(str(current_user.id)),
+        document_id=document_id,
+        current_user_id=uuid.UUID(str(current_user.id)),
+        agent_id=None,
+    )
+    if preview is None:
+        raise HTTPException(status_code=404, detail="Personal knowledge source preview not found")
+    return _source_preview_response(preview)
+
+
 @personal_router.patch("/documents/{document_id}")
 async def patch_current_user_personal_document(
     document_id: uuid.UUID,
@@ -583,6 +615,28 @@ async def get_personal_document(
     if document is None:
         raise HTTPException(status_code=404, detail="Personal knowledge document not found")
     return _dataclass_payload(document)
+
+
+@router.get("/personal/documents/{document_id}/source-preview")
+async def get_personal_document_source_preview(
+    agent_id: uuid.UUID,
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    service = PersonalKnowledgeService()
+    preview = await service.get_personal_document_source_preview(
+        db,
+        tenant_id=_tenant_id_for_agent(agent, current_user),
+        owner_user_id=_owner_user_id_for_personal_kb(agent),
+        document_id=document_id,
+        current_user_id=current_user.id,
+        agent_id=agent_id,
+    )
+    if preview is None:
+        raise HTTPException(status_code=404, detail="Personal knowledge source preview not found")
+    return _source_preview_response(preview)
 
 
 @router.get("/overview")

@@ -1,4 +1,4 @@
-import { del, get, patch, post, upload } from '../core';
+import { del, get, getBlob, patch, post, upload } from '../core';
 
 // Knowledge read model (backend spec §11 / P7) — structured views over the
 // agent's memory engine. The Knowledge plane consumes these instead of
@@ -337,6 +337,8 @@ export const knowledgeApi = {
   },
   myPersonalDocument: (documentId: string) =>
     get<PersonalKnowledgeDocumentDetail>(`/knowledge/personal/documents/${documentId}`),
+  myPersonalDocumentSourcePreview: (documentId: string) =>
+    getBlob(`/knowledge/personal/documents/${documentId}/source-preview`),
   myPersonalImportFile: (file: File, options: PersonalKnowledgeImportFileOptions = {}) => {
     const fields: Record<string, string> = {};
     if (options.title) fields.title = options.title;

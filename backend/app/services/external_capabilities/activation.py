@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import re
 from typing import Any
@@ -275,6 +276,11 @@ async def _activate_components(
         if component_type == "subagent":
             activated.append(_activate_subagent_component(component=component, workspace=workspace))
             continue
+        if component_type == "slash_command":
+            activated.append(
+                _activate_slash_command_component(component=component, snapshot=snapshot, workspace=workspace)
+            )
+            continue
         if component_type == "hook":
             activated.append(_activate_hook_component(component=component))
             continue
@@ -301,7 +307,9 @@ async def _activate_mcp_component(
     config = config if isinstance(config, dict) else None
     if credential_handles:
         config = {**(config or {}), "credential_handles": credential_handles}
-    server_name = _optional_string(runtime_projection.get("server_name")) or _optional_string(component.get("local_name"))
+    server_name = _optional_string(runtime_projection.get("server_name")) or _optional_string(
+        component.get("local_name")
+    )
     if activation_scope == "session":
         return {
             "component_type": "mcp_server",
@@ -334,7 +342,86 @@ def _activate_hook_component(*, component: dict[str, Any]) -> dict[str, Any]:
         "name": _component_qualified_name(component),
         "status": "pending_hook_approval",
         "event": _optional_string(runtime_projection.get("event")) or "unknown",
+        # Hook runtime execution (registration -> executor) is not wired yet; be
+        # explicit rather than let an activated hook read as installed-but-inert.
+        "runtime_execution": "not_yet_supported",
     }
+
+
+def _activate_slash_command_component(
+    *,
+    component: dict[str, Any],
+    snapshot: ExternalCapabilitySnapshot,
+    workspace: Path,
+) -> dict[str, Any]:
+    """Project a plugin slash_command into a single-file skill package.
+
+    The command body becomes a skill's ``SKILL.md`` (fresh ``name``/
+    ``description`` frontmatter over the command body), installed through the
+    same governed path as skills. ``get_agent_extensions`` ->
+    ``_dynamic_skill_commands`` (api/commands.py) then surfaces the installed
+    skill as an agent ``/`` command — zero new runtime infra.
+    """
+    metadata = component.get("metadata") if isinstance(component.get("metadata"), dict) else {}
+    runtime_projection = component.get("runtime_projection")
+    runtime_projection = runtime_projection if isinstance(runtime_projection, dict) else {}
+    raw_name = (
+        _optional_string(component.get("local_name")) or _optional_string(component.get("qualified_name")) or "command"
+    )
+    command_name = _safe_command_name(raw_name)
+    content = _optional_string(metadata.get("content")) or _command_content_from_files(metadata.get("files"))
+    if not content:
+        return {
+            "component_type": "slash_command",
+            "name": command_name,
+            "status": "unsupported_activation_component",
+        }
+    description = _optional_string(runtime_projection.get("description")) or command_name
+    skill_markdown = _command_skill_markdown(command_name, description, content)
+    install_result = install_active_skill_package(
+        workspace=workspace,
+        folder_name=command_name,
+        files=[{"path": "SKILL.md", "content": skill_markdown}],
+        source=f"external_snapshot:{snapshot.snapshot_key}",
+        overwrite=True,
+    )
+    return {
+        "component_type": "slash_command",
+        "name": command_name,
+        "files_written": install_result["files_written"],
+        "status": "activated",
+    }
+
+
+def _command_content_from_files(files: Any) -> str:
+    if not isinstance(files, list):
+        return ""
+    for item in files:
+        if isinstance(item, dict) and str(item.get("path") or "").lower().endswith(".md"):
+            content = _optional_string(item.get("content"))
+            if content:
+                return content
+    return ""
+
+
+def _command_skill_markdown(command_name: str, description: str, content: str) -> str:
+    body = _strip_leading_frontmatter(content)
+    safe_description = json.dumps(description, ensure_ascii=False)
+    return f"---\nname: {command_name}\ndescription: {safe_description}\n---\n\n{body}"
+
+
+def _strip_leading_frontmatter(content: str) -> str:
+    stripped = content.strip()
+    if stripped.startswith("---\n"):
+        remainder = stripped[4:]
+        if "\n---\n" in remainder:
+            return remainder.split("\n---\n", 1)[1].strip()
+    return stripped
+
+
+def _safe_command_name(raw: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_:-]+", "-", str(raw)).strip("-")
+    return slug or "command"
 
 
 def _activate_subagent_component(*, component: dict[str, Any], workspace: Path) -> dict[str, Any]:
@@ -343,7 +430,9 @@ def _activate_subagent_component(*, component: dict[str, Any], workspace: Path) 
     runtime_projection = runtime_projection if isinstance(runtime_projection, dict) else {}
     raw_definition = _optional_string(metadata.get("definition")) or ""
     parsed = parse_subagent_definition(raw_definition) if raw_definition else None
-    raw_name = _optional_string(component.get("local_name")) or _optional_string(component.get("qualified_name")) or "subagent"
+    raw_name = (
+        _optional_string(component.get("local_name")) or _optional_string(component.get("qualified_name")) or "subagent"
+    )
     name = _safe_subagent_name(raw_name)
     description = _optional_string(runtime_projection.get("description")) or (parsed.description if parsed else "")
     if not description:
@@ -357,7 +446,8 @@ def _activate_subagent_component(*, component: dict[str, Any], workspace: Path) 
         ),
         allowed_tools=_string_tuple(runtime_projection.get("tools") or runtime_projection.get("allowed_tools"))
         or (parsed.allowed_tools if parsed else ()),
-        excluded_tools=_string_tuple(runtime_projection.get("excluded_tools")) or (parsed.excluded_tools if parsed else ()),
+        excluded_tools=_string_tuple(runtime_projection.get("excluded_tools"))
+        or (parsed.excluded_tools if parsed else ()),
         model=_optional_string(runtime_projection.get("model")) or (parsed.model if parsed else None),
         max_tool_rounds=_positive_int_or_none(runtime_projection.get("max_tool_rounds"))
         or (parsed.max_tool_rounds if parsed else None),
@@ -428,7 +518,9 @@ def _select_components(
     *,
     component_qualified_names: list[str] | None,
 ) -> list[dict[str, Any]]:
-    normalized_components = [component for component in components if isinstance(component, dict)] if isinstance(components, list) else []
+    normalized_components = (
+        [component for component in components if isinstance(component, dict)] if isinstance(components, list) else []
+    )
     if component_qualified_names is None:
         return normalized_components
     requested_names = _normalize_component_names(component_qualified_names)
@@ -479,7 +571,9 @@ def _credential_handles_for_component(
     required_keys = _required_credential_keys(component)
     missing = [key for key in required_keys if key not in credential_handles]
     if missing:
-        raise ValueError(f"missing credential handle for component {_component_qualified_name(component)}: {', '.join(missing)}")
+        raise ValueError(
+            f"missing credential handle for component {_component_qualified_name(component)}: {', '.join(missing)}"
+        )
     return {key: credential_handles[key] for key in required_keys}
 
 

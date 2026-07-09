@@ -28,6 +28,7 @@ from app.services.external_capabilities.marketplace_sources import (
     submit_marketplace_entry_for_review,
     sync_marketplace_source,
 )
+from app.services.external_capabilities.plugin_source_adapter import stage_cc_plugin_import
 from app.services.external_capabilities.trust_gate import (
     approve_external_capability_snapshot,
     list_external_capability_reviews,
@@ -93,6 +94,14 @@ class ExternalCapabilityReviewIn(BaseModel):
 
 class ExternalCapabilityRejectIn(BaseModel):
     reason: str | None = None
+
+
+class ExternalPluginImportIn(BaseModel):
+    source_kind: Literal["directory", "file", "git", "npm", "remote"]
+    source_ref: str
+    package_name: str | None = None
+    ref: str | None = None
+    version: str | None = None
 
 
 class ExternalExtensionActivationIn(BaseModel):
@@ -197,6 +206,36 @@ async def reject_external_capability_review_route(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/enterprise/external-capabilities/plugin-imports")
+async def stage_cc_plugin_import_route(
+    data: ExternalPluginImportIn,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """C4 import entry: fetch a CC-format plugin source (git/npm/remote/local),
+    quarantine it, parse it with the plugin adapter, and stage a Trust Gate
+    review. Approval/activation then run the existing governed lifecycle."""
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    settings = get_settings()
+    data_root = Path(settings.AGENT_DATA_DIR)
+    return await stage_cc_plugin_import(
+        db,
+        tenant_id=current_user.tenant_id,
+        created_by_user_id=current_user.id,
+        source_kind=data.source_kind,
+        source_ref=data.source_ref,
+        quarantine_root=data_root / "external_quarantine" / str(current_user.tenant_id),
+        package_name=data.package_name,
+        ref=data.ref,
+        version=data.version,
+        # Local file/directory reads fail open when unbounded; always pin them
+        # to the platform data dir so a tenant admin cannot pull arbitrary
+        # server files into review evidence.
+        allowed_roots=[data_root],
+    )
 
 
 @router.post("/enterprise/external-capabilities/snapshots/{snapshot_id}/revoke")

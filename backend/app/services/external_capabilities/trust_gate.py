@@ -548,7 +548,7 @@ def _catalog_entry_to_dict(row: ExternalExtensionCatalogEntry) -> dict[str, Any]
 
 
 def _component_record_to_dict(row: ExternalExtensionComponent) -> dict[str, Any]:
-    return {
+    payload = {
         "id": str(row.id),
         "tenant_id": str(row.tenant_id),
         "snapshot_id": str(row.snapshot_id),
@@ -561,6 +561,11 @@ def _component_record_to_dict(row: ExternalExtensionComponent) -> dict[str, Any]
         "runtime_projection": row.runtime_projection_json or {},
         "metadata": row.metadata_json or {},
     }
+    if row.component_type == "hook":
+        # Explicit installed-list state: hooks are catalogued but their runtime
+        # execution chain is not wired yet (aligns with A2A `not_exposed`).
+        payload["runtime_execution"] = "not_yet_supported"
+    return payload
 
 
 def _hook_registration_to_dict(row: ExternalExtensionHookRegistration) -> dict[str, Any]:

@@ -294,3 +294,73 @@ def test_list_agent_external_extension_catalog_checks_agent_access(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json() == expected
+
+
+def test_stage_cc_plugin_import_api_routes_source_through_adapter(monkeypatch, tmp_path):
+    """C4 live entry: the import route must call stage_cc_plugin_import with the
+    request session, tenant-scoped quarantine root, and — security-critical —
+    local reads bounded to AGENT_DATA_DIR (allowed_roots must never be None:
+    _within_allowed_roots fails open on None, which would let a tenant admin
+    read arbitrary server files into review evidence)."""
+    client, fake_db, current_user = _build_client()
+    monkeypatch.setattr(
+        external_mod,
+        "get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+    expected = {
+        "status": "review_required",
+        "source_kind": "git",
+        "source_ref": "https://github.com/acme/ops-pack",
+        "plugin_name": "ops-pack",
+        "review": {"id": str(uuid4()), "admission_class": "governed_runtime"},
+        "review_id": str(uuid4()),
+        "materialization": {"status": "quarantined"},
+    }
+
+    async def fake_import(db_session, *, tenant_id, created_by_user_id, source_kind, source_ref,
+                          quarantine_root, package_name, ref, version, allowed_roots):
+        assert db_session is fake_db
+        assert tenant_id == current_user.tenant_id
+        assert created_by_user_id == current_user.id
+        assert source_kind == "git"
+        assert source_ref == "https://github.com/acme/ops-pack"
+        assert str(quarantine_root).startswith(str(tmp_path))
+        assert str(current_user.tenant_id) in str(quarantine_root)
+        assert allowed_roots, "allowed_roots must be explicitly bounded (fail-open on None)"
+        assert [str(root) for root in allowed_roots] == [str(tmp_path)]
+        assert package_name is None and ref == "main" and version is None
+        return expected
+
+    monkeypatch.setattr(external_mod, "stage_cc_plugin_import", fake_import)
+
+    resp = client.post(
+        "/enterprise/external-capabilities/plugin-imports",
+        json={"source_kind": "git", "source_ref": "https://github.com/acme/ops-pack", "ref": "main"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == expected
+
+
+def test_stage_cc_plugin_import_api_requires_tenant(monkeypatch):
+    client, _fake_db, current_user = _build_client()
+    current_user.tenant_id = None
+
+    resp = client.post(
+        "/enterprise/external-capabilities/plugin-imports",
+        json={"source_kind": "npm", "source_ref": "@acme/ops-pack"},
+    )
+
+    assert resp.status_code == 400
+
+
+def test_stage_cc_plugin_import_api_rejects_unknown_source_kind():
+    client, _fake_db, _current_user = _build_client()
+
+    resp = client.post(
+        "/enterprise/external-capabilities/plugin-imports",
+        json={"source_kind": "ftp", "source_ref": "ftp://example.com/pack"},
+    )
+
+    assert resp.status_code == 422

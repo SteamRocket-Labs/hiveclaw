@@ -267,6 +267,7 @@ async def test_activate_external_snapshot_selects_components_and_requires_creden
             "name": "docs-pack:hook:pre-bash",
             "status": "pending_hook_approval",
             "event": "PreToolUse",
+            "runtime_execution": "not_yet_supported",
         },
     ]
     assert calls == [
@@ -456,6 +457,96 @@ Review code carefully.
     assert spec.permission_mode is None
     assert spec.hooks is None
     assert spec.mcp_servers == ()
+
+
+@pytest.mark.asyncio
+async def test_activate_slash_command_projects_command_as_skill_package(tmp_path):
+    # C6-command: a slash_command component projects into a single-file skill
+    # package (SKILL.md), which get_agent_extensions -> _dynamic_skill_commands
+    # then surfaces as an agent / command with zero new infra.
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    snapshot = SimpleNamespace(
+        id=snapshot_id,
+        tenant_id=tenant_id,
+        status="approved",
+        normalized_name="ops",
+        snapshot_key="cc_plugin:ops:abc",
+        component_manifest_json={
+            "components": [
+                {
+                    "component_type": "slash_command",
+                    "local_name": "deploy",
+                    "qualified_name": "ops:deploy",
+                    "source_path": "commands/deploy.md",
+                    "metadata": {"content": "---\ndescription: Deploy the app\n---\nRun the deploy steps."},
+                    "runtime_projection": {"description": "Deploy the app", "allowed_tools": []},
+                }
+            ]
+        },
+    )
+    db = _ActivationSession(snapshot)
+
+    result = await activate_external_extension_for_agent(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        workspace=tmp_path,
+        activated_by_user_id=uuid4(),
+    )
+
+    assert result["activated_components"] == [
+        {"component_type": "slash_command", "name": "deploy", "files_written": 1, "status": "activated"}
+    ]
+    skill_md = (tmp_path / "skills" / "deploy" / "SKILL.md").read_text(encoding="utf-8")
+    assert "name: deploy" in skill_md
+    assert "Run the deploy steps." in skill_md
+    # The command's own frontmatter is stripped — exactly one skill frontmatter block.
+    assert skill_md.count("---") == 2
+
+
+@pytest.mark.asyncio
+async def test_activate_hook_component_is_explicitly_marked_runtime_unsupported(tmp_path):
+    # C6-hook: hook runtime execution is not wired; the activation summary must
+    # say so explicitly (runtime_execution=not_yet_supported) rather than
+    # silently appearing installed-but-inert.
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    snapshot = SimpleNamespace(
+        id=snapshot_id,
+        tenant_id=tenant_id,
+        status="approved",
+        normalized_name="guard",
+        snapshot_key="cc_plugin:guard:abc",
+        component_manifest_json={
+            "components": [
+                {
+                    "component_type": "hook",
+                    "local_name": "pre-bash",
+                    "qualified_name": "guard:hook:PreToolUse:*:0",
+                    "runtime_projection": {"event": "PreToolUse", "spec": {}},
+                }
+            ]
+        },
+    )
+    db = _ActivationSession(snapshot)
+
+    result = await activate_external_extension_for_agent(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        workspace=tmp_path,
+        activated_by_user_id=uuid4(),
+    )
+
+    hook = result["activated_components"][0]
+    assert hook["component_type"] == "hook"
+    assert hook["status"] == "pending_hook_approval"
+    assert hook["runtime_execution"] == "not_yet_supported"
 
 
 @pytest.mark.asyncio

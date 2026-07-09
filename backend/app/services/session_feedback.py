@@ -25,6 +25,9 @@ AppendMemory = Callable[..., Awaitable[Any]]
 
 _LABELS = {"useful", "misleading"}
 _ACTIVATION_FEEDBACK_SIDECAR = Path("memory/control/activation_feedback.jsonl")
+_ACTIVATION_FEEDBACK_SIDECAR_MAX_ENTRIES = 5000
+_ACTIVATION_FEEDBACK_READ_SCHEMA = "hive.ccplus.activation_feedback_read_model.v1"
+_ACTIVATION_FEEDBACK_SIDECAR_SCHEMA = "hive.ccplus.activation_feedback_sidecar.v1"
 
 
 def _normalize_label(label: str) -> str:
@@ -140,6 +143,128 @@ def _feedback_heat_delta(label: str) -> float:
     return 1.0 if label == "useful" else -1.0
 
 
+def _default_data_root() -> Path:
+    from app.config import get_settings
+
+    return Path(get_settings().AGENT_DATA_DIR)
+
+
+def _activation_feedback_sidecar_path(data_root: Path, agent_id: uuid.UUID | str) -> Path:
+    return Path(data_root) / str(agent_id) / _ACTIVATION_FEEDBACK_SIDECAR
+
+
+def _coerce_positive_limit(value: int | None, *, default: int, maximum: int) -> int:
+    try:
+        numeric = int(value if value is not None else default)
+    except (TypeError, ValueError):
+        numeric = default
+    return max(1, min(numeric, maximum))
+
+
+def _read_activation_feedback_payloads(path: Path) -> tuple[list[dict[str, Any]], int, int]:
+    if not path.exists():
+        return [], 0, 0
+    payloads: list[dict[str, Any]] = []
+    skipped = 0
+    total = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            total += 1
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                skipped += 1
+                continue
+            if not isinstance(payload, dict) or payload.get("schema") != _ACTIVATION_FEEDBACK_SIDECAR_SCHEMA:
+                skipped += 1
+                continue
+            payloads.append(payload)
+    return payloads, skipped, total
+
+
+def read_activation_feedback_sidecar(
+    data_root: Path | None = None,
+    agent_id: uuid.UUID | str | None = None,
+    *,
+    session_id: uuid.UUID | str | None = None,
+    limit: int | None = 100,
+    newest_first: bool = True,
+) -> dict[str, Any]:
+    """Read the feedback activation audit sidecar as a bounded debug read model."""
+
+    if agent_id is None:
+        raise ValueError("agent_id is required")
+    root = Path(data_root) if data_root is not None else _default_data_root()
+    path = _activation_feedback_sidecar_path(root, agent_id)
+    payloads, skipped, total = _read_activation_feedback_payloads(path)
+    session_filter = str(session_id) if session_id else ""
+    if session_filter:
+        payloads = [payload for payload in payloads if str(payload.get("session_id") or "") == session_filter]
+    ordered = list(reversed(payloads)) if newest_first else list(payloads)
+    bounded_limit = _coerce_positive_limit(limit, default=100, maximum=500)
+    truncated = len(ordered) > bounded_limit
+    entries = ordered[:bounded_limit]
+    return {
+        "schema": _ACTIVATION_FEEDBACK_READ_SCHEMA,
+        "path": str(_ACTIVATION_FEEDBACK_SIDECAR),
+        "entries": entries,
+        "total_lines": total,
+        "skipped_lines": skipped,
+        "matched_entries": len(payloads),
+        "returned_entries": len(entries),
+        "truncated": truncated,
+        "retention": {"max_entries": _ACTIVATION_FEEDBACK_SIDECAR_MAX_ENTRIES},
+    }
+
+
+def prune_activation_feedback_sidecar(
+    data_root: Path | None = None,
+    agent_id: uuid.UUID | str | None = None,
+    *,
+    keep_latest: int | None = None,
+) -> dict[str, Any]:
+    """Retain the newest valid activation-feedback audit records for one agent."""
+
+    if agent_id is None:
+        raise ValueError("agent_id is required")
+    root = Path(data_root) if data_root is not None else _default_data_root()
+    path = _activation_feedback_sidecar_path(root, agent_id)
+    payloads, skipped, total = _read_activation_feedback_payloads(path)
+    keep = _coerce_positive_limit(
+        keep_latest,
+        default=_ACTIVATION_FEEDBACK_SIDECAR_MAX_ENTRIES,
+        maximum=_ACTIVATION_FEEDBACK_SIDECAR_MAX_ENTRIES,
+    )
+    retained = payloads[-keep:]
+    removed = max(0, len(payloads) - len(retained))
+    if not path.exists() or (removed == 0 and skipped == 0):
+        return {
+            "path": str(_ACTIVATION_FEEDBACK_SIDECAR),
+            "max_entries": keep,
+            "retained_entries": len(retained),
+            "removed_entries": removed,
+            "skipped_lines": skipped,
+            "total_lines": total,
+        }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        for payload in retained:
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    tmp_path.replace(path)
+    return {
+        "path": str(_ACTIVATION_FEEDBACK_SIDECAR),
+        "max_entries": keep,
+        "retained_entries": len(retained),
+        "removed_entries": removed,
+        "skipped_lines": skipped,
+        "total_lines": total,
+    }
+
+
 def _build_owner_feedback_activation_event(
     *,
     agent: Agent,
@@ -214,7 +339,7 @@ def _write_feedback_activation_sidecar(
         except (OSError, ValueError) as exc:
             logger.warning("[session_feedback] feedback credit application failed: %s", exc)
     payload = {
-        "schema": "hive.ccplus.activation_feedback_sidecar.v1",
+        "schema": _ACTIVATION_FEEDBACK_SIDECAR_SCHEMA,
         "agent_id": str(agent_id),
         "session_id": str(session_id),
         "label": label,
@@ -226,12 +351,22 @@ def _write_feedback_activation_sidecar(
     }
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    try:
+        retention = prune_activation_feedback_sidecar(
+            data_root=data_root,
+            agent_id=agent_id,
+            keep_latest=_ACTIVATION_FEEDBACK_SIDECAR_MAX_ENTRIES,
+        )
+    except OSError as exc:
+        logger.warning("[session_feedback] activation feedback sidecar retention failed: %s", exc)
+        retention = {"path": str(relative), "max_entries": _ACTIVATION_FEEDBACK_SIDECAR_MAX_ENTRIES}
     return {
-        "schema": "hive.ccplus.activation_feedback_sidecar.v1",
+        "schema": _ACTIVATION_FEEDBACK_SIDECAR_SCHEMA,
         "path": str(relative),
         "heat_delta": payload["heat_delta"],
         "credited_entry_ids": credited_entry_ids,
         "event_id": activation_event.get("event_id", ""),
+        "retention": retention,
     }
 
 
@@ -253,9 +388,7 @@ async def record_session_feedback(
 
     normalized_label = _normalize_label(label)
     if data_root is None:
-        from app.config import get_settings
-
-        data_root = Path(get_settings().AGENT_DATA_DIR)
+        data_root = _default_data_root()
 
     source_refs = [f"session:{session.id}"]
     if message_id:

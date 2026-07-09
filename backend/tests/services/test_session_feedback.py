@@ -127,6 +127,84 @@ async def test_record_session_feedback_writes_activation_credit_sidecar(tmp_path
     assert not (tmp_path / str(agent_id) / "memory" / "t3").exists()
 
 
+def test_activation_feedback_sidecar_read_model_filters_session_and_skips_bad_lines(tmp_path) -> None:
+    from app.services.session_feedback import read_activation_feedback_sidecar
+
+    agent_id = uuid.uuid4()
+    session_a = uuid.uuid4()
+    session_b = uuid.uuid4()
+    sidecar_path = tmp_path / str(agent_id) / "memory" / "control" / "activation_feedback.jsonl"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text(
+        "\n".join(
+            [
+                (
+                    '{"schema":"hive.ccplus.activation_feedback_sidecar.v1",'
+                    f'"agent_id":"{agent_id}","session_id":"{session_a}","label":"useful","created_at":"2026-07-09T01:00:00Z"}}'
+                ),
+                "{not-json",
+                (
+                    '{"schema":"hive.ccplus.activation_feedback_sidecar.v1",'
+                    f'"agent_id":"{agent_id}","session_id":"{session_b}","label":"misleading","created_at":"2026-07-09T02:00:00Z"}}'
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = read_activation_feedback_sidecar(tmp_path, agent_id, session_id=session_a, limit=10)
+
+    assert result["schema"] == "hive.ccplus.activation_feedback_read_model.v1"
+    assert result["path"] == "memory/control/activation_feedback.jsonl"
+    assert result["total_lines"] == 3
+    assert result["skipped_lines"] == 1
+    assert result["matched_entries"] == 1
+    assert result["truncated"] is False
+    assert [entry["session_id"] for entry in result["entries"]] == [str(session_a)]
+
+
+@pytest.mark.asyncio
+async def test_activation_feedback_sidecar_writer_prunes_to_retention_limit(tmp_path, monkeypatch) -> None:
+    from datetime import UTC, datetime
+    from types import SimpleNamespace as T3AppendResult
+
+    import app.services.session_feedback as session_feedback
+
+    monkeypatch.setattr(session_feedback, "_ACTIVATION_FEEDBACK_SIDECAR_MAX_ENTRIES", 2)
+
+    db = _FakeDB()
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+
+    async def fake_append_memory(*_args, **_kwargs):
+        return T3AppendResult(status="overlay", category="feedback", entry_id=f"feedback-{uuid.uuid4().hex[:8]}")
+
+    for label in ("useful", "misleading", "useful"):
+        await session_feedback.record_session_feedback(
+            db,
+            agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+            session=SimpleNamespace(
+                id=uuid.uuid4(),
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                source_channel="web",
+                created_at=datetime(2026, 7, 9, tzinfo=UTC),
+            ),
+            current_user=SimpleNamespace(id=user_id),
+            label=label,
+            data_root=tmp_path,
+            append_memory=fake_append_memory,
+        )
+
+    result = session_feedback.read_activation_feedback_sidecar(tmp_path, agent_id, newest_first=False, limit=10)
+
+    assert result["total_lines"] == 2
+    assert result["retention"]["max_entries"] == 2
+    assert [entry["label"] for entry in result["entries"]] == ["misleading", "useful"]
+
+
 @pytest.mark.asyncio
 async def test_record_session_feedback_links_to_verified_decision_trace(tmp_path) -> None:
     from types import SimpleNamespace as T3AppendResult

@@ -81,3 +81,48 @@ def test_record_session_feedback_api_calls_persistent_service(monkeypatch) -> No
     assert seen["label"] == "useful"
     assert seen["reason"] == "Good synthesis"
     assert seen["decision_id"] == "decision/dec-1"
+
+
+def test_get_session_activation_feedback_api_calls_read_model(monkeypatch) -> None:
+    client, fake_db, current_user = _build_client()
+    agent_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    seen = {}
+
+    async def fake_get_session_and_agent(**kwargs):
+        assert kwargs["db"] is fake_db
+        assert kwargs["agent_id"] == agent_id
+        assert kwargs["session_id"] == session_id
+        return (
+            SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, source_channel="web"),
+            SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+            "use",
+        )
+
+    def fake_read_sidecar(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return {
+            "schema": "hive.ccplus.activation_feedback_read_model.v1",
+            "path": "memory/control/activation_feedback.jsonl",
+            "entries": [{"session_id": str(session_id), "label": "useful"}],
+            "total_lines": 1,
+            "skipped_lines": 0,
+            "matched_entries": 1,
+            "truncated": False,
+            "retention": {"max_entries": 5000},
+        }
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_session_and_agent)
+    monkeypatch.setattr(chat_sessions_api, "read_activation_feedback_sidecar", fake_read_sidecar)
+
+    response = client.get(f"/agents/{agent_id}/sessions/{session_id}/feedback/activation-sidecar?limit=25")
+
+    assert response.status_code == 200
+    assert response.json()["entries"] == [{"session_id": str(session_id), "label": "useful"}]
+    assert seen["args"] == ()
+    assert seen["kwargs"]["agent_id"] == agent_id
+    assert seen["kwargs"]["session_id"] == session_id
+    assert seen["kwargs"]["limit"] == 25
+    assert seen["kwargs"]["newest_first"] is True

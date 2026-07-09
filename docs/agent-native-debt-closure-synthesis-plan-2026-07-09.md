@@ -646,6 +646,48 @@ ruff check \
 
 - `rg` 当前只在退役证据文本和 guard 测试中命中 `promotion_router` / `fast_path_route`，不再有 runtime import/call。
 - `decay_signal` 当前只在测试断言“不应出现”处命中，不再由代码写入 payload。
+- `activation_feedback.jsonl` 已由 G 包补齐 read model、retention 和 debug API，不再是 write-only sidecar。
+
+### 7.6 G 包补充闭环证据（2026-07-09）
+
+补充目标：把 `activation_feedback.jsonl` 从“可辩护的 append-only audit artifact”升级为有明确 owner 的控制面 sidecar，避免留下 write-only 弱残留。
+
+落地结果：
+
+1. `backend/app/services/session_feedback.py` 新增 `read_activation_feedback_sidecar()`，返回 bounded debug read model：
+   - schema：`hive.ccplus.activation_feedback_read_model.v1`
+   - 支持按 `session_id` 过滤。
+   - 隔离 malformed JSONL 行，返回 `skipped_lines`，不让坏行阻断读取。
+   - 支持 `limit` / `newest_first`。
+2. 同文件新增 `prune_activation_feedback_sidecar()`，writer 每次 append 后按 `_ACTIVATION_FEEDBACK_SIDECAR_MAX_ENTRIES` 保留最新有效记录，防止无限增长。
+3. `backend/app/api/chat_sessions.py` 新增只读 debug endpoint：
+   - `GET /agents/{agent_id}/sessions/{session_id}/feedback/activation-sidecar`
+   - 复用 `_get_run_session_and_agent()` 权限校验。
+   - 调用 `read_activation_feedback_sidecar()`，因此 sidecar 有真实 API consumer。
+4. 保持 feedback runtime 语义不变：owner feedback 仍先进入 lifecycle credit，再写 sidecar audit；BaseLevel / turn-stop summary 链路不变。
+
+验证：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_session_feedback.py \
+  tests/api/test_chat_session_feedback.py \
+  tests/runtime/test_t0_to_t2_session_close.py \
+  tests/memory/test_base_level_activation.py \
+  -q
+# 39 passed, 4 warnings
+
+ruff check app/services/session_feedback.py app/api/chat_sessions.py tests/services/test_session_feedback.py tests/api/test_chat_session_feedback.py
+# All checks passed!
+
+pytest tests -q
+# 6029 passed, 1 skipped, 5 warnings
+
+ruff check app tests
+# All checks passed!
+```
 
 ## 8. 施工包 F：现有 Personal KB 与 Dynamic 注入清债
 

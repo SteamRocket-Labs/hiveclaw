@@ -48,7 +48,7 @@ from app.services.web_chat_runtime import (
 from app.services.web_chat_broker import web_chat_broker
 from app.services.conversation_branch_service import create_conversation_branch
 from app.services.session_index import read_session_index
-from app.services.session_feedback import record_session_feedback
+from app.services.session_feedback import read_activation_feedback_sidecar, record_session_feedback
 from app.services.session_control_plane import build_session_json_export, build_session_workbench
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
@@ -1570,6 +1570,29 @@ async def record_feedback_for_session(
     )
     await db.commit()
     return result
+
+
+@router.get("/{agent_id}/sessions/{session_id}/feedback/activation-sidecar")
+async def get_session_activation_feedback_sidecar(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    limit: int = Query(100, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the activation-feedback audit sidecar for session debugging."""
+    session, agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    return read_activation_feedback_sidecar(
+        agent_id=agent.id,
+        session_id=session.id,
+        limit=limit,
+        newest_first=True,
+    )
 
 
 @router.post("/{agent_id}/sessions/runs", status_code=201, response_model=CreateSessionRunOut)

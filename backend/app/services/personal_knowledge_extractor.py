@@ -53,6 +53,8 @@ class KnowledgeExtractionResult:
     assertions: Sequence[KnowledgeExtractionAssertion] = field(default_factory=tuple)
     links: Sequence[KnowledgeExtractionLink] = field(default_factory=tuple)
     warnings: Sequence[str] = field(default_factory=tuple)
+    usage: dict[str, Any] | None = None
+    usage_tokens: int | None = None
 
 
 def _strip_fences(content: str) -> str:
@@ -242,4 +244,19 @@ class PersonalKnowledgeLLMExtractor:
         content = str(getattr(response, "content", "") or "")
         if not content.strip():
             raise PersonalKnowledgeExtractionError("model returned empty extraction")
-        return parse_extraction_payload(_loads_json_object(content))
+        result = parse_extraction_payload(_loads_json_object(content))
+        usage = getattr(response, "usage", None)
+        usage_dict = dict(usage) if isinstance(usage, dict) else None
+        usage_tokens: int | None = None
+        if usage_dict:
+            from app.services.token_tracker import extract_usage_tokens
+
+            usage_tokens = extract_usage_tokens(usage_dict)
+        return KnowledgeExtractionResult(
+            entities=result.entities,
+            assertions=result.assertions,
+            links=result.links,
+            warnings=result.warnings,
+            usage=usage_dict,
+            usage_tokens=usage_tokens,
+        )

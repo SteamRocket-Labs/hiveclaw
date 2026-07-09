@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import asyncio
 import json
 import math
 import mimetypes
@@ -53,6 +54,20 @@ _SENSITIVE_EXTRACTION_BLOCKLIST = {"private", "secret", "restricted", "pl3", "pl
 _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS = 5
 _DEFAULT_IMPORT_JOB_QUEUED_GRACE_SECONDS = 0
 _DEFAULT_IMPORT_JOB_RUNNING_TIMEOUT_SECONDS = 600
+_DEFAULT_EXTRACT_MAX_CONCURRENCY_PER_TENANT = 4
+_EXTRACT_SEMAPHORES: dict[uuid.UUID, asyncio.Semaphore] = {}
+_EXTRACTION_USAGE_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "prompt_cache_miss_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "cached_tokens",
+    "prompt_cache_hit_tokens",
+)
 
 
 @dataclass(frozen=True)
@@ -671,6 +686,58 @@ def _heat_boost(metadata: dict[str, Any]) -> float:
     return min(0.05, math.log1p(count) * 0.01)
 
 
+def _extract_semaphore_for_tenant(tenant_id: uuid.UUID) -> asyncio.Semaphore:
+    limit = max(1, int(_DEFAULT_EXTRACT_MAX_CONCURRENCY_PER_TENANT or 1))
+    semaphore = _EXTRACT_SEMAPHORES.get(tenant_id)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(limit)
+        _EXTRACT_SEMAPHORES[tenant_id] = semaphore
+    return semaphore
+
+
+def _new_extraction_usage_summary() -> dict[str, Any]:
+    return {
+        "segment_count": 0,
+        "segments_with_usage": 0,
+        "tokens": 0,
+        "provider_usage": {},
+    }
+
+
+def _usage_int(value: Any) -> int:
+    try:
+        return max(int(value or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _record_extraction_usage(summary: dict[str, Any], extraction: Any) -> None:
+    summary["segment_count"] = int(summary.get("segment_count", 0) or 0) + 1
+    usage = getattr(extraction, "usage", None)
+    if isinstance(usage, dict):
+        summary["segments_with_usage"] = int(summary.get("segments_with_usage", 0) or 0) + 1
+        provider_usage = dict(summary.get("provider_usage") or {})
+        for key in _EXTRACTION_USAGE_KEYS:
+            if key in usage:
+                provider_usage[key] = _usage_int(provider_usage.get(key)) + _usage_int(usage.get(key))
+        summary["provider_usage"] = provider_usage
+    tokens = _usage_int(getattr(extraction, "usage_tokens", None))
+    if tokens:
+        summary["tokens"] = int(summary.get("tokens", 0) or 0) + tokens
+
+
+def _finalize_extraction_usage(summary: dict[str, Any]) -> dict[str, Any] | None:
+    if int(summary.get("segment_count", 0) or 0) <= 0:
+        return None
+    provider_usage = dict(summary.get("provider_usage") or {})
+    return {
+        "segment_count": int(summary.get("segment_count", 0) or 0),
+        "segments_with_usage": int(summary.get("segments_with_usage", 0) or 0),
+        "tokens": int(summary.get("tokens", 0) or 0),
+        "provider_usage": provider_usage,
+    }
+
+
 class PersonalKnowledgeService:
     """Write person-scope canonical Markdown into the Knowledge Core tables."""
 
@@ -710,6 +777,27 @@ class PersonalKnowledgeService:
 
     def _vector_index_provider(self) -> Any | None:
         return self.vector_provider
+
+    async def _extract_segment_with_tenant_guard(
+        self,
+        *,
+        extractor: Any,
+        segment: Any,
+        document: Any,
+        source_ref: dict[str, Any],
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        sensitivity: str,
+    ) -> Any:
+        async with _extract_semaphore_for_tenant(tenant_id):
+            return await extractor.extract_segment(
+                segment=segment,
+                document=document,
+                source_ref=source_ref,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                sensitivity=sensitivity,
+            )
 
     def _document_summary(
         self,
@@ -1057,6 +1145,7 @@ class PersonalKnowledgeService:
         document: KnowledgeDocument,
         segments: list[KnowledgeSegment],
         sensitivity: str,
+        extraction_usage: dict[str, Any] | None = None,
     ) -> list[str]:
         warnings: list[str] = []
         entity_by_name: dict[str, KnowledgeEntity] = {}
@@ -1068,7 +1157,8 @@ class PersonalKnowledgeService:
                 "heading_path": list(segment.heading_path_json or []),
                 "position": int(segment.position),
             }
-            extraction = await extractor.extract_segment(
+            extraction = await self._extract_segment_with_tenant_guard(
+                extractor=extractor,
                 segment=segment,
                 document=document,
                 source_ref=source_ref,
@@ -1076,6 +1166,8 @@ class PersonalKnowledgeService:
                 owner_user_id=owner_user_id,
                 sensitivity=sensitivity,
             )
+            if extraction_usage is not None:
+                _record_extraction_usage(extraction_usage, extraction)
             warnings.extend([str(warning) for warning in getattr(extraction, "warnings", ()) or []])
 
             for extracted_entity in getattr(extraction, "entities", ()) or []:
@@ -1539,6 +1631,7 @@ class PersonalKnowledgeService:
         final_stage = "indexed"
         final_error: str | None = None
         channels = ["tsvector", "segments"]
+        extraction_usage_summary = _new_extraction_usage_summary()
         if previous_artifact_hash != artifact_hash or force_reindex:
             job = await self._upsert_index_job(
                 session,
@@ -1577,6 +1670,7 @@ class PersonalKnowledgeService:
                         document=document,
                         segments=segment_objects,
                         sensitivity=sensitivity,
+                        extraction_usage=extraction_usage_summary,
                     )
                     all_warnings.extend(extraction_warnings)
                     channels = ["tsvector", "segments", "graph"]
@@ -1645,6 +1739,7 @@ class PersonalKnowledgeService:
                     "error": vector_warning,
                 }
 
+        extraction_usage_state = _finalize_extraction_usage(extraction_usage_summary)
         document.status = final_status
         document.doc_metadata_json = {
             **(document.doc_metadata_json or {}),
@@ -1653,6 +1748,8 @@ class PersonalKnowledgeService:
             "optional_vector": optional_vector_state,
             **(doc_metadata or {}),
         }
+        if extraction_usage_state is not None:
+            document.doc_metadata_json["extraction_usage"] = extraction_usage_state
         if job is not None:
             job.stage = final_stage
             job.status = final_status
@@ -1664,6 +1761,8 @@ class PersonalKnowledgeService:
                 "warnings": all_warnings,
                 "optional_vector": optional_vector_state,
             }
+            if extraction_usage_state is not None:
+                job.job_metadata_json["extraction_usage"] = extraction_usage_state
 
         await session.execute(
             update(KnowledgeSegment)

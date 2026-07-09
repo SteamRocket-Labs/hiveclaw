@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -101,6 +102,48 @@ class _NoopKnowledgeExtractor:
     async def extract_segment(self, *args, **kwargs):  # pragma: no cover - existing tests do not inspect extraction
         from app.services.personal_knowledge_extractor import KnowledgeExtractionResult
 
+        return KnowledgeExtractionResult()
+
+
+class _UsageKnowledgeExtractor:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def extract_segment(self, *args, **kwargs):
+        from app.services.personal_knowledge_extractor import (
+            KnowledgeExtractionEntity,
+            KnowledgeExtractionResult,
+        )
+
+        self.calls += 1
+        return KnowledgeExtractionResult(
+            entities=[
+                KnowledgeExtractionEntity(
+                    canonical_name=f"Usage entity {self.calls}",
+                    entity_type="topic",
+                    confidence=0.8,
+                )
+            ],
+            usage={"input_tokens": 20, "output_tokens": 5, "cache_read_input_tokens": 3},
+            usage_tokens=22,
+        )
+
+
+class _BlockingKnowledgeExtractor:
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def extract_segment(self, *args, **kwargs):
+        from app.services.personal_knowledge_extractor import KnowledgeExtractionResult
+
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.entered.set()
+        await self.release.wait()
+        self.active -= 1
         return KnowledgeExtractionResult()
 
 
@@ -510,6 +553,85 @@ async def test_ingest_markdown_writes_extracted_graph_with_source_refs(tmp_path:
     assert jobs[-1].stage == "indexed"
     assert jobs[-1].status == "ready"
     assert "graph" in jobs[-1].job_metadata_json["channels"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_markdown_records_extraction_usage_in_job_metadata(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    extractor = _UsageKnowledgeExtractor()
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path, extractor=extractor)
+
+    await service.ingest_markdown(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        title="Usage notes",
+        markdown="# One\n\nFirst segment.\n\n## Two\n\nSecond segment.",
+        source_kind="paste",
+        created_by_user_id=owner_id,
+    )
+
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+    usage = jobs[-1].job_metadata_json["extraction_usage"]
+
+    assert usage["segment_count"] == extractor.calls
+    assert usage["segments_with_usage"] == extractor.calls
+    assert usage["tokens"] == 22 * extractor.calls
+    assert usage["provider_usage"]["input_tokens"] == 20 * extractor.calls
+    assert usage["provider_usage"]["output_tokens"] == 5 * extractor.calls
+    assert usage["provider_usage"]["cache_read_input_tokens"] == 3 * extractor.calls
+
+
+@pytest.mark.asyncio
+async def test_extract_segment_guard_limits_same_tenant_concurrency(monkeypatch, tmp_path: Path) -> None:
+    import app.services.personal_knowledge_service as service_module
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    extractor = _BlockingKnowledgeExtractor()
+    service = PersonalKnowledgeService(data_root=tmp_path, extractor=extractor)
+    document = SimpleNamespace(id=uuid.uuid4(), title="Doc", source_kind="paste")
+    segment_a = SimpleNamespace(id=uuid.uuid4(), heading_path_json=[], content="A")
+    segment_b = SimpleNamespace(id=uuid.uuid4(), heading_path_json=[], content="B")
+
+    monkeypatch.setattr(service_module, "_DEFAULT_EXTRACT_MAX_CONCURRENCY_PER_TENANT", 1)
+    service_module._EXTRACT_SEMAPHORES.clear()
+
+    first = asyncio.create_task(
+        service._extract_segment_with_tenant_guard(
+            extractor=extractor,
+            segment=segment_a,
+            document=document,
+            source_ref={"segment_id": str(segment_a.id)},
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            sensitivity="internal",
+        )
+    )
+    await extractor.entered.wait()
+    second = asyncio.create_task(
+        service._extract_segment_with_tenant_guard(
+            extractor=extractor,
+            segment=segment_b,
+            document=document,
+            source_ref={"segment_id": str(segment_b.id)},
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            sensitivity="internal",
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert extractor.max_active == 1
+    assert not second.done()
+    extractor.release.set()
+    await asyncio.gather(first, second)
+    assert extractor.max_active == 1
 
 
 @pytest.mark.asyncio

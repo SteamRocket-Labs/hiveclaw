@@ -15,14 +15,15 @@ from app.services.personal_knowledge_extractor import (
 
 
 class _FakeLLMClient:
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: str, usage: dict | None = None) -> None:
         self.content = content
+        self.usage = usage
         self.complete_calls: list[dict] = []
         self.closed = False
 
     async def complete(self, **kwargs):
         self.complete_calls.append(kwargs)
-        return SimpleNamespace(content=self.content)
+        return SimpleNamespace(content=self.content, usage=self.usage, model="fake-extractor-model")
 
     async def close(self) -> None:
         self.closed = True
@@ -128,6 +129,42 @@ async def test_llm_extractor_parses_fenced_json_and_closes_client(monkeypatch) -
     assert result.entities[0].canonical_name == "Open Notebook"
     assert result.assertions[0].predicate == "preserves"
     assert result.links[0].relation == "informs"
+
+
+@pytest.mark.asyncio
+async def test_llm_extractor_returns_usage_tokens_for_job_accounting(monkeypatch) -> None:
+    import app.services.llm_client as llm_client_module
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    response_payload = {
+        "entities": [{"canonical_name": "Open Notebook", "type": "project"}],
+        "assertions": [],
+        "links": [],
+        "warnings": [],
+    }
+    fake_client = _FakeLLMClient(
+        json.dumps(response_payload),
+        usage={"input_tokens": 125, "output_tokens": 37, "cache_read_input_tokens": 50},
+    )
+
+    async def resolve_model_config(_tenant_id):
+        return {"provider": "fake", "model": "extractor-test"}
+
+    monkeypatch.setattr(llm_client_module, "with_llm_usage_context", lambda config, **_kwargs: config)
+    monkeypatch.setattr(llm_client_module, "create_llm_client_from_config", lambda _config: fake_client)
+
+    result = await PersonalKnowledgeLLMExtractor(model_config_resolver=resolve_model_config).extract_segment(
+        segment=SimpleNamespace(id=uuid.uuid4(), heading_path_json=[], content="Open Notebook source text."),
+        document=SimpleNamespace(id=uuid.uuid4(), title="Doc", source_kind="paste"),
+        source_ref={},
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        sensitivity="internal",
+    )
+
+    assert result.usage == {"input_tokens": 125, "output_tokens": 37, "cache_read_input_tokens": 50}
+    assert result.usage_tokens == 162
 
 
 @pytest.mark.asyncio

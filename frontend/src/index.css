@@ -5827,6 +5827,58 @@
   animation: spin 0.9s linear infinite;
 }
 
+/* §3 seam 2: activeTail working-state line — phase label + live stopwatch. */
+.session-tui-active-tail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.session-tui-active-tail-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  flex-shrink: 0;
+  animation: session-tui-active-tail-pulse 1.6s ease-in-out infinite;
+}
+
+.session-tui-active-tail[data-phase='awaiting_approval'] .session-tui-active-tail-dot,
+.session-tui-active-tail[data-phase='awaiting_budget'] .session-tui-active-tail-dot {
+  background: var(--warning);
+  animation: none;
+}
+
+.session-tui-active-tail-detail {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+
+.session-tui-active-tail-elapsed {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes session-tui-active-tail-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* §3 seam 4: middle-stream <-> right-panel runtime linking (hover). Restrained:
+   background shift + hairline only, no shadows (design law §3.1-6). */
+.is-linked-highlight {
+  background: var(--bg-hover, var(--bg-secondary));
+  box-shadow: inset 0 0 0 1px var(--border-strong, var(--border-subtle));
+  border-radius: 6px;
+}
+
 /* Thinking summary (Codex ReasoningSummaryCell): dim italic headline visible
    inline; the full reasoning expands on demand. */
 .session-tui-thinking-headline {

@@ -1090,3 +1090,78 @@ describe('buildWorkspaceDocumentsModel (session deliverables semantics)', () => 
     });
   });
 });
+
+describe('RuntimePhase in the thread projection (§3 seam 3)', () => {
+  it('threads the phase onto the pending active-run cell with a phase-aware label', () => {
+    const model = buildThreadTimeline({
+      messages: [{ role: 'user', content: 'do the thing' }] as any,
+      isWaiting: true,
+      isStreaming: false,
+      runtimePhase: 'queued',
+    });
+    const run = model.cells.find((cell) => cell.kind === 'active_run') as any;
+    expect(run).toBeTruthy();
+    expect(run.phase).toBe('queued');
+  });
+
+  it('attaches the live phase to the open run cell built from streamed messages', () => {
+    const model = buildThreadTimeline({
+      messages: [
+        { role: 'user', content: 'write the file' },
+        { role: 'tool_call', content: '', toolName: 'write_file', toolStatus: 'running' },
+      ] as any,
+      isWaiting: false,
+      isStreaming: true,
+      runtimePhase: 'tool_running',
+    });
+    const run = model.cells.find((cell) => cell.kind === 'active_run') as any;
+    expect(run).toBeTruthy();
+    expect(run.phase).toBe('tool_running');
+  });
+
+  it('does not attach a phase to settled runs', () => {
+    const model = buildThreadTimeline({
+      messages: [
+        { role: 'user', content: 'question' },
+        { role: 'tool_call', content: '', toolName: 'read_file', toolStatus: 'done' },
+        { role: 'assistant', content: 'Answer.' },
+      ] as any,
+      isWaiting: false,
+      isStreaming: false,
+      runtimePhase: 'done',
+    });
+    const runs = model.cells.filter((cell) => cell.kind === 'active_run') as any[];
+    expect(runs.every((run) => run.phase == null)).toBe(true);
+  });
+
+  it('derives the header status from parked phases', () => {
+    const model = buildThreadTimeline({
+      messages: [{ role: 'user', content: 'x' }] as any,
+      isWaiting: false,
+      isStreaming: false,
+      runtimePhase: 'awaiting_approval',
+    });
+    expect(model.header.status).toBe('waiting');
+  });
+
+  it('includes the phase in the cache signature so live transitions invalidate', () => {
+    const cache = {
+      previousInputSignature: null,
+      previousMessages: null,
+      previousModel: null,
+    } as any;
+    const messages = [{ role: 'user', content: 'x' }] as any;
+    const first = buildThreadTimelineCached(
+      { messages, isWaiting: true, isStreaming: false, runtimePhase: 'starting' },
+      cache,
+    );
+    const second = buildThreadTimelineCached(
+      { messages, isWaiting: true, isStreaming: false, runtimePhase: 'thinking' },
+      cache,
+    );
+    const firstRun = first.cells.find((cell) => cell.kind === 'active_run') as any;
+    const secondRun = second.cells.find((cell) => cell.kind === 'active_run') as any;
+    expect(firstRun.phase).toBe('starting');
+    expect(secondRun.phase).toBe('thinking');
+  });
+});

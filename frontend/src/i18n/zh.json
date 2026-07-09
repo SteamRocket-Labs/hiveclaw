@@ -1461,6 +1461,20 @@
         "title": "命令",
         "hint": "选择命令后继续输入自然语言参数"
       },
+      "phase": {
+        "queued": "排队中",
+        "resuming": "重新连接中",
+        "starting": "启动中",
+        "thinking": "思考中",
+        "responding": "撰写回复中",
+        "tool_running": "执行工具中",
+        "hook_evaluating": "策略核验中",
+        "compacting": "压缩上下文中",
+        "awaiting_approval": "等待你的审批",
+        "awaiting_budget": "预算受限",
+        "summarizing": "撰写收尾总结中",
+        "continuation_gap": "准备下一步"
+      },
       "runtime": {
         "model": "模型",
         "remaining": "剩余上下文",

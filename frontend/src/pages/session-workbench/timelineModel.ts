@@ -27,6 +27,8 @@ export type ThreadTimelineCell =
       sourceMessages: Array<{ message: AgentChatMessage; index: number }>;
       answer?: AgentChatMessage;
       answerIndex?: number;
+      /** Live RuntimePhase for the open run (§3 seam 3); settled runs carry none. */
+      phase?: string;
     }
   | {
       kind: 'boundary';
@@ -138,6 +140,8 @@ export interface BuildThreadTimelineInput {
   isWaiting: boolean;
   isStreaming: boolean;
   activeRunStatus?: string | null;
+  /** First-class RuntimePhase for the active turn (backend contract, §3.3). */
+  runtimePhase?: string;
 }
 
 export type CompletionWakeState = 'pending' | 'running' | 'completed' | 'failed';
@@ -1547,11 +1551,41 @@ function hasOpenRunCell(cells: ThreadTimelineCell[]): boolean {
   ));
 }
 
+const LIVE_RUN_PHASES: ReadonlySet<string> = new Set([
+  'queued',
+  'resuming',
+  'starting',
+  'thinking',
+  'responding',
+  'tool_running',
+  'hook_evaluating',
+  'compacting',
+  'awaiting_approval',
+  'awaiting_budget',
+  'summarizing',
+  'continuation_gap',
+]);
+
+const WAITING_HEADER_PHASES: ReadonlySet<string> = new Set([
+  'queued',
+  'resuming',
+  'starting',
+  'awaiting_approval',
+  'awaiting_budget',
+  'continuation_gap',
+]);
+
+function liveRunPhase(input: BuildThreadTimelineInput): string | null {
+  const phase = String(input.runtimePhase || '').trim();
+  return LIVE_RUN_PHASES.has(phase) ? phase : null;
+}
+
 function buildPendingRunCell(
   input: BuildThreadTimelineInput,
   activeRunStatus: string | null,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> | null {
-  if (!input.isWaiting && !input.isStreaming && !activeRunStatus) return null;
+  const phase = liveRunPhase(input);
+  if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase) return null;
   const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed' ? 'failed' : 'running';
   const title = input.isStreaming ? 'Streaming response' : 'Waiting for model';
   const summary = activeRunStatus
@@ -1563,6 +1597,7 @@ function buildPendingRunCell(
     kind: 'active_run',
     id: 'active-run-pending',
     sourceMessages: [],
+    ...(phase ? { phase } : {}),
     timeline: {
       id: 'active-run-pending',
       status,
@@ -1681,6 +1716,7 @@ function threadTimelineInputSignature(input: BuildThreadTimelineInput): string {
     isWaiting: input.isWaiting,
     isStreaming: input.isStreaming,
     activeRunStatus: input.activeRunStatus ?? null,
+    runtimePhase: input.runtimePhase ?? null,
   });
 }
 
@@ -1697,6 +1733,7 @@ function sameCellIdentity(previous: ThreadTimelineCell, next: ThreadTimelineCell
   }
   if (previous.kind === 'active_run' && next.kind === 'active_run') {
     if (previous.answer !== next.answer || previous.answerIndex !== next.answerIndex) return false;
+    if (previous.phase !== next.phase) return false;
     if (previous.sourceMessages.length !== next.sourceMessages.length) return false;
     return previous.sourceMessages.every((entry, index) => (
       entry.index === next.sourceMessages[index]?.index && entry.message === next.sourceMessages[index]?.message
@@ -1735,11 +1772,24 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
   if (pendingRunCell && !hasOpenRunCell(cells)) {
     cells.push(pendingRunCell);
   }
+  const livePhase = liveRunPhase(input);
+  if (livePhase) {
+    for (let index = cells.length - 1; index >= 0; index -= 1) {
+      const cell = cells[index];
+      if (cell.kind !== 'active_run') continue;
+      if (cell.timeline.status === 'running' || cell.timeline.status === 'blocked') {
+        cells[index] = { ...cell, phase: livePhase };
+      }
+      break;
+    }
+  }
   const sessionIndex = input.sessionIndex && !Array.isArray(input.sessionIndex) ? input.sessionIndex : null;
   const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
   const contextWindow = getContextWindowProjection(sessionWorkbench);
   const runtimeSummary = input.runtimeSummary || null;
-  const headerStatus = getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus);
+  const headerStatus = livePhase
+    ? (WAITING_HEADER_PHASES.has(livePhase) ? 'waiting' : 'streaming')
+    : getHeaderStatus(cells, input.isWaiting, input.isStreaming, activeRunStatus);
 
   return {
     cells,

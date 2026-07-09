@@ -1504,6 +1504,80 @@ function stringValue(value: unknown): string {
   return String(value);
 }
 
+const RUNTIME_PHASE_LABEL_KEYS: Record<string, string> = {
+  queued: 'agent.chat.phase.queued',
+  resuming: 'agent.chat.phase.resuming',
+  starting: 'agent.chat.phase.starting',
+  thinking: 'agent.chat.phase.thinking',
+  responding: 'agent.chat.phase.responding',
+  tool_running: 'agent.chat.phase.tool_running',
+  hook_evaluating: 'agent.chat.phase.hook_evaluating',
+  compacting: 'agent.chat.phase.compacting',
+  awaiting_approval: 'agent.chat.phase.awaiting_approval',
+  awaiting_budget: 'agent.chat.phase.awaiting_budget',
+  summarizing: 'agent.chat.phase.summarizing',
+  continuation_gap: 'agent.chat.phase.continuation_gap',
+};
+
+function formatElapsedSeconds(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
+}
+
+/** §3 seam 2: the activeTail working-state line — phase label + live stopwatch. */
+export function ActiveTailStatusLine({
+  phase,
+  detail,
+  startedAt,
+}: {
+  phase: string;
+  detail?: string | null;
+  startedAt?: string | null;
+}) {
+  const { t } = useTranslation();
+  const anchorRef = React.useRef<number | null>(null);
+  if (anchorRef.current === null) {
+    const parsed = startedAt ? Date.parse(startedAt) : NaN;
+    anchorRef.current = Number.isFinite(parsed) ? parsed : Date.now();
+  }
+  const [nowTick, setNowTick] = React.useState<number>(() => Date.now());
+  React.useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const labelKey = RUNTIME_PHASE_LABEL_KEYS[phase];
+  if (!labelKey) return null;
+  const elapsedSeconds = Math.max(0, Math.floor((nowTick - (anchorRef.current ?? nowTick)) / 1000));
+  return (
+    <div className="session-tui-active-tail" data-testid="active-tail-status" data-phase={phase}>
+      <span className="session-tui-active-tail-dot" />
+      <span className="session-tui-shimmer">{t(labelKey)}</span>
+      {detail ? <span className="session-tui-active-tail-detail">{detail}</span> : null}
+      <span className="session-tui-active-tail-elapsed">{formatElapsedSeconds(elapsedSeconds)}</span>
+    </div>
+  );
+}
+
+const LINKED_HIGHLIGHT_CLASS = 'is-linked-highlight';
+
+/** §3 seam 4: middle-stream <-> right-panel linking is pure DOM decoration —
+ * zero React re-renders on hover (the remount-storm lesson). */
+function setRuntimeLinkHighlight(runtimeId: string | null | undefined, active: boolean): void {
+  if (!runtimeId || typeof document === 'undefined') return;
+  document
+    .querySelectorAll(`[data-runtime-link-id="${CSS.escape(String(runtimeId))}"]`)
+    .forEach((element) => element.classList.toggle(LINKED_HIGHLIGHT_CLASS, active));
+}
+
+function scrollToRuntimeLinkMarker(runtimeId: string | null | undefined): void {
+  if (!runtimeId || typeof document === 'undefined') return;
+  const marker = document.querySelector(
+    `.session-tui-render-cell[data-runtime-link-id="${CSS.escape(String(runtimeId))}"]`,
+  );
+  marker?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 function SessionRuntimePanel({
   messages,
   sessionWorkbench,
@@ -1603,17 +1677,29 @@ function SessionRuntimePanel({
         <span className="session-runtime-status">{item.status || 'unknown'}</span>
       </>
     );
+    const linkId = item.childSessionId || item.id;
+    const linkProps = {
+      'data-runtime-link-id': linkId,
+      onMouseEnter: () => setRuntimeLinkHighlight(linkId, true),
+      onMouseLeave: () => setRuntimeLinkHighlight(linkId, false),
+    } as const;
     return clickable ? (
       <button
         key={item.id}
         type="button"
         className="session-runtime-row session-runtime-row-button"
         onClick={() => sessionId && onSelectSession?.(sessionId)}
+        {...linkProps}
       >
         {content}
       </button>
     ) : (
-      <div key={item.id} className="session-runtime-row">
+      <div
+        key={item.id}
+        className="session-runtime-row"
+        {...linkProps}
+        onClick={() => scrollToRuntimeLinkMarker(linkId)}
+      >
         {content}
       </div>
     );
@@ -3209,6 +3295,9 @@ function AgentChatSection({
           key={`event-${getChatMessageKey(msg, index, 'event')}`}
           className="session-tui-render-cell"
           style={{ paddingLeft: '36px', marginBottom: '8px' }}
+          data-runtime-link-id={msg.eventRuntimeTaskId || msg.eventChildSessionId || undefined}
+          onMouseEnter={() => setRuntimeLinkHighlight(msg.eventRuntimeTaskId || msg.eventChildSessionId, true)}
+          onMouseLeave={() => setRuntimeLinkHighlight(msg.eventRuntimeTaskId || msg.eventChildSessionId, false)}
         >
           <div
             style={{
@@ -3361,6 +3450,7 @@ function AgentChatSection({
       isWaiting: false,
       isStreaming: false,
       activeRunStatus: null,
+      runtimePhase,
     });
 
     model.cells.forEach((cell) => {
@@ -3373,6 +3463,9 @@ function AgentChatSection({
         return;
       }
       if (cell.kind === 'active_run') {
+        const runningStep = cell.phase === 'tool_running'
+          ? [...cell.timeline.steps].reverse().find((step) => step.status === 'running')
+          : null;
         nodes.push(
           <div
             key={cell.id}
@@ -3381,6 +3474,13 @@ function AgentChatSection({
             style={{ marginBottom: '8px' }}
           >
             <RunDisclosureBlock timeline={cell.timeline} />
+            {cell.phase ? (
+              <ActiveTailStatusLine
+                phase={cell.phase}
+                detail={runningStep?.title || null}
+                startedAt={cell.timeline.startedAt || null}
+              />
+            ) : null}
             {cell.sourceMessages.map((entry) => (
               entry.message.role === 'event' && entry.message.sessionPermissionRequest
                 ? renderEventMessage(entry.message, entry.index)
@@ -3666,6 +3766,7 @@ function AgentChatSection({
       isWaiting,
       isStreaming,
       activeRunStatus,
+      runtimePhase,
     }, threadTimelineCacheRef.current),
     [
       activeRunStatus,
@@ -3673,6 +3774,7 @@ function AgentChatSection({
       branchLineage,
       isStreaming,
       isWaiting,
+      runtimePhase,
       runtimeSummary,
       sessionIndex,
       sessionWorkbench,

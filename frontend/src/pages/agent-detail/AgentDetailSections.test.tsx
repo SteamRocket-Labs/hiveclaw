@@ -10,6 +10,7 @@ import AgentAwareSection, {
   workflowDefinitionOptionKey,
 } from './AgentAwareSection';
 import AgentChatSection, {
+  ActiveTailStatusLine,
   BranchLineagePanel,
   SessionCommandControlPanel,
   StructuredToolResultBody,
@@ -5642,5 +5643,30 @@ describe('rewind trim fallback (never a silent no-op)', () => {
     const trimmed = trimMessagesBeforeTranscriptEvent(messages, 'evt-2', '2026-07-02T09:30:00Z');
 
     expect(trimmed.map((message) => message.id)).toEqual(['m1']);
+  });
+});
+
+describe('ActiveTailStatusLine (§3 seam 2)', () => {
+  it('renders the phase label, tool detail, and a stopwatch', () => {
+    const markup = renderToStaticMarkup(
+      <ActiveTailStatusLine phase="tool_running" detail="write_file" startedAt={null} />,
+    );
+    expect(markup).toContain('data-phase="tool_running"');
+    expect(markup).toContain('write_file');
+    expect(markup).toContain('session-tui-active-tail-elapsed');
+  });
+
+  it('renders nothing for unknown phases (forward compatibility)', () => {
+    const markup = renderToStaticMarkup(
+      <ActiveTailStatusLine phase="warp_speed" detail={null} startedAt={null} />,
+    );
+    expect(markup).toBe('');
+  });
+
+  it('marks parked phases so the dot renders as a warning, not a spinner', () => {
+    const markup = renderToStaticMarkup(
+      <ActiveTailStatusLine phase="awaiting_approval" detail={null} startedAt={null} />,
+    );
+    expect(markup).toContain('data-phase="awaiting_approval"');
   });
 });

@@ -20,6 +20,7 @@ from app.runtime.ccplus_contracts import (
     PermissionProfileV1,
     normalize_permission_mode,
 )
+from app.tools.execpolicy import evaluate_command
 
 logger = logging.getLogger(__name__)
 
@@ -141,26 +142,10 @@ _SESSION_AUTO_ALLOW_TOOLS = frozenset(
         "track_todo",
     }
 )
-_DANGEROUS_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
-    (re.compile(r"\brm\s+-[^\s]*r"), "workspace.command.dangerous", "recursive delete"),
-    (re.compile(r"\brm\s+--recursive\b"), "workspace.command.dangerous", "recursive delete"),
-    (re.compile(r"\bgit\s+clean\s+-[a-z]*f[a-z]*x[a-z]*\b"), "workspace.command.dangerous", "git clean -fx"),
-    (re.compile(r"\bfind\b.+\s-delete\b"), "workspace.command.dangerous", "find -delete"),
-    (re.compile(r"\bDROP\s+(TABLE|DATABASE)\b", re.IGNORECASE), "workspace.command.dangerous", "SQL DROP"),
-    (re.compile(r"\bTRUNCATE\s+(TABLE)?\s*\w", re.IGNORECASE), "workspace.command.dangerous", "SQL TRUNCATE"),
-    (
-        re.compile(r"\bDELETE\s+FROM\b(?!.*\bWHERE\b)", re.IGNORECASE | re.DOTALL),
-        "workspace.command.dangerous",
-        "SQL DELETE without WHERE",
-    ),
-    (re.compile(r"\bchmod\s+(-[^\s]*\s+)*(777|666)\b"), "workspace.command.dangerous", "world-writable permissions"),
-    (re.compile(r"\b(chown|sudo)\b"), "workspace.command.dangerous", "privileged ownership or sudo operation"),
-    (
-        re.compile(r"(\bcat\s+\.env\b|\bprintenv\b|\benv\s*\|\s*grep\b|\bSECRET[_A-Z0-9]*\b|\bTOKEN[_A-Z0-9]*\b)"),
-        "workspace.command.secret_exfiltration",
-        "secret exfiltration",
-    ),
-)
+# Dangerous run_command detection is now declarative: see app.tools.execpolicy
+# (Codex execpolicy-inspired rule engine). The former inline
+# `_DANGEROUS_COMMAND_PATTERNS` regex table moved there verbatim; `_detect_dangerous_command`
+# delegates to `evaluate_command` and downstream capability routing is unchanged.
 _DESTRUCTIVE_DELETE_CAPABILITY = "workspace.command.destructive_delete"
 _DESTRUCTIVE_DELETE_RISK_CLASS = "destructive_delete"
 _DESTRUCTIVE_DELETE_CONFIRMATION_KIND = "destructive_once"
@@ -242,11 +227,9 @@ def _detect_dangerous_command(tool_name: str, arguments: dict[str, Any]) -> tupl
     destructive_delete = _detect_destructive_delete(tool_name, arguments)
     if destructive_delete:
         return destructive_delete
-    for candidate in (command, *_split_shell_subcommands(command)):
-        lowered = candidate.lower()
-        for pattern, capability, description in _DANGEROUS_COMMAND_PATTERNS:
-            if pattern.search(lowered):
-                return capability, description
+    match = evaluate_command((command, *_split_shell_subcommands(command)))
+    if match is not None:
+        return match.capability, match.reason
     return None
 
 

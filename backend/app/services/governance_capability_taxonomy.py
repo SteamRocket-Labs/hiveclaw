@@ -37,6 +37,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "execute_code",
         "run_command",
+        "request_shell_escalation",
         "list_files",
         "read_file",
         "write_file",
@@ -98,6 +99,8 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "task_output",
         "task_stop",
         "goal_start",
+        "update_goal",
+        "get_goal",
         "advanced_plan",
         "verify_plan",
     }
@@ -233,6 +236,8 @@ RUNTIME_L2_CAPABILITY_SPECS: tuple[RuntimeL2CapabilitySpec, ...] = (
             "task_output",
             "task_stop",
             "goal_start",
+            "update_goal",
+            "get_goal",
             "advanced_plan",
             "verify_plan",
         ),
@@ -274,6 +279,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "office_document_dump": "workspace.file.read",
     "execute_code": "workspace.code.execute",
     "run_command": "workspace.command.execute",
+    "request_shell_escalation": "workspace.command.execute",
     "track_todo": "agent.task.track",
     "record_finding": "agent.task.track",
     "read_ledger": "agent.task.read",
@@ -284,6 +290,8 @@ CAPABILITY_MAP: dict[str, str] = {
     "task_output": "agent.async_task.read",
     "task_stop": "agent.async_task.modify",
     "goal_start": "agent.goal.modify",
+    "update_goal": "agent.goal.modify",
+    "get_goal": "agent.goal.read",
     "team_create": "agent.team.modify",
     "advanced_plan": "agent.plan.modify",
     "verify_plan": "agent.plan.read",
@@ -442,6 +450,7 @@ _CODING_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
     requires_local_bridge=True,
 )
 
+
 def _normalize_tool_query(value: str) -> str:
     return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value.strip().lower())
 
@@ -482,7 +491,9 @@ def iter_runtime_l2_capability_specs(query: str = "") -> tuple[RuntimeL2Capabili
 def _runtime_l2_descriptors(query: str = "") -> tuple[GovernanceCapabilityDescriptorV1, ...]:
     return tuple(
         descriptor
-        for descriptor in (_descriptor_from_runtime_l2_capability(spec) for spec in iter_runtime_l2_capability_specs(query))
+        for descriptor in (
+            _descriptor_from_runtime_l2_capability(spec) for spec in iter_runtime_l2_capability_specs(query)
+        )
         if descriptor.tools
     )
 
@@ -581,8 +592,7 @@ def taxonomy_policy_capability_group_names_for_tool(tool_name: str) -> tuple[str
             pass
 
         _POLICY_CAPABILITY_GROUP_NAMES_BY_TOOL = {
-            candidate: tuple(sorted(capability_group_names))
-            for candidate, capability_group_names in by_tool.items()
+            candidate: tuple(sorted(capability_group_names)) for candidate, capability_group_names in by_tool.items()
         }
 
     return _POLICY_CAPABILITY_GROUP_NAMES_BY_TOOL.get(name, ())

@@ -13,17 +13,25 @@ from loguru import logger
 
 from app.runtime.prompts.command_parity import (
     ADVANCED_PLAN_DESCRIPTION,
+    GET_GOAL_DESCRIPTION,
     GOAL_START_DESCRIPTION,
     TASK_CREATE_DESCRIPTION,
     TASK_UPDATE_DESCRIPTION,
     TEAM_CREATE_DESCRIPTION,
+    UPDATE_GOAL_DESCRIPTION,
     VERIFY_PLAN_DESCRIPTION,
 )
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_team_runtime_service import create_agent_team_from_tool_request
 from app.services.agent_work_ledger import read_agent_work_ledger_view, upsert_agent_work_ledger_todo
+from app.services.command_escalation_service import request_command_escalation
 from app.services.plan_verification_service import verify_plan_artifact
 from app.services.runtime_task_service import get_runtime_task_record, update_runtime_task_record
+from app.services.session_goal_service import (
+    get_session_goal_from_tool,
+    persist_session_goal_from_tool,
+    update_session_goal_from_tool,
+)
 from app.services.task_command_adapter import TaskCommandKind, adapt_task_command
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
@@ -271,6 +279,15 @@ async def task_stop(request: ToolExecutionRequest) -> str:
                 "objective": {"type": "string"},
                 "token_budget": {"type": "integer"},
                 "max_continuation_turns": {"type": "integer"},
+                "attention_set": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Topics, entities, or files most relevant to this goal. "
+                        "They stay warm in recall for the whole goal — declare "
+                        "the handful of things you expect to keep coming back to."
+                    ),
+                },
             },
             "required": ["objective"],
         },
@@ -283,14 +300,152 @@ async def goal_start(request: ToolExecutionRequest) -> str:
     objective = str(request.arguments.get("objective") or "").strip()
     if not objective:
         return _json({"ok": False, "error": "objective is required."})
+    session_id = _session_id(request)
+    if not session_id:
+        return _json({"ok": False, "error": "a session is required to start a goal."})
+    result = await persist_session_goal_from_tool(
+        agent_id=request.context.agent_id,
+        session_id=session_id,
+        user_id=request.context.user_id,
+        objective=objective,
+        token_budget=request.arguments.get("token_budget"),
+        max_continuation_turns=request.arguments.get("max_continuation_turns"),
+        attention_set=_string_list_argument(request.arguments.get("attention_set")),
+    )
+    # A9: the goal is persisted here now, so the API layer no longer needs to
+    # re-persist it. Keep the field for frontend compatibility, set to False.
+    return _json({"requires_api_persist": False, "session_id": session_id, **result})
+
+
+@tool(
+    ToolMeta(
+        name="update_goal",
+        description=UPDATE_GOAL_DESCRIPTION,
+        parameters={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["complete", "blocked", "paused", "active"]},
+                "objective": {"type": "string"},
+                "summary": {"type": "string"},
+                "attention_set": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Refresh the goal's warm recall set (topics/entities/files). "
+                        "A new declaration replaces the previous one; terminal "
+                        "statuses release it automatically."
+                    ),
+                },
+            },
+        },
+        category="command_goal",
+        display_name="Update Goal",
+        adapter="request",
+    )
+)
+async def update_goal(request: ToolExecutionRequest) -> str:
+    session_id = _session_id(request)
+    if not session_id:
+        return _json({"ok": False, "error": "a session is required to update a goal."})
+    result = await update_session_goal_from_tool(
+        agent_id=request.context.agent_id,
+        session_id=session_id,
+        status=request.arguments.get("status"),
+        objective=request.arguments.get("objective"),
+        summary=request.arguments.get("summary"),
+        attention_set=_string_list_argument(request.arguments.get("attention_set")),
+    )
+    return _json(result)
+
+
+def _string_list_argument(value: Any) -> list[str] | None:
+    if not isinstance(value, list | tuple):
+        return None
+    cleaned = [text for item in value if (text := str(item or "").strip())]
+    return cleaned or None
+
+
+@tool(
+    ToolMeta(
+        name="get_goal",
+        description=GET_GOAL_DESCRIPTION,
+        parameters={"type": "object", "properties": {}},
+        category="command_goal",
+        display_name="Get Goal",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="request",
+    )
+)
+async def get_goal(request: ToolExecutionRequest) -> str:
+    session_id = _session_id(request)
+    if not session_id:
+        return _json({"ok": False, "error": "a session is required to read a goal."})
+    result = await get_session_goal_from_tool(
+        agent_id=request.context.agent_id,
+        session_id=session_id,
+    )
+    return _json(result)
+
+
+_REQUEST_SHELL_ESCALATION_DESCRIPTION = (
+    "Request one-time human approval to run a shell command that the execution "
+    "gate blocked (a dangerous or sandbox-denied command). Provide the EXACT "
+    "command you need and a short reason. This does NOT run the command now: it "
+    "creates an approval for an admin/creator to review. If they approve, that "
+    "exact command runs once. Nothing is remembered — running it again later "
+    "requires a new escalation request. Only escalate when the blocked command is "
+    "genuinely necessary; prefer a safer command first."
+)
+
+
+@tool(
+    ToolMeta(
+        name="request_shell_escalation",
+        description=_REQUEST_SHELL_ESCALATION_DESCRIPTION,
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The exact shell command to escalate (verbatim, as you would pass to run_command).",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why this specific command is needed; shown to the approver.",
+                },
+            },
+            "required": ["command"],
+        },
+        category="command_exec",
+        display_name="Request Shell Escalation",
+        adapter="request",
+    )
+)
+async def request_shell_escalation(request: ToolExecutionRequest) -> str:
+    command = str(request.arguments.get("command") or "").strip()
+    if not command:
+        return _json({"ok": False, "error": "command is required."})
+    reason = str(request.arguments.get("reason") or "").strip()
+    outcome = await request_command_escalation(
+        agent_id=request.context.agent_id,
+        requested_by=request.context.user_id,
+        command=command,
+        reason=reason,
+        session_id=_session_id(request),
+    )
+    has_error = "error" in outcome
     return _json(
         {
-            "ok": True,
-            "requires_api_persist": True,
-            "session_id": _session_id(request),
-            "objective": objective,
-            "token_budget": request.arguments.get("token_budget"),
-            "max_continuation_turns": request.arguments.get("max_continuation_turns"),
+            "ok": not has_error,
+            "status": "error" if has_error else "approval_required",
+            "command": command,
+            "escalation": outcome,
+            "note": (
+                "A human must approve this exact command; on approval it runs once and is not remembered. "
+                "Re-running it later needs a new escalation request."
+            ),
         }
     )
 

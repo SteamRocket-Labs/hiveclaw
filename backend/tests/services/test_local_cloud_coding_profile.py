@@ -40,8 +40,10 @@ def code_exec_calls(monkeypatch):
     """
     calls: dict[str, list[dict]] = {"local": [], "vercel": []}
 
-    async def fake_local(command, *, work_dir, env, timeout):
-        calls["local"].append({"command": command, "work_dir": work_dir, "env": env, "timeout": timeout})
+    async def fake_local(command, *, work_dir, env, timeout, spec=None):
+        calls["local"].append(
+            {"command": command, "work_dir": work_dir, "env": env, "timeout": timeout, "spec": spec}
+        )
         return CodeExecutionResult(stdout="local-ok", evidence={"provider": "local_os_sandbox"})
 
     async def fake_vercel(command, *, work_dir, env, timeout, runtime=None, network_policy=None):

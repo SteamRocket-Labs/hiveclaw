@@ -72,6 +72,7 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
     assert CORE_TOOL_NAMES == {
         "execute_code",
         "run_command",
+        "request_shell_escalation",
         "list_files",
         "read_file",
         "write_file",
@@ -140,6 +141,8 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "task_output",
         "task_stop",
         "goal_start",
+        "update_goal",
+        "get_goal",
         "advanced_plan",
         "verify_plan",
     }

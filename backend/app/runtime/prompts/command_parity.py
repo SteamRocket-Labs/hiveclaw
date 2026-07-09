@@ -16,9 +16,26 @@ TASK_UPDATE_DESCRIPTION = (
 
 GOAL_START_DESCRIPTION = (
     "Declare the current session goal for bounded resume/continuation. The durable "
-    "goal is created through the session goals API so it remains tied to user/session "
-    "permissions. This does not complete the goal automatically; it only gives the "
-    "loop a stable objective and budget boundary."
+    "goal is persisted for this session so it stays tied to user/session permissions "
+    "and survives restarts. Starting a goal only gives the continuation loop a stable "
+    "objective and budget boundary; it does not complete the goal automatically. Report "
+    "progress and completion with update_goal, and read current state with get_goal."
+)
+
+UPDATE_GOAL_DESCRIPTION = (
+    'Update the active session goal for this session. Use status="complete" (with a '
+    "concise evidence-backed summary) the moment the objective is verifiably met — this "
+    "is how you end the goal; do not keep going just because budget remains. Use "
+    'status="blocked" when repeated failures, a missing permission, or a required user '
+    "decision stops progress. Use objective=... to re-scope the goal, which re-orients "
+    'the next continuation turn. status="paused"/"active" pause or resume the loop. '
+    "This records a governed decision-ledger entry; it does not itself run a turn."
+)
+
+GET_GOAL_DESCRIPTION = (
+    "Read the active session goal for this session: its objective, status, tokens "
+    "used, token budget, remaining budget, and continuation count. Read-only; use it to "
+    "check remaining budget and whether the objective is still in scope before acting."
 )
 
 TEAM_CREATE_DESCRIPTION = (

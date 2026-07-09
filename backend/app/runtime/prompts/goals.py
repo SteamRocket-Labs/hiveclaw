@@ -41,10 +41,25 @@ def _common(goal: ThreadGoalPromptState) -> str:
 
 def continuation_prompt(goal: ThreadGoalPromptState) -> str:
     return (
-        "Continue working toward the active session goal.\n"
+        "Continue working toward the active session goal below. Ground every step in the existing conversation, "
+        "Work Ledger, memory, tools, artifacts, and T0 evidence — that is the source of truth.\n"
         f"{_common(goal)}\n"
-        "Use the existing conversation, Work Ledger, memory, tools, artifacts, and T0 evidence as the source of truth. "
-        "If the goal is complete, say so clearly and do not start unrelated work."
+        "Before you act this turn, run these three audit gates in order:\n"
+        "\n"
+        "1. Completion audit — Decide whether the goal is already met, using verifiable evidence "
+        "(artifacts written this session, passing tests/checks, Work Ledger entries), not optimism. "
+        'If it is met, call update_goal(status="complete", summary=...) with a concise evidence-backed '
+        "summary and stop. Do NOT keep exploring just because budget remains; remaining budget is a ceiling, "
+        "not a quota to spend.\n"
+        "2. Blocked audit — Decide whether you are stuck: repeated failures on the same step, a missing "
+        'permission or credential, or a decision only the user can make. If so, call update_goal(status="blocked") '
+        "or state plainly what you are waiting for, then stop instead of thrashing.\n"
+        "3. Fidelity audit — Re-read the <objective> and confirm the work you are about to do is strictly inside "
+        "its scope. Do not drift into adjacent or newly interesting tasks; anything outside the objective is out "
+        "of scope. If the objective itself no longer fits reality, call update_goal(objective=...) rather than "
+        "silently redefining it.\n"
+        "\n"
+        "If none of the gates fire, take the single most valuable next step toward the objective and continue."
     )
 
 

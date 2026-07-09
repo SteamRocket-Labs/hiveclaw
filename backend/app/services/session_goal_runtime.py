@@ -25,6 +25,13 @@ class GoalStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+# Transient terminal errors that should be retried a bounded number of times
+# before the goal is declared Blocked (A6, mirrors Codex turn_error tolerance).
+# Unlike loop_guard / clarification / user_cancel these are not immediate stops;
+# the continuation caller counts consecutive occurrences via blocked_count.
+RETRIABLE_TERMINAL_REASONS: frozenset[str] = frozenset({"provider_error", "turn_abort", "persistence_error"})
+
+
 class SessionGoal(BaseModel):
     id: UUID
     tenant_id: UUID | None = None
@@ -89,12 +96,9 @@ def _previous_terminal_decision(previous_terminal_reason: str | None) -> GoalCon
             reason="previous turn was cancelled by user",
             next_status=GoalStatus.CANCELLED,
         )
-    if reason in {"provider_error", "turn_abort", "persistence_error"}:
-        return GoalContinuationDecision(
-            continue_goal=False,
-            reason=f"previous turn ended with {reason}",
-            next_status=GoalStatus.BLOCKED,
-        )
+    # RETRIABLE_TERMINAL_REASONS (provider_error/turn_abort/persistence_error) fall
+    # through to None on purpose: continue_session_goal increments blocked_count and
+    # decides retry-vs-Blocked with a bounded threshold instead of stopping here.
     return None
 
 

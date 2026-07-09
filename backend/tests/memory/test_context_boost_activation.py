@@ -187,3 +187,60 @@ async def test_recall_eval_context_boost_flips_disambiguation_without_hijacking(
     assert boosted["cases"]["governance-2hop-headroom"]["recall_at_k"] == pytest.approx(2 / 3)
     assert boosted["recall_at_k"] > baseline["recall_at_k"]
     assert boosted["mrr"] > baseline["mrr"]
+
+
+# ---------------------------------------------------------------------------
+# M7 — pinned attention-set seeds (TaskModulation intelligent tier)
+# ---------------------------------------------------------------------------
+
+
+def test_pinned_seeds_survive_turn_decay_until_cleared() -> None:
+    from app.memory.session_working_set import (
+        advance_working_set,
+        clear_pinned_items,
+        pin_attention_set,
+    )
+
+    ws = advance_working_set(None, ["knowledge/other-page"], now=NOW)
+    ws = pin_attention_set(ws, ["knowledge/railway-deployment", "Deploy Checklist"], now=NOW)
+
+    for _ in range(15):
+        ws = advance_working_set(ws, [], now=NOW)
+
+    refs = {item["ref"]: item for item in ws.items}
+    assert "knowledge/railway-deployment" in refs, "pinned seeds must not decay away"
+    assert refs["knowledge/railway-deployment"]["strength"] == 1.0
+    assert refs["knowledge/railway-deployment"].get("pinned") is True
+    assert "knowledge/other-page" not in refs, "unpinned items still decay"
+
+    cleared = clear_pinned_items(ws)
+    assert all(not item.get("pinned") for item in cleared.items)
+    assert "knowledge/railway-deployment" not in {item["ref"] for item in cleared.items}
+
+
+def test_pin_attention_set_replaces_previous_declaration() -> None:
+    from app.memory.session_working_set import pin_attention_set
+
+    ws = pin_attention_set(None, ["knowledge/memory-gate"], now=NOW)
+    ws = pin_attention_set(ws, ["knowledge/platform-gate"], now=NOW)
+
+    pinned = {item["ref"] for item in ws.items if item.get("pinned")}
+    assert pinned == {"knowledge/platform-gate"}, "a new declaration supersedes the old one"
+
+
+def test_persisted_pinned_items_keep_refs_only(tmp_path: Path) -> None:
+    from app.memory.session_working_set import load_working_set, pin_attention_set, save_working_set
+
+    agent_id = uuid.uuid4()
+    ws = pin_attention_set(None, ["knowledge/railway-deployment"], now=NOW)
+    save_working_set(tmp_path, agent_id, "session-pin", ws)
+
+    raw = json.loads(
+        (tmp_path / str(agent_id) / "memory" / "control" / "working_sets" / "session-pin.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    for item in raw["items"]:
+        assert set(item) <= {"ref", "strength", "last_turn", "ts", "pinned"}
+    recovered = load_working_set(tmp_path, agent_id, "session-pin")
+    assert recovered.items[0].get("pinned") is True

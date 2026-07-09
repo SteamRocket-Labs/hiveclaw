@@ -17,9 +17,26 @@ from app.models.agent import Agent
 from app.models.agent_session_goal import AgentSessionGoal
 from app.models.chat_session import ChatSession
 from app.models.user import User
-from app.runtime.prompts.goals import ThreadGoalPromptState, budget_limit_prompt, continuation_prompt
-from app.services.session_goal_runtime import GoalStatus, SessionGoal, build_goal_decision_entry, should_continue_goal
+from app.runtime.prompts.goals import (
+    ThreadGoalPromptState,
+    budget_limit_prompt,
+    continuation_prompt,
+    objective_updated_prompt,
+)
+from app.services.session_goal_runtime import (
+    RETRIABLE_TERMINAL_REASONS,
+    GoalContinuationDecision,
+    GoalStatus,
+    SessionGoal,
+    account_goal_tokens,
+    build_goal_decision_entry,
+    mark_goal_blocked_if_repeated,
+    should_continue_goal,
+)
 from app.services.web_chat_runtime import start_web_chat_run
+
+# A6: how many consecutive retriable terminal errors before a goal is Blocked.
+_BLOCKED_THRESHOLD = 3
 
 
 def _goal_to_runtime_model(goal: AgentSessionGoal) -> SessionGoal:
@@ -40,15 +57,17 @@ def _goal_to_runtime_model(goal: AgentSessionGoal) -> SessionGoal:
     )
 
 
-def _continuation_prompt(goal: AgentSessionGoal) -> str:
-    return continuation_prompt(
-        ThreadGoalPromptState(
-            objective=goal.objective,
-            tokens_used=goal.tokens_used or 0,
-            token_budget=goal.token_budget,
-            time_used_seconds=0,
-        )
+def _prompt_state(goal: AgentSessionGoal) -> ThreadGoalPromptState:
+    return ThreadGoalPromptState(
+        objective=goal.objective,
+        tokens_used=goal.tokens_used or 0,
+        token_budget=goal.token_budget,
+        time_used_seconds=0,
     )
+
+
+def _continuation_prompt(goal: AgentSessionGoal) -> str:
+    return continuation_prompt(_prompt_state(goal))
 
 
 def _progress_evidence_from_metadata(metadata: dict[str, Any]) -> list[str]:
@@ -69,6 +88,23 @@ def _progress_evidence_from_metadata(metadata: dict[str, Any]) -> list[str]:
     if interactive_pause:
         evidence.append(f"interactive_pause:{interactive_pause}")
     return evidence
+
+
+def _turn_tokens_from_metadata(metadata: dict[str, Any]) -> int:
+    """A4: the effective tokens the completed turn spent toward the goal.
+
+    web_chat_runtime records the invocation total under ``turn_tokens_used`` on the
+    terminal RuntimeTask metadata (source: InvocationResult.tokens_used).
+    """
+    for key in ("turn_tokens_used", "tokens_used"):
+        value = metadata.get(key)
+        try:
+            tokens = int(value)
+        except (TypeError, ValueError):
+            continue
+        if tokens > 0:
+            return tokens
+    return 0
 
 
 def _append_goal_decision_entry(metadata: dict[str, Any], entry: dict[str, Any], *, limit: int = 100) -> None:
@@ -93,16 +129,53 @@ async def continue_session_goal(
     ephemeral: bool = False,
     previous_terminal_reason: str | None = None,
     progress_evidence: list[str] | None = None,
+    turn_tokens: int = 0,
 ) -> dict[str, Any]:
+    reason = str(previous_terminal_reason or "").strip()
     runtime_goal = _goal_to_runtime_model(goal)
-    decision = should_continue_goal(
-        runtime_goal,
-        plan_mode=plan_mode,
-        pending_user_input=pending_user_input,
-        active_run_exists=active_run_exists,
-        ephemeral=ephemeral,
-        previous_terminal_reason=previous_terminal_reason,
-    )
+
+    # A6: bounded tolerance for retriable provider/turn/persistence errors. Each
+    # consecutive occurrence bumps blocked_count; at the threshold the goal is
+    # Blocked instead of continuing. loop_guard/clarification/user_cancel remain
+    # immediate stops (handled inside should_continue_goal).
+    forced_decision: GoalContinuationDecision | None = None
+    retry_reason: str | None = None
+    effective_previous_reason = previous_terminal_reason
+    if reason in RETRIABLE_TERMINAL_REASONS:
+        runtime_goal = mark_goal_blocked_if_repeated(runtime_goal, threshold=_BLOCKED_THRESHOLD)
+        goal.blocked_count = runtime_goal.blocked_count
+        if runtime_goal.status == GoalStatus.BLOCKED:
+            forced_decision = GoalContinuationDecision(
+                continue_goal=False,
+                reason=f"blocked after {runtime_goal.blocked_count} consecutive errors ({reason})",
+                next_status=GoalStatus.BLOCKED,
+            )
+        else:
+            retry_reason = f"retry_after_error {runtime_goal.blocked_count}/{_BLOCKED_THRESHOLD}"
+            effective_previous_reason = None
+
+    # A4: account this run's tokens before the budget decision. account_goal_tokens
+    # supplies the clamped total; the status decision stays single-sourced in
+    # should_continue_goal so BUDGET_LIMITED still carries next_status + prompt.
+    if turn_tokens and turn_tokens > 0:
+        accounted_tokens = account_goal_tokens(runtime_goal, turn_tokens).tokens_used
+        goal.tokens_used = accounted_tokens
+        runtime_goal = runtime_goal.model_copy(update={"tokens_used": accounted_tokens})
+
+    if forced_decision is not None:
+        decision = forced_decision
+    else:
+        decision = should_continue_goal(
+            runtime_goal,
+            plan_mode=plan_mode,
+            pending_user_input=pending_user_input,
+            active_run_exists=active_run_exists,
+            ephemeral=ephemeral,
+            previous_terminal_reason=effective_previous_reason,
+        )
+        if retry_reason and decision.continue_goal:
+            decision = decision.model_copy(update={"reason": retry_reason})
+
     decision_payload = decision.model_dump(mode="json")
     metadata = dict(goal.metadata_json or {})
     goal_decision_entry = build_goal_decision_entry(
@@ -121,19 +194,22 @@ async def continue_session_goal(
         if decision.next_status is not None:
             goal.status = decision.next_status.value
             if decision.next_status == GoalStatus.BUDGET_LIMITED:
-                metadata["budget_limit_prompt"] = budget_limit_prompt(
-                    ThreadGoalPromptState(
-                        objective=goal.objective,
-                        tokens_used=goal.tokens_used or 0,
-                        token_budget=goal.token_budget,
-                        time_used_seconds=0,
-                    )
-                )
+                metadata["budget_limit_prompt"] = budget_limit_prompt(_prompt_state(goal))
         goal.metadata_json = metadata
         await db.flush()
         return {"ok": False, "goal_id": str(goal.id), "decision": decision_payload}
 
+    # A6: a clean continuation (no error this turn) clears the error streak.
+    if goal.blocked_count and reason in {"", "turn_stop"}:
+        goal.blocked_count = 0
+
+    # A7: if the objective was re-scoped via update_goal, re-orient this turn and
+    # consume the one-shot steering flag so later turns do not repeat it.
     prompt = _continuation_prompt(goal)
+    if metadata.get("objective_updated_pending"):
+        prompt = f"{objective_updated_prompt(_prompt_state(goal))}\n\n{prompt}"
+        metadata["objective_updated_pending"] = False
+
     run = await start_web_chat_run(
         db=db,
         agent=agent,
@@ -175,20 +251,25 @@ async def maybe_continue_session_goal_after_turn(
     completed_status: str,
     metadata_json: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Dispatch the session Goal continuation loop after a normal user turn completes.
+    """Dispatch the session Goal continuation loop after a turn completes.
 
     This is intentionally a post-turn bridge, not a new executor. The next turn is
     still scheduled through ``start_web_chat_run`` as ``goal_continuation``.
+
+    A3 autonomous loop: completed ``goal_continuation`` turns feed the next
+    continuation (idle → continue until a terminal state, Codex-aligned). The
+    loop's stops are ``should_continue_goal`` — continuation cap, token budget
+    (BUDGET_LIMITED), repeated-error blocking, terminal-reason mapping — plus
+    the inherited budget-plane run enforced by the web-chat runtime; not a
+    one-step-per-user-turn gate.
     """
 
-    if str(completed_task_type or "") != "web_chat_turn":
+    if str(completed_task_type or "") not in {"web_chat_turn", "goal_continuation"}:
         return {"ok": False, "reason": "unsupported_task_type"}
     if str(completed_status or "") != "completed":
         return {"ok": False, "reason": "non_completed_turn"}
 
     metadata = dict(metadata_json or {})
-    if metadata.get("source") == "goal_continuation":
-        return {"ok": False, "reason": "recursive_goal_continuation"}
 
     goal_result = await db.execute(
         select(AgentSessionGoal)
@@ -211,11 +292,7 @@ async def maybe_continue_session_goal_after_turn(
     user_result = await db.execute(select(User).where(User.id == user_id).limit(1))
     user = user_result.scalar_one_or_none()
 
-    missing = [
-        name
-        for name, value in (("agent", agent), ("session", session), ("user", user))
-        if value is None
-    ]
+    missing = [name for name, value in (("agent", agent), ("session", session), ("user", user)) if value is None]
     if missing:
         return {"ok": False, "reason": "missing_context", "missing": missing, "goal_id": str(goal.id)}
 
@@ -231,4 +308,5 @@ async def maybe_continue_session_goal_after_turn(
         ephemeral=bool(metadata.get("ephemeral") or metadata.get("is_ephemeral")),
         previous_terminal_reason=str(metadata.get("terminal_reason") or "") or None,
         progress_evidence=_progress_evidence_from_metadata(metadata),
+        turn_tokens=_turn_tokens_from_metadata(metadata),
     )

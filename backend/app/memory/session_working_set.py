@@ -51,13 +51,27 @@ def advance_working_set(
     *,
     now: datetime | None = None,
 ) -> SessionWorkingSet:
-    """One turn tick: decay every member, refresh/insert this turn's refs."""
+    """One turn tick: decay every member, refresh/insert this turn's refs.
+
+    Pinned attention-set seeds (M7, design §4.4) are exempt from decay and
+    eviction — they hold at full strength until the goal reaches a terminal
+    state or a newer declaration supersedes them.
+    """
     when = (now or datetime.now(UTC)).astimezone(UTC).isoformat()
     turn_index = (existing.turn_index if existing else 0) + 1
     merged: dict[str, dict] = {}
     for item in existing.items if existing else []:
         ref = str(item.get("ref") or "").strip()
         if not ref:
+            continue
+        if item.get("pinned"):
+            merged[ref] = {
+                "ref": ref,
+                "strength": 1.0,
+                "last_turn": int(item.get("last_turn") or 0),
+                "ts": str(item.get("ts") or when),
+                "pinned": True,
+            }
             continue
         strength = float(item.get("strength") or 0.0) * WORKING_SET_DECAY
         if strength < WORKING_SET_MIN_STRENGTH:
@@ -72,9 +86,44 @@ def advance_working_set(
         ref = str(raw_ref or "").strip()
         if not ref:
             continue
-        merged[ref] = {"ref": ref, "strength": 1.0, "last_turn": turn_index, "ts": when}
+        pinned = bool(merged.get(ref, {}).get("pinned"))
+        entry = {"ref": ref, "strength": 1.0, "last_turn": turn_index, "ts": when}
+        if pinned:
+            entry["pinned"] = True
+        merged[ref] = entry
     items = sorted(merged.values(), key=lambda item: (-item["strength"], item["ref"]))[:WORKING_SET_MAX_ITEMS]
     return SessionWorkingSet(turn_index=turn_index, items=items)
+
+
+def pin_attention_set(
+    existing: SessionWorkingSet | None,
+    declared_refs: list[str] | tuple[str, ...],
+    *,
+    now: datetime | None = None,
+) -> SessionWorkingSet:
+    """Pin an agent-declared attention set as persistent W_t seeds (M7).
+
+    The declaration comes from the model itself (goal_start/update_goal tool
+    arguments) — the intelligent judgment stays with the LLM, the platform
+    only records pointers. A new declaration supersedes the previous one.
+    """
+    when = (now or datetime.now(UTC)).astimezone(UTC).isoformat()
+    base = existing or SessionWorkingSet()
+    kept = [dict(item) for item in base.items if not item.get("pinned")]
+    merged: dict[str, dict] = {str(item["ref"]): item for item in kept}
+    for raw_ref in declared_refs:
+        ref = str(raw_ref or "").strip()
+        if not ref:
+            continue
+        merged[ref] = {"ref": ref, "strength": 1.0, "last_turn": base.turn_index, "ts": when, "pinned": True}
+    items = sorted(merged.values(), key=lambda item: (-item["strength"], item["ref"]))[:WORKING_SET_MAX_ITEMS]
+    return SessionWorkingSet(turn_index=base.turn_index, items=items)
+
+
+def clear_pinned_items(existing: SessionWorkingSet) -> SessionWorkingSet:
+    """Drop pinned seeds (goal reached a terminal state)."""
+    items = [dict(item) for item in existing.items if not item.get("pinned")]
+    return SessionWorkingSet(turn_index=existing.turn_index, items=items)
 
 
 def working_set_seeds(working_set: SessionWorkingSet, *, top_n: int = WORKING_SET_SEED_TOP_N) -> dict[str, float]:
@@ -118,16 +167,19 @@ def load_working_set(data_root: Path, agent_id: uuid.UUID | str, session_id: str
     except (OSError, ValueError) as exc:
         logger.warning("[working_set] unreadable state for session %s: %s", session_id, exc)
         return SessionWorkingSet()
-    items = [
-        {
+    items = []
+    for item in payload.get("items") or []:
+        if not str(item.get("ref") or "").strip():
+            continue
+        entry = {
             "ref": str(item.get("ref") or ""),
             "strength": float(item.get("strength") or 0.0),
             "last_turn": int(item.get("last_turn") or 0),
             "ts": str(item.get("ts") or ""),
         }
-        for item in payload.get("items") or []
-        if str(item.get("ref") or "").strip()
-    ]
+        if item.get("pinned"):
+            entry["pinned"] = True
+        items.append(entry)
     return SessionWorkingSet(turn_index=int(payload.get("turn_index") or 0), items=items)
 
 
@@ -139,19 +191,22 @@ def save_working_set(
 ) -> None:
     path = _working_set_path(data_root, agent_id, session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
+    serialized_items = []
+    for item in working_set.items:
+        entry = {
+            "ref": item["ref"],
+            "strength": item["strength"],
+            "last_turn": item["last_turn"],
+            "ts": item["ts"],
+        }
+        if item.get("pinned"):
+            entry["pinned"] = True
+        serialized_items.append(entry)
     payload = {
         "schema": WORKING_SET_SCHEMA,
         "session_id": str(session_id),
         "turn_index": working_set.turn_index,
-        "items": [
-            {
-                "ref": item["ref"],
-                "strength": item["strength"],
-                "last_turn": item["last_turn"],
-                "ts": item["ts"],
-            }
-            for item in working_set.items
-        ],
+        "items": serialized_items,
     }
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")

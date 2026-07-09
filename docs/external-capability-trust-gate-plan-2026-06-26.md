@@ -190,6 +190,63 @@ npm run test -- src/pages/workspace/WorkspaceExtensionCatalogSection.test.tsx
 # Test Files 1 passed (1); Tests 2 passed (2)
 ```
 
+### 0.3 本轮最终闭环复核证据（2026-07-09）
+
+本轮目标不是重写 CC runtime，而是把外部/自产能力的真实输入通道收口到 Hive Trust Gate 前置层：
+
+1. 自产 Skill / Subagent 候选自动进入 `Capability Factor Intake`，不自动发布 catalog，不自动激活。
+2. GitHub/raw/command-shaped Skill source 进入 `materializer -> Trust Gate review`，不在 Agent runtime 或 host HOME 执行 install-time command。
+3. manual/GitHub/CC/Codex marketplace source 进入 discovery entry cache，entry submit 才进入 Trust Gate review。
+
+最终回归：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_external_capability_materializer.py \
+  tests/services/test_external_capability_trust_gate.py \
+  tests/services/test_external_capability_activation.py \
+  tests/services/test_agent_context_session_extensions.py \
+  tests/services/test_external_marketplace_sources.py \
+  tests/services/test_capability_factor_intake.py \
+  tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_proposal \
+  tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_promotes_high_confidence_candidate \
+  tests/api/test_skills_skill_guard.py \
+  tests/api/test_files_import_idempotency.py \
+  tests/api/test_external_capability_reviews_api.py \
+  tests/api/test_external_capability_activation_api.py -q
+# 51 passed, 4 warnings in 2.46s
+
+ruff check \
+  app/agents/subagent_evolution.py \
+  app/services/skill_distiller.py \
+  app/services/external_capabilities/materializer.py \
+  app/services/external_capabilities/skill_source_adapter.py \
+  app/services/external_capabilities/trust_gate.py \
+  app/services/external_capabilities/marketplace_sources.py \
+  app/api/skills.py \
+  app/api/files.py \
+  tests/agents/test_subagent_evolution.py \
+  tests/services/test_skill_distiller.py \
+  tests/services/test_external_capability_materializer.py \
+  tests/services/test_external_capability_trust_gate.py \
+  tests/services/test_external_marketplace_sources.py \
+  tests/api/test_skills_skill_guard.py \
+  tests/api/test_files_import_idempotency.py
+# All checks passed!
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run test -- \
+  src/api/domains/extensions.test.ts \
+  src/pages/workspace/WorkspaceExtensionsSection.test.tsx \
+  src/pages/workspace/WorkspaceExtensionCatalogSection.test.tsx
+# Test Files 3 passed (3); Tests 10 passed (10)
+
+npm run build
+# tsc && vite build -> built in 2.68s
+```
+
 本轮实现顺序：
 
 1. 文档先行：把三个真实输入通道的目标、边界、验收写清。
@@ -2910,7 +2967,7 @@ npm run test -- src/api/domains/extensions.test.ts \
 # Test Files 3 passed (3); Tests 10 passed (10)
 
 npm run build
-# tsc && vite build -> built in 2.62s
+# tsc && vite build -> built in 2.68s
 
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate

@@ -1035,7 +1035,7 @@ M2/org 不进入本轮。原因：
 | 原子项 | 状态 | Commit | 证据 |
 | --- | --- | --- | --- |
 | 15-S0 文档契约 | 已完成 | `document personal kb m1 reliability closure scope` | 当前节记录本轮范围、非范围、原子项和证据要求。 |
-| B4(b) owner-agent 读权限护栏 | 待修复 | - | - |
+| B4(b) owner-agent 读权限护栏 | 已完成 | `complete personal kb owner-agent read guard` | 红测：owner-agent search 缺 `agents` owner-chain，非 owner list/detail 缺 `agent_searchable` 护栏，3 targeted tests 先失败。转绿证据：`pytest tests/services/test_personal_knowledge_service.py::test_owner_agent_search_statement_uses_agent_owner_chain_without_trusting_agent_id tests/services/test_personal_knowledge_service.py::test_personal_document_list_statement_requires_grant_for_non_owner tests/services/test_personal_knowledge_service.py::test_agent_document_detail_statement_requires_agent_searchable_for_non_owner -q` -> 3 passed；`pytest tests/services/test_personal_knowledge_service.py -q` -> 32 passed；`ruff check app/services/personal_knowledge_service.py tests/services/test_personal_knowledge_service.py` -> All checks passed。实现：access predicate 通过 DB 内 `Agent.id/tenant_id/deleted_at/coalesce(owner_user_id,sponsor_user_id,creator_id)` 判定 owner-agent，grant 路径仍保留；list/detail/search 均受 `agent_searchable` 约束。 |
 | D1a Personal KB daemon 兜底 | 待修复 | - | - |
 | D1b 并发闸与 token 记账 | 待修复 | - | - |
 | A1 activation cleanup 安全洞复核 | 待复核 | - | - |

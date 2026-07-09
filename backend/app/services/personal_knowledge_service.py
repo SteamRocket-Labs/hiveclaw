@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from sqlalchemy import Text, and_, cast, delete, desc, exists, false, func, or_, select, true, update
 
 from app.config import get_settings
+from app.models.agent import Agent
 from app.models.knowledge import (
     KnowledgeAssertion,
     KnowledgeDocument,
@@ -337,6 +338,17 @@ def _personal_knowledge_access_predicate(
     if current_user_id == owner_user_id:
         return true()
 
+    owner_agent_predicate = None
+    if agent_id is not None:
+        owner_agent_predicate = exists(
+            select(1).where(
+                Agent.id == agent_id,
+                Agent.tenant_id == tenant_id,
+                Agent.deleted_at.is_(None),
+                func.coalesce(Agent.owner_user_id, Agent.sponsor_user_id, Agent.creator_id) == owner_user_id,
+            )
+        )
+
     grantee_predicates = []
     if current_user_id is not None:
         grantee_predicates.append(
@@ -345,9 +357,9 @@ def _personal_knowledge_access_predicate(
     if agent_id is not None:
         grantee_predicates.append(and_(KnowledgeGrant.grantee_type == "agent", KnowledgeGrant.grantee_id == agent_id))
     if not grantee_predicates:
-        return false()
+        return owner_agent_predicate if owner_agent_predicate is not None else false()
 
-    return exists(
+    grant_predicate = exists(
         select(1).where(
             KnowledgeGrant.tenant_id == tenant_id,
             KnowledgeGrant.scope_type == "person",
@@ -362,6 +374,9 @@ def _personal_knowledge_access_predicate(
             or_(KnowledgeGrant.expires_at.is_(None), KnowledgeGrant.expires_at > func.now()),
         )
     )
+    if owner_agent_predicate is not None:
+        return or_(owner_agent_predicate, grant_predicate)
+    return grant_predicate
 
 
 def _personal_knowledge_agent_visibility_predicate(
@@ -400,6 +415,10 @@ def build_personal_knowledge_document_list_statement(
             KnowledgeDocument.scope_type == "person",
             KnowledgeDocument.scope_id == owner_user_id,
             KnowledgeDocument.status != "deleted",
+            _personal_knowledge_agent_visibility_predicate(
+                owner_user_id=owner_user_id,
+                current_user_id=current_user_id,
+            ),
             _personal_knowledge_access_predicate(
                 tenant_id=tenant_id,
                 owner_user_id=owner_user_id,

@@ -631,6 +631,29 @@ def test_external_search_statement_requires_matching_user_or_agent_grant() -> No
     assert "knowledge_documents.agent_searchable IS true" in compiled
 
 
+def test_owner_agent_search_statement_uses_agent_owner_chain_without_trusting_agent_id() -> None:
+    from app.services.personal_knowledge_service import build_personal_knowledge_search_statement
+
+    statement = build_personal_knowledge_search_statement(
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        query="source refs",
+        current_user_id=None,
+        agent_id=uuid.uuid4(),
+        limit=5,
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
+
+    assert "agents.id" in compiled
+    assert "agents.tenant_id" in compiled
+    assert "agents.deleted_at IS NULL" in compiled
+    assert "agents.owner_user_id" in compiled
+    assert "agents.sponsor_user_id" in compiled
+    assert "agents.creator_id" in compiled
+    assert "knowledge_grants" in compiled
+    assert "knowledge_documents.agent_searchable IS true" in compiled
+
+
 def test_personal_document_list_statement_requires_grant_for_non_owner() -> None:
     from app.services.personal_knowledge_service import build_personal_knowledge_document_list_statement
 
@@ -647,6 +670,25 @@ def test_personal_document_list_statement_requires_grant_for_non_owner() -> None
     assert "knowledge_documents.scope_id" in compiled
     assert "knowledge_grants" in compiled
     assert "knowledge_grants.permission IN" in compiled
+    assert "knowledge_documents.agent_searchable IS true" in compiled
+
+
+def test_agent_document_detail_statement_requires_agent_searchable_for_non_owner() -> None:
+    from app.services.personal_knowledge_service import build_personal_knowledge_document_list_statement
+
+    statement = build_personal_knowledge_document_list_statement(
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        current_user_id=None,
+        agent_id=uuid.uuid4(),
+        limit=1,
+        document_id=uuid.uuid4(),
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
+
+    assert "knowledge_documents.id" in compiled
+    assert "agents.owner_user_id" in compiled
+    assert "knowledge_documents.agent_searchable IS true" in compiled
 
 
 def test_personal_document_list_statement_does_not_require_grant_for_owner() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1391,3 +1392,61 @@ def test_personal_knowledge_access_predicate_filters_expired_grants() -> None:
 
     assert "knowledge_grants.expires_at IS NULL" in compiled
     assert "knowledge_grants.expires_at > now()" in compiled
+
+
+def test_personal_import_job_claim_statement_uses_skip_locked_and_time_guards() -> None:
+    from app.services.personal_knowledge_service import build_personal_knowledge_job_claim_statement
+
+    statement = build_personal_knowledge_job_claim_statement(
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        statuses=("queued", "running"),
+        queued_before=datetime.now(timezone.utc) - timedelta(seconds=30),
+        running_before=datetime.now(timezone.utc) - timedelta(minutes=10),
+        max_attempts=5,
+        limit=10,
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
+
+    assert "knowledge_index_jobs.status = " in compiled
+    assert "knowledge_index_jobs.updated_at <=" in compiled
+    assert "knowledge_index_jobs.attempt_count <" in compiled
+    assert "FOR UPDATE SKIP LOCKED" in compiled
+
+
+@pytest.mark.asyncio
+async def test_process_import_jobs_marks_attempt_limit_as_failed_without_rebuild(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    job = SimpleNamespace(
+        id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        stage="queued",
+        status="queued",
+        error_message=None,
+        attempt_count=5,
+        job_metadata_json={},
+    )
+    session = _QueuedSession([[(job,)]])
+
+    class _PoisonService(PersonalKnowledgeService):
+        async def rebuild_personal_document_index(self, *_args, **_kwargs):  # pragma: no cover - must not run
+            raise AssertionError("poisoned jobs must not rebuild")
+
+    summary = await _PoisonService(data_root=tmp_path).process_import_jobs(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        limit=5,
+        max_attempts=5,
+    )
+
+    assert summary.attempted == 1
+    assert summary.failed == 1
+    assert job.stage == "failed"
+    assert job.status == "failed"
+    assert job.error_message == "personal_kb_import_attempt_limit_exceeded"
+    assert job.job_metadata_json["warnings"] == ["personal_kb_import_attempt_limit_exceeded"]

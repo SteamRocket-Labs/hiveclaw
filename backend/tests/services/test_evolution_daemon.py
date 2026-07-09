@@ -174,6 +174,48 @@ async def test_heartbeat_tick_failure_does_not_break_cleanup(monkeypatch) -> Non
     assert len(cleanup_calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_heartbeat_loop_drains_personal_kb_jobs_per_iteration(monkeypatch) -> None:
+    drain_calls: list[None] = []
+
+    async def fake_tick() -> None:
+        return None
+
+    async def fake_cleanup(_db) -> None:
+        return None
+
+    async def fake_drain() -> None:
+        drain_calls.append(None)
+
+    class _StubDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, *_a, **_k):
+            return None
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr("app.services.heartbeat._heartbeat_tick", fake_tick)
+    monkeypatch.setattr("app.services.pending_reply_service.cleanup_expired_replies", fake_cleanup)
+    monkeypatch.setattr("app.database.async_session", lambda: _StubDB())
+    monkeypatch.setattr(evolution_daemon, "_drain_personal_kb_jobs", fake_drain, raising=False)
+
+    async def fake_sleep(_seconds: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(evolution_daemon.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await evolution_daemon._heartbeat_loop()
+
+    assert drain_calls == [None]
+
+
 # ── Trigger daemon must no longer own heartbeat/workspace ─────
 
 

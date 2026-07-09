@@ -246,9 +246,34 @@ async def _heartbeat_loop() -> None:
         except Exception as e:
             logger.debug(f"[EvolutionDaemon] PendingReply cleanup error (non-fatal): {e}")
 
+        try:
+            await _drain_personal_kb_jobs()
+        except Exception as e:
+            logger.debug(f"[EvolutionDaemon] Personal KB import drain error (non-fatal): {e}")
+
         if heartbeat_ok:
             mark_daemon_tick("evolution_daemon")
         await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
+
+
+async def _drain_personal_kb_jobs() -> None:
+    from app.database import async_session, enter_rls_bypass
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="personal-kb import job drain — recover stale queued/running person-scope jobs"),
+    ):
+        summary = await PersonalKnowledgeService().claim_and_process_stuck_jobs(
+            db,
+            limit=10,
+            queued_grace_seconds=30,
+            running_timeout_seconds=600,
+            max_attempts=5,
+        )
+        if summary.attempted:
+            logger.info("[EvolutionDaemon] Personal KB import drain: {}", summary)
+        await db.commit()
 
 
 async def start_evolution_daemon() -> None:

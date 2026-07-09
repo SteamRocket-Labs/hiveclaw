@@ -10,7 +10,7 @@ import mimetypes
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -50,6 +50,9 @@ _IMAGE_IMPORT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 _MEDIA_IMPORT_EXTENSIONS = _AUDIO_IMPORT_EXTENSIONS | _VIDEO_IMPORT_EXTENSIONS | _IMAGE_IMPORT_EXTENSIONS
 _DEFAULT_EXTRACTOR = object()
 _SENSITIVE_EXTRACTION_BLOCKLIST = {"private", "secret", "restricted", "pl3", "pl4", "credential"}
+_DEFAULT_IMPORT_JOB_MAX_ATTEMPTS = 5
+_DEFAULT_IMPORT_JOB_QUEUED_GRACE_SECONDS = 0
+_DEFAULT_IMPORT_JOB_RUNNING_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -385,6 +388,53 @@ def _personal_knowledge_agent_visibility_predicate(
     if current_user_id == owner_user_id:
         return true()
     return KnowledgeDocument.agent_searchable.is_(True)
+
+
+def build_personal_knowledge_job_claim_statement(
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID | None,
+    statuses: tuple[str, ...],
+    queued_before: datetime | None,
+    running_before: datetime | None,
+    max_attempts: int,
+    limit: int,
+):
+    clean_statuses = tuple(
+        status
+        for status in (str(item or "").strip().lower() for item in statuses)
+        if status in {"queued", "failed", "running"}
+    )
+    status_predicates = []
+    if "queued" in clean_statuses:
+        predicate = KnowledgeIndexJob.status == "queued"
+        if queued_before is not None:
+            predicate = and_(predicate, KnowledgeIndexJob.updated_at <= queued_before)
+        status_predicates.append(predicate)
+    if "failed" in clean_statuses:
+        status_predicates.append(KnowledgeIndexJob.status == "failed")
+    if "running" in clean_statuses:
+        predicate = KnowledgeIndexJob.status == "running"
+        if running_before is not None:
+            predicate = and_(predicate, KnowledgeIndexJob.updated_at <= running_before)
+        status_predicates.append(predicate)
+    if not status_predicates:
+        status_predicates.append(false())
+
+    statement = select(KnowledgeIndexJob).where(
+        KnowledgeIndexJob.scope_type == "person",
+        KnowledgeIndexJob.attempt_count < max(1, int(max_attempts or _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS)),
+        or_(*status_predicates),
+    )
+    if tenant_id is not None:
+        statement = statement.where(KnowledgeIndexJob.tenant_id == tenant_id)
+    if owner_user_id is not None:
+        statement = statement.where(KnowledgeIndexJob.scope_id == owner_user_id)
+    return (
+        statement.order_by(KnowledgeIndexJob.updated_at.asc(), KnowledgeIndexJob.created_at.asc())
+        .limit(max(1, int(limit or 10)))
+        .with_for_update(skip_locked=True)
+    )
 
 
 def build_personal_knowledge_document_list_statement(
@@ -2354,14 +2404,21 @@ class PersonalKnowledgeService:
                 tenant_id=tenant_id,
                 owner_user_id=owner_user_id,
                 current_user_id=current_user_id,
+                claimed=False,
             )
-        return await self.rebuild_personal_document_index(
+        metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+        await self._claim_import_job_for_processing(session, job=job, metadata=metadata)
+        result = await self.rebuild_personal_document_index(
             session,
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
             document_id=job.document_id,
             current_user_id=current_user_id,
         )
+        if result is not None:
+            self._apply_import_job_result(job=job, metadata=metadata, result=result)
+            await session.flush()
+        return result
 
     async def _process_queued_import_job(
         self,
@@ -2371,6 +2428,7 @@ class PersonalKnowledgeService:
         tenant_id: uuid.UUID,
         owner_user_id: uuid.UUID,
         current_user_id: uuid.UUID | None,
+        claimed: bool = False,
     ) -> PersonalKnowledgeIngestResult | None:
         if current_user_id != owner_user_id:
             return None
@@ -2385,11 +2443,9 @@ class PersonalKnowledgeService:
             return uuid.UUID(str(value))
 
         source_hash = _validate_source_sha256(metadata.get("source_sha256") or getattr(job, "artifact_hash", ""))
-        job.stage = "processing"
-        job.status = "running"
-        job.error_message = None
-        job.attempt_count = int(getattr(job, "attempt_count", 0) or 0) + 1
-        await session.flush()
+        if not claimed:
+            await self._claim_import_job_for_processing(session, job=job, metadata=metadata)
+            metadata = dict(getattr(job, "job_metadata_json", {}) or metadata)
 
         try:
             if queued_kind == "markdown":
@@ -2476,6 +2532,41 @@ class PersonalKnowledgeService:
         await session.flush()
         return result
 
+    async def _claim_import_job_for_processing(self, session: Any, *, job: Any, metadata: dict[str, Any]) -> None:
+        job.stage = "processing"
+        job.status = "running"
+        job.error_message = None
+        job.attempt_count = int(getattr(job, "attempt_count", 0) or 0) + 1
+        job.job_metadata_json = {**metadata, "claimed_at": datetime.now(timezone.utc).isoformat()}
+        await session.flush()
+
+    def _apply_import_job_result(
+        self,
+        *,
+        job: Any,
+        metadata: dict[str, Any],
+        result: PersonalKnowledgeIngestResult,
+    ) -> None:
+        job.stage = "indexed" if result.status in {"ready", "degraded"} else "failed"
+        job.status = result.status
+        job.error_message = None if result.status in {"ready", "degraded"} else ";".join(result.warnings or [])
+        job.job_metadata_json = {
+            **metadata,
+            "warnings": list(result.warnings or []),
+            "processed_result_job_id": str(result.job_id or job.id),
+            "processed_document_id": str(result.document_id),
+            "processed_canonical_md_path": result.canonical_md_path,
+        }
+
+    async def _mark_import_job_attempt_limit_exceeded(self, session: Any, *, job: Any) -> None:
+        warning = "personal_kb_import_attempt_limit_exceeded"
+        metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+        job.stage = "failed"
+        job.status = "failed"
+        job.error_message = warning
+        job.job_metadata_json = {**metadata, "warnings": [warning]}
+        await session.flush()
+
     async def process_import_jobs(
         self,
         session: Any,
@@ -2485,27 +2576,85 @@ class PersonalKnowledgeService:
         current_user_id: uuid.UUID | None,
         limit: int = 10,
         statuses: tuple[str, ...] = ("queued", "failed"),
+        queued_grace_seconds: int = _DEFAULT_IMPORT_JOB_QUEUED_GRACE_SECONDS,
+        running_timeout_seconds: int | None = None,
+        max_attempts: int = _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS,
     ) -> PersonalKnowledgeJobProcessSummary:
         if current_user_id != owner_user_id:
             return PersonalKnowledgeJobProcessSummary(attempted=0, succeeded=0, failed=0, skipped=0, results=[])
         clean_statuses = tuple(
             status
             for status in (str(item or "").strip().lower() for item in statuses)
-            if status in {"queued", "failed"}
+            if status in {"queued", "failed", "running"}
         ) or ("queued", "failed")
+        now = datetime.now(timezone.utc)
+        queued_before = now - timedelta(seconds=max(0, int(queued_grace_seconds or 0)))
+        running_before = (
+            now - timedelta(seconds=max(0, int(running_timeout_seconds)))
+            if running_timeout_seconds is not None
+            else None
+        )
         rows = (
             await session.execute(
-                select(KnowledgeIndexJob)
-                .where(
-                    KnowledgeIndexJob.tenant_id == tenant_id,
-                    KnowledgeIndexJob.scope_type == "person",
-                    KnowledgeIndexJob.scope_id == owner_user_id,
-                    KnowledgeIndexJob.status.in_(clean_statuses),
+                build_personal_knowledge_job_claim_statement(
+                    tenant_id=tenant_id,
+                    owner_user_id=owner_user_id,
+                    statuses=clean_statuses,
+                    queued_before=queued_before,
+                    running_before=running_before,
+                    max_attempts=max_attempts,
+                    limit=limit,
                 )
-                .order_by(KnowledgeIndexJob.updated_at.asc(), KnowledgeIndexJob.created_at.asc())
-                .limit(max(1, int(limit or 10)))
             )
         ).all()
+        return await self._process_claimed_import_job_rows(
+            session,
+            rows=rows,
+            max_attempts=max_attempts,
+            default_tenant_id=tenant_id,
+            default_owner_user_id=owner_user_id,
+        )
+
+    async def claim_and_process_stuck_jobs(
+        self,
+        session: Any,
+        *,
+        limit: int = 10,
+        queued_grace_seconds: int = 30,
+        running_timeout_seconds: int = _DEFAULT_IMPORT_JOB_RUNNING_TIMEOUT_SECONDS,
+        max_attempts: int = _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS,
+    ) -> PersonalKnowledgeJobProcessSummary:
+        now = datetime.now(timezone.utc)
+        rows = (
+            await session.execute(
+                build_personal_knowledge_job_claim_statement(
+                    tenant_id=None,
+                    owner_user_id=None,
+                    statuses=("queued", "running"),
+                    queued_before=now - timedelta(seconds=max(0, int(queued_grace_seconds or 0))),
+                    running_before=now - timedelta(seconds=max(0, int(running_timeout_seconds or 0))),
+                    max_attempts=max_attempts,
+                    limit=limit,
+                )
+            )
+        ).all()
+        return await self._process_claimed_import_job_rows(
+            session,
+            rows=rows,
+            max_attempts=max_attempts,
+            default_tenant_id=None,
+            default_owner_user_id=None,
+        )
+
+    async def _process_claimed_import_job_rows(
+        self,
+        session: Any,
+        *,
+        rows: list[Any],
+        max_attempts: int,
+        default_tenant_id: uuid.UUID | None,
+        default_owner_user_id: uuid.UUID | None,
+    ) -> PersonalKnowledgeJobProcessSummary:
         results: list[dict[str, Any]] = []
         succeeded = 0
         failed = 0
@@ -2518,13 +2667,36 @@ class PersonalKnowledgeService:
                 skipped += 1
                 results.append({"job_id": str(job_id or ""), "status": "skipped", "warnings": ["missing_document_id"]})
                 continue
+            tenant_id = getattr(job, "tenant_id", None) or default_tenant_id
+            owner_user_id = getattr(job, "scope_id", None) or default_owner_user_id
+            if tenant_id is None or owner_user_id is None:
+                skipped += 1
+                results.append({"job_id": str(job_id or ""), "status": "skipped", "warnings": ["missing_scope"]})
+                continue
+            if int(getattr(job, "attempt_count", 0) or 0) >= max(1, int(max_attempts or _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS)):
+                await self._mark_import_job_attempt_limit_exceeded(session, job=job)
+                failed += 1
+                results.append(
+                    {
+                        "job_id": str(job_id or ""),
+                        "document_id": str(document_id),
+                        "status": "failed",
+                        "segment_count": 0,
+                        "warnings": ["personal_kb_import_attempt_limit_exceeded"],
+                    }
+                )
+                continue
+            metadata = dict(getattr(job, "job_metadata_json", {}) or {})
+            await self._claim_import_job_for_processing(session, job=job, metadata=metadata)
+            metadata = dict(getattr(job, "job_metadata_json", {}) or metadata)
             if dict(getattr(job, "job_metadata_json", {}) or {}).get("queued_import_kind"):
                 result = await self._process_queued_import_job(
                     session,
                     job=job,
                     tenant_id=tenant_id,
                     owner_user_id=owner_user_id,
-                    current_user_id=current_user_id,
+                    current_user_id=owner_user_id,
+                    claimed=True,
                 )
             else:
                 result = await self.rebuild_personal_document_index(
@@ -2532,8 +2704,11 @@ class PersonalKnowledgeService:
                     tenant_id=tenant_id,
                     owner_user_id=owner_user_id,
                     document_id=document_id,
-                    current_user_id=current_user_id,
+                    current_user_id=owner_user_id,
                 )
+                if result is not None:
+                    self._apply_import_job_result(job=job, metadata=metadata, result=result)
+                    await session.flush()
             if result is None:
                 skipped += 1
                 results.append({"job_id": str(job_id or ""), "status": "skipped", "warnings": ["job_not_rebuilt"]})

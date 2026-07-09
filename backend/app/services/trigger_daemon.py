@@ -193,6 +193,10 @@ async def _create_trigger_runtime_task(
                     max_background_tasks=getattr(budget_policy, "max_background_tasks", None),
                     max_continuation_wakes=getattr(budget_policy, "max_continuation_wakes", None),
                     max_provider_calls=getattr(budget_policy, "max_provider_calls", None),
+                    max_failures=getattr(budget_policy, "max_failures", None),
+                    max_needs_reconciliation=getattr(budget_policy, "max_needs_reconciliation", None),
+                    max_child_failure_ratio=getattr(budget_policy, "max_child_failure_ratio", None),
+                    max_parent_invocations=getattr(budget_policy, "max_parent_invocations", None),
                     policy_snapshot={
                         "policy_id": str(getattr(budget_policy, "id", "")),
                         "scope_type": getattr(budget_policy, "scope_type", None),
@@ -1414,6 +1418,157 @@ def _build_trigger_context(
     return trigger_context, trigger_names
 
 
+# ── B3: same_session delivery (CC /loop "inject into current session") ───
+
+
+def _trigger_delivery_mode(trigger: AgentTrigger) -> str:
+    """Delivery semantics for a fired trigger (config-carried, JSONB).
+
+    ``new_invocation`` (default) keeps the historical behaviour — each fire
+    starts a fresh ``trigger_run`` child session. ``same_session`` routes the
+    fire into an existing chat session as a new turn (CC first-gen ``/loop``
+    cron "塞进当前 session 命令队列" semantics)."""
+    mode = str((getattr(trigger, "config", None) or {}).get("delivery") or "new_invocation").strip()
+    return mode if mode in {"new_invocation", "same_session"} else "new_invocation"
+
+
+def _resolve_batch_same_session_target(triggers: list[AgentTrigger]) -> str | None:
+    """Return the single source session id when the whole fired batch is a
+    ``same_session`` delivery targeting one chat session, else ``None``.
+
+    Conservative on purpose: a mixed batch (some ``same_session``, some normal)
+    or a batch spanning multiple source sessions shares one trigger RuntimeTask,
+    so splitting delivery would be ambiguous — those keep the normal
+    new-invocation path. In practice a ``/loop`` trigger fires on its own
+    interval cadence and reaches this alone."""
+    if not triggers:
+        return None
+    session_ids: set[str] = set()
+    for trigger in triggers:
+        if _trigger_delivery_mode(trigger) != "same_session":
+            return None
+        sid = str((getattr(trigger, "config", None) or {}).get("source_session_id") or "").strip()
+        if not sid:
+            return None
+        session_ids.add(sid)
+    if len(session_ids) != 1:
+        return None
+    return next(iter(session_ids))
+
+
+async def _deliver_batch_to_source_session(
+    agent_id: uuid.UUID,
+    triggers: list[AgentTrigger],
+    *,
+    source_session_id: str,
+    runtime_task_id: str | None,
+) -> bool:
+    """Deliver a fired ``same_session`` batch into its source chat session as a
+    new turn instead of starting a fresh ``trigger_run`` invocation.
+
+    Returns ``True`` when the fire was delivered (either started as a new turn
+    or queued behind an active run — REPL-busy → queue, never concurrent).
+    Returns ``False`` when the source session is gone / the agent is not
+    runnable, so the caller falls back to the normal new-invocation path."""
+    from fastapi import HTTPException
+
+    from app.models.chat_session import ChatSession
+    from app.models.user import User
+    from app.services.web_chat_runtime import (
+        WEB_CHAT_TURN_TASK_TYPE,
+        ActiveWebChatRunExists,
+        start_web_chat_run,
+    )
+
+    tid = await resolve_tenant_for_agent(agent_id)
+    delivered_run_id: str | None = None
+    queued = False
+    async with tenant_scoped_session(tid) as db:
+        agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+        if agent is None or getattr(agent, "status", None) in ("expired", "stopped", "error", "archived"):
+            logger.warning(
+                "[TriggerDaemon] same_session delivery falling back to new invocation — agent {} not runnable",
+                agent_id,
+            )
+            return False
+        try:
+            session_uuid = uuid.UUID(str(source_session_id))
+        except (TypeError, ValueError):
+            return False
+        session = (
+            await db.execute(
+                select(ChatSession).where(ChatSession.id == session_uuid, ChatSession.agent_id == agent_id)
+            )
+        ).scalar_one_or_none()
+        if session is None:
+            logger.warning(
+                "[TriggerDaemon] same_session source session {} missing — falling back to new invocation",
+                source_session_id,
+            )
+            return False
+        user = (await db.execute(select(User).where(User.id == session.user_id))).scalar_one_or_none()
+        if user is None:
+            logger.warning(
+                "[TriggerDaemon] same_session source session {} has no resolvable owner — falling back",
+                source_session_id,
+            )
+            return False
+
+        content, trigger_names = _build_trigger_context(triggers)
+        trigger_ids = [str(getattr(t, "id", "")) for t in triggers if getattr(t, "id", None)]
+        try:
+            payload = await start_web_chat_run(
+                db=db,
+                agent=agent,
+                user=user,
+                session=session,
+                content=content,
+                runtime_task_type=WEB_CHAT_TURN_TASK_TYPE,
+                extra_metadata={
+                    "source": "loop_same_session",
+                    "trigger_ids": trigger_ids,
+                    "trigger_names": trigger_names,
+                    "trigger_runtime_task_id": runtime_task_id,
+                },
+            )
+            delivered_run_id = str(payload.get("run_id") or "") or None
+        except ActiveWebChatRunExists as busy:
+            # REPL-busy: the loop prompt is queued behind the active run — never
+            # started concurrently (CC "only fires when the REPL is idle").
+            queued = True
+            delivered_run_id = str((getattr(busy, "run", None) or {}).get("run_id") or "") or None
+        except HTTPException as exc:
+            logger.warning(
+                "[TriggerDaemon] same_session delivery rejected for session {}: {}",
+                source_session_id,
+                getattr(exc, "detail", exc),
+            )
+            return False
+
+    # The fire is durable now: advance the interval clock / clear the inflight
+    # marker and point the trigger RuntimeTask at the session it delivered into.
+    try:
+        await _record_trigger_success_state(agent_id, [getattr(t, "id") for t in triggers if getattr(t, "id", None)])
+    except Exception as exc:  # noqa: BLE001 - state reset is best-effort.
+        logger.debug("[TriggerDaemon] same_session success-state reset failed (non-fatal): {}", exc)
+    await _update_trigger_runtime_task(
+        runtime_task_id,
+        status="completed",
+        result_summary=(
+            f"Loop delivered into session {source_session_id} "
+            f"({'queued behind active run' if queued else 'started new turn'})."
+        ),
+        session_id=source_session_id,
+        metadata_json={
+            "delivery": "same_session",
+            "delivered_run_id": delivered_run_id,
+            "queued": queued,
+            "source_session_id": source_session_id,
+        },
+    )
+    return True
+
+
 async def _invoke_agent_for_triggers(
     agent_id: uuid.UUID,
     triggers: list[AgentTrigger],
@@ -1464,6 +1619,17 @@ async def _invoke_agent_for_triggers(
         )
         return
     triggers = react_triggers
+
+    # B3: same_session delivery — a ``/loop``-style batch injects its prompt into
+    # its source chat session as a new turn instead of starting a fresh
+    # trigger_run child session. Falls through to the normal new-invocation path
+    # when the source session is gone or the agent is not runnable.
+    same_session_target = _resolve_batch_same_session_target(triggers)
+    if same_session_target is not None:
+        if await _deliver_batch_to_source_session(
+            agent_id, triggers, source_session_id=same_session_target, runtime_task_id=runtime_task_id
+        ):
+            return
 
     try:
         tid = await resolve_tenant_for_agent(agent_id)
@@ -1917,6 +2083,80 @@ async def _invoke_agent_for_triggers(
             result_summary=f"Trigger invocation failed: {str(e)[:500]}",
             metadata_json=failure_metadata,
         )
+
+
+async def fire_trigger_once_now(
+    agent_id: uuid.UUID,
+    trigger_id: str | uuid.UUID,
+    *,
+    event_key_prefix: str = "loop_immediate",
+) -> dict[str, Any]:
+    """Fire a single trigger immediately through the normal daemon fire path.
+
+    B1 (CC ``loop.ts:67`` "run once immediately"): reuses the exact
+    preflight → RuntimeTask admission → mark-fired → invoke sequence the tick
+    loop runs, skipping only the schedule-timing check (we *want* it now). It
+    never bypasses preflight / governance / budget admission, so an immediate
+    ``/loop`` run is subject to the same wake gate as a scheduled fire. The
+    heavy agent invocation is spawned as a background task; this returns as soon
+    as the fire is admitted and marked in-flight so callers get an observable
+    ``runtime_task_id``."""
+    now = datetime.now(timezone.utc)
+    try:
+        trigger_uuid = uuid.UUID(str(trigger_id))
+    except (TypeError, ValueError):
+        return {"fired": False, "reason": "invalid_trigger_id", "runtime_task_id": None}
+
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
+        trigger = (
+            await db.execute(
+                select(AgentTrigger).where(AgentTrigger.id == trigger_uuid, AgentTrigger.agent_id == agent_id)
+            )
+        ).scalar_one_or_none()
+    if trigger is None:
+        return {"fired": False, "reason": "trigger_not_found", "runtime_task_id": None}
+
+    event_key = f"{event_key_prefix}:{trigger.id}:{int(now.timestamp())}"
+    # Best-effort dedup marker; the in-flight config guard below is the real
+    # protection against a same-tick daemon double-fire, so proceed regardless.
+    try:
+        await _acquire_trigger_fire_lease(trigger.id, event_key)
+    except Exception as exc:  # noqa: BLE001 - lease is advisory for the immediate run.
+        logger.debug("[TriggerDaemon] immediate fire lease non-fatal error for {}: {}", trigger.id, exc)
+
+    preflight_ok, skip_reason, skip_summary, preflight_metadata = await _preflight_trigger_group(
+        agent_id, [trigger], now
+    )
+    runtime_task_id = await _create_trigger_runtime_task(
+        agent_id,
+        [trigger],
+        metadata_json={
+            **preflight_metadata,
+            "immediate_fire": True,
+            "fire_event_keys": {str(trigger.id): event_key},
+        },
+    )
+    if not preflight_ok:
+        await _skip_trigger_runtime_task(
+            runtime_task_id,
+            skip_reason=skip_reason or "preflight_blocked",
+            result_summary=skip_summary or "Immediate trigger fire skipped by preflight.",
+            metadata_json=preflight_metadata,
+        )
+        return {"fired": False, "reason": skip_reason or "preflight_blocked", "runtime_task_id": runtime_task_id}
+
+    await _mark_trigger_fire_started(
+        agent_id,
+        [trigger],
+        now=now,
+        runtime_task_id=runtime_task_id,
+        event_keys={trigger.id: event_key},
+    )
+    asyncio.create_task(
+        run_bounded("trigger", _invoke_agent_for_triggers(agent_id, [trigger], runtime_task_id=runtime_task_id))
+    )
+    return {"fired": True, "runtime_task_id": runtime_task_id}
 
 
 # ── Main Tick Loop ──────────────────────────────────────────────────

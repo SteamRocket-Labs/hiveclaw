@@ -77,6 +77,7 @@ _TOOL_BACKED_COMMANDS = frozenset(
 _GOAL_COMMANDS = frozenset({"goal_start", "goal_update", "goal_stop"})
 _TEAM_COMMANDS = frozenset({"team_create", "team_delete"})
 _SCHEDULE_COMMANDS = frozenset({"schedule_create", "schedule_once"})
+_LOOP_COMMANDS = frozenset({"loop"})
 _METADATA_COMMANDS = frozenset({"permissions", "config"})
 _EXTERNAL_PACK_COMMANDS = frozenset(CODING_PACK_COMMAND_NAMES)
 _MCP_ACTION_TO_TOOL = {
@@ -624,6 +625,187 @@ async def _execute_schedule_command(
         },
     )
     return {"ok": True, "command": command_name, **payload}
+
+
+# ── /loop — recurring same-session prompt (CC first-gen /loop alignment) ──
+
+_LOOP_INTERVAL_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*$", re.IGNORECASE)
+_LOOP_UNIT_MINUTES = {"s": 1.0 / 60.0, "m": 1.0, "h": 60.0, "d": 1440.0, "": 1.0}
+
+
+def _parse_loop_interval(text: object) -> tuple[float | None, str | None]:
+    """Parse a ``/loop`` interval token (``5m`` / ``1h`` / ``30s`` / bare minutes)
+    into minutes. Returns ``(minutes, None)`` or ``(None, error_message)``."""
+    raw = str(text or "").strip()
+    if not raw:
+        return None, "Loop interval is required, e.g. 5m / 1h / 30s."
+    match = _LOOP_INTERVAL_RE.match(raw)
+    if not match:
+        return None, f"Invalid loop interval '{raw}'. Use forms like 5m, 1h, 30s."
+    minutes = float(match.group(1)) * _LOOP_UNIT_MINUTES[match.group(2).lower()]
+    if minutes <= 0:
+        return None, f"Loop interval must be positive: '{raw}'."
+    return minutes, None
+
+
+def _parse_loop_args(arguments: dict[str, Any]) -> tuple[str | None, str, bool]:
+    """Return ``(interval_token, prompt, explicit)``.
+
+    Structured form (``{"interval": ..., "prompt": ...}``) sets ``explicit=True``.
+    Natural form (``/loop 5m <prompt>`` via ``input``/``instruction``) splits the
+    first whitespace token as the interval; ``explicit=False`` so a leading
+    non-interval token routes to the self-pace placeholder rather than an error."""
+    if arguments.get("interval") is not None:
+        return (
+            str(arguments.get("interval") or "").strip() or None,
+            str(arguments.get("prompt") or "").strip(),
+            True,
+        )
+    natural = _natural_command_text(arguments)
+    if not natural:
+        return None, "", False
+    parts = natural.split(None, 1)
+    interval_token = parts[0].strip() if parts else ""
+    prompt = parts[1].strip() if len(parts) > 1 else ""
+    return (interval_token or None), prompt, False
+
+
+def _loop_self_pace_placeholder() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "command": "loop",
+        "status": "self_pace_not_available",
+        "message": (
+            "Self-pace mode (no interval) is not yet available. "
+            "Provide an interval, e.g. /loop 5m check the deploy status."
+        ),
+    }
+
+
+def _loop_command_payload(trigger: AgentTrigger, minutes: float, prompt: str) -> dict[str, Any]:
+    config = dict(trigger.config or {})
+    return {
+        "ok": True,
+        "id": str(trigger.id),
+        "agent_id": str(trigger.agent_id),
+        "name": trigger.name,
+        "type": "interval",
+        "interval_minutes": float(minutes),
+        "prompt": prompt,
+        "delivery": config.get("delivery", "same_session"),
+        "source_session_id": config.get("source_session_id"),
+        "is_enabled": bool(trigger.is_enabled),
+        "run_count": int(trigger.fire_count or 0),
+        "requires_api_persist": False,
+    }
+
+
+async def _fire_loop_trigger_now(agent_id: uuid.UUID, trigger_id: str) -> dict[str, Any]:
+    """Run the freshly-created loop trigger once immediately (CC loop.ts:67).
+
+    Delegates to the trigger daemon's normal fire path so the immediate run is
+    subject to the same preflight / governance / budget admission as a scheduled
+    fire — it does not bypass ``trigger_daemon``."""
+    from app.services.trigger_daemon import fire_trigger_once_now
+
+    return await fire_trigger_once_now(agent_id, trigger_id)
+
+
+async def _execute_loop_command(
+    *,
+    db: AsyncSession,
+    agent: Any,
+    user: User,
+    session_id: str | None,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    if not is_agent_creator(user, agent):
+        raise HTTPException(status_code=403, detail="Only the agent creator can start a loop")
+
+    interval_token, prompt, explicit = _parse_loop_args(arguments)
+    if interval_token is None:
+        return _loop_self_pace_placeholder()
+    minutes, interval_error = _parse_loop_interval(interval_token)
+    if minutes is None:
+        # An explicit bad interval is a validation error; a natural leading token
+        # that is not an interval means the user omitted it → self-pace prompt.
+        if explicit:
+            return {"ok": False, "command": "loop", "status": "invalid_interval", "message": interval_error}
+        return _loop_self_pace_placeholder()
+    if not prompt:
+        return {
+            "ok": False,
+            "command": "loop",
+            "status": "missing_prompt",
+            "message": "/loop needs a prompt to run each interval, e.g. /loop 5m check the deploy status.",
+        }
+
+    session = await _load_chat_session(db, agent_id=agent.id, session_id=session_id)
+    interval_seconds = minutes * 60.0
+    stored_minutes: float | int = int(minutes) if float(minutes).is_integer() else minutes
+    config: dict[str, Any] = {
+        "minutes": stored_minutes,
+        "trigger_class": "scheduled_job",
+        "delivery": "same_session",
+        "source_session_id": str(session.id),
+        "loop": True,
+        "command": "loop",
+        "created_by": str(user.id),
+    }
+
+    # /loop creates an ENABLED autonomous interval trigger → same confirmation
+    # gate as any other enabled-trigger creation (no bypass of trigger governance).
+    await enforce_plan_gate(
+        db,
+        agent_id=agent.id,
+        action_kind="create_enabled_trigger",
+        gate=get_plan_mode_gate(),
+        confirmed_plan_id=arguments.get("confirmed_plan_id"),
+        confirmed_plan_version=arguments.get("confirmed_plan_version"),
+        confirmed_plan_hash=arguments.get("confirmed_plan_hash"),
+    )
+    config = stamp_confirmed_plan_provenance(
+        config,
+        plan_id=arguments.get("confirmed_plan_id"),
+        plan_version=arguments.get("confirmed_plan_version"),
+        plan_hash=arguments.get("confirmed_plan_hash"),
+    )
+
+    name = str(arguments.get("name") or "").strip() or f"loop-{uuid.uuid4().hex[:8]}"
+    trigger = AgentTrigger(
+        agent_id=agent.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        name=name,
+        type="interval",
+        config=config,
+        reason=prompt,
+        is_enabled=True,
+        # The interval governs cadence; keep the cooldown floor at or below it.
+        cooldown_seconds=max(1, min(int(interval_seconds), 60)),
+    )
+    db.add(trigger)
+    await db.flush()
+
+    payload = _loop_command_payload(trigger, minutes, prompt)
+    payload["fire_immediately"] = True
+    await _append_command_session_event(
+        db=db,
+        agent=agent,
+        user=user,
+        session_id=session.id,
+        event_type="loop",
+        status="created",
+        message=f"Loop started every {interval_token}: {prompt}",
+        metadata={
+            "loop_id": str(trigger.id),
+            "trigger_id": str(trigger.id),
+            "interval_minutes": float(minutes),
+            "prompt": prompt,
+            "delivery": "same_session",
+            "command": "loop",
+        },
+    )
+    return payload
 
 
 def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:
@@ -1196,6 +1378,19 @@ async def execute_agent_command(
             arguments=body.arguments,
         )
         await db.commit()
+        return {"ok": True, "command": command.name, "result": result}
+    if command.name in _LOOP_COMMANDS:
+        result = await _execute_loop_command(
+            db=db,
+            agent=agent,
+            user=current_user,
+            session_id=body.session_id,
+            arguments=body.arguments,
+        )
+        if result.pop("fire_immediately", False) and result.get("id"):
+            # Persist the trigger before firing so the daemon path can load it.
+            await db.commit()
+            result["immediate_run"] = await _fire_loop_trigger_now(agent.id, result["id"])
         return {"ok": True, "command": command.name, "result": result}
     if command.name in _METADATA_COMMANDS:
         return {

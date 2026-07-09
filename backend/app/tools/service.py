@@ -243,6 +243,21 @@ def _inject_runtime_context_arguments(
     """Thread runtime-owned session context into tools that must never rely on
     the model to restate it correctly.
     """
+    if tool_name == "set_trigger":
+        # B3: a `delivery=same_session` trigger must deliver into the live chat
+        # session — supply its id from the runtime, never trust the model to
+        # restate a session id. Only inject when same_session is requested so the
+        # default path stays untouched.
+        wants_same_session = (
+            str((arguments.get("delivery") or (arguments.get("config") or {}).get("delivery") or "")).strip()
+            == "same_session"
+        )
+        if not (wants_same_session and runtime_context.session_id and not arguments.get("source_session_id")):
+            return arguments
+        enriched = dict(arguments)
+        enriched["source_session_id"] = runtime_context.session_id
+        return enriched
+
     if tool_name not in {"delegate_to_agent", "send_message_to_agent"}:
         return arguments
 

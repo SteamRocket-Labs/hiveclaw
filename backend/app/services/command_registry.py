@@ -457,6 +457,31 @@ def build_default_command_registry(
             },
         ),
         _command(
+            "loop",
+            "Run a prompt on a recurring interval in this chat (e.g. /loop 5m check the deploy). "
+            "Omit the interval to self-pace (not yet available).",
+            category="schedule",
+            execution_mode="runtime",
+            permission_mode="write",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "interval": {
+                        "type": "string",
+                        "description": "Recurrence interval like 5m, 1h, 30s. Omit for self-pace (not yet available).",
+                    },
+                    "prompt": {"type": "string", "description": "The instruction to run on each interval."},
+                    "input": {
+                        "type": "string",
+                        "description": "Natural form '<interval> <prompt>', e.g. '5m check the deploy status'.",
+                    },
+                    "confirmed_plan_id": {"type": "string"},
+                    "confirmed_plan_version": {"type": "integer"},
+                    "confirmed_plan_hash": {"type": "string"},
+                },
+            },
+        ),
+        _command(
             "advanced_plan",
             "Run a detached advanced planning task that returns a plan artifact for approval.",
             category="plan",

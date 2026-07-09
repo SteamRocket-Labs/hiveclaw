@@ -29,7 +29,11 @@ from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
-from app.runtime.ccplus_contracts import DEFAULT_CCPLUS_PERMISSION_MODE, DEFAULT_CCPLUS_WRITABLE_ROOTS, normalize_permission_mode
+from app.runtime.ccplus_contracts import (
+    DEFAULT_CCPLUS_PERMISSION_MODE,
+    DEFAULT_CCPLUS_WRITABLE_ROOTS,
+    normalize_permission_mode,
+)
 from app.services.chat_message_parts import (
     SESSION_NATIVE_EVENT_TYPES,
     build_chunk_event,
@@ -125,6 +129,10 @@ async def _create_runtime_budget_root_run_for_chat(
                 max_background_tasks=getattr(policy, "max_background_tasks", None),
                 max_continuation_wakes=getattr(policy, "max_continuation_wakes", None),
                 max_provider_calls=getattr(policy, "max_provider_calls", None),
+                max_failures=getattr(policy, "max_failures", None),
+                max_needs_reconciliation=getattr(policy, "max_needs_reconciliation", None),
+                max_child_failure_ratio=getattr(policy, "max_child_failure_ratio", None),
+                max_parent_invocations=getattr(policy, "max_parent_invocations", None),
                 policy_snapshot={
                     "policy_id": str(getattr(policy, "id", "")),
                     "scope_type": getattr(policy, "scope_type", None),
@@ -141,6 +149,8 @@ async def _create_runtime_budget_root_run_for_chat(
     except Exception as exc:
         logger.warning("[WebChatRuntime] Runtime budget root creation failed for run {}: {}", run_uuid, exc)
         return None
+
+
 _CHANNEL_DELIVERY_ACTION_HINT_RE = re.compile(
     r"(发给|发送|转发|同步|推送|回传|传回|发回|投递|share|send|forward|deliver|post)",
     re.IGNORECASE,
@@ -354,10 +364,7 @@ def _explicit_channel_delivery_requested(metadata: dict[str, Any], prompt: str |
         )
         if isinstance(part, str) and part.strip()
     )
-    return bool(
-        _CHANNEL_DELIVERY_CHANNEL_HINT_RE.search(text)
-        and _CHANNEL_DELIVERY_ACTION_HINT_RE.search(text)
-    )
+    return bool(_CHANNEL_DELIVERY_CHANNEL_HINT_RE.search(text) and _CHANNEL_DELIVERY_ACTION_HINT_RE.search(text))
 
 
 def _runtime_turn_excluded_tool_names(
@@ -388,7 +395,10 @@ def _active_channel_delivery_target_for_turn(
     session: Any,
     prompt: str | None = None,
 ) -> dict[str, Any] | None:
-    if not (_is_web_origin_turn(metadata, runtime_session_context) and _explicit_channel_delivery_requested(metadata, prompt)):
+    if not (
+        _is_web_origin_turn(metadata, runtime_session_context)
+        and _explicit_channel_delivery_requested(metadata, prompt)
+    ):
         return None
     target = getattr(session, "delivery_target_json", None)
     if not isinstance(target, dict):
@@ -1169,7 +1179,9 @@ async def _apply_active_projection_to_history(
         ]
         if not replacement_messages:
             return history_messages
-        return _dedupe_history_projection([*replacement_messages, *_history_tail_after_projection(history_messages, applied_at)])
+        return _dedupe_history_projection(
+            [*replacement_messages, *_history_tail_after_projection(history_messages, applied_at)]
+        )
 
     if projection_reason == "rewind":
         return await _rewind_projected_history(
@@ -1225,7 +1237,9 @@ def dispatch_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Even
         return False
     cancel_event = cancel_event or asyncio.Event()
     _CANCEL_EVENTS[run_key] = cancel_event
-    task = asyncio.create_task(execute_web_chat_run(run_uuid, cancel_event=cancel_event), name=f"web-chat-run-{run_key}")
+    task = asyncio.create_task(
+        execute_web_chat_run(run_uuid, cancel_event=cancel_event), name=f"web-chat-run-{run_key}"
+    )
     _TASKS[run_key] = task
     task.add_done_callback(lambda _task, run_id=run_key: _TASKS.pop(run_id, None))
     return True
@@ -1421,7 +1435,10 @@ async def start_web_chat_run(
     supplied_metadata = dict(extra_metadata or {})
     turn_id = str(supplied_metadata.get("turn_id") or f"turn-{run_uuid.hex}")
     intent_id = str(supplied_metadata.get("intent_id") or f"intent-{message_id.hex}")
-    source = str(supplied_metadata.get("source") or ("web" if runtime_task_type == WEB_CHAT_TURN_TASK_TYPE else runtime_task_type))
+    source = str(
+        supplied_metadata.get("source")
+        or ("web" if runtime_task_type == WEB_CHAT_TURN_TASK_TYPE else runtime_task_type)
+    )
     inherited_budget_run_id = _uuid_or_none(supplied_metadata.get("budget_run_id"))
     if inherited_budget_run_id is not None:
         budget_run_id = inherited_budget_run_id
@@ -1685,7 +1702,11 @@ async def start_channel_chat_run_from_saved_turn(
         "latest_user_prompt_overrides_history": True,
         "permission_mode": permission_mode,
         "writable_roots": writable_roots,
-        "permission_profile": {"mode": permission_mode, "allowed_tools": allowed_tools, "writable_roots": writable_roots},
+        "permission_profile": {
+            "mode": permission_mode,
+            "allowed_tools": allowed_tools,
+            "writable_roots": writable_roots,
+        },
         **(extra_metadata or {}),
     }
     inherited_budget_run_id = _uuid_or_none(metadata.get("budget_run_id"))
@@ -2083,7 +2104,9 @@ async def _finalize_web_chat_run_with_assistant(
         file_change_paths = _unique_paths(file_change_paths)
         rejected_artifact_paths = _unique_paths(rejected_artifact_paths)
         declared_artifact_paths = _unique_paths(
-            declared_artifact_paths if declared_artifact_paths is not None else [*artifact_paths, *rejected_artifact_paths]
+            declared_artifact_paths
+            if declared_artifact_paths is not None
+            else [*artifact_paths, *rejected_artifact_paths]
         )
         if file_change_paths or rejected_artifact_paths:
             if metadata_json is None:
@@ -2636,10 +2659,7 @@ def _channel_session_permission_prompt_for_tool_call(data: dict[str, Any]) -> st
         request = {}
 
     tool_name = str(
-        request.get("tool_display_name")
-        or request.get("tool_name")
-        or data.get("name")
-        or "requested tool"
+        request.get("tool_display_name") or request.get("tool_name") or data.get("name") or "requested tool"
     )
     permission_request_id = str(request.get("permission_request_id") or "").strip()
     capability = str(request.get("capability") or "").strip()
@@ -3364,10 +3384,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             logger.warning("[WebChatRun] Pending reply injection failed (non-fatal): {}", exc)
 
         if internal_runtime_context_turn and prompt:
-            runtime_suffix = (
-                "Runtime continuation context (system generated, not a user message):\n"
-                f"{prompt}"
-            )
+            runtime_suffix = f"Runtime continuation context (system generated, not a user message):\n{prompt}"
             pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, runtime_suffix) if part)
 
         restart_resume_context = metadata.get("restart_resume_context")
@@ -3679,11 +3696,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         status = (
             "killed"
             if cancel_event.is_set()
-            else (
-                "failed"
-                if plan_mode_terminal_error or is_llm_error_message(assistant_response)
-                else "completed"
-            )
+            else ("failed" if plan_mode_terminal_error or is_llm_error_message(assistant_response) else "completed")
         )
         terminal_reason = _terminal_reason_value_for_web_run(
             status=status,
@@ -3695,6 +3708,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         metadata_update = {
             "cancelled_by_user": bool(cancel_event.is_set()),
             "terminal_reason": terminal_reason,
+            # A4: expose this invocation's token total so the Goal continuation
+            # bridge can charge it against the session goal's token budget.
+            "turn_tokens_used": int(getattr(result, "tokens_used", 0) or 0),
             **_runtime_prompt_metadata_update(runtime_session_context),
         }
         if plan_mode_terminal_error:
@@ -3725,7 +3741,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         file_change_paths = _terminal_file_change_paths_for_turn(runtime_session_context)
         declared_artifact_paths = _declared_terminal_artifact_paths(assistant_response)
         artifact_paths = _terminal_artifact_paths_for_turn(runtime_session_context, assistant_response)
-        rejected_artifact_paths = _rejected_terminal_artifact_paths_for_turn(runtime_session_context, assistant_response)
+        rejected_artifact_paths = _rejected_terminal_artifact_paths_for_turn(
+            runtime_session_context, assistant_response
+        )
         try:
             finalized = await _finalize_web_chat_run_with_assistant(
                 run_uuid=run_uuid,

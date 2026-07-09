@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 MAX_TRIGGERS_PER_AGENT = 20
 VALID_TRIGGER_TYPES = {"cron", "once", "interval", "poll", "on_message", "webhook"}
 VALID_TRIGGER_CLASSES = {"scheduled_job", "event_wait", "system_maintenance"}
+#: B3 — how a fired trigger reaches the agent. ``new_invocation`` (default)
+#: keeps the historical behaviour (each fire starts a fresh trigger_run child
+#: session); ``same_session`` routes the fire into an existing chat session as a
+#: new turn (CC first-gen ``/loop`` cron "塞进当前 session" semantics).
+VALID_DELIVERY_MODES = {"new_invocation", "same_session"}
 EVENT_WAIT_TRIGGER_TYPES = {"poll", "on_message", "webhook"}
 SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
 
@@ -305,6 +310,46 @@ def _validate_trigger_lifecycle_policy(tool_name: str, trigger_type: str, config
     )
 
 
+def _apply_trigger_delivery(tool_name: str, config: dict, arguments: dict) -> str | None:
+    """B3 — normalize the optional ``delivery`` field into the trigger config.
+
+    ``delivery`` may arrive at the top level (``arguments``) or inside
+    ``config``. Absent → default ``new_invocation`` (config left untouched so the
+    default path stays byte-for-byte identical). ``same_session`` requires a
+    ``source_session_id`` — supplied by the runtime (service layer injects the
+    live session), never restated by the model — and stores both on the config
+    so the trigger daemon can route the fire into that chat session. Returns an
+    error envelope string on an invalid mode / missing source, else ``None``."""
+    raw = arguments.get("delivery")
+    if raw is None:
+        raw = config.get("delivery")
+    delivery = str(raw or "").strip()
+    if not delivery:
+        return None
+    if delivery not in VALID_DELIVERY_MODES:
+        return _trigger_error(
+            tool_name,
+            "bad_arguments",
+            f"Invalid delivery '{delivery}'. Valid values: {', '.join(sorted(VALID_DELIVERY_MODES))}.",
+            actionable_hint="Use new_invocation (default) or same_session.",
+        )
+    if delivery == "new_invocation":
+        config["delivery"] = "new_invocation"
+        config.pop("source_session_id", None)
+        return None
+    source_session_id = str(config.get("source_session_id") or arguments.get("source_session_id") or "").strip()
+    if not source_session_id:
+        return _trigger_error(
+            tool_name,
+            "not_configured",
+            "delivery=same_session requires an active chat session to deliver into.",
+            actionable_hint="Create a same_session trigger from within a chat session; the runtime supplies the source session.",
+        )
+    config["delivery"] = "same_session"
+    config["source_session_id"] = source_session_id
+    return None
+
+
 async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     """Create a new trigger for the agent."""
     from app.models.trigger import AgentTrigger
@@ -340,6 +385,9 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     lifecycle_error = _validate_trigger_lifecycle_policy("set_trigger", ttype, config, arguments)
     if lifecycle_error:
         return lifecycle_error
+    delivery_error = _apply_trigger_delivery("set_trigger", config, arguments)
+    if delivery_error:
+        return delivery_error
     if ttype == "on_message":
         if config.get("reply_to_current_sender"):
             config.pop("from_user_name", None)

@@ -231,9 +231,9 @@ async def stage_cc_plugin_import_route(
         package_name=data.package_name,
         ref=data.ref,
         version=data.version,
-        # Local file/directory reads fail open when unbounded; always pin them
-        # to the platform data dir so a tenant admin cannot pull arbitrary
-        # server files into review evidence.
+        # The materializer fails closed without roots; local file/directory
+        # sources are only usable inside the platform data dir, so a tenant
+        # admin cannot pull arbitrary server files into review evidence.
         allowed_roots=[data_root],
     )
 

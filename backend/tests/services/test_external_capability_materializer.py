@@ -479,3 +479,41 @@ async def test_materialize_npm_source_blocks_disallowed_registry():
 
     assert package.status == "blocked"
     assert package.blocking_notes[0]["code"] == "npm_registry_not_allowed"
+
+
+def test_materialize_local_source_fails_closed_when_allowed_roots_missing(tmp_path):
+    """Security default: omitting allowed_roots must block local reads, not
+    silently permit reading any server path (the fail-open only ever escaped
+    testing because every caller passed explicit roots)."""
+    src = tmp_path / "pack"
+    src.mkdir()
+    (src / "SKILL.md").write_text("x", encoding="utf-8")
+
+    package = materialize_local_source(
+        source_path=str(src),
+        source_format="cc_plugin",
+        package_name="local",
+        source_kind="directory",
+        allowed_roots=None,
+    )
+
+    assert package.status == "blocked"
+    assert package.files == []
+    assert package.blocking_notes[0]["code"] == "local_source_outside_allowed_roots"
+
+
+@pytest.mark.asyncio
+async def test_materialize_git_file_url_fails_closed_when_allowed_roots_missing(tmp_path):
+    repo = tmp_path / "upstream"
+    _make_local_git_repo(repo, {"SKILL.md": "# Git skill"})
+
+    package = await materialize_git_source(
+        git_url=f"file://{repo}",
+        source_format="cc_plugin",
+        package_name="git-pack",
+        quarantine_root=tmp_path / "q",
+        allowed_roots=None,
+    )
+
+    assert package.status == "blocked"
+    assert package.blocking_notes[0]["code"] == "git_file_outside_allowed_roots"

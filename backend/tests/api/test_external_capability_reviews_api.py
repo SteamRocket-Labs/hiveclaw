@@ -299,9 +299,9 @@ def test_list_agent_external_extension_catalog_checks_agent_access(monkeypatch):
 def test_stage_cc_plugin_import_api_routes_source_through_adapter(monkeypatch, tmp_path):
     """C4 live entry: the import route must call stage_cc_plugin_import with the
     request session, tenant-scoped quarantine root, and — security-critical —
-    local reads bounded to AGENT_DATA_DIR (allowed_roots must never be None:
-    _within_allowed_roots fails open on None, which would let a tenant admin
-    read arbitrary server files into review evidence)."""
+    local reads bounded to AGENT_DATA_DIR (the materializer fails closed
+    without roots, so the route must scope local sources to the platform data
+    dir rather than to arbitrary server paths)."""
     client, fake_db, current_user = _build_client()
     monkeypatch.setattr(
         external_mod,
@@ -343,7 +343,7 @@ def test_stage_cc_plugin_import_api_routes_source_through_adapter(monkeypatch, t
     assert resp.json() == expected
 
 
-def test_stage_cc_plugin_import_api_requires_tenant(monkeypatch):
+def test_stage_cc_plugin_import_api_requires_tenant():
     client, _fake_db, current_user = _build_client()
     current_user.tenant_id = None
 

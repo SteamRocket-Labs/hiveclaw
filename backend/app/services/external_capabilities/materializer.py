@@ -311,8 +311,11 @@ def _blocked_local_bundle(
 
 
 def _within_allowed_roots(path: Path, allowed_roots: Sequence[Path] | None) -> bool:
+    # Security boundary: no configured roots means no local read is allowed.
+    # Failing open here would let any caller that omits allowed_roots read
+    # arbitrary server paths into review evidence.
     if not allowed_roots:
-        return True
+        return False
     resolved = path.resolve()
     for root in allowed_roots:
         try:

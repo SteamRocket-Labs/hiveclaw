@@ -261,74 +261,23 @@ def test_runtime_prompt_manifest_records_selection_reasons_source_hashes_and_bud
     assert budget_decisions["ctx:skill:skill_catalog"]["budget_chars"] == 80
 
 
-def test_runtime_prompt_manifest_records_activation_qkv_trace_without_value_bodies() -> None:
+def test_runtime_prompt_manifest_counts_memory_values_without_embedding_bodies() -> None:
     from app.memory.types import MemoryItem, MemoryKind
     from app.runtime.turn_envelope import build_runtime_prompt_assembly_manifest
 
-    query = {
-        "schema": "hive.ccplus.activation_query.v1",
-        "query_id": "aq:test-qkv",
-        "raw_prompt": "请回忆 memory runtime 的决策",
-        "session_id": "session-qkv",
-        "turn_id": "turn-qkv",
-        "intent_id": "intent-qkv",
-        "agent_id": "agent-qkv",
-        "agent_role": "engineer",
-        "owner_context": {"owner_id": "owner-1"},
-        "task_profile": {"name": "memory_recall", "complexity": "medium"},
-        "intent": "recall",
-        "entities": [{"kind": "topic", "value": "memory runtime"}],
-        "concepts": ["memory", "runtime"],
-        "temporal_hints": [{"kind": "relative", "value": "之前"}],
-        "referenced_files": [],
-        "risk_level": "low",
-        "memory_need": "high",
-        "knowledge_need": "medium",
-        "skill_need": "low",
-        "tool_need": "low",
-        "candidate_lanes": ["memory", "skill"],
-        "budget_policy": {"max_candidates": 4},
-        "parse_trace": [{"source": "mechanical", "field": "concepts"}],
-    }
-    selected_ref = {"candidate_id": "agent_memory:t3_knowledge:memory-runtime", "kind": "agent_memory"}
-    suppressed_ref = {"candidate_id": "skill:legacy-pack", "kind": "skill"}
-    router_output = {
-        "schema": "hive.ccplus.activation_router_output.v1",
-        "query_id": "aq:test-qkv",
-        "top_activation_candidates": [
-            {
-                "candidate_id": selected_ref["candidate_id"],
-                "candidate_kind": "agent_memory",
-                "candidate_ref": selected_ref,
-                "value_pointer": {"loader": "knowledge_page", "source": "memory/knowledge/memory-runtime.md"},
-                "score": {"total_score": 0.91, "reasons": ["semantic_match"]},
-            }
-        ],
-        "suppressed_activation_candidates": [
-            {
-                "candidate_id": suppressed_ref["candidate_id"],
-                "candidate_kind": "skill",
-                "candidate_ref": suppressed_ref,
-                "hard_mask": {"reason": "policy_denied", "policy_ref": "activation_router.denied_candidate_kinds"},
-            }
-        ],
-        "suppression_reasons": {
-            "policy_denied": {"count": 1, "policy_refs": ["activation_router.denied_candidate_kinds"]}
-        },
-    }
     loaded_values = [
         MemoryItem(
             kind=MemoryKind.SEMANTIC,
-            content="SELECTED MEMORY BODY MUST NOT ENTER TRACE",
+            content="SELECTED MEMORY BODY MUST NOT ENTER MANIFEST",
             score=0.91,
             source="memory/knowledge/memory-runtime.md",
-            metadata={"candidate_ref": selected_ref, "value_pointer": {"loader": "knowledge_page"}},
+            metadata={"value_pointer": {"loader": "knowledge_page"}},
         )
     ]
 
     manifest = build_runtime_prompt_assembly_manifest(
-        turn_id="turn-qkv",
-        session_id="session-qkv",
+        turn_id="turn-mem",
+        session_id="session-mem",
         frozen_prefix="## Identity\nAgent.",
         dynamic_suffix="## Memory\nselected summary",
         provider_system_prompt="## Identity\nAgent.",
@@ -336,20 +285,9 @@ def test_runtime_prompt_manifest_records_activation_qkv_trace_without_value_bodi
         context_budget={},
         model_window=1000,
         tools_for_llm=[],
-        activation_query=query,
-        activation_router_output=router_output,
         loaded_memory_values=loaded_values,
     )
 
-    trace = manifest["activation_qkv_trace"]
-
-    assert trace["schema"] == "hive.ccplus.activation_qkv_trace.v1"
-    assert trace["query"]["query_id"] == "aq:test-qkv"
-    assert trace["query"]["query_ref"]["kind"] == "activation_query"
-    assert trace["query"]["candidate_lanes"] == ["memory", "skill"]
-    assert trace["keys"]["top_candidate_refs"] == [selected_ref]
-    assert trace["keys"]["suppressed_candidate_refs"] == [suppressed_ref]
-    assert trace["keys"]["suppression_reasons"]["policy_denied"]["count"] == 1
-    assert trace["values"]["loaded_memory_values"][0]["source"] == "memory/knowledge/memory-runtime.md"
-    assert trace["values"]["loaded_memory_values"][0]["candidate_ref"] == selected_ref
-    assert "SELECTED MEMORY BODY MUST NOT ENTER TRACE" not in json.dumps(trace, ensure_ascii=False)
+    assert "activation_qkv_trace" not in manifest
+    assert manifest["context_usage_ledger"]["selected_memory_value_count"] == 1
+    assert "SELECTED MEMORY BODY MUST NOT ENTER MANIFEST" not in json.dumps(manifest, ensure_ascii=False)

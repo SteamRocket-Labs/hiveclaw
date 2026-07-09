@@ -25,11 +25,8 @@ class _Provider:
 
 
 @pytest.mark.asyncio
-async def test_invoker_records_personal_kb_candidates_through_activation_router() -> None:
-    from app.runtime.invoker import (
-        _build_activation_query_for_request,
-        _record_knowledge_activation_for_request,
-    )
+async def test_invoker_records_personal_kb_candidates_and_builds_hint() -> None:
+    from app.runtime.invoker import _record_knowledge_activation_for_request
 
     tenant_id = uuid.uuid4()
     owner_id = uuid.uuid4()
@@ -48,14 +45,11 @@ async def test_invoker_records_personal_kb_candidates_through_activation_router(
         session_context=session_context,
         memory_session_id="sess-1",
     )
-    activation_query = _build_activation_query_for_request(request)
 
-    hint = await _record_knowledge_activation_for_request(request, activation_query, provider=_Provider())
+    hint = await _record_knowledge_activation_for_request(request, provider=_Provider())
 
     state = session_context.metadata["runtime_assembly_state"]
     assert state["activation_candidates"][0]["candidate_kind"] == "knowledge_base"
-    assert state["top_activation_candidates"][0]["candidate_kind"] == "knowledge_base"
-    assert state["activation_router_output"]["query_id"] == activation_query["query_id"]
     assert hint is not None
     assert "## Personal Knowledge Hint" in hint
     assert "Retrieval notes" in hint

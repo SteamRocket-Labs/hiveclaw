@@ -1,4 +1,4 @@
-"""Activation candidate contracts for the external attention router."""
+"""Neutral activation-candidate contracts shared by KB, skill, and subagent surfaces."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from typing import Any, Mapping
 
 ACTIVATION_CANDIDATE_SCHEMA = "hive.ccplus.activation_candidate.v1"
 ACTIVATION_SCORE_SCHEMA = "hive.ccplus.activation_score.v1"
-ACTIVATION_HARD_MASK_SCHEMA = "hive.ccplus.activation_hard_mask.v1"
 ACTIVATION_SURFACE_SCHEMA = "hive.ccplus.activation_surface.v1"
 
 
@@ -117,45 +116,6 @@ def _weighted_total(head_scores: dict[str, float], weights: dict[str, float]) ->
 
 
 @dataclass(frozen=True, slots=True)
-class ActivationHardMask:
-    allowed: bool = True
-    reason: str = "allowed"
-    judge: str = "platform_gate"
-    policy_ref: str = ""
-    details: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "allowed", bool(self.allowed))
-        object.__setattr__(self, "reason", _text(self.reason, fallback="allowed"))
-        object.__setattr__(self, "judge", _text(self.judge, fallback="platform_gate"))
-        object.__setattr__(self, "policy_ref", _text(self.policy_ref))
-        object.__setattr__(self, "details", _dict_payload(self.details))
-
-    def to_manifest(self) -> dict[str, Any]:
-        return {
-            "schema": ACTIVATION_HARD_MASK_SCHEMA,
-            "allowed": self.allowed,
-            "reason": self.reason,
-            "judge": self.judge,
-            "policy_ref": self.policy_ref,
-            "details": dict(self.details),
-        }
-
-    @classmethod
-    def from_manifest(cls, manifest: Mapping[str, Any]) -> "ActivationHardMask":
-        schema = manifest.get("schema")
-        if schema and schema != ACTIVATION_HARD_MASK_SCHEMA:
-            raise ValueError(f"Unsupported activation hard mask schema: {schema!r}")
-        return cls(
-            allowed=bool(manifest.get("allowed", True)),
-            reason=_text(manifest.get("reason"), fallback="allowed"),
-            judge=_text(manifest.get("judge"), fallback="platform_gate"),
-            policy_ref=_text(manifest.get("policy_ref")),
-            details=_dict_payload(manifest.get("details")),
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class ActivationSurface:
     surface_kind: str = "hint"
     preview: str = ""
@@ -199,7 +159,6 @@ class ActivationCandidate:
     surface: ActivationSurface | Mapping[str, Any] = field(default_factory=ActivationSurface)
     source_refs: tuple[str, ...] = ()
     score: ActivationScore | Mapping[str, Any] | None = None
-    hard_mask: ActivationHardMask | Mapping[str, Any] = field(default_factory=ActivationHardMask)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -207,11 +166,6 @@ class ActivationCandidate:
         score = self.score
         if score is not None and not isinstance(score, ActivationScore):
             score = ActivationScore.from_manifest(score)
-        hard_mask = (
-            self.hard_mask
-            if isinstance(self.hard_mask, ActivationHardMask)
-            else ActivationHardMask.from_manifest(self.hard_mask)
-        )
         source_refs = _string_tuple(self.source_refs) or surface.source_refs
         object.__setattr__(self, "candidate_kind", _text(self.candidate_kind, fallback="unknown"))
         object.__setattr__(self, "candidate_ref", _dict_payload(self.candidate_ref))
@@ -220,7 +174,6 @@ class ActivationCandidate:
         object.__setattr__(self, "surface", surface)
         object.__setattr__(self, "source_refs", source_refs)
         object.__setattr__(self, "score", score)
-        object.__setattr__(self, "hard_mask", hard_mask)
         object.__setattr__(self, "metadata", _dict_payload(self.metadata))
 
     @property
@@ -236,10 +189,6 @@ class ActivationCandidate:
         }
         return f"{self.candidate_kind}:{activation_candidate_hash(payload)[:16]}"
 
-    @property
-    def is_allowed(self) -> bool:
-        return self.hard_mask.allowed
-
     def to_manifest(self) -> dict[str, Any]:
         return {
             "schema": ACTIVATION_CANDIDATE_SCHEMA,
@@ -251,7 +200,6 @@ class ActivationCandidate:
             "surface": self.surface.to_manifest(),
             "source_refs": list(self.source_refs),
             "score": self.score.to_manifest() if self.score else None,
-            "hard_mask": self.hard_mask.to_manifest(),
             "metadata": dict(self.metadata),
         }
 
@@ -267,18 +215,15 @@ class ActivationCandidate:
             surface=ActivationSurface.from_manifest(_dict_payload(manifest.get("surface"))),
             source_refs=_string_tuple(manifest.get("source_refs")),
             score=ActivationScore.from_manifest(_dict_payload(manifest.get("score"))) if manifest.get("score") else None,
-            hard_mask=ActivationHardMask.from_manifest(_dict_payload(manifest.get("hard_mask"))),
             metadata=_dict_payload(manifest.get("metadata")),
         )
 
 
 __all__ = [
     "ACTIVATION_CANDIDATE_SCHEMA",
-    "ACTIVATION_HARD_MASK_SCHEMA",
     "ACTIVATION_SCORE_SCHEMA",
     "ACTIVATION_SURFACE_SCHEMA",
     "ActivationCandidate",
-    "ActivationHardMask",
     "ActivationScore",
     "ActivationSurface",
     "activation_candidate_hash",

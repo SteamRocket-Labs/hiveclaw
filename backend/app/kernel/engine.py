@@ -1478,12 +1478,10 @@ def _record_tool_result_ledger_entry(
 def _tool_activation_context(request: InvocationRequest) -> dict[str, str]:
     session = request.session_context
     metadata = session.metadata if session is not None and isinstance(session.metadata, dict) else {}
-    activation_query = metadata.get("activation_query") if isinstance(metadata.get("activation_query"), dict) else {}
     return {
         "session_id": str(request.memory_session_id or getattr(session, "session_id", "") or ""),
-        "turn_id": str(activation_query.get("turn_id") or metadata.get("turn_id") or ""),
-        "intent_id": str(activation_query.get("intent_id") or metadata.get("intent_id") or ""),
-        "query_id": str(activation_query.get("query_id") or ""),
+        "turn_id": str(metadata.get("turn_id") or ""),
+        "intent_id": str(metadata.get("intent_id") or ""),
     }
 
 
@@ -1511,11 +1509,8 @@ def _tool_activation_candidate_ref(request: InvocationRequest, tool_name: str) -
     metadata = session.metadata if session is not None and isinstance(session.metadata, dict) else {}
     pools: list[Any] = [
         metadata.get("available_deferred_tool_candidates"),
-        metadata.get("top_activation_candidates"),
         metadata.get("activation_candidates"),
     ]
-    router_output = metadata.get("activation_router_output") if isinstance(metadata.get("activation_router_output"), dict) else {}
-    pools.extend([router_output.get("top_activation_candidates"), router_output.get("suppressed_activation_candidates")])
     for pool in pools:
         if not isinstance(pool, list | tuple):
             continue
@@ -1568,7 +1563,6 @@ def _record_tool_activation_event(
         session_id=context["session_id"],
         turn_id=context["turn_id"],
         intent_id=context["intent_id"],
-        query_id=context["query_id"],
         candidate_id=str(candidate_ref.get("candidate_id") or ""),
         candidate_ref=candidate_ref,
         feedback=feedback,
@@ -3548,17 +3542,6 @@ class AgentKernel:
                     *_build_runtime_attachment_sections(request.agent_id, session_ctx),
                 ]
 
-            _activation_query = (
-                session_ctx.metadata.get("activation_query")
-                if session_ctx is not None and isinstance(session_ctx.metadata, dict)
-                else None
-            )
-            _activation_router_output = (
-                session_ctx.metadata.get("activation_router_output")
-                if session_ctx is not None and isinstance(session_ctx.metadata, dict)
-                else None
-            )
-
             # P0.4 Observability: prompt cache hit/miss
             logger.info(
                 "[Kernel] Prompt prefix cache %s (agent=%s)",
@@ -3599,9 +3582,7 @@ class AgentKernel:
                     user_name=current_user_name or "",
                     channel=session_ctx.channel if session_ctx else "",
                     source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
-                    agent_name=request.agent_name,
-                    activation_router_output=_activation_router_output,
-                    context_section_ledger=dynamic_context_section_ledger,
+                    agent_name=request.agent_name,                    context_section_ledger=dynamic_context_section_ledger,
                 )
                 combined_prompt = assemble_runtime_prompt(
                     _cached_prefix,
@@ -3639,9 +3620,7 @@ class AgentKernel:
                     user_name=current_user_name or "",
                     channel=session_ctx.channel if session_ctx else "",
                     source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
-                    agent_name=request.agent_name,
-                    activation_router_output=_activation_router_output,
-                    context_section_ledger=dynamic_context_section_ledger,
+                    agent_name=request.agent_name,                    context_section_ledger=dynamic_context_section_ledger,
                 )
                 combined_prompt = assemble_runtime_prompt(
                     prompt_prefix,
@@ -3701,10 +3680,7 @@ class AgentKernel:
                     mcp_server_refs=list(session_ctx.metadata.get("mcp_server_refs") or []),
                     hook_added_context=hook_added_context,
                     available_agent_types=list(session_ctx.metadata.get("available_agent_types") or []),
-                    messages=request.messages,
-                    activation_query=_activation_query,
-                    activation_router_output=_activation_router_output,
-                )
+                    messages=request.messages,                )
                 prompt_manifest["dynamic_context_section_ledger"] = {
                     "schema": "hive.ccplus.dynamic_context_section_ledger.v1",
                     "sections": list(dynamic_context_section_ledger),
@@ -4520,9 +4496,7 @@ class AgentKernel:
                                             user_name=current_user_name or "",
                                             channel=session_ctx.channel if session_ctx else "",
                                             source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
-                                            agent_name=request.agent_name,
-                                            activation_router_output=_activation_router_output,
-                                        )
+                                            agent_name=request.agent_name,                                        )
                                         _ptl_prefix = (
                                             session_ctx.prompt_prefix if session_ctx else None
                                         ) or prompt_prefix
@@ -4620,9 +4594,7 @@ class AgentKernel:
                                             user_name=current_user_name or "",
                                             channel=session_ctx.channel if session_ctx else "",
                                             source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
-                                            agent_name=request.agent_name,
-                                            activation_router_output=_activation_router_output,
-                                        )
+                                            agent_name=request.agent_name,                                        )
                                         _ptl_prefix = (
                                             session_ctx.prompt_prefix if session_ctx else None
                                         ) or prompt_prefix
@@ -4714,9 +4686,7 @@ class AgentKernel:
                                                 source=(getattr(session_ctx, "source", "") or "")
                                                 if session_ctx
                                                 else "",
-                                                agent_name=request.agent_name,
-                                                activation_router_output=_activation_router_output,
-                                            )
+                                                agent_name=request.agent_name,                                            )
                                             _ptl_prefix = (
                                                 session_ctx.prompt_prefix if session_ctx else None
                                             ) or prompt_prefix
@@ -5486,9 +5456,7 @@ class AgentKernel:
                                                     user_name=current_user_name or "",
                                                     channel=session_context.channel,
                                                     source=getattr(session_context, "source", "") or "",
-                                                    agent_name=request.agent_name,
-                                                    activation_router_output=_activation_router_output,
-                                                ),
+                                                    agent_name=request.agent_name,                                                ),
                                                 context_window_tokens=_ctx_window,
                                                 budget_profile=budget_profile,
                                             )

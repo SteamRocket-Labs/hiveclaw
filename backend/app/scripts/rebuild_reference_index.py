@@ -49,7 +49,6 @@ def rebuild_reference_indexes(
                 "packages": rebuilt.packages,
                 "label_axis_rows": rebuilt.label_axis_rows,
                 "debt_history_rows": rebuilt.debt_history_rows,
-                "activation_key_rows": rebuilt.activation_key_rows,
             }
         )
     return {

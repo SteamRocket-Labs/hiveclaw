@@ -23,11 +23,9 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
-from app.memory.explicit_overlay import build_explicit_overlay_activation_keys, load_explicit_overlay_entries
+from app.memory.explicit_overlay import load_explicit_overlay_entries
 from app.memory.md_store import extract_t3_xml_blocks, parse_t3_xml_block
-from app.memory.plane_read import list_knowledge_pages, list_profile_entries
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +43,6 @@ class ReferenceIndexRebuildReport:
     packages: int
     label_axis_rows: int = 0
     debt_history_rows: int = 0
-    activation_key_rows: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +89,6 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
 
     label_rows = _label_axis_rows(packages)
     debt_rows = _debt_history_rows(root, agent_id)
-    activation_key_rows = _activation_key_rows(root, agent_id, label_rows=label_rows)
 
     resolution_rows: list[tuple[str, str, str, str]] = []
     for package in packages:
@@ -135,12 +131,6 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
             " active_explicit_entries INTEGER NOT NULL, oldest_explicit_age_hours REAL,"
             " stalled INTEGER NOT NULL, stall_reasons TEXT NOT NULL)"
         )
-        conn.execute(
-            "CREATE TABLE activation_keys (candidate_ref TEXT NOT NULL, candidate_kind TEXT NOT NULL,"
-            " scope TEXT NOT NULL, key_axis TEXT NOT NULL, key_value TEXT NOT NULL,"
-            " source_ref TEXT NOT NULL, confidence REAL NOT NULL, created_at TEXT NOT NULL,"
-            " PRIMARY KEY (candidate_ref, key_axis, key_value, source_ref))"
-        )
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         conn.executemany("INSERT OR IGNORE INTO refs VALUES (?, ?, ?)", rows)
         conn.executemany("INSERT OR REPLACE INTO id_resolution VALUES (?, ?, ?, ?)", resolution_rows)
@@ -150,7 +140,6 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
             "INSERT OR REPLACE INTO consolidation_debt_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             debt_rows,
         )
-        conn.executemany("INSERT OR IGNORE INTO activation_keys VALUES (?, ?, ?, ?, ?, ?, ?, ?)", activation_key_rows)
         conn.execute(
             "INSERT OR REPLACE INTO meta VALUES ('rebuilt_at', ?)",
             (datetime.now(UTC).isoformat(),),
@@ -162,7 +151,6 @@ def rebuild_reference_index(*, agent_id: uuid.UUID | str, data_root: Path | str)
         packages=len(packages),
         label_axis_rows=len(label_rows),
         debt_history_rows=len(debt_rows),
-        activation_key_rows=len(activation_key_rows),
     )
 
 
@@ -178,103 +166,6 @@ def reference_counts(*, agent_id: uuid.UUID | str, data_root: Path | str) -> dic
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute("SELECT source_ref, COUNT(DISTINCT referrer) FROM refs GROUP BY source_ref").fetchall()
     return {str(ref): int(count) for ref, count in rows}
-
-
-def query_activation_keys(
-    *,
-    agent_id: uuid.UUID | str,
-    data_root: Path | str,
-    candidate_kind: str | None = None,
-    scope: str | None = None,
-    key_axis: str | None = None,
-    key_value: str | None = None,
-    limit: int = 100,
-) -> list[dict[str, Any]]:
-    db_path = _ensure_index(agent_id=agent_id, data_root=data_root)
-    columns = "candidate_ref, candidate_kind, scope, key_axis, key_value, source_ref, confidence, created_at"
-    clauses: list[str] = []
-    params: list[Any] = []
-    for column, value in (
-        ("candidate_kind", candidate_kind),
-        ("scope", scope),
-        ("key_axis", key_axis),
-        ("key_value", key_value),
-    ):
-        cleaned = str(value or "").strip()
-        if cleaned:
-            clauses.append(f"{column} = ?")
-            params.append(cleaned)
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    sql = (
-        f"SELECT {columns} FROM activation_keys{where} "
-        "ORDER BY confidence DESC, created_at DESC, candidate_ref ASC LIMIT ?"
-    )
-    params.append(max(1, int(limit or 100)))
-    try:
-        with sqlite3.connect(db_path) as conn:
-            if not _table_exists(conn, "activation_keys"):
-                raise sqlite3.OperationalError("no such table: activation_keys")
-            rows = conn.execute(sql, params).fetchall()
-    except sqlite3.OperationalError as exc:
-        if "activation_keys" not in str(exc):
-            raise
-        rebuild_reference_index(agent_id=agent_id, data_root=data_root)
-        with sqlite3.connect(db_path) as conn:
-            rows = conn.execute(sql, params).fetchall()
-    return [
-        {
-            "candidate_ref": str(row[0]),
-            "candidate_kind": str(row[1]),
-            "scope": str(row[2]),
-            "key_axis": str(row[3]),
-            "key_value": str(row[4]),
-            "source_ref": str(row[5]),
-            "confidence": float(row[6]),
-            "created_at": str(row[7] or ""),
-        }
-        for row in rows
-    ]
-
-
-def candidate_refs_for_keys(
-    *,
-    agent_id: uuid.UUID | str,
-    data_root: Path | str,
-    keys: dict[str, str | list[str] | tuple[str, ...] | set[str] | frozenset[str]],
-    scope: str | None = None,
-    candidate_kind: str | None = None,
-    limit: int = 50,
-) -> list[str]:
-    groups: list[tuple[str, set[str]]] = []
-    for axis, raw_values in keys.items():
-        if isinstance(raw_values, str):
-            values = {raw_values.strip()} if raw_values.strip() else set()
-        else:
-            values = {str(value).strip() for value in raw_values if str(value).strip()}
-        cleaned_axis = str(axis or "").strip()
-        if cleaned_axis and values:
-            groups.append((cleaned_axis, values))
-    if not groups:
-        return []
-    rows = query_activation_keys(
-        agent_id=agent_id,
-        data_root=data_root,
-        candidate_kind=candidate_kind,
-        scope=scope,
-        limit=max(1000, int(limit or 50) * 20),
-    )
-    matched_groups: dict[str, set[int]] = {}
-    confidence: dict[str, float] = {}
-    for row in rows:
-        for index, (axis, values) in enumerate(groups):
-            if row["key_axis"] == axis and row["key_value"] in values:
-                ref = row["candidate_ref"]
-                matched_groups.setdefault(ref, set()).add(index)
-                confidence[ref] = max(confidence.get(ref, 0.0), float(row["confidence"]))
-    required = len(groups)
-    refs = [ref for ref, indexes in matched_groups.items() if len(indexes) == required]
-    refs.sort(key=lambda ref: (-confidence.get(ref, 0.0), ref))
-    return refs[: max(1, int(limit or 50))]
 
 
 def resolve_ref(*, agent_id: uuid.UUID | str, data_root: Path | str, ref: str) -> ResolvedRef | None:
@@ -405,11 +296,6 @@ def _ensure_index(*, agent_id: uuid.UUID | str, data_root: Path | str) -> Path:
     if not db_path.exists():
         rebuild_reference_index(agent_id=agent_id, data_root=data_root)
     return db_path
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)).fetchone()
-    return row is not None
 
 
 def _scan_packages(root: Path, agent_id: uuid.UUID | str) -> list[dict]:
@@ -660,162 +546,6 @@ def _debt_history_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple]:
             )
         )
     return rows
-
-
-_ACTIVATION_AXIS_ALIASES = {
-    "categories": "category",
-    "concepts": "concept",
-    "target_hints": "target_hint",
-    "statuses": "status",
-    "names": "name",
-    "risk_flags": "risk_flag",
-    "aliases": "alias",
-    "tags": "tag",
-}
-
-
-def _activation_key_rows(
-    root: Path,
-    agent_id: uuid.UUID | str,
-    *,
-    label_rows: list[tuple[str, str, str, str, str]] | None = None,
-) -> list[tuple[str, str, str, str, str, str, float, str]]:
-    rows: list[tuple[str, str, str, str, str, str, float, str]] = []
-    rows.extend(_legacy_t2_activation_key_rows(label_rows or []))
-    rows.extend(_t3_activation_key_rows(root, agent_id))
-    for entry in load_explicit_overlay_entries(root, agent_id):
-        if entry.status != "active":
-            continue
-        rows.extend(_flatten_activation_keys(build_explicit_overlay_activation_keys(entry)))
-    return rows
-
-
-def _legacy_t2_activation_key_rows(
-    label_rows: list[tuple[str, str, str, str, str]],
-) -> list[tuple[str, str, str, str, str, str, float, str]]:
-    rows: list[tuple[str, str, str, str, str, str, float, str]] = []
-    for package_ref, _session_id, axis, value, created_at in label_rows:
-        cleaned_ref = str(package_ref or "").strip()
-        cleaned_axis = str(axis or "").strip()
-        cleaned_value = str(value or "").strip()
-        if not cleaned_ref or not cleaned_axis or not cleaned_value:
-            continue
-        rows.append(
-            (
-                f"agent_memory:t2_package:{cleaned_ref}",
-                "agent_memory",
-                "t2_package",
-                cleaned_axis,
-                cleaned_value,
-                cleaned_ref,
-                0.55,
-                str(created_at or ""),
-            )
-        )
-    return rows
-
-
-def _t3_activation_key_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str, str, str, str, str, str, float, str]]:
-    rows: list[tuple[str, str, str, str, str, str, float, str]] = []
-    for entry in list_profile_entries(root, agent_id):
-        entry_id = str(entry.get("id") or "").strip()
-        if not entry_id:
-            continue
-        source = str(entry.get("source") or "").strip()
-        rows.extend(
-            _flatten_activation_keys(
-                {
-                    "candidate_kind": "agent_memory",
-                    "candidate_ref": {
-                        "candidate_id": f"agent_memory:t3_profile:{entry_id}",
-                        "kind": "agent_memory",
-                        "source_type": "t3_profile",
-                    },
-                    "key_features": {
-                        "entry_id": [entry_id],
-                        "heading": [str(entry.get("heading") or "").strip()],
-                        "aliases": entry.get("aliases") or [],
-                        "tags": entry.get("tags") or [],
-                        "lifecycle": [str(entry.get("lifecycle") or "active").strip()],
-                    },
-                    "source_refs": [source],
-                },
-                confidence=0.7,
-            )
-        )
-    for page in list_knowledge_pages(root, agent_id):
-        page_id = str(page.get("id") or "").strip()
-        if not page_id:
-            continue
-        source = str(page.get("source") or "").strip()
-        scope = "t3_milestone" if page.get("kind") == "milestone" else "t3_knowledge"
-        rows.extend(
-            _flatten_activation_keys(
-                {
-                    "candidate_kind": "agent_memory",
-                    "candidate_ref": {
-                        "candidate_id": f"agent_memory:{scope}:{page_id}",
-                        "kind": "agent_memory",
-                        "source_type": scope,
-                    },
-                    "key_features": {
-                        "page_id": [page_id],
-                        "title": [str(page.get("title") or page_id).strip()],
-                        "aliases": page.get("aliases") or [],
-                        "tags": page.get("tags") or [],
-                        "lifecycle": [str(page.get("lifecycle") or "active").strip()],
-                    },
-                    "source_refs": [source],
-                },
-                confidence=0.7,
-            )
-        )
-    return rows
-
-
-def _flatten_activation_keys(keys: dict, *, confidence: float = 1.0) -> list[tuple[str, str, str, str, str, str, float, str]]:
-    candidate_ref = keys.get("candidate_ref") if isinstance(keys.get("candidate_ref"), dict) else {}
-    candidate_id = str(candidate_ref.get("candidate_id") or "").strip()
-    candidate_kind = str(keys.get("candidate_kind") or candidate_ref.get("kind") or "").strip()
-    scope = str(candidate_ref.get("source_type") or candidate_ref.get("kind") or "").strip()
-    if not candidate_id or not candidate_kind or not scope:
-        return []
-
-    key_features = keys.get("key_features") if isinstance(keys.get("key_features"), dict) else {}
-    created_at = str(key_features.get("created_at") or keys.get("created_at") or "").strip()
-    source_refs = [str(ref).strip() for ref in keys.get("source_refs") or () if str(ref).strip()] or [""]
-    rows: list[tuple[str, str, str, str, str, str, float, str]] = []
-    for raw_axis, raw_values in key_features.items():
-        axis = _activation_axis(raw_axis)
-        if axis in {"created_at"}:
-            continue
-        for value in _activation_values(raw_values):
-            for source_ref in source_refs:
-                rows.append((candidate_id, candidate_kind, scope, axis, value, source_ref, confidence, created_at))
-    return rows
-
-
-def _activation_axis(raw_axis: object) -> str:
-    axis = str(raw_axis or "").strip()
-    return _ACTIVATION_AXIS_ALIASES.get(axis, axis)
-
-
-def _activation_values(raw_values: object) -> list[str]:
-    if raw_values is None:
-        return []
-    if isinstance(raw_values, list | tuple | set | frozenset):
-        values = list(raw_values)
-    else:
-        values = [raw_values]
-    result: list[str] = []
-    for value in values:
-        if isinstance(value, dict):
-            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        else:
-            text = str(value or "").strip()
-        if text:
-            result.append(text)
-    return result
 
 
 def _explicit_reference_rows(root: Path, agent_id: uuid.UUID | str) -> list[tuple[str, str, str]]:

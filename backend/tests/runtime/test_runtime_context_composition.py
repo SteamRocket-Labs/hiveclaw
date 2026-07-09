@@ -143,83 +143,22 @@ def test_runtime_context_attaches_runtime_assembly_state() -> None:
     assert session.metadata["dynamic_context_section_ledger"] == {"schema": "sections", "sections": []}
 
 
-def test_runtime_assembly_state_mirrors_activation_query_candidates_and_router_output() -> None:
+def test_runtime_assembly_state_mirrors_activation_candidates() -> None:
     from app.runtime.activation_candidates import ActivationCandidate, ActivationScore
-    from app.runtime.activation_query import ActivationQuery
 
     session = SessionContext(session_id="activation-assembly")
     state = ensure_runtime_assembly_state(session)
-    query = ActivationQuery(
-        raw_prompt="Recall runtime memory decisions.",
-        session_id="activation-assembly",
-        turn_id="turn-1",
-        intent_id="intent-1",
-        candidate_lanes=("memory", "skill"),
-        parse_trace=[{"source": "mechanical", "field": "candidate_lanes"}],
-    )
     candidate = ActivationCandidate(
         candidate_kind="agent_memory",
         candidate_ref={"candidate_id": "agent_memory:t3:v1/abcdef", "kind": "agent_memory"},
         score=ActivationScore(head_scores={"semantic": 0.9}, reasons=("semantic_match",)),
     )
-    router_output = {
-        "schema": "hive.ccplus.activation_router_output.v1",
-        "query_id": query.query_id,
-        "top_activation_candidates": [candidate.to_manifest()],
-        "suppressed_activation_candidates": [],
-    }
 
-    state.record_activation_query(query)
     state.record_activation_candidates([candidate.to_manifest()])
-    state.record_activation_router_output(router_output)
 
     metadata_state = session.metadata["runtime_assembly_state"]
-    assert session.metadata["activation_query"] == query.to_manifest()
-    assert session.metadata["activation_lanes"] == ["memory", "skill"]
-    assert session.metadata["activation_parse_trace"] == [{"source": "mechanical", "field": "candidate_lanes"}]
     assert session.metadata["activation_candidates"] == [candidate.to_manifest()]
-    assert session.metadata["activation_router_output"] == router_output
-    assert metadata_state["activation_query"] == query.to_manifest()
     assert metadata_state["activation_candidates"] == [candidate.to_manifest()]
-    assert metadata_state["top_activation_candidates"] == [candidate.to_manifest()]
-
-
-def test_runtime_assembly_state_records_activation_router_output_object() -> None:
-    from app.runtime.activation_candidates import ActivationCandidate
-    from app.runtime.activation_router import ActivationRouterContext, route_activation_candidates
-    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
-
-    session = SessionContext(session_id="activation-router-object")
-    state = ensure_runtime_assembly_state(session)
-    principal_stack = PrincipalStack(
-        company=Principal(role=PrincipalRole.COMPANY, id="company-1"),
-        direct_owner=Principal(role=PrincipalRole.OWNER, id="owner-1"),
-        current_user=Principal(role=PrincipalRole.CURRENT_USER, id="user-2"),
-    )
-    allowed = ActivationCandidate(
-        candidate_kind="agent_memory",
-        candidate_ref={"candidate_id": "agent_memory:t3:v1/allowed", "kind": "agent_memory"},
-        metadata={"acl_scope": "company", "sensitivity": "PL1_public"},
-    )
-    denied = ActivationCandidate(
-        candidate_kind="agent_memory",
-        candidate_ref={"candidate_id": "agent_memory:t3:v1/denied", "kind": "agent_memory"},
-        metadata={"acl_scope": "owner", "sensitivity": "PL1_public"},
-    )
-    router_output = route_activation_candidates(
-        [allowed, denied],
-        context=ActivationRouterContext(principal_stack=principal_stack, query_id="aq:test"),
-    )
-
-    state.record_activation_router_output(router_output)
-
-    manifest = router_output.to_manifest()
-    metadata_state = session.metadata["runtime_assembly_state"]
-    assert session.metadata["activation_router_output"] == manifest
-    assert session.metadata["top_activation_candidates"] == manifest["top_activation_candidates"]
-    assert session.metadata["suppressed_activation_candidates"] == manifest["suppressed_activation_candidates"]
-    assert metadata_state["activation_router_output"] == manifest
-    assert metadata_state["top_activation_candidates"] == manifest["top_activation_candidates"]
 
 
 def test_tool_result_ledger_mirrors_into_runtime_assembly_state() -> None:

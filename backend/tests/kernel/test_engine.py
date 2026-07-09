@@ -1676,12 +1676,8 @@ async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
     session = SessionContext(session_id="session-ledger")
-    session.metadata["activation_query"] = {
-        "schema": "hive.ccplus.activation_query.v1",
-        "query_id": "aq:tool-success",
-        "turn_id": "turn-tool-success",
-        "intent_id": "intent-tool-success",
-    }
+    session.metadata["turn_id"] = "turn-tool-success"
+    session.metadata["intent_id"] = "intent-tool-success"
     session.metadata["available_deferred_tool_candidates"] = [
         {
             "name": "web_search",
@@ -1727,7 +1723,6 @@ async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
     assert session.metadata["tool_result_ledger"][-1] == ledger_entry
     activation_event = ledger_entry["followup_activation_events"][0]
     assert activation_event["event_type"] == "tool_success"
-    assert activation_event["query_id"] == "aq:tool-success"
     assert activation_event["turn_id"] == "turn-tool-success"
     assert activation_event["intent_id"] == "intent-tool-success"
     assert activation_event["candidate_ref"]["candidate_id"] == "tool_schema:web_search:v1/test"
@@ -1748,12 +1743,8 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_error(m
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
     session = SessionContext(session_id="session-failure-policy")
-    session.metadata["activation_query"] = {
-        "schema": "hive.ccplus.activation_query.v1",
-        "query_id": "aq:tool-failure",
-        "turn_id": "turn-tool-failure",
-        "intent_id": "intent-tool-failure",
-    }
+    session.metadata["turn_id"] = "turn-tool-failure"
+    session.metadata["intent_id"] = "intent-tool-failure"
     request = InvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1"),
         messages=[{"role": "user", "content": "send"}],
@@ -1793,7 +1784,7 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_error(m
     assert ledger_policy == policy
     activation_event = session.metadata["tool_result_ledger"][-1]["followup_activation_events"][0]
     assert activation_event["event_type"] == "tool_failure"
-    assert activation_event["query_id"] == "aq:tool-failure"
+    assert activation_event["turn_id"] == "turn-tool-failure"
     assert activation_event["candidate_ref"]["candidate_id"].startswith("tool_schema:send_email:")
     assert activation_event["feedback"]["signal"] == "tool_failure"
     assert activation_event["feedback"]["credit"] < 0

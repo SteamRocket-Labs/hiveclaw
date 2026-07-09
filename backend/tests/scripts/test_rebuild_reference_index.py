@@ -47,8 +47,8 @@ def test_rebuild_reference_indexes_dry_run_does_not_create_index(tmp_path: Path)
     assert not index_db_path(tmp_path, agent_id).exists()
 
 
-def test_rebuild_reference_indexes_apply_restores_activation_keys_and_source_refs(tmp_path: Path) -> None:
-    from app.memory.reference_index import index_db_path, query_activation_keys, rebuild_reference_index
+def test_rebuild_reference_indexes_apply_restores_source_refs(tmp_path: Path) -> None:
+    from app.memory.reference_index import index_db_path, reference_counts, rebuild_reference_index
     from app.scripts.rebuild_reference_index import rebuild_reference_indexes
 
     agent_id = uuid4()
@@ -60,13 +60,6 @@ def test_rebuild_reference_indexes_apply_restores_activation_keys_and_source_ref
 
     assert report["apply"] is True
     assert report["agents"][0]["status"] == "rebuilt"
-    assert report["agents"][0]["activation_key_rows"] >= 1
-    rows = query_activation_keys(
-        agent_id=agent_id,
-        data_root=tmp_path,
-        scope="explicit_overlay",
-        key_axis="category",
-        key_value="constraint",
-    )
-    assert rows
-    assert {row["source_ref"] for row in rows} == {source_ref}
+    assert "activation_key_rows" not in report["agents"][0]
+    counts = reference_counts(agent_id=agent_id, data_root=tmp_path)
+    assert counts.get(source_ref, 0) >= 1

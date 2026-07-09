@@ -97,18 +97,6 @@ def _axis_rows(tmp_path: Path, agent_id) -> set[tuple[str, str, str]]:
         return {(row[0], row[1], row[2]) for row in conn.execute("SELECT package_ref, axis, value FROM t2_label_axes")}
 
 
-def _activation_key_rows(tmp_path: Path, agent_id) -> set[tuple[str, str, str, str]]:
-    from app.memory.reference_index import index_db_path
-
-    with sqlite3.connect(index_db_path(tmp_path, agent_id)) as conn:
-        return {
-            (row[0], row[1], row[2], row[3])
-            for row in conn.execute(
-                "SELECT candidate_kind, scope, key_axis, key_value FROM activation_keys ORDER BY key_axis, key_value"
-            )
-        }
-
-
 def test_rebuild_populates_label_axes_from_t2_labels(tmp_path: Path) -> None:
     from app.memory.reference_index import rebuild_reference_index
 
@@ -137,152 +125,27 @@ def test_rebuild_populates_label_axes_from_t2_labels(tmp_path: Path) -> None:
     assert (ref, "milestone_criteria", "first_success") in rows
 
 
-def test_rebuild_populates_activation_keys_from_explicit_overlay(tmp_path: Path) -> None:
+def test_rebuild_drops_legacy_activation_keys_table(tmp_path: Path) -> None:
+    """Q-shrink: the write-only activation_keys projection is retired; rebuild
+    must clear any legacy table left in an existing index database."""
     from app.memory.reference_index import index_db_path, rebuild_reference_index
 
     agent_id = uuid4()
-    overlay = _mem_dir(tmp_path, agent_id) / "explicit"
-    (overlay / "entries").mkdir(parents=True, exist_ok=True)
-    (overlay / "manifest.jsonl").write_text(
-        json.dumps(
-            {
-                "id": "ex-red-test",
-                "status": "active",
-                "category": "constraint",
-                "target_hint": "worker",
-                "sensitivity": "PL1_public",
-                "created_at": NOW.isoformat(),
-                "source_refs": "t0://session/s1/segment/seg-1#seq=1..2",
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (overlay / "entries" / "ex-red-test.md").write_text(
-        "<normalized_memory>用户要求整改必须先跑红灯测试。</normalized_memory>",
-        encoding="utf-8",
-    )
+    _write_labeled_package(tmp_path, agent_id)
+    legacy_db = index_db_path(tmp_path, agent_id)
+    legacy_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(legacy_db) as conn:
+        conn.execute("CREATE TABLE activation_keys (candidate_ref TEXT)")
+        conn.execute("INSERT INTO activation_keys VALUES ('legacy-row')")
 
     report = rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
 
-    assert report.activation_key_rows >= 4
-    rows = _activation_key_rows(tmp_path, agent_id)
-    assert ("agent_memory", "explicit_overlay", "category", "constraint") in rows
-    assert ("agent_memory", "explicit_overlay", "target_hint", "worker") in rows
-    assert ("agent_memory", "explicit_overlay", "status", "active") in rows
-    assert ("agent_memory", "explicit_overlay", "concept", "红灯") in rows
-    with sqlite3.connect(index_db_path(tmp_path, agent_id)) as conn:
-        source_refs = {
-            row[0]
-            for row in conn.execute(
-                "SELECT DISTINCT source_ref FROM activation_keys WHERE candidate_ref = ?",
-                ("agent_memory:explicit_overlay:ex-red-test",),
-            )
+    assert not hasattr(report, "activation_key_rows")
+    with sqlite3.connect(legacy_db) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
-    assert source_refs == {"t0://session/s1/segment/seg-1#seq=1..2"}
-
-
-def test_legacy_t2_labels_backfill_activation_keys(tmp_path: Path) -> None:
-    from app.memory.reference_index import rebuild_reference_index
-
-    agent_id = uuid4()
-    package_id = _write_labeled_package(tmp_path, agent_id, package_id="t2pkg-legacy-keys")
-
-    report = rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
-
-    rows = _activation_key_rows(tmp_path, agent_id)
-    short_ref = package_id.replace("t2pkg-", "t2-")
-    assert report.activation_key_rows >= 4
-    assert ("agent_memory", "t2_package", "continuity_state", "standalone") in rows
-    assert ("agent_memory", "t2_package", "risk_flag", "privacy_sensitive") in rows
-    assert ("agent_memory", "t2_package", "system", "memory") in rows
-    assert ("agent_memory", "t2_package", "memory_domain", "decision") in rows
-
-    from app.memory.reference_index import index_db_path
-
-    with sqlite3.connect(index_db_path(tmp_path, agent_id)) as conn:
-        indexed = conn.execute(
-            "SELECT candidate_ref, source_ref, confidence FROM activation_keys "
-            "WHERE scope = 't2_package' AND key_axis = 'risk_flag' AND key_value = 'privacy_sensitive'"
-        ).fetchone()
-    assert indexed == (f"agent_memory:t2_package:{short_ref}", short_ref, 0.55)
-
-
-def test_legacy_t3_profile_and_knowledge_backfill_activation_keys(tmp_path: Path) -> None:
-    from app.memory.reference_index import rebuild_reference_index
-
-    agent_id = uuid4()
-    mem = _mem_dir(tmp_path, agent_id)
-    (mem / "profiles").mkdir(parents=True, exist_ok=True)
-    (mem / "profiles" / "owner.md").write_text(
-        """## 偏好
-
-### 写作风格
-<!-- id: usr-writing-style -->
-- aliases: [tone, voice]
-- tags: [writing, taste]
-- lifecycle: active
-用户偏好直接、证据优先的中文说明。
-""",
-        encoding="utf-8",
-    )
-    (mem / "knowledge").mkdir(parents=True, exist_ok=True)
-    (mem / "knowledge" / "attention-router.md").write_text(
-        """---
-title: Attention Router
-aliases: [QKV Runtime, Runtime Attention]
-tags: [memory, runtime]
-lifecycle: active
----
-## Current Claim
-外部 Attention Router 负责召回排序。
-""",
-        encoding="utf-8",
-    )
-
-    rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
-
-    rows = _activation_key_rows(tmp_path, agent_id)
-    assert ("agent_memory", "t3_profile", "alias", "tone") in rows
-    assert ("agent_memory", "t3_profile", "tag", "writing") in rows
-    assert ("agent_memory", "t3_profile", "lifecycle", "active") in rows
-    assert ("agent_memory", "t3_knowledge", "title", "Attention Router") in rows
-    assert ("agent_memory", "t3_knowledge", "alias", "QKV Runtime") in rows
-    assert ("agent_memory", "t3_knowledge", "tag", "memory") in rows
-
-
-def test_activation_key_query_helpers_return_candidate_refs(tmp_path: Path) -> None:
-    from app.memory.reference_index import candidate_refs_for_keys, query_activation_keys, rebuild_reference_index
-
-    agent_id = uuid4()
-    package_id = _write_labeled_package(tmp_path, agent_id, package_id="t2pkg-query-keys")
-    short_ref = package_id.replace("t2pkg-", "t2-")
-    rebuild_reference_index(agent_id=agent_id, data_root=tmp_path)
-
-    rows = query_activation_keys(
-        agent_id=agent_id,
-        data_root=tmp_path,
-        scope="t2_package",
-        key_axis="risk_flag",
-        key_value="privacy_sensitive",
-    )
-
-    assert rows
-    assert rows[0]["candidate_ref"] == f"agent_memory:t2_package:{short_ref}"
-    assert rows[0]["candidate_kind"] == "agent_memory"
-    assert rows[0]["source_ref"] == short_ref
-    assert rows[0]["confidence"] == 0.55
-
-    refs = candidate_refs_for_keys(
-        agent_id=agent_id,
-        data_root=tmp_path,
-        scope="t2_package",
-        keys={"risk_flag": ["privacy_sensitive"], "system": ["memory"]},
-    )
-
-    assert refs == [f"agent_memory:t2_package:{short_ref}"]
+    assert "activation_keys" not in tables
 
 
 def test_minimal_labels_produce_only_present_axes(tmp_path: Path) -> None:

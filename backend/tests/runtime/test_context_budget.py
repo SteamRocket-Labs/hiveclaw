@@ -152,22 +152,6 @@ def test_infer_task_profile_suggests_deferred_tool_group_for_explicit_platform_e
     assert legacy_profile.suggested_deferred_tool_group_names == ("web",)
 
 
-def test_task_profile_activation_payload_uses_deferred_tool_group_names() -> None:
-    from app.runtime.activation_query import task_profile_to_activation_payload
-    from app.runtime.context_budget import infer_task_profile
-
-    profile = infer_task_profile("请研究最新行业资料，带来源链接，并调用 web 搜索。")
-    payload = task_profile_to_activation_payload(profile)
-
-    assert payload == {
-        "name": "research",
-        "complexity": "medium",
-        "execution_shape": "direct",
-        "suggested_deferred_tool_group_names": ["web"],
-    }
-    assert "suggested_pack_names" not in payload
-
-
 def test_resolve_turn_model_route_keeps_primary_for_simple_general_turn_without_explicit_routing():
     from types import SimpleNamespace
 

@@ -19,8 +19,8 @@ def test_activation_score_computes_weighted_total_and_reasons() -> None:
     assert score.to_manifest()["reasons"] == ["semantic_match", "source_backed"]
 
 
-def test_activation_candidate_manifest_roundtrips_with_surface_and_hard_mask() -> None:
-    from app.runtime.activation_candidates import ActivationCandidate, ActivationHardMask, ActivationScore
+def test_activation_candidate_manifest_roundtrips_with_surface() -> None:
+    from app.runtime.activation_candidates import ActivationCandidate, ActivationScore
 
     candidate = ActivationCandidate(
         candidate_kind="agent_memory",
@@ -41,7 +41,6 @@ def test_activation_candidate_manifest_roundtrips_with_surface_and_hard_mask() -
             "source_refs": ["t0:session-1:segment-1"],
         },
         score=ActivationScore(head_scores={"semantic": 0.8}, reasons=("semantic_match",)),
-        hard_mask=ActivationHardMask(allowed=False, reason="acl_denied", judge="platform_gate"),
         metadata={"lane": "memory"},
     )
 
@@ -49,8 +48,7 @@ def test_activation_candidate_manifest_roundtrips_with_surface_and_hard_mask() -
 
     assert manifest["schema"] == "hive.ccplus.activation_candidate.v1"
     assert manifest["candidate_id"] == "agent_memory:t3_profile:20260705/abcdef123456"
-    assert manifest["hard_mask"]["allowed"] is False
-    assert manifest["hard_mask"]["reason"] == "acl_denied"
+    assert "hard_mask" not in manifest
     json.dumps(manifest)
     assert ActivationCandidate.from_manifest(manifest) == candidate
 

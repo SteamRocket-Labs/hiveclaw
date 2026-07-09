@@ -37,7 +37,6 @@ from app.runtime.context_budget import (
     ContextBudget,
     _is_simple_turn_candidate,
     compute_context_budget,
-    infer_task_profile,
     resolve_turn_model_route,
 )
 from app.runtime.context_engine import DefaultContextEngine
@@ -300,77 +299,8 @@ def _skill_catalog_ranking_inputs(request: AgentInvocationRequest) -> dict[str, 
     }
 
 
-def _build_activation_query_for_request(request: AgentInvocationRequest) -> dict[str, Any]:
-    from app.runtime.activation_query import (
-        ActivationQuery,
-        parse_mechanical_activation_features,
-        task_profile_to_activation_payload,
-    )
-
-    metadata = _ensure_turn_metadata(request)
-    prompt_text = _latest_user_prompt(request.messages)
-    task_profile = infer_task_profile(prompt_text, messages=request.messages)
-    mechanical_features = parse_mechanical_activation_features(prompt_text)
-    owner_context = {
-        key: metadata[key]
-        for key in (
-            "tenant_id",
-            "owner_id",
-            "owner_user_id",
-            "company_id",
-            "principal_id",
-            "runtime_task_id",
-            "task_id",
-        )
-        if metadata.get(key)
-    }
-    activation_query = ActivationQuery(
-        raw_prompt=prompt_text,
-        session_id=request.memory_session_id
-        or (request.session_context.session_id if request.session_context and request.session_context.session_id else ""),
-        turn_id=str(metadata.get("turn_id") or ""),
-        intent_id=str(metadata.get("intent_id") or ""),
-        agent_id=str(request.agent_id or ""),
-        agent_role=request.role_description or request.agent_name,
-        owner_context=owner_context,
-        task_profile=task_profile_to_activation_payload(task_profile),
-        entities=mechanical_features["entities"],
-        concepts=mechanical_features["concepts"],
-        temporal_hints=mechanical_features["temporal_hints"],
-        referenced_files=mechanical_features["referenced_files"],
-        risk_level=mechanical_features["risk_level"],
-        candidate_lanes=("memory", "knowledge", "skill", "tool"),
-        parse_trace=[
-            {"source": "runtime_invoker", "field": "raw_prompt", "method": "latest_user_message"},
-            {"source": "_ensure_turn_metadata", "field": "turn_id", "method": "session_metadata"},
-            {"source": "_ensure_turn_metadata", "field": "intent_id", "method": "session_metadata"},
-            {"source": "infer_task_profile", "field": "task_profile", "method": "context_budget"},
-            {"source": "parse_mechanical_activation_features", "field": "entities", "method": "regex"},
-            {"source": "parse_mechanical_activation_features", "field": "referenced_files", "method": "regex"},
-            {"source": "parse_mechanical_activation_features", "field": "temporal_hints", "method": "keyword"},
-            {"source": "parse_mechanical_activation_features", "field": "risk_level", "method": "keyword"},
-            {"source": "runtime_invoker", "field": "candidate_lanes", "method": "default_runtime_lanes"},
-        ],
-    )
-    return activation_query.to_manifest()
-
-
-def _principal_stack_for_activation(*, owner_user_id: Any, current_user_id: Any):
-    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
-
-    owner_text = str(owner_user_id or "").strip()
-    current_text = str(current_user_id or "").strip()
-    return PrincipalStack(
-        direct_owner=Principal(role=PrincipalRole.OWNER, id=owner_text, label="owner") if owner_text else None,
-        current_user=Principal(role=PrincipalRole.CURRENT_USER, id=current_text, label="current_user")
-        if current_text
-        else None,
-    )
-
-
 async def _record_knowledge_activation_for_request(
     request: AgentInvocationRequest,
-    activation_query: dict[str, Any],
     *,
     provider: Any | None = None,
 ) -> str | None:
@@ -380,11 +310,10 @@ async def _record_knowledge_activation_for_request(
     tenant_id = metadata.get("tenant_id")
     owner_user_id = metadata.get("owner_user_id") or metadata.get("owner_id") or request.user_id
     current_user_id = request.user_id
-    prompt_text = str(activation_query.get("raw_prompt") or _latest_user_prompt(request.messages) or "").strip()
+    prompt_text = str(_latest_user_prompt(request.messages) or "").strip()
     if not tenant_id or not prompt_text:
         return None
 
-    from app.runtime.activation_router import ActivationRouterContext, route_activation_candidates
     from app.runtime.context import ensure_runtime_assembly_state
     from app.runtime.retrieval.kb_candidates import KnowledgeACLContext, gather_knowledge_base_candidates
     from app.runtime.retrieval.personal_knowledge_provider import PersonalKnowledgeCandidateProvider
@@ -408,18 +337,6 @@ async def _record_knowledge_activation_for_request(
 
     assembly_state = ensure_runtime_assembly_state(request.session_context)
     assembly_state.record_activation_candidates(candidates)
-    router_output = route_activation_candidates(
-        candidates,
-        context=ActivationRouterContext(
-            principal_stack=_principal_stack_for_activation(
-                owner_user_id=owner_user_id,
-                current_user_id=current_user_id,
-            ),
-            activation_query=activation_query,
-            allowed_candidate_kinds=("knowledge_base",),
-        ),
-    )
-    assembly_state.record_activation_router_output(router_output)
     return _format_personal_kb_prompt_hint(candidates)
 
 
@@ -1622,22 +1539,19 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
     except Exception as _prompt_err:
         logging.getLogger(__name__).debug("[Invoker] USER_PROMPT_SUBMIT hook failed (non-fatal): %s", _prompt_err)
 
-    # ── Runtime ActivationQuery ──
-    # Native runtime resolver: plugin hooks may add context, but Q construction
-    # is an internal pre-kernel contract and must not depend on hook availability.
+    # ── Personal KB activation hint ──
+    # Real KB retrieval feeds the dynamic prompt hint; candidates are recorded
+    # for observability. Ranking evolution belongs to the unified activation
+    # equation (dynamic recall layer), not a parallel router.
     try:
         if request.session_context is not None:
-            from app.runtime.context import ensure_runtime_assembly_state
-
-            activation_query = _build_activation_query_for_request(request)
-            ensure_runtime_assembly_state(request.session_context).record_activation_query(activation_query)
-            kb_hint = await _record_knowledge_activation_for_request(request, activation_query)
+            kb_hint = await _record_knowledge_activation_for_request(request)
             if kb_hint:
                 kernel_request.system_prompt_suffix = "\n\n".join(
                     part for part in (kernel_request.system_prompt_suffix, kb_hint) if part
                 )
     except Exception as _activation_err:
-        logging.getLogger(__name__).debug("[Invoker] ActivationQuery build failed (non-fatal): %s", _activation_err)
+        logging.getLogger(__name__).debug("[Invoker] Personal KB activation failed (non-fatal): %s", _activation_err)
 
     # ── SESSION_START hook ──
     try:

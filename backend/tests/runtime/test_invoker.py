@@ -117,54 +117,6 @@ async def test_invoke_agent_passes_agent_to_token_quota_before_kernel(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_builds_activation_query_after_user_prompt_submit_before_kernel(monkeypatch):
-    from app.kernel import InvocationResult
-    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
-
-    session = SessionContext(
-        session_id="session-q",
-        source="web_chat",
-        metadata={"request_id": "request-q", "tenant_id": "tenant-q"},
-    )
-    hook_events: list[str] = []
-
-    async def fake_emit_hook(event, **_kwargs):
-        event_name = getattr(event, "name", str(event))
-        hook_events.append(event_name)
-        if event_name == "USER_PROMPT_SUBMIT":
-            assert "activation_query" not in session.metadata
-        return None
-
-    class FakeKernel:
-        async def handle(self, _request):
-            query = session.metadata["activation_query"]
-            assert hook_events[0] == "USER_PROMPT_SUBMIT"
-            assert query["schema"] == "hive.ccplus.activation_query.v1"
-            assert query["raw_prompt"] == "请召回 runtime memory 的设计决策"
-            assert query["session_id"] == "session-q"
-            assert query["turn_id"] == "turn-request-q"
-            assert query["intent_id"] == "intent-request-q"
-            assert query["candidate_lanes"] == ["memory", "knowledge", "skill", "tool"]
-            assert session.metadata["runtime_assembly_state"]["activation_query"] == query
-            return InvocationResult(content="done")
-
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
-
-    result = await invoke_agent(
-        AgentInvocationRequest(
-            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
-            messages=[{"role": "user", "content": "请召回 runtime memory 的设计决策"}],
-            agent_name="Agent",
-            role_description="Runtime engineer",
-            session_context=session,
-        )
-    )
-
-    assert result.content == "done"
-
-
-@pytest.mark.asyncio
 async def test_invoke_agent_injects_personal_kb_hint_before_kernel(monkeypatch):
     from app.kernel import InvocationResult
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
@@ -176,7 +128,7 @@ async def test_invoke_agent_injects_personal_kb_hint_before_kernel(monkeypatch):
     )
     seen_suffixes: list[str] = []
 
-    async def fake_record_knowledge_activation(_request, _activation_query):
+    async def fake_record_knowledge_activation(_request):
         return "## Personal Knowledge Hint\n- Retrieval notes [kb://person/owner/documents/doc#segment=seg]"
 
     class FakeKernel:

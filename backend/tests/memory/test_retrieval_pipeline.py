@@ -242,55 +242,6 @@ def test_memory_retriever_exposes_only_live_retrieval_entrypoints(data_root: Pat
         assert not hasattr(retriever, dead_api)
 
 
-def test_load_selected_memory_values_reads_only_router_top_candidates(
-    data_root: Path,
-    agent_id: uuid.UUID,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.memory.plane_read import load_selected_memory_values
-    from app.runtime.activation_candidates import ActivationCandidate, ActivationSurface
-
-    knowledge_dir = data_root / str(agent_id) / "memory" / "knowledge"
-    knowledge_dir.mkdir(parents=True, exist_ok=True)
-    selected_path = knowledge_dir / "selected.md"
-    unselected_path = knowledge_dir / "unselected.md"
-    selected_path.write_text("---\ntitle: Selected\nstatus: active\n---\n\nSelected body.", encoding="utf-8")
-    unselected_path.write_text("---\ntitle: Unselected\nstatus: active\n---\n\nUnselected body.", encoding="utf-8")
-
-    selected = ActivationCandidate(
-        candidate_kind="agent_memory",
-        candidate_ref={"candidate_id": "agent_memory:t3_knowledge:selected", "kind": "agent_memory"},
-        value_pointer={"loader": "knowledge_page", "source": "memory/knowledge/selected.md", "id": "selected"},
-        surface=ActivationSurface(surface_kind="plane_pointer", preview="selected"),
-    )
-    unselected = ActivationCandidate(
-        candidate_kind="agent_memory",
-        candidate_ref={"candidate_id": "agent_memory:t3_knowledge:unselected", "kind": "agent_memory"},
-        value_pointer={"loader": "knowledge_page", "source": "memory/knowledge/unselected.md", "id": "unselected"},
-        surface=ActivationSurface(surface_kind="plane_pointer", preview="unselected"),
-    )
-    router_output = {
-        "schema": "hive.ccplus.activation_router_output.v1",
-        "top_activation_candidates": [selected.to_manifest()],
-        "suppressed_activation_candidates": [unselected.to_manifest()],
-    }
-
-    original_read_text = Path.read_text
-
-    def guarded_read_text(path: Path, *args, **kwargs):
-        if path == unselected_path:
-            raise AssertionError("unselected candidate body was eagerly loaded")
-        return original_read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", guarded_read_text)
-
-    items = load_selected_memory_values(data_root, agent_id, router_output)
-
-    assert len(items) == 1
-    assert items[0].source == "memory/knowledge/selected.md"
-    assert "Selected body" in items[0].content
-
-
 @pytest.mark.asyncio
 async def test_activation_context_suppresses_pl3_when_current_user_is_not_owner(
     data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever

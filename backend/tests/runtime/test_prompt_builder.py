@@ -186,63 +186,13 @@ def test_dynamic_suffix_records_context_candidate_selection_ledger():
     ]
 
 
-def test_dynamic_suffix_injects_activation_hints_and_records_ledger() -> None:
+def test_dynamic_suffix_has_no_activation_hints_surface() -> None:
+    """QKV retirement: the dynamic suffix must not grow a parallel activation
+    hints injection surface — recall ranking feeds retriever/KB ordering only."""
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
     ledger: list[dict] = []
-    suffix = build_dynamic_prompt_suffix(
-        activation_router_output={
-            "top_activation_candidates": [
-                {
-                    "candidate_kind": "skill",
-                    "key_features": {"name": ["python-api"]},
-                    "value_pointer": {"loader": "load_skill", "name": "python-api"},
-                },
-                {
-                    "candidate_kind": "tool",
-                    "key_features": {"name": ["team_create"]},
-                    "value_pointer": {
-                        "loader": "tool_search",
-                        "selector": "select:team_create",
-                        "tool_name": "team_create",
-                    },
-                },
-                {
-                    "candidate_kind": "agent_memory",
-                    "key_features": {"name": ["private-memory"]},
-                    "value_pointer": {"loader": "knowledge_page", "source": "memory/private.md"},
-                },
-            ]
-        },
-        context_section_ledger=ledger,
-    )
-    decisions = {item["candidate_id"]: item for item in ledger}
-
-    assert "## Activation Hints" in suffix
-    assert "`load_skill` with `python-api`" in suffix
-    assert "`tool_search` with `select:team_create`" in suffix
-    assert "private-memory" not in suffix
-    assert decisions["dynamic:activation:hints"]["selected"] is True
-    assert decisions["dynamic:activation:hints"]["kind"] == "activation_hints"
-    assert decisions["dynamic:activation:hints"]["source_ref"] == "runtime.activation_router"
-
-
-def test_dynamic_suffix_omits_empty_activation_hints_from_ledger() -> None:
-    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
-
-    ledger: list[dict] = []
-    suffix = build_dynamic_prompt_suffix(
-        activation_router_output={
-            "top_activation_candidates": [
-                {
-                    "candidate_kind": "agent_memory",
-                    "key_features": {"name": ["private-memory"]},
-                    "value_pointer": {"loader": "knowledge_page", "source": "memory/private.md"},
-                }
-            ]
-        },
-        context_section_ledger=ledger,
-    )
+    suffix = build_dynamic_prompt_suffix(context_section_ledger=ledger)
 
     assert "## Activation Hints" not in suffix
     assert not any(item["candidate_id"] == "dynamic:activation:hints" for item in ledger)

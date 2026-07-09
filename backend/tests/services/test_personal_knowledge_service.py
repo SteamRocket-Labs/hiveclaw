@@ -1612,3 +1612,76 @@ async def test_process_import_jobs_marks_attempt_limit_as_failed_without_rebuild
     assert job.status == "failed"
     assert job.error_message == "personal_kb_import_attempt_limit_exceeded"
     assert job.job_metadata_json["warnings"] == ["personal_kb_import_attempt_limit_exceeded"]
+
+
+@pytest.mark.asyncio
+async def test_process_import_jobs_isolates_poison_job_from_rest_of_batch(tmp_path: Path) -> None:
+    """A job that raises mid-processing must not starve the rest of the batch."""
+    from app.services.personal_knowledge_service import PersonalKnowledgeIngestResult, PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    poison = SimpleNamespace(
+        id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        stage="queued",
+        status="queued",
+        error_message=None,
+        attempt_count=0,
+        job_metadata_json={},
+    )
+    healthy = SimpleNamespace(
+        id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        stage="queued",
+        status="queued",
+        error_message=None,
+        attempt_count=0,
+        job_metadata_json={},
+    )
+    session = _QueuedSession([[(poison,), (healthy,)]])
+
+    class _PartiallyPoisonedService(PersonalKnowledgeService):
+        def __init__(self) -> None:
+            super().__init__(data_root=tmp_path)
+            self.rebuild_calls: list[uuid.UUID] = []
+
+        async def rebuild_personal_document_index(self, session, **kwargs):
+            document_id = kwargs["document_id"]
+            self.rebuild_calls.append(document_id)
+            if document_id == poison.document_id:
+                raise ValueError("markdown must not be empty")
+            return PersonalKnowledgeIngestResult(
+                document_id=document_id,
+                job_id=healthy.id,
+                source_sha256="c" * 64,
+                artifact_hash="c" * 64,
+                canonical_md_path="c.md",
+                segment_count=3,
+                status="ready",
+                warnings=[],
+            )
+
+    service = _PartiallyPoisonedService()
+
+    summary = await service.process_import_jobs(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        limit=5,
+    )
+
+    # The poison job did not abort the loop: the healthy job was still attempted.
+    assert service.rebuild_calls == [poison.document_id, healthy.document_id]
+    assert summary.attempted == 2
+    assert summary.succeeded == 1
+    assert summary.failed == 1
+    # Poison job carries a terminal failed status with a worker-error warning.
+    assert poison.stage == "failed"
+    assert poison.status == "failed"
+    assert any("personal_kb_import_worker_error" in warning for warning in poison.job_metadata_json["warnings"])
+    assert summary.results[0]["status"] == "failed"
+    # Healthy job indexed successfully after the poison job failed.
+    assert healthy.status == "ready"
+    assert summary.results[1]["status"] == "ready"

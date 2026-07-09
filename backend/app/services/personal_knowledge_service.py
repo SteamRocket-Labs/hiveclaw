@@ -2669,6 +2669,16 @@ class PersonalKnowledgeService:
         job.job_metadata_json = {**metadata, "warnings": [warning]}
         await session.flush()
 
+    async def _fail_import_job_after_worker_error(
+        self, session: Any, *, job: Any, metadata: dict[str, Any], error: str
+    ) -> None:
+        warning = f"personal_kb_import_worker_error:{error}"[:500]
+        job.stage = "failed"
+        job.status = "failed"
+        job.error_message = warning
+        job.job_metadata_json = {**metadata, "warnings": [warning]}
+        await session.flush()
+
     async def process_import_jobs(
         self,
         session: Any,
@@ -2789,28 +2799,46 @@ class PersonalKnowledgeService:
                 )
                 continue
             metadata = dict(getattr(job, "job_metadata_json", {}) or {})
-            await self._claim_import_job_for_processing(session, job=job, metadata=metadata)
-            metadata = dict(getattr(job, "job_metadata_json", {}) or metadata)
-            if dict(getattr(job, "job_metadata_json", {}) or {}).get("queued_import_kind"):
-                result = await self._process_queued_import_job(
-                    session,
-                    job=job,
-                    tenant_id=tenant_id,
-                    owner_user_id=owner_user_id,
-                    current_user_id=owner_user_id,
-                    claimed=True,
+            try:
+                await self._claim_import_job_for_processing(session, job=job, metadata=metadata)
+                metadata = dict(getattr(job, "job_metadata_json", {}) or metadata)
+                if dict(getattr(job, "job_metadata_json", {}) or {}).get("queued_import_kind"):
+                    result = await self._process_queued_import_job(
+                        session,
+                        job=job,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        current_user_id=owner_user_id,
+                        claimed=True,
+                    )
+                else:
+                    result = await self.rebuild_personal_document_index(
+                        session,
+                        tenant_id=tenant_id,
+                        owner_user_id=owner_user_id,
+                        document_id=document_id,
+                        current_user_id=owner_user_id,
+                    )
+                    if result is not None:
+                        self._apply_import_job_result(job=job, metadata=metadata, result=result)
+                        await session.flush()
+            except Exception as exc:
+                # Isolate one poison job (corrupt metadata, empty canonical markdown,
+                # malformed source digest) so it cannot starve the rest of the claimed
+                # batch. The failure is recorded on the job row — the queryable
+                # observability surface for this pipeline — and the loop moves on.
+                await self._fail_import_job_after_worker_error(session, job=job, metadata=metadata, error=str(exc))
+                failed += 1
+                results.append(
+                    {
+                        "job_id": str(job_id or ""),
+                        "document_id": str(document_id),
+                        "status": "failed",
+                        "segment_count": 0,
+                        "warnings": [f"personal_kb_import_worker_error:{exc}"],
+                    }
                 )
-            else:
-                result = await self.rebuild_personal_document_index(
-                    session,
-                    tenant_id=tenant_id,
-                    owner_user_id=owner_user_id,
-                    document_id=document_id,
-                    current_user_id=owner_user_id,
-                )
-                if result is not None:
-                    self._apply_import_job_result(job=job, metadata=metadata, result=result)
-                    await session.flush()
+                continue
             if result is None:
                 skipped += 1
                 results.append({"job_id": str(job_id or ""), "status": "skipped", "warnings": ["job_not_rebuilt"]})

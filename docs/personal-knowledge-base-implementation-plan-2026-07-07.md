@@ -1007,3 +1007,36 @@ npm run build
 3. 权限入口已预留且可执行：`knowledge_grants` 对 user/agent + scope/document 建模；owner 不需要 grant，非 owner 必须 grant。
 4. 当前 M1 没有向量库硬依赖：Personal 先用 PostgreSQL `tsvector` / GIN 和 canonical Markdown artifact，后续企业 KB 可在同一 schema 上扩 Ontology / vector provider。
 5. Company KB 不在 Personal KB 页面内管理；Personal 页面只保留只读/晋升方向入口，避免后续飞书式权限映射时重构。
+
+## 15. M1 可靠性与权限收口追加契约（2026-07-09）
+
+本节记录 2026-07-09 的追加收口范围。它不重开 M2/org 聚合层，也不改变三产品边界；目标是把 M1 已落地能力里的权限护栏、异步可靠性、成本可观测性补成闭环。
+
+### 15.1 本轮范围
+
+| 原子项 | 范围 | 必须完成的实装边界 | 证据要求 |
+| --- | --- | --- | --- |
+| B4(b) owner-agent 读权限护栏 | 本轮完成 | agent 隶属 owner 时可读 owner Personal KB；跨 owner 仍不可见；`agent_searchable=false` 对 agent 的 search/list/detail 全部不可见。放行必须由 DB 内 `Agent` 归属链判定，不能只信传入的 `agent_id`。 | 三类红测扩展为四条：owner-agent 放行、cross-owner 搜空、`agent_searchable=false` 搜空、`agent_searchable=false` detail/list 不可见。 |
+| D1a Personal KB daemon 兜底 | 本轮完成 | 复用 `evolution_daemon` 全局 tick 增加 `_drain_personal_kb_jobs`；后台 BackgroundTasks 与 daemon 共用同一 claim/process 路径；支持 queued grace、running timeout、poison attempt 上限。 | 红测覆盖 daemon 调用 drain、claim 防双跑、stuck running 可恢复、attempt 超上限 failed。 |
+| D1b 并发闸与 token 记账 | 本轮完成 | LLM graph extraction 每段调用受租户级 semaphore 约束；job metadata 聚合 extractor token usage；provider 无 usage 时记录 `usage_unavailable_count`，不得用估算值冒充真实 token。 | 红测覆盖并发上限、job metadata token 聚合、usage unavailable 可观测降级。 |
+| A1 activation cleanup 安全洞复核 | 本轮单独处理 | 不覆盖当前未提交改动；先复核现有 `activation_cleanup` diff 与测试。若 legacy 绕过仍存在，补红测并单独修复；若已修复，只提交证据或等待原改动 owner。 | 单独测试与 commit；明确是否还有 legacy 绕过路径。 |
+| L1 legacy 绕过路径复核 | 本轮完成 | 搜索所有 activation/revoke cleanup caller，确认没有绕过安全 cleanup 的旧路径；若发现 live bypass，必须修掉。 | `search_graph` / `search_code` 证据 + targeted tests。 |
+
+### 15.2 非本轮范围
+
+M2/org 不进入本轮。原因：
+
+1. M2 是聚合/productization 层，不是 M1 可靠性债：concept-page pointer registration、cross-agent lazy merge、owner/profile plane、显式 `save_to_kb` / `save_to_personal_kb`、contribution attribution、richer graph visualization、org proposal gate 需要单独批次。
+2. M2 依赖 Personal KB 上线后的真实 agent/owner 使用数据；现在强做画像收敛会制造空画像或假画像。
+3. Enterprise KB / org proposal 是 company authority surface，不应混进 owner-scoped Personal KB 的 M1 收口。
+
+### 15.3 证据日志
+
+| 原子项 | 状态 | Commit | 证据 |
+| --- | --- | --- | --- |
+| 15-S0 文档契约 | 已完成 | `document personal kb m1 reliability closure scope` | 当前节记录本轮范围、非范围、原子项和证据要求。 |
+| B4(b) owner-agent 读权限护栏 | 待修复 | - | - |
+| D1a Personal KB daemon 兜底 | 待修复 | - | - |
+| D1b 并发闸与 token 记账 | 待修复 | - | - |
+| A1 activation cleanup 安全洞复核 | 待复核 | - | - |
+| L1 legacy 绕过路径复核 | 待复核 | - | - |

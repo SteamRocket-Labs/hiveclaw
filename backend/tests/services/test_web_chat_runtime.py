@@ -670,6 +670,90 @@ async def test_execute_web_chat_run_emits_first_class_phase_signal(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_web_chat_run_persists_stream_steps_for_replay(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id, agent, user, llm_model, runtime_task = _phase_run_fixtures()
+    events: list[dict] = []
+    persisted: list[dict] = []
+
+    async def fake_invoke(request):
+        await request.on_chunk("I will inspect the session renderer.")
+        await request.on_thinking("Checking the transcript contract.")
+        await request.on_tool_call(
+            {
+                "tool_call_id": "tool-read",
+                "name": "read_file",
+                "status": "running",
+                "args": {"path": "frontend/src/pages/agent-detail/chatRuntime.ts"},
+            }
+        )
+        await request.on_tool_call(
+            {
+                "tool_call_id": "tool-read",
+                "name": "read_file",
+                "status": "done",
+                "args": {"path": "frontend/src/pages/agent-detail/chatRuntime.ts"},
+                "result": "read ok",
+            }
+        )
+        return SimpleNamespace(content="done.", reasoning_signature=None, tokens_used=1)
+
+    _patch_phase_run(
+        monkeypatch,
+        runtime,
+        runtime_task=runtime_task,
+        agent=agent,
+        user=user,
+        llm_model=llm_model,
+        fake_invoke=fake_invoke,
+        events=events,
+    )
+
+    class _FakeTenantSession:
+        async def __aenter__(self):
+            return _FakeDB()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def fake_append_session_event(**kwargs):
+        persisted.append(kwargs)
+        return SimpleNamespace(
+            event_id=uuid4(),
+            message_id=None,
+            sequence=len(persisted),
+            transcript_event=SimpleNamespace(
+                content=kwargs.get("content") or "",
+                parts_json=kwargs.get("parts") or [],
+                metadata_json=kwargs.get("metadata") or {},
+            ),
+        )
+
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _FakeTenantSession())
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    stream_events = [event for event in persisted if event.get("event_type") in {"chunk", "thinking"}]
+    assert [(event["event_type"], event["content"]) for event in stream_events] == [
+        ("chunk", "I will inspect the session renderer."),
+        ("thinking", "Checking the transcript contract."),
+    ]
+    assert all(event["actor_type"] == "assistant" for event in stream_events)
+    assert all(event["role"] == "assistant" for event in stream_events)
+    assert all(event["materialize_chat_message"] is False for event in stream_events)
+    assert all(event["run_id"] == run_id for event in stream_events)
+    assert all(event["runtime_task_id"] == run_id for event in stream_events)
+    assert stream_events[0]["parts"] == [
+        {"type": "text_delta", "text": "I will inspect the session renderer."}
+    ]
+    assert stream_events[1]["parts"] == [
+        {"type": "reasoning", "text": "Checking the transcript contract."}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_execute_web_chat_run_emits_failed_phase_on_exception(monkeypatch):
     """The finally backstop settles the phase stream even when the run explodes."""
     import app.services.web_chat_runtime as runtime

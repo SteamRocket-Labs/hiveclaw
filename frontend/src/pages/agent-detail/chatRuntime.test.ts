@@ -1489,6 +1489,109 @@ describe('chatRuntime helpers', () => {
     expect(next[1]).toEqual(toolMessage);
   });
 
+  it('seals pre-tool assistant text deltas as durable process notes', () => {
+    const current = [
+      {
+        role: 'assistant' as const,
+        content: 'I will inspect the current session replay path before calling a tool.',
+        _streaming: true,
+      } as any,
+    ];
+    const toolMessage = normalizeStoredChatMessage({
+      role: 'tool_call',
+      toolName: 'read_file',
+      toolStatus: 'running',
+      toolResult: '',
+      toolArgs: { path: 'frontend/src/pages/agent-detail/chatRuntime.ts' },
+    });
+
+    const next = appendToolCallMessage(current, toolMessage);
+
+    expect(next).toHaveLength(2);
+    expect(next[0]).toMatchObject({
+      role: 'assistant',
+      content: '',
+      thinking: 'I will inspect the current session replay path before calling a tool.',
+    });
+    expect((next[0] as any)._streaming).toBeUndefined();
+    expect(next[1]).toEqual(toolMessage);
+  });
+
+  it('replays assistant text before tool calls as ordered process steps', () => {
+    const state = replayTranscriptEvents([
+      {
+        id: 'evt-chunk-1',
+        sequence: 1,
+        type: 'chunk',
+        event_type: 'chunk',
+        actor_type: 'assistant',
+        role: 'assistant',
+        content: 'I will inspect the current session replay path before calling a tool.',
+        created_at: '2026-07-09T00:00:01Z',
+      },
+      {
+        id: 'evt-tool-1',
+        sequence: 2,
+        type: 'tool_call',
+        event_type: 'tool_call',
+        actor_type: 'agent',
+        role: 'tool_call',
+        content: '',
+        metadata: {
+          tool_name: 'read_file',
+          arguments: { path: 'frontend/src/pages/agent-detail/chatRuntime.ts' },
+          status: 'running',
+        },
+        created_at: '2026-07-09T00:00:02Z',
+      },
+      {
+        id: 'evt-chunk-2',
+        sequence: 3,
+        type: 'chunk',
+        event_type: 'chunk',
+        actor_type: 'assistant',
+        role: 'assistant',
+        content: 'The replay path turns websocket deltas into session messages.',
+        created_at: '2026-07-09T00:00:03Z',
+      },
+      {
+        id: 'evt-tool-2',
+        sequence: 4,
+        type: 'tool_result',
+        event_type: 'tool_result',
+        actor_type: 'agent',
+        role: 'tool_call',
+        content: 'Read file',
+        metadata: {
+          tool_name: 'read_file',
+          arguments: { path: 'frontend/src/pages/agent-detail/chatDisclosureReducer.ts' },
+          status: 'done',
+        },
+        created_at: '2026-07-09T00:00:04Z',
+      },
+      {
+        id: 'evt-final',
+        sequence: 5,
+        type: 'assistant_message',
+        event_type: 'assistant_message',
+        actor_type: 'assistant',
+        role: 'assistant',
+        content: 'Done.',
+        created_at: '2026-07-09T00:00:05Z',
+      },
+    ]);
+
+    expect(state.messages.map((message) => [message.role, message.content, message.thinking])).toEqual([
+      ['assistant', '', 'I will inspect the current session replay path before calling a tool.'],
+      ['tool_call', '', undefined],
+      ['assistant', '', 'The replay path turns websocket deltas into session messages.'],
+      ['tool_call', '', undefined],
+      ['assistant', 'Done.', undefined],
+    ]);
+    expect((state.messages[0] as any)._streaming).toBeUndefined();
+    expect((state.messages[2] as any)._streaming).toBeUndefined();
+  });
+
   it('normalizes persisted system compaction events from JSON content', () => {
     const message = normalizeStoredChatMessage({
       role: 'system',

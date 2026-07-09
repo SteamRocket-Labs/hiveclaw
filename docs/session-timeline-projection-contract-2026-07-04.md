@@ -802,6 +802,50 @@ Historical / unattributed = diagnostic only, 默认隐藏，不进入主 Workspa
 3. 不把 tool raw output 展开成默认正文。
 4. 不改变 CC/FreeCode 消息链语义，只补 Hive replay/presentation 的断点。
 
+### 9.6 Landing record
+
+状态：已落地
+
+文件：
+
+- `backend/app/services/web_chat_runtime.py`
+- `backend/tests/services/test_web_chat_runtime.py`
+- `frontend/src/pages/agent-detail/chatRuntime.ts`
+- `frontend/src/pages/agent-detail/chatRuntime.test.ts`
+
+落地内容：
+
+1. 后端新增 durable stream step 写入：`chunk` / `thinking` 在 micro-batcher flush 后写入 `chat_transcript_events`，并保持 `materialize_chat_message=false`。
+2. websocket live event 绑定 transcript metadata：`transcript_event_id`、`sequence`、`parts`、`metadata`。
+3. reset tombstone 不写 durable transcript。
+4. 前端在 tool/runtime step 到来前封存 streaming assistant placeholder；普通 assistant text delta 会转成 `thinking`/process-note，不再在完成后消失。
+5. final assistant message 仍替换末尾 streaming placeholder，避免最终答案 delta 被复制成过程 step。
+
+验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_emits_first_class_phase_signal \
+  tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_persists_stream_steps_for_replay \
+  tests/services/test_web_chat_runtime.py::test_web_chat_stream_micro_batcher_coalesces_chunk_bursts \
+  tests/services/test_web_chat_runtime.py::test_web_chat_stream_micro_batcher_flushes_before_reset_and_preserves_order \
+  -q
+# 4 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/services/web_chat_runtime.py \
+  tests/services/test_web_chat_runtime.py
+# All checks passed!
+
+cd frontend && npm test -- --run \
+  src/pages/agent-detail/chatRuntime.test.ts \
+  src/pages/agent-detail/chatDisclosureReducer.test.ts
+# 76 passed
+
+cd frontend && npm run build
+# tsc && vite build passed
+```
+
 ## 10. 验收标准
 
 ### 10.1 运行中

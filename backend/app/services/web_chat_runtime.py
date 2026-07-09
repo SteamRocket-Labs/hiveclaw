@@ -984,6 +984,50 @@ async def _materialize_pending_mid_run_user_message(
     )
 
 
+async def _persist_stream_step_event(
+    *,
+    agent_id: uuid.UUID | str,
+    tenant_id: uuid.UUID | str | None,
+    user_id: uuid.UUID | str | None,
+    session_id: str,
+    run_uuid: uuid.UUID,
+    event_type: str,
+    content: str,
+    part: dict[str, Any] | None,
+) -> Any | None:
+    if not content:
+        return None
+    try:
+        async with tenant_scoped_session(tenant_id) as db:
+            result = await append_session_event(
+                db=db,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                actor_type="assistant",
+                event_type=event_type,
+                role="assistant",
+                user_id=user_id,
+                run_id=run_uuid,
+                runtime_task_id=run_uuid,
+                content=content,
+                parts=[part] if isinstance(part, dict) else None,
+                source="web_chat_runtime",
+                materialize_chat_message=False,
+                metadata={
+                    "source": "web_chat_runtime",
+                    "runtime_task_id": run_uuid.hex,
+                    "stream_event_type": event_type,
+                    "durable_stream_step": True,
+                },
+            )
+            await db.commit()
+            return result
+    except Exception as exc:
+        logger.warning("[WebChatRun] Stream step transcript persistence failed (non-fatal): {}", exc)
+        return None
+
+
 async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[dict[str, Any]]:
     run_uuid = _run_id(run_id)
     async with (
@@ -3453,6 +3497,31 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 event = build_thinking_event(text)
             else:
                 event = build_chunk_event(text, reset=reset)
+            if text and not reset:
+                persisted_event = await _persist_stream_step_event(
+                    agent_id=agent.id,
+                    tenant_id=agent.tenant_id,
+                    user_id=user.id,
+                    session_id=session_id,
+                    run_uuid=run_uuid,
+                    event_type=kind,
+                    content=text,
+                    part=event.get("part") if isinstance(event.get("part"), dict) else None,
+                )
+                if persisted_event:
+                    event_parts = persisted_event.transcript_event.parts_json or []
+                    event.update(
+                        {
+                            "transcript_event_id": str(persisted_event.event_id),
+                            "sequence": persisted_event.sequence,
+                            "event_type": kind,
+                            "role": "assistant",
+                            "content": persisted_event.transcript_event.content or text,
+                            "message_id": str(persisted_event.message_id) if persisted_event.message_id else None,
+                            "parts": event_parts or None,
+                            "metadata": persisted_event.transcript_event.metadata_json or {},
+                        }
+                    )
             await broadcast_web_chat_event(agent.id, session_id, event)
 
         stream_batcher = _WebChatStreamMicroBatcher(send_stream_event)

@@ -626,10 +626,40 @@ function isStreamingAssistantPlaceholder(message: AgentChatMessage | undefined):
   );
 }
 
+function isStreamingAssistantMessage(message: AgentChatMessage | undefined): boolean {
+  return Boolean(message && message.role === 'assistant' && (message as any)._streaming);
+}
+
+function joinProcessNotes(existing: string | undefined, next: string): string {
+  const current = existing || '';
+  if (!current.trim()) return next;
+  if (!next.trim()) return current;
+  const separator = current.endsWith('\n') || next.startsWith('\n') ? '' : '\n';
+  return `${current}${separator}${next}`;
+}
+
 function sealStreamingAssistantStep(message: AgentChatMessage): AgentChatMessage {
   const next = { ...(message as any) };
+  const visibleText = String(next.content || '');
+  if (visibleText.trim()) {
+    next.thinking = joinProcessNotes(next.thinking, visibleText);
+    next.content = '';
+  }
   delete next._streaming;
   return next as AgentChatMessage;
+}
+
+function sealStreamingAssistantBeforeProcessMessage(
+  messages: AgentChatMessage[],
+  options: { dropEmpty?: boolean } = {},
+): AgentChatMessage[] {
+  const dropEmpty = options.dropEmpty === true;
+  const last = messages[messages.length - 1];
+  if (!isStreamingAssistantMessage(last)) return messages;
+  if (String(last.content || '').trim() || String(last.thinking || '').trim()) {
+    return [...messages.slice(0, -1), sealStreamingAssistantStep(last)];
+  }
+  return dropEmpty ? messages.slice(0, -1) : messages;
 }
 
 function isTerminalToolCard(message: AgentChatMessage): boolean {
@@ -647,15 +677,7 @@ export function appendToolCallMessage(
   toolMessage: AgentChatMessage,
 ): AgentChatMessage[] {
   const terminalCard = isTerminalToolCard(toolMessage);
-  let base = messages;
-  const last = base[base.length - 1];
-  if (last && isStreamingAssistantPlaceholder(last)) {
-    if (String(last.thinking || '').trim()) {
-      base = [...base.slice(0, -1), sealStreamingAssistantStep(last)];
-    } else if (terminalCard) {
-      base = base.slice(0, -1);
-    }
-  }
+  const base = sealStreamingAssistantBeforeProcessMessage(messages, { dropEmpty: terminalCard });
 
   const lastIdx = base.length - 1;
   const currentLast = base[lastIdx];
@@ -992,7 +1014,10 @@ export function applyTranscriptEvent(
 
   if (eventType === 'assistant_delta' || eventType === 'chunk') {
     return {
-      messages: applyStreamingChunkEvent(state.messages, { type: 'chunk', content }),
+      messages: applyStreamingChunkEvent(state.messages, { type: 'chunk', content }).map((message, index, arr) => {
+        if (index !== arr.length - 1 || message.role !== 'assistant') return message;
+        return { ...message, timestamp } as AgentChatMessage;
+      }),
       seenEventIds,
       ui: uiForPhase(nextPhase),
       pendingSessionPermissions,
@@ -1017,14 +1042,20 @@ export function applyTranscriptEvent(
       if (runtimeEvent.eventStatus === 'session_permission_required' && pendingRequestId) {
         const nextPendingSessionPermissions = upsertSessionPermissionQueue(pendingSessionPermissions, runtimeEvent);
         return {
-          messages: renderSessionPermissionQueue(state.messages, nextPendingSessionPermissions),
+          messages: renderSessionPermissionQueue(
+            sealStreamingAssistantBeforeProcessMessage(state.messages),
+            nextPendingSessionPermissions,
+          ),
           seenEventIds,
           ui: uiForPhase('awaiting_approval'),
           pendingSessionPermissions: nextPendingSessionPermissions,
         };
       }
       return {
-        messages: [...state.messages, runtimeEvent],
+        messages: [
+          ...sealStreamingAssistantBeforeProcessMessage(state.messages),
+          runtimeEvent,
+        ],
         seenEventIds,
         ui: uiForPhase(nextPhase),
         pendingSessionPermissions,
@@ -1138,14 +1169,20 @@ export function applyTranscriptEvent(
     if (runtimeEvent.eventStatus === 'session_permission_required' && pendingRequestId) {
       const nextPendingSessionPermissions = upsertSessionPermissionQueue(pendingSessionPermissions, runtimeEvent);
       return {
-        messages: renderSessionPermissionQueue(state.messages, nextPendingSessionPermissions),
+        messages: renderSessionPermissionQueue(
+          sealStreamingAssistantBeforeProcessMessage(state.messages),
+          nextPendingSessionPermissions,
+        ),
         seenEventIds,
         ui: uiForPhase('awaiting_approval'),
         pendingSessionPermissions: nextPendingSessionPermissions,
       };
     }
     return {
-      messages: [...state.messages, runtimeEvent],
+      messages: [
+        ...sealStreamingAssistantBeforeProcessMessage(state.messages),
+        runtimeEvent,
+      ],
       seenEventIds,
       ui: uiForPhase(nextPhase),
       pendingSessionPermissions,

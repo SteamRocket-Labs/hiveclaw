@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -17,6 +18,9 @@ class ActivationContext:
     goal_terms: list[str] = field(default_factory=list)
     owner_terms: list[str] = field(default_factory=list)
     company_terms: list[str] = field(default_factory=list)
+    # Injectable clock for deterministic scoring (evals, replay); None → wall
+    # clock. BaseLevel decay is the only time-dependent term.
+    now: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +31,10 @@ class ActivationPolicy:
     open_loop_weight: float = 0.2
     retention_weight: float = 0.2
     confidence_weight: float = 0.05
-    usage_heat_weight: float = 0.05
+    # BaseLevel (design §4.3) replaces the old tie-break-only usage heat:
+    # frequency + power-law recency + feedback credit, promoted to a real
+    # (but still bounded, non-hijacking) weight alongside goal/owner pressure.
+    base_level_weight: float = 0.2
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +43,10 @@ class ActivationDecision:
     score: float
     reasons: list[str]
     suppressed: bool = False
+    # Unclamped ranking score: `score` saturates at 1.0 for display/budget
+    # contracts, which would collapse ordering between highly-relevant items;
+    # rankers must sort on this instead.
+    raw_score: float = 0.0
 
 
 class ActivationScorer:
@@ -45,11 +56,15 @@ class ActivationScorer:
     def score(self, item: MemoryItem, context: ActivationContext) -> ActivationDecision:
         lifecycle_suppression = memory_lifecycle_suppression_reason(item.metadata)
         if lifecycle_suppression:
-            return ActivationDecision(item=item, score=0.0, reasons=[lifecycle_suppression], suppressed=True)
+            return ActivationDecision(
+                item=item, score=0.0, reasons=[lifecycle_suppression], suppressed=True, raw_score=0.0
+            )
 
         sensitivity = str(item.metadata.get("sensitivity", "PL1_public"))
         if not context.principal_stack.can_access_sensitivity(sensitivity):
-            return ActivationDecision(item=item, score=0.0, reasons=["sensitivity_strip"], suppressed=True)
+            return ActivationDecision(
+                item=item, score=0.0, reasons=["sensitivity_strip"], suppressed=True, raw_score=0.0
+            )
 
         policy = self.policy
         score = float(item.score)
@@ -76,12 +91,17 @@ class ActivationScorer:
         if _float_meta_any(item, ("confidence", "conf"), default=0.0) >= 0.8:
             score += policy.confidence_weight
             reasons.append("confidence_weight")
-        usage_heat = _usage_heat(item)
-        if usage_heat > 0:
-            score += usage_heat * policy.usage_heat_weight
-            reasons.append("usage_heat")
+        base_level = _base_level(item, now=context.now)
+        if base_level > 0:
+            score += base_level * policy.base_level_weight
+            reasons.append("base_level")
 
-        return ActivationDecision(item=item, score=round(min(score, 1.0), 4), reasons=reasons)
+        return ActivationDecision(
+            item=item,
+            score=round(min(score, 1.0), 4),
+            reasons=reasons,
+            raw_score=round(score, 4),
+        )
 
 
 def _terms(text: str) -> set[str]:
@@ -140,26 +160,52 @@ def _bool_meta_dict(metadata: dict, key: str) -> bool:
     return normalized in {"1", "true", "yes", "y", "on"}
 
 
-def _usage_heat(item: MemoryItem) -> float:
-    """Bounded recall heat from sidecar telemetry.
+# ACT-R style power-law decay exponent (design §4.3): strength of one access
+# aged `t` hours contributes t^(-d). d=0.5 is the classic memory-decay value.
+_BASE_LEVEL_DECAY = 0.5
+# Minimum age (hours) per access — prevents t^(-d) blow-up for just-touched
+# entries; one minute is well below any real inter-turn gap.
+_BASE_LEVEL_MIN_AGE_HOURS = 1.0 / 60.0
+# Log-saturation reference: raw strength at which BaseLevel reaches 1.0.
+# A full K=8 ring accessed within the last hour sums to ~8.0, so ~20 leaves
+# clear headroom for credit while keeping normal usage in the responsive zone.
+_BASE_LEVEL_SATURATION = 20.0
 
-    The signal is intentionally small: access telemetry can break ties and keep
-    useful memories alive, but cannot replace literal relevance, owner/company
-    pressure, or explicit retention policy.
+
+def _base_level(item: MemoryItem, *, now: datetime | None = None) -> float:
+    """Bounded frequency + power-law recency + feedback credit (design §4.3).
+
+    ``BaseLevel = min(1, ln(1 + Σ t_j^(-d) + credit) / ln(1 + saturation))``
+    fed by the lifecycle-sidecar telemetry joined onto item metadata:
+    ``recent_accesses`` (K-ring of ISO timestamps; falls back to the legacy
+    single ``last_accessed`` point so pre-ring sidecar data keeps working)
+    and ``credit`` (owner-feedback reinforcement, may be negative).
     """
-    access_count = max(0.0, _float_meta(item, "access_count"))
-    count_score = min(access_count, 10.0) / 10.0
+    raw_ring = item.metadata.get("recent_accesses")
+    moments: list[datetime] = []
+    if isinstance(raw_ring, list | tuple):
+        for value in raw_ring:
+            parsed = parse_utc_timestamp(str(value or ""))
+            if parsed is not None:
+                moments.append(parsed)
+    if not moments:
+        raw_last_accessed = str(item.metadata.get("last_accessed") or "").strip()
+        if raw_last_accessed and raw_last_accessed.lower() != "never":
+            parsed = parse_utc_timestamp(raw_last_accessed)
+            if parsed is not None:
+                moments.append(parsed)
 
-    recency_score = 0.0
-    raw_last_accessed = str(item.metadata.get("last_accessed") or "").strip()
-    if raw_last_accessed and raw_last_accessed.lower() != "never":
-        accessed_at = parse_utc_timestamp(raw_last_accessed)
-        if accessed_at is not None:
-            age_days = max(0.0, (datetime.now(UTC) - accessed_at).total_seconds() / 86400)
-            if age_days <= 7:
-                recency_score = 1.0
-            elif age_days <= 30:
-                recency_score = 0.5
+    credit = _float_meta(item, "credit")
+    if not moments and credit == 0.0:
+        return 0.0
 
-    heat = (0.7 * count_score) + (0.3 * recency_score)
-    return round(min(1.0, max(0.0, heat)), 4)
+    reference = now or datetime.now(UTC)
+    strength = 0.0
+    for moment in moments:
+        age_hours = max((reference - moment).total_seconds() / 3600.0, _BASE_LEVEL_MIN_AGE_HOURS)
+        strength += age_hours**-_BASE_LEVEL_DECAY
+    raw = strength + credit
+    if raw <= 0.0:
+        return 0.0
+    normalized = math.log1p(raw) / math.log1p(_BASE_LEVEL_SATURATION)
+    return round(min(1.0, normalized), 4)

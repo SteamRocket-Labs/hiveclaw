@@ -25,14 +25,20 @@ def bump_access(
     file_relpath: str,
     entry_id: str,
     now: datetime | None = None,
+    create_if_missing: bool = False,
 ) -> bool:
-    """Increment `access_count` / refresh `last_accessed` in the lifecycle sidecar.
+    """Increment access telemetry (count / last_accessed / K-ring) in the sidecar.
 
     Returns True when a sidecar record exists for `entry_id` and was bumped;
-    False when no sidecar record exists (orphan prose line, or sidecar absent).
-    `file_relpath` is retained for caller/audit compatibility but is no longer
-    used to locate the entry — the sidecar is keyed by `entry_id`.
+    False when no sidecar record exists (orphan prose line, or sidecar absent)
+    unless ``create_if_missing`` seeds a telemetry-only record (knowledge and
+    milestone pages have no authored lifecycle record but still accumulate
+    BaseLevel frequency). `file_relpath` is retained for caller/audit
+    compatibility but is no longer used to locate the entry — the sidecar is
+    keyed by `entry_id`.
     """
 
     del file_relpath  # join key is entry_id; prose path no longer touched
-    return bump_access_telemetry(data_root, agent_id, entry_id=entry_id, now=now)
+    return bump_access_telemetry(
+        data_root, agent_id, entry_id=entry_id, now=now, create_if_missing=create_if_missing
+    )

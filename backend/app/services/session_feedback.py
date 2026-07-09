@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import logging
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -17,6 +18,8 @@ from app.models.chat_session import ChatSession
 from app.models.session_feedback import SessionFeedbackEvent
 from app.models.user import User
 from app.services.decision_trace import DecisionTraceStore, decision_id_from_ref, normalize_decision_ref
+
+logger = logging.getLogger(__name__)
 
 AppendMemory = Callable[..., Awaitable[Any]]
 
@@ -190,17 +193,38 @@ def _write_feedback_activation_sidecar(
     label: str,
     source_refs: list[str],
     activation_event: dict[str, Any],
+    session_started_at: datetime | None = None,
 ) -> dict[str, Any]:
     relative = _ACTIVATION_FEEDBACK_SIDECAR
     path = Path(data_root) / str(agent_id) / relative
     path.parent.mkdir(parents=True, exist_ok=True)
+    heat_delta = _feedback_heat_delta(label)
+    # M3 FeedbackCredit (design §4.3): the heat/decay signal is no longer
+    # write-only — it lands as bounded credit on the lifecycle-sidecar entries
+    # activated during this session. Mechanical bookkeeping only; MD prose and
+    # the Memory Gate write surfaces stay untouched. The session working set
+    # (M4) will narrow "activated during this session" to precise W_t members.
+    credited_entry_ids: list[str] = []
+    if session_started_at is not None:
+        from app.memory.lifecycle_store import apply_feedback_credit_to_recent
+
+        try:
+            credited_entry_ids = apply_feedback_credit_to_recent(
+                Path(data_root),
+                agent_id,
+                delta=heat_delta * 0.5,
+                since=session_started_at,
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("[session_feedback] feedback credit application failed: %s", exc)
     payload = {
         "schema": "hive.ccplus.activation_feedback_sidecar.v1",
         "agent_id": str(agent_id),
         "session_id": str(session_id),
         "label": label,
-        "heat_delta": _feedback_heat_delta(label),
+        "heat_delta": heat_delta,
         "decay_signal": _feedback_decay_signal(label),
+        "credited_entry_ids": credited_entry_ids,
         "source_refs": list(source_refs),
         "activation_event": activation_event,
         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -212,6 +236,7 @@ def _write_feedback_activation_sidecar(
         "path": str(relative),
         "heat_delta": payload["heat_delta"],
         "decay_signal": payload["decay_signal"],
+        "credited_entry_ids": credited_entry_ids,
         "event_id": activation_event.get("event_id", ""),
     }
 
@@ -289,6 +314,7 @@ async def record_session_feedback(
         label=normalized_label,
         source_refs=source_refs,
         activation_event=activation_event,
+        session_started_at=getattr(session, "created_at", None),
     )
     attribution = {
         "session_id": str(session.id),

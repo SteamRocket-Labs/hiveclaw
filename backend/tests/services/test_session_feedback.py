@@ -258,3 +258,85 @@ async def test_record_misleading_session_feedback_marks_harmful_calibration(tmp_
     assert result["label"] == "misleading"
     assert result["calibration_result"]["t3_status"] == "duplicate"
     assert result["calibration_result"]["counter_delta"]["harmful_count"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_feedback_credit_reaches_recently_activated_sidecar_entries(tmp_path) -> None:
+    """M3 FeedbackCredit: owner feedback must move the lifecycle-sidecar credit
+    of memories activated during this session — and only those — closing the
+    heat_delta/decay_signal write-only loop. Sidecar-only: no MD prose touched."""
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace as T3AppendResult
+
+    from app.memory.lifecycle_store import (
+        MemoryLifecycleStore,
+        bump_access_telemetry,
+        lifecycle_path,
+    )
+    from app.services.session_feedback import record_session_feedback
+
+    db = _FakeDB()
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    session_started = datetime.now(UTC) - timedelta(minutes=30)
+
+    path = lifecycle_path(tmp_path, agent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    store = MemoryLifecycleStore(path)
+    store.create_active("recalled during session", entry_id="usr-in-session")
+    store.create_active("recalled long ago", entry_id="usr-stale")
+    bump_access_telemetry(tmp_path, agent_id, entry_id="usr-in-session", now=session_started + timedelta(minutes=5))
+    bump_access_telemetry(tmp_path, agent_id, entry_id="usr-stale", now=session_started - timedelta(days=3))
+
+    async def fake_append_memory(*_args, **_kwargs):
+        return T3AppendResult(
+            status="overlay",
+            category="feedback",
+            entry_id="explicit-feedback-credit",
+            path="memory/explicit/entries/explicit-feedback-credit.md",
+        )
+
+    result = await record_session_feedback(
+        db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        session=SimpleNamespace(
+            id=session_id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            source_channel="web",
+            created_at=session_started,
+        ),
+        current_user=SimpleNamespace(id=user_id),
+        label="useful",
+        reason="The deployment memory was exactly right.",
+        data_root=tmp_path,
+        append_memory=fake_append_memory,
+    )
+
+    sidecar = result["calibration_result"]["heat_decay_sidecar"]
+    assert sidecar["credited_entry_ids"] == ["usr-in-session"]
+
+    reloaded = MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id))
+    assert reloaded.get("usr-in-session").credit > 0
+    assert reloaded.get("usr-stale").credit == 0.0
+
+    negative = await record_session_feedback(
+        db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        session=SimpleNamespace(
+            id=session_id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            source_channel="web",
+            created_at=session_started,
+        ),
+        current_user=SimpleNamespace(id=user_id),
+        label="misleading",
+        reason="Actually that was stale.",
+        data_root=tmp_path,
+        append_memory=fake_append_memory,
+    )
+    assert negative["calibration_result"]["heat_decay_sidecar"]["credited_entry_ids"] == ["usr-in-session"]
+    assert MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id)).get("usr-in-session").credit == pytest.approx(0.0)

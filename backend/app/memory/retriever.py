@@ -159,6 +159,7 @@ class MemoryRetriever:
                     source=source_ref,
                     metadata={
                         "page_id": page_id,
+                        "entry_id": page_id,
                         "title": title,
                         "page_kind": page_kind,
                         "source_ref": source_ref,
@@ -179,6 +180,7 @@ class MemoryRetriever:
     ) -> list[MemoryItem]:
         from app.memory.access_log import bump_access
 
+        items = self._join_access_telemetry(items, agent_id=agent_id)
         scorer = ActivationScorer()
         activated: list[MemoryItem] = []
         for item in items:
@@ -193,12 +195,14 @@ class MemoryRetriever:
                         agent_id,
                         file_relpath=item.source,
                         entry_id=str(entry_id),
+                        create_if_missing=True,
                     )
                 except (OSError, ValueError) as exc:
                     logger.debug("[retriever] access bump failed for %s: %s", entry_id, exc)
             metadata = {
                 **item.metadata,
                 "activation_score": decision.score,
+                "activation_raw_score": decision.raw_score,
                 "activation_reasons": decision.reasons,
             }
             activated.append(
@@ -210,7 +214,45 @@ class MemoryRetriever:
                     metadata=metadata,
                 )
             )
-        return sorted(activated, key=lambda item: item.score, reverse=True)
+        # Rank on the unclamped score: the display score saturates at 1.0,
+        # which would erase ordering between highly-relevant items.
+        return sorted(activated, key=lambda item: float(item.metadata.get("activation_raw_score") or item.score), reverse=True)
+
+    def _join_access_telemetry(self, items: list[MemoryItem], *, agent_id: uuid.UUID) -> list[MemoryItem]:
+        """Join lifecycle-sidecar telemetry onto retrieved items (design §4.3).
+
+        Closes the write-only half-loop: ``bump_access`` has always written the
+        sidecar; this read-side join is what lets BaseLevel actually see
+        frequency, recency, and feedback credit. Joins strictly before this
+        turn's own bumps so one retrieval scores against the pre-turn state.
+        """
+        if not items:
+            return items
+        try:
+            from app.memory.lifecycle_store import read_access_telemetry
+
+            telemetry = read_access_telemetry(self.data_root, agent_id)
+        except (OSError, ValueError) as exc:
+            logger.warning("[retriever] telemetry join failed: %s", exc)
+            return items
+        if not telemetry:
+            return items
+        joined: list[MemoryItem] = []
+        for item in items:
+            record = telemetry.get(str(item.metadata.get("entry_id") or ""))
+            if not record:
+                joined.append(item)
+                continue
+            joined.append(
+                MemoryItem(
+                    kind=item.kind,
+                    content=item.content,
+                    score=item.score,
+                    source=item.source,
+                    metadata={**item.metadata, **record},
+                )
+            )
+        return joined
 
     def _retrieve_explicit_overlay(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
         items: list[MemoryItem] = []

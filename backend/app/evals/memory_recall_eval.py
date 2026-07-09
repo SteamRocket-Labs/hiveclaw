@@ -19,9 +19,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from contextlib import contextmanager
+
 from app.memory.activation import ActivationContext
+from app.memory.lifecycle_store import bump_access_telemetry, lifecycle_path
 from app.memory.relation_graph import KNOWLEDGE_PAGE_DIRS
 from app.memory.retriever import MemoryRetriever
 from app.memory.wiki_retrieval import search_wiki_pages
@@ -311,6 +315,37 @@ def default_memory_recall_cases() -> tuple[MemoryRecallCase, ...]:
     return _DEFAULT_CASES
 
 
+@contextmanager
+def _sidecar_snapshot(data_root: Path, agent_id: uuid.UUID):
+    """Restore the lifecycle sidecar after the block (case isolation)."""
+    path = lifecycle_path(data_root, agent_id)
+    before = path.read_bytes() if path.exists() else None
+    try:
+        yield
+    finally:
+        if before is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(before)
+
+
+def seed_base_level_telemetry(data_root: Path, agent_id: uuid.UUID, *, now: datetime) -> None:
+    """Seed deterministic usage history for the M2 BaseLevel comparison run.
+
+    The api-timeout runbook is the frequently-consulted page (a full recent
+    ring); the lexically-stuffed archive has never been touched. With the
+    BaseLevel term active, frequency must flip the headroom case.
+    """
+    for hours_ago in range(8, 0, -1):
+        bump_access_telemetry(
+            data_root,
+            agent_id,
+            entry_id="knowledge/api-timeout-runbook",
+            now=now - timedelta(hours=hours_ago),
+            create_if_missing=True,
+        )
+
+
 def _score_cases(ranked_ids_by_case: dict[str, list[str]], cases: tuple[MemoryRecallCase, ...]) -> dict:
     case_reports: dict[str, dict] = {}
     recall_values: list[float] = []
@@ -381,26 +416,32 @@ async def run_retriever_pipeline_eval(
     agent_id: uuid.UUID,
     *,
     cases: tuple[MemoryRecallCase, ...] | None = None,
+    now: datetime | None = None,
 ) -> dict:
     """Rank fixture pages through the full retriever + activation pipeline.
 
     Sources are memory-relative markdown paths (``memory/<dir>/<slug>.md``);
     expected page ids are mapped onto that shape for scoring so the same
-    cases drive both runners.
+    cases drive both runners. ``now`` pins the BaseLevel decay clock for
+    deterministic scoring against seeded telemetry.
     """
     active_cases = cases or _DEFAULT_CASES
     retriever = MemoryRetriever(data_root=data_root)
     ranked_by_case: dict[str, list[str]] = {}
     scores_by_case: dict[str, list[float]] = {}
     for case in active_cases:
-        context = ActivationContext(query=case.query, principal_stack=PrincipalStack())
-        items = await retriever.retrieve(
-            agent_id,
-            case.query,
-            session_id=None,
-            tenant_id=None,
-            activation_context=context,
-        )
+        context = ActivationContext(query=case.query, principal_stack=PrincipalStack(), now=now)
+        # Cases are independent query scenarios: retrieval's own access bumps
+        # must not leak usage history from one case into the next, so the
+        # sidecar is restored after each case (seeded telemetry stays fixed).
+        with _sidecar_snapshot(data_root, agent_id):
+            items = await retriever.retrieve(
+                agent_id,
+                case.query,
+                session_id=None,
+                tenant_id=None,
+                activation_context=context,
+            )
         ranked_by_case[case.id] = [item.source for item in items]
         scores_by_case[case.id] = [item.score for item in items]
 

@@ -33,6 +33,7 @@ from app.models.agent import Agent
 from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause
 from app.services.plan_mode_core import build_plan_execution_instruction
 from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
 from app.services.runtime_task_service import (
     build_restart_reconciliation_metadata,
     build_restart_replay_contract,
@@ -1590,6 +1591,17 @@ async def _invoke_agent_for_triggers(
     # engine branch; the rest continue down the existing prose-ReAct path.
     from app.services.workflow_trigger import fire_workflow_for_trigger
 
+    admission = await admit_agent_runtime_tenant(agent_id, source="trigger")
+    if not admission.ok:
+        await _skip_trigger_runtime_task(
+            runtime_task_id,
+            skip_reason=admission.reason_code,
+            result_summary=admission.message,
+            metadata_json=admission.metadata(),
+        )
+        return
+    tenant_id = admission.tenant_id
+
     react_triggers: list[AgentTrigger] = []
     for trigger in triggers:
         try:
@@ -1632,8 +1644,7 @@ async def _invoke_agent_for_triggers(
             return
 
     try:
-        tid = await resolve_tenant_for_agent(agent_id)
-        async with tenant_scoped_session(tid) as db:
+        async with tenant_scoped_session(tenant_id, require_tenant=True, source="trigger") as db:
             # Load agent
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
@@ -1702,7 +1713,7 @@ async def _invoke_agent_for_triggers(
 
             session = ChatSession(
                 agent_id=agent_id,
-                tenant_id=tid,
+                tenant_id=tenant_id,
                 user_id=agent.creator_id,
                 participant_id=agent_participant.id if agent_participant else None,
                 source_channel="trigger",
@@ -1741,7 +1752,7 @@ async def _invoke_agent_for_triggers(
             await append_session_event(
                 db=db,
                 agent_id=agent_id,
-                tenant_id=tid,
+                tenant_id=tenant_id,
                 session_id=session_id,
                 run_id=run_uuid,
                 actor_type="user",
@@ -1772,7 +1783,7 @@ async def _invoke_agent_for_triggers(
             # scoped session closes; stage-2b ChatMessage INSERTs must set
             # tenant_id and run under a tenant-scoped session).
             agent_participant_id = agent_participant.id if agent_participant else None
-            agent_tenant_id = tid
+            agent_tenant_id = tenant_id
             agent_creator_id = agent.creator_id
             trigger_run_uuid = run_uuid
 

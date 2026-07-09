@@ -22,6 +22,28 @@ def _route_runtime_accessors(monkeypatch, fake_session, *, tenant_id=None):
 
     monkeypatch.setattr("app.services.runtime_task_service.resolve_tenant_for_agent", _fake_resolve_tenant)
 
+    async def _fake_admit_tenant(agent_id, *, source, **_kwargs):
+        from app.runtime.tenant_admission import RuntimeTenantAdmission, blocked_runtime_tenant_admission
+
+        if tenant_id is None:
+            return blocked_runtime_tenant_admission(
+                reason_code="agent_tenant_missing",
+                message=f"{source} runtime is blocked because agent {agent_id} has no tenant.",
+                source=source,
+                agent_id=agent_id,
+            )
+        return RuntimeTenantAdmission(
+            ok=True,
+            tenant_id=tenant_id,
+            status="allowed",
+            reason_code="tenant_resolved",
+            message=f"{source} runtime tenant resolved.",
+            agent_id=agent_id,
+            source=source,
+        )
+
+    monkeypatch.setattr("app.services.runtime_task_service.admit_agent_runtime_tenant", _fake_admit_tenant)
+
 
 class _FailingSession:
     def __init__(self, *, fail_on: str):
@@ -163,6 +185,28 @@ async def test_create_runtime_task_record_persists_runtime_budget_metadata(monke
     assert task.budget_run_id == budget_run_id
     assert task.budget_reservation_key == "subagent:child-1"
     assert task.budget_admission_status == "reserved"
+
+
+@pytest.mark.asyncio
+async def test_create_runtime_task_record_blocks_parent_agent_without_tenant(monkeypatch):
+    from app.runtime.tenant_admission import RuntimeTenantPreconditionError
+    from app.services.runtime_task_service import create_runtime_task_record
+
+    fake_session = _CreateSession()
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=None)
+
+    with pytest.raises(RuntimeTenantPreconditionError) as exc:
+        await create_runtime_task_record(
+            task_id=uuid4().hex,
+            task_type="trigger",
+            parent_agent_id=uuid4(),
+            metadata_json={"source": "trigger"},
+        )
+
+    assert exc.value.status == "blocked_precondition"
+    assert exc.value.reason_code == "agent_tenant_missing"
+    assert fake_session.added == []
+    assert fake_session.commit_calls == 0
 
 
 @pytest.mark.asyncio

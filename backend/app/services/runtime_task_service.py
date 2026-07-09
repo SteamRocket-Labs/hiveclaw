@@ -10,6 +10,8 @@ from sqlalchemy import or_, select
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
+from app.runtime.tenant_admission import raise_runtime_tenant_precondition
+from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
@@ -349,11 +351,22 @@ async def create_runtime_task_record(
 
     started_at = datetime.now(timezone.utc) if status == "running" else None
     # Stage-2b: runtime_tasks now carries a tenant_id (RLS). Derive it from the
-    # parent agent so the INSERT lands inside the agent's tenant — without it the
-    # row is NULL and (post role-flip) globally visible. No parent_agent → None
-    # (orphan, surfaced honestly the same way the backfill leaves orphans NULL).
-    tenant_id = await resolve_tenant_for_agent(parent_agent_id)
-    async with tenant_scoped_session(tenant_id) as db:
+    # parent agent so the INSERT lands inside the agent's tenant. A declared
+    # parent agent whose tenant cannot be resolved is a blocked precondition,
+    # not a valid NULL-tenant runtime task. No parent_agent still means an
+    # orphan/backfill record and keeps the historical fail-closed None scope.
+    if parent_agent_id is not None:
+        admission = await admit_agent_runtime_tenant(parent_agent_id, source=f"runtime_task:{task_type}")
+        if not admission.ok:
+            raise_runtime_tenant_precondition(admission)
+        tenant_id = admission.tenant_id
+    else:
+        tenant_id = None
+    async with tenant_scoped_session(
+        tenant_id,
+        require_tenant=parent_agent_id is not None,
+        source=f"runtime_task:{task_type}",
+    ) as db:
         try:
             db.add(
                 RuntimeTask(

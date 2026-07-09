@@ -33,6 +33,7 @@ from app.services.runtime_task_service import (
     update_runtime_task_record,
 )
 from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
+from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 # Legacy human-readable protocol note. Runtime consolidation uses
@@ -1344,7 +1345,16 @@ async def _execute_heartbeat(
     re-invocation without the tick's tenant in scope).
     """
     if tenant_id is None:
-        tenant_id = await resolve_tenant_for_agent(agent_id)
+        admission = await admit_agent_runtime_tenant(agent_id, source="heartbeat")
+        if not admission.ok:
+            await _skip_heartbeat_runtime_task(
+                runtime_task_id,
+                skip_reason=admission.reason_code,
+                result_summary=admission.message,
+                metadata_json=admission.metadata(),
+            )
+            return
+        tenant_id = admission.tenant_id
     heartbeat_session_id: str | None = None
     lease_held = lease_acquired
     if not lease_held:

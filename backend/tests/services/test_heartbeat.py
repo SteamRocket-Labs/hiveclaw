@@ -811,6 +811,58 @@ async def test_execute_heartbeat_marks_runtime_task_skipped_when_no_model(monkey
 
 
 @pytest.mark.asyncio
+async def test_execute_heartbeat_blocks_when_agent_tenant_missing(monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    updates = []
+    opened_session = False
+    lease_attempted = False
+
+    async def fake_update_runtime_task_record(task_id, **fields):
+        updates.append((task_id, fields))
+        return True
+
+    async def fake_resolve_tenant(_agent_id, *_args, **_kwargs):
+        return None
+
+    async def fake_admit_tenant(agent_id, *, source, **_kwargs):
+        from app.runtime.tenant_admission import blocked_runtime_tenant_admission
+
+        return blocked_runtime_tenant_admission(
+            reason_code="agent_tenant_missing",
+            message=f"{source} runtime is blocked because agent {agent_id} has no tenant.",
+            source=source,
+            agent_id=agent_id,
+        )
+
+    async def fake_try_acquire_heartbeat_lease(_agent_id):
+        nonlocal lease_attempted
+        lease_attempted = True
+        return True
+
+    def fake_tenant_scoped_session(*_args, **_kwargs):
+        nonlocal opened_session
+        opened_session = True
+        raise AssertionError("tenant_scoped_session should not open when runtime tenant admission blocks")
+
+    monkeypatch.setattr(heartbeat, "resolve_tenant_for_agent", fake_resolve_tenant)
+    monkeypatch.setattr(heartbeat, "admit_agent_runtime_tenant", fake_admit_tenant)
+    monkeypatch.setattr(heartbeat, "_try_acquire_heartbeat_lease_async", fake_try_acquire_heartbeat_lease)
+    monkeypatch.setattr(heartbeat, "tenant_scoped_session", fake_tenant_scoped_session)
+    monkeypatch.setattr(heartbeat, "update_runtime_task_record", fake_update_runtime_task_record)
+
+    await heartbeat._execute_heartbeat(agent_id, runtime_task_id="heartbeat-task-1")
+
+    assert lease_attempted is False
+    assert opened_session is False
+    assert updates[-1][0] == "heartbeat-task-1"
+    assert updates[-1][1]["status"] == "skipped"
+    assert updates[-1][1]["metadata_json"]["skip_reason"] == "agent_tenant_missing"
+    assert updates[-1][1]["metadata_json"]["precondition_status"] == "blocked_precondition"
+
+
+@pytest.mark.asyncio
 async def test_resume_persisted_heartbeat_runs_requeues_unstarted_run(monkeypatch):
     from app.services import heartbeat
 

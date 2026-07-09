@@ -9,6 +9,7 @@ from typing import Any
 from app.core.execution_context import get_execution_identity
 from app.database import async_session, enter_rls_bypass
 from app.models.runtime_task import RuntimeTask
+from app.runtime.tenant_admission import RuntimeTenantPreconditionError
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.runtime import ToolExecutionContext
 from app.tools.workspace import ensure_workspace
@@ -57,19 +58,26 @@ class ToolRuntimeResolver:
         # bare read of ``agents`` fails closed once the app connects as a
         # non-owner role. ``resolve_tenant_for_agent`` is the sanctioned narrow
         # ``enter_rls_bypass`` lookup (single agent row by PK, audited).
-        tenant_id = None
         try:
             tenant = await resolve_tenant_for_agent(agent_id)
-            if tenant:
-                tenant_id = str(tenant)
         except Exception as exc:
-            # Cutover hardening (stage-3): after the role flip a resolve failure
-            # here leaves the tool running with an empty tenant GUC — every
-            # governed query then fail-closes. Surface it loudly (was a silent
-            # debug line) instead of swallowing the make-or-break signal.
             logger.warning(
                 "[Governance] tenant resolution failed for tool execution (agent=%s): %s", agent_id, exc
             )
+            raise RuntimeTenantPreconditionError(
+                reason_code="agent_tenant_resolution_failed",
+                message=f"tool runtime is blocked because tenant resolution failed for agent {agent_id}.",
+                source="tool_runtime",
+                agent_id=agent_id,
+            ) from exc
+        if tenant is None:
+            raise RuntimeTenantPreconditionError(
+                reason_code="agent_tenant_missing",
+                message=f"tool runtime is blocked because agent {agent_id} has no tenant.",
+                source="tool_runtime",
+                agent_id=agent_id,
+            )
+        tenant_id = str(tenant)
 
         workspace = await ensure_workspace(agent_id, tenant_id=tenant_id)
         resolved_budget_run_id = str(budget_run_id) if budget_run_id else await _resolve_budget_run_id_from_runtime_task(runtime_task_id)

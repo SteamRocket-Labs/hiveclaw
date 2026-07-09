@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Session as SyncSession
 
 from app.config import get_settings
+from app.runtime.tenant_admission import RuntimeTenantPreconditionError
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -196,6 +197,8 @@ async def tenant_scoped_session(
     tenant_id: str | uuid.UUID | None = None,
     *,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    require_tenant: bool = False,
+    source: str = "tenant_scoped_session",
 ) -> AsyncIterator[AsyncSession]:
     """Open a session whose RLS GUC is pinned to ``tenant_id`` (§9 P0).
 
@@ -210,8 +213,15 @@ async def tenant_scoped_session(
     ``session_factory`` exists for callers that hold their own engine
     (integration tests against a Testcontainers PG, future workflow engine).
     """
-    factory = session_factory or async_session
     effective = tenant_id if tenant_id is not None else _current_tenant_id.get()
+    if require_tenant and not effective:
+        raise RuntimeTenantPreconditionError(
+            reason_code="tenant_required",
+            message=f"{source} requires a tenant before opening a mutating runtime session.",
+            source=source,
+        )
+
+    factory = session_factory or async_session
     previous_tenant = _current_tenant_id.get()
 
     async with factory() as session:

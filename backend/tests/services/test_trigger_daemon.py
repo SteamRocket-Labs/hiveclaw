@@ -90,6 +90,28 @@ def _route_scoped_session(monkeypatch, trigger_daemon, session_provider, *, tena
 
     monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _fake_resolve_tenant)
 
+    async def _fake_admit_tenant(agent_id, *, source, **_kwargs):
+        from app.runtime.tenant_admission import RuntimeTenantAdmission, blocked_runtime_tenant_admission
+
+        if tenant_id is None:
+            return blocked_runtime_tenant_admission(
+                reason_code="agent_tenant_missing",
+                message=f"{source} runtime is blocked because agent {agent_id} has no tenant.",
+                source=source,
+                agent_id=agent_id,
+            )
+        return RuntimeTenantAdmission(
+            ok=True,
+            tenant_id=tenant_id,
+            status="allowed",
+            reason_code="tenant_resolved",
+            message=f"{source} runtime tenant resolved.",
+            agent_id=agent_id,
+            source=source,
+        )
+
+    monkeypatch.setattr(trigger_daemon, "admit_agent_runtime_tenant", _fake_admit_tenant)
+
 
 def _disable_completed_focus_reconciler(monkeypatch, trigger_daemon):
     async def fake_preflight_trigger_group(_agent_id, _triggers, _now):
@@ -715,6 +737,51 @@ async def test_invoke_trigger_marks_runtime_task_skipped_when_agent_has_no_model
     assert updates[-1][0] == "runtime-task-1"
     assert updates[-1][1]["status"] == "skipped"
     assert updates[-1][1]["metadata_json"]["skip_reason"] == "no_model"
+
+
+@pytest.mark.asyncio
+async def test_invoke_trigger_blocks_when_agent_tenant_missing(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    trigger = SimpleNamespace(id=uuid4(), name="daily_brief", type="cron", reason="Run")
+    updates = []
+    opened_session = False
+
+    async def fake_update_runtime_task_record(task_id, **fields):
+        updates.append((task_id, fields))
+        return True
+
+    async def fake_resolve_tenant(_agent_id, *_args, **_kwargs):
+        return None
+
+    async def fake_admit_tenant(agent_id, *, source, **_kwargs):
+        from app.runtime.tenant_admission import blocked_runtime_tenant_admission
+
+        return blocked_runtime_tenant_admission(
+            reason_code="agent_tenant_missing",
+            message=f"{source} runtime is blocked because agent {agent_id} has no tenant.",
+            source=source,
+            agent_id=agent_id,
+        )
+
+    def fake_tenant_scoped_session(*_args, **_kwargs):
+        nonlocal opened_session
+        opened_session = True
+        raise AssertionError("tenant_scoped_session should not open when runtime tenant admission blocks")
+
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", fake_resolve_tenant)
+    monkeypatch.setattr(trigger_daemon, "admit_agent_runtime_tenant", fake_admit_tenant)
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", fake_tenant_scoped_session)
+    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+
+    await trigger_daemon._invoke_agent_for_triggers(agent_id, [trigger], runtime_task_id="runtime-task-1")
+
+    assert opened_session is False
+    assert updates[-1][0] == "runtime-task-1"
+    assert updates[-1][1]["status"] == "skipped"
+    assert updates[-1][1]["metadata_json"]["skip_reason"] == "agent_tenant_missing"
+    assert updates[-1][1]["metadata_json"]["precondition_status"] == "blocked_precondition"
 
 
 @pytest.mark.asyncio

@@ -119,6 +119,24 @@ class _FakeSession:
         return _ScalarResult(self._value)
 
 
+def _pin_tool_config(monkeypatch, web_mcp, tool):
+    """Pin the tool config source deterministically.
+
+    _get_tool_config prefers resolve_tool_config (real DB via the global
+    engine); it only falls back to the raw async_session path on failure.
+    Patching both makes these unit tests independent of DB reachability
+    instead of relying on resolve_tool_config happening to raise.
+    """
+    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+
+    async def _resolver_miss(_tool_name, _tenant_id):
+        raise RuntimeError("resolve_tool_config disabled for this unit test")
+
+    monkeypatch.setattr(
+        "app.services.tool_config_service.resolve_tool_config", _resolver_miss
+    )
+
+
 @pytest.mark.asyncio
 async def test_firecrawl_fetch_falls_back_to_web_fetch_on_billing_error(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
@@ -348,7 +366,7 @@ async def test_web_search_auto_uses_searxng_even_when_anysearch_key_is_configure
             "language": "en",
         }
     )
-    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+    _pin_tool_config(monkeypatch, web_mcp, tool)
 
     async def fake_anysearch(query: str, config: dict, max_results: int, language: str) -> str:
         raise AssertionError("CORE web_search auto must not route through AnySearch; use AnySearch L2 tools instead")
@@ -382,7 +400,7 @@ async def test_web_search_no_anysearch_key_uses_searxng_fallback(monkeypatch):
             "language": "en",
         }
     )
-    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+    _pin_tool_config(monkeypatch, web_mcp, tool)
 
     async def fake_anysearch(query: str, config: dict, max_results: int, language: str) -> str:
         raise AssertionError("AnySearch must not run without configured API keys")
@@ -416,7 +434,7 @@ async def test_web_search_legacy_anysearch_config_uses_basic_provider_not_anysea
             "language": "en",
         }
     )
-    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+    _pin_tool_config(monkeypatch, web_mcp, tool)
 
     async def fake_anysearch(query: str, config: dict, max_results: int, language: str) -> str:
         raise AssertionError("legacy web_search search_engine=anysearch must not execute AnySearch")
@@ -451,7 +469,7 @@ async def test_web_search_auto_uses_basic_search_even_when_exa_key_is_available(
             "language": "en",
         }
     )
-    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+    _pin_tool_config(monkeypatch, web_mcp, tool)
 
     async def fake_get_exa_api_key() -> str:
         return "exa-key"
@@ -1031,7 +1049,7 @@ async def test_exa_search_uses_provider_config(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 
     tool = SimpleNamespace(config={"api_key": "exa-key", "max_results": 5})
-    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+    _pin_tool_config(monkeypatch, web_mcp, tool)
 
     async def fake_exa(
         query: str,
@@ -1069,7 +1087,7 @@ async def test_tavily_search_uses_keyless_mode_without_provider_key(monkeypatch)
     from app.services.agent_tool_domains import web_mcp
 
     tool = SimpleNamespace(config={"api_key": "", "max_results": 5})
-    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+    _pin_tool_config(monkeypatch, web_mcp, tool)
 
     async def fake_get_tavily_api_key() -> str:
         return ""
@@ -1542,7 +1560,7 @@ async def test_web_search_returns_provider_error_when_duckduckgo_fails_without_p
     from app.services.agent_tool_domains import web_mcp
 
     tool = SimpleNamespace(config={"search_engine": "duckduckgo_legacy", "max_results": 5, "language": "en"})
-    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+    _pin_tool_config(monkeypatch, web_mcp, tool)
 
     async def fake_get_exa_api_key() -> str:
         return ""
@@ -1568,7 +1586,7 @@ async def test_web_search_treats_legacy_google_config_as_basic_search(monkeypatc
     from app.services.agent_tool_domains import web_mcp
 
     tool = SimpleNamespace(config={"search_engine": "google", "api_key": "key:cx", "max_results": 5, "language": "en"})
-    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+    _pin_tool_config(monkeypatch, web_mcp, tool)
 
     async def fake_get_searxng_url() -> str:
         return "https://search.example.com"

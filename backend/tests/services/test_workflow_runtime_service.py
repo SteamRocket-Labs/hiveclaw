@@ -159,9 +159,14 @@ async def test_dynamic_workflow_run_updates_decision_entry_with_outcome_and_repa
     assert entry["preview_id"] == "preview-1"
     assert entry["run_id"] == str(handle.run_id)
     assert entry["outcome"]["status"] == "failed"
-    assert entry["outcome"]["leaf_failed"] == 1
+    # AgentStep failures journal at STEP level (leaf rows belong to fanout):
+    # the report step fails, so the evidence counts one failed step, zero
+    # failed leaves, and the repair strategy resumes from the failed step.
+    assert entry["outcome"]["steps_failed"] == 1
+    assert entry["outcome"]["leaf_failed"] == 0
     assert entry["repair_plan"]["repairable"] is True
-    assert entry["repair_plan"]["strategy"] == "resume_failed_leaves"
+    assert entry["repair_plan"]["strategy"] == "resume_from_failed_step"
+    assert entry["repair_plan"]["failed_step_count"] == 1
     assert entry["promotion_eligible"] is False
 
 

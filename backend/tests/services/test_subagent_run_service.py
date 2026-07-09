@@ -328,7 +328,9 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
     assert child_session.transcript_metadata_json["session_contract"]["continuation_address"] == started.child_session_id
     assert child_session.transcript_metadata_json["session_contract"]["run_id"] == started.run_id
     assert runtime_task.task_type == svc.SUBAGENT_RUN_TASK_TYPE
-    assert runtime_task.status == "running"
+    # Durable enqueue semantics (RTD-32 / budget plane): the run is created
+    # pending and a shared worker claims it to running.
+    assert runtime_task.status == "pending"
     assert runtime_task.parent_agent_id == parent_agent_id
     assert runtime_task.parent_session_id == str(parent_session_id)
     assert runtime_task.child_session_id == started.child_session_id
@@ -419,20 +421,10 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
             SimpleNamespace(id=parent_agent_id, name="parent-agent", tenant_id=tenant_id, creator_id=user_id),
         )
 
-    spawned: dict[str, object] = {}
-
-    async def fake_spawn_subagent(ctx, spec, task, **kwargs):
-        spawned["ctx"] = ctx
-        spawned["spec"] = spec
-        spawned["task"] = task
-        spawned["kwargs"] = kwargs
-        return SimpleNamespace(result=None)
-
     async def fake_emit_hook(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(subagent_handler, "_resolve_parent_runtime", fake_resolve_parent_runtime)
-    monkeypatch.setattr(subagent_handler, "spawn_subagent", fake_spawn_subagent)
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
 
     session_context = SessionContext(
@@ -503,8 +495,6 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
     run_id = uuid.UUID(run_id_text)
     assert handoff_result["mode"] == "background"
     assert "Skill fork worker `Research` executed through `spawn_subagent`." in result
-    assert spawned["task"] == "Use the loaded skill `Research`."
-    assert spawned["ctx"].child_session_id == str(child_session_id)
 
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
         child_session = (await session.execute(select(ChatSession).where(ChatSession.id == child_session_id))).scalar_one()
@@ -521,6 +511,9 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
     assert child_session.source_channel == "subagent"
     assert child_session.parent_session_id == parent_session_id
     assert runtime_task.task_type == svc.SUBAGENT_RUN_TASK_TYPE
+    # The skill fork enqueues a durable background run carrying the fork task.
+    assert runtime_task.status == "pending"
+    assert runtime_task.prompt == "Use the loaded skill `Research`."
     assert runtime_task.child_session_id == str(child_session_id)
     assert start_event.metadata_json["session_contract"]["run_id"] == run_id_text
     t0_events = replay_t0_session_events(agent_id=parent_agent_id, session_id=child_session_id, data_root=tmp_path)

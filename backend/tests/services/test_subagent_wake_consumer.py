@@ -255,6 +255,14 @@ async def test_subagent_completion_wake_budget_denial_consumes_signal_without_pa
     captured: dict = {}
 
     class DenyingBudgetService:
+        def __init__(self, **_kwargs):
+            # Accepts the production session_factory DI keyword.
+            pass
+
+        async def evaluate_wake_breaker(self, **_kwargs):
+            # No breaker opinion: the denial under test comes from reserve().
+            return None
+
         async def reserve(self, reservation):
             captured["reservation"] = reservation
             raise RuntimeBudgetDenied("budget exhausted", budget_run_id=reservation.budget_run_id)
@@ -297,6 +305,9 @@ async def test_subagent_completion_wake_trips_child_reconciliation_breaker(owner
             max_subagents=10,
             max_background_tasks=10,
             max_continuation_wakes=10,
+            # §10: breaker thresholds are policy-driven (None = unlimited), so the
+            # reconciliation trip under test must be an explicit run threshold.
+            max_needs_reconciliation=3,
         )
     )
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
@@ -332,9 +343,10 @@ async def test_subagent_completion_wake_trips_child_reconciliation_breaker(owner
     assert len(result) == 1
     assert result[0].signal_id == signal_id
     assert result[0].status == "breaker"
-    assert "runtime_child_needs_reconciliation_breaker" in result[0].detail
+    # §10 policy-driven breaker reason format: <event>:<dimension>:<observed>>=<threshold>
+    assert "runtime_budget_circuit_break:needs_reconciliation:3>=3" == result[0].detail
     assert stored_run.status == "hard_stopped"
-    assert stored_run.terminal_reason == "runtime_child_needs_reconciliation_breaker:3"
+    assert stored_run.terminal_reason == "runtime_budget_circuit_break:needs_reconciliation:3>=3"
     assert await _signal_count(owner_sessionmaker, tenant_id) == 0
 
 

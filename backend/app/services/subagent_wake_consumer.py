@@ -73,6 +73,7 @@ async def _reserve_continuation_wake_budget(
     *,
     signal_id: uuid.UUID,
     metadata: dict[str, Any] | None,
+    session_factory: Any = None,
 ) -> tuple[RuntimeBudgetService, RuntimeBudgetReservation] | None:
     budget_run_id = _uuid_or_none((metadata or {}).get("budget_run_id"))
     if budget_run_id is None:
@@ -84,7 +85,10 @@ async def _reserve_continuation_wake_budget(
         reason="subagent_completion_wake",
         metadata={"signal_id": str(signal_id), **(metadata or {})},
     )
-    service = RuntimeBudgetService()
+    # Thread the drain's session factory through: the budget rows live in the
+    # same database the drain is operating on, not the process-default engine.
+    service_kwargs = {"session_factory": session_factory} if session_factory is not None else {}
+    service = RuntimeBudgetService(**service_kwargs)
     await service.reserve(reservation)
     return service, reservation
 
@@ -253,7 +257,9 @@ async def drain_subagent_completion_wakes(
                 continue
 
         try:
-            wake_budget = await _reserve_continuation_wake_budget(signal_id=signal_id, metadata=metadata)
+            wake_budget = await _reserve_continuation_wake_budget(
+                signal_id=signal_id, metadata=metadata, session_factory=session_factory
+            )
         except RuntimeBudgetDenied as exc:
             await _consume_completion_signal(
                 tenant_id=tenant_id,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -11,7 +12,10 @@ from app.services.external_capabilities.trust_gate import (
     revoke_external_capability_snapshot,
     stage_external_capability_review,
 )
-from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review
+from app.services.external_capabilities.skill_source_adapter import (
+    stage_external_skill_package_review,
+    stage_remote_external_skill_source_review,
+)
 from app.services.external_capabilities.types import ExternalCapabilityComponent, NormalizedExternalPluginBundle
 
 
@@ -522,3 +526,66 @@ async def test_stage_external_skill_package_review_records_materialization_repor
     assert row.admission_report_json["materialization"]["sandbox"]["host_home_mounted"] is False
     component = row.normalized_manifest_json["components"][0]
     assert component["metadata"]["materialization"]["artifact_sha256"] == result["materialization"]["artifact_sha256"]
+
+
+@pytest.mark.asyncio
+async def test_stage_remote_external_skill_source_review_materializes_before_review():
+    tenant_id = uuid4()
+    user_id = uuid4()
+    db = _TrustGateSession()
+
+    async def fake_fetch_json(url, headers):
+        assert headers == {"Authorization": "Bearer gh-test"}
+        if url == "https://api.github.com/repos/acme/skills/contents/research?ref=main":
+            return [
+                {
+                    "name": "SKILL.md",
+                    "path": "research/SKILL.md",
+                    "type": "file",
+                    "url": "https://api.github.com/file/skill",
+                    "size": 36,
+                }
+            ]
+        if url == "https://api.github.com/file/skill":
+            return {"content": base64.b64encode(b"---\nname: Research\n---\n\nUse sources.\n").decode()}
+        raise AssertionError(f"unexpected url: {url}")
+
+    result = await stage_remote_external_skill_source_review(
+        db,
+        tenant_id=tenant_id,
+        created_by_user_id=user_id,
+        source_uri="https://github.com/acme/skills/tree/main/research",
+        folder_name="research",
+        source_format="external_skill_url",
+        token="gh-test",
+        fetch_json=fake_fetch_json,
+    )
+
+    assert result["status"] == "review_required"
+    assert result["files_written"] == 0
+    assert result["materialization"]["remote_fetch"]["source_kind"] == "github_tree"
+    row = db.added[0]
+    assert row.source_ref == result["materialization"]["resolved_ref"]
+    assert row.normalized_manifest_json["lockfile"]["files"][0]["path"] == "SKILL.md"
+
+
+@pytest.mark.asyncio
+async def test_stage_remote_external_skill_source_review_blocks_install_command_source():
+    tenant_id = uuid4()
+    user_id = uuid4()
+    db = _TrustGateSession()
+
+    result = await stage_remote_external_skill_source_review(
+        db,
+        tenant_id=tenant_id,
+        created_by_user_id=user_id,
+        source_uri="npx skills add acme/research",
+        folder_name="research",
+        source_format="skills_sh_command",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["materialization"]["install_time_commands_executed"] == []
+    row = db.added[0]
+    assert row.admission_class == "blocked"
+    assert row.admission_report_json["notes"][0]["code"] == "install_time_commands_require_isolated_worker"

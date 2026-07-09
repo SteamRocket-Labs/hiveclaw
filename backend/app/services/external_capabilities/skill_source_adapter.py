@@ -8,7 +8,13 @@ from typing import Any
 import uuid
 
 from app.database import tenant_scoped_session
-from app.services.external_capabilities.materializer import materialize_file_bundle
+from app.services.external_capabilities.materializer import (
+    JsonFetcher,
+    MaterializedExternalPackage,
+    TextFetcher,
+    materialize_file_bundle,
+    materialize_remote_source,
+)
 from app.services.external_capabilities.trust_gate import stage_external_capability_review
 from app.services.external_capabilities.types import ExternalCapabilityComponent, NormalizedExternalPluginBundle
 from app.services.skill_guard import scan_skill_files
@@ -19,15 +25,17 @@ def build_external_skill_bundle(
     *,
     source_uri: str,
     folder_name: str,
-    files: Sequence[Mapping[str, Any]],
+    files: Sequence[Mapping[str, Any]] | None = None,
     source_format: str,
+    materialized: MaterializedExternalPackage | None = None,
 ) -> tuple[NormalizedExternalPluginBundle, dict[str, Any], dict[str, Any]]:
-    materialized = materialize_file_bundle(
-        source_format=source_format,
-        source_uri=source_uri,
-        package_name=folder_name,
-        files=files,
-    )
+    if materialized is None:
+        materialized = materialize_file_bundle(
+            source_format=source_format,
+            source_uri=source_uri,
+            package_name=folder_name,
+            files=files or (),
+        )
     normalized_files = materialized.files
     guard_report = scan_skill_files(normalized_files, source=source_uri)
     notes: list[dict[str, Any]] = list(materialized.blocking_notes)
@@ -92,6 +100,104 @@ async def stage_external_skill_package_review(
         created_by_user_id=created_by_user_id,
         bundle=bundle,
     )
+    return _review_required_payload(
+        folder_name=folder_name,
+        source_uri=source_uri,
+        review=review,
+        skill_guard=guard_report,
+        materialization=materialization_report,
+    )
+
+
+async def stage_remote_external_skill_source_review(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    created_by_user_id: uuid.UUID | None,
+    source_uri: str,
+    folder_name: str,
+    source_format: str,
+    token: str = "",
+    fetch_uri: str | None = None,
+    install_commands: Sequence[str] | None = None,
+    fetch_json: JsonFetcher | None = None,
+    fetch_text: TextFetcher | None = None,
+) -> dict[str, Any]:
+    materialized = await materialize_remote_source(
+        source_uri=fetch_uri or source_uri,
+        source_format=source_format,
+        package_name=folder_name,
+        token=token,
+        install_commands=install_commands,
+        fetch_json=fetch_json,
+        fetch_text=fetch_text,
+    )
+    bundle, guard_report, materialization_report = build_external_skill_bundle(
+        source_uri=source_uri,
+        folder_name=folder_name,
+        files=materialized.files,
+        source_format=source_format,
+        materialized=materialized,
+    )
+    review = await stage_external_capability_review(
+        db,
+        tenant_id=tenant_id,
+        created_by_user_id=created_by_user_id,
+        bundle=bundle,
+    )
+    return _review_required_payload(
+        folder_name=folder_name,
+        source_uri=source_uri,
+        review=review,
+        skill_guard=guard_report,
+        materialization=materialization_report,
+    )
+
+
+async def stage_remote_external_skill_source_review_for_tenant(
+    *,
+    tenant_id: uuid.UUID | None,
+    created_by_user_id: uuid.UUID | None,
+    source_uri: str,
+    folder_name: str,
+    source_format: str,
+    token: str = "",
+    fetch_uri: str | None = None,
+    install_commands: Sequence[str] | None = None,
+    fetch_json: JsonFetcher | None = None,
+    fetch_text: TextFetcher | None = None,
+) -> dict[str, Any]:
+    materialized = await materialize_remote_source(
+        source_uri=fetch_uri or source_uri,
+        source_format=source_format,
+        package_name=folder_name,
+        token=token,
+        install_commands=install_commands,
+        fetch_json=fetch_json,
+        fetch_text=fetch_text,
+    )
+    bundle, guard_report, materialization_report = build_external_skill_bundle(
+        source_uri=source_uri,
+        folder_name=folder_name,
+        files=materialized.files,
+        source_format=source_format,
+        materialized=materialized,
+    )
+    if tenant_id is None:
+        return _blocked_without_review_payload(
+            folder_name=folder_name,
+            source_uri=source_uri,
+            skill_guard=guard_report,
+            error_code="missing_tenant",
+            error_message="External capability Trust Gate requires tenant scope",
+        )
+    async with tenant_scoped_session(tenant_id) as db:
+        review = await stage_external_capability_review(
+            db,
+            tenant_id=tenant_id,
+            created_by_user_id=created_by_user_id,
+            bundle=bundle,
+        )
     return _review_required_payload(
         folder_name=folder_name,
         source_uri=source_uri,

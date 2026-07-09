@@ -2,7 +2,7 @@
 
 日期：2026-06-26
 更新：2026-07-09，按当前 checkout 复核后进入完整闭环施工：核心骨架、准入门、Agent/Workspace 前端入口、Capability Factor Intake、Legacy migration dry-run 均已实装；本轮必须补齐外部/自产能力真实输入通道
-状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、session-scoped try activation、component-level selected activation substrate、credential handle binding、external component/hook evidence tables、quarantine-only Materialize、revoke/deactivate 后端入口、Marketplace manual discovery source 管理、Capability Factor Intake / promotion proposal substrate、Skill/Subagent 自产候选自动进入 Factor Intake、LegacyPackAdapter migration-only report、legacy pack migration dry-run API / Workspace UI、Agent/Workspace Extensions 入口已落地；本轮剩余闭环项为：远程 Git/GitHub/npm/skills.sh source 进入 materializer boundary、GitHub/CC/Codex marketplace manifest refresh 进入 entry cache；hook/slash/app connector runtime activation 仍 fail-closed
+状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、session-scoped try activation、component-level selected activation substrate、credential handle binding、external component/hook evidence tables、GitHub/raw/command-shaped source materializer boundary、revoke/deactivate 后端入口、Marketplace manual discovery source 管理、Capability Factor Intake / promotion proposal substrate、Skill/Subagent 自产候选自动进入 Factor Intake、LegacyPackAdapter migration-only report、legacy pack migration dry-run API / Workspace UI、Agent/Workspace Extensions 入口已落地；本轮剩余闭环项为：GitHub/CC/Codex marketplace manifest refresh 进入 entry cache；hook/slash/app connector runtime activation 仍 fail-closed
 范围：外部 Plugin/Extension 的发现、检验、审批、安装、激活、撤销与审计；Skill、MCP Server、Subagent、Hook 是 Plugin components，也保留单组件快捷导入入口
 上位文档：
 - `docs/agent-extension-surface-skill-mcp.md`
@@ -44,8 +44,8 @@ External Capability Trust Gate
 当前实现不能再简单写成“核心闭环已实装”。更准确的表述是：
 
 ```text
-已实装：adapter normalize -> Trust Gate review/snapshot -> catalog listing -> agent durable activation 的骨架。
-未完成：外部远程能力从 source 安全 materialize，到可审计撤销、可完整按 component 管理和推广的完整闭环。
+已实装：adapter normalize -> materializer boundary -> Trust Gate review/snapshot -> catalog listing -> agent durable activation 的骨架。
+未完成：远程 marketplace manifest refresh、真正隔离 install worker/smoke test、以及少数组件 runtime binding。
 ```
 
 已核实存在的实现：
@@ -56,6 +56,7 @@ External Capability Trust Gate
 - `backend/app/services/external_capabilities/activation.py`：approved snapshot durable activation 到 existing Skill / MCP / Subagent runtime surface。
 - `backend/app/services/external_capabilities/activation.py`：支持 selected component activation、session-scoped try activation、credential handle preflight/binding、Hook fail-closed pending activation result。
 - `backend/app/services/external_capabilities/marketplace_sources.py`：manual marketplace source sync、entry cache、entry submit -> Trust Gate review。
+- `backend/app/services/external_capabilities/materializer.py`：GitHub tree/raw/source allowlist materializer、command-shaped source fail-closed、path/size/host guard、quarantine/report/lock evidence。
 - `backend/app/services/external_capabilities/legacy_pack_adapter.py`：`TenantInstalledPlugin` / `AgentPluginAssignment` -> migration-only normalized bundle / catalog projection / activation projection dry-run report；不写 catalog、activation 或 runtime。
 - `backend/app/models/external_capability.py` + migrations：`external_capability_reviews`、`external_capability_snapshots`、`external_extension_catalog_entries`、`external_extension_components`、`external_extension_hook_registrations`、`external_extension_activations`、`external_marketplace_sources`、`external_marketplace_entries`。
 - `backend/app/models/capability_factor.py` + `capability_factor_intake_0709.py`：`capability_factors`、`capability_factor_reviews`、`capability_promotion_proposals`。
@@ -63,17 +64,17 @@ External Capability Trust Gate
 - `backend/app/api/capabilities.py`：agent factor capture/list、enterprise factor intake、promotion proposal create/approve/reject/archive API。
 - `frontend/src/pages/agent-detail/AgentExtensionsSection.tsx` 与 `frontend/src/pages/workspace/WorkspaceExtensionsSection.tsx` / `WorkspaceExtensionCatalogSection.tsx` / `AgentCapabilityFactorsSection.tsx` / `WorkspaceCapabilityFactorsSection.tsx`：Agent / Workspace 的 Extensions 入口、Catalog、Review queue、Marketplace source/entry、Legacy migration dry-run、Capability Factor Intake 子面。
 
-已核实缺失的闭环能力：
+当前剩余边界：
 
-1. `Materialize / Sandbox / Quarantine` 已有 quarantine-only file-bundle materializer：它能为外部文件包生成 resolved ref、artifact hash、sandbox/quarantine report，并把 install-time command fail-closed 进 blocking notes。仍缺真正隔离 worker、dependency install、smoke test、network policy enforcement。
+1. `Materialize / Sandbox / Quarantine` 已有 GitHub tree/raw/URL allowlist materializer：它能在 Trust Gate boundary 拉取远程文件、生成 resolved ref、artifact hash、sandbox/quarantine report，并把 install-time command、非 allowlist host、path escape、oversize fail-closed 进 blocking notes。仍缺真正隔离 worker、dependency install、smoke test、network policy enforcement。
 2. `revoke / deactivate` 已有后端与前端入口：review reject、snapshot revoke、agent activation deactivate 已有 service/API；Agent Catalog 可停用 active snapshot，Workspace Catalog 可 reject/revoke。snapshot revoke 会撤 catalog、标记 active activation 为 `revoked`，并在能定位 workspace 时清理 Skill/Subagent artifact。仍缺 audit event 和 MCP assignment 级自动禁用。
 3. `try in chat / session-scoped activation` substrate 已有：activation 记录 `activation_scope=session`、`session_id`、`expires_at`，API 为 `/try`，Agent Catalog 有按钮；Skill component 会写入 session overlay，并只在对应 session 的 Skill catalog / `load_skill` 中可见。MCP session tool projection 和 Subagent session resolver 仍未投影，保持 fail-closed / metadata-only。
 4. `component-level activation substrate` 已有，但产品闭环未完成：service/API 已能只启用 selected Skill/MCP/Subagent/Hook，并要求 credential handle；Agent Catalog UI 仍没有组件选择器、credential binding prompt、per-component installed state。
 5. `LegacyPackAdapter` 已有 migration-only dry-run report；`HiveExtensionManifestAdapter` 仍未实现。legacy pack 仍只能作为兼容 backing store / migration projection，不能成为新生态 manifest。
 6. Hook 目前只有 snapshot/component provenance 和 `pending_approval` fail-closed registration；还没有 hook allowlist approval route，也没有投影到 existing hook dispatcher 的 runtime binding。
-7. Marketplace source 管理已有 manual discovery source / entry cache / submit review 闭环；Capability Factor Intake 已有 capture / review / proposal / approve / reject / archive substrate；legacy pack migration dry-run API / UI 已有。仍缺 Git/GitHub/npm/CC/Codex marketplace 远程 refresh worker、自产候选自动采集 hook、approved fork -> trusted snapshot 生成、production dry-run 实际执行与正式 backfill。
+7. Marketplace source 管理已有 manual discovery source / entry cache / submit review 闭环；Capability Factor Intake 已有 capture / review / proposal / approve / reject / archive substrate，Skill/Subagent 自产候选自动采集已接入；legacy pack migration dry-run API / UI 已有。仍缺 GitHub/CC/Codex marketplace 远程 refresh worker、approved fork -> trusted snapshot 生成、production dry-run 实际执行与正式 backfill。
 
-当前安全边界是 fail-closed：远程 source 和不支持的 component 不会静默进入 runtime。这是正确的安全姿态，但它也意味着远程插件安装主线还没有完全打通。
+当前安全边界是 fail-closed：远程 source 和不支持的 component 不会静默进入 runtime。GitHub/raw source 已能进入 materializer + review；install-time command 仍只生成阻断证据，不能执行。
 
 ### 0.2 本轮必须闭环的真实输入通道（2026-07-09）
 
@@ -126,6 +127,35 @@ pytest tests/agents/test_subagent_evolution.py::test_nominate_creates_pending_pr
   - GitHub raw/tree source 能 materialize 成 quarantined package 并进入 review。
   - 带 install-time command 的 source 只生成 command plan / blocking note，不能执行命令。
   - path escape、oversize、非 allowlist host 均 fail-closed。
+
+2026-07-09 实装证据：
+
+- `backend/app/services/external_capabilities/materializer.py`：新增 `materialize_remote_source()`，支持 GitHub tree/raw allowlist fetch、quarantine write/report、artifact hash、remote fetch report；`npx` / `npm` / `pnpm` / `yarn` / `bunx` command-shaped source 只生成 `install_time_commands_require_isolated_worker` blocking note。
+- `backend/app/services/external_capabilities/skill_source_adapter.py`：新增 `stage_remote_external_skill_source_review()` / `_for_tenant()`，remote materialized package 直接进入 Trust Gate review，不再在 API 层先 fetch 成普通 files。
+- `backend/app/api/files.py` 与 `backend/app/api/skills.py`：URL import、ClawHub import 均改为 remote materializer staging；preview 仍可读远程做只读预览，但安装/提交 review 统一走 materializer boundary。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_external_capability_materializer.py \
+  tests/services/test_external_capability_trust_gate.py::test_stage_external_skill_package_review_records_materialization_report \
+  tests/services/test_external_capability_trust_gate.py::test_stage_remote_external_skill_source_review_materializes_before_review \
+  tests/services/test_external_capability_trust_gate.py::test_stage_remote_external_skill_source_review_blocks_install_command_source \
+  tests/api/test_skills_skill_guard.py \
+  tests/api/test_files_import_idempotency.py -q
+# 15 passed in 0.34s
+
+ruff check app/services/external_capabilities/materializer.py \
+  app/services/external_capabilities/skill_source_adapter.py \
+  app/services/external_capabilities/trust_gate.py \
+  app/api/skills.py app/api/files.py \
+  tests/services/test_external_capability_materializer.py \
+  tests/services/test_external_capability_trust_gate.py \
+  tests/api/test_skills_skill_guard.py \
+  tests/api/test_files_import_idempotency.py
+# All checks passed!
+```
 
 闭环项 3：远程 marketplace refresh。
 
@@ -2265,14 +2295,14 @@ rg -n "import_and_register" backend/app/api/mcp_servers.py backend/tests/api/tes
 
 Round 2 当前未完成项（2026-07-09 复核）：
 
-- `materialize` 已有 quarantine-only file-bundle 实现；仍没有真正 install-time sandbox worker、dependency lock 生成器、sandbox smoke test runner。
+- `materialize` 已有 quarantine-only file-bundle + GitHub tree/raw remote source materializer 实现；仍没有真正 install-time sandbox worker、dependency lock 生成器、sandbox smoke test runner。
 - `approve_external_capability_snapshot()` 目前把 publish-to-catalog 合并在 approve 内部；没有独立 `publish-to-catalog` API。
 - reject / revoke API 和前端操作面已有；snapshot revoke 会标记 active activation 并清理可定位的 Skill/Subagent artifact。仍缺 audit event 和 MCP assignment 自动禁用。
 - `external_extension_components` / `external_extension_hook_registrations` 已补齐；Hook 仍只停在 `pending_approval` 证据层，还没有 allowlist approval API 或 runtime dispatcher projection。
 - `LegacyPackAdapter` migration-only report 已实现；`HiveExtensionManifestAdapter` 未实现。
-- 当前 external Skill URL / ClawHub import 已经收口到 `review_required`，并通过 quarantine-only materializer 记录 materialization evidence；远程 fetch 仍是入口自身完成，不是真正 isolated materializer worker。
+- 当前 external Skill URL / ClawHub import 已经收口到 `review_required`，并通过 remote materializer boundary 完成 GitHub allowlist fetch、quarantine、hash、lock/report；它仍不是完整 isolated install-time worker，不执行 dependency install / smoke test。
 
-因此 Round 2 只能标记为：Trust Gate substrate / selected adapters / component evidence / hook pending evidence / quarantine-only materializer / legacy migration-only adapter 已实装；完整 canonical substrate 仍缺 install-time sandbox worker、独立 publish API、audit event、MCP assignment revoke closure 和 Hive-native manifest adapter。
+因此 Round 2 只能标记为：Trust Gate substrate / selected adapters / component evidence / hook pending evidence / remote source materializer boundary / legacy migration-only adapter 已实装；完整 canonical substrate 仍缺 install-time sandbox worker、独立 publish API、audit event、MCP assignment revoke closure 和 Hive-native manifest adapter。
 
 ### Round 3：Agent runtime visibility / activation layer 与 Agent Detail 前端收敛
 

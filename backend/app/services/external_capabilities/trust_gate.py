@@ -23,7 +23,22 @@ from app.models.external_capability import (
 from app.services.external_capabilities.activation_cleanup import deactivate_activation_components
 from app.services.external_capabilities.types import NormalizedExternalPluginBundle
 
-_BLOCKING_NOTE_CODES = {"component_path_escape", "missing_skill_md", "skill_guard_blocked"}
+_BLOCKING_NOTE_CODES = {
+    "component_path_escape",
+    "install_time_commands_require_isolated_worker",
+    "materialized_path_escape",
+    "missing_skill_md",
+    "remote_directory_depth_exceeded",
+    "remote_fetch_failed",
+    "remote_file_count_exceeded",
+    "remote_file_decode_failed",
+    "remote_file_unreadable",
+    "remote_host_not_allowed",
+    "remote_manifest_unreadable",
+    "remote_source_format_unsupported",
+    "remote_total_size_exceeded",
+    "skill_guard_blocked",
+}
 
 
 async def stage_external_capability_review(

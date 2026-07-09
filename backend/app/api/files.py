@@ -21,7 +21,7 @@ from app.services.file_download_tokens import (
     NotChannelFileDownloadToken,
     verify_channel_file_download_token,
 )
-from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review
+from app.services.external_capabilities.skill_source_adapter import stage_remote_external_skill_source_review
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -833,7 +833,6 @@ async def agent_import_from_clawhub(
 
     from app.api.skills import (
         CLAWHUB_BASE,
-        _fetch_github_directory,
         _get_github_token,
     )
     import httpx
@@ -870,21 +869,21 @@ async def agent_import_from_clawhub(
     if not handle:
         raise HTTPException(400, "Could not determine skill owner from ClawHub metadata")
 
-    # 2. Fetch files from GitHub
+    # 2. Stage GitHub archive through the materializer boundary
     github_path = f"skills/{handle}/{slug}"
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     token = await _get_github_token(tenant_id)
-    files = await _fetch_github_directory("openclaw", "skills", github_path, "main", token)
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated")
-    review_result = await stage_external_skill_package_review(
+    review_result = await stage_remote_external_skill_source_review(
         db,
         tenant_id=current_user.tenant_id,
         created_by_user_id=current_user.id,
         source_uri=f"clawhub:{slug}",
+        fetch_uri=f"https://github.com/openclaw/skills/tree/main/{github_path}",
         folder_name=folder_name,
-        files=files,
         source_format="clawhub_skill",
+        token=token,
     )
 
     return {
@@ -903,13 +902,13 @@ async def agent_import_from_url(
     """Import a skill from a GitHub URL directly into this agent's skills/ workspace."""
     await check_agent_access(db, current_user, agent_id)
 
-    from app.api.skills import _parse_github_url, _fetch_github_directory, _get_github_token
+    from app.api.skills import _parse_github_url, _get_github_token
 
     parsed = _parse_github_url(body.url)
     if not parsed:
         raise HTTPException(400, "Invalid GitHub URL")
 
-    owner, repo, branch, path = parsed["owner"], parsed["repo"], parsed["branch"], parsed["path"]
+    repo, path = parsed["repo"], parsed["path"]
     # Derive folder name
     folder_name = path.rstrip("/").split("/")[-1] if path else repo
     base = _agent_base_dir(agent_id)
@@ -924,17 +923,14 @@ async def agent_import_from_url(
 
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     token = await _get_github_token(tenant_id)
-    files = await _fetch_github_directory(owner, repo, path, branch, token)
-    if not files:
-        raise HTTPException(404, "No files found")
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated")
-    return await stage_external_skill_package_review(
+    return await stage_remote_external_skill_source_review(
         db,
         tenant_id=current_user.tenant_id,
         created_by_user_id=current_user.id,
         source_uri=body.url,
         folder_name=folder_name,
-        files=files,
         source_format="external_skill_url",
+        token=token,
     )

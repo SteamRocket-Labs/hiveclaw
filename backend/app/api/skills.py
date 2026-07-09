@@ -17,7 +17,9 @@ from app.database import get_db, tenant_scoped_session
 from app.models.skill import Skill, SkillFile
 from app.core.security import require_role, get_current_user
 from app.models.user import User
-from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review_for_tenant
+from app.services.external_capabilities.skill_source_adapter import (
+    stage_remote_external_skill_source_review_for_tenant,
+)
 from app.services.skill_guard import SkillGuardReport, scan_skill_files
 
 logger = logging.getLogger(__name__)
@@ -139,6 +141,18 @@ def _parse_skill_md_frontmatter(content: str) -> dict:
         return yaml.safe_load(match.group(1)) or {}
     except Exception:
         return {}
+
+
+def _review_materialized_files(result: dict) -> list[dict]:
+    manifest = ((result.get("review") or {}).get("normalized_manifest") or {}) if isinstance(result, dict) else {}
+    components = manifest.get("components") if isinstance(manifest, dict) else None
+    if not isinstance(components, list) or not components:
+        return []
+    metadata = components[0].get("metadata") if isinstance(components[0], dict) else None
+    files = metadata.get("files") if isinstance(metadata, dict) else None
+    if not isinstance(files, list):
+        return []
+    return [item for item in files if isinstance(item, dict)]
 
 
 def _skill_guard_detail(report: SkillGuardReport) -> dict:
@@ -520,42 +534,30 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
     is_suspicious = moderation.get("isSuspicious", False)
     moderation_summary = moderation.get("summary", "")
 
-    # 3. Fetch files from GitHub archive
+    # 3. Stage remote GitHub archive through the materializer boundary.
     github_path = f"skills/{handle}/{slug}"
-    try:
-        files = await _fetch_github_directory("openclaw", "skills", github_path, "main", token=token)
-    except HTTPException as e:
-        if e.status_code == 404:
-            raise HTTPException(
-                404, f"Skill files not found in GitHub archive at {github_path}. Try importing via URL instead."
-            )
-        raise
+    github_url = f"https://github.com/openclaw/skills/tree/main/{github_path}"
+    result = await stage_remote_external_skill_source_review_for_tenant(
+        tenant_id=current_user.tenant_id,
+        created_by_user_id=current_user.id,
+        source_uri=f"clawhub:{slug}",
+        fetch_uri=github_url,
+        folder_name=slug,
+        source_format="clawhub_skill",
+        token=token,
+    )
 
-    if not files:
-        raise HTTPException(404, "No files found in the skill directory")
+    files = _review_materialized_files(result)
 
-    # 4. Extract name/description from SKILL.md
+    # 4. Extract name/description from SKILL.md when materialization produced one.
     skill_md = next((f for f in files if f["path"].upper() == "SKILL.MD"), None)
-    if not skill_md:
-        raise HTTPException(400, "No SKILL.md found — not a valid skill package")
-
-    frontmatter = _parse_skill_md_frontmatter(skill_md["content"])
+    frontmatter = _parse_skill_md_frontmatter(skill_md["content"]) if skill_md else {}
     name = frontmatter.get("name", skill_info.get("displayName", slug))
     description = frontmatter.get("description", skill_info.get("summary", ""))
 
     # 5. Classify portability tier for the review report payload.
-    tier = classify_portability(skill_md["content"])
+    tier = classify_portability(skill_md["content"]) if skill_md else None
     has_scripts = any("/" in f["path"] for f in files if f["path"] != "SKILL.md")
-
-    # 6. Stage review; external ClawHub content must not directly enter the company registry.
-    result = await stage_external_skill_package_review_for_tenant(
-        tenant_id=current_user.tenant_id,
-        created_by_user_id=current_user.id,
-        source_uri=f"clawhub:{slug}",
-        folder_name=slug,
-        files=files,
-        source_format="clawhub_skill",
-    )
 
     result["tier"] = tier
     result["name"] = name
@@ -581,21 +583,7 @@ async def import_from_url(body: UrlImportIn, current_user: User = Depends(get_cu
             400, "Invalid GitHub URL. Expected format: https://github.com/{owner}/{repo}/tree/{branch}/{path}"
         )
 
-    owner, repo, branch, path = parsed["owner"], parsed["repo"], parsed["branch"], parsed["path"]
-
-    # Fetch files
-    files = await _fetch_github_directory(owner, repo, path, branch, token=token)
-    if not files:
-        raise HTTPException(404, "No files found at the specified path")
-
-    # Validate SKILL.md exists
-    skill_md = next((f for f in files if f["path"].upper() == "SKILL.MD"), None)
-    if not skill_md:
-        raise HTTPException(400, "No SKILL.md found at this URL — not a valid skill package")
-
-    frontmatter = _parse_skill_md_frontmatter(skill_md["content"])
-    name = frontmatter.get("name", path.rstrip("/").split("/")[-1] if path else repo)
-    description = frontmatter.get("description", "")
+    repo, path = parsed["repo"], parsed["path"]
 
     # Derive folder_name from the last path segment
     folder_name = path.rstrip("/").split("/")[-1] if path else repo
@@ -610,16 +598,20 @@ async def import_from_url(body: UrlImportIn, current_user: User = Depends(get_cu
             "source": "url",
         }
 
-    tier = classify_portability(skill_md["content"])
-
-    result = await stage_external_skill_package_review_for_tenant(
+    result = await stage_remote_external_skill_source_review_for_tenant(
         tenant_id=current_user.tenant_id,
         created_by_user_id=current_user.id,
         source_uri=body.url,
         folder_name=folder_name,
-        files=files,
         source_format="external_skill_url",
+        token=token,
     )
+    files = _review_materialized_files(result)
+    skill_md = next((f for f in files if f["path"].upper() == "SKILL.MD"), None)
+    frontmatter = _parse_skill_md_frontmatter(skill_md["content"]) if skill_md else {}
+    name = frontmatter.get("name", folder_name)
+    description = frontmatter.get("description", "")
+    tier = classify_portability(skill_md["content"]) if skill_md else None
 
     result["tier"] = tier
     result["name"] = name

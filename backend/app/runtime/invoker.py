@@ -299,6 +299,95 @@ def _skill_catalog_ranking_inputs(request: AgentInvocationRequest) -> dict[str, 
     }
 
 
+def _activation_data_root() -> Path:
+    from app.config import get_settings
+
+    return Path(get_settings().AGENT_DATA_DIR)
+
+
+def _kb_activation_session_id(request: AgentInvocationRequest) -> str:
+    if request.memory_session_id:
+        return str(request.memory_session_id)
+    session = request.session_context
+    return str(session.session_id) if session is not None and session.session_id else ""
+
+
+def _apply_working_set_activation_to_kb_candidates(
+    request: AgentInvocationRequest,
+    candidates: list[Any],
+) -> list[Any]:
+    """M8 consumption contract (design §4.5): the unified activation signal
+    must actually reorder KB results — compute-and-record-only is the audited
+    QKV failure mode. Session-working-set strength boosts matching documents
+    (bounded multiplicative factor) and the trace explains every rerank."""
+    session_id = _kb_activation_session_id(request)
+    if not session_id or request.agent_id is None:
+        return list(candidates)
+    try:
+        from app.memory.session_working_set import load_working_set
+
+        working_set = load_working_set(_activation_data_root(), request.agent_id, session_id)
+    except (OSError, ValueError) as exc:
+        logging.getLogger(__name__).warning("[Invoker] KB working-set load failed: %s", exc)
+        return list(candidates)
+    strength_by_ref = {str(item["ref"]): float(item["strength"]) for item in working_set.items}
+    if not strength_by_ref:
+        return list(candidates)
+
+    from dataclasses import replace as _dc_replace
+
+    reranked: list[tuple[float, int, Any]] = []
+    for index, candidate in enumerate(candidates):
+        base_score = float(getattr(getattr(candidate, "score", None), "total_score", 0.0) or 0.0)
+        refs = list(getattr(candidate, "source_refs", ()) or [])
+        strength = max((strength_by_ref.get(str(ref), 0.0) for ref in refs), default=0.0)
+        # Bounded multiplicative factor, max x1.3 (design 4 keeps boosts in
+        # [0.8, 1.6]): a document this session already consulted is a strong
+        # recall prior, but it must never eclipse a decisive lexical gap.
+        rank_score = base_score * (1.0 + 0.3 * min(1.0, strength))
+        if strength > 0:
+            candidate = _dc_replace(
+                candidate,
+                metadata={
+                    **dict(getattr(candidate, "metadata", {}) or {}),
+                    "context_boost": round(min(1.0, strength), 6),
+                    "activation_rank_score": round(rank_score, 6),
+                    "activation_score_trace": {
+                        "base_score": round(base_score, 6),
+                        "context_boost": round(min(1.0, strength), 6),
+                        "activation_rank_score": round(rank_score, 6),
+                        "reason": "session_working_set",
+                    },
+                },
+            )
+        reranked.append((rank_score, index, candidate))
+    reranked.sort(key=lambda entry: (-entry[0], entry[1]))
+    return [candidate for _, _, candidate in reranked]
+
+
+def _touch_working_set_with_kb_refs(request: AgentInvocationRequest, candidates: list[Any]) -> None:
+    """KB activations join W_t (design §4.2) without an extra turn tick."""
+    session_id = _kb_activation_session_id(request)
+    if not session_id or request.agent_id is None:
+        return
+    refs = [
+        str(ref)
+        for candidate in candidates
+        for ref in (getattr(candidate, "source_refs", ()) or [])
+        if str(ref or "").strip()
+    ]
+    if not refs:
+        return
+    try:
+        from app.memory.session_working_set import load_working_set, save_working_set, touch_working_set
+
+        data_root = _activation_data_root()
+        state = load_working_set(data_root, request.agent_id, session_id)
+        save_working_set(data_root, request.agent_id, session_id, touch_working_set(state, refs))
+    except (OSError, ValueError) as exc:
+        logging.getLogger(__name__).warning("[Invoker] KB working-set touch failed: %s", exc)
+
+
 async def _record_knowledge_activation_for_request(
     request: AgentInvocationRequest,
     *,
@@ -335,9 +424,12 @@ async def _record_knowledge_activation_for_request(
     if not candidates:
         return None
 
+    candidates = _apply_working_set_activation_to_kb_candidates(request, list(candidates))
     assembly_state = ensure_runtime_assembly_state(request.session_context)
     assembly_state.record_activation_candidates(candidates)
-    return _format_personal_kb_prompt_hint(candidates)
+    hint = _format_personal_kb_prompt_hint(candidates)
+    _touch_working_set_with_kb_refs(request, candidates[:3])
+    return hint
 
 
 def _trim_kb_hint_text(value: Any, *, limit: int) -> str:
@@ -351,11 +443,17 @@ def _format_personal_kb_prompt_hint(candidates: list[Any] | tuple[Any, ...], *, 
     usable = [candidate for candidate in candidates if getattr(candidate, "candidate_kind", "") == "knowledge_base"]
     if not usable:
         return ""
-    ranked = sorted(
-        usable,
-        key=lambda candidate: float(getattr(getattr(candidate, "score", None), "total_score", 0.0) or 0.0),
-        reverse=True,
-    )[: max(1, min(3, int(limit or 3)))]
+    def _rank_key(candidate: Any) -> float:
+        candidate_metadata = dict(getattr(candidate, "metadata", {}) or {})
+        activation_rank = candidate_metadata.get("activation_rank_score")
+        if activation_rank is not None:
+            try:
+                return float(activation_rank)
+            except (TypeError, ValueError):
+                pass
+        return float(getattr(getattr(candidate, "score", None), "total_score", 0.0) or 0.0)
+
+    ranked = sorted(usable, key=_rank_key, reverse=True)[: max(1, min(3, int(limit or 3)))]
     lines = [
         "## Personal Knowledge Hint",
         "Relevant owner KB records were found. Use `search_personal_kb` for full snippets before quoting details.",

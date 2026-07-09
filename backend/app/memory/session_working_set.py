@@ -81,6 +81,29 @@ def working_set_seeds(working_set: SessionWorkingSet, *, top_n: int = WORKING_SE
     return {str(item["ref"]): float(item["strength"]) for item in working_set.items[: max(1, top_n)]}
 
 
+def touch_working_set(
+    existing: SessionWorkingSet,
+    refs: list[str] | tuple[str, ...],
+    *,
+    now: datetime | None = None,
+) -> SessionWorkingSet:
+    """Refresh/insert refs WITHOUT a turn tick (no decay, no turn advance).
+
+    Used by same-turn secondary activation surfaces (e.g. the personal-KB
+    hint) so one conversational turn causes exactly one decay step regardless
+    of how many activation surfaces fire within it.
+    """
+    when = (now or datetime.now(UTC)).astimezone(UTC).isoformat()
+    merged: dict[str, dict] = {str(item["ref"]): dict(item) for item in existing.items}
+    for raw_ref in refs:
+        ref = str(raw_ref or "").strip()
+        if not ref:
+            continue
+        merged[ref] = {"ref": ref, "strength": 1.0, "last_turn": existing.turn_index, "ts": when}
+    items = sorted(merged.values(), key=lambda item: (-item["strength"], item["ref"]))[:WORKING_SET_MAX_ITEMS]
+    return SessionWorkingSet(turn_index=existing.turn_index, items=items)
+
+
 def _working_set_path(data_root: Path, agent_id: uuid.UUID | str, session_id: str) -> Path:
     safe_session = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in str(session_id))[:80] or "session"
     return Path(data_root) / str(agent_id) / "memory" / "control" / "working_sets" / f"{safe_session}.json"

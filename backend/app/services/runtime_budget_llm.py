@@ -5,7 +5,9 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from app.runtime.provider_prompt_ledger import build_provider_prompt_ledger, prompt_projection_token_count
 from app.services.llm_client import ChunkCallback, LLMClient, LLMMessage, LLMResponse, ThinkingCallback
+from app.services.prompt_cache import extract_cache_metrics
 from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService, RuntimeBudgetSettlement
 
 
@@ -23,7 +25,14 @@ def _message_text(value: Any) -> str:
     return str(value or "")
 
 
-def estimate_llm_prompt_tokens(messages: list[LLMMessage] | None) -> int:
+def estimate_llm_prompt_tokens(
+    messages: list[LLMMessage] | None,
+    *,
+    tools: list[dict] | None = None,
+    extra_surfaces: dict[str, Any] | None = None,
+) -> int:
+    if tools or extra_surfaces:
+        return prompt_projection_token_count(messages=messages, tools=tools, extra_surfaces=extra_surfaces)
     text = "\n".join(_message_text(getattr(message, "content", "")) for message in messages or [])
     return max(1, (len(text) + 3) // 4) if text else 0
 
@@ -150,7 +159,15 @@ class RuntimeBudgetedLLMClient(LLMClient):
         await self._inner.close()
 
     async def _run_budgeted_call(self, method: str, *, messages: list[LLMMessage], tools: list[dict] | None, call):
-        prompt_estimate = estimate_llm_prompt_tokens(messages)
+        provider_prompt_ledger = build_provider_prompt_ledger(
+            messages=messages,
+            tools=tools,
+            provider=str(getattr(self._inner, "provider", "") or ""),
+            model=str(self.model or ""),
+        )
+        prompt_estimate = int(provider_prompt_ledger["projected_input_tokens"])
+        projected_uncached_input_tokens = int(provider_prompt_ledger["projected_uncached_input_tokens"])
+        tool_schema_estimate_tokens = int(provider_prompt_ledger["tool_schema_tokens"])
         reservation_tokens = max(self._default_llm_call_token_reservation, prompt_estimate)
         reservation_key = f"provider_call:{self._runtime_task_id or 'unknown'}:{uuid.uuid4().hex}"
         await self._service.reserve(
@@ -158,7 +175,7 @@ class RuntimeBudgetedLLMClient(LLMClient):
                 budget_run_id=self._budget_run_id,
                 reservation_key=reservation_key,
                 tokens=reservation_tokens,
-                cache_miss_tokens=prompt_estimate,
+                cache_miss_tokens=projected_uncached_input_tokens,
                 provider_calls=1,
                 reason="provider_call_start",
                 runtime_task_id=self._runtime_task_id,
@@ -167,6 +184,10 @@ class RuntimeBudgetedLLMClient(LLMClient):
                     "model": self.model,
                     "has_tools": bool(tools),
                     "prompt_estimate_tokens": prompt_estimate,
+                    "projected_input_tokens": prompt_estimate,
+                    "projected_uncached_input_tokens": projected_uncached_input_tokens,
+                    "tool_schema_estimate_tokens": tool_schema_estimate_tokens,
+                    "provider_prompt_ledger": provider_prompt_ledger,
                     **({"budget_summary_turn": True} if self._summary_lane else {}),
                 },
             )
@@ -192,6 +213,10 @@ class RuntimeBudgetedLLMClient(LLMClient):
             getattr(response, "usage", None),
             prompt_estimate=prompt_estimate,
         )
+        cache_metrics = extract_cache_metrics(
+            getattr(response, "usage", None),
+            provider=str(getattr(self._inner, "provider", "") or "unknown"),
+        )
         await self._service.settle(
             RuntimeBudgetSettlement(
                 budget_run_id=self._budget_run_id,
@@ -206,6 +231,20 @@ class RuntimeBudgetedLLMClient(LLMClient):
                     "model": getattr(response, "model", None) or self.model,
                     "usage": getattr(response, "usage", None),
                     "cache_miss_usage_observed": observed,
+                    "cache_read_tokens": cache_metrics.cache_read_tokens,
+                    "cache_write_tokens": cache_metrics.cache_write_tokens,
+                    "cache_miss_tokens": actual_cache_miss_tokens,
+                    "cache_metrics_observed": bool(
+                        cache_metrics.total_input_tokens
+                        or cache_metrics.cache_read_tokens
+                        or cache_metrics.cache_write_tokens
+                    ),
+                    "cache_unknown": not bool(
+                        cache_metrics.total_input_tokens
+                        or cache_metrics.cache_read_tokens
+                        or cache_metrics.cache_write_tokens
+                    ),
+                    "provider_prompt_ledger": provider_prompt_ledger,
                 },
             )
         )

@@ -286,16 +286,17 @@ git status -sb
 
 ### Commit B：ProviderPromptLedger + Runtime budget
 
-状态：待落地
+状态：已完成
 
 文件：
 
 - `backend/app/runtime/provider_prompt_ledger.py`
 - `backend/app/services/runtime_budget_llm.py`
-- `backend/app/kernel/engine.py`
 - `backend/tests/runtime/test_provider_prompt_ledger.py`
 - `backend/tests/services/test_runtime_budget_llm.py`
 - 本文档
+
+说明：本提交先把 provider prompt projection 和 runtime budget 预约/结算口径收敛到同一份 ledger。`engine.py` 的每轮 provider-call span / Workbench 写入在后续 observability commit 中接入，避免与正在独立落地的 final-answer evidence 改动混在同一提交。
 
 验收：
 
@@ -304,6 +305,14 @@ cd backend && source .venv/bin/activate && pytest \
   tests/runtime/test_provider_prompt_ledger.py \
   tests/services/test_runtime_budget_llm.py \
   -q
+# 7 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/runtime/provider_prompt_ledger.py \
+  app/services/runtime_budget_llm.py \
+  tests/runtime/test_provider_prompt_ledger.py \
+  tests/services/test_runtime_budget_llm.py
+# All checks passed!
 ```
 
 ### Commit C：ToolEvidenceLedger + final answer verifier
@@ -404,7 +413,7 @@ cd backend && source .venv/bin/activate && pytest \
 | 提交 | 状态 | 说明 | 验证 |
 | --- | --- | --- | --- |
 | A | 已完成 | 文档总控 | `git add -f docs/ccplus-session-full-landfall-2026-07-09.md && git commit -m "docs: define session full landfall plan"` |
-| B | 待落地 | ProviderPromptLedger + Runtime budget | 待补 |
+| B | 已完成 | ProviderPromptLedger + Runtime budget；runtime reservation 计入 tool schema / projected uncached input；settlement 记录 cache read/write/miss/unknown | `pytest tests/runtime/test_provider_prompt_ledger.py tests/services/test_runtime_budget_llm.py -q` -> `7 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | C | 待落地 | ToolEvidenceLedger + final answer verifier | 待补 |
 | D | 待落地 | Replay repair + compaction/cost breaker | 待补 |
 | E | 待落地 | Workbench / observability | 待补 |

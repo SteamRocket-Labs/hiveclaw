@@ -25,8 +25,6 @@ export type ThreadTimelineCell =
       id: string;
       timeline: RunTimelineSnapshot;
       sourceMessages: Array<{ message: AgentChatMessage; index: number }>;
-      answer?: AgentChatMessage;
-      answerIndex?: number;
       /** Live RuntimePhase for the open run (§3 seam 3); settled runs carry none. */
       phase?: string;
     }
@@ -1539,8 +1537,6 @@ function buildRunCell(
     id: `run-${runIndex}-${sourceMessages[0]?.index ?? answer?.index ?? 0}`,
     timeline: buildRunTimelineFromMessages(timelineMessages),
     sourceMessages,
-    answer: answer?.message,
-    answerIndex: answer?.index,
   };
 }
 
@@ -1630,17 +1626,30 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
   messages.forEach((message, index) => {
     if (isRenderableAssistantAnswer(message)) {
       if (message.thinking?.trim()) {
+        const answerMessage = assistantAnswerMessage(message);
         const sourceMessages = [
           ...pendingRun,
           { message: assistantReasoningStepMessage(message), index },
         ];
-        cells.push(buildRunCell(runIndex, sourceMessages, { message: assistantAnswerMessage(message), index }));
+        cells.push(buildRunCell(runIndex, sourceMessages, { message: answerMessage, index }));
+        cells.push({
+          kind: 'assistant_final',
+          id: messageId(answerMessage, `assistant-${index}`),
+          message: answerMessage,
+          index,
+        });
         runIndex += 1;
         pendingRun.length = 0;
         return;
       }
       if (pendingRun.length > 0) {
         cells.push(buildRunCell(runIndex, [...pendingRun], { message, index }));
+        cells.push({
+          kind: 'assistant_final',
+          id: messageId(message, `assistant-${index}`),
+          message,
+          index,
+        });
         runIndex += 1;
         pendingRun.length = 0;
         return;
@@ -1732,7 +1741,6 @@ function sameCellIdentity(previous: ThreadTimelineCell, next: ThreadTimelineCell
     return previous.index === next.index && previous.title === next.title && previous.summary === next.summary;
   }
   if (previous.kind === 'active_run' && next.kind === 'active_run') {
-    if (previous.answer !== next.answer || previous.answerIndex !== next.answerIndex) return false;
     if (previous.phase !== next.phase) return false;
     if (previous.sourceMessages.length !== next.sourceMessages.length) return false;
     return previous.sourceMessages.every((entry, index) => (

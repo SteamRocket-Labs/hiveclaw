@@ -3488,7 +3488,6 @@ function AgentChatSection({
                   ? renderInlinePlanToolCall(entry.message, entry.index)
                   : null
             ))}
-	            {cell.answer ? renderConversationMessage(cell.answer, cell.answerIndex ?? 0, resolveIsLeft(cell.answer, cell.answerIndex ?? 0), checkpointByIndex) : null}
           </div>,
         );
         return;

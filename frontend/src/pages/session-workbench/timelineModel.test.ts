@@ -106,7 +106,7 @@ describe('session workbench timeline model', () => {
     expect(signatureReads).toBe(0);
   });
 
-  it('keeps a turn run as one cell with reasoning, tool, and final answer parts', () => {
+  it('projects a turn as a run process cell followed by a final answer cell', () => {
     const messages: AgentChatMessage[] = [
       { id: 'u1', role: 'user', content: 'Check the current frontend state.' },
       { id: 'r1', role: 'assistant', content: '', thinking: 'Need to inspect chat code.' },
@@ -122,12 +122,15 @@ describe('session workbench timeline model', () => {
       activeRunStatus: null,
     });
 
-    expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run']);
+    expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run', 'assistant_final']);
     const runCell = model.cells[1];
     expect(runCell.kind).toBe('active_run');
     if (runCell.kind !== 'active_run') throw new Error('expected active run cell');
     expect(runCell.timeline.steps.map((step) => step.kind)).toEqual(['reasoning', 'file']);
-    expect(runCell.answer?.content).toContain('presentation model');
+    const answerCell = model.cells[2];
+    expect(answerCell.kind).toBe('assistant_final');
+    if (answerCell.kind !== 'assistant_final') throw new Error('expected assistant final cell');
+    expect(answerCell.message.content).toContain('presentation model');
     expect(model.header.status).toBe('complete');
   });
 
@@ -149,7 +152,7 @@ describe('session workbench timeline model', () => {
       activeRunStatus: null,
     });
 
-    expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run']);
+    expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run', 'assistant_final']);
     const runCell = model.cells[1];
     expect(runCell.kind).toBe('active_run');
     if (runCell.kind !== 'active_run') throw new Error('expected active run cell');
@@ -159,7 +162,10 @@ describe('session workbench timeline model', () => {
       'reasoning:Now inspect the timeline projection.',
       'file:timelineModel.ts',
     ]);
-    expect(runCell.answer?.content).toBe('Done. The process is fixed.');
+    const answerCell = model.cells[2];
+    expect(answerCell.kind).toBe('assistant_final');
+    if (answerCell.kind !== 'assistant_final') throw new Error('expected assistant final cell');
+    expect(answerCell.message.content).toBe('Done. The process is fixed.');
   });
 
   it('keeps an assistant answer visible when reasoning and content share one transcript message', () => {
@@ -181,12 +187,15 @@ describe('session workbench timeline model', () => {
       activeRunStatus: null,
     });
 
-    expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run']);
+    expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run', 'assistant_final']);
     const runCell = model.cells[1];
     expect(runCell.kind).toBe('active_run');
     if (runCell.kind !== 'active_run') throw new Error('expected active run cell');
     expect(runCell.timeline.steps.map((step) => step.kind)).toEqual(['reasoning']);
-    expect(runCell.answer?.content).toContain('point before the selected prompt');
+    const answerCell = model.cells[2];
+    expect(answerCell.kind).toBe('assistant_final');
+    if (answerCell.kind !== 'assistant_final') throw new Error('expected assistant final cell');
+    expect(answerCell.message.content).toContain('point before the selected prompt');
   });
 
   it('marks question and plan tool calls as blocking active run steps', () => {

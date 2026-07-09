@@ -490,6 +490,8 @@ cd backend && source .venv/bin/activate && ruff check \
 
 ### G2. Run process projection hardening
 
+状态：已完成
+
 裁决：
 
 - `active_run` 不再作为 final answer 的渲染容器。
@@ -501,6 +503,21 @@ cd backend && source .venv/bin/activate && ruff check \
 - `thinking -> tool -> final answer` 的 cell 顺序为 `active_run`, `assistant_final`。
 - UI 不再从 active-run cell 内渲染 `cell.answer`。
 - completed collapsed 时仍显示 final answer；展开只显示原始 step sequence。
+
+文件：
+
+- `frontend/src/pages/session-workbench/timelineModel.ts`
+- `frontend/src/pages/session-workbench/timelineModel.test.ts`
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx`
+
+验证：
+
+```bash
+cd frontend && npm test -- --run \
+  src/pages/session-workbench/timelineModel.test.ts \
+  src/pages/agent-detail/AgentDetailSections.test.tsx
+# 122 passed
+```
 
 ### G3. Workspace rail scope hardening
 

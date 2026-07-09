@@ -129,6 +129,17 @@ class _UsageKnowledgeExtractor:
         )
 
 
+class _NoUsageKnowledgeExtractor:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def extract_segment(self, *args, **kwargs):
+        from app.services.personal_knowledge_extractor import KnowledgeExtractionResult
+
+        self.calls += 1
+        return KnowledgeExtractionResult()
+
+
 class _BlockingKnowledgeExtractor:
     def __init__(self) -> None:
         self.active = 0
@@ -584,6 +595,35 @@ async def test_ingest_markdown_records_extraction_usage_in_job_metadata(tmp_path
     assert usage["provider_usage"]["input_tokens"] == 20 * extractor.calls
     assert usage["provider_usage"]["output_tokens"] == 5 * extractor.calls
     assert usage["provider_usage"]["cache_read_input_tokens"] == 3 * extractor.calls
+
+
+@pytest.mark.asyncio
+async def test_ingest_markdown_records_usage_unavailable_when_provider_omits_usage(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    extractor = _NoUsageKnowledgeExtractor()
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path, extractor=extractor)
+
+    await service.ingest_markdown(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        title="No usage notes",
+        markdown="# One\n\nProvider did not return usage.",
+        source_kind="paste",
+        created_by_user_id=owner_id,
+    )
+
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+    usage = jobs[-1].job_metadata_json["extraction_usage"]
+
+    assert usage["segment_count"] == extractor.calls
+    assert usage["segments_with_usage"] == 0
+    assert usage["usage_unavailable_count"] == extractor.calls
+    assert usage["tokens"] == 0
 
 
 @pytest.mark.asyncio

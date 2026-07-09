@@ -727,12 +727,15 @@ def _record_extraction_usage(summary: dict[str, Any], extraction: Any) -> None:
 
 
 def _finalize_extraction_usage(summary: dict[str, Any]) -> dict[str, Any] | None:
-    if int(summary.get("segment_count", 0) or 0) <= 0:
+    segment_count = int(summary.get("segment_count", 0) or 0)
+    if segment_count <= 0:
         return None
+    segments_with_usage = int(summary.get("segments_with_usage", 0) or 0)
     provider_usage = dict(summary.get("provider_usage") or {})
     return {
-        "segment_count": int(summary.get("segment_count", 0) or 0),
-        "segments_with_usage": int(summary.get("segments_with_usage", 0) or 0),
+        "segment_count": segment_count,
+        "segments_with_usage": segments_with_usage,
+        "usage_unavailable_count": max(segment_count - segments_with_usage, 0),
         "tokens": int(summary.get("tokens", 0) or 0),
         "provider_usage": provider_usage,
     }

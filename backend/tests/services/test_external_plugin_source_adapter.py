@@ -117,7 +117,7 @@ async def test_cc_plugin_directory_import_stage_approve_activate_e2e(tmp_path, m
     # 3. activate (agent)
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    activate_db = _StubSession(execute_values=[snapshot_row])
+    activate_db = _StubSession(execute_values=[agent_id, snapshot_row])
     activation = await activate_external_extension_for_agent(
         activate_db,
         tenant_id=tenant_id,

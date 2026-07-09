@@ -47,7 +47,7 @@ _AGENT_TOKEN_QUOTA_COLUMNS = (
     "quota_tokens_per_day",
     "quota_tokens_per_month",
 )
-_CURRENT_CLOSURE_HEAD = "runtime_budget_run_metadata_0709"
+_CURRENT_CLOSURE_HEAD = "external_capability_strict_rls_0709"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:

@@ -356,7 +356,11 @@ async def create_runtime_task_record(
     # not a valid NULL-tenant runtime task. No parent_agent still means an
     # orphan/backfill record and keeps the historical fail-closed None scope.
     if parent_agent_id is not None:
-        admission = await admit_agent_runtime_tenant(parent_agent_id, source=f"runtime_task:{task_type}")
+        admission = await admit_agent_runtime_tenant(
+            parent_agent_id,
+            source=f"runtime_task:{task_type}",
+            tenant_resolver=resolve_tenant_for_agent,
+        )
         if not admission.ok:
             raise_runtime_tenant_precondition(admission)
         tenant_id = admission.tenant_id

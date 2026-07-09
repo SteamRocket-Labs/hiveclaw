@@ -1591,17 +1591,6 @@ async def _invoke_agent_for_triggers(
     # engine branch; the rest continue down the existing prose-ReAct path.
     from app.services.workflow_trigger import fire_workflow_for_trigger
 
-    admission = await admit_agent_runtime_tenant(agent_id, source="trigger")
-    if not admission.ok:
-        await _skip_trigger_runtime_task(
-            runtime_task_id,
-            skip_reason=admission.reason_code,
-            result_summary=admission.message,
-            metadata_json=admission.metadata(),
-        )
-        return
-    tenant_id = admission.tenant_id
-
     react_triggers: list[AgentTrigger] = []
     for trigger in triggers:
         try:
@@ -1642,6 +1631,21 @@ async def _invoke_agent_for_triggers(
             agent_id, triggers, source_session_id=same_session_target, runtime_task_id=runtime_task_id
         ):
             return
+
+    admission = await admit_agent_runtime_tenant(
+        agent_id,
+        source="trigger",
+        tenant_resolver=resolve_tenant_for_agent,
+    )
+    if not admission.ok:
+        await _skip_trigger_runtime_task(
+            runtime_task_id,
+            skip_reason=admission.reason_code,
+            result_summary=admission.message,
+            metadata_json=admission.metadata(),
+        )
+        return
+    tenant_id = admission.tenant_id
 
     try:
         async with tenant_scoped_session(tenant_id, require_tenant=True, source="trigger") as db:

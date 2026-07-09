@@ -800,6 +800,50 @@ source .venv/bin/activate
 pytest tests -q
 ```
 
+### 9.1 总验证完成证据（2026-07-09）
+
+第一部分 A-F 施工包全部完成后，额外修复完整套件暴露的验收断点：
+
+1. `admit_agent_runtime_tenant()` 支持注入 tenant resolver，生产默认不变；`runtime_task_service` / `trigger_daemon` 仍走统一 admission，不再各自复制短路逻辑。
+2. trigger `same_session` delivery 恢复早返回语义；fresh trigger-run path 继续执行 RuntimeTenantAdmission。
+3. external plugin activation E2E 测试桩补齐真实 `_require_agent_in_tenant()` 查询顺序。
+4. Alembic single-head closure 常量更新到当前真实 head `external_capability_strict_rls_0709`。
+5. 清理 `tests/tools/test_hook_governance.py` 中阻断全量 lint 的未使用 import。
+
+验证：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_runtime_tenant_admission.py \
+  tests/services/test_trigger_daemon.py \
+  tests/services/test_heartbeat.py \
+  tests/services/test_runtime_task_service.py \
+  tests/services/test_session_command_runtime.py \
+  tests/services/test_session_workspace_snapshot.py \
+  tests/memory/test_assembler.py \
+  tests/runtime/test_runtime_context_composition.py \
+  tests/runtime/test_personal_knowledge_activation.py \
+  tests/tools/test_audit.py \
+  tests/architecture/test_rls_tenant_write_contracts.py \
+  -q
+# 158 passed, 4 warnings
+
+pytest tests -q
+# 6026 passed, 1 skipped, 5 warnings
+
+ruff check app tests
+# All checks passed!
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm test -- --run
+# Test Files 84 passed; Tests 528 passed
+
+npm run build
+# tsc && vite build; built successfully
+```
+
 ## 10. 第二部分：冻结设计，但不立刻实现
 
 第二部分只有在第一部分验收通过后才开工。

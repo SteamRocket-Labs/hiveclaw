@@ -58,3 +58,21 @@ async def test_admit_agent_runtime_tenant_allows_resolved_tenant(monkeypatch) ->
     assert admission.agent_id == agent_id
     assert admission.tenant_id == tenant_id
     assert admission.metadata()["tenant_admission_status"] == "allowed"
+
+
+@pytest.mark.asyncio
+async def test_admit_agent_runtime_tenant_uses_injected_resolver() -> None:
+    from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
+
+    tenant_id = uuid4()
+    calls = []
+
+    async def _resolved_tenant(_agent_id, **kwargs):
+        calls.append(kwargs)
+        return tenant_id
+
+    admission = await admit_agent_runtime_tenant(uuid4(), source="trigger", tenant_resolver=_resolved_tenant)
+
+    assert admission.ok is True
+    assert admission.tenant_id == tenant_id
+    assert calls == [{"session_factory": None}]

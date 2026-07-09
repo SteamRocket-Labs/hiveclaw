@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.runtime.tenant_admission import RuntimeTenantAdmission, blocked_runtime_tenant_admission
 from app.services.tenant_resolver import resolve_tenant_for_agent
+
+TenantResolver = Callable[..., Awaitable[uuid.UUID | None]]
 
 
 def _coerce_agent_id(agent_id: uuid.UUID | str | None) -> uuid.UUID | None:
@@ -24,6 +27,7 @@ async def admit_agent_runtime_tenant(
     *,
     source: str,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    tenant_resolver: TenantResolver | None = None,
 ) -> RuntimeTenantAdmission:
     """Resolve the tenant precondition before a background runtime mutates state."""
 
@@ -37,7 +41,8 @@ async def admit_agent_runtime_tenant(
             agent_id=None,
         )
 
-    tenant_id = await resolve_tenant_for_agent(normalized_agent_id, session_factory=session_factory)
+    resolver = tenant_resolver or resolve_tenant_for_agent
+    tenant_id = await resolver(normalized_agent_id, session_factory=session_factory)
     if tenant_id is None:
         return blocked_runtime_tenant_admission(
             reason_code="agent_tenant_missing",

@@ -189,6 +189,7 @@ export type ChatTranscriptEventPayload = {
   content?: string;
   permission_request_id?: string;
   status?: string;
+  phase?: string;
   parts?: Array<Record<string, unknown>>;
   metadata?: Record<string, unknown>;
   created_at?: string;
@@ -221,9 +222,142 @@ export interface SessionRunState {
   status: string;
 }
 
+/**
+ * RuntimePhase — frontend mirror of the backend first-class phase contract
+ * (backend/app/runtime/runtime_phase.py, unified design 2026-07-09 §3.3).
+ * `idle` is a frontend-only base state meaning "no run in this session".
+ */
+export type RuntimePhase =
+  | 'idle'
+  | 'queued'
+  | 'resuming'
+  | 'starting'
+  | 'thinking'
+  | 'responding'
+  | 'tool_running'
+  | 'hook_evaluating'
+  | 'compacting'
+  | 'awaiting_approval'
+  | 'awaiting_budget'
+  | 'summarizing'
+  | 'continuation_gap'
+  | 'done'
+  | 'failed'
+  | 'cancelled';
+
+const RUNTIME_PHASE_VALUES: ReadonlySet<string> = new Set([
+  'idle',
+  'queued',
+  'resuming',
+  'starting',
+  'thinking',
+  'responding',
+  'tool_running',
+  'hook_evaluating',
+  'compacting',
+  'awaiting_approval',
+  'awaiting_budget',
+  'summarizing',
+  'continuation_gap',
+  'done',
+  'failed',
+  'cancelled',
+]);
+
+export const TERMINAL_RUNTIME_PHASES: ReadonlySet<RuntimePhase> = new Set([
+  'done',
+  'failed',
+  'cancelled',
+]);
+
+const STREAMING_RUNTIME_PHASES: ReadonlySet<RuntimePhase> = new Set([
+  'thinking',
+  'responding',
+  'tool_running',
+  'hook_evaluating',
+  'compacting',
+  'summarizing',
+]);
+
+const WAITING_RUNTIME_PHASES: ReadonlySet<RuntimePhase> = new Set([
+  'queued',
+  'resuming',
+  'starting',
+]);
+
+export function isRuntimePhase(value: unknown): value is RuntimePhase {
+  return typeof value === 'string' && RUNTIME_PHASE_VALUES.has(value);
+}
+
 export interface SessionUiState {
+  phase: RuntimePhase;
   isWaiting: boolean;
   isStreaming: boolean;
+}
+
+/** Derive the legacy waiting/streaming booleans from the phase — the single source of truth. */
+export function phaseUi(phase: RuntimePhase): { isWaiting: boolean; isStreaming: boolean } {
+  return {
+    isWaiting: WAITING_RUNTIME_PHASES.has(phase),
+    isStreaming: STREAMING_RUNTIME_PHASES.has(phase),
+  };
+}
+
+/** The only constructor for SessionUiState: booleans are always derived from the phase. */
+export function uiForPhase(phase: RuntimePhase): SessionUiState {
+  return { phase, ...phaseUi(phase) };
+}
+
+interface RuntimePhaseEventLike {
+  type?: unknown;
+  event_type?: unknown;
+  phase?: unknown;
+  status?: unknown;
+  role?: unknown;
+}
+
+/**
+ * Turn lifecycle state machine shared by the live WS hot path and transcript
+ * replay. A backend `phase` event is authoritative; other events derive the
+ * phase so replayed histories reach the same state without persisted phases.
+ * Terminal phases are not sealed here: the session-level machine must reopen
+ * when a new run starts in the same session.
+ */
+export function reduceRuntimePhase(current: RuntimePhase, event: RuntimePhaseEventLike): RuntimePhase {
+  const eventType = String(event.event_type || event.type || '');
+  switch (eventType) {
+    case 'phase':
+      return isRuntimePhase(event.phase) ? event.phase : current;
+    case 'run_queued':
+      return 'queued';
+    case 'run_started':
+      return 'starting';
+    case 'thinking':
+      return 'thinking';
+    case 'chunk':
+    case 'assistant_delta':
+      return 'responding';
+    case 'tool_call':
+      return event.status === 'done' ? 'thinking' : 'tool_running';
+    case 'tool_result':
+      return 'thinking';
+    case 'permission':
+      return String(event.status || '') === 'session_permission_required' ? 'awaiting_approval' : current;
+    case 'permission_resolved':
+    case 'session_permission_decision':
+      return 'starting';
+    case 'done':
+    case 'run_completed':
+    case 'assistant_message':
+      return 'done';
+    case 'error':
+    case 'quota_exceeded':
+      return 'failed';
+    case 'run_cancelled':
+      return 'cancelled';
+    default:
+      return current;
+  }
 }
 
 export type SessionTranscriptLoadSurface = 'chat' | 'history';
@@ -362,7 +496,7 @@ export function applySessionActiveRunState(
   if (run) {
     return {
       activeRuns: { ...activeRuns, [key]: run },
-      uiStates: { ...uiStates, [key]: { isWaiting: true, isStreaming: false } },
+      uiStates: { ...uiStates, [key]: uiForPhase('starting') },
     };
   }
   const nextActiveRuns = { ...activeRuns };
@@ -383,9 +517,7 @@ export function applySessionActiveRunObservedState(
     activeRuns: { ...activeRuns, [key]: run },
     uiStates: {
       ...uiStates,
-      [key]: currentUi?.isStreaming
-        ? currentUi
-        : { isWaiting: true, isStreaming: false },
+      [key]: currentUi?.isStreaming ? currentUi : uiForPhase('resuming'),
     },
   };
 }
@@ -461,7 +593,7 @@ export function buildChatSocketKeepaliveMessage(): { type: 'ping' } {
 export function createEmptyTranscriptReplayState(): TranscriptReplayState {
   return {
     messages: [],
-    ui: { isWaiting: false, isStreaming: false },
+    ui: uiForPhase('idle'),
     seenEventIds: new Set<string>(),
     pendingSessionPermissions: [],
   };
@@ -798,12 +930,23 @@ export function applyTranscriptEvent(
   const timestamp = event.created_at || event.timestamp;
   const content = event.content || '';
   const pendingSessionPermissions = state.pendingSessionPermissions || [];
+  const nextPhase = reduceRuntimePhase(state.ui.phase, { ...event, type: eventType });
+
+  if (eventType === 'phase') {
+    // Backend first-class phase signal: updates the state machine, adds no message.
+    return {
+      messages: state.messages,
+      seenEventIds,
+      ui: uiForPhase(nextPhase),
+      pendingSessionPermissions,
+    };
+  }
 
   if (eventType === 'run_started') {
     return {
       messages: state.messages,
       seenEventIds,
-      ui: { isWaiting: true, isStreaming: false },
+      ui: uiForPhase(nextPhase),
       pendingSessionPermissions,
     };
   }
@@ -812,7 +955,7 @@ export function applyTranscriptEvent(
     return {
       messages: state.messages,
       seenEventIds,
-      ui: { isWaiting: false, isStreaming: false },
+      ui: uiForPhase(nextPhase),
       pendingSessionPermissions,
     };
   }
@@ -830,7 +973,7 @@ export function applyTranscriptEvent(
           )
         : state.messages,
       seenEventIds,
-      ui: { isWaiting: false, isStreaming: false },
+      ui: uiForPhase(nextPhase),
       pendingSessionPermissions: nextPendingSessionPermissions,
     };
   }
@@ -842,7 +985,7 @@ export function applyTranscriptEvent(
         return { ...message, thinking: `${message.thinking || ''}${content}`, timestamp } as AgentChatMessage;
       }),
       seenEventIds,
-      ui: { isWaiting: false, isStreaming: true },
+      ui: uiForPhase(nextPhase),
       pendingSessionPermissions,
     };
   }
@@ -851,7 +994,7 @@ export function applyTranscriptEvent(
     return {
       messages: applyStreamingChunkEvent(state.messages, { type: 'chunk', content }),
       seenEventIds,
-      ui: { isWaiting: false, isStreaming: true },
+      ui: uiForPhase(nextPhase),
       pendingSessionPermissions,
     };
   }
@@ -876,14 +1019,14 @@ export function applyTranscriptEvent(
         return {
           messages: renderSessionPermissionQueue(state.messages, nextPendingSessionPermissions),
           seenEventIds,
-          ui: { isWaiting: false, isStreaming: false },
+          ui: uiForPhase('awaiting_approval'),
           pendingSessionPermissions: nextPendingSessionPermissions,
         };
       }
       return {
         messages: [...state.messages, runtimeEvent],
         seenEventIds,
-        ui: { isWaiting: false, isStreaming: false },
+        ui: uiForPhase(nextPhase),
         pendingSessionPermissions,
       };
     }
@@ -958,8 +1101,8 @@ export function applyTranscriptEvent(
       messages: appendToolCallMessage(state.messages, toolMessage),
       seenEventIds,
       ui: isBlockingToolMessage(toolMessage)
-        ? { isWaiting: false, isStreaming: false }
-        : { isWaiting: false, isStreaming: state.ui.isStreaming },
+        ? uiForPhase('awaiting_approval')
+        : uiForPhase(nextPhase),
       pendingSessionPermissions,
     };
   }
@@ -978,7 +1121,7 @@ export function applyTranscriptEvent(
 	          : message
 	      )),
       seenEventIds,
-      ui: { isWaiting: false, isStreaming: false },
+      ui: uiForPhase(nextPhase),
       pendingSessionPermissions,
     };
   }
@@ -997,14 +1140,14 @@ export function applyTranscriptEvent(
       return {
         messages: renderSessionPermissionQueue(state.messages, nextPendingSessionPermissions),
         seenEventIds,
-        ui: { isWaiting: false, isStreaming: false },
+        ui: uiForPhase('awaiting_approval'),
         pendingSessionPermissions: nextPendingSessionPermissions,
       };
     }
     return {
       messages: [...state.messages, runtimeEvent],
       seenEventIds,
-      ui: { isWaiting: false, isStreaming: false },
+      ui: uiForPhase(nextPhase),
       pendingSessionPermissions,
     };
   }

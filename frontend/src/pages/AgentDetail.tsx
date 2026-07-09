@@ -41,12 +41,17 @@ import {
     getTerminalRunIdFromTranscriptEvent,
     getTransportNotice,
     isDraftHumanChatSession,
+    isRuntimePhase,
     isTerminalRealtimeChatEvent,
     mergePendingUserMessages,
     filterSessionsForAgent,
     normalizeRuntimeEventMessage,
     normalizeStoredChatMessage,
+    phaseUi,
+    reduceRuntimePhase,
     replayTranscriptEvents,
+    TERMINAL_RUNTIME_PHASES,
+    uiForPhase,
     sessionBelongsToAgent,
     shouldPreserveActiveSessionForRequestedId,
     shouldUseWritableSessionSurface,
@@ -57,6 +62,7 @@ import {
     type ChatTranscriptEventPayload,
     type ChatRuntimeSummary,
     type PendingUserMessage,
+    type RuntimePhase,
     type SessionTranscriptLoadDescriptor,
     type SessionPermissionRequest,
     type SessionRunState,
@@ -608,11 +614,16 @@ function AgentDetailInner() {
         delete runtimeActivityAtRef.current[key];
     };
 
-    const setSessionUiState = (key: SessionRuntimeKey, next: Partial<{ isWaiting: boolean; isStreaming: boolean }>) => {
-        const prev = sessionUiStateRef.current[key] || { isWaiting: false, isStreaming: false };
-        sessionUiStateRef.current[key] = { ...prev, ...next };
-        if (next.isWaiting || next.isStreaming) runtimeActivityAtRef.current[key] = Date.now();
+    // Turn lifecycle state machine (§3 seam 1): the RuntimePhase is the single
+    // source of truth per session; waiting/streaming booleans are derived views.
+    const setSessionPhase = (key: SessionRuntimeKey, phase: RuntimePhase) => {
+        sessionUiStateRef.current[key] = uiForPhase(phase);
+        const derived = phaseUi(phase);
+        if (derived.isWaiting || derived.isStreaming) runtimeActivityAtRef.current[key] = Date.now();
     };
+
+    const sessionPhaseOf = (key: SessionRuntimeKey): RuntimePhase =>
+        sessionUiStateRef.current[key]?.phase ?? 'idle';
 
     const mergePendingForSession = (key: SessionRuntimeKey, messages: AgentChatMessage[]): AgentChatMessage[] => {
         const merged = mergePendingUserMessages(messages, pendingUserMessagesRef.current[key] || []);
@@ -683,6 +694,7 @@ function AgentDetailInner() {
             setChatMessagesSessionId(sessionId);
             const commitChatMessages = terminal ? setChatMessagesAfterQueued : enqueueChatMessagesUpdate;
             commitChatMessages(() => mergePendingForSession(key, next.messages.map(parseChatMsg)));
+            setActivePhase(next.ui.phase);
             setIsWaiting(next.ui.isWaiting);
             setIsStreaming(next.ui.isStreaming);
         }
@@ -744,7 +756,7 @@ function AgentDetailInner() {
         if (!sessionBelongsToAgent(sess, targetAgentId)) return;
         const sessionId = String(sess.id);
         const runtimeKey = buildSessionRuntimeKey(targetAgentId, sessionId);
-        const runtimeState = sessionUiStateRef.current[runtimeKey] || { isWaiting: false, isStreaming: false };
+        const runtimeState = sessionUiStateRef.current[runtimeKey] || uiForPhase('idle');
         const activeRunState = activeRunStateRef.current[runtimeKey];
         const writableSession = isWritableSession(sess);
         const draftSession = isDraftHumanChatSession(sess);
@@ -764,8 +776,11 @@ function AgentDetailInner() {
         }
         setTransportNotice(null);
         setSessionCommandControl(null);
-        setIsStreaming(runtimeState.isStreaming);
-        setIsWaiting(runtimeState.isWaiting || !!activeRunState);
+        syncActivePhase(
+            runtimeState.phase !== 'idle'
+                ? runtimeState.phase
+                : (activeRunState ? 'resuming' : 'idle'),
+        );
         setSessionPermissionMode(sessionPermissionModeFromSession(sess));
         setActiveSession(sess);
         setAgentExpired(false);
@@ -1422,6 +1437,16 @@ function AgentDetailInner() {
     const [uploading, setUploading] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
+    // RuntimePhase for the ACTIVE session (§3 seam 1). isWaiting/isStreaming are
+    // derived views kept in sync through syncActivePhase — never set directly
+    // on lifecycle paths anymore.
+    const [activePhase, setActivePhase] = useState<RuntimePhase>('idle');
+    const syncActivePhase = (phase: RuntimePhase) => {
+        setActivePhase(phase);
+        const derived = phaseUi(phase);
+        setIsWaiting(derived.isWaiting);
+        setIsStreaming(derived.isStreaming);
+    };
     const [transportNotice, setTransportNotice] = useState<string | null>(null);
 
     const [uploadProgress, setUploadProgress] = useState(-1);
@@ -1678,13 +1703,13 @@ function AgentDetailInner() {
             if (wsMapRef.current[key] === ws) delete wsMapRef.current[key];
             clearKeepaliveTimer(key);
             const runStillActive = !!activeRunStateRef.current[key];
-            setSessionUiState(key, { isWaiting: runStillActive, isStreaming: false });
+            const disconnectPhase: RuntimePhase = runStillActive ? 'resuming' : 'idle';
+            setSessionPhase(key, disconnectPhase);
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
             if (isActiveRuntime) {
                 wsRef.current = null;
                 setWsConnected(false);
-                setIsWaiting(runStillActive);
-                setIsStreaming(false);
+                syncActivePhase(disconnectPhase);
             }
             if (e.code === 4003 || e.code === 4002) {
                 reconnectDisabledRef.current[key] = true;
@@ -1722,33 +1747,42 @@ function AgentDetailInner() {
                 }
                 return;
             }
+            if (d.type === 'phase') {
+                // Backend first-class RuntimePhase signal (§3 seam 1) — authoritative.
+                if (isRuntimePhase(d.phase)) {
+                    setSessionPhase(key, d.phase);
+                    if (TERMINAL_RUNTIME_PHASES.has(d.phase)) {
+                        markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
+                    }
+                    if (isActiveRuntime) syncActivePhase(d.phase);
+                }
+                return;
+            }
             if (d.type === 'run_started' && d.run_id) {
                 setActiveRunState(key, { runId: String(d.run_id), status: d.status || 'running' });
                 invalidateSessionRuntimeQueries(agentId, sessionId);
+                setSessionPhase(key, 'starting');
                 if (isActiveRuntime) {
-                    setIsWaiting(true);
-                    setIsStreaming(false);
+                    syncActivePhase('starting');
                 }
                 return;
             }
             if (d.type === 'run_cancelled') {
                 markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
                 invalidateSessionRuntimeQueries(agentId, sessionId);
+                setSessionPhase(key, 'cancelled');
                 if (isActiveRuntime) {
-                    setIsWaiting(false);
-                    setIsStreaming(false);
+                    syncActivePhase('cancelled');
                     void selectSession(sess);
                 }
                 fetchMySessions(true, agentId);
                 return;
             }
-            if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
-                const nextStreaming = ['thinking', 'chunk', 'tool_call'].includes(d.type);
+            const isLifecycleStreamEvent = ['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type);
+            const reducedPhase = isLifecycleStreamEvent ? reduceRuntimePhase(sessionPhaseOf(key), d) : null;
+            if (isLifecycleStreamEvent && reducedPhase) {
                 const endStreaming = ['done', 'error', 'quota_exceeded'].includes(d.type);
-                setSessionUiState(key, {
-                    isWaiting: false,
-                    isStreaming: endStreaming ? false : nextStreaming,
-                });
+                setSessionPhase(key, reducedPhase);
                 if (d.type === 'tool_call') {
                     // Tool-heavy turns fire this event in bursts; coalesce the
                     // HTTP refetch amplification into a 2s window (plan D2).
@@ -1785,10 +1819,8 @@ function AgentDetailInner() {
                 return;
             }
 
-            if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
-                setIsWaiting(false);
-                if (['thinking', 'chunk', 'tool_call'].includes(d.type)) setIsStreaming(true);
-                if (['done', 'error', 'quota_exceeded'].includes(d.type)) setIsStreaming(false);
+            if (reducedPhase) {
+                syncActivePhase(reducedPhase);
             }
 
             const runtimeEvent = getRuntimeEventMessage({ ...d, timestamp: new Date().toISOString() });
@@ -1820,9 +1852,8 @@ function AgentDetailInner() {
                 });
                 if (isTerminalTranscriptToolMessage(toolMsg)) {
                     markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
-                    setSessionUiState(key, { isWaiting: false, isStreaming: false });
-                    setIsWaiting(false);
-                    setIsStreaming(false);
+                    setSessionPhase(key, 'awaiting_approval');
+                    syncActivePhase('awaiting_approval');
                 }
                 if (normalizedResult.createdAgentId) {
                     setCreatedAgentId(normalizedResult.createdAgentId);
@@ -2014,10 +2045,9 @@ function AgentDetailInner() {
                 if (!commandSession?.id) return;
                 const commandSessionId = String(commandSession.id);
                 const activeRuntimeKey = buildSessionRuntimeKey(id, commandSessionId);
-                setIsWaiting(true);
-                setIsStreaming(false);
+                syncActivePhase('queued');
                 setTransportNotice(null);
-                setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
+                setSessionPhase(activeRuntimeKey, 'queued');
                 setChatMessagesSessionId(commandSessionId);
                 setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({
                     role: 'user',
@@ -2072,9 +2102,8 @@ function AgentDetailInner() {
                     setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
                 } finally {
                     if (!commandStartedRun) {
-                        setIsWaiting(false);
-                        setIsStreaming(false);
-                        setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+                        syncActivePhase('idle');
+                        setSessionPhase(activeRuntimeKey, 'idle');
                     }
                 }
                 return;
@@ -2125,10 +2154,9 @@ function AgentDetailInner() {
             if (!started?.session?.id) return;
             const runSessionId = String(started.session.id);
             const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
-            setIsWaiting(true);
-            setIsStreaming(false);
+            syncActivePhase('queued');
             setTransportNotice(null);
-            setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
+            setSessionPhase(activeRuntimeKey, 'queued');
             setChatMessagesSessionId(runSessionId);
             appendOptimisticUserMessage(activeRuntimeKey, {
                 role: 'user',
@@ -2171,10 +2199,9 @@ function AgentDetailInner() {
             if (!started?.session?.id) return;
             const runSessionId = String(started.session.id);
             const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
-            setIsWaiting(true);
-            setIsStreaming(false);
+            syncActivePhase('queued');
             setTransportNotice(null);
-            setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
+            setSessionPhase(activeRuntimeKey, 'queued');
             setChatMessagesSessionId(runSessionId);
             appendOptimisticUserMessage(activeRuntimeKey, {
                 role: 'user',
@@ -2410,6 +2437,7 @@ function AgentDetailInner() {
                 runId: activeSessionRun.run_id,
                 status: activeSessionRun.status,
             });
+            setActivePhase(observedUiState.phase);
             setIsWaiting(observedUiState.isWaiting);
             setIsStreaming(observedUiState.isStreaming);
             return;
@@ -2426,8 +2454,7 @@ function AgentDetailInner() {
             graceMs: ACTIVE_RUN_ABSENCE_GRACE_MS,
         })) {
             setActiveRunState(key, null);
-            setIsWaiting(false);
-            setIsStreaming(false);
+            syncActivePhase('idle');
             invalidateSessionRuntimeQueries(id, String(activeSession.id), false);
             selectSession(activeSession);
             fetchMySessions(true, id);
@@ -2479,9 +2506,8 @@ function AgentDetailInner() {
                 console.warn('Failed to cancel chat run:', err);
             });
             markActiveRunTerminal(activeRuntimeKey);
-            setIsStreaming(false);
-            setIsWaiting(false);
-            setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+            syncActivePhase('cancelled');
+            setSessionPhase(activeRuntimeKey, 'cancelled');
             return;
         }
         const activeSocket = wsMapRef.current[activeRuntimeKey];
@@ -2841,6 +2867,7 @@ function AgentDetailInner() {
                             agentPermissions={permData ?? null}
                             transportNotice={transportNotice}
                             isWaiting={isWaiting}
+                            runtimePhase={activePhase}
                             activeRunStatus={currentActiveRunState?.status || null}
                             planModeRequested={planModeRequested}
                             onTogglePlanMode={handleTogglePlanMode}

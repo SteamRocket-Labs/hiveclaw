@@ -24,6 +24,9 @@ import {
   normalizeStoredChatMessage,
   applyTranscriptEvent,
   createEmptyTranscriptReplayState,
+  phaseUi,
+  reduceRuntimePhase,
+  uiForPhase,
   filterSessionsForAgent,
   mergePendingUserMessages,
   replayTranscriptEvents,
@@ -70,7 +73,7 @@ describe('chatRuntime helpers', () => {
 
     expect(fromHistory.messages).toHaveLength(1);
     expect(fromSocket.messages).toEqual(fromHistory.messages);
-    expect(fromSocket.ui).toEqual({ isWaiting: false, isStreaming: false });
+    expect(fromSocket.ui).toEqual(uiForPhase('done'));
   });
 
   it('preserves transcript event id separately from durable message id during replay', () => {
@@ -135,7 +138,7 @@ describe('chatRuntime helpers', () => {
     const state = {
       ...createEmptyTranscriptReplayState(),
       messages: [{ role: 'assistant' as const, content: '', thinking: 'Need more input', _streaming: true } as any],
-      ui: { isWaiting: true, isStreaming: true },
+      ui: uiForPhase('thinking'),
     };
 
     const next = applyTranscriptEvent(state, {
@@ -166,7 +169,7 @@ describe('chatRuntime helpers', () => {
       toolName: 'ask_user_question',
       toolMeta: { kind: 'user_clarification', blocking: true },
     });
-    expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
+    expect(next.ui).toEqual(uiForPhase('awaiting_approval'));
   });
 
   it('replays interleaved thinking and tool events as separate ordered steps', () => {
@@ -377,7 +380,7 @@ describe('chatRuntime helpers', () => {
     ]);
 
     expect(state.messages).toHaveLength(0);
-    expect(state.ui).toEqual({ isWaiting: false, isStreaming: false });
+    expect(state.ui).toEqual(uiForPhase('starting'));
   });
 
   it('removes a resolved session permission gate from live broadcast payloads', () => {
@@ -418,7 +421,7 @@ describe('chatRuntime helpers', () => {
     const state = {
       ...createEmptyTranscriptReplayState(),
       messages: [{ role: 'assistant' as const, content: '', thinking: 'Need more input', _streaming: true } as any],
-      ui: { isWaiting: true, isStreaming: true },
+      ui: uiForPhase('thinking'),
     };
 
     const next = applyTranscriptEvent(state, {
@@ -457,7 +460,7 @@ describe('chatRuntime helpers', () => {
       toolName: 'ask_user_question',
       toolMeta: { kind: 'user_clarification', blocking: true },
     });
-    expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
+    expect(next.ui).toEqual(uiForPhase('awaiting_approval'));
   });
 
   it('hydrates durable clarification answer metadata from transcript events', () => {
@@ -494,7 +497,7 @@ describe('chatRuntime helpers', () => {
         answerText: 'Scope: Mine',
       },
     });
-    expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
+    expect(next.ui).toEqual(uiForPhase('awaiting_approval'));
   });
 
   it('recovers clarification cards from persisted content replacement envelopes', () => {
@@ -543,7 +546,7 @@ describe('chatRuntime helpers', () => {
         questions: [{ header: '方向选择', question: '「创新型金融模式」具体指哪个方向？' }],
       },
     });
-    expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
+    expect(next.ui).toEqual(uiForPhase('awaiting_approval'));
   });
 
   it('preserves runtime step metadata from persisted tool transcript events', () => {
@@ -598,7 +601,7 @@ describe('chatRuntime helpers', () => {
   it('clears stale waiting state when the backend reports no active run', () => {
     const result = applySessionActiveRunState(
       { 'agent-1:session-1': { runId: 'run-1', status: 'running' } },
-      { 'agent-1:session-1': { isWaiting: true, isStreaming: false } },
+      { 'agent-1:session-1': uiForPhase('starting') },
       'agent-1:session-1',
       null,
     );
@@ -616,19 +619,19 @@ describe('chatRuntime helpers', () => {
     );
 
     expect(result.activeRuns).toEqual({ 'agent-1:session-1': { runId: 'run-1', status: 'running' } });
-    expect(result.uiStates).toEqual({ 'agent-1:session-1': { isWaiting: true, isStreaming: false } });
+    expect(result.uiStates).toEqual({ 'agent-1:session-1': uiForPhase('starting') });
   });
 
   it('does not let active-run polling overwrite an already streaming transcript', () => {
     const result = applySessionActiveRunObservedState(
       {},
-      { 'agent-1:session-1': { isWaiting: false, isStreaming: true } },
+      { 'agent-1:session-1': uiForPhase('responding') },
       'agent-1:session-1',
       { runId: 'run-1', status: 'running' },
     );
 
     expect(result.activeRuns).toEqual({ 'agent-1:session-1': { runId: 'run-1', status: 'running' } });
-    expect(result.uiStates).toEqual({ 'agent-1:session-1': { isWaiting: false, isStreaming: true } });
+    expect(result.uiStates).toEqual({ 'agent-1:session-1': uiForPhase('responding') });
   });
 
   it('ignores observed active runs once a terminal event closed the same session', () => {
@@ -1621,5 +1624,91 @@ describe('chatRuntime helpers', () => {
       workspace_key: 'workspace-alpha',
       matched_keys: ['deploy-playbook'],
     });
+  });
+});
+
+describe('RuntimePhase state machine (§3 seam 1)', () => {
+  it('adopts backend first-class phase events and ignores unknown phases', () => {
+    expect(reduceRuntimePhase('idle', { type: 'phase', phase: 'tool_running' })).toBe('tool_running');
+    expect(reduceRuntimePhase('thinking', { type: 'phase', phase: 'summarizing' })).toBe('summarizing');
+    // Forward-compat: an unknown phase value from a newer backend is ignored.
+    expect(reduceRuntimePhase('thinking', { type: 'phase', phase: 'warp_speed' })).toBe('thinking');
+  });
+
+  it('derives phases from the durable event stream for replay parity', () => {
+    expect(reduceRuntimePhase('idle', { type: 'run_queued' })).toBe('queued');
+    expect(reduceRuntimePhase('queued', { type: 'run_started' })).toBe('starting');
+    expect(reduceRuntimePhase('starting', { type: 'thinking' })).toBe('thinking');
+    expect(reduceRuntimePhase('thinking', { type: 'chunk' })).toBe('responding');
+    expect(reduceRuntimePhase('responding', { event_type: 'assistant_delta' })).toBe('responding');
+    expect(reduceRuntimePhase('responding', { type: 'tool_call', status: 'running' })).toBe('tool_running');
+    expect(reduceRuntimePhase('tool_running', { type: 'tool_call', status: 'done' })).toBe('thinking');
+    expect(reduceRuntimePhase('tool_running', { event_type: 'tool_result' })).toBe('thinking');
+    expect(reduceRuntimePhase('responding', { type: 'done' })).toBe('done');
+    expect(reduceRuntimePhase('responding', { type: 'error' })).toBe('failed');
+    expect(reduceRuntimePhase('responding', { type: 'quota_exceeded' })).toBe('failed');
+    expect(reduceRuntimePhase('tool_running', { type: 'run_cancelled' })).toBe('cancelled');
+    expect(
+      reduceRuntimePhase('responding', { type: 'permission', status: 'session_permission_required' }),
+    ).toBe('awaiting_approval');
+    expect(reduceRuntimePhase('awaiting_approval', { event_type: 'permission_resolved' })).toBe('starting');
+  });
+
+  it('leaves the phase untouched for non-lifecycle events and allows new turns after terminal phases', () => {
+    expect(reduceRuntimePhase('responding', { type: 'artifact_delivery' })).toBe('responding');
+    expect(reduceRuntimePhase('thinking', { event_type: 'user_message' })).toBe('thinking');
+    // Session-level machine is not sealed: a new run reopens after done.
+    expect(reduceRuntimePhase('done', { type: 'run_queued' })).toBe('queued');
+    expect(reduceRuntimePhase('cancelled', { type: 'run_started' })).toBe('starting');
+  });
+
+  it('derives waiting/streaming booleans from the phase as the single source of truth', () => {
+    expect(phaseUi('idle')).toEqual({ isWaiting: false, isStreaming: false });
+    expect(phaseUi('queued')).toEqual({ isWaiting: true, isStreaming: false });
+    expect(phaseUi('resuming')).toEqual({ isWaiting: true, isStreaming: false });
+    expect(phaseUi('starting')).toEqual({ isWaiting: true, isStreaming: false });
+    expect(phaseUi('thinking')).toEqual({ isWaiting: false, isStreaming: true });
+    expect(phaseUi('responding')).toEqual({ isWaiting: false, isStreaming: true });
+    expect(phaseUi('tool_running')).toEqual({ isWaiting: false, isStreaming: true });
+    expect(phaseUi('hook_evaluating')).toEqual({ isWaiting: false, isStreaming: true });
+    expect(phaseUi('compacting')).toEqual({ isWaiting: false, isStreaming: true });
+    expect(phaseUi('summarizing')).toEqual({ isWaiting: false, isStreaming: true });
+    // Parked states render their own UI (approval card, budget notice) — no spinner lies.
+    expect(phaseUi('awaiting_approval')).toEqual({ isWaiting: false, isStreaming: false });
+    expect(phaseUi('awaiting_budget')).toEqual({ isWaiting: false, isStreaming: false });
+    expect(phaseUi('continuation_gap')).toEqual({ isWaiting: false, isStreaming: false });
+    expect(phaseUi('done')).toEqual({ isWaiting: false, isStreaming: false });
+    expect(phaseUi('failed')).toEqual({ isWaiting: false, isStreaming: false });
+    expect(phaseUi('cancelled')).toEqual({ isWaiting: false, isStreaming: false });
+  });
+
+  it('threads the phase through transcript replay', () => {
+    let state = createEmptyTranscriptReplayState();
+    expect(state.ui.phase).toBe('idle');
+
+    state = applyTranscriptEvent(state, { id: 'e1', sequence: 1, type: 'run_started' });
+    expect(state.ui).toEqual(uiForPhase('starting'));
+
+    state = applyTranscriptEvent(state, { id: 'e2', sequence: 2, type: 'thinking', content: 'hmm' });
+    expect(state.ui).toEqual(uiForPhase('thinking'));
+
+    state = applyTranscriptEvent(state, { id: 'e3', sequence: 3, type: 'chunk', content: 'partial' });
+    expect(state.ui).toEqual(uiForPhase('responding'));
+
+    state = applyTranscriptEvent(state, {
+      id: 'e4',
+      sequence: 4,
+      type: 'assistant_message',
+      role: 'assistant',
+      content: 'All done.',
+      created_at: '2026-07-09T12:00:00Z',
+    });
+    expect(state.ui).toEqual(uiForPhase('done'));
+  });
+
+  it('adopts a backend phase event during replay as the authoritative signal', () => {
+    let state = createEmptyTranscriptReplayState();
+    state = applyTranscriptEvent(state, { id: 'p1', sequence: 5, type: 'phase', phase: 'summarizing' });
+    expect(state.ui).toEqual(uiForPhase('summarizing'));
   });
 });

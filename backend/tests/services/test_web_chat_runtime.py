@@ -504,6 +504,183 @@ async def test_execute_web_chat_run_records_turn_tokens_for_goal_accounting(monk
     assert metadata_json["turn_tokens_used"] == 4242
 
 
+def _phase_run_fixtures():
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="do the work",
+        metadata_json={"user_id": str(user_id), "session_id": session_id, "source": "web"},
+        trace_id=f"web_chat_turn:{run_id.hex}",
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    return run_id, agent, user, llm_model, runtime_task
+
+
+def _patch_phase_run(monkeypatch, runtime, *, runtime_task, agent, user, llm_model, fake_invoke, events):
+    from app.runtime.session import SessionContext
+
+    runtime_context = SessionContext(
+        session_id=str(runtime_task.parent_session_id), source="web", channel="web"
+    )
+
+    async def fake_load_context(_run_uuid):
+        return (runtime_task, agent, user, llm_model, None, [], SimpleNamespace(delivery_target_json=None))
+
+    async def fake_runtime_session(_agent_id, _session_id):
+        return runtime_context
+
+    async def capture_broadcast(_agent_id, _session_id, event):
+        events.append(event)
+
+    async def fake_finalize(**_kwargs):
+        return True
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime.web_chat_broker, "get_or_create_runtime_session", fake_runtime_session)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fake_finalize)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", capture_broadcast)
+    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_emits_first_class_phase_signal(monkeypatch):
+    """§3 seam 1: one clean RuntimePhase stream — starting → thinking →
+    tool_running → thinking → responding → done — emitted as `phase` events."""
+    import app.services.web_chat_runtime as runtime
+
+    run_id, agent, user, llm_model, runtime_task = _phase_run_fixtures()
+    events: list[dict] = []
+
+    async def fake_invoke(request):
+        await request.on_thinking("pondering")
+        await request.on_tool_call({"name": "write_file", "status": "running", "args": {}})
+        await request.on_tool_call({"name": "write_file", "status": "done", "result": "{}"})
+        await request.on_chunk("hello")
+        return SimpleNamespace(content="done.", reasoning_signature=None, tokens_used=1)
+
+    _patch_phase_run(
+        monkeypatch,
+        runtime,
+        runtime_task=runtime_task,
+        agent=agent,
+        user=user,
+        llm_model=llm_model,
+        fake_invoke=fake_invoke,
+        events=events,
+    )
+
+    await runtime.execute_web_chat_run(run_id)
+
+    phase_events = [event for event in events if event.get("type") == "phase"]
+    assert [event["phase"] for event in phase_events] == [
+        "starting",
+        "thinking",
+        "tool_running",
+        "thinking",
+        "responding",
+        "done",
+    ]
+    tool_phase = next(event for event in phase_events if event["phase"] == "tool_running")
+    assert tool_phase["detail"] == {"tool_name": "write_file"}
+    assert all(event["run_id"] == run_id.hex for event in phase_events)
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_emits_failed_phase_on_exception(monkeypatch):
+    """The finally backstop settles the phase stream even when the run explodes."""
+    import app.services.web_chat_runtime as runtime
+
+    run_id, agent, user, llm_model, runtime_task = _phase_run_fixtures()
+    events: list[dict] = []
+
+    async def fake_invoke(_request):
+        raise RuntimeError("provider exploded")
+
+    _patch_phase_run(
+        monkeypatch,
+        runtime,
+        runtime_task=runtime_task,
+        agent=agent,
+        user=user,
+        llm_model=llm_model,
+        fake_invoke=fake_invoke,
+        events=events,
+    )
+
+    await runtime.execute_web_chat_run(run_id)
+
+    phase_events = [event for event in events if event.get("type") == "phase"]
+    assert [event["phase"] for event in phase_events] == ["starting", "failed"]
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_awaiting_approval_phase_survives_run_release(monkeypatch):
+    """A session-permission pause parks the phase at awaiting_approval, not done."""
+    import app.services.web_chat_runtime as runtime
+
+    run_id, agent, user, llm_model, runtime_task = _phase_run_fixtures()
+    events: list[dict] = []
+
+    async def fake_invoke(request):
+        await request.on_tool_call(
+            {
+                "name": "send_email",
+                "status": "done",
+                "result": json.dumps({"status": "session_permission_required", "message": "approve?"}),
+            }
+        )
+        return SimpleNamespace(content="", reasoning_signature=None, tokens_used=1)
+
+    _patch_phase_run(
+        monkeypatch,
+        runtime,
+        runtime_task=runtime_task,
+        agent=agent,
+        user=user,
+        llm_model=llm_model,
+        fake_invoke=fake_invoke,
+        events=events,
+    )
+
+    async def fake_finalize_without_assistant(**_kwargs):
+        return True
+
+    monkeypatch.setattr(
+        runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant
+    )
+
+    await runtime.execute_web_chat_run(run_id)
+
+    phase_events = [event for event in events if event.get("type") == "phase"]
+    assert phase_events[-1]["phase"] == "awaiting_approval"
+    assert "done" not in {event["phase"] for event in phase_events}
+
+
 def test_web_chat_final_message_has_database_idempotency_guard():
     from pathlib import Path
 
@@ -4271,7 +4448,10 @@ async def test_execute_web_chat_run_persists_visible_error_on_uncancelled_except
         }
     ]
     assert updates == []
-    assert broadcasts[-1] == {"type": "error", "content": "[LLM Error] AI 模型调用异常，请稍后重试。"}
+    assert {"type": "error", "content": "[LLM Error] AI 模型调用异常，请稍后重试。"} in broadcasts
+    # The RuntimePhase backstop settles the stream after the visible error event.
+    phase_broadcasts = [event for event in broadcasts if event.get("type") == "phase"]
+    assert phase_broadcasts[-1]["phase"] == "failed"
 
 
 @pytest.mark.asyncio

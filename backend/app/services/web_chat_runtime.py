@@ -34,6 +34,7 @@ from app.runtime.ccplus_contracts import (
     DEFAULT_CCPLUS_WRITABLE_ROOTS,
     normalize_permission_mode,
 )
+from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase, build_phase_event
 from app.services.chat_message_parts import (
     SESSION_NATIVE_EVENT_TYPES,
     build_chunk_event,
@@ -1575,6 +1576,9 @@ async def start_web_chat_run(
         logger.warning("[WebChatRun] runtime task worker wakeup failed for {}: {}", run_uuid, exc)
     payload = _runtime_task_to_run(runtime_task)
     await broadcast_web_chat_event(agent.id, session.id, {"type": "run_queued", **payload})
+    await broadcast_web_chat_event(
+        agent.id, session.id, build_phase_event(RuntimePhase.QUEUED, run_id=run_uuid.hex)
+    )
     return payload
 
 
@@ -1796,6 +1800,9 @@ async def start_channel_chat_run_from_saved_turn(
         logger.warning("[WebChatRun] runtime task worker wakeup failed for {}: {}", run_uuid, exc)
     payload = _runtime_task_to_run(runtime_task)
     await broadcast_web_chat_event(agent.id, session.id, {"type": "run_queued", **payload})
+    await broadcast_web_chat_event(
+        agent.id, session.id, build_phase_event(RuntimePhase.QUEUED, run_id=run_uuid.hex)
+    )
     return payload
 
 
@@ -1846,6 +1853,11 @@ async def cancel_web_chat_run(
 
     payload = _runtime_task_to_run(task)
     await broadcast_web_chat_event(agent_id, session_id, {"type": "run_cancelled", **payload})
+    # Cross-process cancels may land after the executing worker is already gone;
+    # broadcast the terminal phase here so the UI state machine always settles.
+    await broadcast_web_chat_event(
+        agent_id, session_id, build_phase_event(RuntimePhase.CANCELLED, run_id=run_uuid.hex)
+    )
     return payload
 
 
@@ -3197,6 +3209,22 @@ async def _deliver_run_result_to_channel(agent_id: uuid.UUID, session_id: Any, t
         logger.warning("[WebChatRun] channel delivery of run result failed (non-fatal): {}", exc)
 
 
+def _phase_for_terminal_status(status: str) -> RuntimePhase:
+    if status == "killed":
+        return RuntimePhase.CANCELLED
+    if status == "failed":
+        return RuntimePhase.FAILED
+    return RuntimePhase.DONE
+
+
+def _phase_for_interactive_pause(summary: str | None, *, cancelled: bool) -> RuntimePhase:
+    if cancelled:
+        return RuntimePhase.CANCELLED
+    if summary == "awaiting_session_permission":
+        return RuntimePhase.AWAITING_APPROVAL
+    return RuntimePhase.DONE
+
+
 async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> None:
     run_uuid = _run_id(run_id)
     run_key = run_uuid.hex
@@ -3208,6 +3236,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     terminal_agent_id: uuid.UUID | None = None
     terminal_session_id: str | None = None
     terminal_runtime_metadata: dict[str, Any] | None = None
+    phase_emitter: RunPhaseEmitter | None = None
+    terminal_phase_hint: RuntimePhase | None = None
 
     try:
         loaded_context = await _load_runtime_context(run_uuid)
@@ -3219,6 +3249,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         session_id = str(runtime_task.parent_session_id)
         terminal_agent_id = agent.id
         terminal_session_id = session_id
+        phase_emitter = RunPhaseEmitter(
+            lambda event: broadcast_web_chat_event(agent.id, session_id, event),
+            run_id=run_key,
+        )
+        await phase_emitter.transition(RuntimePhase.STARTING)
         conversation = conversation_from_history_messages(history_messages)
         prompt = runtime_task.prompt or ""
         metadata = _merge_runtime_permission_metadata(
@@ -3309,6 +3344,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             return
 
         if not llm_model:
+            terminal_phase_hint = RuntimePhase.FAILED
             assistant_response = f"[LLM Error] {agent.name} has no LLM model configured. Please select a model in the agent's Settings tab."
             finalized = await _finalize_web_chat_run_with_assistant(
                 run_uuid=run_uuid,
@@ -3348,11 +3384,15 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 streamed_chunks.clear()
                 await stream_batcher.reset_chunk()
                 return
+            if phase_emitter is not None:
+                await phase_emitter.transition(RuntimePhase.RESPONDING)
             streamed_chunks.append(text)
             await stream_batcher.emit_chunk(text)
 
         async def thinking_to_ws(text: str) -> None:
             assert stream_batcher is not None
+            if phase_emitter is not None:
+                await phase_emitter.transition(RuntimePhase.THINKING)
             thinking_content.append(text)
             await stream_batcher.emit_thinking(text)
 
@@ -3363,6 +3403,16 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 await stream_batcher.reset_chunk()
                 return
             event_type = str(data.get("type") or data.get("event_type") or "")
+            if phase_emitter is not None:
+                if event_type == "compaction_started":
+                    await phase_emitter.transition(RuntimePhase.COMPACTING)
+                elif event_type in {"compaction_completed", "compaction_skipped"}:
+                    await phase_emitter.transition(RuntimePhase.THINKING)
+                elif (
+                    event_type == "permission"
+                    and str(data.get("status") or "") == "session_permission_required"
+                ):
+                    await phase_emitter.transition(RuntimePhase.AWAITING_APPROVAL)
             if event_type in SESSION_NATIVE_EVENT_TYPES:
                 event_payload = build_session_native_event(data)
             else:
@@ -3462,9 +3512,12 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
 
         async def _finalize_terminal_tool_card_now(summary: str) -> bool:
             """Release the active run as soon as a terminal tool card is visible."""
-            nonlocal terminal_tool_card_finalized
+            nonlocal terminal_tool_card_finalized, terminal_phase_hint
             if terminal_tool_card_finalized:
                 return True
+            terminal_phase_hint = _phase_for_interactive_pause(
+                summary, cancelled=bool(cancel_event.is_set())
+            )
             metadata_update = {
                 "cancelled_by_user": bool(cancel_event.is_set()),
                 "interactive_pause": summary,
@@ -3516,6 +3569,14 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             nonlocal interactive_pause_summary, plan_mode_submitted
             if terminal_tool_card_finalized:
                 return
+            if phase_emitter is not None:
+                if data.get("status") != "done":
+                    await phase_emitter.transition(
+                        RuntimePhase.TOOL_RUNNING,
+                        detail={"tool_name": str(data.get("name") or "")},
+                    )
+                else:
+                    await phase_emitter.transition(RuntimePhase.THINKING)
             if stream_batcher is not None:
                 await stream_batcher.flush()
             data = _tool_step_contract(data, fallback_run_id=run_uuid)
@@ -3654,6 +3715,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         if stream_batcher is not None:
             await stream_batcher.flush()
         if result is None and interactive_pause_summary:
+            terminal_phase_hint = _phase_for_interactive_pause(
+                interactive_pause_summary, cancelled=bool(cancel_event.is_set())
+            )
             metadata_update = {
                 "cancelled_by_user": bool(cancel_event.is_set()),
                 "interactive_pause": interactive_pause_summary,
@@ -3698,6 +3762,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             if cancel_event.is_set()
             else ("failed" if plan_mode_terminal_error or is_llm_error_message(assistant_response) else "completed")
         )
+        terminal_phase_hint = _phase_for_terminal_status(status)
         terminal_reason = _terminal_reason_value_for_web_run(
             status=status,
             result_reason=getattr(result, "terminal_reason", None),
@@ -3794,6 +3859,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     except Exception as exc:
         logger.exception("[WebChatRun] Run {} failed", run_uuid.hex)
         was_cancelled = cancel_event.is_set()
+        terminal_phase_hint = RuntimePhase.CANCELLED if was_cancelled else RuntimePhase.FAILED
         if was_cancelled:
             await _update_runtime_task(
                 run_uuid,
@@ -3869,6 +3935,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 metadata_json=persistence_metadata,
             )
     finally:
+        if phase_emitter is not None:
+            settled_phase = terminal_phase_hint or (
+                RuntimePhase.CANCELLED if cancel_event.is_set() else RuntimePhase.DONE
+            )
+            await phase_emitter.transition(settled_phase)
         _CURRENT_BROADCAST_RUN_ID.reset(broadcast_run_token)
         _CANCEL_EVENTS.pop(run_key, None)
         if terminal_agent_id is not None and terminal_session_id:

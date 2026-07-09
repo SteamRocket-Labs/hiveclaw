@@ -67,6 +67,7 @@ import {
   type AgentChatMessage,
   type ChatArtifactPart,
   type ChatRuntimeSummary,
+  type RuntimePhase,
   type SessionPermissionRequest,
 } from './chatRuntime';
 
@@ -303,6 +304,8 @@ interface AgentChatSectionProps {
   agentPermissions?: AgentPermissions | null;
   transportNotice: string | null;
   isWaiting: boolean;
+  /** Turn lifecycle phase for the active session (§3 seam 1). Rendering seams 2-4 consume this. */
+  runtimePhase?: RuntimePhase;
   activeRunStatus?: string | null;
 
   chatEndRef: React.RefObject<HTMLDivElement | null>;
@@ -2922,6 +2925,7 @@ function AgentChatSection({
   agentPermissions,
   transportNotice,
   isWaiting,
+  runtimePhase = 'idle',
   activeRunStatus,
 
   chatEndRef,

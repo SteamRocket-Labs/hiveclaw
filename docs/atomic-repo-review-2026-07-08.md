@@ -23,6 +23,15 @@
 | 2026-07-08 | P1-9 External capability reject + version supersede | ✅ 已闭环 | Red: missing `reject_external_capability_review`; approve did not supersede older approved snapshot/catalog. Green: `cd backend && source .venv/bin/activate && pytest tests/services/test_external_capability_trust_gate.py tests/services/test_external_capability_activation.py tests/api/test_external_capability_reviews_api.py -q` → `19 passed`; `pytest tests/services/test_plugin_install_service.py -q` → `16 passed` confirms legacy `/enterprise/plugins/install` remains builtin/local pack projection, not external-source trust-gate bypass |
 | 2026-07-08 | P1-10 Personal KB autonomous owner-scope agent grant | ✅ 已闭环 | Red: `test_ensure_agent_identity_seeds_owner_scope_personal_knowledge_grant` found no `KnowledgeGrant`. Green: `cd backend && source .venv/bin/activate && pytest tests/services/test_agent_identity_lifecycle.py -q` → `5 passed`; `pytest tests/services/test_personal_knowledge_service.py -q` → `24 passed`; new agent identity bootstrap now seeds owner-scope `search` grant for the agent when tenant + owner exist |
 | 2026-07-08 | P1-11 Full regression contract sync | ✅ 已闭环 | Full backend: `cd backend && source .venv/bin/activate && pytest tests -q --tb=short` → `5513 passed, 206 skipped, 4 warnings`; backend ruff on changed files → `All checks passed!`; frontend targeted tests → `3 passed / 36 tests`; frontend build → success; `git diff --check` → clean |
+| 2026-07-09 | §7.3.2 M0 动态记忆激活 eval 基线（先行门） | ✅ 已闭环 | Red: `tests/evals/test_memory_recall_baseline.py` collection error（harness 未建）; Green: `cd backend && source .venv/bin/activate && pytest tests/evals/test_memory_recall_baseline.py -q` → `6 passed`。基线锚定（真实 `search_wiki_pages` + `MemoryRetriever`+`ActivationScorer` 双 runner，零 mock 零 LLM 零 DB 写）：recall@k=0.833333 / MRR=0.857143，全部 ranked 顺序逐位钉死；确定性双跑一致；多跳证明（PPR 达 2 跳页而 BM25 不能）；2 个 headroom case（api-timeout recall=0 留 M2 BaseLevel、governance-2hop recall=2/3 留 M5 ContextBoost）。此 scorecard 即 Q-shrink 自验门（§7.3.3）：删 QKV 前后所有数字与顺序必须逐位不变 |
+
+## 0.2 闭环后独立复核（2026-07-09，主审逐 commit 抽查 09e20e95c..dcda97812，15 commits / 52 files）
+
+**14/15 项实锤真实现**：P0-1 CAPABILITY_MAP（taxonomy:295 + gate 测试 :126 精确断言 + `audit_capability_mapping()` 执行级清零）；P0-2 strip 覆盖 hooks_setup 全部 7 个 T0 写入点（`_t0_safe_metadata` :247/339/380/455/489/526/577）；P0-3 HR 模板 sweep 实锤（SKILL.md:109-111 KB 引导真加、source_refs 示例全迁 `memory/knowledge/**` 零 t3 残留）；P1-3/9 revoke/deactivate/reject/supersede 真函数（trust_gate.py:189 / activation.py:73）；P1-4/6/7 前端真渲染（SessionNativeControls.tsx:79-80 读 cache/agent_cycle ledger 计数）——原"死观测面"复活；P1-10 grant 真种（agent_identity_lifecycle.py:59-61）。
+
+**两个残留（同款"无调用者"反模式，登记为新债）**：
+1. **P1-2 半闭环**：`process_import_jobs`（personal_knowledge_service.py:1985）**全仓零调用者**——无 daemon/API/scheduler 调度它。B2"同步内联"实质未变（upload.py:309 仍在请求内 `await ingest_source_bytes`），本批做的是有界化（上传硬上限）而非异步化。"批量消费入口"目前是带测试的孤儿方法。
+2. **QKV K 侧写投影残留**：P1-8 删除了读侧死 API（MemoryRetriever gather），但 reference_index.py:116/139 的 activation_keys SQLite 全量 DROP+CREATE **写侧仍在**——读者清零后它成为更纯粹的只写不读，每次 T2/T3/explicit 写照付全量重建成本。应随 QKV"接活 vs 收缩"拍板一并处置。
 
 ---
 
@@ -32,13 +41,13 @@
 |---|---|---|
 | ① kernel 主循环 CC 对齐 | **✅ 扎实 CCPlus** | 5 维度全对齐或合规增强，无 CC 语义违背；债在 RTD 遥测台账层非内核 |
 | ① RTD 决策台账层 | ✅ T3 死写入已闭环 | `context-usage`/Workbench 已读回核心 ledger；Codex dead append 已删；workflow/execution-shape 两项复核为误判 |
-| ② QKV Attention Control | ⚠️ **半接线脚手架 / 收缩中** | 能稳定运行（fail-open + cache 正确）但未承载真实激活；T0 原始 activation event 泄漏已堵；空 hints 与 MemoryRetriever dead gather 已删，剩余为 Q 侧接活或继续收缩决策 |
+| ② QKV Attention Control | ✅ **已定方向（2026-07-09）：精确退役 + 演进为 Dynamic Recall Layer** | 拍板不接活；机械层外科手术式退役（§7.3.1 删/留清单），ActivationScorer 本体升级为统一激活方程（§7.3.2 / 设计文档），Hive-native 记忆演进主线（§7.3） |
 | ③ Plugin：CC 市场适配 | ❌ **≈15%** | marketplace/source 拉取/materialize/`${CLAUDE_PLUGIN_ROOT}` 全零；adapter 是孤儿代码 |
 | ③ Plugin：trust gate | ✅ 当前 trust chain 已闭环 / ⚠️ 市场适配未做 | skill/MCP import→stage→approve/reject→snapshot/catalog→activate/deactivate/revoke 真接线；新版本 approve 会 supersede 旧 snapshot/catalog；legacy plugins/install 复核为 builtin/local pack projection，不是 external-source trust-gate bypass |
 | ④ Personal KB | ✅ 上线前硬断点已闭环 / ⚠️ 产品增强债仍在 | `search_personal_kb` 已注册 `agent.knowledge.read`；owner 搜索不再被 `agent_searchable` 误过滤；上传有硬上限；`KnowledgeIndexJob` 有批量消费入口；新 agent 自动获得 owner-scope Personal KB `search` grant 供自主态使用 |
 | ⑤ HR Agent | ✅ P0 已闭环 | HR v5 模板已同步 Personal KB、work ledger、workflow/subagent 路由；旧 `memory/t3/` source attribution 示例已迁；现有 HR diff 已回归验证 |
-| ⑥ Loop | ② 部分实现 | trigger 覆盖 cron 内核；缺模型自节奏 self-pace 链与 `/loop` 命令层 |
-| ⑥ Target Mode | **CC 侧不存在此功能**（Fact） | Hive Goal Mode 是 Codex-inspired 原生 delta，单次续跑防 runaway，缺"模型自判完成"闭环 |
+| ⑥ Loop | ② 部分实现 | trigger 覆盖 cron 内核；缺模型自节奏 self-pace 链与 `/loop` 命令层；全量对齐清单见 §7.2-B |
+| ⑥ 目标模式（/goal） | **基线=Codex `ext/goal`；Hive 半装配** | CC 无此功能（Fact）→ 权威基线转 Codex `/goal`（成熟自主目标循环）；Hive 数据模型逐字段对应但三处致命断点（完成回写桥缺/自主循环被双重阻断/记账空壳）；九件对齐清单见 §7.2-A |
 
 ---
 
@@ -116,10 +125,12 @@ FreeCode 全仓 attention/activation/router 零命中（Fact）——CC 无此�
 
 hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约束授权范围 = **L2 合法**。scoring（_multi_head_score:181-206）= 机械词重叠替代"哪些记忆相关"= **L1 领域**；更糟：semantic head（权重 0.4 最大）作用于恒空 concepts → **40% 打分权重永远为 0**，且 router 会用空-concept 词重叠分覆盖 KB 原本 FTS 相关分（:353）。当前因"非承载"被临时掩盖——**接线那天即 case-law 级 L1 违规**（对标 compaction `[-40:]` 案）。注：K 侧 activation_keys 是 LLM 在 T2 build 时撰写的（t2/prompts.py:109），这一侧是 AI-native 的。
 
-### 2.4 处置建议（要么接活，要么退役——当前半接线是最坏状态）
+### 2.4 处置建议 → **已拍板（2026-07-09）：精确退役 + 演进为 Dynamic Recall Layer**
 
-- **S1** hints 死注入与 KB 旁路二选一：kb_hint 已够用，删空注入（prompt_builder.py:865-875 + activation_hints.py）。
-- **S2** 退役 K 侧只写不读回路：✅ dead gather 函数已删；activation_keys 表投影仍保留为 derived index / source-ref / repair script 合约，后续若继续退役必须先拆 reference_index 合约与测试，若接读侧则必须先修 B1（LLM parser）+ 让 scoring 语义判断回归模型。
+原"要么接活要么退役"的二选一已有结论：**不接活、精确退役机械层、演进为新层**。完整删/留清单与执行顺序见 **§7.3（主线 2）**；此处只留已闭环的两项存档。
+
+- **S1** ✅ hints 死注入已删（P1-1 空 hints shrink，prompt_builder + activation_hints）。
+- **S2** ✅ dead gather 已删（P1-8）；剩余 activation_keys 投影退役并入 §7.3.1 Q-shrink（精确删投影、留 reference_counts 反向索引，删前后 M0 eval 分数应不变作自验门）。**不再接活**——机械 scoring 让位给 §7.3.2 的统一激活方程（ActivationScorer 本体升级，非重建平行层）。
 - **S4（治理级）✅ 已闭环**：T0 seal 前 strip 原始 activation_events（只留 summary）堵 B9；policy dict 不再作为原始 activation event 进入 T0 truth surface。
 - **S5** 若保留 SQLite 索引：加 busy_timeout + build-to-temp + atomic-rename（当前双进程可 database is locked，连接不 close 泄漏句柄）。
 - 性能注记：KB 激活每 invocation 无条件 ~2 个 PG 查询（invoker.py:1623），热路径无同步 embedding ✅；reference_index 每写全量 DROP+CREATE 却无读者（为死读侧付全量写代价）。
@@ -183,45 +194,136 @@ hard mask（policy/acl/sensitivity/budget，activation_router.py:280-333）= 约
 - **第一代（FreeCode 快照）**：`/loop` = 纯 cron 包装（src/skills/bundled/loop.ts:74-92→CronCreate，省略 interval 默认 10m，**无 self-pace**；建完立即先跑一次 :67）；cron 把 prompt **塞进当前 session 命令队列**（isMeta/priority:later），仅 REPL idle 才 fire；recurring 7 天过期。真 self-pace 是分离的 ant-only `--proactive`（main.tsx:3833）+ `<tick>` 注入 + **Sleep 工具**（"nothing useful → MUST call Sleep"）。`autonomous-loop` 字面 sentinel 源码不存在。
 - **第二代（现役 CC harness）**：`/loop` 统一 interval（CronCreate，sentinel `<<autonomous-loop>>`）+ dynamic（ScheduleWakeup，sentinel `<<autonomous-loop-dynamic>>`，模型自定 delaySeconds [60,3600]、每轮回传 prompt、stop:true 终止）= 把第一代 ant-only 自醒循环收编进 GA。
 
-### 6.2 Target Mode：**CC 两基线均无此命名功能**（穷举 grep 零真命中；targetMode 命中全是 file/queue/permission mode 参数误命中）。最接近机制按序：--proactive 自主模式 > /loop dynamic > Plan Mode。
+### 6.2 目标模式（/goal）：权威基线 = Codex `ext/goal` crate（2026-07-09 修订）
 
-### 6.3 Hive 对照
+CC 两基线无此命名功能（穷举 grep 零真命中，判定不变）。**Owner 澄清：目标模式即 `/goal`，权威基线转 Codex 源码。** codex-rs 考证结论（完整报告 scratchpad/goal-mode-codex-vs-hive-alignment.md，全部 file:line 可复核）：
 
-- **Loop ② 部分实现**：trigger 系统（set_trigger cron/once/interval/poll/on_message/webhook/event_wait，triggers.py:21；trigger_daemon._should_fire:730-774）覆盖"周期触发"内核，且有 CC 没有的 failure_policy/preflight/restart-safe/budget daemon。三缺口：①**上下文延续语义相反**——CC 塞当前 session 队列，Hive 每次 fire 另起新 invocation/child_session（trigger_daemon.py:427）；②无模型自节奏 self-pace 工具（ScheduleWakeup/Sleep/tick 全仓零命中）；③无 `/loop` 自然语言命令层（docs/freecode-command-loop-feature-parity-audit-2026-06-22.md 自认）。
-- **Goal Mode（Hive-native delta，② 部分）**：session-local（session_goal_runtime.py:1-5 自述 Codex-inspired），数据/工具/命令面/REST/前端/治理/审计全接线 restart-safe。关键性质：续跑决策是**确定性 Python**（should_continue_goal:155-185 判 budget/turn-cap，非模型自判）；**每用户 turn 后最多续跑一次、续跑不递归**（goal_continuation_service.py:184 + 测试钉死）——刻意防 runaway（呼应常春藤烧钱事故），但不等价 CC proactive 持续自主。缺口：goal_stop/goal_update 不是 agent 可调工具（仅命令面/REST），"目标是否完成"落在 prose 无治理回写桥 = L1 待加强。
-- **建设判断**：两者都不是从零建——底座（trigger daemon + goal 续跑 + RuntimeTask + heartbeat）都在，缺的是"模型自节奏 + 自判完成"这条 L1 自主链 + `/loop` 命令薄封装。若要"无人值守持续自主"形态，**必须先落 runtime budget control plane**（docs/runtime-budget-control-plane-plan-2026-07-03.md）再放开，否则重演烧钱事故。
+**Codex `/goal` = 成熟的自主目标循环**，七维语义：
+1. **入口**：`/goal set/clear/edit/pause/resume`（tui/slash_command.rs:122 "set or view the goal for a long-running task"，任务运行中可用）+ 三个 agent 工具 `get_goal`/`create_goal`/`update_goal`（ext/goal/src/spec.rs:9-11）。
+2. **存储**：codex_state per-thread 单 goal，跨 session 持久（tool.rs:454-465）；`ThreadGoal{objective≤4000 chars, status, token_budget, tokens_used, time_used_seconds}`（protocol.rs:4019）；超大 objective 物化为 goal-objective.md 文件让模型 Read（tui/goal_files.rs）。
+3. **注入**：隐藏 `<codex_internal_context source=goal>`，事件驱动非常驻（internal_model_context.rs:7；steering.rs:49-54）。
+4. **驱动（关键）**：thread idle → continue_if_idle → try_start_turn_if_idle **自主循环直到终态，无次数上限**（runtime.rs:359-394；extension.rs:154-167）；turn_error→Blocked 防烧 token（extension.rs:305-312）。
+5. **完成判定 = 模型自判 + `update_goal` 工具回写**（tool.rs:221-291）；5,261 字节 continuation.md 提示词含 Completion/Blocked/Fidelity 三个审计段。
+6. **记账**：全链 token/time 真接线，预算耗尽 → BudgetLimited + steering（accounting.rs；extension.rs:326-403）；六态机 Active/Paused/Blocked/UsageLimited/BudgetLimited/Complete（protocol.rs:3993）。
+7. **终止/恢复**：clear/complete/blocked/usage/pause；session resume 恢复 Active goal（runtime.rs:335-357）。
+
+**与 CC /loop 的关系（Owner 问询结论）**：不是一回事，是正交两轴——/loop 是**时间调度轴**（何时再执行，无"完成"概念，终止是时间性的），/goal 是**目标驱动轴**（朝什么工作 + idle 自续跑直到目标终态，终止是状态性的）。Hive 映射恰好也是两套：trigger ↔ loop，Goal Mode ↔ goal，分开对齐不合并。
+
+**Hive Goal Mode 对照判决：半装配脚手架**——数据模型逐字段对应 Codex ThreadGoal（objective/status/token_budget 甚至命名一致，"Codex-inspired" 是字面移植），should_continue_goal 与每-turn-一次续跑真接线，但**三处致命断点**使它尚不是真正的目标模式：
+- **断点①完成回写桥缺失【最严重·L1 违规】**：agent 仅有 goal_start 工具，无 update_goal——模型说"目标完成了"没有任何路径写 status=complete，只剩确定性 terminal_reason 映射 + 用户手动 goal_stop。
+- **断点②自主循环被双重阻断**：`completed_task_type != web_chat_turn` 拒 + `source == goal_continuation` 拒（goal_continuation_service.py:184,190-191）→ 每用户 turn 最多推进一步，`max_continuation_turns > 1` 永远达不到。
+- **断点③记账空壳**：`tokens_used` 全仓零写入点，account_goal_tokens / mark_goal_blocked_if_repeated / objective_updated steering 全为死代码 → token_budget/BUDGET_LIMITED/time_budget 全是死字段；唯一真递增的是 continuation_count。另有 agent goal_start 落库桥断（requires_api_persist 无服务层消费者——agent 自主调 goal_start 实际不落库）。
+- 对齐维（平台形态差异不算缺口）：存储（DB vs state_db 语义等价）、注入（都是续跑时注入非常驻）。合法 Hive delta 保留：多租户治理/RLS/CANCELLED 态/decision ledger/续跑不绕 T0——以及 **max_continuation_turns 硬上限 + Runtime Budget Control Plane**（Codex 本地无次数上限，Hive 多租户 Web 必须有 per-goal 熔断）。
+
+### 6.3 Loop 的 Hive 对照
+
+**Loop ② 部分实现**：trigger 系统（set_trigger cron/once/interval/poll/on_message/webhook/event_wait，triggers.py:21；trigger_daemon._should_fire:730-774）覆盖"周期触发"内核，且有 CC 没有的 failure_policy/preflight/restart-safe/budget daemon。三缺口：①**上下文延续语义相反**——CC 塞当前 session 队列，Hive 每次 fire 另起新 invocation/child_session（trigger_daemon.py:427）；②无模型自节奏 self-pace 工具（ScheduleWakeup/Sleep/tick 全仓零命中）；③无 `/loop` 自然语言命令层（docs/freecode-command-loop-feature-parity-audit-2026-06-22.md 自认）。全量对齐项见 §7.2-B。
 
 ---
 
-## 7. 统一优先级行动清单
+## 7. 全量完成对齐清单（2026-07-09 重构）
 
-### P0 — 生产断点 / 治理级（立即）
-1. ✅ **Personal KB B1**：search_personal_kb 注册 CAPABILITY_MAP（一行）+ 补真走 governance 的集成测试当修复门。上线前置。已闭环：`search_personal_kb -> agent.knowledge.read`，capability audit 无 drift。
-2. ✅ **QKV B9**：T0 seal 前 strip 原始 activation_events，堵 truth-surface 泄漏；policy dict 接真实校验或删。已闭环：T0 boundary 只保留 `activation_feedback_summary`，不落原始 `activation_events`。
-3. ✅ **HR 既存红测**：test_hr_tool_included_in_hr_tools_set 改 superset 断言；已由目标红测转绿并纳入 HR 回归组。
-4. ✅ **HR diff**：已完成并回归验证；HR v5 模板同步 Personal KB / ledger / workflow / subagent 路由，旧 `memory/t3/` 示例已清除。
+> **Owner 指令（2026-07-09）：取消 P1/P2 分层——全部对齐项必须一次做完，不分期、不留债（一次改完纪律）。** 本节是唯一执行清单。条目间只有**执行依赖顺序**（G 前置），没有优先级分期；每条附验收判据。
 
-### P1 — 结构性技术债（要么接活要么退役，禁半接线常态化）
-5. **QKV 收缩**：✅ S1 删恒空 hints 注入（kb_hint 已够，builder 仅在有 actionable skill/tool/subagent hint 时写 ledger）；✅ S2 dead gather 函数已退役；activation_keys derived index 是否继续收缩需按 reference_index/source-ref/repair-script 合约单独处理，或拍板接活（接活先修 LLM parser + scoring 回归模型判断）。
-6. ✅ **RTD T3 六项死写入**：context-usage 死观测面已接前端（Session-native controls + Chat header chip fallback）；`codex_optimization_ledger` dead append / 恒 False override 已删，保留 Workbench builder；`cache_decision_ledger`、`agent_cycle_decision_ledger`、`context_artifacts` 已接 context-usage + Workbench；`workflow_decision_entry` 与 `execution_shape_decision` 复核为误判（已有运行时/返回 payload 读者）。剩余只属于文件组织瘦身，不再是行为死写入。
-7. ✅ **Plugin trust gate 下半场**：snapshot revoke/deactivate/rollback 已补（catalog 隐藏，agent activation inactive，本地 skill/subagent 文件清理，MCP 标记 `manual_revoke_required`）；admin reject + rejected review approval block + version supersede 已补；legacy `/enterprise/plugins/install` 复核为 builtin/local pack projection，不是 external-source trust-gate bypass。剩余 Plugin 大项仅属于 CC marketplace/source/materialize 能力建设，不再是当前 trust-gate 安全缺口。
-8. ✅ **Personal KB B2-B4**：B2 deterministic 部分已补：`process_import_jobs` 批量消费 queued/failed `KnowledgeIndexJob`，聊天上传新增 `HIVE_CHAT_UPLOAD_MAX_BYTES`/`HIVE_CHAT_IMAGE_UPLOAD_MAX_BYTES` 硬上限；B3 owner 搜索去 `agent_searchable` 过滤，agent/非 owner 搜索仍过滤；B4 新 agent identity bootstrap 自动种 owner-scope agent `search` grant。
-9. ✅ **HR 模板 sweep**（B1 落后）：O1 stale t3 例子 + M1 KB 引导 + M2/M3 能力路由，已随 P0-3 同批 bump 到 HR v5。
-10. **瘦身**：~1,990 LOC test-only 死模块退役（cc_plugin_adapter 等三个 external_capabilities 文件除外——若 Plugin 主线拍板接线则留）。
+### 7.1 已闭环存档
 
-### P2 — 对齐增强（拍板后排期）
-11. Codex sandbox 分档接线（SandboxProfile 死契约→builder）+ 单命令升权流 + execpolicy 规则引擎。
-12. Loop 补齐：/loop 命令层薄封装；评估同 session 续跑模式；self-pace 工具（前置=budget control plane）。
-13. Goal Mode 闭环：goal_stop(complete) 成 agent 工具 + prose→完成治理回写桥。
-14. Plugin CC 市场主线：marketplace.json 解析 + source 拉取 + materialize + ${CLAUDE_PLUGIN_ROOT} + adapter 接线（文档 §0.1 已排序）。
+首轮 P0-1..P1-11 已于 2026-07-08 闭环 @ dcda97812（逐项验证见 §0.1，独立复核见 §0.2）：KB capability gate / QKV T0 泄漏 / HR 红测+模板 v5 / QKV 空 hints+死 gather / KB B3-B4 / Plugin trust gate 下半场（revoke/reject/supersede）/ RTD 读面接前端 / codex 死 append 删。全量 5513 passed。§0.2 两项残留（process_import_jobs 孤儿、K 侧写投影）滚入 §7.2-E。
 
-### Owner 拍板点
-- **QKV 走向**：接活成真承载（需先修 Q 侧 LLM parser、scoring 让位模型）vs 收缩到"契约 + kb_hint + 治理 sidecar"。
-- **无人值守持续自主**（Loop self-pace + Goal 多步续跑）：要不要这个产品形态；要则 budget control plane 前置。
-- **Plugin 市场主线**：15% 的市场适配是否本期推进（决定 cc_plugin_adapter 等孤儿是接线还是暂留）。
+### 7.2 全量对齐清单（全部必做）
+
+**A. 目标模式（/goal）全对齐 — 基线 Codex `ext/goal`（九件，依据 §6.2 考证）**
+| # | 项 | Hive 落点 | 验收判据 |
+|---|---|---|---|
+| A1 | `update_goal` agent 工具（模型自判完成回写桥，含 status/objective/summary 更新） | command_parity.py + 服务层落库；**必注册 CAPABILITY_MAP**（防重演 KB B1 STRICT 拒） | agent 在续跑中调 update_goal(status=complete) → DB status=complete + 循环停 + decision ledger 记录；governance 集成测试过 |
+| A2 | continuation prompt 升 benchmark 质量 | prompts/goals.py:42（现 3 行）→ 对标 Codex 5,261 字节 continuation.md 的 Completion/Blocked/Fidelity 三审计段，vendor-neutral | prompt 含三审计段；prompt contract 测试钉住结构 |
+| A3 | 打通自主续跑循环（idle→continue 直到终态） | 放开 goal_continuation_service.py:184,190-191 双重阻断，改用 continuation_count < max_continuation_turns 边界 | max_continuation_turns=5 的 goal 单用户 turn 后自主推进 5 步；每步过 budget guard；测试钉多步与熔断双路径 |
+| A4 | token/time 记账接活 | account_goal_tokens 去死代码，invocation 结束累加 tokens_used/time_used_seconds | 续跑后 tokens_used>0；超 token_budget → status=BUDGET_LIMITED + 循环停 |
+| A5 | `get_goal` agent 工具 | 同 A1 落点 | agent 可读当前 goal 状态与剩余预算 |
+| A6 | 连续失败 → Blocked（对标 turn_error→Blocked 防烧） | mark_goal_blocked_if_repeated 去死代码，接 turn 终态 | 3 连败 → status=blocked + 循环停 + 审计记录 |
+| A7 | objective 更新 steering（改目标后下轮注入更新提示） | objective_updated prompt 去死代码接注入链 | goal_update 后下一续跑 prompt 含新 objective steering |
+| A8 | session resume 后 Active goal 恢复续跑资格 | 对标 runtime.rs:335-357；web chat 重连/RuntimeTask 恢复路径 | 重启后 Active goal 的下一 turn 仍触发续跑 |
+| A9 | 修 agent goal_start 落库桥 | requires_api_persist 无服务层消费者——agent 自主调 goal_start 实际不落库 | agent 调 goal_start → DB 有行 + 前端可见 |
+| 六态机 | status 枚举补齐 Active/Paused/Blocked/UsageLimited/BudgetLimited/Complete（+Hive 合法 CANCELLED） | models/agent_session_goal.py | 状态流转测试全覆盖 |
+
+**B. Loop 全对齐 — 基线 CC /loop 两代（四件，依据 §6.1/6.3）**
+| # | 项 | 验收判据 |
+|---|---|---|
+| B1 | `/loop` 命令层（命令面/agent 工具双入口的自然语言薄封装，落到 trigger） | `/loop 5m <prompt>` 创建 interval trigger 并立即先跑一次（对齐 loop.ts:67）；省略 interval 走 B2 |
+| B2 | 模型自节奏 self-pace（ScheduleWakeup 等价工具：模型自定下次唤醒延迟 + stop 终止） | agent 可调 schedule_wakeup(delay,prompt)/stop；延迟受 clamp；每轮 prompt 回传续跑；受 budget plane 熔断 |
+| B3 | 同 session 续跑模式（loop fire 可选注入当前 chat session 队列而非恒起新 invocation，对齐 CC cron 塞队列语义） | trigger 新增 delivery=same_session 选项；fire 时消息入该 session 下一 turn；REPL-busy 时排队不并发 |
+| B4 | Loop 与 Goal 组合语义（loop 醒来时若有 Active goal，续跑走 goal 循环而非裸 prompt） | 同 session 内 loop+goal 并存时行为有测试钉死 |
+
+**C. Plugin CC 市场全对齐 — 基线 FreeCode schemas.ts（六件，依据 §3）**
+| # | 项 | 验收判据 |
+|---|---|---|
+| C1 | marketplace.json 索引解析（含官方市场仿冒/homograph 防护） | 真实 CC marketplace 仓库可被索引并列出插件 |
+| C2 | plugin source 拉取（github/git/npm/url/file/directory） | 六种 source 各有集成测试；经 trust gate 评审后物化 |
+| C3 | materialize 物化层 + `${CLAUDE_PLUGIN_ROOT}` 替换 | 插件文件落 workspace，hooks/mcp 中变量被替换为真实路径 |
+| C4 | cc_plugin_adapter 接入运行时导入入口（孤儿转正） | 一个真实 CC 格式插件 repo 端到端：import→review→approve→activate→agent 真用起来（E2E 测试） |
+| C5 | 格式矩阵补缺：manifest 字段（commands 内联 content/agents/skills/hooks 三形态/mcpServers path 形态）、目录+manifest 合并语义、userConfig `${user_config.KEY}` 替换、dependencies | §3.2 矩阵 ❌/⚠️ 项全转 ✅，各有解析测试 |
+| C6 | command/hook 组件激活接线（去 fail-closed unsupported）或经 owner 确认标注永久 unsupported 并从 catalog 隐藏 | 装了的组件要么能用要么不出现在"已安装"列表 |
+
+**D. Codex 工程 delta 完工（三件，依据 §1.3）**
+| # | 项 | 验收判据 |
+|---|---|---|
+| D1 | SandboxProfile 四档 + network_access + writable_roots 真接进 subprocess_sandbox builder | 四档各有行为级测试（read_only 拒写/workspace_write 只许 writable_roots/网络开关生效）；Railway 仍锁 vercel_sandbox |
+| D2 | 单命令 shell 升权流（被沙箱命令按需一次性申请升权，经审批） | 升权走 governance 审批；审批后仅该命令放行；审计记录 |
+| D3 | 声明式 execpolicy 命令规则引擎替代 governance.py:232 手写危险 regex | 规则声明式可配；现有危险命令用例全过；结果仍喂 capability gate |
+
+**E. 复核残留闭环（两件，依据 §0.2）**
+| # | 项 | 验收判据 |
+|---|---|---|
+| E1 | process_import_jobs 接真实调度（daemon tick 或 upload 后异步派发），聊天上传管线真异步化——或明确改设计为同步有界并删孤儿方法 | 大文档上传即刻返回、后台完成索引；或方法删除 + spec §4 改写。禁止"方法存在无调用者"现状 |
+| E2 | ~~QKV K 侧 activation_keys 写投影处置~~ → **已拍板并入 §7.3.1 Q-shrink**（精确删投影、留 reference_counts 反向索引） | 见 §7.3.1 删/留表 |
+
+**F. 瘦身（一批，依据 §1.4）**
+~1,990 LOC test-only 死模块 ×10 退役（连带测试）；台账工厂 7 文件合并 ~645→300L；薄文件内联；assembly-state 持久化字段裁剪（§0.2 DB bloat）。**注**：external_capabilities 三文件（cc_plugin_adapter/codex_plugin_adapter/context_projection）因 C4 接线**保留**，从退役清单移除。验收：全量测试绿 + 死模块 grep 零残留。
+
+**G. 执行依赖（顺序约束，非分期）—— 两条并行主线 + 一个交汇点**
+
+`docs/runtime-budget-control-plane-plan-2026-07-03.md` 的 reservation + circuit breaker **必须先落地**，然后 A3（goal 自主循环）与 B2（self-pace）才能放开——安全门不是 MVP 分期。
+
+工作分成两条可**并行**推进的主线（互不阻塞，只在 M7↔A7 一处交汇）：
+
+- **主线 1 — CC/Codex 全量对齐（§7.2 A-F）**：`G → A → B`；`C / D / F` 三组相互独立可并行；`E1`（Personal KB 异步化）独立。
+- **主线 2 — Hive-native 记忆演进（§7.3）**：`Q-shrink（精确退役）→ M0（eval 红测锚基线，删 QKV 前后分数应不变）→ {M1-M3 BaseLevel 线 ∥ M4-M5 ContextBoost 线} → M6 填 goal_terms → M8 消费契约兑现`。
+- **交汇点**：主线 2 的 `M7`（TaskModulation 智能级 attention set）依赖主线 1 的 `A7`（goal objective steering），共用一条链——A 系列落地后 M7 才收尾。
+
+主线 2 的 M0-M6/M8 **不依赖 G**（dynamic recall 是确定性零 LLM，不烧钱），故可与主线 1 从头并行；唯一等待是 M7 尾随 A。整体收敛序：`G` 启动主线 1，`Q-shrink` 同时启动主线 2，两线并进，A7 完成时回收 M7，最后 F 瘦身收尾。
+
+### 7.3 主线 2：Hive-native 记忆演进（已拍板 2026-07-09）
+
+QKV 走向已拍板：**不接活、精确退役机械层，并演进为一层新的 Dynamic Recall Layer**（设计文档 `docs/dynamic-memory-activation-design-2026-07-09.md`）。这不是"整洁问题"，是一条与 §7.2 CC/Codex 对齐清单**并行的 Hive-native 记忆能力主线**。设计律：**Attention is for recall/ranking, not for truth**——T0/T2/T3/Memory Gate 仍独占真相，本层只决定"这一轮优先唤起什么"。
+
+#### 7.3.1 QKV 精确退役（Q-shrink）——外科手术，不是一刀切
+
+QKV 表面是 4 文件 1,269 行，但里面缠着被 KB/subagent/skill/T2-retention **复用的通用载体**与新方案要用的 **feedback 契约**。无脑全删会误伤一大片。精确删/留清单（全部 grep 证据）：
+
+| 组件 | 行数 | 处置 | 依据（file:line） |
+|---|---|---|---|
+| `activation_router.py`（multi-head overlap scoring） | 380 | **删整个** | 唯一生产调用点 invoker.py:411 是"算了不用"死路径（record 后 :423 return 原始 candidates） |
+| `activation_query.py` 机械 regex parser + 死 LLM seam | ~397 | **删机械部分** | invoker.py:304 + turn_envelope.py:293 同属死路径链；concepts 恒空 |
+| `activation_candidates.py` 死 gather + `ActivationHardMask` | 部分 | **删** | P1-8 已删部分；HardMask 仅 router 用 |
+| `reference_index.py` `activation_keys` 表投影（写侧 DROP+CREATE+INSERT + 读侧 `query_activation_keys`） | 部分 | **删** | 读侧 grep 零生产读者，纯只写不读 |
+| — 分隔线：以下**保留**，删时误伤即回退 — | | | |
+| `activation_candidates.py` 的 `ActivationCandidate/ActivationScore/ActivationSurface` | 保留 | **留**（宜搬中性模块） | KB(kb_candidates.py:14)/subagent(subagent_listing.py:13)/skill(skill_catalog_ranker.py:10) 三处复用 |
+| `reference_index.py` 的 `reference_counts`（source_ref 反向索引） | 保留 | **留** | t2_retention.py:71 保留策略 + personal KB 在用，非 QKV 私有 |
+| `activation_events.py`（`ActivationFeedback` heat_delta/decay_signal 契约） | 207 | **全留** | M3 FeedbackCredit 的原料契约；S4 已把它挡在 T0 truth surface 之外 |
+| `ActivationScorer`（activation.py） | — | **留并升级** | 统一激活方程的宿主（不重建） |
+| PPR/relation_graph、access_log/lifecycle、T2 activation_keys（LLM 撰写） | — | **留** | 分别是 ContextBoost/BaseLevel/K 的原料 |
+
+净删约 700-800 行（router 全 + query 机械 + activation_keys 投影），而非 1,269 行全删。原 §7.2-E2 并入此表（不再是"随 G 拍板"）。
+
+#### 7.3.2 Dynamic Recall Layer（H 组 = M0-M8）
+
+统一激活方程 `Activation = Relevance(RRF,不动) × ContextBoost(W_t→PPR) × BaseLevel(频率+幂律衰减+credit) × TaskModulation(goal)`。**分件明细、验收判据、消费契约、W_t ACL 边界全部在设计文档，本文不复制**（避免双轨漂移）。摘要：M0 eval 红测门先行 → M1-M3 BaseLevel 线 ∥ M4-M5 ContextBoost 线 → M6 首次填 goal_terms → M7 智能级(依赖 A 系列) → M8 消费契约兑现(修 invoker.py:423 + score_trace)。
+
+#### 7.3.3 关键自验门（删 QKV 与建新层的接缝）
+
+**删 Q-shrink 前后，M0 的纯 RRF eval 分数应当不变**——因为审计结论是"QKV 非承载"（hints 恒空、router 算了不用）。若删后分数不变 → 实锤 QKV 确实没在承载，退役安全；若分数掉了 → 说明它其实在某处承载，**立即回退并重查**。这把"删旧"和"建新"用同一把 eval 尺子接上了缝。
 
 ---
 
 ## 8. 审计方法与证据
 
-六路后台 agent 并行（部分自带子 agent 三层展开），全程 Grep/Read/Bash 直查源码 + 执行级验证（audit_capability_mapping() 实跑、测试套件实跑：external_capability 19 passed、HR 相关 70 passed、最终全后端 5513 passed / 206 skipped）；FreeCode/claude-code-org/codex-rs 三基线交叉；每结论 file:line 可复核。详细分报告：QKV 完整版存于审计 agent scratchpad（qkv-audit-final-report.md），其余以本文档为准。
+六路后台 agent 并行（部分自带子 agent 三层展开），全程 Grep/Read/Bash 直查源码 + 执行级验证（audit_capability_mapping() 实跑、测试套件实跑：external_capability 19 passed、HR 相关 70 passed、最终全后端 5513 passed / 206 skipped）；FreeCode/claude-code-org/codex-rs 三基线交叉；每结论 file:line 可复核。2026-07-09 增补：Codex `ext/goal` crate 专项考证（七维生命周期 + Hive 逐维对照，报告 scratchpad/goal-mode-codex-vs-hive-alignment.md）支撑 §6.2 与 §7.2-A。详细分报告：QKV 完整版存于审计 agent scratchpad（qkv-audit-final-report.md），其余以本文档为准。

@@ -22,11 +22,12 @@ fi
 # (NOSUPERUSER) cannot run DDL. SCHEMA_DATABASE_URL holds the owner URL; before
 # the cutover it is unset and everything uses DATABASE_URL (no behavior change).
 SCHEMA_URL="${SCHEMA_DATABASE_URL:-$DATABASE_URL}"
-# Normalize a bare postgresql:// (a ${{Postgres.DATABASE_URL}} reference) to
-# +asyncpg so every schema step (create_all, alembic env.py, grant, backfill)
-# gets the async driver the engine requires.
+# Normalize bare Railway/Postgres URLs to +asyncpg so every schema step
+# (create_all, alembic env.py, grant, backfill) gets the async driver the
+# engine requires.
 case "$SCHEMA_URL" in
   postgresql://*) SCHEMA_URL="postgresql+asyncpg://${SCHEMA_URL#postgresql://}" ;;
+  postgres://*) SCHEMA_URL="postgresql+asyncpg://${SCHEMA_URL#postgres://}" ;;
 esac
 
 if [ "${HIVE_PROCESS_ROLE:-runtime}" != "api" ]; then

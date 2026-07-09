@@ -1795,7 +1795,12 @@ async def get_session_index(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    await check_agent_access(db, current_user, agent_id)
+    await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
     index = await read_session_index(db, agent_id=agent_id, session_id=session_id)
     if index is None:
         raise HTTPException(status_code=404, detail="Chat session not found")

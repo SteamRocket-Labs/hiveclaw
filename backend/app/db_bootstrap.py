@@ -138,6 +138,31 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "knowledge_grants",
 )
 
+# Non-null tenant-owned tables must never inherit the legacy nullable-tenant
+# compatibility branch. Fresh create_all bootstrap stamps Alembic head and
+# skips migrations, so this list keeps bootstrap RLS aligned with strict
+# migration-installed policies for new table families.
+STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
+    "external_capability_reviews",
+    "external_capability_snapshots",
+    "external_extension_catalog_entries",
+    "external_extension_components",
+    "external_extension_hook_registrations",
+    "external_extension_activations",
+    "external_marketplace_sources",
+    "external_marketplace_entries",
+    "capability_factors",
+    "capability_factor_reviews",
+    "capability_promotion_proposals",
+    "knowledge_documents",
+    "knowledge_segments",
+    "knowledge_entities",
+    "knowledge_assertions",
+    "knowledge_links",
+    "knowledge_index_jobs",
+    "knowledge_grants",
+)
+
 REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (
     "tenants",
     "notifications",
@@ -179,6 +204,13 @@ def _standard_tenant_predicate(table: str) -> str:
         {_bypass_predicate()}
         OR {table}.tenant_id::text = current_setting('app.current_tenant_id', true)
         OR {table}.tenant_id IS NULL
+    """
+
+
+def _strict_tenant_predicate(table: str) -> str:
+    return f"""
+        {_bypass_predicate()}
+        OR {table}.tenant_id::text = current_setting('app.current_tenant_id', true)
     """
 
 
@@ -315,6 +347,8 @@ def _policy_predicates_for_table(table: str) -> tuple[str, str]:
         predicate = _system_settings_predicate()
     elif table == "identities":
         predicate = _bypass_predicate()
+    elif table in STRICT_TENANT_RLS_TABLES:
+        predicate = _strict_tenant_predicate(table)
     else:
         predicate = _standard_tenant_predicate(table)
     return predicate, predicate

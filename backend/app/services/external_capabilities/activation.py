@@ -16,6 +16,8 @@ from app.agents.subagent_definition import (
     parse_subagent_definition,
     validate_subagent_name,
 )
+from app.models.agent import Agent
+from app.models.chat_session import ChatSession
 from app.models.external_capability import ExternalCapabilitySnapshot, ExternalExtensionActivation
 from app.services.external_capabilities.activation_cleanup import deactivate_activation_components
 from app.services.external_capabilities.plugin_materializer import (
@@ -41,6 +43,7 @@ async def activate_external_extension_for_agent(
     component_qualified_names: list[str] | None = None,
     credential_handles: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    await _require_agent_in_tenant(db, tenant_id=tenant_id, agent_id=agent_id)
     result = await db.execute(
         select(ExternalCapabilitySnapshot).where(
             ExternalCapabilitySnapshot.id == snapshot_id,
@@ -102,6 +105,13 @@ async def try_external_extension_in_chat(
     credential_handles: dict[str, str] | None = None,
     expires_in_minutes: int = 60,
 ) -> dict[str, Any]:
+    await _require_agent_in_tenant(db, tenant_id=tenant_id, agent_id=agent_id)
+    await _require_chat_session_in_agent_tenant(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
     result = await db.execute(
         select(ExternalCapabilitySnapshot).where(
             ExternalCapabilitySnapshot.id == snapshot_id,
@@ -170,6 +180,7 @@ async def deactivate_external_extension_for_agent(
     workspace: Path,
     deactivated_by_user_id: uuid.UUID | None,
 ) -> dict[str, Any]:
+    await _require_agent_in_tenant(db, tenant_id=tenant_id, agent_id=agent_id)
     result = await db.execute(
         select(ExternalExtensionActivation).where(
             ExternalExtensionActivation.tenant_id == tenant_id,
@@ -208,6 +219,36 @@ async def deactivate_external_extension_for_agent(
     except Exception:
         await db.rollback()
         raise
+
+
+async def _require_agent_in_tenant(db: AsyncSession, *, tenant_id: uuid.UUID, agent_id: uuid.UUID) -> None:
+    result = await db.execute(
+        select(Agent.id).where(
+            Agent.id == agent_id,
+            Agent.tenant_id == tenant_id,
+            Agent.deleted_at.is_(None),
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise ValueError("agent not found for tenant")
+
+
+async def _require_chat_session_in_agent_tenant(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+) -> None:
+    result = await db.execute(
+        select(ChatSession.id).where(
+            ChatSession.id == session_id,
+            ChatSession.agent_id == agent_id,
+            ChatSession.tenant_id == tenant_id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise ValueError("chat session not found for agent")
 
 
 async def _activate_components(

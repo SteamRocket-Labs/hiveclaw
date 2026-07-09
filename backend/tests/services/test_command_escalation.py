@@ -115,7 +115,12 @@ async def test_request_command_escalation_creates_pending_approval(monkeypatch):
     monkeypatch.setattr(svc.approval_service, "request_approval", fake_request_approval)
 
     outcome = await request_command_escalation(
-        agent_id=agent_id, requested_by=user_id, command=_BLOCKED_COMMAND, reason="cleanup", session_id="sess-9"
+        agent_id=agent_id,
+        tenant_id=agent.tenant_id,
+        requested_by=user_id,
+        command=_BLOCKED_COMMAND,
+        reason="cleanup",
+        session_id="sess-9",
     )
 
     assert outcome["approval_id"] == "appr-1"
@@ -127,8 +132,46 @@ async def test_request_command_escalation_creates_pending_approval(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_request_command_escalation_scopes_agent_lookup_to_runtime_tenant(monkeypatch):
+    from app.services import command_escalation_service as svc
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, name="tester", creator_id=uuid4())
+    statements: list[str] = []
+
+    class _TenantAssertingDb(_FakeDb):
+        async def execute(self, query):
+            statements.append(str(query))
+            return _FakeResult(agent)
+
+    db = _TenantAssertingDb(agent)
+    monkeypatch.setattr(svc, "async_session", lambda: _AsyncCtx(db))
+    monkeypatch.setattr(svc, "enter_rls_bypass", lambda _db, reason=None: _AsyncCtx(None))
+
+    async def fake_request_approval(db, passed_agent, *, action_type, details):
+        return {"allowed": False, "approval_id": "appr-tenant", "message": "Approval requested"}
+
+    monkeypatch.setattr(svc.approval_service, "request_approval", fake_request_approval)
+
+    outcome = await request_command_escalation(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        requested_by=user_id,
+        command=_BLOCKED_COMMAND,
+        reason="cleanup",
+        session_id="sess-9",
+    )
+
+    assert outcome["approval_id"] == "appr-tenant"
+    assert statements
+    assert "agents.tenant_id" in statements[0]
+
+
+@pytest.mark.asyncio
 async def test_request_command_escalation_rejects_empty_command():
-    outcome = await request_command_escalation(agent_id=uuid4(), requested_by=uuid4(), command="   ")
+    outcome = await request_command_escalation(agent_id=uuid4(), tenant_id=uuid4(), requested_by=uuid4(), command="   ")
     assert outcome["allowed"] is False
     assert "required" in outcome["error"]
 
@@ -143,7 +186,9 @@ async def test_request_command_escalation_handles_missing_agent(monkeypatch):
         raise AssertionError("approval must not be requested when the agent is missing")
 
     monkeypatch.setattr(svc.approval_service, "request_approval", _boom)
-    outcome = await request_command_escalation(agent_id=uuid4(), requested_by=uuid4(), command=_BLOCKED_COMMAND)
+    outcome = await request_command_escalation(
+        agent_id=uuid4(), tenant_id=uuid4(), requested_by=uuid4(), command=_BLOCKED_COMMAND
+    )
     assert outcome["allowed"] is False
     assert "Agent not found" in outcome["error"]
 
@@ -237,8 +282,8 @@ async def test_request_shell_escalation_tool_wires_service(monkeypatch):
 
     captured = {}
 
-    async def fake_service(*, agent_id, requested_by, command, reason, session_id):
-        captured.update(agent_id=agent_id, command=command, reason=reason, session_id=session_id)
+    async def fake_service(*, agent_id, tenant_id, requested_by, command, reason, session_id):
+        captured.update(agent_id=agent_id, tenant_id=tenant_id, command=command, reason=reason, session_id=session_id)
         return {"allowed": False, "approval_id": "appr-42"}
 
     monkeypatch.setattr(command_parity, "request_command_escalation", fake_service)
@@ -256,6 +301,7 @@ async def test_request_shell_escalation_tool_wires_service(monkeypatch):
     assert payload["escalation"]["approval_id"] == "appr-42"
     assert captured["command"] == _BLOCKED_COMMAND
     assert captured["reason"] == "cleanup"
+    assert captured["tenant_id"] == request.context.tenant_id
 
 
 @pytest.mark.asyncio

@@ -3121,6 +3121,62 @@ async def _materialize_initial_user_turn_for_worker(
     runtime_task.metadata_json = metadata
 
 
+def _runtime_boundary_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _ids_match(left: Any, right: Any) -> bool:
+    left_text = _runtime_boundary_id(left)
+    right_text = _runtime_boundary_id(right)
+    return left_text is not None and right_text is not None and left_text == right_text
+
+
+def _enforce_runtime_context_tenant_boundary(
+    *,
+    runtime_task: RuntimeTask,
+    agent: Agent,
+    user: User,
+    session: ChatSession | None,
+) -> dict[str, Any]:
+    agent_tenant_id = getattr(agent, "tenant_id", None)
+    if agent_tenant_id is None:
+        raise RuntimeError(f"tenant boundary mismatch for run {runtime_task.id}: agent tenant missing")
+
+    metadata_updates: dict[str, Any] = {}
+    task_tenant_id = getattr(runtime_task, "tenant_id", None)
+    if task_tenant_id is None:
+        runtime_task.tenant_id = agent_tenant_id
+        metadata_updates["tenant_id_backfilled_from_agent"] = str(agent_tenant_id)
+    elif not _ids_match(task_tenant_id, agent_tenant_id):
+        raise RuntimeError(
+            f"tenant boundary mismatch for run {runtime_task.id}: runtime task tenant does not match agent tenant"
+        )
+
+    if session is not None:
+        if getattr(session, "agent_id", None) is not None and not _ids_match(getattr(session, "agent_id"), agent.id):
+            raise RuntimeError(
+                f"tenant boundary mismatch for run {runtime_task.id}: session agent does not match task agent"
+            )
+        session_tenant_id = getattr(session, "tenant_id", None)
+        if session_tenant_id is None:
+            session.tenant_id = agent_tenant_id
+            metadata_updates["session_tenant_id_backfilled_from_agent"] = str(agent_tenant_id)
+        elif not _ids_match(session_tenant_id, agent_tenant_id):
+            raise RuntimeError(
+                f"tenant boundary mismatch for run {runtime_task.id}: session tenant does not match agent tenant"
+            )
+
+    user_tenant_id = getattr(user, "tenant_id", None)
+    if user_tenant_id is not None and not _ids_match(user_tenant_id, agent_tenant_id):
+        raise RuntimeError(
+            f"tenant boundary mismatch for run {runtime_task.id}: user tenant does not match agent tenant"
+        )
+    return metadata_updates
+
+
 async def _load_runtime_context(
     run_uuid: uuid.UUID,
 ) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[ChatMessage], ChatSession | None]:
@@ -3154,6 +3210,16 @@ async def _load_runtime_context(
         user = user_result.scalar_one_or_none()
         if user is None:
             raise RuntimeError(f"User {user_id} not found")
+
+        boundary_updates = _enforce_runtime_context_tenant_boundary(
+            runtime_task=runtime_task,
+            agent=agent,
+            user=user,
+            session=session,
+        )
+        if boundary_updates:
+            metadata.update(boundary_updates)
+            runtime_task.metadata_json = metadata
 
         if getattr(runtime_task, "status", None) == "pending":
             runtime_task.status = "running"

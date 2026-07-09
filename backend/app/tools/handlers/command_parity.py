@@ -430,6 +430,7 @@ async def request_shell_escalation(request: ToolExecutionRequest) -> str:
     reason = str(request.arguments.get("reason") or "").strip()
     outcome = await request_command_escalation(
         agent_id=request.context.agent_id,
+        tenant_id=request.context.tenant_id,
         requested_by=request.context.user_id,
         command=command,
         reason=reason,

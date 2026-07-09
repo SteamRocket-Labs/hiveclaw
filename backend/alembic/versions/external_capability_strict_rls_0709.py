@@ -1,12 +1,12 @@
-"""Force tenant RLS on the external-capability and capability-factor tables.
+"""Repair external-capability RLS policies to strict tenant isolation.
 
-These eleven tables landed with the marketplace/capability-intake commits but
-never joined an RLS FORCE migration — the bootstrap force-list covered them at
-create_all time only. Multi-tenancy is a hard invariant: every tenant-scoped
-table carries a FORCE ROW LEVEL SECURITY policy at the migration layer too.
+The first FORCE migration used a second policy name on top of the create-table
+policies. This hardening migration normalizes both possible policy names to a
+single strict tenant policy, so already-upgraded databases do not retain an
+older null-tenant bypass predicate.
 
-Revision ID: external_capability_rls_0709
-Revises: runtime_budget_breaker_dims_0709
+Revision ID: external_capability_strict_rls_0709
+Revises: runtime_budget_run_metadata_0709
 Create Date: 2026-07-09
 """
 
@@ -15,8 +15,8 @@ from __future__ import annotations
 from alembic import op
 from sqlalchemy import inspect
 
-revision = "external_capability_rls_0709"
-down_revision = "runtime_budget_breaker_dims_0709"
+revision = "external_capability_strict_rls_0709"
+down_revision = "runtime_budget_run_metadata_0709"
 branch_labels = None
 depends_on = None
 
@@ -47,6 +47,20 @@ def _tenant_predicate(table: str) -> str:
     """
 
 
+def _install_strict_policy(table: str, *, policy_name: str) -> None:
+    op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+    op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
+    op.execute(f"DROP POLICY IF EXISTS {table}_tenant_isolation ON {table}")
+    op.execute(f"DROP POLICY IF EXISTS tenant_isolation_{table} ON {table}")
+    op.execute(
+        f"""
+        CREATE POLICY {policy_name} ON {table}
+        USING ({_tenant_predicate(table)})
+        WITH CHECK ({_tenant_predicate(table)})
+        """
+    )
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
@@ -55,16 +69,7 @@ def upgrade() -> None:
     for table in _EXTERNAL_CAPABILITY_TABLES:
         if table not in existing:
             continue
-        op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
-        op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
-        op.execute(f"DROP POLICY IF EXISTS {table}_tenant_isolation ON {table}")
-        op.execute(
-            f"""
-            CREATE POLICY {table}_tenant_isolation ON {table}
-            USING ({_tenant_predicate(table)})
-            WITH CHECK ({_tenant_predicate(table)})
-            """
-        )
+        _install_strict_policy(table, policy_name=f"tenant_isolation_{table}")
 
 
 def downgrade() -> None:
@@ -75,6 +80,4 @@ def downgrade() -> None:
     for table in _EXTERNAL_CAPABILITY_TABLES:
         if table not in existing:
             continue
-        op.execute(f"DROP POLICY IF EXISTS {table}_tenant_isolation ON {table}")
-        op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY")
-        op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
+        _install_strict_policy(table, policy_name=f"{table}_tenant_isolation")

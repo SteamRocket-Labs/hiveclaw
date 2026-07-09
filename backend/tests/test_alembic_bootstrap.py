@@ -130,6 +130,38 @@ def test_personal_knowledge_tables_are_forced_rls_on_fresh_bootstrap_path() -> N
     } <= set(RLS_FORCED_TENANT_TABLES)
 
 
+def test_bootstrap_policy_uses_strict_tenant_predicate_for_non_nullable_runtime_tables() -> None:
+    from app.db_bootstrap import STRICT_TENANT_RLS_TABLES, _policy_predicates_for_table
+
+    expected_strict_tables = {
+        "external_capability_reviews",
+        "external_capability_snapshots",
+        "external_extension_catalog_entries",
+        "external_extension_components",
+        "external_extension_hook_registrations",
+        "external_extension_activations",
+        "external_marketplace_sources",
+        "external_marketplace_entries",
+        "capability_factors",
+        "capability_factor_reviews",
+        "capability_promotion_proposals",
+        "knowledge_documents",
+        "knowledge_segments",
+        "knowledge_entities",
+        "knowledge_assertions",
+        "knowledge_links",
+        "knowledge_index_jobs",
+        "knowledge_grants",
+    }
+
+    assert expected_strict_tables <= set(STRICT_TENANT_RLS_TABLES)
+    for table in expected_strict_tables:
+        using, check = _policy_predicates_for_table(table)
+        assert using == check
+        assert f"{table}.tenant_id::text = current_setting('app.current_tenant_id', true)" in using
+        assert "tenant_id IS NULL" not in using
+
+
 def test_bootstrap_policy_sql_covers_remaining_global_and_derived_tables() -> None:
     from app.db_bootstrap import _policy_predicates_for_table
 

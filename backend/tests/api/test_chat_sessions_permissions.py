@@ -527,6 +527,45 @@ async def test_get_session_messages_allows_manage_access_for_non_owner(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_get_session_index_rejects_non_owner_without_manage_access(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    owner_id = uuid4()
+    viewer_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        peer_agent_id=None,
+        user_id=owner_id,
+        source_channel="web",
+    )
+    current_user = SimpleNamespace(id=viewer_id, role="member")
+    db = _QueryAwareDB(agent=agent, sessions=[session])
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    async def fake_read_session_index(*_args, **_kwargs):
+        return {"schema": "hive.session_index.v1"}
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr(chat_sessions_api, "read_session_index", fake_read_session_index, raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        await chat_sessions_api.get_session_index(
+            agent_id=agent_id,
+            session_id=session_id,
+            current_user=current_user,
+            db=db,
+        )
+
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_get_session_messages_enriches_artifact_agent_names(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 

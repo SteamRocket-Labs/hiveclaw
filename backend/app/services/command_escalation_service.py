@@ -68,6 +68,7 @@ def build_command_escalation_request(
 async def request_command_escalation(
     *,
     agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | str | None,
     requested_by: uuid.UUID | str | None,
     command: str,
     reason: str | None = None,
@@ -82,6 +83,9 @@ async def request_command_escalation(
     normalized_command = command.strip()
     if not normalized_command:
         return {"allowed": False, "error": "command is required for escalation."}
+    tenant_uuid = _normalize_uuid(tenant_id)
+    if tenant_uuid is None:
+        return {"allowed": False, "error": "tenant_id is required for escalation."}
 
     action_type, details = build_command_escalation_request(
         normalized_command,
@@ -91,10 +95,30 @@ async def request_command_escalation(
     )
 
     async with async_session() as db, enter_rls_bypass(db, reason=f"command escalation request for agent {agent_id}"):
-        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        result = await db.execute(
+            select(Agent).where(
+                Agent.id == agent_id,
+                Agent.tenant_id == tenant_uuid,
+                Agent.deleted_at.is_(None),
+            )
+        )
         agent = result.scalar_one_or_none()
         if agent is None:
             return {"allowed": False, "error": "Agent not found for escalation."}
         outcome = await approval_service.request_approval(db, agent, action_type=action_type, details=details)
         await db.commit()
         return outcome
+
+
+def _normalize_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text)
+    except ValueError:
+        return None

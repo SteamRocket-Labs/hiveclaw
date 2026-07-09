@@ -66,8 +66,6 @@ def downgrade() -> None:
     op.drop_column("runtime_tasks", "root_runtime_task_id")
 
     op.drop_column("runtime_budget_runs", "parent_invocations")
-    op.drop_column("runtime_budget_runs", "needs_reconciliation_count")
-    op.drop_column("runtime_budget_runs", "failures")
     op.drop_column("runtime_budget_runs", "max_parent_invocations")
     op.drop_column("runtime_budget_runs", "max_child_failure_ratio")
     op.drop_column("runtime_budget_runs", "max_needs_reconciliation")

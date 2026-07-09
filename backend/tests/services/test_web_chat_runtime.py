@@ -1018,6 +1018,80 @@ async def test_load_runtime_context_resolves_model_before_rls_bypass_transaction
 
 
 @pytest.mark.asyncio
+async def test_load_runtime_context_rejects_runtime_task_agent_tenant_mismatch(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    user_id = uuid4()
+    agent_tenant_id = uuid4()
+    task_tenant_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        tenant_id=task_tenant_id,
+        parent_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        status="running",
+        started_at=datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc),
+        metadata_json={"user_id": str(user_id)},
+    )
+    session_row = SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=agent_tenant_id, transcript_metadata_json={})
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        tenant_id=agent_tenant_id,
+        primary_model_id=None,
+        fallback_model_id=None,
+        sponsor=None,
+        deleted_at=None,
+        deactivated_at=None,
+    )
+    user = SimpleNamespace(id=user_id, tenant_id=agent_tenant_id)
+
+    class _Session:
+        def __init__(self):
+            self.values = [task, session_row, agent, user, []]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            return _QueuedScalarResult(self.values.pop(0) if self.values else [])
+
+        async def commit(self):
+            return None
+
+    class _BypassContext:
+        def __init__(self, db):
+            self.db = db
+
+        async def __aenter__(self):
+            return self.db
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def noop_materialize(**_kwargs):
+        return None
+
+    async def noop_projection(_db, _session, messages):
+        return messages
+
+    db = _Session()
+    monkeypatch.setattr(runtime, "_async_session", lambda: db)
+    monkeypatch.setattr(runtime, "enter_rls_bypass", lambda db, **_kwargs: _BypassContext(db))
+    monkeypatch.setattr(runtime, "_materialize_initial_user_turn_for_worker", noop_materialize)
+    monkeypatch.setattr(runtime, "_apply_active_projection_to_history", noop_projection)
+
+    with pytest.raises(RuntimeError, match="tenant boundary mismatch"):
+        await runtime._load_runtime_context(run_id)
+
+
+@pytest.mark.asyncio
 async def test_active_compact_projection_replaces_prior_history_and_keeps_later_tail():
     import app.services.web_chat_runtime as runtime
 

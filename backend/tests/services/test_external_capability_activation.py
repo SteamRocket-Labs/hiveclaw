@@ -23,13 +23,20 @@ class _ScalarResult:
 
 
 class _ActivationSession:
-    def __init__(self, snapshot):
+    def __init__(self, snapshot, *, agent=object(), chat_session=object()):
         self.snapshot = snapshot
+        self.agent = agent
+        self.chat_session = chat_session
         self.added = []
         self.commit_calls = 0
         self.rollback_calls = 0
 
-    async def execute(self, _stmt):
+    async def execute(self, statement):
+        statement_text = str(statement)
+        if "FROM agents" in statement_text:
+            return _ScalarResult(self.agent)
+        if "FROM chat_sessions" in statement_text:
+            return _ScalarResult(self.chat_session)
         return _ScalarResult(self.snapshot)
 
     def add(self, value):
@@ -286,6 +293,34 @@ async def test_activate_external_snapshot_selects_components_and_requires_creden
 
 
 @pytest.mark.asyncio
+async def test_activate_external_extension_rejects_agent_outside_tenant(tmp_path):
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    snapshot = SimpleNamespace(
+        id=snapshot_id,
+        tenant_id=tenant_id,
+        status="approved",
+        snapshot_key="cc_plugin:trial-pack:abc",
+        component_manifest_json={"components": []},
+    )
+    db = _ActivationSession(snapshot, agent=None)
+
+    with pytest.raises(ValueError, match="agent not found for tenant"):
+        await activate_external_extension_for_agent(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            snapshot_id=snapshot_id,
+            workspace=tmp_path,
+            activated_by_user_id=uuid4(),
+        )
+
+    assert db.added == []
+    assert db.commit_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_try_external_extension_in_chat_creates_session_activation_overlay(tmp_path):
     tenant_id = uuid4()
     agent_id = uuid4()
@@ -338,6 +373,36 @@ async def test_try_external_extension_in_chat_creates_session_activation_overlay
     assert activation.session_id == session_id
     assert activation.selected_components_json == ["trial-pack:skill:trial"]
     assert activation.expires_at is not None
+
+
+@pytest.mark.asyncio
+async def test_try_external_extension_in_chat_rejects_session_outside_agent_tenant(tmp_path):
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    session_id = uuid4()
+    snapshot = SimpleNamespace(
+        id=snapshot_id,
+        tenant_id=tenant_id,
+        status="approved",
+        snapshot_key="cc_plugin:trial-pack:abc",
+        component_manifest_json={"components": []},
+    )
+    db = _ActivationSession(snapshot, chat_session=None)
+
+    with pytest.raises(ValueError, match="chat session not found for agent"):
+        await try_external_extension_in_chat(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            snapshot_id=snapshot_id,
+            session_id=session_id,
+            workspace=tmp_path,
+            activated_by_user_id=uuid4(),
+        )
+
+    assert db.added == []
+    assert db.commit_calls == 0
 
 
 @pytest.mark.asyncio

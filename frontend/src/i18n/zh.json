@@ -19,6 +19,8 @@
     "cacheDecisions": "缓存决策",
     "toolResults": "工具结果",
     "agentCycleDecisions": "Agent cycle 决策",
+    "activationCandidates": "激活候选",
+    "personalKbCandidates": "个人知识库",
     "contextArtifacts": "上下文工件",
     "activeRun": "运行",
     "inspectorTitle": "会话上下文",

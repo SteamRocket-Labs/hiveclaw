@@ -25,6 +25,8 @@ describe('SessionNativeControls Agent Team contract', () => {
     expect(controlsSource).toContain('agent_cycle_decision_ledger');
     expect(controlsSource).toContain('sessionWorkbench.contextArtifacts');
     expect(controlsSource).toContain('context_artifacts');
+    expect(controlsSource).toContain('sessionWorkbench.personalKbCandidates');
+    expect(controlsSource).toContain('personal_kb_candidates');
   });
 
   it('keeps Team creation container-only and discovers teammates through spawn_subagent', async () => {

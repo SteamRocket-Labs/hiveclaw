@@ -203,6 +203,7 @@ export interface SessionContextUsage {
   tool_result_ledger?: unknown[];
   cache_decision_ledger?: unknown[];
   agent_cycle_decision_ledger?: unknown[];
+  activation_candidates?: unknown[];
   context_artifacts?: unknown[];
   active_tool_names?: unknown[];
   deferred_tool_names?: unknown[];

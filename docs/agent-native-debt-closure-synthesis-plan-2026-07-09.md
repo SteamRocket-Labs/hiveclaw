@@ -722,6 +722,43 @@ pytest \
   -q
 ```
 
+### 8.4 完成证据（2026-07-09）
+
+已完成：
+
+1. `backend/app/memory/assembler.py` 新增 `_memory_item_sort_score()`，优先使用 `metadata.activation_raw_score`，fallback 到 `item.score`，不改 ActivationScorer 方程。
+2. `backend/app/api/chat_sessions.py` 的 `Context usage` payload 暴露 `activation_candidates`，并统计 `personal_kb_candidates`。
+3. `frontend/src/pages/session-workbench/SessionNativeControls.tsx` 在 Workbench context usage 中展示 activation candidates 与 Personal KB candidate count。
+4. `frontend/src/api/domains/ccParity.ts`、`frontend/src/i18n/en.json`、`frontend/src/i18n/zh.json` 补齐类型与文案。
+5. 新增/扩展 regression：
+   - saturated `item.score=1.0` 时 assembler 仍按 `activation_raw_score` 排序。
+   - session context usage API 返回 activation candidates 与 Personal KB count。
+   - Workbench UI source guard 覆盖 Personal KB candidate 展示。
+
+验证：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_personal_knowledge_service.py \
+  tests/tools/test_personal_knowledge_tool.py \
+  tests/runtime/test_personal_knowledge_activation.py \
+  tests/runtime/test_personal_knowledge_provider.py \
+  tests/integration/test_personal_knowledge_cross_owner.py \
+  tests/memory/test_assembler.py \
+  tests/api/test_chat_sessions_permissions.py::test_get_session_context_usage_returns_context_diagnostics \
+  -q
+# 73 passed, 4 warnings
+
+ruff check app/api/chat_sessions.py app/memory/assembler.py tests/api/test_chat_sessions_permissions.py tests/memory/test_assembler.py
+# All checks passed!
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm test -- --run src/pages/session-workbench/SessionNativeControls.test.tsx
+# Test Files 1 passed; Tests 2 passed
+```
+
 ## 9. 第一部分总验证
 
 第一部分施工完成后至少跑：

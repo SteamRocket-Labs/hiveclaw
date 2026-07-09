@@ -71,6 +71,16 @@ class TestAssembleGroupsByKind:
 
         assert result.index("high score fact") < result.index("low score fact")
 
+    def test_activation_raw_score_orders_saturated_display_scores(self) -> None:
+        items = [
+            _make_item(MemoryKind.SEMANTIC, "raw score loser", score=1.0, activation_raw_score=1.2),
+            _make_item(MemoryKind.SEMANTIC, "raw score winner", score=1.0, activation_raw_score=2.4),
+        ]
+        assembler = MemoryAssembler()
+        result = assembler.assemble(items)
+
+        assert result.index("raw score winner") < result.index("raw score loser")
+
 
 class TestAssembleBudgetTrim:
     """Output respects budget_chars limit."""

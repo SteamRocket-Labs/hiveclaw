@@ -682,6 +682,14 @@ async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch
                 "tool_result_ledger": [{"tool_name": "read_file", "result_kind": "evidence"}],
                 "cache_decision_ledger": [{"cache_surface": "prompt_prefix", "decision": "hit"}],
                 "agent_cycle_decision_ledger": [{"subsystem": "workflow", "decision": "run_or_preview"}],
+                "activation_candidates": [
+                    {
+                        "candidate_kind": "knowledge_base",
+                        "metadata": {"scope": "personal", "title": "Owner KB"},
+                        "source_refs": ["kb://person/owner/documents/doc#segment=seg"],
+                    },
+                    {"candidate_kind": "agent_memory", "metadata": {"scope": "agent"}},
+                ],
             },
             "context_artifacts": [{"kind": "knowledge_relevant", "source": "prompt_manifest"}],
         },
@@ -713,6 +721,8 @@ async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch
     assert result["tool_result_ledger"][0]["tool_name"] == "read_file"
     assert result["cache_decision_ledger"][0]["cache_surface"] == "prompt_prefix"
     assert result["agent_cycle_decision_ledger"][0]["subsystem"] == "workflow"
+    assert result["activation_candidates"][0]["candidate_kind"] == "knowledge_base"
+    assert result["activation_candidates"][0]["metadata"]["scope"] == "personal"
     assert result["context_artifacts"][0]["kind"] == "knowledge_relevant"
     assert result["counts"] == {
         "categories": 2,
@@ -722,6 +732,8 @@ async def test_get_session_context_usage_returns_context_diagnostics(monkeypatch
         "dynamic_context_sections": 1,
         "cache_decisions": 1,
         "agent_cycle_decisions": 1,
+        "activation_candidates": 2,
+        "personal_kb_candidates": 1,
         "context_artifacts": 1,
         "tools": 1,
         "deferred_tools": 1,

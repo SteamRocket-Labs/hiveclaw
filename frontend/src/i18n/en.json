@@ -19,6 +19,8 @@
     "cacheDecisions": "cache decisions",
     "toolResults": "tool results",
     "agentCycleDecisions": "agent cycle decisions",
+    "activationCandidates": "activation candidates",
+    "personalKbCandidates": "Personal KB",
     "contextArtifacts": "context artifacts",
     "activeRun": "run",
     "inspectorTitle": "Session context",

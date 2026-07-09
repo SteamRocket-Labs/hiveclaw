@@ -207,6 +207,10 @@ export default function SessionNativeControls({
             {t('sessionWorkbench.agentCycleDecisions', 'agent cycle decisions')}: {agentCycleDecisionCount} · {t('sessionWorkbench.contextArtifacts', 'context artifacts')}:{' '}
             {contextArtifactCount}
           </div>
+          <div>
+            {t('sessionWorkbench.activationCandidates', 'activation candidates')}: {numericValue(contextUsageCounts?.activation_candidates)} · {t('sessionWorkbench.personalKbCandidates', 'Personal KB')}:{' '}
+            {numericValue(contextUsageCounts?.personal_kb_candidates)}
+          </div>
         </div>
       </div>
 

@@ -54,6 +54,16 @@ def _activation_suffix(item: MemoryItem) -> str:
     return f" [why={','.join(compact[:4])}]"
 
 
+def _memory_item_sort_score(item: MemoryItem) -> float:
+    raw_score = item.metadata.get("activation_raw_score")
+    if raw_score is not None:
+        try:
+            return float(raw_score)
+        except (TypeError, ValueError):
+            pass
+    return float(item.score or 0.0)
+
+
 class MemoryAssembler:
     """Assemble retrieved memory items into a prompt section."""
 
@@ -62,8 +72,8 @@ class MemoryAssembler:
 
         Returns a string with section headers ready to inject into a system prompt.
         """
-        # Sort ALL items by score FIRST so dedup keeps highest-scored version (CR-01)
-        sorted_items = sorted(items, key=lambda i: i.score, reverse=True)
+        # Sort ALL items first so dedup keeps the highest-ranked version (CR-01).
+        sorted_items = sorted(items, key=_memory_item_sort_score, reverse=True)
 
         # Deduplicate by content hash (highest score wins since we sorted first)
         seen: set[str] = set()

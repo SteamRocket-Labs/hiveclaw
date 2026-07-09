@@ -317,17 +317,18 @@ cd backend && source .venv/bin/activate && ruff check \
 
 ### Commit C：ToolEvidenceLedger + final answer verifier
 
-状态：待落地
+状态：已完成
 
 文件：
 
 - `backend/app/runtime/tool_evidence_ledger.py`
 - `backend/app/kernel/final_answer_evidence.py`
 - `backend/app/kernel/engine.py`
-- `backend/app/services/web_chat_runtime.py`
 - `backend/tests/kernel/test_tool_evidence_honesty.py`
 - `backend/tests/runtime/test_tool_evidence_ledger.py`
 - 本文档
+
+说明：本提交把 final answer honesty 从 marker/request-type 补丁升级为结构化工具证据 summary。`web_chat_runtime.py` 的 malformed replay visible repair 在 Commit D 单独落地。
 
 验收：
 
@@ -336,6 +337,15 @@ cd backend && source .venv/bin/activate && pytest \
   tests/kernel/test_tool_evidence_honesty.py \
   tests/runtime/test_tool_evidence_ledger.py \
   -q
+# 8 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/runtime/tool_evidence_ledger.py \
+  app/kernel/final_answer_evidence.py \
+  app/kernel/engine.py \
+  tests/runtime/test_tool_evidence_ledger.py \
+  tests/kernel/test_tool_evidence_honesty.py
+# All checks passed!
 ```
 
 ### Commit D：Replay repair + compaction/cost breaker
@@ -414,7 +424,7 @@ cd backend && source .venv/bin/activate && pytest \
 | --- | --- | --- | --- |
 | A | 已完成 | 文档总控 | `git add -f docs/ccplus-session-full-landfall-2026-07-09.md && git commit -m "docs: define session full landfall plan"` |
 | B | 已完成 | ProviderPromptLedger + Runtime budget；runtime reservation 计入 tool schema / projected uncached input；settlement 记录 cache read/write/miss/unknown | `pytest tests/runtime/test_provider_prompt_ledger.py tests/services/test_runtime_budget_llm.py -q` -> `7 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
-| C | 待落地 | ToolEvidenceLedger + final answer verifier | 待补 |
+| C | 已完成 | ToolEvidenceLedger + final answer verifier；`engine.py` final path 从 `collected_parts` 构建结构化工具证据 summary，不再依赖 prompt-export 例外补丁 | `pytest tests/kernel/test_tool_evidence_honesty.py tests/runtime/test_tool_evidence_ledger.py -q` -> `8 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | D | 待落地 | Replay repair + compaction/cost breaker | 待补 |
 | E | 待落地 | Workbench / observability | 待补 |
 | F | 待落地 | 全链路回归 | 待补 |

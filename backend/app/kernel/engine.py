@@ -27,6 +27,7 @@ from app.kernel.contracts import (
     TerminalReason,
     ThinkingCallback,
 )
+from app.kernel.final_answer_evidence import verify_final_answer_tool_evidence
 from app.kernel.loop_guard import LoopGuard, LoopGuardDecision
 from app.kernel.reminder_scheduler import (
     _WORK_LEDGER_ENABLED_METADATA_KEY,
@@ -57,6 +58,7 @@ from app.services.invocation_trace import (
 )
 from app.runtime.ccplus_contracts import ContextPolicyV1, build_context_policy
 from app.runtime.session_context_controller import prepare_session_context_for_request
+from app.runtime.tool_evidence_ledger import ToolEvidenceLedger
 from app.tools.registry import is_destructive_tool, is_parallel_safe_tool, result_char_limit_for_tool
 from app.tools.result_envelope import ToolContentEnvelope
 
@@ -116,28 +118,67 @@ _UNBACKED_TOOL_RESULT_MARKERS = (
     "failed with",
 )
 
+_TEXT_ONLY_REQUEST_MARKERS = (
+    "prompt",
+    "system prompt",
+    "完整生产",
+    "导出",
+    "解释",
+    "说明",
+    "总结",
+    "介绍",
+    "模板",
+    "文本",
+    "模式",
+)
+
+_TOOL_STATUS_REQUEST_MARKERS = (
+    "工具状态",
+    "工具执行",
+    "调用情况",
+    "调用记录",
+    "工具结果",
+    "成功",
+    "失败",
+    "超时",
+    "返回了吗",
+    "返回了什么",
+    "返回结果",
+    "结果是什么",
+    "有没有调用",
+    "which tools",
+    "tool status",
+    "tool execution",
+    "tool calls",
+)
+
+
+def _is_text_only_request(latest_user_query: str) -> bool:
+    query = (latest_user_query or "").strip().lower()
+    if not query:
+        return False
+    if any(marker in query for marker in _TOOL_STATUS_REQUEST_MARKERS):
+        return False
+    return any(marker in query for marker in _TEXT_ONLY_REQUEST_MARKERS)
+
 
 def _repair_unbacked_tool_result_claim(
     content: str,
     *,
     tool_names: set[str],
     has_tool_evidence: bool,
+    latest_user_query: str = "",
 ) -> str:
-    """Replace tool-result claims when this invocation produced no tool evidence."""
-    if has_tool_evidence or not content or not tool_names:
-        return content
-    lowered = content.lower()
-    if not any(marker in lowered or marker in content for marker in _UNBACKED_TOOL_RESULT_MARKERS):
-        return content
-    mentioned = sorted(
-        name for name in tool_names if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", content)
-    )
-    if not mentioned:
-        return content
-    names = ", ".join(f"`{name}`" for name in mentioned[:8])
-    return (
-        "我不能确认刚才的工具状态：本轮没有实际工具调用记录，因此不能声称 "
-        f"{names} 已返回、失败或超时。请重试该操作，我会先调用对应工具并基于工具结果给出结论。"
+    """Compatibility wrapper for older tests/callers; new code uses tool ledger summaries."""
+    del latest_user_query
+    return verify_final_answer_tool_evidence(
+        content,
+        available_tool_names=tool_names,
+        tool_evidence_summary={
+            "schema": "hive.ccplus.tool_evidence_ledger.v1",
+            "has_tool_evidence": bool(has_tool_evidence),
+            "tool_names": sorted(tool_names) if has_tool_evidence else [],
+        },
     )
 
 
@@ -4866,10 +4907,11 @@ class AgentKernel:
                             for tool in (tools_for_llm or [])
                             if isinstance(tool, dict) and tool.get("function", {}).get("name")
                         }
-                        final_content = _repair_unbacked_tool_result_claim(
+                        _tool_evidence_summary = ToolEvidenceLedger.from_parts(collected_parts).to_summary()
+                        final_content = verify_final_answer_tool_evidence(
                             final_content,
-                            tool_names=_available_tool_names,
-                            has_tool_evidence=any(part.get("type") == "tool_call" for part in collected_parts),
+                            available_tool_names=_available_tool_names,
+                            tool_evidence_summary=_tool_evidence_summary,
                         )
                         final_content, _source_permission_allowed = await _enforce_generated_source_permissions(
                             final_content

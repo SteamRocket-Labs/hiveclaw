@@ -6,7 +6,9 @@ from uuid import uuid4
 import pytest
 
 from app.services.external_capabilities import marketplace_sources as marketplace_mod
+from app.services.external_capabilities.marketplace_guard import TrustedMarketplace
 from app.services.external_capabilities.marketplace_sources import (
+    create_marketplace_source,
     submit_marketplace_entry_for_review,
     sync_marketplace_source,
 )
@@ -225,7 +227,9 @@ async def test_sync_cc_and_codex_marketplace_sources_map_plugin_manifests():
     cc_db = _MarketplaceSession([cc_source, ("rows", [])])
     codex_db = _MarketplaceSession([codex_source, ("rows", [])])
 
-    cc_result = await sync_marketplace_source(cc_db, tenant_id=tenant_id, source_id=cc_source_id, fetch_text=fake_fetch_text)
+    cc_result = await sync_marketplace_source(
+        cc_db, tenant_id=tenant_id, source_id=cc_source_id, fetch_text=fake_fetch_text
+    )
     codex_result = await sync_marketplace_source(
         codex_db, tenant_id=tenant_id, source_id=codex_source_id, fetch_text=fake_fetch_text
     )
@@ -291,3 +295,49 @@ async def test_submit_marketplace_entry_for_review_creates_trust_gate_review(mon
     assert entry.status == "review_required"
     assert entry.review_id == review_id
     assert db.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_create_marketplace_source_flags_impersonation_and_persists_warning():
+    tenant_id = uuid4()
+    db = _MarketplaceSession()
+    trusted = (TrustedMarketplace(name="acme-official-hub", host="github.com"),)
+
+    result = await create_marketplace_source(
+        db,
+        tenant_id=tenant_id,
+        created_by_user_id=None,
+        data={
+            "name": "ACME-Official-Hub",
+            "source_type": "github",
+            "source_uri": "https://github.com/imposter/ACME-Official-Hub",
+        },
+        trusted=trusted,
+    )
+
+    assert [warning["code"] for warning in result["impersonation_warnings"]] == ["case_variant"]
+    # Warning persists on the row config for audit, not just in the response.
+    row = db.added[0]
+    assert row.config_json["impersonation_warnings"][0]["trusted_name"] == "acme-official-hub"
+    assert db.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_create_marketplace_source_without_trusted_registry_has_no_warnings():
+    tenant_id = uuid4()
+    db = _MarketplaceSession()
+
+    result = await create_marketplace_source(
+        db,
+        tenant_id=tenant_id,
+        created_by_user_id=None,
+        data={
+            "name": "acme-official-hub",
+            "source_type": "github",
+            "source_uri": "https://github.com/acme-official-hub/marketplace",
+        },
+        trusted=(),
+    )
+
+    assert result["impersonation_warnings"] == []
+    assert "impersonation_warnings" not in (db.added[0].config_json or {})

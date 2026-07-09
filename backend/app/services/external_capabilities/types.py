@@ -36,6 +36,9 @@ class NormalizedExternalPluginBundle:
     unsupported_components: list[dict[str, Any]] = field(default_factory=list)
     credential_requirements: list[dict[str, Any]] = field(default_factory=list)
     admission_notes: list[dict[str, Any]] = field(default_factory=list)
+    # Plugin manifest metadata (author/homepage/license/keywords/dependencies)
+    # captured from plugin.json — CC schema fields (schemas.ts:274-320).
+    manifest_metadata: dict[str, Any] = field(default_factory=dict)
 
     def component_by_name(self, qualified_name: str) -> ExternalCapabilityComponent:
         for component in self.components:

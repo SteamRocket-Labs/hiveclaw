@@ -13,6 +13,7 @@ from app.services.external_capabilities.materializer import (
     MaterializedExternalPackage,
     TextFetcher,
     materialize_file_bundle,
+    materialize_local_source,
     materialize_remote_source,
 )
 from app.services.external_capabilities.trust_gate import stage_external_capability_review
@@ -71,7 +72,9 @@ def build_external_skill_bundle(
         manifest_sha256=component.content_sha256,
         materialization_report=materialized.report,
         sandbox_report=dict(materialized.report.get("sandbox") or {}),
-        lockfile={"files": [{"path": item["path"], "sha256": _text_sha256(item["content"])} for item in normalized_files]},
+        lockfile={
+            "files": [{"path": item["path"], "sha256": _text_sha256(item["content"])} for item in normalized_files]
+        },
         components=[component],
         admission_notes=notes,
     )
@@ -201,6 +204,61 @@ async def stage_remote_external_skill_source_review_for_tenant(
     return _review_required_payload(
         folder_name=folder_name,
         source_uri=source_uri,
+        review=review,
+        skill_guard=guard_report,
+        materialization=materialization_report,
+    )
+
+
+async def stage_local_external_skill_source_review_for_tenant(
+    *,
+    tenant_id: uuid.UUID | None,
+    created_by_user_id: uuid.UUID | None,
+    source_path: str,
+    folder_name: str,
+    source_format: str,
+    source_kind: str = "auto",
+    allowed_roots: Sequence[Path] | None = None,
+) -> dict[str, Any]:
+    """Stage a local ``file``/``directory`` skill source through the Trust Gate.
+
+    Parallels ``stage_remote_external_skill_source_review_for_tenant`` but reads
+    from the local filesystem via ``materialize_local_source`` (allowed-root
+    bounded, symlink-rejecting). Consumer: the external-capability import API /
+    C4 runtime import entry surfaces local plugin/skill sources through this.
+    """
+    materialized = materialize_local_source(
+        source_path=source_path,
+        source_format=source_format,
+        package_name=folder_name,
+        source_kind=source_kind,
+        allowed_roots=allowed_roots,
+    )
+    bundle, guard_report, materialization_report = build_external_skill_bundle(
+        source_uri=source_path,
+        folder_name=folder_name,
+        files=materialized.files,
+        source_format=source_format,
+        materialized=materialized,
+    )
+    if tenant_id is None:
+        return _blocked_without_review_payload(
+            folder_name=folder_name,
+            source_uri=source_path,
+            skill_guard=guard_report,
+            error_code="missing_tenant",
+            error_message="External capability Trust Gate requires tenant scope",
+        )
+    async with tenant_scoped_session(tenant_id) as db:
+        review = await stage_external_capability_review(
+            db,
+            tenant_id=tenant_id,
+            created_by_user_id=created_by_user_id,
+            bundle=bundle,
+        )
+    return _review_required_payload(
+        folder_name=folder_name,
+        source_uri=source_path,
         review=review,
         skill_guard=guard_report,
         materialization=materialization_report,

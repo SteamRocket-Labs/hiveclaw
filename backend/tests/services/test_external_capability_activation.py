@@ -340,6 +340,59 @@ async def test_try_external_extension_in_chat_creates_session_activation_overlay
 
 
 @pytest.mark.asyncio
+async def test_activate_substitutes_plugin_root_and_materializes_plugin_body(tmp_path):
+    # C3: ${CLAUDE_PLUGIN_ROOT} in projected skill content is replaced with the
+    # real materialized path, and the plugin file body lands under
+    # workspace/plugins/<name>.
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    snapshot_id = uuid4()
+    snapshot = SimpleNamespace(
+        id=snapshot_id,
+        tenant_id=tenant_id,
+        status="approved",
+        normalized_name="toolkit",
+        snapshot_key="cc_plugin:toolkit:abc",
+        component_manifest_json={
+            "components": [
+                {
+                    "component_type": "skill",
+                    "local_name": "audit",
+                    "qualified_name": "toolkit:audit",
+                    "source_path": "skills/audit/SKILL.md",
+                    "metadata": {
+                        "files": [
+                            {"path": "SKILL.md", "content": "Run ${CLAUDE_PLUGIN_ROOT}/scripts/run.py"},
+                        ]
+                    },
+                    "runtime_projection": {"folder_name": "audit"},
+                }
+            ]
+        },
+    )
+    db = _ActivationSession(snapshot)
+
+    result = await activate_external_extension_for_agent(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        snapshot_id=snapshot_id,
+        workspace=tmp_path,
+        activated_by_user_id=uuid4(),
+    )
+
+    assert result["status"] == "active"
+    plugin_root = (tmp_path / "plugins" / "toolkit").resolve()
+    # Projected (model-facing) skill content has the real path, no literal var.
+    projected = (tmp_path / "skills" / "audit" / "SKILL.md").read_text(encoding="utf-8")
+    assert projected == f"Run {plugin_root}/scripts/run.py"
+    assert "${CLAUDE_PLUGIN_ROOT}" not in projected
+    # Raw plugin body is materialized under workspace/plugins/<name> (var intact).
+    raw = (plugin_root / "skills" / "audit" / "SKILL.md").read_text(encoding="utf-8")
+    assert raw == "Run ${CLAUDE_PLUGIN_ROOT}/scripts/run.py"
+
+
+@pytest.mark.asyncio
 async def test_activate_external_subagent_snapshot_writes_sanitized_agent_definition(tmp_path):
     tenant_id = uuid4()
     agent_id = uuid4()
@@ -396,9 +449,7 @@ Review code carefully.
 
     definition_path = tmp_path / "subagents" / "reviewer.md"
     spec = parse_subagent_definition(definition_path.read_text(encoding="utf-8"))
-    assert result["activated_components"] == [
-        {"component_type": "subagent", "name": "reviewer", "status": "activated"}
-    ]
+    assert result["activated_components"] == [{"component_type": "subagent", "name": "reviewer", "status": "activated"}]
     assert spec.allowed_tools == ("read_file",)
     assert spec.skills == ("audit",)
     assert spec.model == "claude-sonnet"

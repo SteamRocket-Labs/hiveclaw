@@ -17,6 +17,12 @@ from app.agents.subagent_definition import (
 )
 from app.models.external_capability import ExternalCapabilitySnapshot, ExternalExtensionActivation
 from app.services.external_capabilities.activation_cleanup import deactivate_activation_components
+from app.services.external_capabilities.plugin_materializer import (
+    build_plugin_root_files,
+    materialize_plugin_root,
+    plugin_root_path,
+    resolve_component_variables,
+)
 from app.services.mcp_server_service import import_mcp_for_agent_and_register
 from app.services.skill_installation import install_active_skill_package
 
@@ -225,10 +231,33 @@ async def _activate_components(
         component_credential_handles[component_name] = component_handles
         used_credential_handles.update(component_handles)
 
+    # Materialize the plugin's file body into workspace/plugins/<name> (the
+    # ${CLAUDE_PLUGIN_ROOT}) and resolve plugin/user_config variables in each
+    # component before projection. This complements — does not replace — the
+    # skill/subagent projection below.
+    plugin_name = _optional_string(getattr(snapshot, "normalized_name", None)) or _plugin_name_from_snapshot_key(
+        getattr(snapshot, "snapshot_key", None)
+    )
+    plugin_root = plugin_root_path(workspace, plugin_name)
+    materialize_plugin_root(
+        workspace=workspace,
+        plugin_name=plugin_name,
+        files=build_plugin_root_files(selected_components),
+    )
+    plugin_root_str = str(plugin_root)
+
     activated: list[dict[str, Any]] = []
     for component in selected_components:
         if not isinstance(component, dict):
             continue
+        component_name = _component_qualified_name(component)
+        component_handles = component_credential_handles.get(component_name, {})
+        component = resolve_component_variables(
+            component,
+            plugin_root=plugin_root_str,
+            user_config=component_handles,
+            user_config_schema={key: {"sensitive": True} for key in component_handles},
+        )
         component_type = component.get("component_type")
         if component_type == "skill":
             activated.append(_activate_skill_component(component=component, snapshot=snapshot, workspace=workspace))
@@ -238,7 +267,7 @@ async def _activate_components(
                 await _activate_mcp_component(
                     component=component,
                     agent_id=agent_id,
-                    credential_handles=component_credential_handles.get(_component_qualified_name(component), {}),
+                    credential_handles=component_handles,
                     activation_scope=activation_scope,
                 )
             )
@@ -484,6 +513,16 @@ def _optional_string(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _plugin_name_from_snapshot_key(snapshot_key: Any) -> str:
+    # snapshot_key is "<source_format>:<name>:<hash>"; the middle segment is the
+    # plugin/package name. Falls back to a safe default for legacy keys.
+    text = _optional_string(snapshot_key)
+    if not text:
+        return "plugin"
+    parts = text.split(":")
+    return parts[1] if len(parts) >= 2 and parts[1] else "plugin"
 
 
 def _string_tuple(value: Any) -> tuple[str, ...]:

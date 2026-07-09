@@ -349,6 +349,7 @@ def _bundle_manifest(bundle: NormalizedExternalPluginBundle) -> dict[str, Any]:
         "unsupported_components": list(bundle.unsupported_components),
         "credential_requirements": list(bundle.credential_requirements),
         "admission_notes": list(bundle.admission_notes),
+        "manifest_metadata": dict(bundle.manifest_metadata or {}),
     }
 
 

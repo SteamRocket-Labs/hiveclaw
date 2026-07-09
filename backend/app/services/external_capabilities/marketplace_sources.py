@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timezone
 import json
 from typing import Any
@@ -12,6 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.external_capability import ExternalMarketplaceEntry, ExternalMarketplaceSource
+from app.services.external_capabilities.marketplace_guard import (
+    TrustedMarketplace,
+    evaluate_marketplace_impersonation,
+    load_trusted_marketplaces,
+)
 from app.services.external_capabilities.materializer import DEFAULT_ALLOWED_REMOTE_HOSTS
 from app.services.external_capabilities.trust_gate import stage_external_capability_review
 from app.services.external_capabilities.types import ExternalCapabilityComponent, NormalizedExternalPluginBundle
@@ -35,14 +40,24 @@ async def create_marketplace_source(
     tenant_id: uuid.UUID,
     created_by_user_id: uuid.UUID | None,
     data: dict[str, Any],
+    trusted: Sequence[TrustedMarketplace] | None = None,
 ) -> dict[str, Any]:
+    name = _required_string(data.get("name"), field_name="name")
+    source_uri = _required_string(data.get("source_uri"), field_name="source_uri")
+    config = _dict_or_empty(data.get("config"))
+    trusted_registry = trusted if trusted is not None else load_trusted_marketplaces()
+    impersonation_warnings = evaluate_marketplace_impersonation(
+        name=name, source_uri=source_uri, trusted=trusted_registry
+    )
+    if impersonation_warnings:
+        config = {**config, "impersonation_warnings": [warning.to_dict() for warning in impersonation_warnings]}
     row = ExternalMarketplaceSource(
         tenant_id=tenant_id,
-        name=_required_string(data.get("name"), field_name="name"),
+        name=name,
         source_type=_optional_string(data.get("source_type")) or "manual",
-        source_uri=_required_string(data.get("source_uri"), field_name="source_uri"),
+        source_uri=source_uri,
         status=_optional_string(data.get("status")) or "enabled",
-        config_json=_dict_or_empty(data.get("config")),
+        config_json=config,
         created_by_user_id=created_by_user_id,
     )
     try:
@@ -247,11 +262,21 @@ def _remote_entries_from_manifest(
 ) -> list[dict[str, Any]]:
     raw_entries = manifest.get("entries")
     if isinstance(raw_entries, list):
-        return [_normalize_remote_entry_payload(source, item, manifest_uri=manifest_uri) for item in raw_entries if isinstance(item, dict)]
-    raw_plugins = manifest.get("plugins") or manifest.get("items") or manifest.get("extensions") or manifest.get("skills")
+        return [
+            _normalize_remote_entry_payload(source, item, manifest_uri=manifest_uri)
+            for item in raw_entries
+            if isinstance(item, dict)
+        ]
+    raw_plugins = (
+        manifest.get("plugins") or manifest.get("items") or manifest.get("extensions") or manifest.get("skills")
+    )
     if not isinstance(raw_plugins, list):
         return []
-    return [_normalize_remote_plugin_payload(source, item, manifest_uri=manifest_uri) for item in raw_plugins if isinstance(item, dict)]
+    return [
+        _normalize_remote_plugin_payload(source, item, manifest_uri=manifest_uri)
+        for item in raw_plugins
+        if isinstance(item, dict)
+    ]
 
 
 def _normalize_remote_entry_payload(
@@ -276,12 +301,18 @@ def _normalize_remote_plugin_payload(
     *,
     manifest_uri: str,
 ) -> dict[str, Any]:
-    name = _optional_string(payload.get("name")) or _optional_string(payload.get("id")) or _required_string(
-        payload.get("source_uri") or payload.get("repo") or payload.get("url"),
-        field_name="plugin name or source_uri",
+    name = (
+        _optional_string(payload.get("name"))
+        or _optional_string(payload.get("id"))
+        or _required_string(
+            payload.get("source_uri") or payload.get("repo") or payload.get("url"),
+            field_name="plugin name or source_uri",
+        )
     )
-    source_uri = _optional_string(payload.get("source_uri")) or _optional_string(payload.get("repo")) or _optional_string(
-        payload.get("url")
+    source_uri = (
+        _optional_string(payload.get("source_uri"))
+        or _optional_string(payload.get("repo"))
+        or _optional_string(payload.get("url"))
     )
     if not source_uri:
         source_uri = f"{source.source_uri.rstrip('#')}#{name}"
@@ -366,6 +397,8 @@ def _bundle_from_entry(entry: ExternalMarketplaceEntry) -> NormalizedExternalPlu
 
 
 def _source_to_dict(row: ExternalMarketplaceSource) -> dict[str, Any]:
+    config = row.config_json or {}
+    warnings = config.get("impersonation_warnings")
     return {
         "id": str(row.id),
         "tenant_id": str(row.tenant_id),
@@ -375,7 +408,8 @@ def _source_to_dict(row: ExternalMarketplaceSource) -> dict[str, Any]:
         "status": row.status,
         "sync_status": row.sync_status,
         "last_sync_error": row.last_sync_error,
-        "config": row.config_json or {},
+        "config": config,
+        "impersonation_warnings": warnings if isinstance(warnings, list) else [],
         "last_sync_at": _isoformat_or_none(row.last_sync_at),
     }
 

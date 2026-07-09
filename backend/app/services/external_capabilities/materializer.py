@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 import hashlib
+import io
 import json
+import os
 from pathlib import Path, PurePosixPath
+import re
+import tarfile
+import tempfile
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
@@ -21,9 +27,16 @@ DEFAULT_ALLOWED_REMOTE_HOSTS = {
     "skills.sh",
     "www.skills.sh",
 }
+DEFAULT_ALLOWED_NPM_REGISTRY_HOSTS = {"registry.npmjs.org"}
+GIT_CLONE_TIMEOUT_SECONDS = 60.0
+NPM_MAX_COMPRESSED_BYTES = 5_000_000
 
 JsonFetcher = Callable[[str, Mapping[str, str]], Awaitable[Any]]
 TextFetcher = Callable[[str, Mapping[str, str]], Awaitable[str]]
+BytesFetcher = Callable[[str, Mapping[str, str]], Awaitable[bytes]]
+
+_NPM_SCOPED_NAME = re.compile(r"^@[a-z0-9][a-z0-9\-._]*/[a-z0-9][a-z0-9\-._]*$")
+_NPM_REGULAR_NAME = re.compile(r"^[a-z0-9][a-z0-9\-._]*$")
 
 
 @dataclass(frozen=True)
@@ -199,6 +212,486 @@ async def materialize_remote_source(
     return package
 
 
+def materialize_local_source(
+    *,
+    source_path: str,
+    source_format: str,
+    package_name: str,
+    source_kind: str = "auto",
+    quarantine_root: Path | None = None,
+    allowed_roots: Sequence[Path] | None = None,
+    max_total_bytes: int = MAX_REMOTE_PACKAGE_BYTES,
+    max_files: int = MAX_REMOTE_PACKAGE_FILES,
+    max_depth: int = MAX_REMOTE_DIRECTORY_DEPTH,
+) -> MaterializedExternalPackage:
+    """Materialize a local ``file`` or ``directory`` plugin source into the same
+    quarantine-only boundary (FreeCode marketplaceManager.ts:1623/1636).
+
+    Local reads are bounded by ``allowed_roots`` (paths outside are rejected),
+    reject symlinks (no following into host files), and honor file-count / total-
+    byte / directory-depth ceilings. The output is a staging bundle for the
+    import/review flow; nothing is executed and no host secrets are inherited.
+    """
+
+    resolved = Path(urlparse(source_path).path if source_path.startswith("file://") else source_path)
+    if not _within_allowed_roots(resolved, allowed_roots):
+        return _blocked_local_bundle(
+            source_format,
+            source_path,
+            package_name,
+            quarantine_root,
+            source_kind,
+            {"code": "local_source_outside_allowed_roots", "path": str(resolved)},
+        )
+    if resolved.is_symlink():
+        return _blocked_local_bundle(
+            source_format,
+            source_path,
+            package_name,
+            quarantine_root,
+            source_kind,
+            {"code": "materialized_symlink_rejected", "path": str(resolved)},
+        )
+    if not resolved.exists():
+        return _blocked_local_bundle(
+            source_format,
+            source_path,
+            package_name,
+            quarantine_root,
+            source_kind,
+            {"code": "local_source_not_found", "path": str(resolved)},
+        )
+
+    effective_kind = source_kind
+    if effective_kind == "auto":
+        effective_kind = "directory" if resolved.is_dir() else "file"
+
+    if effective_kind == "file":
+        content = resolved.read_text(encoding="utf-8", errors="replace")
+        files = [{"path": resolved.name, "content": content}]
+        blocking_notes: list[dict[str, Any]] = []
+    else:
+        files, blocking_notes = _read_local_directory(
+            resolved, max_files=max_files, max_total_bytes=max_total_bytes, max_depth=max_depth
+        )
+
+    package = materialize_file_bundle(
+        source_format=source_format,
+        source_uri=source_path,
+        package_name=package_name,
+        files=files,
+        resolved_ref=f"local:{effective_kind}",
+        blocking_notes=blocking_notes,
+        quarantine_root=quarantine_root,
+    )
+    package.report["source_kind"] = effective_kind
+    if quarantine_root is not None:
+        _write_report(quarantine_root / package.artifact_sha256[:24] / "materialization_report.json", package.report)
+    return package
+
+
+def _blocked_local_bundle(
+    source_format: str,
+    source_uri: str,
+    package_name: str,
+    quarantine_root: Path | None,
+    source_kind: str,
+    note: dict[str, Any],
+) -> MaterializedExternalPackage:
+    package = materialize_file_bundle(
+        source_format=source_format,
+        source_uri=source_uri,
+        package_name=package_name,
+        files=[],
+        blocking_notes=[note],
+        quarantine_root=quarantine_root,
+    )
+    package.report["source_kind"] = source_kind
+    return package
+
+
+def _within_allowed_roots(path: Path, allowed_roots: Sequence[Path] | None) -> bool:
+    if not allowed_roots:
+        return True
+    resolved = path.resolve()
+    for root in allowed_roots:
+        try:
+            resolved.relative_to(Path(root).resolve())
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _read_local_directory(
+    root: Path,
+    *,
+    max_files: int,
+    max_total_bytes: int,
+    max_depth: int,
+    exclude_dirs: set[str] | None = None,
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    root = root.resolve()
+    excluded = exclude_dirs or set()
+    files: list[dict[str, str]] = []
+    notes: list[dict[str, Any]] = []
+    total_bytes = 0
+    stop = False
+
+    def walk(current: Path, rel_prefix: str, depth: int) -> None:
+        nonlocal total_bytes, stop
+        if stop or depth > max_depth:
+            return
+        for entry in sorted(current.iterdir(), key=lambda item: item.name):
+            if stop:
+                return
+            rel = f"{rel_prefix}{entry.name}"
+            if entry.is_symlink():
+                notes.append({"code": "materialized_symlink_rejected", "path": rel})
+                continue
+            if entry.is_dir():
+                if entry.name in excluded:
+                    continue
+                walk(entry, f"{rel}/", depth + 1)
+            elif entry.is_file():
+                if len(files) >= max_files:
+                    notes.append({"code": "local_file_count_exceeded", "max_files": max_files})
+                    stop = True
+                    return
+                content = entry.read_text(encoding="utf-8", errors="replace")
+                total_bytes += len(content.encode("utf-8"))
+                if total_bytes > max_total_bytes:
+                    notes.append({"code": "local_total_size_exceeded", "max_total_bytes": max_total_bytes})
+                    stop = True
+                    return
+                files.append({"path": rel, "content": content})
+
+    walk(root, "", 0)
+    return files, notes
+
+
+async def materialize_git_source(
+    *,
+    git_url: str,
+    source_format: str,
+    package_name: str,
+    ref: str | None = None,
+    quarantine_root: Path | None = None,
+    allowed_hosts: set[str] | None = None,
+    allowed_roots: Sequence[Path] | None = None,
+    max_total_bytes: int = MAX_REMOTE_PACKAGE_BYTES,
+    max_files: int = MAX_REMOTE_PACKAGE_FILES,
+    max_depth: int = MAX_REMOTE_DIRECTORY_DEPTH,
+    timeout_seconds: float = GIT_CLONE_TIMEOUT_SECONDS,
+) -> MaterializedExternalPackage:
+    """Hardened shallow clone of a generic git plugin source (FreeCode
+    marketplaceManager.ts:836-897).
+
+    A platform-side deterministic fetch, NOT agent-controlled code execution.
+    Hardening: ``--depth 1`` single-branch, git hooks + fsmonitor disabled, the
+    ext/dumb-http RCE protocols denied, no host credential helper inherited, a
+    wall-clock timeout, ``.git`` stripped from the bundle, symlinks rejected, and
+    size/count/depth ceilings. Only ``https`` and ``file`` (allowed-root bounded)
+    URL schemes are permitted; ``git://``/``ssh``/``ext::`` are refused.
+
+    Consumer: the C4 plugin import flow (fetch → quarantine →
+    ``cc_plugin_adapter.load_cc_plugin_bundle`` → Trust Gate review), parallel to
+    ``materialize_remote_source``.
+    """
+
+    parsed = urlparse(git_url)
+    scheme = parsed.scheme.lower()
+    hosts = allowed_hosts or DEFAULT_ALLOWED_REMOTE_HOSTS
+    if scheme == "https":
+        if parsed.netloc.lower() not in hosts:
+            return _blocked_local_bundle(
+                source_format,
+                git_url,
+                package_name,
+                quarantine_root,
+                "git",
+                {"code": "git_host_not_allowed", "host": parsed.netloc.lower()},
+            )
+    elif scheme == "file":
+        if not _within_allowed_roots(Path(parsed.path), allowed_roots):
+            return _blocked_local_bundle(
+                source_format,
+                git_url,
+                package_name,
+                quarantine_root,
+                "git",
+                {"code": "git_file_outside_allowed_roots", "path": parsed.path},
+            )
+    else:
+        return _blocked_local_bundle(
+            source_format,
+            git_url,
+            package_name,
+            quarantine_root,
+            "git",
+            {"code": "git_scheme_not_allowed", "scheme": scheme},
+        )
+
+    with tempfile.TemporaryDirectory(prefix="hive-git-") as tmp:
+        clone_dir = Path(tmp) / "repo"
+        hooks_dir = Path(tmp) / "nohooks"
+        hooks_dir.mkdir()
+        args = [
+            "git",
+            "-c",
+            f"core.hooksPath={hooks_dir}",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "protocol.ext.allow=never",
+        ]
+        if scheme == "file":
+            args += ["-c", "protocol.file.allow=always"]
+        args += ["clone", "--depth", "1", "--no-tags", "--single-branch"]
+        if ref:
+            args += ["--branch", ref]
+        args += ["--", git_url, str(clone_dir)]
+        try:
+            exit_code = await _run_git_clone(args, timeout_seconds)
+        except Exception as exc:  # noqa: BLE001 - clone failures become review evidence
+            return _blocked_local_bundle(
+                source_format,
+                git_url,
+                package_name,
+                quarantine_root,
+                "git",
+                {"code": "git_clone_failed", "message": str(exc)},
+            )
+        if exit_code != 0:
+            return _blocked_local_bundle(
+                source_format,
+                git_url,
+                package_name,
+                quarantine_root,
+                "git",
+                {"code": "git_clone_failed", "exit_code": exit_code},
+            )
+        files, blocking_notes = _read_local_directory(
+            clone_dir,
+            max_files=max_files,
+            max_total_bytes=max_total_bytes,
+            max_depth=max_depth,
+            exclude_dirs={".git"},
+        )
+
+    package = materialize_file_bundle(
+        source_format=source_format,
+        source_uri=git_url,
+        package_name=package_name,
+        files=files,
+        resolved_ref=f"git:{ref or 'default'}",
+        blocking_notes=blocking_notes,
+        quarantine_root=quarantine_root,
+    )
+    package.report["source_kind"] = "git"
+    if quarantine_root is not None:
+        _write_report(quarantine_root / package.artifact_sha256[:24] / "materialization_report.json", package.report)
+    return package
+
+
+async def materialize_npm_source(
+    *,
+    package: str,
+    source_format: str,
+    package_name: str,
+    version: str | None = None,
+    registry: str = "https://registry.npmjs.org",
+    quarantine_root: Path | None = None,
+    allowed_registry_hosts: set[str] | None = None,
+    fetch_json: JsonFetcher | None = None,
+    fetch_bytes: BytesFetcher | None = None,
+    max_total_bytes: int = MAX_REMOTE_PACKAGE_BYTES,
+    max_files: int = MAX_REMOTE_PACKAGE_FILES,
+    max_compressed_bytes: int = NPM_MAX_COMPRESSED_BYTES,
+) -> MaterializedExternalPackage:
+    """Read-only npm registry tarball fetch + unpack into the quarantine boundary.
+
+    Hive-ahead-of-CC additive delta: CC's npm marketplace source is unimplemented
+    (marketplaceManager.ts:1618 ``// TODO``). This NEVER invokes npm or any
+    package lifecycle scripts — it resolves the version, downloads the ``.tgz``,
+    and unpacks pure files. Hardening: registry host allowlist, compressed and
+    decompressed size ceilings, tar member path-traversal rejection, and
+    symlink/hardlink rejection.
+
+    Consumer: the C4 plugin import flow (fetch → quarantine →
+    ``cc_plugin_adapter.load_cc_plugin_bundle`` → Trust Gate review), parallel to
+    ``materialize_remote_source``.
+    """
+
+    if not _valid_npm_package_name(package):
+        return _blocked_local_bundle(
+            source_format,
+            f"npm:{package}",
+            package_name,
+            quarantine_root,
+            "npm",
+            {"code": "npm_invalid_package_name", "package": package},
+        )
+    parsed_registry = urlparse(registry)
+    hosts = allowed_registry_hosts or DEFAULT_ALLOWED_NPM_REGISTRY_HOSTS
+    if parsed_registry.scheme != "https" or parsed_registry.netloc.lower() not in hosts:
+        return _blocked_local_bundle(
+            source_format,
+            f"npm:{package}",
+            package_name,
+            quarantine_root,
+            "npm",
+            {"code": "npm_registry_not_allowed", "registry": registry},
+        )
+
+    json_fetcher = fetch_json or _default_fetch_json
+    bytes_fetcher = fetch_bytes or _default_fetch_bytes
+    try:
+        metadata = await json_fetcher(f"{registry.rstrip('/')}/{package}", {})
+        resolved_version, tarball_url = _resolve_npm_tarball(metadata, version)
+        if not tarball_url:
+            return _blocked_local_bundle(
+                source_format,
+                f"npm:{package}",
+                package_name,
+                quarantine_root,
+                "npm",
+                {"code": "npm_version_not_found", "requested_version": version},
+            )
+        if urlparse(tarball_url).netloc.lower() not in hosts:
+            return _blocked_local_bundle(
+                source_format,
+                f"npm:{package}",
+                package_name,
+                quarantine_root,
+                "npm",
+                {"code": "npm_tarball_host_not_allowed", "host": urlparse(tarball_url).netloc.lower()},
+            )
+        data = await bytes_fetcher(tarball_url, {})
+    except Exception as exc:  # noqa: BLE001 - fetch failures become review evidence
+        return _blocked_local_bundle(
+            source_format,
+            f"npm:{package}",
+            package_name,
+            quarantine_root,
+            "npm",
+            {"code": "npm_fetch_failed", "message": str(exc)},
+        )
+
+    if len(data) > max_compressed_bytes:
+        return _blocked_local_bundle(
+            source_format,
+            f"npm:{package}",
+            package_name,
+            quarantine_root,
+            "npm",
+            {"code": "npm_tarball_too_large", "compressed_bytes": len(data)},
+        )
+
+    files, blocking_notes = _extract_npm_tarball(data, max_total_bytes=max_total_bytes, max_files=max_files)
+    package_obj = materialize_file_bundle(
+        source_format=source_format,
+        source_uri=f"npm:{package}",
+        package_name=package_name,
+        files=files,
+        resolved_ref=f"npm:{package}@{resolved_version}",
+        blocking_notes=blocking_notes,
+        quarantine_root=quarantine_root,
+    )
+    package_obj.report["source_kind"] = "npm"
+    if quarantine_root is not None:
+        _write_report(
+            quarantine_root / package_obj.artifact_sha256[:24] / "materialization_report.json", package_obj.report
+        )
+    return package_obj
+
+
+async def _run_git_clone(args: list[str], timeout_seconds: float) -> int:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1"}
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        proc.kill()
+        await proc.wait()
+        raise TimeoutError("git clone timed out") from exc
+    return proc.returncode if proc.returncode is not None else 1
+
+
+def _resolve_npm_tarball(metadata: Any, version: str | None) -> tuple[str | None, str | None]:
+    if not isinstance(metadata, Mapping):
+        return None, None
+    versions = metadata.get("versions")
+    if not isinstance(versions, Mapping):
+        return None, None
+    resolved = version
+    if not resolved:
+        dist_tags = metadata.get("dist-tags")
+        resolved = dist_tags.get("latest") if isinstance(dist_tags, Mapping) else None
+    if not resolved or resolved not in versions:
+        return None, None
+    version_meta = versions[resolved]
+    dist = version_meta.get("dist") if isinstance(version_meta, Mapping) else None
+    tarball = dist.get("tarball") if isinstance(dist, Mapping) else None
+    return str(resolved), (str(tarball) if tarball else None)
+
+
+def _extract_npm_tarball(
+    data: bytes,
+    *,
+    max_total_bytes: int,
+    max_files: int,
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    files: list[dict[str, str]] = []
+    notes: list[dict[str, Any]] = []
+    total_bytes = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for member in tar:
+                if len(files) >= max_files:
+                    notes.append({"code": "npm_file_count_exceeded", "max_files": max_files})
+                    break
+                if member.issym() or member.islnk():
+                    notes.append({"code": "materialized_symlink_rejected", "path": member.name})
+                    continue
+                if not member.isfile():
+                    continue
+                safe = _safe_relative_path(_strip_npm_prefix(member.name))
+                if safe is None:
+                    notes.append({"code": "materialized_path_escape", "path": member.name})
+                    continue
+                if member.size < 0 or total_bytes + member.size > max_total_bytes:
+                    notes.append({"code": "npm_total_size_exceeded", "max_total_bytes": max_total_bytes})
+                    break
+                total_bytes += member.size
+                extracted = tar.extractfile(member)
+                content = extracted.read().decode("utf-8", errors="replace") if extracted is not None else ""
+                files.append({"path": safe, "content": content})
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        notes.append({"code": "npm_tarball_unreadable", "message": str(exc)})
+    return files, notes
+
+
+def _strip_npm_prefix(name: str) -> str:
+    normalized = name.replace("\\", "/").lstrip("/")
+    if normalized.startswith("package/"):
+        return normalized[len("package/") :]
+    return normalized
+
+
+def _valid_npm_package_name(name: str) -> bool:
+    if ".." in name or "//" in name:
+        return False
+    return bool(_NPM_SCOPED_NAME.match(name) or _NPM_REGULAR_NAME.match(name))
+
+
 def _normalize_safe_files(files: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     normalized: list[dict[str, str]] = []
     notes: list[dict[str, Any]] = []
@@ -353,8 +846,7 @@ async def _fetch_github_files(
         if depth > MAX_REMOTE_DIRECTORY_DEPTH:
             raise _RemoteMaterializationBlocked({"code": "remote_directory_depth_exceeded", "path": path})
         api_url = (
-            f"https://api.github.com/repos/{github['owner']}/{github['repo']}/contents/{path}"
-            f"?ref={github['branch']}"
+            f"https://api.github.com/repos/{github['owner']}/{github['repo']}/contents/{path}?ref={github['branch']}"
         )
         items = await fetch_json(api_url, headers)
         if isinstance(items, Mapping):
@@ -407,11 +899,11 @@ def _decode_github_content(payload: Any) -> str:
 
 def _check_size(total_bytes: int, *, max_total_bytes: int, max_files: int) -> None:
     if total_bytes > max_total_bytes:
-        raise _RemoteMaterializationBlocked(
-            {"code": "remote_total_size_exceeded", "max_total_bytes": max_total_bytes}
-        )
+        raise _RemoteMaterializationBlocked({"code": "remote_total_size_exceeded", "max_total_bytes": max_total_bytes})
     if max_files > MAX_REMOTE_PACKAGE_FILES:
-        raise _RemoteMaterializationBlocked({"code": "remote_file_count_exceeded", "max_files": MAX_REMOTE_PACKAGE_FILES})
+        raise _RemoteMaterializationBlocked(
+            {"code": "remote_file_count_exceeded", "max_files": MAX_REMOTE_PACKAGE_FILES}
+        )
 
 
 async def _default_fetch_json(url: str, headers: Mapping[str, str]) -> Any:
@@ -428,8 +920,17 @@ async def _default_fetch_text(url: str, headers: Mapping[str, str]) -> str:
         return response.text
 
 
+async def _default_fetch_bytes(url: str, headers: Mapping[str, str]) -> bytes:
+    async with httpx.AsyncClient(timeout=30, headers=dict(headers)) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.content
+
+
 def _files_sha256(files: Sequence[Mapping[str, str]]) -> str:
-    payload = [{"path": item["path"], "content": item["content"]} for item in sorted(files, key=lambda item: item["path"])]
+    payload = [
+        {"path": item["path"], "content": item["content"]} for item in sorted(files, key=lambda item: item["path"])
+    ]
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

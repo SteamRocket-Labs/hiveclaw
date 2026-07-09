@@ -545,6 +545,8 @@ cd frontend && npm test -- --run \
 
 ### G3. Workspace rail scope hardening
 
+状态：已完成
+
 裁决：
 
 - Workspace rail 默认视图只显示 current session deliverables。
@@ -556,3 +558,17 @@ cd frontend && npm test -- --run \
 - 一个 current delivery + 一个 historical artifact 时，右栏主列表只显示 current delivery。
 - 只有 raw tool writes 时，右栏交付物空态，File changes 仍可显示。
 - 中间区 artifact card 与右栏 row 共用同一个 `ChatArtifactPart`。
+
+文件：
+
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx`
+- `frontend/src/pages/agent-detail/AgentDetailSections.test.tsx`
+
+验证：
+
+```bash
+cd frontend && npm test -- --run \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  src/pages/session-workbench/timelineModel.test.ts
+# 122 passed
+```

@@ -1645,6 +1645,7 @@ function SessionRuntimePanel({
     activeRunStatus,
   });
   const docs = rightPanel.workspaceDocuments;
+  const currentSessionDocumentCount = docs.currentSession.items.length;
   const runtimeConsole = rightPanel.runtimeConsole;
   const [showAllCurrentDocuments, setShowAllCurrentDocuments] = React.useState(false);
   const [runtimeSegmentOverride, setRuntimeSegmentOverride] = React.useState<RuntimeConsoleSegmentKey | null>(null);
@@ -2130,17 +2131,15 @@ function SessionRuntimePanel({
             <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.session', 'Session')}</div>
             <h3>{t('sessionWorkbench.rightPanel.sessionArtifacts', 'Session artifacts')}</h3>
           </div>
-          <span>{docs.total}</span>
+          <span>{currentSessionDocumentCount}</span>
         </div>
-        {docs.total === 0 ? (
+        {currentSessionDocumentCount === 0 ? (
           <div className="session-runtime-empty">
             {t('sessionWorkbench.rightPanel.noSessionArtifacts', 'No delivered artifacts in this session yet.')}
           </div>
         ) : (
           <div className="session-runtime-doc-groups">
             {renderDocumentGroup(docs.currentSession, 'session-workspace-documents-current')}
-            {renderDocumentGroup(docs.historical, 'session-workspace-documents-historical')}
-            {renderDocumentGroup(docs.unattributed, 'session-workspace-documents-unattributed')}
           </div>
         )}
       </section>

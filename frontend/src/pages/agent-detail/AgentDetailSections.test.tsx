@@ -2654,9 +2654,10 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Processed');
     expect(markup).not.toContain('office_document_apply');
-    expect(markup).toContain('proposal.docx');
-    expect(markup).toContain('data-testid="session-workspace-documents-unattributed"');
-    expect(markup).not.toContain('data-testid="session-workspace-documents-currentSession"');
+    expect(markup).not.toContain('proposal.docx');
+    expect(markup).toContain('No delivered artifacts in this session yet.');
+    expect(markup).not.toContain('data-testid="session-workspace-documents-unattributed"');
+    expect(markup).not.toContain('data-testid="session-workspace-documents-current"');
     expect(markup).not.toContain('data-testid="chat-artifact-row-open"');
   });
 
@@ -3728,12 +3729,10 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Current session');
     expect(markup).toContain('runtime-report.md');
     expect(markup).toContain('By Reviewer Bot');
-    expect(markup).toContain('data-testid="session-workspace-documents-historical"');
-    expect(markup).toContain('Historical');
-    expect(markup).toContain('historical-report.md');
-    expect(markup).toContain('data-testid="session-workspace-documents-unattributed"');
-    expect(markup).toContain('Unattributed');
-    expect(markup).toContain('scratch.txt');
+    expect(markup).not.toContain('data-testid="session-workspace-documents-historical"');
+    expect(markup).not.toContain('Historical');
+    expect(markup).not.toContain('data-testid="session-workspace-documents-unattributed"');
+    expect(markup).not.toContain('Unattributed');
     expect(markup).toContain('data-testid="session-runtime-divider"');
     expect(markup).toContain('data-testid="session-runtime-collaboration"');
     expect(markup).toContain('data-testid="session-runtime-console"');

@@ -270,7 +270,8 @@ async def test_wake_breaker_summary_only_after_consecutive_failures(
             .all()
         )
     assert stored.status == "summary_only"
-    assert stored.failures == 3  # materialized from ground truth
+    # failures is query-derived (not a persisted column); the 3 failed child tasks
+    # trip max_failures=2 and surface in the reason string asserted above.
     assert stored.parent_invocations == 1
     assert len(events) == 1
 
@@ -298,8 +299,9 @@ async def test_wake_breaker_trips_on_needs_reconciliation(
     assert reason is not None and "needs_reconciliation" in reason
     async with owner_sessionmaker() as db:
         stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
+    # needs_reconciliation is query-derived (not persisted); the 2 reconciliation
+    # children trip max_needs_reconciliation=2 and surface in the reason string.
     assert stored.status == "hard_stopped"
-    assert stored.needs_reconciliation_count == 2
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

@@ -1067,13 +1067,18 @@ class RuntimeBudgetService:
             total_children = len(statuses)
             failed = sum(1 for status in statuses if status in _BREAKER_FAILED_STATUSES)
             needs_reconciliation = sum(1 for status in statuses if status == "needs_reconciliation")
-            # Real write points: materialize breaker counters from ground truth
-            # and count this parent invocation before evaluating the breaker.
-            run.failures = failed
-            run.needs_reconciliation_count = needs_reconciliation
+            # parent_invocations is the one persisted breaker counter (real write
+            # point); failures / needs_reconciliation are derived from the query
+            # above and passed straight into the breaker, never persisted.
             run.parent_invocations = (run.parent_invocations or 0) + 1
             ratio = (failed / total_children) if total_children else None
-            tripped = self._breaker_tripped(run, child_failure_ratio=ratio, total_children=total_children)
+            tripped = self._breaker_tripped(
+                run,
+                failures=failed,
+                needs_reconciliation_count=needs_reconciliation,
+                child_failure_ratio=ratio,
+                total_children=total_children,
+            )
             if not tripped:
                 await db.commit()
                 return None
@@ -1223,10 +1228,19 @@ class RuntimeBudgetService:
         self,
         run: RuntimeBudgetRun,
         *,
+        failures: int = 0,
+        needs_reconciliation_count: int = 0,
         child_failure_ratio: float | None = None,
         total_children: int = 0,
     ) -> list[str]:
-        """Read the §10 breaker dimensions off the run row and return trips."""
+        """Return tripped §10 breaker dimensions for a run.
+
+        Accumulation dimensions and ``parent_invocations`` come off the run row.
+        ``failures`` / ``needs_reconciliation`` / ``child_failure_ratio`` are
+        supplied by the caller from the ground-truth child-status query at the
+        wake boundary (they are not persisted columns), and default to 0/None so
+        the settlement path evaluates only the persisted dimensions.
+        """
 
         used = {dimension: getattr(run, f"used_{dimension}", 0) or 0 for dimension in _DIMENSIONS}
         reserved = {
@@ -1243,8 +1257,8 @@ class RuntimeBudgetService:
             used=used,
             reserved=reserved,
             maxes=maxes,
-            failures=run.failures or 0,
-            needs_reconciliation_count=run.needs_reconciliation_count or 0,
+            failures=failures,
+            needs_reconciliation_count=needs_reconciliation_count,
             parent_invocations=run.parent_invocations or 0,
             child_failure_ratio=child_failure_ratio,
             total_children=total_children,

@@ -129,9 +129,10 @@ class RuntimeBudgetRun(Base):
     reserved_provider_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     used_provider_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
-    # §10 breaker counters with real write points (child failure / reconciliation / parent wake)
-    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    needs_reconciliation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # §10 parent-wake counter (real write point). failures / needs_reconciliation
+    # are NOT persisted: they are derived from ground-truth child-task statuses at
+    # the wake boundary (query-derivation), so a denormalized column would only
+    # risk drift. See the conformance audit for this §7.2 field deviation.
     parent_invocations: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     policy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

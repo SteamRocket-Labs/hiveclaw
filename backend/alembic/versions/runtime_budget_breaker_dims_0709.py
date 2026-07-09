@@ -36,15 +36,8 @@ def upgrade() -> None:
     op.add_column("runtime_budget_runs", sa.Column("max_child_failure_ratio", sa.Float(), nullable=True))
     op.add_column("runtime_budget_runs", sa.Column("max_parent_invocations", sa.Integer(), nullable=True))
 
-    # §10 breaker counters with real write points.
-    op.add_column(
-        "runtime_budget_runs",
-        sa.Column("failures", sa.Integer(), server_default="0", nullable=False),
-    )
-    op.add_column(
-        "runtime_budget_runs",
-        sa.Column("needs_reconciliation_count", sa.Integer(), server_default="0", nullable=False),
-    )
+    # §10 parent-wake counter (real write point). failures / needs_reconciliation
+    # are derived from ground-truth child-task statuses at wake time, not persisted.
     op.add_column(
         "runtime_budget_runs",
         sa.Column("parent_invocations", sa.Integer(), server_default="0", nullable=False),

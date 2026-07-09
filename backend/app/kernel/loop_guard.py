@@ -101,14 +101,23 @@ class LoopGuard:
         identical_tool_threshold: int = 5,
         repeated_failure_threshold: int = 4,
         repeated_text_threshold: int = 3,
+        cost_pressure_threshold: int = 3,
+        high_prompt_output_ratio: int = 200,
+        high_tool_schema_tokens: int = 100_000,
+        low_cache_hit_rate: float = 0.05,
     ) -> None:
         self.total_tool_threshold = total_tool_threshold
         self.failed_tool_threshold = failed_tool_threshold
         self.identical_tool_threshold = identical_tool_threshold
         self.repeated_failure_threshold = repeated_failure_threshold
         self.repeated_text_threshold = repeated_text_threshold
+        self.cost_pressure_threshold = cost_pressure_threshold
+        self.high_prompt_output_ratio = high_prompt_output_ratio
+        self.high_tool_schema_tokens = high_tool_schema_tokens
+        self.low_cache_hit_rate = low_cache_hit_rate
         self.total_tool_calls = 0
         self.failed_tool_calls = 0
+        self.provider_cost_pressure_count = 0
         self._tool_arg_counts: dict[tuple[str, str], int] = {}
         self._failure_counts: dict[tuple[str, str, str], int] = {}
         self._assistant_text_counts: dict[str, int] = {}
@@ -188,6 +197,50 @@ class LoopGuard:
         return self._escalate(
             text_check,
             extra_trace={"text_digest": digest, "count": self._assistant_text_counts[digest]},
+        )
+
+    def observe_provider_call_cost(
+        self,
+        *,
+        projected_input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        tool_schema_tokens: int,
+    ) -> LoopGuardDecision | None:
+        projected = max(int(projected_input_tokens or 0), 0)
+        output = max(int(output_tokens or 0), 0)
+        cache_read = max(int(cache_read_tokens or 0), 0)
+        tool_schema = max(int(tool_schema_tokens or 0), 0)
+        if projected <= 0:
+            return None
+        cache_hit_rate = cache_read / projected if projected else 0.0
+        prompt_output_ratio = projected / max(output, 1)
+        high_ratio = output > 0 and prompt_output_ratio >= self.high_prompt_output_ratio
+        large_uncached_tools = tool_schema >= self.high_tool_schema_tokens and cache_hit_rate <= self.low_cache_hit_rate
+        if not high_ratio and not large_uncached_tools:
+            return None
+
+        self.provider_cost_pressure_count += 1
+        check = _PatternCheck(
+            reason="provider_call_cost_pressure",
+            detail=(
+                "provider calls are repeatedly spending large input/tool-schema tokens "
+                "without proportional output or cache reads"
+            ),
+            warn_key="provider_call_cost_pressure",
+            count=self.provider_cost_pressure_count,
+            warn_threshold=self.cost_pressure_threshold,
+        )
+        return self._escalate(
+            check,
+            extra_trace={
+                "projected_input_tokens": projected,
+                "output_tokens": output,
+                "cache_read_tokens": cache_read,
+                "cache_hit_rate": cache_hit_rate,
+                "tool_schema_tokens": tool_schema,
+                "prompt_output_ratio": prompt_output_ratio,
+            },
         )
 
     # ── escalation core ──────────────────────────────────────────────

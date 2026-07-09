@@ -57,6 +57,7 @@ from app.services.invocation_trace import (
     set_invocation_id,
 )
 from app.runtime.ccplus_contracts import ContextPolicyV1, build_context_policy
+from app.runtime.provider_prompt_ledger import build_provider_prompt_ledger
 from app.runtime.session_context_controller import prepare_session_context_for_request
 from app.runtime.tool_evidence_ledger import ToolEvidenceLedger
 from app.tools.registry import is_destructive_tool, is_parallel_safe_tool, result_char_limit_for_tool
@@ -2824,6 +2825,20 @@ def _merge_usage_dicts(left: dict | None, right: dict | None) -> dict | None:
     return merged
 
 
+def _usage_int(usage: dict[str, Any] | None, *keys: str) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    for key in keys:
+        value = usage.get(key)
+        if value is None:
+            continue
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
 def _merge_continuation_response(base: LLMResponse, continuation: LLMResponse) -> LLMResponse:
     base.content = (getattr(base, "content", "") or "") + (getattr(continuation, "content", "") or "")
     continuation_reasoning = getattr(continuation, "reasoning_content", None)
@@ -4139,7 +4154,7 @@ class AgentKernel:
                         "user_id": request.user_id,
                         "on_compaction": _emit_compaction_event,
                     },
-                    tool_result_exempt_names={"read_file", "list_files", "web_search", "web_fetch"},
+                    tool_result_exempt_names={"read_file", "list_files"},
                 )
                 if prepared.changed:
                     api_messages = [system_message] + prepared.messages
@@ -4418,6 +4433,15 @@ class AgentKernel:
                                 on_thinking=_emit_thinking,
                                 reasoning_kwargs=reasoning_kwargs,
                             )
+                            provider_prompt_ledger = build_provider_prompt_ledger(
+                                messages=stream_messages,
+                                tools=tools_for_llm if tools_for_llm else None,
+                                provider=str(getattr(active_model, "provider", "") or ""),
+                                model=str(getattr(active_model, "model", "") or ""),
+                                round_index=round_i + 1,
+                                model_window_tokens=getattr(active_model, "max_input_tokens", None),
+                                cache_hints_applied=bool(self._deps.apply_cache_hints),
+                            )
                             await _record_span(
                                 span_type="generation",
                                 name="llm.stream",
@@ -4429,15 +4453,33 @@ class AgentKernel:
                                     "tool_count": len(tools_for_llm or []),
                                     "tool_call_count": len(response.tool_calls or []),
                                     "usage": response.usage or {},
+                                    "provider_prompt_ledger": provider_prompt_ledger,
                                 },
                             )
+                            cache_metrics = extract_cache_metrics(
+                                response.usage,
+                                provider=str(getattr(active_model, "provider", "") or "unknown"),
+                            )
                             if response.usage:
-                                record_prompt_cache_metrics(
-                                    extract_cache_metrics(
-                                        response.usage,
-                                        provider=str(getattr(active_model, "provider", "") or "unknown"),
-                                    )
-                                )
+                                record_prompt_cache_metrics(cache_metrics)
+                            _usage = response.usage or {}
+                            _output_tokens = _usage_int(
+                                _usage,
+                                "output_tokens",
+                                "completion_tokens",
+                                "candidatesTokenCount",
+                            )
+                            cost_loop_decision = loop_guard.observe_provider_call_cost(
+                                projected_input_tokens=int(provider_prompt_ledger.get("projected_input_tokens") or 0),
+                                output_tokens=_output_tokens,
+                                cache_read_tokens=int(cache_metrics.cache_read_tokens or 0),
+                                tool_schema_tokens=int(provider_prompt_ledger.get("tool_schema_tokens") or 0),
+                            )
+                            if cost_loop_decision:
+                                if cost_loop_decision.severity == "warn":
+                                    await _inject_loop_guard_warning(cost_loop_decision)
+                                else:
+                                    return await _abort_for_loop_guard(cost_loop_decision)
                             break
                         except _KernelCancelledError:
                             await _record_span(

@@ -321,6 +321,30 @@ def test_conversation_reload_reuses_frozen_tool_result_bytes_and_call_id():
     assert conversation[1]["content"] == "MODEL-SEEN-BYTES"
 
 
+def test_conversation_reload_surfaces_malformed_tool_call_record() -> None:
+    from app.services.web_chat_runtime import conversation_from_history_messages
+
+    history = [
+        SimpleNamespace(
+            role="tool_call",
+            id="bad-tool-row",
+            content="{not valid json",
+        )
+    ]
+
+    conversation = conversation_from_history_messages(history)
+
+    assert conversation == [
+        {
+            "role": "system",
+            "content": (
+                "[Tool replay repair] A persisted tool_call record could not be reconstructed "
+                "(message_id=bad-tool-row). Treat that tool result as unavailable and do not claim it succeeded."
+            ),
+        }
+    ]
+
+
 def test_terminal_artifact_paths_require_model_declared_current_turn_writes():
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import SessionContext

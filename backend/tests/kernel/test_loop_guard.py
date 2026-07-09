@@ -174,3 +174,33 @@ def test_loop_guard_default_identical_tool_args_threshold_is_lenient_but_bounded
 
     assert decision is not None
     assert decision.reason == "identical_tool_args"
+
+
+def test_loop_guard_warns_on_repeated_provider_cost_pressure() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard(cost_pressure_threshold=2, high_tool_schema_tokens=1_000)
+
+    assert (
+        guard.observe_provider_call_cost(
+            projected_input_tokens=80_000,
+            output_tokens=200,
+            cache_read_tokens=0,
+            tool_schema_tokens=2_000,
+        )
+        is None
+    )
+    decision = guard.observe_provider_call_cost(
+        projected_input_tokens=81_000,
+        output_tokens=200,
+        cache_read_tokens=0,
+        tool_schema_tokens=2_100,
+    )
+
+    assert decision is not None
+    assert decision.severity == "warn"
+    assert decision.reason == "provider_call_cost_pressure"
+    assert decision.trace_event["projected_input_tokens"] == 81_000
+    assert decision.trace_event["tool_schema_tokens"] == 2_100
+    assert decision.outcome is not None
+    assert decision.outcome.next_action == "self_correct_and_continue"

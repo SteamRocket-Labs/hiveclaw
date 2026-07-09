@@ -350,11 +350,10 @@ cd backend && source .venv/bin/activate && ruff check \
 
 ### Commit D：Replay repair + compaction/cost breaker
 
-状态：待落地
+状态：已完成
 
 文件：
 
-- `backend/app/runtime/session_context_controller.py`
 - `backend/app/kernel/loop_guard.py`
 - `backend/app/kernel/engine.py`
 - `backend/app/services/web_chat_runtime.py`
@@ -371,6 +370,20 @@ cd backend && source .venv/bin/activate && pytest \
   tests/kernel/test_loop_guard.py \
   tests/services/test_web_chat_runtime.py \
   -q
+# Targeted subset run in this commit:
+# pytest tests/services/test_web_chat_runtime.py::test_conversation_reload_surfaces_malformed_tool_call_record \
+#   tests/kernel/test_loop_guard.py \
+#   tests/runtime/test_session_context_controller.py -q
+# 19 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/kernel/engine.py \
+  app/kernel/loop_guard.py \
+  app/services/web_chat_runtime.py \
+  tests/kernel/test_loop_guard.py \
+  tests/services/test_web_chat_runtime.py \
+  tests/runtime/test_session_context_controller.py
+# All checks passed!
 ```
 
 ### Commit E：Workbench / observability 闭环
@@ -425,6 +438,6 @@ cd backend && source .venv/bin/activate && pytest \
 | A | 已完成 | 文档总控 | `git add -f docs/ccplus-session-full-landfall-2026-07-09.md && git commit -m "docs: define session full landfall plan"` |
 | B | 已完成 | ProviderPromptLedger + Runtime budget；runtime reservation 计入 tool schema / projected uncached input；settlement 记录 cache read/write/miss/unknown | `pytest tests/runtime/test_provider_prompt_ledger.py tests/services/test_runtime_budget_llm.py -q` -> `7 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | C | 已完成 | ToolEvidenceLedger + final answer verifier；`engine.py` final path 从 `collected_parts` 构建结构化工具证据 summary，不再依赖 prompt-export 例外补丁 | `pytest tests/kernel/test_tool_evidence_honesty.py tests/runtime/test_tool_evidence_ledger.py -q` -> `8 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
-| D | 待落地 | Replay repair + compaction/cost breaker | 待补 |
+| D | 已完成 | malformed `tool_call` replay 变成 visible repair system message；LoopGuard 增加 provider-call 成本/cache 压力观测；engine preflight 不再默认豁免 `web_search/web_fetch` 大结果 | targeted pytest -> `19 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | E | 待落地 | Workbench / observability | 待补 |
 | F | 待落地 | 全链路回归 | 待补 |

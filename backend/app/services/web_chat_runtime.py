@@ -1039,7 +1039,17 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                     )
                 conversation.append({"role": "tool", "tool_call_id": tc_id, "content": tool_result})
             except Exception as exc:
-                logger.debug("[WebChatRun] Skipped malformed tool_call record: {}", exc)
+                logger.debug("[WebChatRun] Repaired malformed tool_call record during replay: {}", exc)
+                conversation.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "[Tool replay repair] A persisted tool_call record could not be reconstructed "
+                            f"(message_id={getattr(msg, 'id', 'unknown')}). Treat that tool result as unavailable "
+                            "and do not claim it succeeded."
+                        ),
+                    }
+                )
             continue
 
         if msg.role == "assistant" and is_llm_error_message(msg.content):

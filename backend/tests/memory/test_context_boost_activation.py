@@ -106,7 +106,9 @@ def test_scorer_applies_bounded_context_boost() -> None:
     boosted = scorer.score(_item("body", {"context_boost": "1.0"}), context)
     plain = scorer.score(_item("body", {}), context)
 
-    assert boosted.raw_score - plain.raw_score == pytest.approx(scorer.policy.context_boost_weight)
+    assert boosted.raw_score == pytest.approx(plain.raw_score * (1.0 + scorer.policy.context_boost_weight))
+    assert boosted.score_trace["scorer"] == "unified_activation_multiplier.v1"
+    assert boosted.score_trace["factors"]["context_boost"] == pytest.approx(1.0 + scorer.policy.context_boost_weight)
     assert "context_boost" in boosted.reasons
     assert "context_boost" not in plain.reasons
 

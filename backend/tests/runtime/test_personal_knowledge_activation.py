@@ -128,7 +128,14 @@ async def test_kb_ordering_consumes_working_set_activation(tmp_path, monkeypatch
     assert recorded[0]["source_refs"] == [contextual_ref], "recorded order must match the consumed order"
     assert recorded[0]["metadata"]["context_boost"] > 0
     trace = recorded[0]["metadata"]["activation_score_trace"]
+    from app.memory.activation import score_activation_factors
+
+    expected_rank = score_activation_factors(relevance_score=0.7, context_boost=1.0)
+
+    assert trace["scorer"] == "unified_activation_multiplier.v1"
+    assert trace["formula"] == "relevance*context_boost*base_level*task_modulation"
     assert trace["base_score"] == pytest.approx(0.7)
+    assert trace["activation_rank_score"] == pytest.approx(expected_rank.raw_score)
     assert trace["activation_rank_score"] > trace["base_score"]
 
     state = load_working_set(tmp_path, agent_id, session_id)

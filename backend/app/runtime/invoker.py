@@ -336,28 +336,27 @@ def _apply_working_set_activation_to_kb_candidates(
 
     from dataclasses import replace as _dc_replace
 
+    from app.memory.activation import score_activation_factors
+
     reranked: list[tuple[float, int, Any]] = []
     for index, candidate in enumerate(candidates):
         base_score = float(getattr(getattr(candidate, "score", None), "total_score", 0.0) or 0.0)
         refs = list(getattr(candidate, "source_refs", ()) or [])
         strength = max((strength_by_ref.get(str(ref), 0.0) for ref in refs), default=0.0)
-        # Bounded multiplicative factor, max x1.3 (design 4 keeps boosts in
-        # [0.8, 1.6]): a document this session already consulted is a strong
-        # recall prior, but it must never eclipse a decisive lexical gap.
-        rank_score = base_score * (1.0 + 0.3 * min(1.0, strength))
+        rank = score_activation_factors(
+            relevance_score=base_score,
+            context_boost=strength,
+            reasons=("session_working_set",) if strength > 0 else (),
+        )
+        rank_score = rank.raw_score
         if strength > 0:
             candidate = _dc_replace(
                 candidate,
                 metadata={
                     **dict(getattr(candidate, "metadata", {}) or {}),
                     "context_boost": round(min(1.0, strength), 6),
-                    "activation_rank_score": round(rank_score, 6),
-                    "activation_score_trace": {
-                        "base_score": round(base_score, 6),
-                        "context_boost": round(min(1.0, strength), 6),
-                        "activation_rank_score": round(rank_score, 6),
-                        "reason": "session_working_set",
-                    },
+                    "activation_rank_score": rank.raw_score,
+                    "activation_score_trace": rank.score_trace,
                 },
             )
         reranked.append((rank_score, index, candidate))

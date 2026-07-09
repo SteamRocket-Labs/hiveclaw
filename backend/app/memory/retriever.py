@@ -205,6 +205,7 @@ class MemoryRetriever:
                 "activation_score": decision.score,
                 "activation_raw_score": decision.raw_score,
                 "activation_reasons": decision.reasons,
+                "activation_score_trace": decision.score_trace,
             }
             activated.append(
                 MemoryItem(

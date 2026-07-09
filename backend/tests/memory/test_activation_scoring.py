@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.memory.activation import ActivationContext, ActivationScorer
+from app.memory.activation import ActivationContext, ActivationPolicy, ActivationScorer, score_activation_factors
 from app.memory.types import MemoryItem, MemoryKind
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
@@ -34,6 +34,34 @@ def test_activation_includes_reasons_for_goal_owner_and_open_loop() -> None:
 
     assert decision.score > item.score
     assert {"goal_relevance", "principal_relevance", "open_loop_pressure", "retention_score"} <= set(decision.reasons)
+
+
+def test_activation_uses_unified_multiplicative_formula() -> None:
+    policy = ActivationPolicy(context_boost_weight=0.3)
+    item = MemoryItem(
+        kind=MemoryKind.SEMANTIC,
+        content="Railway deployment context.",
+        score=0.5,
+        source="test",
+        metadata={"context_boost": "1.0"},
+    )
+    context = ActivationContext(query="deployment", principal_stack=_stack(), goal_terms=["railway"])
+
+    decision = ActivationScorer(policy).score(item, context)
+    expected = score_activation_factors(
+        relevance_score=item.score,
+        task_modulation_delta=policy.goal_weight,
+        context_boost=1.0,
+        policy=policy,
+    )
+
+    assert decision.raw_score == expected.raw_score
+    assert decision.raw_score == 0.8125
+    assert decision.raw_score < 1.0, "additive score += would saturate this case instead of multiplying"
+    assert decision.score_trace["scorer"] == "unified_activation_multiplier.v1"
+    assert decision.score_trace["formula"] == "relevance*context_boost*base_level*task_modulation"
+    assert decision.score_trace["factors"]["context_boost"] == 1.3
+    assert decision.score_trace["factors"]["task_modulation"] == 1.25
 
 
 def test_activation_accepts_conf_alias_for_confidence_weight() -> None:

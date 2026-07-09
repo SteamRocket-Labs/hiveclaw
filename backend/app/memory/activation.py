@@ -6,6 +6,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from app.memory.types import MemoryItem, parse_utc_timestamp
 from app.services.principal_context import PrincipalStack
@@ -41,7 +42,7 @@ class ActivationPolicy:
     # ContextBoost (design §4.2): session-working-set diffusion over the
     # relation graph. Small and bounded — context warms neighbors, it never
     # hijacks literal relevance.
-    context_boost_weight: float = 0.15
+    context_boost_weight: float = 0.3
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,67 @@ class ActivationDecision:
     # contracts, which would collapse ordering between highly-relevant items;
     # rankers must sort on this instead.
     raw_score: float = 0.0
+    score_trace: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ActivationRankResult:
+    score: float
+    raw_score: float
+    score_trace: dict[str, Any]
+
+
+_ACTIVATION_SCORER = "unified_activation_multiplier.v1"
+_ACTIVATION_FORMULA = "relevance*context_boost*base_level*task_modulation"
+_ACTIVATION_FACTOR_MIN = 0.8
+_ACTIVATION_FACTOR_MAX = 1.6
+
+
+def score_activation_factors(
+    *,
+    relevance_score: float,
+    task_modulation_delta: float = 0.0,
+    base_level: float = 0.0,
+    context_boost: float = 0.0,
+    policy: ActivationPolicy | None = None,
+    reasons: list[str] | tuple[str, ...] = (),
+) -> ActivationRankResult:
+    """Unified bounded multiplicative activation equation.
+
+    This is the shared contract for memory retrieval and KB reranking:
+    relevance is the base candidate score, while ContextBoost, BaseLevel, and
+    TaskModulation are bounded multipliers. The truth surfaces stay untouched;
+    this only ranks recall candidates.
+    """
+
+    active_policy = policy or ActivationPolicy()
+    relevance = max(0.0, float(relevance_score or 0.0))
+    context_signal = max(0.0, min(1.0, float(context_boost or 0.0)))
+    base_signal = max(0.0, min(1.0, float(base_level or 0.0)))
+    task_delta = max(0.0, float(task_modulation_delta or 0.0))
+
+    factors = {
+        "relevance": 1.0,
+        "context_boost": _bounded_multiplier(1.0 + (context_signal * active_policy.context_boost_weight)),
+        "base_level": _bounded_multiplier(1.0 + (base_signal * active_policy.base_level_weight)),
+        "task_modulation": _bounded_multiplier(1.0 + task_delta),
+    }
+    raw_score = relevance * factors["context_boost"] * factors["base_level"] * factors["task_modulation"]
+    rounded_raw = round(raw_score, 6)
+    display_score = round(min(rounded_raw, 1.0), 4)
+    trace = {
+        "scorer": _ACTIVATION_SCORER,
+        "formula": _ACTIVATION_FORMULA,
+        "base_score": round(relevance, 6),
+        "relevance": round(relevance, 6),
+        "context_boost": round(context_signal, 6),
+        "base_level": round(base_signal, 6),
+        "task_modulation": round(task_delta, 6),
+        "factors": {key: round(value, 6) for key, value in factors.items()},
+        "activation_rank_score": rounded_raw,
+        "reasons": list(reasons),
+    }
+    return ActivationRankResult(score=display_score, raw_score=rounded_raw, score_trace=trace)
 
 
 class ActivationScorer:
@@ -74,44 +136,51 @@ class ActivationScorer:
             )
 
         policy = self.policy
-        score = float(item.score)
         reasons: list[str] = []
         content = item.content
         query_terms = _terms(context.query)
+        task_modulation_delta = 0.0
 
         if _overlap(query_terms | set(context.goal_terms), content):
-            score += policy.goal_weight
+            task_modulation_delta += policy.goal_weight
             reasons.append("goal_relevance")
         if _overlap(set(context.owner_terms) | {"owner"}, content):
-            score += policy.owner_weight
+            task_modulation_delta += policy.owner_weight
             reasons.append("principal_relevance")
         if _overlap(set(context.company_terms), content):
-            score += policy.company_weight
+            task_modulation_delta += policy.company_weight
             reasons.append("company_relevance")
         if _bool_meta(item, "open_loop"):
-            score += policy.open_loop_weight
+            task_modulation_delta += policy.open_loop_weight
             reasons.append("open_loop_pressure")
         retention_score = _float_meta(item, "retention_score")
         if retention_score > 0:
-            score += retention_score * policy.retention_weight
+            task_modulation_delta += retention_score * policy.retention_weight
             reasons.append("retention_score")
         if _float_meta_any(item, ("confidence", "conf"), default=0.0) >= 0.8:
-            score += policy.confidence_weight
+            task_modulation_delta += policy.confidence_weight
             reasons.append("confidence_weight")
         base_level = _base_level(item, now=context.now)
         if base_level > 0:
-            score += base_level * policy.base_level_weight
             reasons.append("base_level")
         context_boost = _float_meta(item, "context_boost")
         if context_boost > 0:
-            score += min(1.0, context_boost) * policy.context_boost_weight
             reasons.append("context_boost")
+        rank = score_activation_factors(
+            relevance_score=item.score,
+            task_modulation_delta=task_modulation_delta,
+            base_level=base_level,
+            context_boost=context_boost,
+            policy=policy,
+            reasons=reasons,
+        )
 
         return ActivationDecision(
             item=item,
-            score=round(min(score, 1.0), 4),
+            score=rank.score,
             reasons=reasons,
-            raw_score=round(score, 4),
+            raw_score=rank.raw_score,
+            score_trace=rank.score_trace,
         )
 
 
@@ -169,6 +238,10 @@ def _bool_meta_dict(metadata: dict, key: str) -> bool:
         return False
     normalized = str(value).strip().lower()
     return normalized in {"1", "true", "yes", "y", "on"}
+
+
+def _bounded_multiplier(value: float) -> float:
+    return max(_ACTIVATION_FACTOR_MIN, min(_ACTIVATION_FACTOR_MAX, float(value)))
 
 
 # ACT-R style power-law decay exponent (design §4.3): strength of one access

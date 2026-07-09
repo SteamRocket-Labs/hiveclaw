@@ -53,6 +53,56 @@ def test_context_window_payload_extracts_latest_status_and_skipped_reason():
     assert payload["decision_count"] == 2
 
 
+def test_provider_call_ledger_payload_extracts_latest_tokens_and_cache_metrics():
+    import app.services.session_control_plane as service
+
+    events = [
+        SimpleNamespace(
+            id=uuid4(),
+            event_id=uuid4(),
+            sequence=21,
+            event_type="provider_call_ledger",
+            actor_type="system",
+            role="system",
+            content="",
+            metadata_json={
+                "provider_prompt_ledger": {
+                    "schema": "hive.ccplus.provider_prompt_ledger.v1",
+                    "provider_call_id": "provider-call-1",
+                    "projected_input_tokens": 81_000,
+                    "projected_uncached_input_tokens": 80_000,
+                    "tool_schema_tokens": 2_100,
+                    "categories": [{"name": "tool_schemas", "tokens": 2_100}],
+                },
+                "cache_metrics": {
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 400,
+                    "uncached_input_tokens": 80_000,
+                    "total_input_tokens": 81_000,
+                    "cache_hit": False,
+                    "cache_hit_rate": 0.0,
+                },
+                "tool_count": 147,
+                "tool_call_count": 0,
+            },
+            created_at=datetime(2026, 7, 9, tzinfo=timezone.utc),
+        )
+    ]
+
+    payload = service._provider_call_ledger_payload(events)
+
+    assert payload["schema"] == "hive.ccplus.provider_call_ledger.v1"
+    assert payload["call_count"] == 1
+    assert payload["latest"]["provider_call_id"] == "provider-call-1"
+    assert payload["latest"]["projected_input_tokens"] == 81_000
+    assert payload["latest"]["projected_uncached_input_tokens"] == 80_000
+    assert payload["latest"]["tool_schema_tokens"] == 2_100
+    assert payload["latest"]["cache_read_tokens"] == 0
+    assert payload["latest"]["cache_write_tokens"] == 400
+    assert payload["latest"]["cache_hit_rate"] == 0.0
+    assert payload["latest"]["tool_count"] == 147
+
+
 def test_compaction_payloads_ignore_context_window_decision_events():
     import app.services.session_control_plane as service
 

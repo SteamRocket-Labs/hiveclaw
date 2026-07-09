@@ -388,14 +388,14 @@ cd backend && source .venv/bin/activate && ruff check \
 
 ### Commit E：Workbench / observability 闭环
 
-状态：待落地
+状态：已完成
 
 文件：
 
 - `backend/app/services/session_control_plane.py`
-- `backend/app/api/chat_sessions.py`
-- 前端 Workbench 类型/展示文件（如触及）
-- 对应测试
+- `backend/app/services/web_chat_runtime.py`
+- `backend/app/kernel/engine.py`
+- `backend/tests/services/test_session_control_plane.py`
 - 本文档
 
 验收：
@@ -403,15 +403,18 @@ cd backend && source .venv/bin/activate && ruff check \
 ```bash
 cd backend && source .venv/bin/activate && pytest \
   tests/services/test_session_control_plane.py \
-  tests/api/test_chat_sessions_permissions.py \
   -q
+# 17 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check \
+  app/kernel/engine.py \
+  app/services/session_control_plane.py \
+  app/services/web_chat_runtime.py \
+  tests/services/test_session_control_plane.py
+# All checks passed!
 ```
 
-如触及前端：
-
-```bash
-cd frontend && npm run build
-```
+前端未触及。本提交先通过 backend Workbench JSON 增加 `provider_call_ledger` 读模型；如需 UI 可视化，可在后续产品层消费该字段。
 
 ### Commit F：全链路回归
 
@@ -439,5 +442,5 @@ cd backend && source .venv/bin/activate && pytest \
 | B | 已完成 | ProviderPromptLedger + Runtime budget；runtime reservation 计入 tool schema / projected uncached input；settlement 记录 cache read/write/miss/unknown | `pytest tests/runtime/test_provider_prompt_ledger.py tests/services/test_runtime_budget_llm.py -q` -> `7 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | C | 已完成 | ToolEvidenceLedger + final answer verifier；`engine.py` final path 从 `collected_parts` 构建结构化工具证据 summary，不再依赖 prompt-export 例外补丁 | `pytest tests/kernel/test_tool_evidence_honesty.py tests/runtime/test_tool_evidence_ledger.py -q` -> `8 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | D | 已完成 | malformed `tool_call` replay 变成 visible repair system message；LoopGuard 增加 provider-call 成本/cache 压力观测；engine preflight 不再默认豁免 `web_search/web_fetch` 大结果 | targeted pytest -> `19 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
-| E | 待落地 | Workbench / observability | 待补 |
+| E | 已完成 | kernel 发出 `provider_call_ledger` session-context event；web runtime 持久化；Workbench 聚合 latest/calls，展示 projected input、tool schema tokens、cache read/write/miss 和 tool count | `pytest tests/services/test_session_control_plane.py -q` -> `17 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | F | 待落地 | 全链路回归 | 待补 |

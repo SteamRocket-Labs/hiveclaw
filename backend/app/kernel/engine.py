@@ -4462,6 +4462,17 @@ class AgentKernel:
                             )
                             if response.usage:
                                 record_prompt_cache_metrics(cache_metrics)
+                            await _emit_event(
+                                {
+                                    "type": "session_context",
+                                    "event_type": "provider_call_ledger",
+                                    "provider_prompt_ledger": provider_prompt_ledger,
+                                    "cache_metrics": cache_metrics.as_log_dict(),
+                                    "tool_count": len(tools_for_llm or []),
+                                    "tool_call_count": len(response.tool_calls or []),
+                                    "visibility": "debug",
+                                }
+                            )
                             _usage = response.usage or {}
                             _output_tokens = _usage_int(
                                 _usage,

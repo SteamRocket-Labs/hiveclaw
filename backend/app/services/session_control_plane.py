@@ -1476,6 +1476,45 @@ def _context_window_payload(events: list[Any]) -> dict[str, Any]:
     }
 
 
+def _provider_call_ledger_payload(events: list[Any]) -> dict[str, Any]:
+    calls: list[dict[str, Any]] = []
+    for event in events:
+        payload = _event_payload(event)
+        metadata = {**payload, **_event_metadata_from_payload(payload)}
+        if str(payload.get("event_type") or "") != "provider_call_ledger":
+            continue
+        ledger = _mapping(metadata.get("provider_prompt_ledger"))
+        cache_metrics = _mapping(metadata.get("cache_metrics"))
+        calls.append(
+            {
+                "event_id": payload.get("id"),
+                "sequence": payload.get("sequence"),
+                "created_at": payload.get("created_at"),
+                "provider_call_id": ledger.get("provider_call_id"),
+                "provider": ledger.get("provider"),
+                "model": ledger.get("model"),
+                "projected_input_tokens": ledger.get("projected_input_tokens"),
+                "projected_uncached_input_tokens": ledger.get("projected_uncached_input_tokens"),
+                "tool_schema_tokens": ledger.get("tool_schema_tokens"),
+                "cache_read_tokens": cache_metrics.get("cache_read_tokens"),
+                "cache_write_tokens": cache_metrics.get("cache_write_tokens"),
+                "uncached_input_tokens": cache_metrics.get("uncached_input_tokens"),
+                "total_input_tokens": cache_metrics.get("total_input_tokens"),
+                "cache_hit": cache_metrics.get("cache_hit"),
+                "cache_hit_rate": cache_metrics.get("cache_hit_rate"),
+                "tool_count": metadata.get("tool_count"),
+                "tool_call_count": metadata.get("tool_call_count"),
+                "categories": ledger.get("categories") or [],
+            }
+        )
+    return {
+        "schema": "hive.ccplus.provider_call_ledger.v1",
+        "call_count": len(calls),
+        "latest": calls[-1] if calls else None,
+        "calls": calls[-20:],
+    }
+
+
 def _approval_payload(approval: ApprovalRequest) -> dict[str, Any]:
     return {
         "id": str(approval.id),
@@ -1682,6 +1721,7 @@ async def build_session_workbench(
         "hooks": _hook_payloads(events) if "hooks" in included_sections else [],
         "compactions": _compaction_payloads(events) if "compactions" in included_sections else [],
         "context_window": _context_window_payload(events),
+        "provider_call_ledger": _provider_call_ledger_payload(events),
         "branches": branches,
         "permission_profile": permission_profile,
         "context_policy": context_policy,

@@ -82,6 +82,7 @@ _SESSION_CONTEXT_RUNTIME_EVENT_TYPES = {
     "compaction_started",
     "compaction_completed",
     "tool_result_budget_pass",
+    "provider_call_ledger",
 }
 
 

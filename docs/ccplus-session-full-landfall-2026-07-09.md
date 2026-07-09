@@ -464,3 +464,54 @@ cd backend && source .venv/bin/activate && ruff check \
 | D | 已完成 | malformed `tool_call` replay 变成 visible repair system message；LoopGuard 增加 provider-call 成本/cache 压力观测；engine preflight 不再默认豁免 `web_search/web_fetch` 大结果 | targeted pytest -> `19 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | E | 已完成 | kernel 发出 `provider_call_ledger` session-context event；web runtime 持久化；Workbench 聚合 latest/calls，展示 projected input、tool schema tokens、cache read/write/miss 和 tool count | `pytest tests/services/test_session_control_plane.py -q` -> `17 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
 | F | 已完成 | 全链路回归；覆盖 provider prompt ledger、tool evidence、session context controller、runtime budget、web chat replay、Workbench provider-call ledger | `pytest ... -q` -> `128 passed, 4 warnings`; `ruff check ...` -> `All checks passed!` |
+
+## 7. Session Projection 二次闭环
+
+日期：2026-07-09
+
+状态：实施中。原因是 `session-timeline-projection-contract-2026-07-04.md` 的体验目标 2.1 / 2.2 仍有两处没有完全落地：
+
+1. final summary 提到的本轮文档没有稳定 po 成 artifact delivery；旧逻辑只认 `DELIVERABLE:` / `交付物:` marker。
+2. Workspace rail 仍暴露 historical / unattributed 组，默认体验像 agent workspace 浏览器，不是当前 session projection。
+
+### G1. Final summary delivery hardening
+
+裁决：
+
+- artifact delivery 的来源扩展为 `explicit marker OR final answer mentioned current-turn workspace path OR final-summary single-document fallback`。
+- 所有候选仍必须通过 current-turn/session provenance 校验。
+- fallback 只允许用户可见文档，不允许 `.ultra/*`、隐藏文件、日志、scratch、内部审计文件或旧 session 文件。
+
+验收：
+
+- `workspace/report.md` 是本 turn 写入，final answer 只写“见 workspace/report.md”时，必须产生 `artifact_delivery`。
+- final answer 没有路径但本 turn 只写入一个用户文档时，必须产生 artifact delivery。
+- final answer 提到旧文件时，必须进入 rejected list，不能变成 current session deliverable。
+
+### G2. Run process projection hardening
+
+裁决：
+
+- `active_run` 不再作为 final answer 的渲染容器。
+- assistant message 同时包含 thinking 和 content 时，投影拆成 `active_run(reasoning steps)` + `assistant_final(answer-only)` 两个 cell。
+- 2.2 的完成折叠必须由结构保证：`RunDisclosureBlock` 折叠只影响 run process cell，不能影响 final answer、deliverable cards、file changes。
+
+验收：
+
+- `thinking -> tool -> final answer` 的 cell 顺序为 `active_run`, `assistant_final`。
+- UI 不再从 active-run cell 内渲染 `cell.answer`。
+- completed collapsed 时仍显示 final answer；展开只显示原始 step sequence。
+
+### G3. Workspace rail scope hardening
+
+裁决：
+
+- Workspace rail 默认视图只显示 current session deliverables。
+- Historical / unattributed 只作为 diagnostic，不进入主 Workspace 列表和默认计数。
+- raw `workspace_write` 不提升为 deliverable；它属于 File changes。
+
+验收：
+
+- 一个 current delivery + 一个 historical artifact 时，右栏主列表只显示 current delivery。
+- 只有 raw tool writes 时，右栏交付物空态，File changes 仍可显示。
+- 中间区 artifact card 与右栏 row 共用同一个 `ChatArtifactPart`。

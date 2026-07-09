@@ -18,15 +18,25 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("runtime_budget_policies", sa.Column("max_team_sessions", sa.Integer(), nullable=True))
-    op.add_column("runtime_budget_runs", sa.Column("max_team_sessions", sa.Integer(), nullable=True))
+    op.add_column(
+        "runtime_budget_policies",
+        sa.Column("max_team_sessions", sa.Integer(), nullable=True),
+        if_not_exists=True,
+    )
+    op.add_column(
+        "runtime_budget_runs",
+        sa.Column("max_team_sessions", sa.Integer(), nullable=True),
+        if_not_exists=True,
+    )
     op.add_column(
         "runtime_budget_runs",
         sa.Column("reserved_team_sessions", sa.Integer(), server_default="0", nullable=False),
+        if_not_exists=True,
     )
     op.add_column(
         "runtime_budget_runs",
         sa.Column("used_team_sessions", sa.Integer(), server_default="0", nullable=False),
+        if_not_exists=True,
     )
 
 

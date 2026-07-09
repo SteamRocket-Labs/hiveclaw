@@ -21,6 +21,7 @@ def upgrade() -> None:
     op.add_column(
         "runtime_budget_runs",
         sa.Column("metadata_json", JSONB, nullable=True),
+        if_not_exists=True,
     )
 
 

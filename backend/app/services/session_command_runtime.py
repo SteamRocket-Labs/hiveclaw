@@ -879,9 +879,11 @@ async def execute_session_command(
                     session_id=session.id,
                     ok=False,
                     ui_action={
-                        "type": "open_permissions_menu",
+                        "type": "confirm_workspace_restore",
                         "level": "warning",
                         "message": "Workspace rewind will restore files from the selected checkpoint. Confirm before applying.",
+                        "checkpoint_event_id": checkpoint["checkpoint_event_id"],
+                        "requested_mode": rewind_mode,
                     },
                     debug_payload={
                         "requested_mode": rewind_mode,

@@ -368,6 +368,80 @@ npm test -- --run \
   src/pages/agent-detail/sessionCommandResult.test.ts
 ```
 
+### 5.3 实装证据（2026-07-09）
+
+状态：已完成并准备独立提交。
+
+实装范围：
+
+1. `backend/app/services/session_command_runtime.py`：workspace rewind 缺少确认时不再复用 `open_permissions_menu`，而是返回专用 `confirm_workspace_restore` UI action，携带 `checkpoint_event_id` 和 `requested_mode`。
+2. `frontend/src/pages/agent-detail/AgentChatSection.tsx`：`SessionCommandControlPanel` 增加 Conversation / Workspace / Both mode 控件；checkpoint rewind 统一通过 `buildSessionRewindCommandArgs()` 传递显式 `mode`。
+3. `frontend/src/pages/AgentDetail.tsx`：收到 `confirm_workspace_restore` 后打开 workspace restore 确认卡；确认按钮重新发送 `rewind`，并带 `confirm_workspace_restore=true`。
+4. `frontend/src/index.css`：补齐 mode segmented control 和确认按钮样式，保持 Session TUI 的紧凑控制面。
+5. 测试覆盖后端确认 action、前端 mode payload、确认卡渲染和 typed session result 格式化。
+
+红测证据：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_session_command_runtime.py -q
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
+```
+
+红测失败点：
+
+```text
+backend: expected confirm_workspace_restore, got open_permissions_menu
+frontend: missing session-rewind-mode-* controls; buildSessionRewindCommandArgs is not a function; missing session-workspace-restore-confirm-action
+```
+
+绿测证据：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_session_command_runtime.py -q
+```
+
+结果：
+
+```text
+27 passed, 3 warnings
+```
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
+```
+
+结果：
+
+```text
+Test Files 2 passed (2)
+Tests 100 passed (100)
+```
+
+构建与静态检查：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+ruff check app/services/session_command_runtime.py tests/services/test_session_command_runtime.py
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run build
+```
+
+结果：
+
+```text
+All checks passed!
+frontend build: tsc && vite build completed successfully
+```
+
 ## 6. 施工包 D：Memory/T3 双轨清理
 
 ### 6.1 问题

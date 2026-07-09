@@ -15,6 +15,7 @@ import AgentChatSection, {
   SessionCommandControlPanel,
   StructuredToolResultBody,
   WorkflowRunFocusPanel,
+  buildSessionRewindCommandArgs,
   buildBranchLineageRows,
   extractPlanIdFromPlanModeMessage,
   getSessionGitLineDensity,
@@ -1327,10 +1328,54 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-session-action="focus-checkpoint"');
     expect(markup).toContain('data-testid="session-checkpoint-rewind-action"');
     expect(markup).toContain('data-testid="session-checkpoint-branch-action"');
+    expect(markup).toContain('data-testid="session-rewind-mode-conversation"');
+    expect(markup).toContain('data-testid="session-rewind-mode-workspace"');
+    expect(markup).toContain('data-testid="session-rewind-mode-both"');
     expect(markup).toContain('Rewind here');
     expect(markup).toContain('Branch here');
     expect(markup).toContain('第一次输入');
     expect(markup).toContain('第二次输入');
+  });
+
+  it('builds explicit workspace rewind command arguments from the checkpoint selector', () => {
+    expect(buildSessionRewindCommandArgs('evt-1', 'conversation')).toEqual({
+      checkpoint_event_id: 'evt-1',
+      mode: 'conversation',
+    });
+    expect(buildSessionRewindCommandArgs('evt-1', 'workspace')).toEqual({
+      checkpoint_event_id: 'evt-1',
+      mode: 'workspace',
+    });
+    expect(buildSessionRewindCommandArgs('evt-1', 'both', true)).toEqual({
+      checkpoint_event_id: 'evt-1',
+      mode: 'both',
+      confirm_workspace_restore: true,
+    });
+  });
+
+  it('renders workspace rewind confirmation as an explicit command panel action', () => {
+    const markup = renderToStaticMarkup(
+      <SessionCommandControlPanel
+        control={{
+          type: 'workspace_restore_confirmation' as any,
+          title: 'Confirm workspace rewind',
+          message: 'Workspace rewind will restore files from the selected checkpoint.',
+          command: 'rewind',
+          payload: {
+            action: 'workspace_restore_requires_confirmation',
+            checkpoint: { checkpoint_event_id: 'evt-1', content: 'Restore this point' },
+            debug_payload: { requested_mode: 'both', checkpoint_event_id: 'evt-1' },
+          },
+        }}
+        onDismiss={vi.fn()}
+        onRunCommand={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-workspace-restore-confirm-action"');
+    expect(markup).toContain('data-session-command="rewind"');
+    expect(markup).toContain('data-rewind-mode="both"');
+    expect(markup).toContain('Confirm restore');
   });
 
   it('renders compact and rewind command outcomes inside the session instead of toast-only feedback', () => {

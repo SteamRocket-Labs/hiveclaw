@@ -81,4 +81,28 @@ describe('sessionCommandResult', () => {
     expect(isSessionControlCommandResult(response)).toBe(false);
     expect(formatSlashCommandResult(response)).toBe('Opened workflow catalog.');
   });
+
+  it('formats workspace restore confirmation as a typed session control result', () => {
+    const response: ExecuteCommandResult = {
+      ok: false,
+      command: 'rewind',
+      result: {
+        ok: false,
+        command: 'rewind',
+        action: 'workspace_restore_requires_confirmation',
+        session_id: 'session-1',
+        ui_action: {
+          type: 'confirm_workspace_restore',
+          level: 'warning',
+          message: 'Workspace rewind will restore files from the selected checkpoint.',
+          checkpoint_event_id: 'event-1',
+          requested_mode: 'workspace',
+        },
+      },
+    };
+
+    expect(isSessionControlCommandResult(response)).toBe(true);
+    expect(getSessionCommandUiAction(response)?.type).toBe('confirm_workspace_restore');
+    expect(formatSlashCommandResult(response)).toBe('Workspace rewind will restore files from the selected checkpoint.');
+  });
 });

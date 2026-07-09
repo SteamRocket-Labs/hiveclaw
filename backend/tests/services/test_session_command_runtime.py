@@ -567,7 +567,9 @@ async def test_rewind_workspace_mode_requires_explicit_restore_confirmation(monk
 
     assert result["ok"] is False
     assert result["action"] == "workspace_restore_requires_confirmation"
-    assert result["ui_action"]["type"] == "open_permissions_menu"
+    assert result["ui_action"]["type"] == "confirm_workspace_restore"
+    assert result["ui_action"]["checkpoint_event_id"] == str(first.id)
+    assert result["ui_action"]["requested_mode"] == "workspace"
     assert result["debug_payload"]["requested_mode"] == "workspace"
 
 

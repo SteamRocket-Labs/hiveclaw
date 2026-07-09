@@ -2107,6 +2107,36 @@
   gap: 4px;
 }
 
+.session-tui-rewind-mode-group {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.session-tui-rewind-mode-button {
+  min-height: 28px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-row);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--session-tui-font-meta);
+  font-weight: 650;
+  line-height: var(--session-tui-line-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.session-tui-rewind-mode-button:hover,
+.session-tui-rewind-mode-button.is-active {
+  border-color: var(--session-tui-selected-border);
+  background: var(--session-tui-selected-bg);
+  color: var(--text-primary);
+}
+
 .session-tui-checkpoint-row-shell {
   display: grid;
   gap: 5px;
@@ -2171,6 +2201,37 @@
   border-color: var(--border-default);
   background: var(--session-tui-hover-bg);
   color: var(--text-primary);
+}
+
+.session-tui-confirm-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.session-tui-confirm-row button {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-row);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--session-tui-font-meta);
+  font-weight: 650;
+  line-height: var(--session-tui-line-meta);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.session-tui-confirm-row button:hover:not(:disabled) {
+  border-color: var(--session-tui-selected-border);
+  background: var(--session-tui-selected-bg);
+  color: var(--text-primary);
+}
+
+.session-tui-confirm-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .session-tui-command-details {

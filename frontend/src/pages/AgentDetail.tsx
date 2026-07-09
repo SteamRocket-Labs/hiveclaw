@@ -1118,6 +1118,19 @@ function AgentDetailInner() {
             return true;
         }
 
+        if (uiAction.type === 'confirm_workspace_restore') {
+            openSessionCommandControl({
+                type: 'workspace_restore_confirmation',
+                title: message || 'Confirm workspace rewind',
+                message,
+                command: response.command,
+                level: 'info',
+                payload: actionResult,
+            });
+            invalidateSessionRuntimeQueries(id, currentSessionId);
+            return true;
+        }
+
         if (
             uiAction.type === 'install_compacted_context'
             || uiAction.type === 'install_active_projection'

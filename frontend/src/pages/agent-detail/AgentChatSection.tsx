@@ -245,6 +245,46 @@ export interface SessionCommandCheckpoint {
   created_at?: string | null;
 }
 
+export type SessionRewindMode = 'conversation' | 'workspace' | 'both';
+
+export const SESSION_REWIND_MODE_OPTIONS: Array<{
+  value: SessionRewindMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'conversation',
+    label: 'Conversation',
+    description: 'Rewind only the chat projection',
+  },
+  {
+    value: 'workspace',
+    label: 'Workspace',
+    description: 'Restore only workspace files',
+  },
+  {
+    value: 'both',
+    label: 'Both',
+    description: 'Rewind chat and restore files',
+  },
+];
+
+export function normalizeSessionRewindMode(value: unknown): SessionRewindMode {
+  return value === 'workspace' || value === 'both' ? value : 'conversation';
+}
+
+export function buildSessionRewindCommandArgs(
+  checkpointEventId: string,
+  mode: SessionRewindMode = 'conversation',
+  confirmWorkspaceRestore = false,
+): Record<string, unknown> {
+  return {
+    checkpoint_event_id: checkpointEventId,
+    mode,
+    ...(confirmWorkspaceRestore ? { confirm_workspace_restore: true } : {}),
+  };
+}
+
 export type SessionCommandControlType =
   | 'checkpoint_selector'
   | 'projection_status'
@@ -253,6 +293,7 @@ export type SessionCommandControlType =
   | 'export_panel'
   | 'side_question'
   | 'permissions_panel'
+  | 'workspace_restore_confirmation'
   | 'resume_picker';
 
 export interface SessionCommandControlState {
@@ -950,6 +991,8 @@ function commandPanelTypeLabel(type: SessionCommandControlType): string {
       return 'Side question';
     case 'permissions_panel':
       return 'Permissions';
+    case 'workspace_restore_confirmation':
+      return 'Workspace restore';
     case 'resume_picker':
       return 'Resume';
     default:
@@ -976,6 +1019,34 @@ function payloadSummary(payload?: Record<string, unknown> | null): Array<[string
     .map(([key, value]) => [key, String(value)]);
 }
 
+function recordValue(value: unknown): Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function workspaceRestoreConfirmationArgs(control: SessionCommandControlState): {
+  checkpointEventId: string;
+  mode: SessionRewindMode;
+} {
+  const payload = recordValue(control.payload);
+  const uiAction = recordValue(payload.ui_action);
+  const debugPayload = recordValue(payload.debug_payload);
+  const checkpoint = recordValue(payload.checkpoint);
+  const checkpointEventId = String(
+    uiAction.checkpoint_event_id
+      || debugPayload.checkpoint_event_id
+      || checkpoint.checkpoint_event_id
+      || '',
+  ).trim();
+  const mode = normalizeSessionRewindMode(
+    uiAction.requested_mode
+      || debugPayload.requested_mode
+      || payload.requested_mode,
+  );
+  return { checkpointEventId, mode };
+}
+
 export function SessionCommandControlPanel({
   control,
   onDismiss,
@@ -992,6 +1063,7 @@ export function SessionCommandControlPanel({
     ? availableCheckpointIds[availableCheckpointIds.length - 1]
     : null;
   const [focusedCheckpointId, setFocusedCheckpointId] = React.useState<string | null>(defaultFocusedCheckpointId);
+  const [rewindMode, setRewindMode] = React.useState<SessionRewindMode>('conversation');
   React.useEffect(() => {
     setFocusedCheckpointId((current) => {
       if (current && checkpointIds.includes(current)) return current;
@@ -1000,9 +1072,13 @@ export function SessionCommandControlPanel({
   }, [defaultFocusedCheckpointId, checkpointIds.join('|')]);
   if (!control) return null;
   const details = payloadSummary(control.payload);
+  const confirmationArgs = control.type === 'workspace_restore_confirmation'
+    ? workspaceRestoreConfirmationArgs(control)
+    : null;
+  const hasPanelBody = checkpoints.length > 0 || details.length > 0 || Boolean(confirmationArgs);
   return (
     <section data-testid="session-command-control-panel" className="session-tui-command-panel">
-      <div className={`session-tui-command-panel-header ${checkpoints.length > 0 || details.length > 0 ? 'has-body' : ''}`}>
+      <div className={`session-tui-command-panel-header ${hasPanelBody ? 'has-body' : ''}`}>
         <div style={{ minWidth: 0 }}>
           <div className="session-tui-kicker">
             {commandPanelTypeLabel(control.type)}
@@ -1027,6 +1103,22 @@ export function SessionCommandControlPanel({
       </div>
       {checkpoints.length > 0 ? (
         <div className="session-tui-command-panel-body">
+          <div className="session-tui-rewind-mode-group" role="group" aria-label="Rewind mode">
+            {SESSION_REWIND_MODE_OPTIONS.map(option => (
+              <button
+                key={option.value}
+                type="button"
+                data-testid={`session-rewind-mode-${option.value}`}
+                data-rewind-mode={option.value}
+                aria-pressed={rewindMode === option.value}
+                title={option.description}
+                onClick={() => setRewindMode(option.value)}
+                className={`session-tui-rewind-mode-button ${rewindMode === option.value ? 'is-active' : ''}`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           <div data-testid="session-checkpoint-rail" className="session-tui-checkpoint-rail">
             {checkpoints.map((checkpoint, index) => {
               const id = checkpointId(checkpoint);
@@ -1070,7 +1162,8 @@ export function SessionCommandControlPanel({
                         type="button"
                         data-testid="session-checkpoint-rewind-action"
                         data-session-command="rewind"
-                        onClick={() => onRunCommand('rewind', { checkpoint_event_id: id })}
+                        data-rewind-mode={rewindMode}
+                        onClick={() => onRunCommand('rewind', buildSessionRewindCommandArgs(id, rewindMode))}
                       >
                         Rewind here
                       </button>
@@ -1087,6 +1180,32 @@ export function SessionCommandControlPanel({
                 </div>
               );
             })}
+          </div>
+        </div>
+      ) : null}
+      {confirmationArgs ? (
+        <div className="session-tui-command-panel-body">
+          <div className="session-tui-confirm-row">
+            <button
+              type="button"
+              data-testid="session-workspace-restore-confirm-action"
+              data-session-command="rewind"
+              data-rewind-mode={confirmationArgs.mode}
+              disabled={!confirmationArgs.checkpointEventId}
+              onClick={() => onRunCommand(
+                'rewind',
+                buildSessionRewindCommandArgs(confirmationArgs.checkpointEventId, confirmationArgs.mode, true),
+              )}
+            >
+              Confirm restore
+            </button>
+            <button
+              type="button"
+              data-testid="session-workspace-restore-cancel-action"
+              onClick={onDismiss}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       ) : null}

@@ -43,6 +43,13 @@ describe('slashCommand', () => {
     });
   });
 
+  it('parses steer as the user-facing active-turn steering command', () => {
+    expect(parseSlashCommandInput('/steer use the stricter interpretation')).toEqual({
+      name: 'steer',
+      args: { content: 'use the stricter interpretation' },
+    });
+  });
+
   it('parses schedule, once, workflow, and skill wrapper commands as natural prompt commands', () => {
     expect(parseSlashCommandInput('/schedule 每天早上九点检查日志')).toEqual({
       name: 'schedule',

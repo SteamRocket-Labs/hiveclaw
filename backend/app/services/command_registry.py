@@ -216,6 +216,7 @@ def build_default_command_registry(
             "turn_steer",
             "Steer the currently active turn by queuing an additional user message.",
             category="session",
+            aliases=("steer",),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -224,7 +225,7 @@ def build_default_command_registry(
                 },
                 "required": ["content"],
             },
-            visible_to_user=False,
+            visible_to_user=True,
         ),
         _command(
             "interrupt",
@@ -459,7 +460,7 @@ def build_default_command_registry(
         _command(
             "loop",
             "Run a prompt on a recurring interval in this chat (e.g. /loop 5m check the deploy). "
-            "Omit the interval to self-pace (not yet available).",
+            "Omit the interval to let the agent self-pace with schedule_wakeup.",
             category="schedule",
             execution_mode="runtime",
             permission_mode="write",
@@ -468,7 +469,7 @@ def build_default_command_registry(
                 "properties": {
                     "interval": {
                         "type": "string",
-                        "description": "Recurrence interval like 5m, 1h, 30s. Omit for self-pace (not yet available).",
+                        "description": "Recurrence interval like 5m, 1h, 30s. Omit for self-paced schedule_wakeup mode.",
                     },
                     "prompt": {"type": "string", "description": "The instruction to run on each interval."},
                     "input": {

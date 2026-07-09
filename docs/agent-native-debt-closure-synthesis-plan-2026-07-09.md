@@ -252,6 +252,74 @@ npm test -- --run \
 2. `advanced_plan` / `verify_plan` 若是 internal-only，文档和 schema 明确来源限制。
 3. `permissions/config` 如果云端只读是刻意设计，文档写清楚，不与 CC 本地 CLI 可写语义混用。
 
+### 4.3 实装证据（2026-07-09）
+
+状态：已完成并准备独立提交。
+
+实装范围：
+
+1. `backend/app/services/command_registry.py`：`turn_steer` 增加 user alias `steer`，user command index 暴露 `/steer`，canonical 仍为 `turn_steer`。
+2. `frontend/src/pages/agent-detail/slashCommand.ts`：放开 `/steer ...` 解析，继续禁止 internal `/turn_steer`。
+3. `backend/app/services/command_registry.py` 与 `backend/app/api/commands.py`：`/loop` 文案从 “not yet available” 改为已实装 self-paced `schedule_wakeup` 模式。
+4. `backend/tests/api/test_cc_codex_parity_api.py`：补 `/steer` API index/schema 断言，并修正 session index fake DB 以匹配当前 ownership 校验。
+5. `frontend/src/pages/agent-detail/slashCommand.test.ts`：补 `/steer` 解析断言。
+6. `backend/tests/api/test_commands_loop.py`：补 `/loop` schema 不再包含 “not yet available” 的断言。
+
+红测证据：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema -q
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm test -- --run src/pages/agent-detail/slashCommand.test.ts
+```
+
+红测失败点：user command index 不含 `steer`；frontend `/steer ...` 被 internal-only filter 返回 null。
+
+绿测证据：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/api/test_cc_codex_parity_api.py tests/api/test_commands_loop.py tests/services/test_session_command_runtime.py -q
+```
+
+结果：
+
+```text
+59 passed, 3 warnings
+```
+
+前端：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm test -- --run src/pages/agent-detail/slashCommand.test.ts src/pages/agent-detail/CommandPalette.test.tsx src/pages/agent-detail/SlashCommandMenu.test.tsx
+```
+
+结果：
+
+```text
+Test Files  3 passed (3)
+Tests  21 passed (21)
+```
+
+静态检查：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+ruff check app/services/command_registry.py app/api/commands.py tests/api/test_cc_codex_parity_api.py tests/api/test_commands_loop.py
+```
+
+结果：
+
+```text
+All checks passed!
+```
+
 ## 5. 施工包 C：Workspace Rewind UI 闭环
 
 ### 5.1 问题

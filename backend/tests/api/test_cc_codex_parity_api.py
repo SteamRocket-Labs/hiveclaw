@@ -167,6 +167,7 @@ async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
     assert next(item for item in user_index if item["name"] == "goal")["canonical_name"] == "goal_start"
     assert next(item for item in user_index if item["name"] == "schedule")["canonical_name"] == "schedule_create"
     assert next(item for item in user_index if item["name"] == "once")["canonical_name"] == "schedule_once"
+    assert next(item for item in user_index if item["name"] == "steer")["canonical_name"] == "turn_steer"
 
     schema = await commands_api.get_agent_command(
         agent_id=agent_id, command_name="goal", current_user=current_user, db=db
@@ -178,6 +179,12 @@ async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
         agent_id=agent_id, command_name="schedule", current_user=current_user, db=db
     )
     assert schedule_schema["name"] == "schedule_create"
+
+    steer_schema = await commands_api.get_agent_command(
+        agent_id=agent_id, command_name="steer", current_user=current_user, db=db
+    )
+    assert steer_schema["name"] == "turn_steer"
+    assert steer_schema["input_schema"]["required"] == ["content"]
     assert schedule_schema["category"] == "schedule"
     assert schedule_schema["input_schema"]["properties"]["cron_expr"]["type"] == "string"
 
@@ -358,7 +365,8 @@ async def test_chat_sessions_api_exposes_session_index(monkeypatch):
     agent_id = uuid4()
     session_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="member")
-    db = _FakeDB()
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=current_user.id)
+    db = _ExecuteDB(session)
     captured = {}
 
     async def fake_access(db_arg, user_arg, requested_agent_id):

@@ -2,8 +2,8 @@
 
 ``/loop <interval> <prompt>`` creates an interval trigger that delivers into the
 current chat session (delivery=same_session) and runs once immediately after
-creation (CC ``loop.ts:67``). Omitting the interval returns a clear placeholder
-pointing at the not-yet-available self-pace mode (B2).
+creation (CC ``loop.ts:67``). Omitting the interval starts the self-paced B2
+mode where the model reschedules itself via schedule_wakeup.
 """
 
 from __future__ import annotations
@@ -300,3 +300,10 @@ async def test_loop_command_listed_as_user_visible(monkeypatch):
         agent_id=agent_id, surface="user", current_user=current_user, db=db
     )
     assert any(item["name"] == "loop" for item in user_index)
+
+    loop_schema = await commands_api.get_agent_command(
+        agent_id=agent_id, command_name="loop", current_user=current_user, db=db
+    )
+    serialized = str(loop_schema).lower()
+    assert "not yet available" not in serialized
+    assert "schedule_wakeup" in serialized

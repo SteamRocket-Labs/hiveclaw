@@ -654,7 +654,7 @@ def _parse_loop_args(arguments: dict[str, Any]) -> tuple[str | None, str, bool]:
     Structured form (``{"interval": ..., "prompt": ...}``) sets ``explicit=True``.
     Natural form (``/loop 5m <prompt>`` via ``input``/``instruction``) splits the
     first whitespace token as the interval; ``explicit=False`` so a leading
-    non-interval token routes to the self-pace placeholder rather than an error."""
+    non-interval token routes to self-paced mode rather than an error."""
     if arguments.get("interval") is not None:
         return (
             str(arguments.get("interval") or "").strip() or None,

@@ -36,7 +36,6 @@ const INTERNAL_ONLY_SLASH_COMMAND_NAMES = new Set([
   'start_workflow',
   'stats',
   'status',
-  'steer',
   'tag',
   'task_create',
   'task_get',

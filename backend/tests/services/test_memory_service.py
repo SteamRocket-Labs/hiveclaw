@@ -760,3 +760,53 @@ async def test_build_memory_context_evolves_session_working_set(monkeypatch, tmp
     assert seen_working_sets[0] == ()
     assert ("knowledge/railway-deployment", 1.0) in (seen_working_sets[1] or ())
     assert load_working_set(tmp_path, agent_id, session_id).turn_index == 2
+
+
+@pytest.mark.asyncio
+async def test_activation_context_carries_active_goal_terms(monkeypatch, tmp_path):
+    """M6 TaskModulation (deterministic tier): the active session goal's
+    objective must reach ActivationContext.goal_terms — until now the field
+    existed but was never populated, so goal_relevance was a misnomer for
+    plain query overlap."""
+    from app.memory.activation import ActivationContext
+    from app.services import memory_service
+    from app.services.principal_context import PrincipalStack
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = str(uuid4())
+
+    monkeypatch.setattr(
+        memory_service,
+        "get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), MEMORY_RESIDENT_BUDGET_CHARS=24_000),
+    )
+
+    async def fake_resolver(**kwargs):
+        base = ActivationContext(query=kwargs.get("query", ""), principal_stack=PrincipalStack())
+        return await memory_service._attach_goal_terms(
+            base, agent_id=kwargs["agent_id"], tenant_id=kwargs["tenant_id"], session_id=session_id
+        )
+
+    async def fake_goal_objective(**_kwargs):
+        return "ship the railway deployment overhaul milestone"
+
+    monkeypatch.setattr(memory_service, "_load_active_goal_objective", fake_goal_objective)
+
+    captured: dict = {}
+
+    class _GoalFakeRetriever:
+        async def retrieve(self, _agent_id, _query, _session_id, _tenant_id, *, activation_context=None, **_kwargs):
+            captured["context"] = activation_context
+            return []
+
+    monkeypatch.setattr(memory_service, "MemoryRetriever", lambda **_kwargs: _GoalFakeRetriever())
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", fake_resolver)
+
+    await memory_service.build_memory_context(agent_id, tenant_id, session_id=session_id, query="status update")
+
+    context = captured["context"]
+    assert context is not None
+    assert "railway" in context.goal_terms
+    assert "deployment" in context.goal_terms
+    assert "the" not in context.goal_terms, "stopword-ish single-letter/article noise should be filtered"

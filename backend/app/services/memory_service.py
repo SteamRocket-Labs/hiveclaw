@@ -123,6 +123,12 @@ async def build_memory_context(
                 current_user_id=current_user_id,
                 current_user_name=current_user_name,
             )
+        # TaskModulation deterministic tier (design §4.4, M6): the active
+        # goal's objective joins recall as a second term channel.
+        if session_id and activation_context is not None:
+            activation_context = await _attach_goal_terms(
+                activation_context, agent_id=agent_id, tenant_id=tenant_id, session_id=str(session_id)
+            )
         # Session working set W_t (design §4.2): load the evolving activation
         # state for this session so ContextBoost sees what the conversation is
         # already about; advanced + persisted after retrieval below.
@@ -247,6 +253,76 @@ async def _resolve_activation_context(
             accountability.company_charter.company_name,
         ),
     )
+
+
+async def _load_active_goal_objective(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    session_id: str,
+) -> str | None:
+    """Fetch the active session goal's objective for TaskModulation (M6)."""
+    try:
+        session_uuid = uuid.UUID(str(session_id))
+    except (TypeError, ValueError):
+        return None
+    try:
+        from app.models.agent_session_goal import AgentSessionGoal
+
+        async with tenant_scoped_session(tenant_id) as db:
+            result = await db.execute(
+                select(AgentSessionGoal.objective).where(
+                    AgentSessionGoal.agent_id == agent_id,
+                    AgentSessionGoal.chat_session_id == session_uuid,
+                    AgentSessionGoal.status == "active",
+                )
+            )
+            objective = result.scalar_one_or_none()
+    except Exception as exc:  # noqa: BLE001 - goal modulation is additive, recall must not fail on it
+        logger.warning("Active goal lookup failed for agent %s: %s", agent_id, exc)
+        return None
+    text = str(objective or "").strip()
+    return text or None
+
+
+_GOAL_TERM_STOPWORDS = frozenset(
+    {"the", "and", "for", "with", "that", "this", "then", "from", "into", "onto", "our", "your", "their", "all", "any"}
+)
+
+
+def _goal_terms_from_objective(objective: str) -> list[str]:
+    import re as _re
+
+    terms = {
+        term
+        for term in _re.split(r"\W+", objective.lower())
+        if len(term) >= 3 and term not in _GOAL_TERM_STOPWORDS
+    }
+    return sorted(terms)
+
+
+async def _attach_goal_terms(
+    context: ActivationContext,
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    session_id: str,
+) -> ActivationContext:
+    """TaskModulation deterministic tier (design §4.4, M6).
+
+    First real population of ``goal_terms``: the active goal's objective joins
+    the query as a second term channel, so goal_relevance stops being a
+    misnomer for plain query overlap. Zero LLM, fail-open.
+    """
+    objective = await _load_active_goal_objective(agent_id=agent_id, tenant_id=tenant_id, session_id=session_id)
+    if not objective:
+        return context
+    terms = _goal_terms_from_objective(objective)
+    if not terms:
+        return context
+    from dataclasses import replace as _dc_replace
+
+    return _dc_replace(context, goal_terms=terms)
 
 
 async def _resolve_accountability_context(

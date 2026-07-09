@@ -1,5 +1,6 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 
 import AdminCompaniesSection from './AdminCompaniesSection';
@@ -11,13 +12,27 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-vi.mock('@tabler/icons-react', () => ({
-  IconFilter: () => <span>Filter Icon</span>,
-}));
+vi.mock('@tabler/icons-react', () => {
+  const iconStub = (name: string) => () => <span>{name} Icon</span>;
+  return {
+    IconAlertTriangle: iconStub('AlertTriangle'),
+    IconFilter: iconStub('Filter'),
+    IconPlayerPause: iconStub('PlayerPause'),
+    IconShieldCheck: iconStub('ShieldCheck'),
+    IconShieldOff: iconStub('ShieldOff'),
+  };
+});
 
 describe('Admin companies extracted sections', () => {
   it('renders AdminPlatformSection as a standalone platform settings module', () => {
-    const markup = renderToStaticMarkup(<AdminPlatformSection />);
+    // AdminPlatformSection embeds WorkspaceRuntimeBudgetsSection, which reads
+    // the query client — provide a real one instead of mocking the section away.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}>
+        <AdminPlatformSection />
+      </QueryClientProvider>,
+    );
 
     expect(markup).toContain('Notification Bar');
     expect(markup).toContain('Public URL');

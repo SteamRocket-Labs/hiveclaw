@@ -4,6 +4,77 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-07-09T12:25Z [sid:5b3d1f83]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, activation.py, +5); last commit: f5530f38f fix activation feedback sidecar closure
+- 2026-07-09T06:23Z [sid:0a0c04a4]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T06:08Z [sid:02225279]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T06:08Z [sid:0a0c04a4]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T06:07Z [sid:3a6755fa]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T06:07Z [sid:0a0c04a4]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T06:04Z [sid:02225279]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T06:04Z [sid:0a0c04a4]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T06:04Z [sid:3a6755fa]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T05:57Z [sid:0a0c04a4]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T05:30Z [sid:169ca8ab]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T05:29Z [sid:0a0c04a4]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
+- 2026-07-09T05:25Z [sid:169ca8ab]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be2464a5c docs: record §7.2-C/D/E closure evidence in the 0.
+- 2026-07-09T05:23Z [sid:0a0c04a4]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be2464a5c docs: record §7.2-C/D/E closure evidence in the 0.
+- 2026-07-09T05:13Z [sid:169ca8ab]; branch:main; 5 files (compact-snapshot.md, orphan-trail.md, activation.py, +2); last commit: fb8e80e0c docs: record §7.2-F slimming closure evidence in t
+- 2026-07-09T05:01Z [sid:0a0c04a4]; branch:main; 2 files (orphan-trail.md, atomic-repo-review-2026-07-08.md); last commit: 546ce1e9b refactor: consolidate the decision-ledger factory 
+- 2026-07-09T04:52Z [sid:73c71880]; branch:main; 1 files (orphan-trail.md); last commit: f49f4d4f3 feat: add self-paced wakeups and loop-goal composi
+- 2026-07-09T04:21Z [sid:c457448f]; branch:main; 3 files (orphan-trail.md, skill_distiller.py, test_skill_distiller.py); last commit: d07c4773d refactor: derive breaker failure counts from groun
+- 2026-07-09T04:21Z [sid:169ca8ab]; branch:main; 3 files (orphan-trail.md, skill_distiller.py, test_skill_distiller.py); last commit: d07c4773d refactor: derive breaker failure counts from groun
+- 2026-07-09T04:20Z [sid:c457448f]; branch:main; 3 files (orphan-trail.md, skill_distiller.py, test_skill_distiller.py); last commit: d07c4773d refactor: derive breaker failure counts from groun
+- 2026-07-09T04:19Z [sid:3172be17]; branch:main; 3 files (orphan-trail.md, skill_distiller.py, test_skill_distiller.py); last commit: d07c4773d refactor: derive breaker failure counts from groun
+- 2026-07-09T04:14Z [sid:c457448f]; branch:main; 27 files (orphan-trail.md, commands.py, runtime_budget.py, +24); last commit: 08811b5d3 feat: complete Goal Mode alignment (A1-A9) and pin
+- 2026-07-09T04:12Z [sid:0a0c04a4]; branch:main; 27 files (orphan-trail.md, commands.py, runtime_budget.py, +24); last commit: 08811b5d3 feat: complete Goal Mode alignment (A1-A9) and pin
+- 2026-07-09T04:11Z [sid:3172be17]; branch:main; 38 files (orphan-trail.md, commands.py, session_working_set.py, +35); last commit: 119d71261 feat: land Codex engineering deltas D1+D3 and the 
+- 2026-07-09T04:07Z [sid:169ca8ab]; branch:main; 38 files (orphan-trail.md, commands.py, session_working_set.py, +35); last commit: 119d71261 feat: land Codex engineering deltas D1+D3 and the 
+- 2026-07-09T04:02Z [sid:d4ae7499]; branch:main; 34 files (orphan-trail.md, runtime_budget.py, runtime_task.py, +31); last commit: 119d71261 feat: land Codex engineering deltas D1+D3 and the 
+- 2026-07-09T03:58Z [sid:0a0c04a4]; branch:main; 31 files (orphan-trail.md, runtime_budget.py, runtime_task.py, +28); last commit: 119d71261 feat: land Codex engineering deltas D1+D3 and the 
+- 2026-07-09T03:58Z [sid:169ca8ab]; branch:main; 30 files (orphan-trail.md, runtime_budget.py, runtime_task.py, +27); last commit: 119d71261 feat: land Codex engineering deltas D1+D3 and the 
+- 2026-07-09T03:57Z [sid:0a0c04a4]; branch:main; 30 files (orphan-trail.md, runtime_budget.py, runtime_task.py, +27); last commit: 119d71261 feat: land Codex engineering deltas D1+D3 and the 
+- 2026-07-09T03:46Z [sid:b2c30227]; branch:main; 20 files (orphan-trail.md, command_parity.py, goals.py, +17); last commit: 36824ac89 test: drop dead is_pack_enabled monkeypatches afte
+- 2026-07-09T03:41Z [sid:0a0c04a4]; branch:main; 16 files (orphan-trail.md, local_provider.py, service.py, +13); last commit: d69cb925d refactor: retire test-only dead service modules (F
+- 2026-07-09T03:39Z [sid:e9994636]; branch:main; 15 files (orphan-trail.md, local_provider.py, service.py, +12); last commit: d69cb925d refactor: retire test-only dead service modules (F
+- 2026-07-09T03:38Z [sid:0a0c04a4]; branch:main; 15 files (orphan-trail.md, local_provider.py, service.py, +12); last commit: d69cb925d refactor: retire test-only dead service modules (F
+- 2026-07-09T03:30Z [sid:c457448f]; branch:main; 11 files (orphan-trail.md, local_provider.py, service.py, +8); last commit: 972a3b593 feat: make personal KB import pipeline truly async
+- 2026-07-09T03:05Z [sid:e9994636]; branch:main; 5 files (orphan-trail.md, personal_knowledge_service.py, subprocess_sandbox.py, +2); last commit: 21f69dad6 feat: add BaseLevel activation line (M1-M3 dynamic
+- 2026-07-09T02:43Z [sid:73c71880]; branch:main; 28 files (orphan-trail.md, engine.py, plane_read.py, +25); last commit: 27b83850b fix: keep skill factor capture tenant-explicit
+- 2026-07-09T02:21Z [sid:c457448f]; branch:main; 4 files (orphan-trail.md, memory_recall_eval.py, test_memory_recall_baseline.py, +1); last commit: 7dee0276b docs: record external capability closure evidence
+- 2026-07-09T02:18Z [sid:be200f52]; branch:main; 2 files (orphan-trail.md, atomic-repo-review-2026-07-08.md); last commit: 7dee0276b docs: record external capability closure evidence
+- 2026-07-09T02:12Z [sid:73c71880]; branch:main; 2 files (orphan-trail.md, atomic-repo-review-2026-07-08.md); last commit: 7dee0276b docs: record external capability closure evidence
+- 2026-07-09T01:45Z [sid:be200f52]; branch:main; 11 files (orphan-trail.md, files.py, skills.py, +8); last commit: 2436f82bd feat: auto capture self-grown capability factors
+- 2026-07-09T01:14Z [sid:73c71880]; branch:main; 8 files (orphan-trail.md, evolution_daemon.py, activation_cleanup.py, +5); last commit: 3726b3b53 complete personal kb owner-agent read guard
+- 2026-07-09T01:04Z [sid:0a0c04a4]; branch:main; 4 files (orphan-trail.md, activation_cleanup.py, atomic-repo-review-2026-07-08.md, +1); last commit: 5e27d7f7d feat: add legacy pack migration dry run
+- 2026-07-09T01:00Z [sid:7228cd37]; branch:main; 3 files (orphan-trail.md, activation_cleanup.py, atomic-repo-review-2026-07-08.md); last commit: 5e27d7f7d feat: add legacy pack migration dry run
+- 2026-07-08T17:46Z [sid:be200f52]; branch:main; 8 files (orphan-trail.md, db_bootstrap.py, activation_cleanup.py, +5); last commit: 650e8adf4 feat: add external marketplace discovery sources
+- 2026-07-08T17:19Z [sid:7228cd37]; branch:main; 8 files (orphan-trail.md, external_capability.py, activation.py, +5); last commit: dd4279f76 feat: activate external extension components
+- 2026-07-08T17:11Z [sid:be200f52]; branch:main; 14 files (orphan-trail.md, external_capabilities.py, db_bootstrap.py, +11); last commit: 178e44906 feat: close external extension revoke flow
+- 2026-07-08T17:08Z [sid:7228cd37]; branch:main; 10 files (orphan-trail.md, db_bootstrap.py, external_capability.py, +7); last commit: 178e44906 feat: close external extension revoke flow
+- 2026-07-08T17:05Z [sid:be200f52]; branch:main; 5 files (orphan-trail.md, activation_cleanup.py, test_external_capability_activation.py, +2); last commit: 178e44906 feat: close external extension revoke flow
+- 2026-07-08T17:01Z [sid:7228cd37]; branch:main; 3 files (orphan-trail.md, activation_cleanup.py, atomic-repo-review-2026-07-08.md); last commit: 178e44906 feat: close external extension revoke flow
+- 2026-07-08T16:57Z [sid:fb93f5f7]; branch:main; 10 files (orphan-trail.md, external_capabilities.py, activation.py, +7); last commit: 4904f4a11 feat: materialize external capability bundles
+- 2026-07-08T16:55Z [sid:5edea2dc]; branch:main; 5 files (orphan-trail.md, external_capabilities.py, trust_gate.py, +2); last commit: 4904f4a11 feat: materialize external capability bundles
+- 2026-07-08T16:48Z [sid:7228cd37]; branch:main; 2 files (orphan-trail.md, atomic-repo-review-2026-07-08.md); last commit: fe1c6f776 complete personal kb sag scorecard
+- 2026-07-08T16:23Z [sid:20836182]; branch:main; 8 files (orphan-trail.md, agent_knowledge.py, upload.py, +5); last commit: a621b0d8c complete personal kb ppr retrieval
+- 2026-07-08T16:11Z [sid:7228cd37]; branch:main; 2 files (orphan-trail.md, atomic-repo-review-2026-07-08.md); last commit: a621b0d8c complete personal kb ppr retrieval
+- 2026-07-08T08:54Z [sid:7464aafd]; branch:main; 10 files (orphan-trail.md, agents.py, agent_identity_lifecycle.py, +7); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:52Z [sid:7228cd37]; branch:main; 10 files (orphan-trail.md, agents.py, agent_identity_lifecycle.py, +7); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:50Z [sid:7464aafd]; branch:main; 10 files (orphan-trail.md, agents.py, agent_identity_lifecycle.py, +7); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:41Z [sid:f561413e]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:41Z [sid:7228cd37]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:40Z [sid:65a94cf1]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:38Z [sid:7228cd37]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:38Z [sid:59eebbd7]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:37Z [sid:7228cd37]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:37Z [sid:c1eb4b43]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:37Z [sid:7228cd37]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:32Z [sid:8367d7bd]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:32Z [sid:7464aafd]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:30Z [sid:c1eb4b43]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T08:19Z [sid:5edea2dc]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
+- 2026-07-08T06:32Z [sid:73c71880]; branch:main; 12 files (orphan-trail.md, en.json, zh.json, +9); last commit: 089d2a61c Implement owner personal knowledge workspace
+- 2026-07-08T06:25Z [sid:5edea2dc]; branch:main; 11 files (en.json, zh.json, PersonalKnowledge.css, +8); last commit: 089d2a61c Implement owner personal knowledge workspace
 - 2026-07-03T17:18Z [sid:47c4a226]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
 - 2026-07-03T16:34Z [sid:63e46018]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
 - 2026-07-03T16:29Z [sid:47c4a226]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
@@ -33,74 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-07-03T09:32Z [sid:f1e0343b]; branch:main; 30 files (orphan-trail.md, subagent.py, subagent_definition.py, +27); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
 - 2026-07-03T09:32Z [sid:e1e5a38b]; branch:main; 29 files (orphan-trail.md, subagent.py, subagent_definition.py, +26); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
 - 2026-07-03T09:26Z [sid:63e46018]; branch:main; 29 files (orphan-trail.md, subagent.py, subagent_definition.py, +26); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:24Z [sid:25309a6d]; branch:main; 29 files (orphan-trail.md, subagent.py, subagent_definition.py, +26); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:19Z [sid:ddbc4a4f]; branch:main; 29 files (orphan-trail.md, subagent.py, subagent_definition.py, +26); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:00Z [sid:25309a6d]; branch:main; 29 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +26); last commit: 251f545b Migrate remaining 30 surfaces off inline styles (P3
-- 2026-07-03T08:53Z [sid:3116e075]; branch:main; 25 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +22); last commit: 251f545b Migrate remaining 30 surfaces off inline styles (P3
-- 2026-07-03T08:52Z [sid:39552e23]; branch:main; 25 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +22); last commit: 251f545b Migrate remaining 30 surfaces off inline styles (P3
-- 2026-07-03T08:51Z [sid:78d98752]; branch:main; 25 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +22); last commit: 251f545b Migrate remaining 30 surfaces off inline styles (P3
-- 2026-07-03T08:50Z [sid:25309a6d]; branch:main; 25 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +22); last commit: 251f545b Migrate remaining 30 surfaces off inline styles (P3
-- 2026-07-03T08:50Z [sid:7ff2d7c2]; branch:main; 25 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +22); last commit: 251f545b Migrate remaining 30 surfaces off inline styles (P3
-- 2026-07-03T08:50Z [sid:25309a6d]; branch:main; 25 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +22); last commit: 251f545b Migrate remaining 30 surfaces off inline styles (P3
-- 2026-07-03T08:50Z [sid:4d37aad4]; branch:main; 25 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +22); last commit: 251f545b Migrate remaining 30 surfaces off inline styles (P3
-- 2026-07-03T08:49Z [sid:25309a6d]; branch:main; 21 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +18); last commit: 251f545b Migrate remaining 30 surfaces off inline styles (P3
-- 2026-07-03T08:48Z [sid:7458fc01]; branch:main; 84 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +81); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:48Z [sid:25309a6d]; branch:main; 84 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +81); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:43Z [sid:ddbc4a4f]; branch:main; 54 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +51); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:42Z [sid:ed1b53e9]; branch:main; 54 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +51); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:38Z [sid:ddbc4a4f]; branch:main; 48 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +45); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:33Z [sid:a102c6b8]; branch:main; 44 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +41); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:32Z [sid:ddbc4a4f]; branch:main; 44 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +41); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:31Z [sid:37377b7b]; branch:main; 41 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +38); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:31Z [sid:5288a982]; branch:main; 41 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +38); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:30Z [sid:e5d8bf8e]; branch:main; 41 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +38); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:28Z [sid:7b4167a8]; branch:main; 39 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +36); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:27Z [sid:ddbc4a4f]; branch:main; 39 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +36); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:08Z [sid:0535a560]; branch:main; 12 files (orphan-trail.md, workflows.py, dynamic_workflow.py, +9); last commit: 48e8c70d Migrate 17 surfaces off inline styles to component 
-- 2026-07-03T08:05Z [sid:ddbc4a4f]; branch:main; 25 files (orphan-trail.md, dynamic_workflow.py, workflow_admission.py, +22); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T08:05Z [sid:e43e7c0e]; branch:main; 25 files (orphan-trail.md, dynamic_workflow.py, workflow_admission.py, +22); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T08:05Z [sid:ddbc4a4f]; branch:main; 24 files (orphan-trail.md, workflow_admission.py, workflow_compiler.py, +21); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T08:05Z [sid:e92428d4]; branch:main; 23 files (orphan-trail.md, workflow_admission.py, workflow_compiler.py, +20); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T08:04Z [sid:ddbc4a4f]; branch:main; 20 files (orphan-trail.md, test_workflow_admission.py, test_workflow_definition.py, +17); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T08:01Z [sid:459abc36]; branch:main; 16 files (orphan-trail.md, ChannelConfig.tsx, FileBrowser.tsx, +13); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T08:01Z [sid:6093a029]; branch:main; 16 files (orphan-trail.md, ChannelConfig.tsx, FileBrowser.tsx, +13); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T08:00Z [sid:ddbc4a4f]; branch:main; 16 files (orphan-trail.md, ChannelConfig.tsx, FileBrowser.tsx, +13); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T08:00Z [sid:459abc36]; branch:main; 16 files (orphan-trail.md, ChannelConfig.tsx, FileBrowser.tsx, +13); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T08:00Z [sid:cba3c1b3]; branch:main; 16 files (orphan-trail.md, ChannelConfig.tsx, FileBrowser.tsx, +13); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T08:00Z [sid:6d5e14b4]; branch:main; 16 files (orphan-trail.md, ChannelConfig.tsx, FileBrowser.tsx, +13); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T07:59Z [sid:ddbc4a4f]; branch:main; 16 files (orphan-trail.md, ChannelConfig.tsx, FileBrowser.tsx, +13); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T07:58Z [sid:6d5e14b4]; branch:main; 15 files (orphan-trail.md, ChannelConfig.tsx, FileBrowser.tsx, +12); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T07:57Z [sid:ddbc4a4f]; branch:main; 13 files (orphan-trail.md, ChannelConfig.tsx, FileBrowser.tsx, +10); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T07:56Z [sid:e50175ae]; branch:main; 11 files (orphan-trail.md, FileBrowser.tsx, Dashboard.tsx, +8); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T07:53Z [sid:ddbc4a4f]; branch:main; 3 files (Dashboard.tsx, Plaza.tsx, WorkspaceSkillsSection.tsx); last commit: 5f4b2292 Normalize residual shadows and radii to tokens (P3)
-- 2026-07-03T03:29Z [sid:7390d1c5]; branch:main; 8 files (orphan-trail.md, en.json, zh.json, +5); last commit: 5439642b Fix web chat model resolution under RLS
-- 2026-07-03T03:08Z [sid:ddbc4a4f]; branch:main; 8 files (orphan-trail.md, en.json, zh.json, +5); last commit: 8839da3f Allow empty migration sections as no-claim scaffold
-- 2026-07-03T00:06Z [sid:b3537fe6]; branch:main; 17 files (orphan-trail.md, chat_sessions.py, agent_session_continuation.py, +14); last commit: b719e84d Promote command wrappers to core tool surface
-- 2026-07-02T22:57Z [sid:ddbc4a4f]; branch:main; 1 files (test_dream_phase6.py); last commit: e115ec35 Harden runtime control bus and T0 transcript bridgi
-- 2026-07-02T22:11Z [sid:d10bf6fb]; branch:main; 1 files (timelineModel.test.ts); last commit: b5d19fe7 Record subagent activity in debug log
-- 2026-07-02T21:51Z [sid:c5740092]; branch:main; 19 files (orphan-trail.md, orchestrator.py, files.py, +16); last commit: 820e312a Route notifications through API plane
-- 2026-07-02T17:19Z [sid:d10bf6fb]; branch:main; 11 files (orphan-trail.md, orchestrator.py, files.py, +8); last commit: 820e312a Route notifications through API plane
-- 2026-07-02T17:16Z [sid:c5740092]; branch:main; 11 files (orphan-trail.md, orchestrator.py, files.py, +8); last commit: 820e312a Route notifications through API plane
-- 2026-07-02T17:09Z [sid:48a22b8e]; branch:main; 7 files (orphan-trail.md, files.py, main.py, +4); last commit: 820e312a Route notifications through API plane
-- 2026-07-02T17:09Z [sid:9bbef5b3]; branch:main; 6 files (orphan-trail.md, files.py, main.py, +3); last commit: 820e312a Route notifications through API plane
-- 2026-07-02T17:08Z [sid:d10bf6fb]; branch:main; 5 files (orphan-trail.md, files.py, main.py, +2); last commit: 820e312a Route notifications through API plane
-- 2026-07-02T17:05Z [sid:c5740092]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 820e312a Route notifications through API plane
-- 2026-07-02T14:41Z [sid:4fa6e2cc]; branch:main; 19 files (orphan-trail.md, orchestrator.py, files.py, +16); last commit: 27868d1c Add no-volume API role and split frontend routing
-- 2026-07-02T13:50Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: cdabf1c7 Release heartbeat DB sessions before model invocati
-- 2026-07-02T13:06Z [sid:4fa6e2cc]; branch:main; 4 files (orphan-trail.md, files.py, test_files_channel_download_token.py, +1); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T13:05Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:58Z [sid:01ead1c5]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:57Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:57Z [sid:4c3958a6]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:56Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:56Z [sid:48ef0190]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:54Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:54Z [sid:32ff51d9]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:53Z [sid:25b606c4]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:53Z [sid:54b27f88]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:53Z [sid:f37657bf]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:53Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:52Z [sid:c8381d61]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:52Z [sid:32ff51d9]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:51Z [sid:5dc3962a]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 
-- 2026-07-02T12:51Z [sid:d10bf6fb]; branch:main; 3 files (orphan-trail.md, files.py, test_files_channel_download_token.py); last commit: 4f211ee7 pin the rewind trim timestamp fallback with direct 

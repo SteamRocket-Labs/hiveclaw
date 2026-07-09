@@ -71,6 +71,49 @@ async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     return await _handle_set_trigger(agent_id, arguments)
 
 
+# -- schedule_wakeup (B2 self-pace) --------------------------------------------
+
+@tool(ToolMeta(
+    name="schedule_wakeup",
+    description=(
+        "Schedule your own next wakeup in THIS conversation (self-paced loop).\n\n"
+        "Usage:\n"
+        "- Call with delay_seconds and a prompt: after the delay the prompt fires back "
+        "into this session as your next turn. Pick the delay to match how fast the "
+        "watched state actually changes (delay is clamped to 60-3600 seconds).\n"
+        "- Each round, do the work, then either call schedule_wakeup again with the "
+        "next delay+prompt, or call it with stop=true when nothing useful remains.\n"
+        "- One pending wakeup per session: a new call replaces the previous one.\n"
+        "- Use set_trigger instead for fixed recurring schedules or event conditions."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "delay_seconds": {
+                "type": "integer",
+                "description": "Seconds until the next wakeup (clamped to 60-3600).",
+            },
+            "prompt": {
+                "type": "string",
+                "description": "Instructions for your future self when the wakeup fires.",
+            },
+            "stop": {
+                "type": "boolean",
+                "description": "true ends the self-paced loop: the pending wakeup is cancelled.",
+            },
+        },
+    },
+    category="triggers",
+    display_name="Schedule Wakeup",
+    icon="⏰",
+    plan_gate_action_kind="create_enabled_trigger",
+    adapter="agent_args",
+))
+async def schedule_wakeup(agent_id: uuid.UUID, arguments: dict) -> str:
+    from app.services.agent_tool_domains.triggers import _handle_schedule_wakeup
+    return await _handle_schedule_wakeup(agent_id, arguments)
+
+
 # -- update_trigger -----------------------------------------------------------
 
 @tool(ToolMeta(

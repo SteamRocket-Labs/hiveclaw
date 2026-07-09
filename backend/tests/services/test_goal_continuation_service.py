@@ -648,3 +648,53 @@ async def test_maybe_continue_dispatches_resumed_turn(monkeypatch):
 
     assert result["ok"] is True
     assert calls, "a resumed completed web_chat_turn must still trigger goal continuation"
+
+
+@pytest.mark.asyncio
+async def test_loop_delivered_turn_feeds_active_goal_continuation(monkeypatch):
+    """B4 loop x goal composition: a turn delivered by a same-session loop fire
+    completes like any turn — when an Active goal exists, the goal loop takes
+    over the continuation (the wakeup is the heartbeat, the goal is the
+    direction). Pinned by test so the composition never regresses."""
+    import app.services.goal_continuation_service as service
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    user_id = uuid4()
+    goal = AgentSessionGoal(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        chat_session_id=session_id,
+        created_by_user_id=user_id,
+        objective="Keep the deploy healthy.",
+        status="active",
+        continuation_count=0,
+        max_continuation_turns=5,
+    )
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    session = SimpleNamespace(id=session_id)
+    user = SimpleNamespace(id=user_id)
+    db = _ExecuteDB([goal, agent, session, user])
+    calls: list[dict] = []
+
+    async def fake_continue_session_goal(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "goal_id": str(goal.id), "run": {"run_id": "run-loop-goal"}}
+
+    monkeypatch.setattr(service, "continue_session_goal", fake_continue_session_goal)
+
+    result = await service.maybe_continue_session_goal_after_turn(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        user_id=user_id,
+        completed_task_type="web_chat_turn",
+        completed_status="completed",
+        metadata_json={"source": "loop_same_session", "terminal_reason": "turn_stop"},
+    )
+
+    assert result["ok"] is True
+    assert calls and calls[0]["goal"] is goal

@@ -24,6 +24,10 @@ from app.tools.result_envelope import render_tool_error
 logger = logging.getLogger(__name__)
 
 MAX_TRIGGERS_PER_AGENT = 20
+#: B2 self-pace clamp (CC dynamic /loop alignment): the model picks its own
+#: next wakeup delay inside these bounds.
+SELF_PACE_WAKEUP_MIN_SECONDS = 60
+SELF_PACE_WAKEUP_MAX_SECONDS = 3600
 VALID_TRIGGER_TYPES = {"cron", "once", "interval", "poll", "on_message", "webhook"}
 VALID_TRIGGER_CLASSES = {"scheduled_job", "event_wait", "system_maintenance"}
 #: B3 — how a fired trigger reaches the agent. ``new_invocation`` (default)
@@ -739,6 +743,119 @@ async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
     except Exception as e:
         return _trigger_error("cancel_trigger", "operation_failed", f"Failed to cancel trigger: {e}", retryable=True)
+
+
+async def _handle_schedule_wakeup(agent_id: uuid.UUID, arguments: dict) -> str:
+    """B2 self-pace: the model schedules (or cancels) its own next wakeup.
+
+    Creates a ``once`` trigger delivered into the SAME session (B3 rail): the
+    prompt fires back into this conversation after ``delay_seconds`` (clamped
+    to [SELF_PACE_WAKEUP_MIN_SECONDS, SELF_PACE_WAKEUP_MAX_SECONDS]), the model
+    re-schedules each round, and ``stop=true`` ends the loop. One pending
+    wakeup per session: a new call supersedes the previous one. Fires go
+    through the normal trigger-daemon sequence, so preflight, failure policy,
+    and budget admission all apply.
+    """
+    from datetime import timedelta
+
+    from app.models.trigger import AgentTrigger
+
+    session_id = str(arguments.get("source_session_id") or "").strip()
+    if not session_id:
+        return _trigger_error(
+            "schedule_wakeup",
+            "bad_arguments",
+            "schedule_wakeup requires a live chat session (runtime supplies it).",
+        )
+    stop = bool(arguments.get("stop"))
+    prompt = str(arguments.get("prompt") or "").strip()
+    if not stop and not prompt:
+        return _trigger_error(
+            "schedule_wakeup",
+            "bad_arguments",
+            "schedule_wakeup requires a prompt for the next wakeup (or stop=true to end the loop).",
+            actionable_hint='Pass {"delay_seconds": 300, "prompt": "..."} or {"stop": true}.',
+        )
+
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
+        pending_rows = (
+            (
+                await db.execute(
+                    select(AgentTrigger).where(
+                        AgentTrigger.agent_id == agent_id,
+                        AgentTrigger.type == "once",
+                        AgentTrigger.is_enabled.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        cancelled: list[str] = []
+        for row in pending_rows:
+            config = dict(getattr(row, "config", None) or {})
+            if config.get("self_pace") and str(config.get("source_session_id") or "") == session_id:
+                row.is_enabled = False
+                cancelled.append(str(getattr(row, "id", "")))
+
+        if stop:
+            await db.flush()
+            await db.commit()
+            return _json_payload(
+                {
+                    "ok": True,
+                    "status": "stopped",
+                    "cancelled_wakeups": cancelled,
+                    "message": "Self-pace loop stopped; no further wakeups are scheduled.",
+                }
+            )
+
+        try:
+            delay = int(arguments.get("delay_seconds") or 0)
+        except (TypeError, ValueError):
+            delay = 0
+        clamped = max(SELF_PACE_WAKEUP_MIN_SECONDS, min(SELF_PACE_WAKEUP_MAX_SECONDS, delay))
+        fire_at = datetime.now(timezone.utc) + timedelta(seconds=clamped)
+        trigger = AgentTrigger(
+            agent_id=agent_id,
+            tenant_id=tid,
+            name=f"wakeup-{uuid.uuid4().hex[:8]}",
+            type="once",
+            config={
+                "at": fire_at.isoformat(),
+                "trigger_class": "scheduled_job",
+                "delivery": "same_session",
+                "source_session_id": session_id,
+                "self_pace": True,
+            },
+            reason=prompt,
+            is_enabled=True,
+            cooldown_seconds=1,
+        )
+        db.add(trigger)
+        await db.flush()
+        payload = {
+            "ok": True,
+            "status": "scheduled",
+            "wakeup_id": str(getattr(trigger, "id", "")),
+            "delay_seconds": clamped,
+            "requested_delay_seconds": delay,
+            "at": fire_at.isoformat(),
+            "superseded_wakeups": cancelled,
+            "message": (
+                f"Next wakeup in {clamped}s. You will receive your prompt in this session; "
+                "re-schedule each round or call schedule_wakeup(stop=true) to end the loop."
+            ),
+        }
+        await db.commit()
+        return _json_payload(payload)
+
+
+def _json_payload(payload: dict) -> str:
+    import json
+
+    return json.dumps(payload, ensure_ascii=False)
 
 
 async def _handle_list_triggers(agent_id: uuid.UUID) -> str:

@@ -214,28 +214,45 @@ async def _async_fire():
     return {"fired": True, "runtime_task_id": "rt"}
 
 
-# ── omitted interval → self-pace placeholder (B2, not implemented) ──────
+# ── omitted interval → self-paced loop (B2 dynamic mode) ─────────────────
 
 
 @pytest.mark.asyncio
-async def test_loop_command_without_interval_returns_self_pace_placeholder(monkeypatch):
+async def test_loop_command_without_interval_starts_self_paced_loop(monkeypatch):
+    """B2: /loop with no interval hands the cadence to the model — the prompt
+    is delivered into this session with the self-pace contract appended, no
+    interval trigger is created up front, and the model reschedules itself
+    via schedule_wakeup."""
     import app.api.commands as commands_api
 
     agent_id = uuid4()
     session_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="member")
     agent = SimpleNamespace(id=agent_id, tenant_id=uuid4(), creator_id=current_user.id)
+    session = SimpleNamespace(id=session_id, agent_id=agent_id)
     db = _FakeDB()
+    started: list[dict] = []
 
     async def fake_access(_db, _user, requested_agent_id):
         return agent, "manage"
 
     def fail_fire(*_a, **_k):
-        raise AssertionError("self-pace placeholder must not create or fire a trigger")
+        raise AssertionError("self-pace mode must not create or fire an interval trigger")
+
+    async def fake_load_session(_db, *, agent_id, session_id):
+        return session
+
+    async def fake_start_web_chat_run(**kwargs):
+        started.append(kwargs)
+        return {"run_id": "run-self-pace"}
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
     monkeypatch.setattr(commands_api, "is_agent_creator", lambda *_a, **_k: True)
     monkeypatch.setattr(commands_api, "_fire_loop_trigger_now", fail_fire)
+    monkeypatch.setattr(commands_api, "_load_chat_session", fake_load_session)
+    import app.services.web_chat_runtime as web_chat_runtime
+
+    monkeypatch.setattr(web_chat_runtime, "start_web_chat_run", fake_start_web_chat_run)
 
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
@@ -250,10 +267,14 @@ async def test_loop_command_without_interval_returns_self_pace_placeholder(monke
     )
 
     payload = result["result"]
-    assert payload["ok"] is False
-    assert payload["status"] == "self_pace_not_available"
-    assert "interval" in payload["message"].lower()
-    # no trigger persisted
+    assert payload["ok"] is True
+    assert payload["status"] == "self_pace_started"
+    assert payload["run_id"] == "run-self-pace"
+    assert started, "the kickoff turn must be delivered into this session"
+    content = started[0]["content"]
+    assert "keep watching the queue" in content
+    assert "schedule_wakeup" in content, "the kickoff must hand the cadence contract to the model"
+    # no interval trigger persisted
     assert db.added == []
 
 

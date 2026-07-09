@@ -670,15 +670,59 @@ def _parse_loop_args(arguments: dict[str, Any]) -> tuple[str | None, str, bool]:
     return (interval_token or None), prompt, False
 
 
-def _loop_self_pace_placeholder() -> dict[str, Any]:
+_SELF_PACE_KICKOFF_SUFFIX = (
+    "\n\n[Self-paced loop] No fixed interval was given — you own the cadence. "
+    "Do the work above now; when this round is done, call schedule_wakeup with "
+    "the delay that matches how fast the watched state actually changes "
+    "(60-3600s) and the prompt for your next round. When nothing useful "
+    "remains, call schedule_wakeup with stop=true and summarize."
+)
+
+
+async def _execute_loop_self_pace(
+    *,
+    db: AsyncSession,
+    agent: Any,
+    user: User,
+    session_id: str | None,
+    prompt: str,
+) -> dict[str, Any]:
+    """B2 dynamic /loop: no interval → the model paces itself.
+
+    The prompt is delivered into this session immediately with the self-pace
+    contract appended; each subsequent round the model reschedules via the
+    schedule_wakeup tool (same-session once triggers through normal trigger
+    governance). Nothing is created up front — the loop lives exactly as long
+    as the model keeps rescheduling."""
+    from app.services.web_chat_runtime import WEB_CHAT_TURN_TASK_TYPE, start_web_chat_run
+
+    if not prompt:
+        return {
+            "ok": False,
+            "command": "loop",
+            "status": "missing_prompt",
+            "message": "/loop needs a prompt, e.g. /loop keep the deploy healthy.",
+        }
+    session = await _load_chat_session(db, agent_id=agent.id, session_id=session_id)
+    run = await start_web_chat_run(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content=f"{prompt}{_SELF_PACE_KICKOFF_SUFFIX}",
+        display_content=f"/loop {prompt}",
+        runtime_task_type=WEB_CHAT_TURN_TASK_TYPE,
+        extra_metadata={"source": "loop_self_pace_kickoff", "command": "loop"},
+    )
     return {
-        "ok": False,
+        "ok": True,
         "command": "loop",
-        "status": "self_pace_not_available",
-        "message": (
-            "Self-pace mode (no interval) is not yet available. "
-            "Provide an interval, e.g. /loop 5m check the deploy status."
-        ),
+        "status": "self_pace_started",
+        "mode": "self_pace",
+        "prompt": prompt,
+        "run_id": run.get("run_id"),
+        "message": "Self-paced loop started: the agent schedules its own wakeups (schedule_wakeup) until it stops.",
+        "requires_api_persist": False,
     }
 
 
@@ -724,14 +768,18 @@ async def _execute_loop_command(
 
     interval_token, prompt, explicit = _parse_loop_args(arguments)
     if interval_token is None:
-        return _loop_self_pace_placeholder()
+        return await _execute_loop_self_pace(db=db, agent=agent, user=user, session_id=session_id, prompt=prompt)
     minutes, interval_error = _parse_loop_interval(interval_token)
     if minutes is None:
         # An explicit bad interval is a validation error; a natural leading token
-        # that is not an interval means the user omitted it → self-pace prompt.
+        # that is not an interval means the user omitted the interval → the whole
+        # text is the prompt for a self-paced loop (B2 dynamic mode).
         if explicit:
             return {"ok": False, "command": "loop", "status": "invalid_interval", "message": interval_error}
-        return _loop_self_pace_placeholder()
+        natural_prompt = " ".join(part for part in (interval_token, prompt) if part).strip()
+        return await _execute_loop_self_pace(
+            db=db, agent=agent, user=user, session_id=session_id, prompt=natural_prompt
+        )
     if not prompt:
         return {
             "ok": False,

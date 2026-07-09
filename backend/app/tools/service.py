@@ -258,6 +258,15 @@ def _inject_runtime_context_arguments(
         enriched["source_session_id"] = runtime_context.session_id
         return enriched
 
+    if tool_name == "schedule_wakeup":
+        # B2: a self-pace wakeup is always same-session by definition — the
+        # runtime supplies the live session id, never the model.
+        if not runtime_context.session_id or arguments.get("source_session_id"):
+            return arguments
+        enriched = dict(arguments)
+        enriched["source_session_id"] = runtime_context.session_id
+        return enriched
+
     if tool_name not in {"delegate_to_agent", "send_message_to_agent"}:
         return arguments
 

@@ -1,8 +1,8 @@
 # External Capability Trust Gate Plan
 
 日期：2026-06-26
-更新：2026-07-09，按当前 checkout 复核后收敛状态：核心骨架、准入门、Agent/Workspace 前端入口、Capability Factor Intake、Legacy migration dry-run 均已实装；完整远程安装闭环仍未完成
-状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、session-scoped try activation、component-level selected activation substrate、credential handle binding、external component/hook evidence tables、quarantine-only Materialize、revoke/deactivate 后端入口、Marketplace manual discovery source 管理、Capability Factor Intake / promotion proposal substrate、LegacyPackAdapter migration-only report、legacy pack migration dry-run API / Workspace UI、Agent/Workspace Extensions 入口已落地；install-time sandbox worker、远程 Git/GitHub/npm marketplace materializer、HiveExtensionManifestAdapter、production dry-run 执行与正式 backfill 仍未完成；hook/slash/app connector runtime activation 仍 fail-closed
+更新：2026-07-09，按当前 checkout 复核后进入完整闭环施工：核心骨架、准入门、Agent/Workspace 前端入口、Capability Factor Intake、Legacy migration dry-run 均已实装；本轮必须补齐外部/自产能力真实输入通道
+状态：CC/Codex component adapter、Trust Gate review/snapshot、Catalog、Agent durable activation、session-scoped try activation、component-level selected activation substrate、credential handle binding、external component/hook evidence tables、quarantine-only Materialize、revoke/deactivate 后端入口、Marketplace manual discovery source 管理、Capability Factor Intake / promotion proposal substrate、LegacyPackAdapter migration-only report、legacy pack migration dry-run API / Workspace UI、Agent/Workspace Extensions 入口已落地；本轮闭环项为：自产能力自动进入 Capability Factor Intake、远程 Git/GitHub/npm/skills.sh source 进入 materializer boundary、GitHub/CC/Codex marketplace manifest refresh 进入 entry cache；hook/slash/app connector runtime activation 仍 fail-closed
 范围：外部 Plugin/Extension 的发现、检验、审批、安装、激活、撤销与审计；Skill、MCP Server、Subagent、Hook 是 Plugin components，也保留单组件快捷导入入口
 上位文档：
 - `docs/agent-extension-surface-skill-mcp.md`
@@ -75,15 +75,62 @@ External Capability Trust Gate
 
 当前安全边界是 fail-closed：远程 source 和不支持的 component 不会静默进入 runtime。这是正确的安全姿态，但它也意味着远程插件安装主线还没有完全打通。
 
-下一步实现顺序必须先补闭环内缺口：
+### 0.2 本轮必须闭环的真实输入通道（2026-07-09）
 
-1. install-time sandbox worker / smoke test。
-2. revoke / deactivate 审计闭环与 MCP assignment 自动禁用。
-3. component-level activation 的前端选择器、credential binding prompt、hook allowlist approval route。
-4. MCP session try projection、Subagent session resolver。
-5. Git/GitHub/npm/CC/Codex marketplace 远程 refresh worker。
-6. 自产候选自动采集 hook 与 approved fork -> trusted snapshot 生成。
-7. production dry-run execution + legacy backfill apply gate。
+这轮不能只停在“治理骨架可演示”。必须把真实数据进入层补上，同时保持 CC 对齐和不重写 runtime 的北极星：
+
+```text
+CC semantic baseline
+  -> Trust Gate admission / materializer / marketplace / factor intake
+  -> existing Hive Skill / MCP / Subagent / Hook runtime projection
+```
+
+闭环项 1：自产能力自动进入 Capability Factor Intake。
+
+- 目标：Skill distiller / capability reuse / subagent proposal / evolution 产出的可复用能力候选，自动写入 `capability_factors`。
+- 约束：自动采集只生成 factor + review，不自动发布 workspace catalog，不自动激活到其他 agent。
+- 触点：
+  - `backend/app/services/capability_factor_intake.py`
+  - `backend/app/services/skill_distiller.py`
+  - `backend/app/services/capability_reuse_service.py`
+  - `backend/app/tools/handlers/subagent.py` 或实际 subagent proposal 入口
+- 验收：
+  - 单测证明真实产出路径调用 factor intake，而不是只靠手动 API。
+  - 外部 upstream / external usage factor 默认 `self_evolution_eligible=false`。
+  - approved proposal 仍只产生 promotion decision，不绕过 Trust Gate snapshot。
+
+闭环项 2：远程 source materializer。
+
+- 目标：GitHub / git / URL / skills.sh / npm-style source 先进入 dedicated materializer boundary，产出 resolved ref、artifact hash、file manifest、lock/report，再 stage review。
+- 约束：不能在 Agent runtime、ToolRuntimeService、web chat worker 或 host HOME 裸跑 Git/npm/npx；本地实现可用受限 fetcher + allowlist + size limit + command-plan fail-closed 作为第一层 boundary，但所有报告必须显式标记 provider、network policy、host secrets 不继承。
+- 触点：
+  - `backend/app/services/external_capabilities/materializer.py`
+  - `backend/app/services/external_capabilities/skill_source_adapter.py`
+  - `backend/app/api/files.py` / `backend/app/api/skills.py`
+- 验收：
+  - GitHub raw/tree source 能 materialize 成 quarantined package 并进入 review。
+  - 带 install-time command 的 source 只生成 command plan / blocking note，不能执行命令。
+  - path escape、oversize、非 allowlist host 均 fail-closed。
+
+闭环项 3：远程 marketplace refresh。
+
+- 目标：Workspace marketplace source 不再只支持 `manual` config；GitHub/CC/Codex marketplace manifest 能 refresh 到 `external_marketplace_entries`，用户再 submit review。
+- 约束：marketplace 是发现层，不是 trust root；refresh 只能更新 entry cache，不能创建 approved snapshot，不能改变 agent runtime。
+- 触点：
+  - `backend/app/services/external_capabilities/marketplace_sources.py`
+  - `frontend/src/pages/workspace/WorkspaceExtensionCatalogSection.tsx`
+- 验收：
+  - manual / github / cc_marketplace / codex_marketplace source 都能 sync。
+  - remote marketplace entry submit 仍走 `stage_external_capability_review()`。
+  - frontend source type 不再硬编码 manual-only。
+
+本轮实现顺序：
+
+1. 文档先行：把三个真实输入通道的目标、边界、验收写清。
+2. 自产能力自动采集：真实 Skill/Subagent 产出路径写入 Capability Factor Intake。
+3. 远程 materializer：GitHub/git/url/skills.sh/npm-style source 进入 materializer boundary，产出 hash/report 后才能 stage review。
+4. 远程 marketplace refresh：GitHub/CC/Codex marketplace manifest 同步 entry cache，仍需 submit review 才能进入 Trust Gate。
+5. 更新前后端入口和证据：Agent/Workspace UI、API adapter、targeted tests、build、文档证据一起收敛。
 
 核心原则：
 

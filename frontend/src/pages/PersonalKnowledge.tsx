@@ -1,5 +1,4 @@
 import { type FormEvent, type ReactNode, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -665,10 +664,6 @@ export default function PersonalKnowledge() {
           <h1>{t('personalKnowledge.title', '个人知识库')}</h1>
           <p>{t('personalKnowledge.subtitle', 'Owner 级别的一份真相：文档、笔记、画像、授权入口都从这里进入。')}</p>
         </div>
-        <Link to="/enterprise/memory" className="btn btn-secondary">
-          <IconShieldCheck size={15} stroke={1.7} />
-          {t('personalKnowledge.companyReadonly', '企业库（只读）')}
-        </Link>
       </header>
 
       <nav className="personal-kb-tabs" role="tablist" aria-label={t('personalKnowledge.navLabel', 'Personal knowledge sections')}>

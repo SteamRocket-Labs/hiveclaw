@@ -2938,7 +2938,6 @@
   "personalKnowledge": {
     "title": "个人知识库",
     "subtitle": "Owner 级别的一份真相：文档、笔记、画像、授权入口都从这里进入。",
-    "companyReadonly": "企业库（只读）",
     "navLabel": "个人知识库分区",
     "inbox": "收集箱",
     "inboxHelper": "投喂与管线",

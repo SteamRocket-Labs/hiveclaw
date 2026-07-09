@@ -2911,7 +2911,6 @@
   "personalKnowledge": {
     "title": "Personal Knowledge Base",
     "subtitle": "One owner-level truth surface for documents, notes, profiles, and grants.",
-    "companyReadonly": "Company KB (read-only)",
     "navLabel": "Personal knowledge sections",
     "inbox": "Inbox",
     "inboxHelper": "Ingest pipeline",

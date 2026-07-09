@@ -192,7 +192,8 @@ describe('PersonalKnowledge', () => {
     expect(html).toContain('知识网');
     expect(html).toContain('画像');
     expect(html).toContain('授权');
-    expect(html).toContain('企业库（只读）');
+    expect(html).not.toContain('企业库（只读）');
+    expect(html).not.toContain('/enterprise/memory');
     expect(html).toContain('+ 投喂');
     expect(html).toContain('拖拽或选择文件');
     expect(html).toContain('PDF');

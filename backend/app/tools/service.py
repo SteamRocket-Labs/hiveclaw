@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable
 from app.agents.coordination import CoordinationRuntime, coordination_runtime
 from app.agents.coordination_gateway import CoordinationGateway, InProcessCoordinationGateway
 from app.agents.coordination_wiring import gateway_scope
-from app.runtime.authorization_decision import build_authorization_decision_entry
+from app.runtime.decision_ledger import build_authorization_decision_entry
 from app.runtime.ccplus_contracts import ToolCallLifecycleV1, ToolExecutionFrameV1
 from app.services.action_preflight import (
     ActionPreflightInput,

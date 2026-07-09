@@ -2373,7 +2373,7 @@ def _invalidate_prompt_prefix_cache(session_context: SessionContext | None, *, r
         return
     cache_key = str(session_context.metadata.get(_PROMPT_CACHE_KEY_FIELD) or "")
     if cache_key:
-        from app.runtime.cache_decision_ledger import append_cache_decision_entry, build_cache_decision_entry
+        from app.runtime.decision_ledger import append_cache_decision_entry, build_cache_decision_entry
 
         append_cache_decision_entry(
             session_context,
@@ -3550,7 +3550,7 @@ class AgentKernel:
                 extra={"metric": "prompt_cache", "cache_hit": _cache_valid},
             )
             if session_ctx is not None:
-                from app.runtime.cache_decision_ledger import append_cache_decision_entry, build_cache_decision_entry
+                from app.runtime.decision_ledger import append_cache_decision_entry, build_cache_decision_entry
 
                 append_cache_decision_entry(
                     session_ctx,
@@ -3989,7 +3989,7 @@ class AgentKernel:
                 event_type = str(data.get("event_type") or "context_window_status")
                 runtime_decision_entry = data.get("runtime_decision_entry")
                 if request.session_context is not None and isinstance(runtime_decision_entry, dict):
-                    from app.runtime.runtime_decision_ledger import append_runtime_decision_entry
+                    from app.runtime.decision_ledger import append_runtime_decision_entry
 
                     append_runtime_decision_entry(request.session_context, runtime_decision_entry)
                 if (

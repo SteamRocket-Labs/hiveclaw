@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from app.runtime.authorization_decision import build_authorization_decision_entry
+from app.runtime.decision_ledger import build_authorization_decision_entry
 from app.runtime.ccplus_contracts import TruthEvidencePackV1
 from app.services.privacy_layer import SensitivityLevel
 

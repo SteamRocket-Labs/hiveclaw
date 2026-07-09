@@ -1,7 +1,13 @@
-"""Unified Agent Cycle decision matrix entries."""
+"""Unified runtime decision ledger.
+
+One home for the runtime's decision-entry builders (F slimming: the former
+cache_decision_ledger / runtime_decision_ledger / authorization_decision
+single-builder modules folded in here — same schemas, same behavior).
+"""
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 AGENT_CYCLE_DECISION_SCHEMA = "hive.ccplus.agent_cycle_decision.v1"
@@ -136,9 +142,159 @@ def append_agent_cycle_decision_entry(session_context: Any | None, entry: dict[s
     ensure_runtime_assembly_state(session_context).record_agent_cycle_decision(entry, limit=limit)
 
 
+# ── Cache decisions (formerly cache_decision_ledger.py) ─────────────────────
+
+
+def _hash_cache_key(cache_key: str) -> str:
+    return hashlib.sha256(str(cache_key or "").encode("utf-8")).hexdigest()[:16]
+
+
+def build_cache_decision_entry(
+    *,
+    cache_surface: str,
+    cache_key: str = "",
+    decision: str,
+    invalidation_reason: str = "",
+    shared_with_parent: bool = False,
+) -> dict[str, Any]:
+    return {
+        "schema": "hive.ccplus.cache_decision.v1",
+        "cache_surface": str(cache_surface or "none"),
+        "cache_key": "[redacted]" if cache_key else "",
+        "cache_key_hash": _hash_cache_key(cache_key) if cache_key else "",
+        "decision": str(decision or "none"),
+        "invalidation_reason": str(invalidation_reason or ""),
+        "shared_with_parent": bool(shared_with_parent),
+    }
+
+
+def append_cache_decision_entry(session_context: Any | None, entry: dict[str, Any], *, limit: int = 50) -> None:
+    if session_context is None:
+        return
+    from app.runtime.context import ensure_runtime_assembly_state
+
+    ensure_runtime_assembly_state(session_context).record_cache_decision(entry, limit=limit)
+
+
+# ── Runtime control decisions (formerly runtime_decision_ledger.py) ─────────
+
+
+def _budget_result(*, trigger: str, status: str, details: dict[str, Any]) -> str:
+    if details.get("tool_result_trimmed"):
+        return "tool_result_trimmed"
+    if details.get("budget_result"):
+        return str(details["budget_result"])
+    if trigger == "tool_result_budget":
+        return "within_budget" if status != "failed" else "over_budget"
+    return "not_applicable"
+
+
+def build_runtime_decision_entry(
+    *,
+    kind: str,
+    status: str,
+    trigger: str = "",
+    reason: str = "",
+    next_action: str = "",
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    details_payload = dict(details or {})
+    agent_cycle_decision_entry = build_agent_cycle_decision_entry(
+        subsystem=str(kind or "unknown"),
+        trigger=str(trigger or "runtime"),
+        judge=f"{str(kind or 'runtime')}_controller",
+        decision=str(status or "unknown"),
+        outcome=str(status or "unknown"),
+        next_action=str(next_action or ""),
+        model_interaction="runtime_control",
+        user_visible=False,
+        permission_result=str(details_payload.get("permission_result") or "unchanged"),
+        budget_result=_budget_result(trigger=str(trigger or ""), status=str(status or ""), details=details_payload),
+        details=details_payload,
+    )
+    return {
+        "schema": "hive.ccplus.runtime_decision.v1",
+        "kind": str(kind or "unknown"),
+        "trigger": str(trigger or ""),
+        "status": str(status or "unknown"),
+        "reason": str(reason or ""),
+        "next_action": str(next_action or ""),
+        "judge": agent_cycle_decision_entry["judge"],
+        "decision": agent_cycle_decision_entry["decision"],
+        "outcome": agent_cycle_decision_entry["outcome"],
+        "model_interaction": agent_cycle_decision_entry["model_interaction"],
+        "user_visible": agent_cycle_decision_entry["user_visible"],
+        "permission_result": agent_cycle_decision_entry["permission_result"],
+        "budget_result": agent_cycle_decision_entry["budget_result"],
+        "agent_cycle_decision_entry": agent_cycle_decision_entry,
+        "details": details_payload,
+    }
+
+
+def append_runtime_decision_entry(session_context: Any | None, entry: dict[str, Any], *, limit: int = 100) -> None:
+    if session_context is None:
+        return
+    from app.runtime.context import ensure_runtime_assembly_state
+
+    ensure_runtime_assembly_state(session_context).record_runtime_decision(entry, limit=limit)
+    agent_cycle_entry = entry.get("agent_cycle_decision_entry")
+    if isinstance(agent_cycle_entry, dict):
+        append_agent_cycle_decision_entry(session_context, agent_cycle_entry, limit=limit)
+
+
+# ── Authorization decisions (formerly authorization_decision.py) ────────────
+
+AUTHORIZATION_DECISION_SCHEMA = "hive.ccplus.authorization_decision.v1"
+
+
+def _auth_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _auth_reason_text(reason: Any) -> str:
+    if isinstance(reason, (list, tuple, set)):
+        return ",".join(str(item) for item in reason if str(item or "").strip())
+    return str(reason or "").strip()
+
+
+def build_authorization_decision_entry(
+    *,
+    resource: Any,
+    action: Any,
+    result: Any,
+    reason: Any = None,
+    principal: Any = None,
+    company: Any = None,
+    sensitivity: Any = None,
+    policy: Any = None,
+    model_visible_message: Any = None,
+    source: str = "runtime",
+) -> dict[str, Any]:
+    return {
+        "schema": AUTHORIZATION_DECISION_SCHEMA,
+        "resource": _auth_text(resource),
+        "action": _auth_text(action),
+        "principal": _auth_text(principal),
+        "company": _auth_text(company),
+        "sensitivity": _auth_text(sensitivity),
+        "policy": _auth_text(policy),
+        "result": _auth_text(result),
+        "reason": _auth_reason_text(reason) or None,
+        "model_visible_message": _auth_text(model_visible_message),
+        "source": source,
+    }
+
+
 __all__ = [
     "AGENT_CYCLE_DECISION_SCHEMA",
+    "AUTHORIZATION_DECISION_SCHEMA",
     "build_agent_cycle_decision_matrix",
     "append_agent_cycle_decision_entry",
     "build_agent_cycle_decision_entry",
+    "build_cache_decision_entry",
+    "append_cache_decision_entry",
+    "build_runtime_decision_entry",
+    "append_runtime_decision_entry",
+    "build_authorization_decision_entry",
 ]

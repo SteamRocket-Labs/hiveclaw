@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
-from app.runtime.authorization_decision import build_authorization_decision_entry
+from app.runtime.decision_ledger import build_authorization_decision_entry
 from app.runtime.ccplus_contracts import (
     PendingToolFrameV1,
     PermissionMode,

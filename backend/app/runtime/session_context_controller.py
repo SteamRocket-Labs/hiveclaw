@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from app.runtime.ccplus_contracts import CompactionLifecycleV1, ContextPolicyV1
-from app.runtime.runtime_decision_ledger import build_runtime_decision_entry
+from app.runtime.decision_ledger import build_runtime_decision_entry
 from app.services.llm_client import LLMMessage
 
 CC_AUTOCOMPACT_BUFFER_TOKENS = 13_000

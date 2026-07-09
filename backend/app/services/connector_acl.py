@@ -14,7 +14,7 @@ import re
 import uuid
 from typing import Any
 
-from app.runtime.authorization_decision import build_authorization_decision_entry
+from app.runtime.decision_ledger import build_authorization_decision_entry
 
 CONNECTOR_SOURCE_ITEMS_METADATA_KEY = "connector_source_items"
 GENERATED_SOURCE_PERMISSION_CHECKS_METADATA_KEY = "generated_source_permission_checks"

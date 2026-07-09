@@ -132,6 +132,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "send_message_to_agent",
         "send_web_message",
         "set_trigger",
+        "schedule_wakeup",
         "submit_t3_consolidation_pitch",
         "submit_t3_memory_gate_review",
         "submit_t3_revised_patch",

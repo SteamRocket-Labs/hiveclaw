@@ -176,7 +176,7 @@ def test_tool_result_ledger_mirrors_into_runtime_assembly_state() -> None:
 
 
 def test_cache_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
-    from app.runtime.cache_decision_ledger import append_cache_decision_entry, build_cache_decision_entry
+    from app.runtime.decision_ledger import append_cache_decision_entry, build_cache_decision_entry
 
     session = SessionContext(session_id="cache-ledger")
     entry = build_cache_decision_entry(
@@ -196,7 +196,7 @@ def test_cache_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
 
 
 def test_runtime_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
-    from app.runtime.runtime_decision_ledger import append_runtime_decision_entry, build_runtime_decision_entry
+    from app.runtime.decision_ledger import append_runtime_decision_entry, build_runtime_decision_entry
 
     session = SessionContext(session_id="runtime-decision-ledger")
     entry = build_runtime_decision_entry(

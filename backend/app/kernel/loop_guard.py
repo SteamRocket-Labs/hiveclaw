@@ -13,13 +13,34 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
-from app.runtime.outcome import RuntimeOutcome
 
 _ABORT_MULTIPLIER = 1.5  # abort threshold = ceil(warn threshold × 1.5)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeOutcome:
+    """Shared runtime outcome contract (inlined from app.runtime.outcome —
+    loop_guard is its only consumer)."""
+
+    status: str
+    terminal_reason: str | None
+    next_action: str
+    reason: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def to_event(self) -> dict[str, Any]:
+        return {
+            "schema": "hive.ccplus.runtime_outcome.v1",
+            "status": self.status,
+            "terminal_reason": self.terminal_reason,
+            "next_action": self.next_action,
+            "reason": self.reason,
+            "details": dict(self.details),
+        }
 
 
 @dataclass(frozen=True)

@@ -232,7 +232,7 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 | Dynamic activation / working set | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Session feedback 回流 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Dream / reflection | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Skill evolution | ● | ● | ● | ● | ● | ● | △ | **局部闭环** |
+| Skill evolution | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Personal KB Tool-first read | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Personal KB 跨轮消费 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Personal KB owner 管理 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
@@ -242,6 +242,8 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 | A2A / peer delegation | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Interoperability descriptor | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Company KB | × | × | × | × | × | × | × | **已知缺失，第二部分** |
+
+这里把 Skill evolution 标为闭环，指 evidence → candidate → eval → governed promotion → revision/rollback → runtime consumption 已有当前路径与测试；长期与 Hermes/SOTA 的行为 benchmark 仍持续运行，但它是质量回归基线，不是七原子中的消费或验收断点。
 
 ### 5.2 Personal KB 的正确边界
 

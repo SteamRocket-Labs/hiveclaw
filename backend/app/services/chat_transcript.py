@@ -80,6 +80,34 @@ def _metadata_with_transcript_refs(
     return clean
 
 
+async def lock_transcript_session(db: AsyncSession, *, session_id: uuid.UUID) -> None:
+    """Serialize transcript mutations for one session inside the current transaction."""
+
+    bind = db.get_bind() if hasattr(db, "get_bind") else None
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+    if dialect_name == "postgresql":
+        lock_key = int.from_bytes(session_id.bytes[:8], byteorder="big", signed=True)
+        await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
+
+
+async def read_transcript_revision(
+    db: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    lock: bool = False,
+) -> int:
+    """Return the canonical last committed transcript sequence for CAS operations."""
+
+    if lock:
+        await lock_transcript_session(db, session_id=session_id)
+    result = await db.execute(
+        select(func.coalesce(func.max(ChatTranscriptEvent.sequence), 0)).where(
+            ChatTranscriptEvent.session_id == session_id
+        )
+    )
+    return int(result.scalar_one())
+
+
 async def allocate_transcript_sequence(db: AsyncSession, *, session_id: uuid.UUID) -> int:
     """Allocate a collision-free sequence inside the caller's DB transaction.
 
@@ -91,17 +119,8 @@ async def allocate_transcript_sequence(db: AsyncSession, *, session_id: uuid.UUI
         # Narrow compatibility for unit-test recording sessions; production
         # AsyncSession always takes the DB-serialized path below.
         return uuid.uuid4().int & ((1 << 63) - 1)
-    bind = db.get_bind() if hasattr(db, "get_bind") else None
-    dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
-    if dialect_name == "postgresql":
-        lock_key = int.from_bytes(session_id.bytes[:8], byteorder="big", signed=True)
-        await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
-    result = await db.execute(
-        select(func.coalesce(func.max(ChatTranscriptEvent.sequence), 0) + 1).where(
-            ChatTranscriptEvent.session_id == session_id
-        )
-    )
-    return int(result.scalar_one())
+    revision = await read_transcript_revision(db, session_id=session_id, lock=True)
+    return revision + 1
 
 
 def build_transcript_item_contract(

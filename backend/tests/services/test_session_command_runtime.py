@@ -21,7 +21,7 @@ class _ScalarResult:
 
     def scalars(self):
         value = self._value if isinstance(self._value, list) else ([] if self._value is None else [self._value])
-        return SimpleNamespace(all=lambda: value)
+        return SimpleNamespace(all=lambda: value, first=lambda: value[0] if value else None)
 
 
 class _DB:
@@ -451,6 +451,7 @@ async def test_rewind_without_checkpoint_opens_selector_and_does_not_create_sess
     assert result["session_id"] == str(session.id)
     assert "session" not in result
     assert result["ui_action"]["type"] == "open_checkpoint_selector"
+    assert result["rewind_guard"] == {"last_sequence": 3}
     assert [item["checkpoint_event_id"] for item in result["ui_action"]["checkpoints"]] == [
         str(first.id),
         str(second.id),
@@ -507,6 +508,161 @@ async def test_rewind_with_checkpoint_updates_active_projection_without_new_sess
     assert session.transcript_metadata_json["active_projection"]["draft_content"] == "first"
     assert db.added == []
     assert db.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_rewind_interrupts_active_run_then_applies_under_stable_revision(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    second = _event(session, "user_message", sequence=3, content="second", role="user")
+    run_id = uuid4()
+    db = _DB(session, _db_rows(first, second))
+    active_states = iter([{"run_id": str(run_id), "status": "running"}, None])
+    revisions = iter([3, 3])
+    cancelled = []
+    appended = []
+    session_locks = []
+    revision_locks = []
+    lock_order = []
+
+    async def fake_active(**_kwargs):
+        return next(active_states)
+
+    async def fake_cancel(**kwargs):
+        cancelled.append(kwargs)
+        return {"run_id": str(run_id), "status": "killed"}
+
+    async def fake_revision(*_args, **_kwargs):
+        revision_locks.append(_kwargs["lock"])
+        lock_order.append(f"revision:{_kwargs['lock']}")
+        return next(revisions)
+
+    async def fake_session_lock(*_args, **_kwargs):
+        session_locks.append(_kwargs["session_id"])
+        lock_order.append("session_row")
+
+    async def fake_append(**kwargs):
+        appended.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=4)
+
+    monkeypatch.setattr(runtime, "get_active_web_chat_run", fake_active)
+    monkeypatch.setattr(runtime, "cancel_web_chat_run", fake_cancel)
+    monkeypatch.setattr(runtime, "_read_rewind_revision", fake_revision, raising=False)
+    monkeypatch.setattr(runtime, "_lock_rewind_session_row", fake_session_lock, raising=False)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="rewind",
+        session_id=session.id,
+        arguments={
+            "checkpoint_event_id": str(first.id),
+            "mode": "conversation",
+            "expected_last_sequence": 3,
+        },
+    )
+
+    assert result["action"] == "rewind_applied"
+    assert result["rewind_guard"]["interrupted_active_run"] is True
+    assert result["rewind_guard"]["last_sequence"] == 3
+    assert cancelled[0]["run_id"] == run_id
+    assert session_locks == [session.id]
+    assert revision_locks == [False, True]
+    assert lock_order == ["revision:False", "revision:True", "session_row"]
+    assert appended[0]["event_type"] == "session_rewind"
+
+
+@pytest.mark.asyncio
+async def test_rewind_rejects_when_revision_changes_while_interrupting(monkeypatch):
+    import app.services.session_command_runtime as runtime
+    from fastapi import HTTPException
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    second = _event(session, "user_message", sequence=3, content="second", role="user")
+    run_id = uuid4()
+    db = _DB(session, _db_rows(first, second))
+    active_states = iter([{"run_id": str(run_id), "status": "running"}, None])
+    revisions = iter([3, 4])
+    appended = []
+
+    async def fake_active(**_kwargs):
+        return next(active_states)
+
+    async def fake_cancel(**_kwargs):
+        return {"run_id": str(run_id), "status": "killed"}
+
+    async def fake_revision(*_args, **_kwargs):
+        return next(revisions)
+
+    async def fake_append(**kwargs):
+        appended.append(kwargs)
+
+    monkeypatch.setattr(runtime, "get_active_web_chat_run", fake_active)
+    monkeypatch.setattr(runtime, "cancel_web_chat_run", fake_cancel)
+    monkeypatch.setattr(runtime, "_read_rewind_revision", fake_revision, raising=False)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append)
+
+    with pytest.raises(HTTPException) as exc:
+        await runtime.execute_session_command(
+            db=db,
+            agent=agent,
+            user=user,
+            access_level="use",
+            command_name="rewind",
+            session_id=session.id,
+            arguments={"checkpoint_event_id": str(first.id), "expected_last_sequence": 3},
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "rewind_revision_conflict"
+    assert (session.transcript_metadata_json or {}).get("active_projection") is None
+    assert appended == []
+
+
+@pytest.mark.asyncio
+async def test_rewind_rejects_stale_client_revision_before_interrupt(monkeypatch):
+    import app.services.session_command_runtime as runtime
+    from fastapi import HTTPException
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    current = _event(session, "assistant_message", sequence=4, content="new result", role="assistant")
+    db = _DB(session, _db_rows(first, current))
+
+    async def fake_revision(*_args, **_kwargs):
+        return 4
+
+    async def fail_active(**_kwargs):
+        raise AssertionError("stale rewind must fail before touching the active run")
+
+    monkeypatch.setattr(runtime, "_read_rewind_revision", fake_revision, raising=False)
+    monkeypatch.setattr(runtime, "get_active_web_chat_run", fail_active)
+
+    with pytest.raises(HTTPException) as exc:
+        await runtime.execute_session_command(
+            db=db,
+            agent=agent,
+            user=user,
+            access_level="use",
+            command_name="rewind",
+            session_id=session.id,
+            arguments={"checkpoint_event_id": str(first.id), "expected_last_sequence": 3},
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "rewind_revision_conflict"
 
 
 @pytest.mark.asyncio
@@ -574,6 +730,45 @@ async def test_rewind_workspace_mode_requires_explicit_restore_confirmation(monk
     assert result["ui_action"]["checkpoint_event_id"] == str(first.id)
     assert result["ui_action"]["requested_mode"] == "workspace"
     assert result["debug_payload"]["requested_mode"] == "workspace"
+
+
+@pytest.mark.asyncio
+async def test_workspace_rewind_does_not_refresh_a_stale_revision_during_confirmation():
+    from app.services.session_command_runtime import execute_session_command
+    from fastapi import HTTPException
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    latest = _event(session, "assistant_message", sequence=3, content="latest", role="assistant")
+    session.transcript_metadata_json = {
+        "workspace_snapshots": {
+            str(first.id): {
+                "checkpoint_event_id": str(first.id),
+                "manifest_path": "runtime_artifacts/snap/manifest.json",
+            }
+        }
+    }
+    db = _DB(session, _db_rows(first, latest))
+
+    with pytest.raises(HTTPException) as exc:
+        await execute_session_command(
+            db=db,
+            agent=agent,
+            user=user,
+            access_level="use",
+            command_name="rewind",
+            session_id=session.id,
+            arguments={
+                "checkpoint_event_id": str(first.id),
+                "mode": "workspace",
+                "expected_last_sequence": 2,
+            },
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["reason"] == "stale_workspace_confirmation"
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ async def test_concurrent_transcript_appends_allocate_unique_session_sequences(o
     from app.models.chat_session import ChatSession
     from app.models.tenant import Tenant
     from app.models.user import User
-    from app.services.chat_transcript import append_session_event
+    from app.services.chat_transcript import append_session_event, read_transcript_revision
 
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
@@ -56,8 +56,11 @@ async def test_concurrent_transcript_appends_allocate_unique_session_sequences(o
             return result.sequence
 
     sequences = await asyncio.gather(append("first"), append("second"))
+    async with owner_sessionmaker() as db:
+        revision = await read_transcript_revision(db, session_id=session_id, lock=True)
     assert len(set(sequences)) == 2
     assert max(sequences) - min(sequences) == 1
+    assert revision == max(sequences)
 
 
 async def test_committed_transcript_projects_to_t0_once_and_persists_watermark(

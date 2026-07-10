@@ -295,11 +295,13 @@ export function buildSessionRewindCommandArgs(
   checkpointEventId: string,
   mode: SessionRewindMode = 'conversation',
   confirmWorkspaceRestore = false,
+  expectedLastSequence?: number | null,
 ): Record<string, unknown> {
   return {
     checkpoint_event_id: checkpointEventId,
     mode,
     ...(confirmWorkspaceRestore ? { confirm_workspace_restore: true } : {}),
+    ...(typeof expectedLastSequence === 'number' ? { expected_last_sequence: expectedLastSequence } : {}),
   };
 }
 
@@ -1058,6 +1060,7 @@ function recordValue(value: unknown): Record<string, unknown> {
 function workspaceRestoreConfirmationArgs(control: SessionCommandControlState): {
   checkpointEventId: string;
   mode: SessionRewindMode;
+  expectedLastSequence: number | null;
 } {
   const payload = recordValue(control.payload);
   const uiAction = recordValue(payload.ui_action);
@@ -1074,17 +1077,28 @@ function workspaceRestoreConfirmationArgs(control: SessionCommandControlState): 
       || debugPayload.requested_mode
       || payload.requested_mode,
   );
-  return { checkpointEventId, mode };
+  const rewindGuard = recordValue(payload.rewind_guard);
+  const rawSequence = rewindGuard.last_sequence;
+  const expectedLastSequence = typeof rawSequence === 'number'
+    ? rawSequence
+    : (typeof rawSequence === 'string' && rawSequence.trim() ? Number(rawSequence) : null);
+  return {
+    checkpointEventId,
+    mode,
+    expectedLastSequence: Number.isFinite(expectedLastSequence) ? expectedLastSequence : null,
+  };
 }
 
 export function SessionCommandControlPanel({
   control,
   onDismiss,
   onRunCommand,
+  rewindUnavailableReason,
 }: {
   control?: SessionCommandControlState | null;
   onDismiss: () => void;
   onRunCommand: (command: string, args?: Record<string, unknown>) => void | Promise<unknown>;
+  rewindUnavailableReason?: string | null;
 }) {
   const checkpoints = control?.checkpoints || [];
   const checkpointIds = checkpoints.map(checkpointId);
@@ -1105,6 +1119,11 @@ export function SessionCommandControlPanel({
   const confirmationArgs = control.type === 'workspace_restore_confirmation'
     ? workspaceRestoreConfirmationArgs(control)
     : null;
+  const rewindGuard = recordValue(control.payload?.rewind_guard);
+  const rawExpectedSequence = rewindGuard.last_sequence;
+  const expectedLastSequence = typeof rawExpectedSequence === 'number'
+    ? rawExpectedSequence
+    : (typeof rawExpectedSequence === 'string' && rawExpectedSequence.trim() ? Number(rawExpectedSequence) : null);
   const hasPanelBody = checkpoints.length > 0 || details.length > 0 || Boolean(confirmationArgs);
   return (
     <section data-testid="session-command-control-panel" className="session-tui-command-panel">
@@ -1193,7 +1212,17 @@ export function SessionCommandControlPanel({
                         data-testid="session-checkpoint-rewind-action"
                         data-session-command="rewind"
                         data-rewind-mode={rewindMode}
-                        onClick={() => onRunCommand('rewind', buildSessionRewindCommandArgs(id, rewindMode))}
+                        disabled={Boolean(rewindUnavailableReason)}
+                        title={rewindUnavailableReason || undefined}
+                        onClick={() => onRunCommand(
+                          'rewind',
+                          buildSessionRewindCommandArgs(
+                            id,
+                            rewindMode,
+                            false,
+                            Number.isFinite(expectedLastSequence) ? expectedLastSequence : null,
+                          ),
+                        )}
                       >
                         Rewind here
                       </button>
@@ -1211,6 +1240,9 @@ export function SessionCommandControlPanel({
               );
             })}
           </div>
+          {rewindUnavailableReason ? (
+            <div className="session-tui-row-meta" role="status">{rewindUnavailableReason}</div>
+          ) : null}
         </div>
       ) : null}
       {confirmationArgs ? (
@@ -1221,10 +1253,16 @@ export function SessionCommandControlPanel({
               data-testid="session-workspace-restore-confirm-action"
               data-session-command="rewind"
               data-rewind-mode={confirmationArgs.mode}
-              disabled={!confirmationArgs.checkpointEventId}
+              disabled={!confirmationArgs.checkpointEventId || Boolean(rewindUnavailableReason)}
+              title={rewindUnavailableReason || undefined}
               onClick={() => onRunCommand(
                 'rewind',
-                buildSessionRewindCommandArgs(confirmationArgs.checkpointEventId, confirmationArgs.mode, true),
+                buildSessionRewindCommandArgs(
+                  confirmationArgs.checkpointEventId,
+                  confirmationArgs.mode,
+                  true,
+                  confirmationArgs.expectedLastSequence,
+                ),
               )}
             >
               Confirm restore
@@ -3287,6 +3325,12 @@ function AgentChatSection({
   const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : EMPTY_CHAT_MESSAGES;
   const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : EMPTY_CHAT_MESSAGES;
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
+  const normalizedActiveRunStatus = String(activeRunStatus || '').trim().toLowerCase();
+  const rewindUnavailableReason = isStreaming
+    || isWaiting
+    || ['created', 'pending', 'queued', 'running', 'started', 'in_progress', 'resuming', 'waiting', 'waiting_user'].includes(normalizedActiveRunStatus)
+    ? t('sessionWorkbench.rewind.activeRunBlocked', 'Stop the current turn before rewinding. Branch remains available.')
+    : null;
   const {
     selectedId: selectedThreadItemId,
     selectedItem: selectedThreadItem,
@@ -3393,10 +3437,10 @@ function AgentChatSection({
 
 	  const rewindFromMessage = React.useCallback(
 	    async (message: AgentChatMessage) => {
-	      if (!message.transcriptEventId || !onRunSessionCommand) return;
+	      if (!message.transcriptEventId || !onRunSessionCommand || rewindUnavailableReason) return;
 	      await onRunSessionCommand('rewind', { checkpoint_event_id: String(message.transcriptEventId) });
 	    },
-	    [onRunSessionCommand],
+	    [onRunSessionCommand, rewindUnavailableReason],
 	  );
 
   const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
@@ -3609,7 +3653,7 @@ function AgentChatSection({
           onOpenArtifact={openArtifact}
           onBranchMessage={startBranchAction}
           onFeedbackMessage={submitMessageFeedback}
-          onRewindMessage={rewindFromMessage}
+          onRewindMessage={rewindUnavailableReason ? undefined : rewindFromMessage}
           t={t}
 	      />
 	    );
@@ -4373,6 +4417,7 @@ function AgentChatSection({
                 control={sessionCommandControl}
                 onDismiss={onDismissSessionCommandControl || (() => undefined)}
                 onRunCommand={onRunSessionCommand || (() => undefined)}
+                rewindUnavailableReason={rewindUnavailableReason}
               />
               <SessionComposer
                 value={chatInput}

@@ -1382,6 +1382,31 @@ describe('AgentDetail extracted sections', () => {
       mode: 'both',
       confirm_workspace_restore: true,
     });
+    expect(buildSessionRewindCommandArgs('evt-1', 'conversation', false, 12)).toEqual({
+      checkpoint_event_id: 'evt-1',
+      mode: 'conversation',
+      expected_last_sequence: 12,
+    });
+  });
+
+  it('disables Rewind but keeps Branch available while a turn is active', () => {
+    const markup = renderToStaticMarkup(
+      <SessionCommandControlPanel
+        control={{
+          type: 'checkpoint_selector',
+          title: 'Select checkpoint',
+          checkpoints: [{ checkpoint_event_id: 'evt-1', sequence: 1, content: 'First turn' }],
+          payload: { rewind_guard: { last_sequence: 12 } },
+        }}
+        rewindUnavailableReason="Stop the current turn before rewinding."
+        onDismiss={vi.fn()}
+        onRunCommand={vi.fn()}
+      />,
+    );
+
+    expect(markup).toMatch(/data-testid="session-checkpoint-rewind-action"[^>]*disabled=""/);
+    expect(markup).toMatch(/data-testid="session-checkpoint-branch-action"(?![^>]*disabled="")[^>]*>/);
+    expect(markup).toContain('Stop the current turn before rewinding.');
   });
 
   it('renders workspace rewind confirmation as an explicit command panel action', () => {

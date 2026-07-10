@@ -45,7 +45,7 @@ from app.services.chat_message_parts import (
     build_tool_call_event,
 )
 from app.services.chat_artifact_delivery import create_chat_artifacts_for_message, tool_session_write_paths
-from app.services.chat_transcript import append_session_event
+from app.services.chat_transcript import append_session_event, lock_transcript_session
 from app.services.conversation_interaction_service import mark_latest_pending_clarification_answered
 from app.services.llm_error_policy import is_llm_error_message
 from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
@@ -85,6 +85,18 @@ _SESSION_CONTEXT_RUNTIME_EVENT_TYPES = {
     "tool_result_budget_pass",
     "provider_call_ledger",
 }
+
+
+async def _lock_session_runtime_mutation(db: AsyncSession, *, session_id: uuid.UUID) -> None:
+    """Serialize run admission with transcript mutations such as Rewind.
+
+    PostgreSQL advisory locks live for the current transaction. Lightweight
+    test doubles intentionally skip the database-specific lock while tests that
+    exercise ordering replace this boundary directly.
+    """
+
+    if isinstance(db, AsyncSession):
+        await lock_transcript_session(db, session_id=session_id)
 
 
 async def _create_runtime_budget_root_run_for_chat(
@@ -1635,6 +1647,8 @@ async def start_web_chat_run(
     if not is_executable_chat_task_type(runtime_task_type):
         raise HTTPException(status_code=400, detail=f"Unsupported executable chat task type: {runtime_task_type}")
 
+    await _lock_session_runtime_mutation(db, session_id=session.id)
+
     if run_id is not None:
         existing_run = await _load_web_chat_run_by_id(db, run_id)
         if existing_run is not None:
@@ -1903,6 +1917,8 @@ async def start_channel_chat_run_from_saved_turn(
         raise HTTPException(status_code=403, detail="Agent has expired")
     if not content:
         raise HTTPException(status_code=400, detail="content is required")
+
+    await _lock_session_runtime_mutation(db, session_id=session.id)
 
     active = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
     if active:

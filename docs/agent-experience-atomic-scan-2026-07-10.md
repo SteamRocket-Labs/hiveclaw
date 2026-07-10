@@ -1105,3 +1105,53 @@ git diff --check -> clean
 - 第 6.3 节断点 D（Enter / Send / Resume / Close 消费）：`断点 -> 闭环`。
 - 第 6.3 节断点 E（平台代替模型综合）：`断点 -> 闭环`。
 - 七原子总矩阵的 Agent Team：`断点 -> 闭环`。
+
+### 12.8 Rewind active-run CAS 与 Branch 语义 — 已闭环
+
+本节收口 `MODE-06`。Branch 继续是非破坏性的并行时间线，因此活动 Run 期间仍可使用；Rewind 会改写当前 session 的 active projection 和可选 Workspace，必须与 Run 入场、transcript 追加及 Workspace 恢复串行化。
+
+**原子链**
+
+| 原子 | 当前事实源与消费路径 |
+| --- | --- |
+| 输入 | checkpoint selector 返回当时的 `last_sequence`；前端在真正应用 conversation / workspace / both Rewind 时回传 `expected_last_sequence`。活动 Run 期间 Rewind 与 Workspace confirmation 均禁用并解释原因，Branch 保持可用。 |
+| 权威 | Rewind 继续通过 `authorize_session_action` 绑定 tenant、Agent、Session 与用户；服务端不信任客户端 revision，只把它作为 optimistic concurrency 前置条件。 |
+| 执行 | Rewind 唯一顺序为 `read revision -> interrupt active run -> transcript advisory lock -> session row lock -> compare revision -> verify no active run -> restore workspace/apply projection`。Web 与渠道 Run 的 admission 在检查 active run 和创建 `RuntimeTask` 前获取同一 transcript advisory lock。 |
+| 证据 | `ChatTranscriptEvent.sequence` 是 revision 机械事实；`session_rewind` typed event、active projection metadata 与 workspace restore result 记录最终动作；`rewind_guard` 返回 CAS revision 和被中断的 Run。 |
+| 恢复 | stale selector、interrupt 期间 transcript 变化、新 Run 抢占或 active Run 未停止均返回结构化、可重试 409，且在 CAS 成功前不恢复 Workspace、不安装 projection。被 kill 的旧 Run finalizer 不再追加 late assistant result。 |
+| 消费 | Session UI 刷新 checkpoint 后可安全重试；Branch 不被 Rewind 的活动态限制误伤。普通用户只看到“任务运行中不能回退”和刷新重试语义，revision / run id 留在机械响应与 Inspector。 |
+| 验收 | 覆盖 stale client、interrupt race、锁顺序、Web/渠道 Run admission、Workspace confirmation、Branch coexistence、前端 active-state controls、全量前端回归与 production build。 |
+
+**并发契约**
+
+```text
+Run admission ─┐
+               ├─ transcript advisory lock -> active-run decision / RuntimeTask commit
+Rewind CAS ────┘
+    -> session row lock -> revision compare -> workspace/projection mutation
+```
+
+所有需要两把锁的路径都使用 `transcript advisory lock -> session row lock` 的固定顺序，避免 Rewind 与 Run admission 形成锁反转。`allocate_transcript_sequence()` 也复用同一个 transcript lock，因此 CAS 覆盖真实 event append，而不是只覆盖 UI 状态。
+
+**代码极简收口**
+
+- `chat_transcript.py` 提供唯一 `lock_transcript_session()` 与 `read_transcript_revision()`；sequence allocation 不再内嵌另一份 advisory-lock 实现；
+- `web_chat_runtime.py` 的 Web/渠道入口共用一个 `_lock_session_runtime_mutation()` 边界，没有引入第二套 Run mutex；
+- `session_command_runtime.py` 只保留一个 `_prepare_rewind_mutation()`，conversation、workspace 与 both 模式共用同一 CAS；
+- 前端 `buildSessionRewindCommandArgs()` 是 selector、message action 与 Workspace confirmation 的唯一 revision 参数构造路径。
+
+**故障注入与机械验收**
+
+```text
+Red evidence -> active turn 可点击 Rewind；selector revision 未回传；interrupt 中新增 event 仍会回退；Run admission 不参与 CAS；锁顺序为 session row -> transcript，存在反转风险
+backend Rewind/Transcript/Web Runtime/Branch/API adjacent suites -> 196 passed, 0 failed
+frontend full regression -> 97 files, 575 passed, 0 failed
+npm run build -> TypeScript + Vite exit 0
+ruff check + ruff format --check affected backend paths -> clean
+```
+
+**状态变化**
+
+- `MODE-06 Rewind`：`断点 -> 闭环`。
+- Branch：继续保持非破坏性 `闭环`，活动 Run 期间仍可创建。
+- 七原子总矩阵的 Rewind：`断点 -> 闭环`。

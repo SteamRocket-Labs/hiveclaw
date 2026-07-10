@@ -25,7 +25,7 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.user import User
 from app.memory.t0.ledger import T0SessionEvent, replay_t0_session_events_tail
 from app.runtime.hooks import HookEvent, emit_hook
-from app.services.chat_transcript import append_session_event
+from app.services.chat_transcript import append_session_event, read_transcript_revision
 from app.services.conversation_branch_service import create_conversation_branch
 from app.services.memory_service import _generate_session_summary, _wrap_compressed_summary
 from app.services.session_workspace_snapshot import restore_session_workspace_snapshot
@@ -304,6 +304,133 @@ def _checkpoint_payloads(events: list[ChatTranscriptEvent | T0SessionEvent]) -> 
 
 def _has_explicit_rewind_target(arguments: dict[str, Any]) -> bool:
     return any(arguments.get(key) for key in ("checkpoint_event_id", "anchor_event_id", "event_id", "num_turns"))
+
+
+def _session_event_revision(events: list[ChatTranscriptEvent | T0SessionEvent]) -> int:
+    revisions: list[int] = []
+    for event in events:
+        try:
+            revisions.append(int(getattr(event, "sequence", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+    return max(revisions, default=0)
+
+
+def _expected_rewind_revision(arguments: dict[str, Any]) -> int | None:
+    raw = arguments.get("expected_last_sequence")
+    if raw is None or raw == "":
+        return None
+    try:
+        revision = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="expected_last_sequence must be an integer") from exc
+    if revision < 0:
+        raise HTTPException(status_code=400, detail="expected_last_sequence must be non-negative")
+    return revision
+
+
+def _rewind_revision_conflict(*, expected: int, actual: int, reason: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "rewind_revision_conflict",
+            "message": "The session changed before Rewind could be applied. Refresh the checkpoints and try again.",
+            "expected_last_sequence": expected,
+            "actual_last_sequence": actual,
+            "reason": reason,
+            "retryable": True,
+        },
+    )
+
+
+async def _read_rewind_revision(
+    db: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    lock: bool,
+) -> int | None:
+    if not isinstance(db, AsyncSession):
+        return None
+    return await read_transcript_revision(db, session_id=session_id, lock=lock)
+
+
+async def _lock_rewind_session_row(db: AsyncSession, *, session_id: uuid.UUID) -> None:
+    if not isinstance(db, AsyncSession):
+        return
+    locked_session_id = (
+        await db.execute(select(ChatSession.id).where(ChatSession.id == session_id).with_for_update())
+    ).scalar_one_or_none()
+    if locked_session_id is None:
+        raise HTTPException(status_code=404, detail="Session not found while preparing Rewind")
+
+
+async def _prepare_rewind_mutation(
+    *,
+    db: AsyncSession,
+    agent: Agent,
+    user: User,
+    session: ChatSession,
+    arguments: dict[str, Any],
+    observed_last_sequence: int,
+) -> dict[str, Any]:
+    """Interrupt an active turn, then CAS the transcript before mutating projection/workspace."""
+
+    current_before = await _read_rewind_revision(db, session_id=session.id, lock=False)
+    if current_before is None:
+        current_before = observed_last_sequence
+    expected = _expected_rewind_revision(arguments)
+    if expected is not None and expected != current_before:
+        raise _rewind_revision_conflict(
+            expected=expected,
+            actual=current_before,
+            reason="stale_client_revision",
+        )
+
+    active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
+    interrupted_run_id: str | None = None
+    if active_run is not None:
+        raw_run_id = active_run.get("run_id") or active_run.get("id") or active_run.get("runtime_task_id")
+        if raw_run_id:
+            run_id = _parse_uuid_argument(raw_run_id, field="run_id")
+            try:
+                await cancel_web_chat_run(
+                    db=db,
+                    agent_id=agent.id,
+                    session_id=session.id,
+                    run_id=run_id,
+                    user_id=user.id,
+                )
+                interrupted_run_id = str(run_id)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+
+    current_after = await _read_rewind_revision(db, session_id=session.id, lock=True)
+    if current_after is None:
+        current_after = current_before
+    await _lock_rewind_session_row(db, session_id=session.id)
+    if current_after != current_before:
+        raise _rewind_revision_conflict(
+            expected=current_before,
+            actual=current_after,
+            reason="transcript_changed_during_interrupt",
+        )
+    remaining_active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
+    if remaining_active_run is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "rewind_active_run_conflict",
+                "message": "The active turn did not stop cleanly. Wait for it to settle, then retry Rewind.",
+                "retryable": True,
+            },
+        )
+    return {
+        "last_sequence": current_after,
+        "interrupted_active_run": interrupted_run_id is not None,
+        "interrupted_run_id": interrupted_run_id,
+        "cas": "transcript_advisory_lock",
+    }
 
 
 def _event_to_summary_message(event: ChatTranscriptEvent | T0SessionEvent) -> dict[str, str] | None:
@@ -837,6 +964,7 @@ async def execute_session_command(
             limit=_positive_int(arguments.get("limit"), default=1000, field="limit"),
         )
         checkpoints = _checkpoint_payloads(events)
+        observed_last_sequence = _session_event_revision(events)
         if command_name == "rewind" and not _has_explicit_rewind_target(arguments):
             return _typed_result(
                 command="rewind",
@@ -852,6 +980,7 @@ async def execute_session_command(
                 checkpoint_count=len(checkpoints),
                 checkpoints=checkpoints,
                 checkpoint_strategy="user_message_turn_boundary",
+                rewind_guard={"last_sequence": observed_last_sequence},
             )
 
         rewind_mode = str(arguments.get("mode") or "conversation").strip().lower()
@@ -879,6 +1008,13 @@ async def execute_session_command(
                     checkpoint_count=len(checkpoints),
                 )
             if not arguments.get("confirm_workspace_restore"):
+                expected_revision = _expected_rewind_revision(arguments)
+                if expected_revision is not None and expected_revision != observed_last_sequence:
+                    raise _rewind_revision_conflict(
+                        expected=expected_revision,
+                        actual=observed_last_sequence,
+                        reason="stale_workspace_confirmation",
+                    )
                 return _typed_result(
                     command=command_name,
                     action="workspace_restore_requires_confirmation",
@@ -897,7 +1033,19 @@ async def execute_session_command(
                     },
                     truth_source=truth_source,
                     checkpoint=checkpoint,
+                    rewind_guard={"last_sequence": observed_last_sequence},
                 )
+
+        rewind_guard = await _prepare_rewind_mutation(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            arguments=arguments,
+            observed_last_sequence=observed_last_sequence,
+        )
+
+        if rewind_mode in {"workspace", "both"}:
             restore = restore_session_workspace_snapshot(
                 agent_id=agent.id,
                 session=session,
@@ -944,6 +1092,7 @@ async def execute_session_command(
                 truth_source=truth_source,
                 checkpoint=checkpoint,
                 workspace_restore=workspace_restore_payload,
+                rewind_guard=rewind_guard,
             )
 
         projection = {
@@ -955,6 +1104,7 @@ async def execute_session_command(
             "applied_at": datetime.now(timezone.utc).isoformat(),
             "truth_source": truth_source,
             "mode": rewind_mode,
+            "rewind_guard": rewind_guard,
         }
         metadata = dict(session.transcript_metadata_json or {})
         metadata["active_projection"] = projection
@@ -991,6 +1141,7 @@ async def execute_session_command(
             truth_source=truth_source,
             checkpoint=checkpoint,
             workspace_restore=workspace_restore_payload,
+            rewind_guard=rewind_guard,
             rollback={
                 "strategy": "active_projection_rewind",
                 "num_turns": _positive_int(arguments.get("num_turns"), default=1, field="num_turns")

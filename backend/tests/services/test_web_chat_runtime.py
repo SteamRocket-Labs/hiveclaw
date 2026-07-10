@@ -3087,6 +3087,7 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     )
     db = _FakeDB(active_run=None)
     scheduled = []
+    runtime_lock_order = []
 
     def fake_create_task(coro):
         scheduled.append(coro)
@@ -3098,7 +3099,16 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     async def fake_broadcast(*_args, **_kwargs):
         return None
 
+    async def fake_lock_session_runtime_mutation(*_args, **_kwargs):
+        runtime_lock_order.append("lock")
+
+    async def fake_find_active_run(*_args, **_kwargs):
+        runtime_lock_order.append("find_active")
+        return None
+
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_lock_session_runtime_mutation", fake_lock_session_runtime_mutation, raising=False)
+    monkeypatch.setattr(runtime, "_find_active_run", fake_find_active_run)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     result = await runtime.start_web_chat_run(
@@ -3131,6 +3141,7 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     assert task.metadata_json["initial_user_message"]["message_id"]
     assert task.metadata_json["initial_user_message_t0_materialized"] is False
     assert db.commits == 1
+    assert runtime_lock_order[:2] == ["lock", "find_active"]
     assert not scheduled
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert events == []
@@ -3437,6 +3448,7 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
     )
     db = _FakeDB(active_run=None)
     scheduled = []
+    runtime_lock_order = []
 
     def fake_create_task(coro):
         scheduled.append(coro)
@@ -3448,7 +3460,16 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
     async def fake_broadcast(*_args, **_kwargs):
         return None
 
+    async def fake_lock_session_runtime_mutation(*_args, **_kwargs):
+        runtime_lock_order.append("lock")
+
+    async def fake_find_active_run(*_args, **_kwargs):
+        runtime_lock_order.append("find_active")
+        return None
+
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_lock_session_runtime_mutation", fake_lock_session_runtime_mutation, raising=False)
+    monkeypatch.setattr(runtime, "_find_active_run", fake_find_active_run)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     result = await runtime.start_channel_chat_run_from_saved_turn(
@@ -3486,6 +3507,7 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
     assert task.metadata_json["initial_user_message"]["content"] == "处理这条飞书消息"
     assert task.metadata_json["initial_user_message"]["source"] == "feishu"
     assert task.metadata_json["initial_user_message_t0_materialized"] is False
+    assert runtime_lock_order[:2] == ["lock", "find_active"]
     assert not scheduled
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert events == []

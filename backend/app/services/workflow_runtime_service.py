@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.coordination_wiring import gateway_scope
 from app.config import get_settings
-from app.database import enter_rls_bypass, tenant_scoped_session
+from app.database import tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
 from app.runtime.dynamic_workflow import (
@@ -41,7 +41,13 @@ from app.services.channel_delivery_service import ChannelDeliveryService
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
-from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow, normalize_workflow_args
+from app.services.runtime_task_service import list_active_runtime_task_records
+from app.runtime.workflow_admission import (
+    AdmissionLimits,
+    WorkflowAdmissionError,
+    admit_workflow,
+    normalize_workflow_args,
+)
 from app.runtime.workflow_compiler import CompiledWorkflow, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.runtime.workflow_engine import (
@@ -605,17 +611,13 @@ class CheckpointGateDecider:
         return None
 
     async def _tenant_for_run(self, run_id: str) -> str | None:
-        async with tenant_scoped_session(session_factory=self._session_factory) as session:
-            async with enter_rls_bypass(session, reason=f"workflow gate tenant resolution for run {run_id}"):
-                row = (
-                    await session.execute(
-                        select(RuntimeTask.metadata_json).where(RuntimeTask.id == uuid.UUID(str(run_id)))
-                    )
-                ).scalar_one_or_none()
-        if not isinstance(row, dict):
-            return None
-        tenant_value = row.get("tenant_id")
-        return str(tenant_value) if tenant_value else None
+        from app.services.tenant_resolver import resolve_tenant_for_runtime_task
+
+        tenant_id = await resolve_tenant_for_runtime_task(
+            run_id,
+            session_factory=self._session_factory,
+        )
+        return str(tenant_id) if tenant_id else None
 
     async def _find_pg(self, run_id: str, step_id: str):
         from app.models.coordination import CoordinationCheckpoint
@@ -1311,27 +1313,21 @@ class WorkflowRuntimeService:
     # ── startup resume (precedent: resume_persisted_async_delegations) ──
 
     async def resume_pending_runs(self, *, leaf_executor: LeafExecutor) -> list[ResumedRun]:
-        async with self._session(None) as session:
-            # runtime_tasks.tenant_id is nullable/backfilled; tenant comes from
-            # each run's metadata mirror (authoritative) and scopes the per-run
-            # journal sessions.
-            async with enter_rls_bypass(session, reason="workflow startup resume — enumerate resumable workflow runs"):
-                rows = (
-                    (
-                        await session.execute(
-                            select(RuntimeTask).where(
-                                RuntimeTask.task_type == "workflow",
-                                RuntimeTask.status.in_(_RESUMABLE_STATUSES),
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-            pending = [
-                (row.id, (row.metadata_json or {}).get("tenant_id"), row.status, row.metadata_json or {})
-                for row in rows
-            ]
+        records = await list_active_runtime_task_records(
+            statuses=_RESUMABLE_STATUSES,
+            task_types=("workflow",),
+            limit=None,
+            session_factory=self._session_factory,
+        )
+        pending = [
+            (
+                uuid.UUID(str(record["task_id"])),
+                (record.get("metadata") or {}).get("tenant_id") or record.get("tenant_id"),
+                record.get("status"),
+                record.get("metadata") or {},
+            )
+            for record in records
+        ]
 
         from datetime import UTC, datetime
 

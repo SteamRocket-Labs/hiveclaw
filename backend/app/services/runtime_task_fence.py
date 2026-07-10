@@ -86,29 +86,38 @@ async def renew_current_runtime_task_lease(*, lease_seconds: float) -> datetime 
     if fence is None:
         return None
 
-    from app.database import async_session, enter_rls_bypass
+    from app.database import async_session, tenant_scoped_session
     from app.models.runtime_task import RuntimeTask
+    from app.services.tenant_resolver import resolve_tenant_for_runtime_task
 
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(0.03, float(lease_seconds)))
-    async with async_session() as db:
-        async with enter_rls_bypass(db, reason="runtime-task fenced lease renewal") as bypass_db:
-            result = await bypass_db.execute(
-                update(RuntimeTask)
-                .where(
-                    RuntimeTask.id == fence.task_id,
-                    RuntimeTask.claim_version == fence.claim_version,
-                    RuntimeTask.claimed_by == fence.worker_id,
-                    RuntimeTask.status == "running",
-                )
-                .values(claim_expires_at=expires_at)
+    tenant_id = await resolve_tenant_for_runtime_task(
+        fence.task_id,
+        session_factory=async_session,
+    )
+    if tenant_id is None:
+        raise StaleRuntimeTaskFenceError(f"RuntimeTask {fence.task_id} no longer has an owning tenant")
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="runtime_task_fenced_lease_renewal",
+    ) as db:
+        result = await db.execute(
+            update(RuntimeTask)
+            .where(
+                RuntimeTask.id == fence.task_id,
+                RuntimeTask.claim_version == fence.claim_version,
+                RuntimeTask.claimed_by == fence.worker_id,
+                RuntimeTask.status == "running",
             )
-            if int(getattr(result, "rowcount", 0) or 0) != 1:
-                await bypass_db.rollback()
-                raise StaleRuntimeTaskFenceError(
-                    f"stale RuntimeTask worker {fence.worker_id} cannot renew {fence.task_id} "
-                    f"at claim_version={fence.claim_version}"
-                )
-            await bypass_db.commit()
+            .values(claim_expires_at=expires_at)
+        )
+        if int(getattr(result, "rowcount", 0) or 0) != 1:
+            raise StaleRuntimeTaskFenceError(
+                f"stale RuntimeTask worker {fence.worker_id} cannot renew {fence.task_id} "
+                f"at claim_version={fence.claim_version}"
+            )
     return expires_at
 
 

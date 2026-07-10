@@ -87,4 +87,4 @@ def test_tool_runtime_service_exposes_explicit_normal_and_approved_paths() -> No
     methods = {node.name for node in ast.walk(tree) if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))}
 
     assert {"execute", "execute_approved", "execute_with_context"} <= methods
-    assert "execute_direct" in methods
+    assert "execute_direct" not in methods

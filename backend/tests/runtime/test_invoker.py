@@ -669,7 +669,9 @@ async def test_execute_tool_receives_session_frame_metadata(monkeypatch):
         session_context=session,
     )
 
-    result = await _execute_tool_with_request("write_file", {"path": "workspace/a.md", "content": "x"}, request, emit_event)
+    result = await _execute_tool_with_request(
+        "write_file", {"path": "workspace/a.md", "content": "x"}, request, emit_event
+    )
 
     assert result == "tool-ok"
     assert seen["turn_id"] == "turn-1"
@@ -1173,7 +1175,11 @@ async def test_resolve_runtime_config_defaults_skill_candidate_loop_to_true_when
     async def fake_is_feature_enabled(*args, **kwargs):
         raise AssertionError("is_feature_enabled should not be called when the flag row is missing")
 
-    monkeypatch.setattr("app.runtime.invoker.async_session", lambda: _FakeSession())
+    async def fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr("app.runtime.invoker.resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr("app.runtime.invoker.tenant_scoped_session", lambda *a, **k: _FakeSession())
     monkeypatch.setattr("app.runtime.invoker.get_settings", lambda: SimpleNamespace(DEBUG=False))
     monkeypatch.setattr("app.runtime.invoker.is_feature_enabled", fake_is_feature_enabled)
 
@@ -2397,7 +2403,15 @@ async def test_resolve_runtime_config_success_does_not_set_tenant_error(monkeypa
     async def _fake_flag(*_args, **_kwargs):
         return False
 
-    monkeypatch.setattr(invoker, "async_session", lambda: _FakeAsyncSessionCM(_FakeDB(agent_value=fake_agent)))
+    async def _fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return fake_agent.tenant_id
+
+    monkeypatch.setattr(invoker, "resolve_tenant_for_agent", _fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(
+        invoker,
+        "tenant_scoped_session",
+        lambda *a, **k: _FakeAsyncSessionCM(_FakeDB(agent_value=fake_agent)),
+    )
     monkeypatch.setattr(invoker, "is_feature_enabled", _fake_flag)
 
     cfg = await invoker._resolve_runtime_config(fake_agent.id)

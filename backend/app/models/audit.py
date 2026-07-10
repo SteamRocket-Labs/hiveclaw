@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +29,17 @@ class ApprovalRequest(Base):
     """Approval request for capability-gated operations."""
 
     __tablename__ = "approval_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_idempotency_key",
+            name="uq_approval_requests_execution_idempotency_key",
+        ),
+        CheckConstraint(
+            "execution_status IN ('pending','approved','rejected','executing','succeeded','failed',"
+            "'needs_reconciliation','needs_reapproval')",
+            name="ck_approval_requests_execution_status",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
@@ -43,6 +54,19 @@ class ApprovalRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    decision_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    tool_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    normalized_arguments: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    policy_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    policy_snapshot_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    execution_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    execution_idempotency_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    execution_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_receipt: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class ChatMessage(Base):
@@ -61,7 +85,9 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     conversation_id: Mapped[str] = mapped_column(String(200), default="web", nullable=False)
     # Participant identity (unified User/Agent identity)
-    participant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("participants.id"), nullable=True)
+    participant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("participants.id"), nullable=True
+    )
     # Model thinking process
     thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
     thinking_signature: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -73,9 +99,7 @@ class EnterpriseInfo(Base):
     """Centralized enterprise information with versioning for sync."""
 
     __tablename__ = "enterprise_info"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "info_type", name="uq_enterprise_info_tenant_info_type"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "info_type", name="uq_enterprise_info_tenant_info_type"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), index=True)

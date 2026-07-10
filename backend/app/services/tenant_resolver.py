@@ -116,3 +116,105 @@ async def resolve_tenant_for_plan(
         async with enter_rls_bypass(db, reason=f"tenant resolution for plan {plan_id}") as bypass_db:
             result = await bypass_db.execute(select(AgentPlanRequest.tenant_id).where(AgentPlanRequest.id == plan_id))
             return result.scalar_one_or_none()
+
+
+async def resolve_tenant_for_runtime_task(
+    task_id: uuid.UUID | str | None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> uuid.UUID | None:
+    """Locate one RuntimeTask tenant before reopening it under tenant RLS."""
+    task_uuid = _normalize_uuid(task_id)
+    if task_uuid is None:
+        return None
+    from app.models.runtime_task import RuntimeTask
+
+    factory = session_factory or async_session
+    async with factory() as db:
+        try:
+            async with enter_rls_bypass(
+                db,
+                reason=f"tenant resolution for runtime task {task_uuid}",
+            ) as bypass_db:
+                result = await bypass_db.execute(select(RuntimeTask.tenant_id).where(RuntimeTask.id == task_uuid))
+                return result.scalar_one_or_none()
+        except Exception:
+            await db.rollback()
+            raise
+
+
+async def resolve_tenant_for_user(
+    user_id: uuid.UUID | str | None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> uuid.UUID | None:
+    """Locate one User tenant before reopening the user under tenant RLS."""
+    user_uuid = _normalize_uuid(user_id)
+    if user_uuid is None:
+        return None
+    from app.models.user import User
+
+    factory = session_factory or async_session
+    async with factory() as db:
+        try:
+            async with enter_rls_bypass(
+                db,
+                reason=f"tenant resolution for user {user_uuid}",
+            ) as bypass_db:
+                result = await bypass_db.execute(select(User.tenant_id).where(User.id == user_uuid))
+                return result.scalar_one_or_none()
+        except Exception:
+            await db.rollback()
+            raise
+
+
+async def resolve_tenant_for_chat_session(
+    session_id: uuid.UUID | str | None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> uuid.UUID | None:
+    """Locate one ChatSession tenant before reading its messages under RLS."""
+    session_uuid = _normalize_uuid(session_id)
+    if session_uuid is None:
+        return None
+    from app.models.chat_session import ChatSession
+
+    factory = session_factory or async_session
+    async with factory() as db:
+        try:
+            async with enter_rls_bypass(
+                db,
+                reason=f"tenant resolution for chat session {session_uuid}",
+            ) as bypass_db:
+                result = await bypass_db.execute(select(ChatSession.tenant_id).where(ChatSession.id == session_uuid))
+                return result.scalar_one_or_none()
+        except Exception:
+            await db.rollback()
+            raise
+
+
+async def resolve_tenant_for_transcript_event(
+    event_id: uuid.UUID | str | None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> uuid.UUID | None:
+    """Locate one transcript event tenant before projecting it under RLS."""
+    event_uuid = _normalize_uuid(event_id)
+    if event_uuid is None:
+        return None
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    factory = session_factory or async_session
+    async with factory() as db:
+        try:
+            async with enter_rls_bypass(
+                db,
+                reason=f"tenant resolution for transcript event {event_uuid}",
+            ) as bypass_db:
+                result = await bypass_db.execute(
+                    select(ChatTranscriptEvent.tenant_id).where(ChatTranscriptEvent.id == event_uuid)
+                )
+                return result.scalar_one_or_none()
+        except Exception:
+            await db.rollback()
+            raise

@@ -126,7 +126,7 @@ async def test_channel_reply_resolves_latest_session_permission(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_channel_permission_mode_command_reports_full_access_for_missing_profile() -> None:
+async def test_channel_permission_mode_command_reports_ask_first_for_missing_profile() -> None:
     from app.services.channel_agent_runtime import try_handle_channel_permission_mode_command
 
     agent_id = uuid4()
@@ -153,15 +153,15 @@ async def test_channel_permission_mode_command_reports_full_access_for_missing_p
     )
 
     assert reply is not None
-    assert "当前权限模式：完全访问（Full access）" in reply
+    assert "当前权限模式：请求批准（Ask first）" in reply
     assert "本会话已授权工具：web_search, read_file" in reply
     assert "/permissions ask" in reply
     assert "/permissions auto" in reply
-    assert "/permissions full" in reply
+    assert "/permissions full" not in reply
 
 
 @pytest.mark.asyncio
-async def test_channel_permission_mode_command_switches_session_and_active_run() -> None:
+async def test_channel_permission_mode_command_rejects_unscoped_full_access() -> None:
     from app.services.channel_agent_runtime import try_handle_channel_permission_mode_command
 
     agent_id = uuid4()
@@ -208,20 +208,10 @@ async def test_channel_permission_mode_command_switches_session_and_active_run()
         durable_session=session,
     )
 
-    assert reply == "已将当前会话权限模式切换为：完全访问。"
-    assert session.transcript_metadata_json["permission_mode"] == "bypassPermissions"
-    assert session.transcript_metadata_json["permission_profile"] == {
-        "mode": "bypassPermissions",
-        "allowed_tools": ["track_todo"],
-        "writable_roots": ["workspace/"],
-    }
-    assert active_run.metadata_json["permission_mode"] == "bypassPermissions"
-    assert active_run.metadata_json["permission_profile"] == {
-        "mode": "bypassPermissions",
-        "allowed_tools": ["track_todo"],
-        "writable_roots": ["workspace/"],
-    }
-    assert db.commits == 1
+    assert "break-glass" in reply
+    assert session.transcript_metadata_json["permission_mode"] == "auto"
+    assert active_run.metadata_json["permission_mode"] == "auto"
+    assert db.commits == 0
 
 
 @pytest.mark.asyncio
@@ -271,10 +261,10 @@ async def test_call_agent_llm_permission_mode_command_uses_channel_user_id_witho
         durable_user=None,
     )
 
-    assert reply == "已将当前会话权限模式切换为：完全访问。"
-    assert session.transcript_metadata_json["permission_mode"] == "bypassPermissions"
-    assert active_run.metadata_json["permission_mode"] == "bypassPermissions"
-    assert db.commits == 1
+    assert "break-glass" in reply
+    assert session.transcript_metadata_json["permission_mode"] == "auto"
+    assert active_run.metadata_json["permission_mode"] == "auto"
+    assert db.commits == 0
 
 
 @pytest.mark.asyncio

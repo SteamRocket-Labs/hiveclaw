@@ -6,11 +6,13 @@ import logging
 import uuid
 from typing import Any
 
+from sqlalchemy import select
+
 from app.core.execution_context import get_execution_identity
-from app.database import async_session, enter_rls_bypass
+from app.database import async_session, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError
-from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_runtime_task
 from app.tools.runtime import ToolExecutionContext
 from app.tools.workspace import ensure_workspace
 
@@ -25,12 +27,26 @@ async def _resolve_budget_run_id_from_runtime_task(runtime_task_id: str | None) 
     except (TypeError, ValueError, AttributeError):
         return None
     try:
-        async with async_session() as db:
-            async with enter_rls_bypass(db, reason="tool runtime context — inherit RuntimeTask budget envelope"):
-                task = await db.get(RuntimeTask, task_id)
-                if task is None or task.budget_run_id is None:
-                    return None
-                return str(task.budget_run_id)
+        tenant_id = await resolve_tenant_for_runtime_task(
+            task_id,
+            session_factory=async_session,
+        )
+        if tenant_id is None:
+            return None
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=async_session,
+            require_tenant=True,
+            source="tool_runtime_budget_envelope",
+        ) as db:
+            result = await db.execute(
+                select(RuntimeTask.budget_run_id).where(
+                    RuntimeTask.id == task_id,
+                    RuntimeTask.tenant_id == tenant_id,
+                )
+            )
+            budget_run_id = result.scalar_one_or_none()
+            return str(budget_run_id) if budget_run_id is not None else None
     except Exception as exc:
         logger.warning("[Governance] budget resolution failed for runtime task %s: %s", runtime_task_id, exc)
         return None
@@ -61,9 +77,7 @@ class ToolRuntimeResolver:
         try:
             tenant = await resolve_tenant_for_agent(agent_id)
         except Exception as exc:
-            logger.warning(
-                "[Governance] tenant resolution failed for tool execution (agent=%s): %s", agent_id, exc
-            )
+            logger.warning("[Governance] tenant resolution failed for tool execution (agent=%s): %s", agent_id, exc)
             raise RuntimeTenantPreconditionError(
                 reason_code="agent_tenant_resolution_failed",
                 message=f"tool runtime is blocked because tenant resolution failed for agent {agent_id}.",
@@ -80,7 +94,9 @@ class ToolRuntimeResolver:
         tenant_id = str(tenant)
 
         workspace = await ensure_workspace(agent_id, tenant_id=tenant_id)
-        resolved_budget_run_id = str(budget_run_id) if budget_run_id else await _resolve_budget_run_id_from_runtime_task(runtime_task_id)
+        resolved_budget_run_id = (
+            str(budget_run_id) if budget_run_id else await _resolve_budget_run_id_from_runtime_task(runtime_task_id)
+        )
         return ToolExecutionContext(
             agent_id=agent_id,
             user_id=user_id,

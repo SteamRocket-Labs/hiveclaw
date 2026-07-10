@@ -171,6 +171,8 @@ class ToolGovernanceContext:
     arguments: dict[str, Any]
     session_id: str | None = None
     tool_call_id: str | None = None
+    decision_id: str | None = None
+    approval_id: str | None = None
     # P1-W3-3: when this invocation is a child delegation, the parent's
     # token narrows the child's capability set and carries an expiry.
     # `None` means "not a delegated invocation" (web chat, trigger, etc.).
@@ -185,6 +187,9 @@ class ToolGovernanceContext:
     origin_channel: str | None = None
     round_state: dict[str, Any] | None = None
     t0_refs: tuple[str, ...] = ()
+    guard_policy_snapshot: dict[str, Any] | None = None
+    guard_policy_verdict: dict[str, Any] | None = None
+    capability_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -205,6 +210,7 @@ class GovernanceDependencies:
     # Slow-lane executor: runs one command hook in the code-execution sandbox and
     # returns a HookVerdict. Injected so the pipeline stays pure and testable.
     run_command_hook: Callable[[Any, dict[str, Any]], Awaitable[Any]] | None = None
+    load_guard_policy: Callable[[uuid.UUID, uuid.UUID, str], Awaitable[dict[str, Any]] | dict[str, Any]] | None = None
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -590,6 +596,7 @@ async def _emit_enterprise_approval_result(
     capability: str | None,
     reason: str | None,
     event_callback: EventCallback | None,
+    approval_origin_type: str = "company_tool_policy",
 ) -> str | None:
     """Create a company-level approval request for an explicit admin policy.
 
@@ -597,18 +604,27 @@ async def _emit_enterprise_approval_result(
     above the Session mode layer, so full-access/bypass can skip only missing
     policy prompts, not an explicit "requires approval" company setting.
     """
-    approval = await _maybe_await(
-        deps.request_approval(
-            agent_id=context.agent_id,
-            user_id=context.user_id,
-            tool_name=context.tool_name,
-            arguments=dict(context.arguments or {}),
-            capability=capability or context.tool_name,
-            reason=reason,
-            session_id=context.session_id,
-            approval_origin_type="company_tool_policy",
-        )
-    )
+    decision_id = context.decision_id or f"decision:{context.tool_call_id or uuid.uuid4()}"
+    context.decision_id = decision_id
+    approval_kwargs = {
+        "agent_id": context.agent_id,
+        "user_id": context.user_id,
+        "tool_name": context.tool_name,
+        "arguments": dict(context.arguments or {}),
+        "capability": capability or context.tool_name,
+        "reason": reason,
+        "session_id": context.session_id,
+        "approval_origin_type": approval_origin_type,
+    }
+    try:
+        request_params = inspect.signature(deps.request_approval).parameters
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in request_params.values())
+    except (TypeError, ValueError):
+        request_params = {}
+        accepts_kwargs = False
+    if accepts_kwargs or "decision_id" in request_params:
+        approval_kwargs["decision_id"] = decision_id
+    approval = await _maybe_await(deps.request_approval(**approval_kwargs))
     if approval and approval.get("allowed") is True:
         await _emit_event(
             event_callback,
@@ -624,6 +640,7 @@ async def _emit_enterprise_approval_result(
         return None
 
     approval_id = str((approval or {}).get("approval_id") or "")
+    context.approval_id = approval_id or None
     message = (
         f"⏳ Tool '{context.tool_name}' requires company approval"
         f" [capability: {capability or context.tool_name}]. "
@@ -941,6 +958,50 @@ async def _run_governance_inner(
             )
             return message
 
+    # GuardPolicy is a shrink-only enterprise input to the same final tool
+    # decision.  It cannot grant a capability or bypass resource/session rules.
+    guard_policy_loader = getattr(deps, "load_guard_policy", None)
+    if guard_policy_loader is not None and context.tenant_id:
+        from dataclasses import asdict
+
+        from app.tools.guard_policy import evaluate_guard_policy
+        from app.tools.registry import tool_execution_policy
+
+        try:
+            tenant_uuid = uuid.UUID(context.tenant_id)
+            guard_snapshot = await _maybe_await(guard_policy_loader(tenant_uuid, context.agent_id, context.tool_name))
+            context.guard_policy_snapshot = dict(guard_snapshot or {})
+            guard_verdict = evaluate_guard_policy(
+                tool_name=context.tool_name,
+                arguments=context.arguments,
+                external_visible=tool_execution_policy(context.tool_name).external_visible,
+                snapshot=context.guard_policy_snapshot,
+            )
+            context.guard_policy_verdict = asdict(guard_verdict)
+        except Exception as exc:
+            logger.warning("[Governance] GuardPolicy resolution failed — blocking: %s", exc)
+            return f"🔒 Tool '{context.tool_name}' blocked — GuardPolicy check unavailable. Please retry."
+        if guard_verdict.decision == "deny":
+            return _teaching_block_message(
+                context.tool_name,
+                reason=guard_verdict.reason or "tenant GuardPolicy denied this tool",
+                next_steps=[
+                    "continue with a tool allowed by the tenant GuardPolicy",
+                    "ask a workspace admin to review the GuardPolicy rule",
+                ],
+            )
+        if guard_verdict.decision == "require_approval":
+            message = await _emit_enterprise_approval_result(
+                context,
+                deps,
+                capability=f"guard_policy:{context.tool_name}",
+                reason=guard_verdict.reason,
+                event_callback=event_callback,
+                approval_origin_type="guard_policy",
+            )
+            if message is not None:
+                return message
+
     # ── MCP server-policy gate (closure A2) ────────────────────────────
     # approval gates EXECUTION (the remote call), not discovery: metadata
     # tools annotate instead (handlers/mcp.py). deny blocks hard here and
@@ -1003,6 +1064,15 @@ async def _run_governance_inner(
         try:
             tenant_uuid = uuid.UUID(context.tenant_id)
             cap_result = await _maybe_await(deps.check_capability(tenant_uuid, context.agent_id, context.tool_name))
+            if cap_result is not None:
+                context.capability_snapshot = {
+                    "allowed": bool(getattr(cap_result, "allowed", False)),
+                    "denied": bool(getattr(cap_result, "denied", False)),
+                    "escalate_to_l3": bool(getattr(cap_result, "escalate_to_l3", False)),
+                    "name": str(getattr(cap_result, "capability", "") or ""),
+                    "reason": str(getattr(cap_result, "reason", "") or ""),
+                    "policy_found": bool(getattr(cap_result, "policy_found", False)),
+                }
             if cap_result is not None and not hasattr(cap_result, "denied"):
                 logger.warning(
                     "[Governance] Unexpected capability result type: %s — blocking (fail-closed)", type(cap_result)

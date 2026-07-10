@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import pytest
@@ -99,9 +100,46 @@ class _ListResult:
         return list(self._values)
 
 
+class _RowResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return list(self._rows)
+
+
+class _LocatorSession:
+    def __init__(self, rows):
+        self.rows = rows
+        self.queries = []
+        self.rollback_calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, query):
+        query_text = str(query)
+        self.queries.append(query_text)
+        if "app.current_tenant_id" in query_text:
+            return _RowResult([])
+        return _RowResult(self.rows)
+
+    async def rollback(self):
+        self.rollback_calls += 1
+
+
 class _ReconcileSession:
     def __init__(self, tasks):
         self.tasks = tasks
+        self.tenant_id = uuid4()
+        for task in self.tasks:
+            if not hasattr(task, "id"):
+                task.id = uuid4()
+            if not hasattr(task, "tenant_id"):
+                task.tenant_id = self.tenant_id
         self.rollback_calls = 0
         self.commit_calls = 0
 
@@ -112,6 +150,11 @@ class _ReconcileSession:
         return False
 
     async def execute(self, _query):
+        query_text = str(_query)
+        if "app.current_tenant_id" in query_text:
+            return _RowResult([])
+        if query_text.lstrip().startswith("SELECT runtime_tasks.id, runtime_tasks.tenant_id"):
+            return _RowResult([(task.id, task.tenant_id) for task in self.tasks])
         return _ListResult(self.tasks)
 
     async def commit(self):
@@ -119,6 +162,80 @@ class _ReconcileSession:
 
     async def rollback(self):
         self.rollback_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_list_active_runtime_tasks_uses_locator_then_tenant_scoped_reads(monkeypatch):
+    from app.services.runtime_task_service import list_active_runtime_task_records
+
+    tenant_a = uuid4()
+    tenant_b = uuid4()
+    task_a = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "subagent",
+            "status": "running",
+            "tenant_id": tenant_a,
+            "parent_agent_id": None,
+            "child_agent_id": None,
+            "child_agent_name": None,
+            "prompt": "a",
+            "result_summary": None,
+            "trace_id": None,
+            "parent_session_id": None,
+            "child_session_id": None,
+            "depth": 1,
+            "budget_run_id": None,
+            "budget_reservation_key": None,
+            "budget_admission_status": None,
+            "budget_terminal_reason": None,
+            "claim_version": 0,
+            "root_idempotency_key": "subagent:a",
+            "config_snapshot_hash": "config-a",
+            "policy_snapshot_hash": "policy-a",
+            "metadata_json": {},
+            "created_at": None,
+            "started_at": None,
+            "completed_at": None,
+        },
+    )()
+    task_b = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            **{name: getattr(task_a, name) for name in vars(type(task_a)) if not name.startswith("__")},
+            "id": uuid4(),
+            "tenant_id": tenant_b,
+            "prompt": "b",
+            "root_idempotency_key": "subagent:b",
+        },
+    )()
+    locator = _LocatorSession([(task_b.id, tenant_b), (task_a.id, tenant_a)])
+    scoped_sessions = {
+        tenant_a: _ReconcileSession([task_a]),
+        tenant_b: _ReconcileSession([task_b]),
+    }
+    opened_tenants = []
+
+    @asynccontextmanager
+    async def _tenant_scope(tenant_id, **_kwargs):
+        opened_tenants.append(tenant_id)
+        yield scoped_sessions[tenant_id]
+
+    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: locator)
+    monkeypatch.setattr("app.services.runtime_task_service.tenant_scoped_session", _tenant_scope)
+
+    records = await list_active_runtime_task_records()
+
+    assert [record["task_id"] for record in records] == [task_b.id.hex, task_a.id.hex]
+    assert opened_tenants == [tenant_b, tenant_a]
+    locator_selects = [query for query in locator.queries if query.lstrip().startswith("SELECT")]
+    assert len(locator_selects) == 1
+    assert "runtime_tasks.id" in locator_selects[0]
+    assert "runtime_tasks.tenant_id" in locator_selects[0]
+    assert "runtime_tasks.prompt" not in locator_selects[0]
 
 
 class _OneTaskResult:
@@ -142,6 +259,11 @@ class _UpdateSession:
         return False
 
     async def execute(self, _query):
+        query_text = str(_query)
+        if "app.current_tenant_id" in query_text:
+            return _OneTaskResult(None)
+        if query_text.lstrip().startswith("SELECT runtime_tasks.tenant_id"):
+            return _OneTaskResult(self.task.tenant_id)
         return _OneTaskResult(self.task)
 
     async def commit(self):
@@ -571,6 +693,7 @@ async def test_update_runtime_task_record_marks_skipped_completed(monkeypatch):
             "started_at": None,
             "completed_at": None,
             "metadata_json": {},
+            "tenant_id": uuid4(),
         },
     )()
     fake_session = _UpdateSession(task)
@@ -587,7 +710,7 @@ async def test_update_runtime_task_record_marks_skipped_completed(monkeypatch):
     assert task.status == "skipped"
     assert task.completed_at is not None
     assert task.metadata_json["skip_reason"] == "no_model"
-    assert fake_session.commit_calls == 1
+    assert fake_session.commit_calls == 2  # locator audit + tenant-scoped update
 
 
 @pytest.mark.asyncio
@@ -608,6 +731,7 @@ async def test_update_runtime_task_record_marks_needs_reconciliation_completed(m
             "child_session_id": None,
             "parent_session_id": None,
             "result_summary": None,
+            "tenant_id": uuid4(),
         },
     )()
     fake_session = _UpdateSession(task)
@@ -625,4 +749,4 @@ async def test_update_runtime_task_record_marks_needs_reconciliation_completed(m
     assert task.completed_at is not None
     assert task.metadata_json["needs_reconciliation"] is True
     assert task.metadata_json["completion_journal"][0]["status"] == "needs_reconciliation"
-    assert fake_session.commit_calls == 1
+    assert fake_session.commit_calls == 2  # locator audit + tenant-scoped update

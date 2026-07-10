@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 from sqlalchemy import select
@@ -18,6 +18,11 @@ from app.models.user import User
 from app.services.channel_user_service import channel_user_service
 from app.services.enterprise_approval_visibility import is_session_tool_approval
 from app.services.feishu_service import feishu_service
+from app.services.approval_ticket import (
+    hash_policy_snapshot,
+    hash_tool_input,
+    normalize_tool_arguments,
+)
 
 
 def _same_uuid(left: object, right: object) -> bool:
@@ -58,11 +63,40 @@ class ApprovalService:
             )
         )
 
+        approval_id = uuid.uuid4()
+        tool_name = str(details.get("tool") or "").strip() or None
+        arguments = normalize_tool_arguments(details.get("args")) if tool_name else None
+        requested_by = None
+        try:
+            requested_by = uuid.UUID(str(details.get("requested_by"))) if details.get("requested_by") else None
+        except ValueError:
+            requested_by = None
+        policy_snapshot = dict(
+            details.get("policy_snapshot")
+            or {
+                "capability": action_type,
+                "tenant_id": str(agent.tenant_id) if agent.tenant_id else None,
+                "agent_id": str(agent.id),
+                "reason": details.get("reason"),
+                "origin": details.get("origin"),
+            }
+        )
         approval = ApprovalRequest(
+            id=approval_id,
             agent_id=agent.id,
             tenant_id=agent.tenant_id,
             action_type=action_type,
             details=details,
+            requested_by=requested_by,
+            decision_id=str(details.get("decision_id") or f"approval:{approval_id}"),
+            tool_name=tool_name,
+            normalized_arguments=arguments,
+            input_hash=hash_tool_input(tool_name, arguments) if tool_name and arguments is not None else None,
+            policy_snapshot=policy_snapshot,
+            policy_snapshot_hash=hash_policy_snapshot(policy_snapshot),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+            execution_status="pending",
+            execution_idempotency_key=f"approval:{approval_id}",
         )
         db.add(approval)
         await db.flush()
@@ -108,6 +142,7 @@ class ApprovalService:
             return approval
 
         approval.status = "approved" if action == "approve" else "rejected"
+        approval.execution_status = approval.status
         approval.resolved_at = datetime.now(timezone.utc)
         approval.resolved_by = user.id
 
@@ -117,7 +152,11 @@ class ApprovalService:
                 agent_id=approval.agent_id,
                 tenant_id=getattr(approval, "tenant_id", None) or (agent.tenant_id if agent else None),
                 action=f"approval_{approval.status}",
-                details={"approval_id": str(approval.id), "action_type": approval.action_type},
+                details={
+                    "approval_id": str(approval.id),
+                    "action_type": approval.action_type,
+                    "decision_id": getattr(approval, "decision_id", None),
+                },
             )
         )
 
@@ -134,7 +173,11 @@ class ApprovalService:
                 action=f"approval_{approval.status}",
                 resource_type="approval",
                 resource_id=approval.id,
-                details={"action_type": approval.action_type, "agent_name": agent.name if agent else None},
+                details={
+                    "action_type": approval.action_type,
+                    "agent_name": agent.name if agent else None,
+                    "decision_id": getattr(approval, "decision_id", None),
+                },
             )
         except Exception:
             logger.warning("Audit write failed for approval.resolved", exc_info=True)
@@ -147,11 +190,9 @@ class ApprovalService:
         await db.commit()
 
         execution_result = None
-        if approval.status == "approved" and approval.details:
+        if approval.status == "approved" and getattr(approval, "tool_name", None):
             execution_result = await self._execute_approved_action(
                 approval.agent_id,
-                approval.action_type,
-                approval.details,
                 approved_by_user_id=user.id,
                 approval_id=approval.id,
             )
@@ -212,43 +253,21 @@ class ApprovalService:
     async def _execute_approved_action(
         self,
         agent_id: uuid.UUID,
-        action_type: str,
-        details: dict,
         *,
         approved_by_user_id: uuid.UUID | None = None,
-        approval_id: uuid.UUID | None = None,
+        approval_id: uuid.UUID,
     ) -> str | None:
         """Execute the tool action that was approved."""
-        tool_name = details.get("tool")
-        args_raw = details.get("args", "{}")
-        if not tool_name:
-            return None
-
         try:
-            import ast
-
-            if isinstance(args_raw, str):
-                try:
-                    arguments = ast.literal_eval(args_raw)
-                except (ValueError, SyntaxError):
-                    try:
-                        arguments = json.loads(args_raw)
-                    except json.JSONDecodeError:
-                        arguments = {}
-            else:
-                arguments = args_raw
-
             from app.services.agent_tools import execute_approved_tool
 
             return await execute_approved_tool(
-                tool_name,
-                arguments,
-                agent_id,
-                approved_by_user_id=approved_by_user_id,
                 approval_id=approval_id,
+                expected_agent_id=agent_id,
+                approved_by_user_id=approved_by_user_id,
             )
         except Exception as exc:
-            logger.error("Failed to execute approved action %s: %s", tool_name, exc)
+            logger.error("Failed to execute approved action %s: %s", approval_id, exc)
             return f"Execution failed: {exc}"
 
     async def _publish_approval_result_to_origin(

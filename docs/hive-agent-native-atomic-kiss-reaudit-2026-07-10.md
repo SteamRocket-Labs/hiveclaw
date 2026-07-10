@@ -16,7 +16,7 @@ Hive 已经不是一个“缺核心 Agent 能力”的系统。当前真实状�
 
 1. **Single Agent 的 CC 主循环和大部分生命周期已经成立**：统一 Kernel 入口、工具循环、Hooks、Compaction、Plan Mode、Work Ledger、Skill、Subagent、Workflow、持久化 RuntimeTask、断线继续运行、代码沙箱均有真实消费路径。
 2. **Hive-native 优势已经形成**：T0/T2/T3/`soul.md`、Memory Gate + Platform Gate、动态激活、Dream、Skill evolution、反馈回流、Personal KB Tool-first 读取均不是空壳。
-3. **当前最大的风险不是“功能太少”，而是同一语义有多套表示和多处判定**：工具治理、审批后执行、事件事实源、RuntimeTask 租约、RLS bypass、配置版本、前端消息模型存在事实源分裂或恢复断点。
+3. **Run/Event 与 ToolDecision/Approval 两组 P0 断点已经落地关闭**：当前主要剩余风险转为兼容层与巨型模块、ConfigRevision/AI Asset、Personal KB 写入与 Local/A2A receipt、前端 typed workbench。
 4. **企业 AI 资产管理还没有统一闭环**：Agent、Skill、Subagent、Workflow、外部能力各自有部分生命周期，但版本、所有权、信任、依赖、发布、回滚和消费证据没有统一控制索引。
 5. **Personal KB 的原始上下文污染问题已修正**：现在应维持 Tool-first；它不参与原始上下文组装。剩余缺口是 Agent 向 Personal KB 的受治理提案/写入闭环，以及内部服务的复杂度治理。
 6. **Company KB 是明确的第二部分已知缺失**：当前 `/enterprise/knowledge-base` 文件树不是新的企业知识权威平面。第一部分不得偷建 Company KB，也不得把它自动塞入原始上下文。
@@ -124,8 +124,8 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 | LLM 主循环 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Provider 路由与 fallback | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | 工具发现与 progressive disclosure | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| 工具统一执行 | ● | △ | △ | ● | △ | ● | ● | **局部闭环** |
-| 审批与审批后执行 | ● | △ | × | △ | △ | ● | △ | **断点** |
+| 工具统一执行 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| 审批与审批后执行 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Hooks | ● | △ | ● | ● | △ | ● | ● | **局部闭环** |
 | Transcript / event stream | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Compaction / microcompact | ● | ● | ● | ● | ● | ● | ● | **闭环** |
@@ -167,11 +167,15 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 
 **修复原则：** approval 必须成为一次性、可消费、带 input hash 和 policy snapshot 的授权票据；`execute_approved` 只能用票据恢复原始规范化请求，不再接受任意替换参数。
 
+**落地状态（2026-07-10）：已关闭。** ApprovalRequest 已成为带 tenant/agent/requester/approver、normalized input hash、policy snapshot hash、TTL、decision id 和 idempotency key 的一次性票据。审批执行只接收 ticket identity，使用原请求人权限执行，审批人与执行 principal 分离；消费后 hook 不得改写参数，崩溃窗口进入 `needs_reconciliation`，不会自动重放未知副作用。
+
 #### SA-02：`execute_direct()` 是无生产消费者的治理旁路
 
 `execute_direct()` 当前无生产 inbound caller，语义是“认为已批准并跳过治理”。它与 `execute_approved()` 重叠，增加未来误用概率。
 
 **结论：** 写回归测试证明无生产消费后删除；测试不应为了保留它而成为唯一消费者。
+
+**落地状态（2026-07-10）：已关闭。** `ToolRuntimeService.execute_direct()` 已删除，架构测试锁定唯一普通入口与 immutable-ticket approved 入口；旧“direct fallback”仅是 registry 未命中后的同一 handler/MCP dispatch，不再是治理入口。
 
 #### SA-03：默认 `bypassPermissions` 与企业治理目标冲突
 
@@ -183,6 +187,8 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 - `bypassPermissions` 只允许 break-glass；
 - 必须有 operator、reason、scope、TTL、审批与审计；
 - 任何模式都不能绕过 tenant、RLS、secret、MCP token、irreversible hard deny。
+
+**落地状态（2026-07-10）：已关闭。** 新会话与无 profile 路径默认 `default`；tenant 只可配置 `default/auto`。`bypassPermissions` 仅允许 org/platform admin 以 session scope、reason、1–60 分钟 TTL 启用，状态同步写入 session、active RuntimeTask、runtime context、typed transcript event 与前端；过期或缺少任一绑定都会降级为标准模式。
 
 #### SA-04：云端租约没有 fencing token
 
@@ -303,18 +309,18 @@ A2A 不需要变成 Workflow。Lease/Signal/Checkpoint 继续用于协作；Work
 
 | 能力 | 输入 | 权威 | 执行 | 证据 | 恢复 | 消费 | 验收 | 总判定 |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
-| Tenant identity / RLS | ● | ● | ● | ● | ● | ● | △ | **局部闭环** |
-| RLS bypass 管理 | △ | △ | × | △ | △ | ● | × | **断点** |
+| Tenant identity / RLS | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| RLS bypass 管理 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | User/Agent/delegation principal | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | CapabilityPolicy | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | ResourcePermission | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| GuardPolicy | ● | ● | △ | ● | ● | △ | △ | **局部闭环** |
+| GuardPolicy | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | ActionPreflight | ● | ● | ● | ● | △ | ● | ● | **局部闭环** |
-| Approval | ● | ● | × | △ | △ | ● | △ | **断点** |
+| Approval | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Quota / budget | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Secrets / credential boundary | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | MCP authz | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Invocation/audit spans | ● | ● | ● | ● | ● | ● | △ | **局部闭环** |
+| Invocation/audit spans | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Agent 资产管理 | ● | ● | ● | △ | △ | ● | △ | **局部闭环** |
 | Skill 资产管理 | ● | △ | ● | △ | △ | ● | △ | **局部闭环** |
 | Workflow 资产管理 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
@@ -383,7 +389,7 @@ runtime_task_id / session_id / trace_id
 
 ### 6.4 RLS bypass 的原子化修复
 
-当前 `backend/app` 内 `enter_rls_bypass(` 约 90 个调用、分布约 54 个文件。RLS 是正确的底层隔离，但 bypass 过宽会形成两种相反失败：
+审计起点 `backend/app` 内 `enter_rls_bypass(` 约 90 个调用、分布约 54 个文件。RLS 是正确的底层隔离，但 bypass 过宽会形成两种相反失败：
 
 - worker 不 bypass：因没有 user context 读不到待处理行，任务永远不运行；
 - worker 全程 bypass：后续业务查询在 super-scope 下运行，越权风险扩大。
@@ -401,6 +407,8 @@ tenant-scoped execution transaction
 ```
 
 必须新增 AST/CI allowlist，逐个登记 bypass 的：文件、函数、原因、允许查询字段、owner、到期日期。新 bypass 未登记即 CI 失败。现有调用逐个迁移到少量 sanctioned locator helper，不能简单用全局 decorator 隐藏。
+
+**落地状态（2026-07-10）：本包闭环。** 当前降至 67 个登记调用、40 个文件。主 Agent invoker、Tool resolver/governance、Web Chat、RuntimeTask 更新/恢复、Workflow launch/resume/signal/gate、Subagent、Team、MCP、Quota、Workspace 和 transcript projector 已全部改为窄 locator → tenant-scoped execution。剩余调用均进入带 owner 与到期日的 exact AST manifest，限定为 public/auth/platform-admin、全局 claim/ID 枚举、startup seeding/maintenance 或窄 tenant locator；Memory/Personal KB 维护枚举仍会在 C/E 包按各自业务消费路径继续拆小，但不再是未登记旁路。
 
 ### 6.5 ConfigRevision 是典型“有表有 API但没有闭环”
 
@@ -852,11 +860,11 @@ Company Charter、Owner Agency Charter、不可违反的安全政策可以作为
 
 ### P0：可造成越权、重复副作用或事实源分裂
 
-1. `execute_approved` 未绑定并消费 approval ticket。
-2. 默认 `bypassPermissions`。
-3. RuntimeTask 无 fencing token / root idempotency。
-4. DB event 与 T0 双主、`time.time_ns()` 顺序。
-5. RLS bypass 分散且无 allowlist。
+1. ~~`execute_approved` 未绑定并消费 approval ticket。~~ **B 包已关闭。**
+2. ~~默认 `bypassPermissions`。~~ **B 包已关闭。**
+3. ~~RuntimeTask 无 fencing token / root idempotency。~~ **A 包已关闭。**
+4. ~~DB event 与 T0 双主、`time.time_ns()` 顺序。~~ **A 包已关闭。**
+5. ~~RLS bypass 分散且无 allowlist。~~ **B 包已关闭。**
 
 ### P1：能力看似存在但消费/恢复断开
 
@@ -1045,3 +1053,63 @@ git diff --check
 ```
 
 本包独立提交标题：`Close durable run fencing and event truth`。
+
+### 15.3 B 包：ToolDecision / Approval / RLS 治理收敛（2026-07-10）
+
+完成内容：
+
+1. 新增 pure typed `ToolDecision`，统一投影 tenant/agent/actor/delegator、input/policy/capability hashes、outcome/reason、approval、run/session/trace 与 idempotency join keys；最终结果进入 `InvocationSpan` 元数据，不再由 UI 猜测治理状态。
+2. `execute_direct()` 已删除；`execute_approved()` 只接受 approval id 与 expected principals，通过一次性票据恢复 exact tool/arguments。ticket 同时绑定 requester 与 approver，执行沿用原请求人的权限，不能借审批人权限扩权。
+3. approval ticket 增加 TTL、input hash、live policy drift 校验、single consume、execution receipt 与 stuck-execution reconciliation。票据消费后的 hook 只能阻断，不能改写已批准参数；阻断/变更均形成失败 receipt，不误记成功，也不自动重放未知副作用。
+4. 默认 permission mode 改为 `default`；tenant 默认只允许 `default/auto`。`bypassPermissions` 变为 admin-only、reason + session scope + TTL 的 break-glass，并同步到 session、active run、runtime context、typed event 与前端状态；普通 composer 不再提供常规 full-access 选项。
+5. `ToolMeta` 成为 timeout、risk、retry、idempotency、external visibility、delegated-user authorization 的执行描述源；删除 Tool service 内 timeout/egress 静态表，并补齐外部可见 Feishu/channel side effect 与典型只读工具标注。
+6. GuardPolicy 以 pure shrink-only evaluator 接入同一治理路径；malformed policy fail-closed，allow 不能覆盖 CapabilityPolicy/ResourcePermission/session/hook/preflight deny，approval 复用同一个 durable company ticket，并回写 `ToolDecision.approval_id`。
+7. 新增 exact AST RLS bypass manifest：每个调用绑定 file/function/reason/query shape/owner/expiry，新调用或 query widening 直接使 CI 失败。核心业务路径迁为窄 tenant locator → tenant-scoped execution；调用数由约 90/54 文件降至 67/40 文件。
+8. 修复综合回归发现的 tenant setting 路由错误：读取默认权限不再触发未定义 `data`，写入端才校验并拒绝 tenant-level break-glass。
+9. migration 对既有 approval 回填 tool/args/hash/policy/expiry/idempotency/status；历史已批准 side effect 进入 `needs_reapproval`，不把旧授权静默升级成可执行票据。
+
+七原子结果：
+
+| 输入 | 权威 | 执行 | 证据 | 恢复 | 消费 | 验收 | 判定 |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| ● | ● | ● | ● | ● | ● | ● | **闭环** |
+
+关键安全、故障与恢复证据：
+
+- 同一 ticket 并发/重复消费只有第一次成功；expired、agent/approver mismatch、input mutation、policy drift 均 fail-closed。
+- requester 与 approver 是两个独立 principal；approved execution 不再使用审批人身份取得额外资源权限。
+- ticket 消费后若 PRE_TOOL_USE 修改参数或新策略阻断，handler 不执行，receipt 为 failed；崩溃后长期 `executing` 转为 `needs_reconciliation`，明确 `side_effect_state=unknown` 与 `automatic_replay=false`。
+- GuardPolicy deny 高于 approval/allow，egress 规则只作用于 `ToolMeta.external_visible`，malformed policy deny；ToolDecision 可追到对应 approval id、delegator 与 span。
+- Web Chat、Workflow、Subagent、Team、MCP、Quota、Workspace、RuntimeTask 和 transcript projection 的业务读写均不再持有 RLS bypass；manifest exact-match 测试覆盖新增与扩大旁路。
+- break-glass 缺 operator/reason/session scope/TTL 或已过期时降为标准模式，tenant setting API 拒绝把它设成组织默认。
+
+验证证据：
+
+```text
+cd backend && source .venv/bin/activate
+pytest <B 包 ToolDecision/Approval/RLS/permission/Workflow/WebChat 聚焦集合> -q
+-> 458 passed, 5 warnings in 31.54s
+
+ruff check app tests
+-> All checks passed!
+
+pytest tests -q
+-> 6079 passed, 1 skipped, 5 warnings in 115.08s
+
+cd frontend && npm test -- --run
+-> 84 test files passed, 528 tests passed
+
+npm run build
+-> 7046 modules transformed, build succeeded
+
+cd backend && alembic heads
+-> approval_ticket_governance_0710 (head)
+
+python - <<'PY'  # scan_rls_bypass_callsites(Path('app'))
+-> RLS bypass calls=67 files=40
+
+git diff --check
+-> passed
+```
+
+本包没有建设 Company KB，也没有把 Personal KB 放回原始上下文。本包独立提交标题：`Close approval tickets and unified tool governance`。

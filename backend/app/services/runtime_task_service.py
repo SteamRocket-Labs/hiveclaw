@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -12,7 +13,10 @@ from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.runtime.tenant_admission import raise_runtime_tenant_precondition
 from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
-from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_runtime_task
+
+
+logger = logging.getLogger(__name__)
 
 
 _RESTART_RESUMABLE_TASK_TYPES = (
@@ -65,6 +69,33 @@ def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
     }
+
+
+def _group_runtime_task_locators(
+    rows: list[Any],
+    *,
+    operation: str,
+) -> tuple[list[uuid.UUID], dict[uuid.UUID, list[uuid.UUID]]]:
+    """Keep cross-tenant scans metadata-only, then group safe tenant reads."""
+    ordered_ids: list[uuid.UUID] = []
+    ids_by_tenant: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for row in rows:
+        task_id, tenant_id = row
+        normalized_task_id = _coerce_task_id(task_id)
+        normalized_tenant_id = _coerce_task_id(tenant_id) if tenant_id else None
+        if normalized_task_id is None:
+            logger.error("Skipping malformed RuntimeTask locator during %s: %r", operation, task_id)
+            continue
+        if normalized_tenant_id is None:
+            logger.error(
+                "Skipping tenantless RuntimeTask %s during %s; repair its tenant_id before replay.",
+                normalized_task_id,
+                operation,
+            )
+            continue
+        ordered_ids.append(normalized_task_id)
+        ids_by_tenant.setdefault(normalized_tenant_id, []).append(normalized_task_id)
+    return ordered_ids, ids_by_tenant
 
 
 def _is_restart_resumable_runtime_task(task: RuntimeTask) -> bool:
@@ -416,10 +447,15 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
     if runtime_task_id is None:
         return False
 
-    # By-PK single-row update: scope the smallest sanctioned surface. A bare
-    # session fail-closes post role-flip; an audited single-row BYPASS touches
-    # exactly this runtime_task row (no cross-tenant scan).
-    async with async_session() as db, enter_rls_bypass(db, reason="runtime-task status update"):
+    tenant_id = await resolve_tenant_for_runtime_task(runtime_task_id, session_factory=async_session)
+    if tenant_id is None:
+        return False
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="runtime_task_status_update",
+    ) as db:
         try:
             result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == runtime_task_id))
             task = result.scalar_one_or_none()
@@ -478,8 +514,15 @@ async def get_runtime_task_record(task_id: str) -> dict[str, Any] | None:
     if runtime_task_id is None:
         return None
 
-    # By-PK single-row read → audited single-row BYPASS (see update above).
-    async with async_session() as db, enter_rls_bypass(db, reason="runtime-task status read"):
+    tenant_id = await resolve_tenant_for_runtime_task(runtime_task_id, session_factory=async_session)
+    if tenant_id is None:
+        return None
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="runtime_task_status_read",
+    ) as db:
         try:
             result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == runtime_task_id))
             task = result.scalar_one_or_none()
@@ -517,27 +560,59 @@ async def list_runtime_task_records(
 async def list_active_runtime_task_records(
     *,
     statuses: tuple[str, ...] = ("pending", "running"),
-    limit: int = 50,
+    task_types: tuple[str, ...] | None = None,
+    oldest_started_first: bool = False,
+    limit: int | None = 50,
+    session_factory: Any | None = None,
 ) -> list[dict[str, Any]]:
-    # Restart-safe resume scan is intentionally cross-tenant (enumerate every
-    # tenant's still-active tasks at startup) → audited BYPASS, not fail-closed.
+    # The global startup pass may only locate task/tenant pairs. Full records
+    # are re-read under each tenant's RLS scope before they reach consumers.
+    factory = session_factory or async_session
     async with (
-        async_session() as db,
+        factory() as db,
         enter_rls_bypass(db, reason="restart-safe async-delegation resume scan"),
     ):
         try:
-            stmt = (
-                select(RuntimeTask)
-                .where(RuntimeTask.status.in_(statuses))
-                .order_by(RuntimeTask.created_at.asc())
-                .limit(limit)
-            )
+            stmt = select(RuntimeTask.id, RuntimeTask.tenant_id).where(RuntimeTask.status.in_(statuses))
+            if task_types:
+                stmt = stmt.where(RuntimeTask.task_type.in_(task_types))
+            if oldest_started_first:
+                stmt = stmt.order_by(
+                    RuntimeTask.started_at.asc().nulls_last(),
+                    RuntimeTask.created_at.asc(),
+                )
+            else:
+                stmt = stmt.order_by(RuntimeTask.created_at.asc())
+            if limit is not None:
+                stmt = stmt.limit(limit)
             result = await db.execute(stmt)
-            tasks = result.scalars().all()
+            locator_rows = result.all()
         except Exception:
             await db.rollback()
             raise
-    return [_task_to_dict(task) for task in tasks]
+
+    ordered_ids, ids_by_tenant = _group_runtime_task_locators(
+        locator_rows,
+        operation="restart-safe active-task scan",
+    )
+    tasks_by_id: dict[uuid.UUID, RuntimeTask] = {}
+    for tenant_id, task_ids in ids_by_tenant.items():
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=factory,
+            require_tenant=True,
+            source="restart_safe_active_task_hydration",
+        ) as db:
+            hydration_filters = [
+                RuntimeTask.id.in_(task_ids),
+                RuntimeTask.status.in_(statuses),
+            ]
+            if task_types:
+                hydration_filters.append(RuntimeTask.task_type.in_(task_types))
+            result = await db.execute(select(RuntimeTask).where(*hydration_filters))
+            tasks_by_id.update((task.id, task) for task in result.scalars().all())
+
+    return [_task_to_dict(tasks_by_id[task_id]) for task_id in ordered_ids if task_id in tasks_by_id]
 
 
 async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None = None) -> int:
@@ -552,13 +627,14 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
         for task_id in (exclude_task_ids or set())
         if (runtime_task_id := _coerce_task_id(task_id)) is not None
     }
-    # Startup reconcile sweeps every tenant's stuck "running" rows → audited BYPASS.
+    # Cross-tenant access is limited to the locator columns. Reconciliation
+    # reads and mutations happen only after reopening rows under tenant RLS.
     async with (
         async_session() as db,
         enter_rls_bypass(db, reason="startup orphaned runtime-task reconcile"),
     ):
         try:
-            stmt = select(RuntimeTask).where(
+            stmt = select(RuntimeTask.id, RuntimeTask.tenant_id).where(
                 RuntimeTask.status == "running",
                 or_(
                     RuntimeTask.task_type.is_(None),
@@ -566,13 +642,38 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                 ),
             )
             result = await db.execute(stmt)
-            tasks = result.scalars().all()
-            if not tasks:
-                return 0
+            locator_rows = result.all()
+        except Exception:
+            await db.rollback()
+            raise
 
-            now = datetime.now(timezone.utc)
-            updated = 0
-            for task in tasks:
+    _, ids_by_tenant = _group_runtime_task_locators(
+        locator_rows,
+        operation="startup orphan reconciliation",
+    )
+    now = datetime.now(timezone.utc)
+    updated = 0
+    for tenant_id, located_task_ids in ids_by_tenant.items():
+        task_ids = [task_id for task_id in located_task_ids if task_id not in excluded]
+        if not task_ids:
+            continue
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=async_session,
+            require_tenant=True,
+            source="startup_orphan_runtime_task_reconciliation",
+        ) as db:
+            result = await db.execute(
+                select(RuntimeTask).where(
+                    RuntimeTask.id.in_(task_ids),
+                    RuntimeTask.status == "running",
+                    or_(
+                        RuntimeTask.task_type.is_(None),
+                        RuntimeTask.task_type.notin_(_RESTART_RESUMABLE_TASK_TYPES),
+                    ),
+                )
+            )
+            for task in result.scalars().all():
                 if getattr(task, "id", None) in excluded:
                     continue
                 task_type = str(getattr(task, "task_type", None) or "runtime_task")
@@ -610,9 +711,4 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                 metadata["orphaned_by_restart"] = True
                 task.metadata_json = metadata
                 updated += 1
-
-            await db.commit()
-            return updated
-        except Exception:
-            await db.rollback()
-            raise
+    return updated

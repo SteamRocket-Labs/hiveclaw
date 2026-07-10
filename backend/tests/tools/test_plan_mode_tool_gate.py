@@ -3,9 +3,9 @@
 These tests pin the tool-layer confirmation backstop: a tagged autonomous-
 enabling tool with no confirmed user approval must short-circuit with a
 ``requires_confirmation`` envelope (and never reach the registry), while an
-untagged tool runs exactly as before. The gate must fire at all three entrypoints
-— ``execute`` / ``execute_direct`` / ``execute_approved`` — so
-``execute_approved`` cannot be used to bypass it.
+untagged tool runs exactly as before. A consumed ``execute_approved`` ticket
+does not run the gate again because the original governed request already did;
+the ticket binds the exact payload and is the single-use authorization result.
 
 The decision logic itself is covered by the gate's own suites
 (``test_plan_mode_gate.py`` / ``test_plan_mode_gate_core.py``); here we only
@@ -332,103 +332,55 @@ async def test_execute_does_not_plan_gate_create_digital_employee():
 
 
 # ---------------------------------------------------------------------------
-# execute_direct / execute_approved: the gate fires there too (no bypass).
+# execute_approved: consume the exact ticket without a conflicting second gate.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_execute_direct_blocks_tagged_tool_without_confirmed_plan():
-    context = _context()
-    registry = _FakeRegistry("SHOULD_NOT_RUN")
-    gate = _RecordingGate(_BLOCKED)
-    service = _make_service(context=context, registry=registry, gate=gate)
+async def test_execute_approved_consumes_bound_ticket_without_second_plan_gate():
+    from app.services.approval_ticket import ApprovalExecutionTicket
 
-    result = await service.execute_direct(
-        "set_trigger",
-        {"name": "Recurring sweep", "type": "cron", "config": {"expr": "0 9 * * *"}},
-        agent_id=context.agent_id,
-    )
-
-    payload = json.loads(result)
-    assert payload["status"] == "requires_confirmation"
-    assert payload["requires_confirmation"] is True
-    assert registry.calls == []
-    assert gate.calls and gate.calls[0]["action_kind"] == "create_enabled_trigger"
-
-
-@pytest.mark.asyncio
-async def test_execute_approved_blocks_tagged_tool_without_confirmed_plan():
-    """§9.2: execute_approved must not be a bypass for the Plan Mode gate.
-
-    F-2: manage_tasks was retired from the agent tool face, so set_trigger
-    proves that a still-gated autonomous action cannot bypass the gate.
-    """
-    context = _context()
-    registry = _FakeRegistry("SHOULD_NOT_RUN")
-    gate = _RecordingGate(_BLOCKED)
-    service = _make_service(context=context, registry=registry, gate=gate)
-
-    result = await service.execute_approved(
-        "set_trigger",
-        {"name": "Recurring sweep", "type": "cron", "config": {"expr": "0 9 * * *"}},
-        agent_id=context.agent_id,
-        approved_by_user_id=uuid4(),
-        approval_id=uuid4(),
-    )
-
-    payload = json.loads(result)
-    assert payload["status"] == "requires_confirmation"
-    assert payload["requires_confirmation"] is True
-    assert registry.calls == []
-    assert gate.calls and gate.calls[0]["action_kind"] == "create_enabled_trigger"
-
-
-@pytest.mark.asyncio
-async def test_execute_approved_never_gates_retired_manage_tasks():
-    """F-2: manage_tasks is retired from the tool face — no payload gates it.
-
-    Replaces the old per-payload manage_tasks gating tests (todo/update_status),
-    which exercised a tool that is no longer agent-callable. The gate must never
-    be consulted for it at execute_approved, under any payload.
-    """
-    for payload in (
-        {"action": "create", "title": "Recurring sweep", "task_type": "todo"},
-        {"action": "create", "title": "Untyped task"},
-        {"action": "update_status", "title": "Recurring sweep", "status": "done"},
-    ):
-        context = _context()
-        registry = _FakeRegistry("RAN")
-        gate = _RecordingGate(_BLOCKED)
-        service = _make_service(context=context, registry=registry, gate=gate)
-
-        result = await service.execute_approved(
-            "manage_tasks",
-            payload,
-            agent_id=context.agent_id,
-            approved_by_user_id=uuid4(),
-            approval_id=uuid4(),
-        )
-
-        assert result == "RAN", payload
-        assert len(registry.calls) == 1, payload
-        assert gate.calls == [], payload
-
-
-@pytest.mark.asyncio
-async def test_execute_approved_runs_untagged_tool_normally():
     context = _context()
     registry = _FakeRegistry("APPROVED")
     gate = _RecordingGate(_BLOCKED)
     service = _make_service(context=context, registry=registry, gate=gate)
+    approval_id = uuid4()
+    approved_by = uuid4()
+
+    async def consume_ticket(**_kwargs):
+        return ApprovalExecutionTicket(
+            approval_id=approval_id,
+            tenant_id=uuid4(),
+            agent_id=context.agent_id,
+            requested_by_user_id=context.user_id,
+            approved_by_user_id=approved_by,
+            tool_name="set_trigger",
+            arguments={
+                "name": "Recurring sweep",
+                "type": "cron",
+                "config": {"expr": "0 9 * * *"},
+                "reason": "approved recurring sweep",
+            },
+            input_hash="input-hash",
+            policy_snapshot_hash="policy-hash",
+            idempotency_key=f"approval:{approval_id}",
+            decision_id="decision-plan-approved-1",
+        )
+
+    async def complete_ticket(**_kwargs):
+        return None
+
+    service.approval_ticket_consumer = consume_ticket
+    service.approval_ticket_completer = complete_ticket
 
     result = await service.execute_approved(
-        "write_file",
-        {"path": "out.md", "content": "done"},
-        agent_id=context.agent_id,
-        approved_by_user_id=uuid4(),
+        approval_id=approval_id,
+        expected_agent_id=context.agent_id,
+        approved_by_user_id=approved_by,
     )
 
     assert result == "APPROVED"
+    assert len(registry.calls) == 1
     assert gate.calls == []
 
 

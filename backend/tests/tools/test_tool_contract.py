@@ -9,6 +9,8 @@ name lists.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def test_static_classification_lists_removed():
     """The hardcoded _STATIC_READ_ONLY / _STATIC_PARALLEL_SAFE drifting name
@@ -58,6 +60,67 @@ def test_max_result_chars_unlimited_for_read_tools():
     assert result_char_limit_for_tool("read_document") == RESULT_CHARS_UNLIMITED
     # an unset tool returns None (caller falls back to the global default)
     assert result_char_limit_for_tool("send_feishu_message") is None
+
+
+def test_execution_policy_comes_only_from_tool_meta():
+    from app.tools.registry import tool_execution_policy
+
+    assert tool_execution_policy("execute_code").timeout_seconds == 120.0
+    assert tool_execution_policy("spawn_subagent").timeout_seconds == 180.0
+    assert tool_execution_policy("send_message_to_agent").timeout_seconds == 360.0
+    assert tool_execution_policy("send_feishu_message").external_visible is True
+    assert tool_execution_policy("send_feishu_message").delegated_user_authorized is True
+    assert tool_execution_policy("read_file").external_visible is False
+
+    source = (Path(__file__).parents[2] / "app/tools/service.py").read_text(encoding="utf-8")
+    assert "TOOL_TIMEOUTS" not in source
+    assert "_EXTERNAL_VISIBLE_TOOLS" not in source
+
+
+def test_external_side_effects_are_declared_on_tool_meta():
+    from app.tools.registry import tool_execution_policy
+
+    external_side_effects = {
+        "send_channel_message",
+        "send_channel_file",
+        "upload_image",
+        "feishu_approval_create",
+        "feishu_base_app_create",
+        "feishu_base_field_create",
+        "feishu_base_record_delete",
+        "feishu_base_record_upload_attachment",
+        "feishu_base_record_upsert",
+        "feishu_calendar_create",
+        "feishu_calendar_delete",
+        "feishu_calendar_update",
+        "feishu_doc_append",
+        "feishu_doc_create",
+        "feishu_doc_delete",
+        "feishu_doc_share",
+        "feishu_task_comment",
+        "feishu_task_complete",
+        "feishu_task_create",
+    }
+
+    for name in external_side_effects:
+        policy = tool_execution_policy(name)
+        assert policy.external_visible is True, name
+        assert policy.risk_class == "external_visible", name
+        assert policy.idempotency_scope == "tool_call", name
+
+
+def test_obvious_read_tools_are_declared_read_only_on_tool_meta():
+    from app.tools.registry import is_read_only_tool
+
+    for name in {
+        "read_emails",
+        "plaza_get_new_posts",
+        "feishu_calendar_list",
+        "feishu_doc_read",
+        "feishu_user_search",
+        "feishu_wiki_list",
+    }:
+        assert is_read_only_tool(name), name
 
 
 def test_eviction_threshold_resolution():

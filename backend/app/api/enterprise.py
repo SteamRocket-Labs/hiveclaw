@@ -39,7 +39,7 @@ from app.services.secrets_provider import get_secrets_provider
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
-TENANT_SYSTEM_SETTING_KEYS = {"feishu_org_sync"}
+TENANT_SYSTEM_SETTING_KEYS = {"agent_permission_default", "feishu_org_sync"}
 
 
 # ─── LLM Model Pool ────────────────────────────────────
@@ -980,6 +980,17 @@ async def update_system_setting(
     """Create or update a system setting."""
     if key in TENANT_SYSTEM_SETTING_KEYS:
         from app.models.tenant_setting import TenantSetting
+
+        if key == "agent_permission_default":
+            from app.runtime.ccplus_contracts import tenant_permission_default_from_value
+
+            requested_mode = data.value.get("mode") if isinstance(data.value, dict) else None
+            if requested_mode not in {"default", "auto"}:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Tenant permission default must be default or auto; break-glass is session-scoped only",
+                )
+            data.value = {"mode": tenant_permission_default_from_value(data.value)}
 
         target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
         result = await db.execute(

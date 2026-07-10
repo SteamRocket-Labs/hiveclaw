@@ -131,7 +131,7 @@ def test_ccplus_v1_profiles_default_to_governed_safe_values():
     )
 
     permission = PermissionProfileV1()
-    assert permission.mode == PermissionMode.BYPASS_PERMISSIONS
+    assert permission.mode == PermissionMode.DEFAULT
     assert permission.sandbox == SandboxProfile.WORKSPACE_WRITE
     assert permission.writable_roots == ("workspace/",)
     assert permission.default_decision == "escalate"
@@ -188,7 +188,7 @@ def test_ccplus_v1_profiles_default_to_governed_safe_values():
         hook_refs=("hook://pre/1",),
     )
     assert pending.arguments["to"] == "user@example.com"
-    assert pending.permission_profile.mode == PermissionMode.BYPASS_PERMISSIONS
+    assert pending.permission_profile.mode == PermissionMode.DEFAULT
 
     checkpoint = PermissionCheckpointV1(
         permission_request_id="perm-1",

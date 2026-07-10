@@ -306,9 +306,8 @@ async def test_permission_profile_dont_ask_blocks_mapped_no_policy_capability() 
 
 
 @pytest.mark.asyncio
-async def test_permission_profile_none_falls_back_to_full_access_default() -> None:
-    """No profile threaded onto the turn uses Hive's current session default:
-    full access, while explicit hard-deny policies still win elsewhere."""
+async def test_permission_profile_none_falls_back_to_standard_ask_on_risk() -> None:
+    """No profile means the safe standard mode, never implicit full access."""
     approval_calls: list[dict] = []
     audit_calls: list[dict] = []
     events: list[dict] = []
@@ -330,10 +329,11 @@ async def test_permission_profile_none_falls_back_to_full_access_default() -> No
         event_callback=events.append,
     )
 
-    assert message is None
+    assert "session_permission_required" in str(message)
     assert approval_calls == []
     assert audit_calls == []
-    assert events == []
+    assert events[-1]["status"] == "session_permission_required"
+    assert events[-1]["permission_mode"] == "default"
 
 
 def test_permission_profile_resolve_no_policy_decision_normalizes() -> None:

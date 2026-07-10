@@ -1033,11 +1033,24 @@ async def _persist_stream_step_event(
 
 async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[dict[str, Any]]:
     run_uuid = _run_id(run_id)
-    async with (
-        _async_session() as db,
-        enter_rls_bypass(db, reason=f"durable web-run mid-run user message drain for run {run_uuid}"),
-    ):
-        result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_uuid))
+    tenant_id = await resolve_tenant_for_runtime_task(
+        run_uuid,
+        session_factory=_async_session,
+    )
+    if tenant_id is None:
+        return []
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=_async_session,
+        require_tenant=True,
+        source="durable_web_run_mid_run_message_drain",
+    ) as db:
+        result = await db.execute(
+            select(RuntimeTask).where(
+                RuntimeTask.id == run_uuid,
+                RuntimeTask.tenant_id == tenant_id,
+            )
+        )
         task = result.scalar_one_or_none()
         if task is None:
             return []
@@ -1050,7 +1063,6 @@ async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[
         metadata["pending_user_messages"] = []
         metadata["pending_user_message_count"] = 0
         task.metadata_json = metadata
-        await db.commit()
     drained: list[dict[str, Any]] = []
     for item in pending:
         content = item.get("llm_content") or item.get("content")
@@ -2062,44 +2074,64 @@ async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
     if capacity <= 0:
         logger.info("[WebChatRun] Startup resume deferred because runtime worker capacity is full")
         return []
-    async with _async_session() as db, enter_rls_bypass(db, reason="startup resume persisted web-chat runs"):
-        result = await db.execute(
-            select(RuntimeTask)
-            .where(
-                RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
-                RuntimeTask.status.in_(_ACTIVE_STATUSES),
+    records = await list_active_runtime_task_records(
+        statuses=_ACTIVE_STATUSES,
+        task_types=_EXECUTABLE_CHAT_TASK_TYPES,
+        oldest_started_first=True,
+        limit=min(limit, capacity),
+    )
+    ordered_ids: list[uuid.UUID] = []
+    ids_by_tenant: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for record in records:
+        try:
+            task_id = uuid.UUID(str(record["task_id"]))
+            tenant_id = uuid.UUID(str(record["tenant_id"]))
+        except (KeyError, TypeError, ValueError):
+            logger.error("[WebChatRun] Skipping malformed active-run locator {}", record)
+            continue
+        ordered_ids.append(task_id)
+        ids_by_tenant.setdefault(tenant_id, []).append(task_id)
+
+    resumable_ids: set[uuid.UUID] = set()
+    for tenant_id, task_ids in ids_by_tenant.items():
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=_async_session,
+            require_tenant=True,
+            source="startup_resume_persisted_web_chat_runs",
+        ) as db:
+            result = await db.execute(
+                select(RuntimeTask).where(
+                    RuntimeTask.id.in_(task_ids),
+                    RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
+                    RuntimeTask.status.in_(_ACTIVE_STATUSES),
+                )
             )
-            .order_by(RuntimeTask.started_at.asc().nulls_last(), RuntimeTask.created_at.asc())
-            .limit(min(limit, capacity))
-        )
-        tasks = result.scalars().all()
-        resumed: list[RuntimeTask] = []
-        for task in tasks:
-            if await _reconcile_terminal_transcript_ghost(db, task):
-                continue
-            run_key = task.id.hex
-            if run_key in _TASKS:
-                continue
-            metadata = dict(task.metadata_json or {})
-            if task.parent_agent_id:
-                try:
-                    metadata["restart_resume_context"] = build_long_task_resume_context(
-                        agent_id=task.parent_agent_id,
-                        runtime_task_id=task.id,
-                    )
-                except Exception as exc:
-                    metadata["restart_resume_context_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-            metadata["resumed_after_restart"] = True
-            metadata["resumed_at"] = datetime.now(timezone.utc).isoformat()
-            task.metadata_json = metadata
-            resumed.append(task)
-        if resumed:
-            await db.commit()
+            for task in result.scalars().all():
+                if await _reconcile_terminal_transcript_ghost(db, task):
+                    continue
+                run_key = task.id.hex
+                if run_key in _TASKS:
+                    continue
+                metadata = dict(task.metadata_json or {})
+                if task.parent_agent_id:
+                    try:
+                        metadata["restart_resume_context"] = build_long_task_resume_context(
+                            agent_id=task.parent_agent_id,
+                            runtime_task_id=task.id,
+                        )
+                    except Exception as exc:
+                        metadata["restart_resume_context_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+                metadata["resumed_after_restart"] = True
+                metadata["resumed_at"] = datetime.now(timezone.utc).isoformat()
+                task.metadata_json = metadata
+                resumable_ids.add(task.id)
 
     resumed_ids: list[str] = []
-    for task in resumed[:capacity]:
-        if dispatch_web_chat_run(task.id):
-            resumed_ids.append(task.id.hex)
+    for task_id in ordered_ids[:capacity]:
+        if task_id in resumable_ids and dispatch_web_chat_run(task_id):
+            resumed_ids.append(task_id.hex)
     return resumed_ids
 
 
@@ -3147,8 +3179,24 @@ async def _update_runtime_task(
     result_summary: str | None = None,
     metadata_json: dict[str, Any] | None = None,
 ) -> None:
-    async with _async_session() as db, enter_rls_bypass(db, reason=f"durable web-run status update for run {run_uuid}"):
-        result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_uuid))
+    tenant_id = await resolve_tenant_for_runtime_task(
+        run_uuid,
+        session_factory=_async_session,
+    )
+    if tenant_id is None:
+        return
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=_async_session,
+        require_tenant=True,
+        source="durable_web_run_status_update",
+    ) as db:
+        result = await db.execute(
+            select(RuntimeTask).where(
+                RuntimeTask.id == run_uuid,
+                RuntimeTask.tenant_id == tenant_id,
+            )
+        )
         task = result.scalar_one_or_none()
         if task is None:
             return
@@ -3161,7 +3209,6 @@ async def _update_runtime_task(
             task.metadata_json = metadata
         if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
             task.completed_at = datetime.now(timezone.utc)
-        await db.commit()
 
 
 async def _materialize_initial_user_turn_for_worker(
@@ -3287,8 +3334,24 @@ def _enforce_runtime_context_tenant_boundary(
 async def _load_runtime_context(
     run_uuid: uuid.UUID,
 ) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[ChatMessage], ChatSession | None]:
-    async with _async_session() as db, enter_rls_bypass(db, reason=f"durable web-run bootstrap for run {run_uuid}"):
-        task_result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_uuid))
+    tenant_id = await resolve_tenant_for_runtime_task(
+        run_uuid,
+        session_factory=_async_session,
+    )
+    if tenant_id is None:
+        raise RuntimeError(f"RuntimeTask {run_uuid.hex} not found")
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=_async_session,
+        require_tenant=True,
+        source="durable_web_run_context_bootstrap",
+    ) as db:
+        task_result = await db.execute(
+            select(RuntimeTask).where(
+                RuntimeTask.id == run_uuid,
+                RuntimeTask.tenant_id == tenant_id,
+            )
+        )
         runtime_task = task_result.scalar_one_or_none()
         if runtime_task is None:
             raise RuntimeError(f"RuntimeTask {run_uuid.hex} not found")
@@ -3389,7 +3452,6 @@ async def _load_runtime_context(
         )
         history_messages = list(reversed(history_result.scalars().all()))
         history_messages = await _apply_active_projection_to_history(db, session, history_messages)
-        await db.commit()
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 
 
@@ -4272,4 +4334,6 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
 
 
 # Kept as an overridable module global for tests and for parity with other services.
-from app.database import async_session as _async_session, enter_rls_bypass, tenant_scoped_session  # noqa: E402
+from app.database import async_session as _async_session, tenant_scoped_session  # noqa: E402
+from app.services.runtime_task_service import list_active_runtime_task_records  # noqa: E402
+from app.services.tenant_resolver import resolve_tenant_for_runtime_task  # noqa: E402

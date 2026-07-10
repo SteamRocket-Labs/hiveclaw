@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.policy import write_audit_event
-from app.database import async_session, enter_rls_bypass, tenant_scoped_session
+from app.database import async_session, tenant_scoped_session
 from app.models.agent import Agent
 from app.services.approval_service import approval_service
 from app.services.capability_gate import check_capability
@@ -108,12 +108,14 @@ class ToolGovernanceResolver:
         self._capability_cache = _TtlSingleFlightCache(ttl_seconds=lookup_cache_ttl_seconds)
         self._mcp_tool_mode_cache = _TtlSingleFlightCache(ttl_seconds=lookup_cache_ttl_seconds)
         self._governance_hooks_cache = _TtlSingleFlightCache(ttl_seconds=lookup_cache_ttl_seconds)
+        self._guard_policy_cache = _TtlSingleFlightCache(ttl_seconds=lookup_cache_ttl_seconds)
 
     def clear_lookup_cache(self) -> None:
         self._security_zone_cache.clear()
         self._capability_cache.clear()
         self._mcp_tool_mode_cache.clear()
         self._governance_hooks_cache.clear()
+        self._guard_policy_cache.clear()
 
     async def build_context(
         self,
@@ -132,6 +134,7 @@ class ToolGovernanceResolver:
             arguments=arguments,
             session_id=runtime_context.session_id,
             tool_call_id=tool_call_id,
+            decision_id=f"decision:{tool_call_id}" if tool_call_id else None,
             delegation_token=delegation_token,
             permission_profile=runtime_context.permission_profile,
             turn_id=runtime_context.turn_id,
@@ -145,17 +148,37 @@ class ToolGovernanceResolver:
         async def _resolve_security_zone(agent_id: uuid.UUID) -> str:
             async def _load() -> str:
                 try:
-                    async with async_session() as db:
-                        async with enter_rls_bypass(db, reason=f"security-zone resolution for agent {agent_id}"):
-                            result = await db.execute(select(Agent).where(Agent.id == agent_id))
-                            agent = result.scalar_one_or_none()
-                            zone = getattr(agent, "security_zone", None)
-                            if not zone:
-                                logger.warning(
-                                    "[Governance] Agent %s has no security_zone set — defaulting to 'restricted'",
-                                    agent_id,
-                                )
-                        await db.rollback()
+                    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+                    tenant_id = await resolve_tenant_for_agent(
+                        agent_id,
+                        session_factory=async_session,
+                    )
+                    if tenant_id is None:
+                        logger.warning(
+                            "[Governance] Agent %s has no tenant — defaulting to 'restricted'",
+                            agent_id,
+                        )
+                        return "restricted"
+                    async with tenant_scoped_session(
+                        tenant_id,
+                        session_factory=async_session,
+                        require_tenant=True,
+                        source="tool_governance_security_zone",
+                    ) as db:
+                        result = await db.execute(
+                            select(Agent).where(
+                                Agent.id == agent_id,
+                                Agent.tenant_id == tenant_id,
+                            )
+                        )
+                        agent = result.scalar_one_or_none()
+                        zone = getattr(agent, "security_zone", None)
+                        if not zone:
+                            logger.warning(
+                                "[Governance] Agent %s has no security_zone set — defaulting to 'restricted'",
+                                agent_id,
+                            )
                         return zone or "restricted"
                 except Exception as exc:
                     logger.error(
@@ -192,13 +215,26 @@ class ToolGovernanceResolver:
             reason: str | None = None,
             session_id: str | None = None,
             approval_origin_type: str | None = None,
+            decision_id: str | None = None,
         ) -> dict:
-            async with async_session() as db, enter_rls_bypass(db, reason=f"approval request for agent {agent_id}"):
-                result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            from app.services.approval_ticket import build_live_approval_policy_snapshot
+            from app.services.tenant_resolver import resolve_tenant_for_agent
+
+            tenant_id = await resolve_tenant_for_agent(agent_id)
+            if tenant_id is None:
+                return {"allowed": False, "message": "Agent tenant not found"}
+            async with tenant_scoped_session(tenant_id) as db:
+                result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
                 agent = result.scalar_one_or_none()
                 if not agent:
                     return {"allowed": False, "message": "Agent not found"}
                 origin_type = approval_origin_type or ("agent_session" if session_id else "approval_request")
+                policy_snapshot = await build_live_approval_policy_snapshot(
+                    db=db,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    tool_name=tool_name,
+                )
                 outcome = await approval_service.request_approval(
                     db,
                     agent,
@@ -209,6 +245,8 @@ class ToolGovernanceResolver:
                         "requested_by": str(user_id),
                         "reason": reason,
                         "session_id": session_id,
+                        "decision_id": decision_id,
+                        "policy_snapshot": policy_snapshot,
                         "origin": {
                             "type": origin_type,
                             "session_id": session_id,
@@ -233,26 +271,36 @@ class ToolGovernanceResolver:
             async def _load() -> str | None:
                 from app.models.tool import AgentTool, Tool
                 from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
+                from app.services.tenant_resolver import resolve_tenant_for_agent
 
-                async with async_session() as db:
-                    async with enter_rls_bypass(db, reason=f"MCP tool-mode resolution for agent {agent_id}"):
-                        result = await db.execute(
-                            select(Tool)
-                            .join(AgentTool, AgentTool.tool_id == Tool.id)
-                            .where(
-                                AgentTool.agent_id == agent_id,
-                                AgentTool.enabled.is_(True),
-                                Tool.name == target,
-                                Tool.type == "mcp",
-                                Tool.enabled.is_(True),
-                            )
+                tenant_id = await resolve_tenant_for_agent(
+                    agent_id,
+                    session_factory=async_session,
+                )
+                if tenant_id is None:
+                    return None
+                async with tenant_scoped_session(
+                    tenant_id,
+                    session_factory=async_session,
+                    require_tenant=True,
+                    source="tool_governance_mcp_mode",
+                ) as db:
+                    result = await db.execute(
+                        select(Tool)
+                        .join(AgentTool, AgentTool.tool_id == Tool.id)
+                        .where(
+                            AgentTool.agent_id == agent_id,
+                            AgentTool.enabled.is_(True),
+                            Tool.name == target,
+                            Tool.type == "mcp",
+                            Tool.enabled.is_(True),
+                            Tool.tenant_id == tenant_id,
                         )
-                        tool = result.scalar_one_or_none()
-                        mode = None
-                        if tool is not None:
-                            mode = await resolve_agent_mcp_tool_mode(db, agent_id, tool)
-                    await db.rollback()
-                    return mode
+                    )
+                    tool = result.scalar_one_or_none()
+                    if tool is None:
+                        return None
+                    return await resolve_agent_mcp_tool_mode(db, agent_id, tool)
 
             return await self._mcp_tool_mode_cache.get((agent_id, target), _load)
 
@@ -312,6 +360,27 @@ class ToolGovernanceResolver:
         async def _run_command_hook(spec: GovernanceHookSpec, payload: dict[str, Any]) -> HookVerdict:
             return await run_sandboxed_governance_hook(spec, payload)
 
+        async def _load_guard_policy(
+            tenant_id: uuid.UUID,
+            _agent_id: uuid.UUID,
+            _tool_name: str,
+        ) -> dict[str, Any]:
+            async def _load() -> dict[str, Any]:
+                from app.models.guard_policy import GuardPolicy
+
+                async with tenant_scoped_session(tenant_id) as db:
+                    result = await db.execute(select(GuardPolicy).where(GuardPolicy.tenant_id == tenant_id))
+                    policy = result.scalar_one_or_none()
+                if policy is None:
+                    return {"version": 0, "zone_guard": {}, "egress_guard": {}}
+                return {
+                    "version": int(policy.version),
+                    "zone_guard": dict(policy.zone_guard or {}),
+                    "egress_guard": dict(policy.egress_guard or {}),
+                }
+
+            return await self._guard_policy_cache.get(("guard_policy", tenant_id), _load)
+
         return GovernanceDependencies(
             resolve_security_zone=_resolve_security_zone,
             check_capability=_check_capability,
@@ -320,6 +389,7 @@ class ToolGovernanceResolver:
             resolve_mcp_tool_mode=_resolve_mcp_tool_mode,
             load_governance_hooks=_load_governance_hooks,
             run_command_hook=_run_command_hook,
+            load_guard_policy=_load_guard_policy,
         )
 
 

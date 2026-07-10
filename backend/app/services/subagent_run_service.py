@@ -25,7 +25,7 @@ from app.agents.subagent import (
 )
 from app.agents.subagent_definition import SCOPE_AGENT
 from app.agents.subagent_memory import make_llm_how_distiller, memory_store_for_agent, memory_store_for_tenant
-from app.database import async_session, enter_rls_bypass, tenant_scoped_session
+from app.database import async_session, tenant_scoped_session
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
@@ -360,7 +360,9 @@ async def start_subagent_run(
         snapshot_dict = subagent_spec_to_snapshot(spec_snapshot)
     elif isinstance(spec_snapshot, dict):
         restored_snapshot = subagent_spec_from_snapshot(spec_snapshot)
-        snapshot_dict = subagent_spec_to_snapshot(restored_snapshot) if restored_snapshot is not None else dict(spec_snapshot)
+        snapshot_dict = (
+            subagent_spec_to_snapshot(restored_snapshot) if restored_snapshot is not None else dict(spec_snapshot)
+        )
     if snapshot_dict is not None:
         metadata["subagent_spec"] = snapshot_dict
         if snapshot_dict.get("max_tool_rounds") is not None:
@@ -452,7 +454,7 @@ def make_run_completer(run_id: str):
                         else "mutating",
                         summary=summary,
                     )
-                ]
+                ],
             },
         )
         await update_subagent_child_session_state_for_run(
@@ -472,7 +474,9 @@ async def _settle_subagent_budget(*, run_id: str, result: SubagentResult) -> Non
             return
         metadata = dict(record.get("metadata") or {})
         budget_run_id = _uuid_or_none(record.get("budget_run_id") or metadata.get("budget_run_id"))
-        reservation_key = str(record.get("budget_reservation_key") or metadata.get("budget_reservation_key") or "").strip()
+        reservation_key = str(
+            record.get("budget_reservation_key") or metadata.get("budget_reservation_key") or ""
+        ).strip()
         if budget_run_id is None or not reservation_key:
             return
         tokens = max(0, int(getattr(result, "tokens_used", 0) or 0))
@@ -734,45 +738,59 @@ async def _wake_parent_session_from_subagent_completion(
 async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> SubagentSpawnContext | None:
     from app.services.model_resolution import choose_runtime_model_pair
 
-    async with async_session() as db:
-        async with enter_rls_bypass(db, reason="background subagent restart runtime bootstrap"):
-            agent = (await db.execute(select(Agent).where(Agent.id == parent_agent_id))).scalar_one_or_none()
-            if agent is None:
-                return None
-            primary_model = None
-            fallback_model = None
-            if getattr(agent, "primary_model_id", None):
-                primary_model = (
-                    await db.execute(
-                        select(LLMModel).where(
-                            LLMModel.id == agent.primary_model_id,
-                            LLMModel.tenant_id == agent.tenant_id,
-                            LLMModel.enabled.is_(True),
-                        )
-                    )
-                ).scalar_one_or_none()
-            if getattr(agent, "fallback_model_id", None):
-                fallback_model = (
-                    await db.execute(
-                        select(LLMModel).where(
-                            LLMModel.id == agent.fallback_model_id,
-                            LLMModel.tenant_id == agent.tenant_id,
-                            LLMModel.enabled.is_(True),
-                        )
-                    )
-                ).scalar_one_or_none()
-            model, fallback_model = choose_runtime_model_pair(primary_model, fallback_model, None)
-            if model is None:
-                return None
-            return SubagentSpawnContext(
-                parent_agent_id=parent_agent_id,
-                parent_user_id=agent.creator_id,
-                model=model,
-                fallback_model=fallback_model,
-                parent_agent_name=getattr(agent, "name", None) or "Agent",
-                role_description=getattr(agent, "role_description", None) or "",
-                tenant_id=agent.tenant_id,
+    tenant_id = await resolve_tenant_for_agent(parent_agent_id, session_factory=async_session)
+    if tenant_id is None:
+        return None
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="background_subagent_restart_bootstrap",
+    ) as db:
+        agent = (
+            await db.execute(
+                select(Agent).where(
+                    Agent.id == parent_agent_id,
+                    Agent.tenant_id == tenant_id,
+                )
             )
+        ).scalar_one_or_none()
+        if agent is None:
+            return None
+        primary_model = None
+        fallback_model = None
+        if getattr(agent, "primary_model_id", None):
+            primary_model = (
+                await db.execute(
+                    select(LLMModel).where(
+                        LLMModel.id == agent.primary_model_id,
+                        LLMModel.tenant_id == agent.tenant_id,
+                        LLMModel.enabled.is_(True),
+                    )
+                )
+            ).scalar_one_or_none()
+        if getattr(agent, "fallback_model_id", None):
+            fallback_model = (
+                await db.execute(
+                    select(LLMModel).where(
+                        LLMModel.id == agent.fallback_model_id,
+                        LLMModel.tenant_id == agent.tenant_id,
+                        LLMModel.enabled.is_(True),
+                    )
+                )
+            ).scalar_one_or_none()
+        model, fallback_model = choose_runtime_model_pair(primary_model, fallback_model, None)
+        if model is None:
+            return None
+        return SubagentSpawnContext(
+            parent_agent_id=parent_agent_id,
+            parent_user_id=agent.creator_id,
+            model=model,
+            fallback_model=fallback_model,
+            parent_agent_name=getattr(agent, "name", None) or "Agent",
+            role_description=getattr(agent, "role_description", None) or "",
+            tenant_id=agent.tenant_id,
+        )
 
 
 async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) -> Any | None:
@@ -1052,7 +1070,7 @@ async def _load_subagent_resume_messages(
         return {
             "role": "user",
             "content": (
-                f"<subagent-transcript-event type=\"{event_type}\" role=\"tool\" format=\"json-evidence\">\n"
+                f'<subagent-transcript-event type="{event_type}" role="tool" format="json-evidence">\n'
                 f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
                 "</subagent-transcript-event>"
             ),
@@ -1413,7 +1431,9 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
     """Requeue replay-safe background subagents after a process restart."""
 
     resumed: list[str] = []
-    records = await list_active_runtime_task_records(limit=limit, statuses=("pending", "running", "needs_reconciliation"))
+    records = await list_active_runtime_task_records(
+        limit=limit, statuses=("pending", "running", "needs_reconciliation")
+    )
     for record in records:
         if record.get("task_type") != SUBAGENT_RUN_TASK_TYPE:
             continue

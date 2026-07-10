@@ -176,6 +176,7 @@ async def list_agents(
     )
     return [_agent_list_out_from_mapping(row) for row in result.mappings().all()]
 
+
 HR_AGENT_NAME = "__system_hr__"
 HR_TEMPLATE_VERSION = "hr-flow-v5-personal-kb-work-routing-2026-07-08"
 
@@ -1188,6 +1189,15 @@ async def list_agent_approvals(
             "created_at": a.created_at.isoformat() if a.created_at else None,
             "resolved_at": a.resolved_at.isoformat() if a.resolved_at else None,
             "resolved_by": str(a.resolved_by) if a.resolved_by else None,
+            "decision_id": a.decision_id,
+            "tool_name": a.tool_name,
+            "normalized_arguments": a.normalized_arguments,
+            "input_hash": a.input_hash,
+            "policy_snapshot_hash": a.policy_snapshot_hash,
+            "expires_at": a.expires_at.isoformat() if a.expires_at else None,
+            "consumed_at": a.consumed_at.isoformat() if a.consumed_at else None,
+            "execution_status": a.execution_status,
+            "execution_receipt": a.execution_receipt,
         }
         for a in approvals
     ]

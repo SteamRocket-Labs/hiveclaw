@@ -246,6 +246,7 @@ async def _resume_runtime_tasks_after_startup(done_event=None) -> None:
         from app.api.chat_sessions import expire_stale_session_permission_requests
         from app.database import async_session as _session_permission_scan
         from app.services.heartbeat import resume_persisted_heartbeat_runs
+        from app.services.approval_ticket import reconcile_stuck_approval_tickets
         from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
         from app.services.subagent_run_service import resume_persisted_subagent_runs
         from app.services.trigger_daemon import resume_persisted_trigger_runs
@@ -258,6 +259,17 @@ async def _resume_runtime_tasks_after_startup(done_event=None) -> None:
         if not _runtime_execution_startup_enabled():
             logger.info("[startup] runtime resume/reconcile disabled for process role {}", _process_role())
             return
+
+        from datetime import datetime, timedelta, timezone
+
+        reconciled_approvals = await reconcile_stuck_approval_tickets(
+            older_than=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+        if reconciled_approvals:
+            logger.warning(
+                "[startup] Marked {} interrupted approval execution(s) for reconciliation",
+                reconciled_approvals,
+            )
 
         resumed_task_ids = await resume_persisted_async_delegations(limit=50)
         resumed_subagent_ids = await resume_persisted_subagent_runs(limit=50)

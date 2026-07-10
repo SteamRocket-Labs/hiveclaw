@@ -10,6 +10,7 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 @tool(
     ToolMeta(
         name="web_search",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Basic internet search for public information using Hive's built-in basic provider chain "
@@ -117,6 +118,7 @@ _ANYSEARCH_DOMAINS = [
 @tool(
     ToolMeta(
         name="anysearch_get_sub_domains",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Discover AnySearch MCP vertical sub-domains and required parameters before vertical search. "
@@ -163,6 +165,7 @@ async def anysearch_get_sub_domains(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="anysearch_search",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Search with the AnySearch MCP search/discovery surface, including vertical domains such as finance, "
@@ -221,6 +224,7 @@ async def anysearch_search(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="anysearch_batch_search",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Run 2-5 AnySearch MCP searches in parallel through the AnySearch search/discovery surface, useful "
@@ -282,6 +286,7 @@ async def anysearch_batch_search(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="anysearch_extract",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Extract full page content as Markdown through the AnySearch read/extract surface for a known URL "
@@ -320,6 +325,7 @@ async def anysearch_extract(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="advanced_web_search",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Advanced web search router for no-key providers by default. It chooses among AnySearch vertical "
@@ -388,6 +394,7 @@ async def advanced_web_search(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="advanced_web_fetch",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Advanced web fetch router for known URLs. It tries direct `web_fetch`, Firecrawl, Tavily Extract, "
@@ -440,6 +447,7 @@ async def advanced_web_fetch(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="exa_search",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Exa AI-native search for LLM agents: search the web and extract contents from results, with search "
@@ -543,6 +551,7 @@ async def exa_search(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="exa_fetch",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Exa Fetch for reading a known URL through Exa MCP. Works with no API key by default via Exa MCP; "
@@ -596,6 +605,7 @@ async def exa_fetch(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="tavily_search",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Tavily real-time web access layer for AI agents and RAG workflows: retrieve live web data, relevant "
@@ -711,6 +721,7 @@ async def tavily_search(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="tavily_extract",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Tavily Extract for reading a known URL with Tavily's extraction API. Works with no API key by default; "
@@ -779,6 +790,7 @@ async def tavily_extract(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="web_fetch",
+        timeout_seconds=60.0,
         description=(
             "Fetch and extract readable content directly from a specific URL without relying on third-party reader services.\n\n"
             "Usage:\n"
@@ -825,6 +837,7 @@ async def web_fetch(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="firecrawl_search",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Firecrawl `/search` for keyword search with optional result content scraping. Works with no API key "
@@ -909,6 +922,7 @@ async def firecrawl_search(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="firecrawl_fetch",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Fetch a known URL with Firecrawl `/scrape` for single-page extraction into LLM-ready markdown, "
@@ -1010,6 +1024,7 @@ async def firecrawl_fetch(arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="xcrawl_scrape",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Scrape a known URL with the XCrawl Scrape API for single-page extraction using official "

@@ -90,6 +90,7 @@ def test_runtime_resume_runs_as_background_startup_task_not_lifespan_blocker():
     assert "resume_persisted_subagent_runs" not in pre_background_task_setup
     assert "_resume_runtime_tasks_after_startup(" in background_task_setup
     assert "_run_after_startup_resume_gate(" in background_task_setup
+    assert "reconcile_stuck_approval_tickets" in source
 
 
 @pytest.mark.asyncio

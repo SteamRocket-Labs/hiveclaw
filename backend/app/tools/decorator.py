@@ -51,6 +51,15 @@ class ToolMeta:
     # (small / structural / self-truncating results, e.g. read_file/read_document).
     max_result_chars: int | None = None
 
+    # Execution policy — single source consumed by runtime, governance, UI,
+    # extension descriptors, and tests.
+    timeout_seconds: float = 30.0
+    risk_class: str = "standard"
+    retry_policy: str = "none"
+    idempotency_scope: str = "none"
+    external_visible: bool = False
+    delegated_user_authorized: bool = False
+
     # Governance
     governance: str = ""  # "" | "safe" | "sensitive"
 

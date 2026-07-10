@@ -140,7 +140,11 @@ def _parse_channel_permission_action(text: str) -> str | None:
     import re
 
     clean = text or ""
-    if re.search(r"(本会话|当前会话|this session|for this session|session).*?(允许|批准|同意|可以|allow|approve|yes)", clean, re.IGNORECASE):
+    if re.search(
+        r"(本会话|当前会话|this session|for this session|session).*?(允许|批准|同意|可以|allow|approve|yes)",
+        clean,
+        re.IGNORECASE,
+    ):
         return "allow_session"
     if re.search(r"(拒绝|驳回|不通过|deny|denied|reject|rejected)", clean, re.IGNORECASE):
         return "deny"
@@ -212,7 +216,9 @@ async def _load_channel_session(
         return None
     from app.models.chat_session import ChatSession
 
-    result = await db.execute(select(ChatSession).where(ChatSession.id == session_uuid, ChatSession.agent_id == agent_id))
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == session_uuid, ChatSession.agent_id == agent_id)
+    )
     return result.scalar_one_or_none()
 
 
@@ -247,7 +253,10 @@ async def try_handle_channel_permission_mode_command(
 
     if action == "show":
         metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
-        mode = normalize_permission_mode(metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value).value
+        mode = chat_sessions_api._session_permission_metadata(
+            metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value,
+            session,
+        )["permission_mode"]
         allowed_tools = [
             str(item) for item in (metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
         ]
@@ -257,14 +266,18 @@ async def try_handle_channel_permission_mode_command(
             f"本会话已授权工具：{allowed_text}\n"
             "可切换为：\n"
             "1. 请求批准：/permissions ask\n"
-            "2. 替我批准：/permissions auto\n"
-            "3. 完全访问：/permissions full"
+            "2. 替我批准：/permissions auto"
         )
 
     if user is None:
         return "权限模式切换需要可审计的用户身份。请先绑定账号，或到 Web 端会话内切换。"
 
     mode = normalize_permission_mode(requested_mode or DEFAULT_CCPLUS_PERMISSION_MODE.value).value
+    if mode == "bypassPermissions":
+        return (
+            "完全访问只能由组织管理员通过 Web 会话的 break-glass 流程开启，"
+            "并且必须填写原因、限定 session scope 和 1-60 分钟 TTL。"
+        )
     permission_metadata = chat_sessions_api._session_permission_metadata(mode, session)
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
     session_metadata.update(permission_metadata)

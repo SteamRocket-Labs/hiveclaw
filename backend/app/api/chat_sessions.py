@@ -4,7 +4,7 @@ import json
 import logging
 import uuid
 from dataclasses import asdict
-from datetime import datetime, timezone as tz
+from datetime import datetime, timedelta, timezone as tz
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -30,6 +30,7 @@ from app.runtime.ccplus_contracts import (
     PermissionCheckpointV1,
     build_permission_profile,
     normalize_permission_mode,
+    tenant_permission_default_from_value as _tenant_permission_default_from_value,
 )
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_artifact_delivery import artifact_part_from_model
@@ -62,6 +63,20 @@ _SESSION_PERMISSION_RESOLUTION_EVENT_TYPES = {
     "session_permission_expired",
 }
 _ARTIFACT_AGENT_FIELD_PREFIXES = ("owner", "source", "download", "delivery")
+
+
+async def _resolve_tenant_permission_default(db: AsyncSession, tenant_id: uuid.UUID | None) -> str:
+    if tenant_id is None:
+        return DEFAULT_CCPLUS_PERMISSION_MODE.value
+    from app.models.tenant_setting import TenantSetting
+
+    result = await db.execute(
+        select(TenantSetting.value).where(
+            TenantSetting.tenant_id == tenant_id,
+            TenantSetting.key == "agent_permission_default",
+        )
+    )
+    return _tenant_permission_default_from_value(result.scalar_one_or_none())
 
 
 def _is_admin_or_creator(user: User, agent: Agent) -> bool:
@@ -128,6 +143,7 @@ class SessionOut(BaseModel):
     permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
     permission_profile: dict[str, Any] = Field(default_factory=dict)
     writable_roots: list[str] = Field(default_factory=list)
+    break_glass: dict[str, Any] | None = None
     is_current_user_session: bool = False
     read_only: bool = False
     # Agent-to-agent session fields
@@ -167,9 +183,37 @@ def _session_contract_fields(session: ChatSession) -> dict[str, Any]:
     }
 
 
-def _session_permission_metadata(permission_mode: str | None, session: ChatSession | None = None) -> dict[str, Any]:
-    mode = normalize_permission_mode(permission_mode or DEFAULT_CCPLUS_PERMISSION_MODE.value).value
+def _active_break_glass(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    required = ("operator_id", "reason", "scope", "expires_at")
+    if any(not str(value.get(key) or "").strip() for key in required):
+        return None
+    if value.get("scope") != "session":
+        return None
+    try:
+        expires_at = datetime.fromisoformat(str(value["expires_at"]).replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=tz.utc)
+    except (TypeError, ValueError):
+        return None
+    if expires_at <= datetime.now(tz.utc):
+        return None
+    return {**value, "expires_at": expires_at.astimezone(tz.utc).isoformat()}
+
+
+def _session_permission_metadata(
+    permission_mode: str | None,
+    session: ChatSession | None = None,
+    *,
+    break_glass: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {}) if session is not None else {}
+    requested_mode = permission_mode or session_metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value
+    mode = normalize_permission_mode(requested_mode).value
+    active_break_glass = _active_break_glass(break_glass or session_metadata.get("break_glass"))
+    if mode == "bypassPermissions" and active_break_glass is None:
+        mode = DEFAULT_CCPLUS_PERMISSION_MODE.value
     allowed_tools = [
         str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
     ]
@@ -178,6 +222,7 @@ def _session_permission_metadata(permission_mode: str | None, session: ChatSessi
         "permission_mode": mode,
         "writable_roots": writable_roots,
         "permission_profile": {"mode": mode, "allowed_tools": allowed_tools, "writable_roots": writable_roots},
+        "break_glass": active_break_glass if mode == "bypassPermissions" else None,
     }
 
 
@@ -343,9 +388,7 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
     activation_candidates = _metadata_list(
         metadata.get("activation_candidates") or assembly_state.get("activation_candidates")
     )
-    tool_result_ledger = _metadata_list(
-        metadata.get("tool_result_ledger") or assembly_state.get("tool_result_ledger")
-    )
+    tool_result_ledger = _metadata_list(metadata.get("tool_result_ledger") or assembly_state.get("tool_result_ledger"))
     knowledge_tool_results = [
         entry
         for entry in tool_result_ledger
@@ -884,6 +927,9 @@ class PatchSessionIn(BaseModel):
 
 class UpdateSessionPermissionProfileIn(BaseModel):
     permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
+    break_glass_reason: str | None = None
+    break_glass_scope: Literal["session"] | None = None
+    break_glass_ttl_minutes: int | None = Field(default=None, ge=1, le=60)
 
 
 class StartSessionRunIn(BaseModel):
@@ -891,7 +937,7 @@ class StartSessionRunIn(BaseModel):
     display_content: str = ""
     file_name: str = ""
     plan_mode_requested: bool = False
-    permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
+    permission_mode: str | None = None
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -1086,7 +1132,9 @@ def _project_interactive_tool_card_content(event: ChatTranscriptEvent, content: 
     tool_name = (
         payload_tool_name
         if isinstance(payload_tool_name, str) and payload_tool_name
-        else metadata_tool_name if isinstance(metadata_tool_name, str) and metadata_tool_name else ""
+        else metadata_tool_name
+        if isinstance(metadata_tool_name, str) and metadata_tool_name
+        else ""
     )
     if not _interactive_tool_result_status_allowed(tool_name, result_payload.get("status")):
         return None
@@ -1509,7 +1557,24 @@ async def update_session_permission_profile(
         session_id=session_id,
         current_user=current_user,
     )
-    permission_metadata = _session_permission_metadata(body.permission_mode, session)
+    break_glass = None
+    if normalize_permission_mode(body.permission_mode).value == "bypassPermissions":
+        if getattr(current_user, "role", None) not in {"org_admin", "platform_admin"}:
+            raise HTTPException(status_code=403, detail="Break-glass full access requires an organization admin")
+        reason = str(body.break_glass_reason or "").strip()
+        if len(reason) < 8 or body.break_glass_scope != "session" or body.break_glass_ttl_minutes is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Break-glass requires reason, scope=session, and a TTL of 1-60 minutes",
+            )
+        break_glass = {
+            "operator_id": str(current_user.id),
+            "reason": reason,
+            "scope": "session",
+            "issued_at": datetime.now(tz.utc).isoformat(),
+            "expires_at": (datetime.now(tz.utc) + timedelta(minutes=body.break_glass_ttl_minutes)).isoformat(),
+        }
+    permission_metadata = _session_permission_metadata(body.permission_mode, session, break_glass=break_glass)
     session_metadata = dict(session.transcript_metadata_json or {})
     session_metadata.update(permission_metadata)
     session.transcript_metadata_json = session_metadata
@@ -1529,6 +1594,24 @@ async def update_session_permission_profile(
         active_metadata = dict(getattr(active_run, "metadata_json", None) or {})
         active_metadata.update(permission_metadata)
         active_run.metadata_json = active_metadata
+
+    await append_session_event(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=session.tenant_id,
+        session_id=session_id,
+        actor_type="user",
+        event_type="permission_profile_updated",
+        content=f"Session permission mode changed to {permission_metadata['permission_mode']}",
+        user_id=current_user.id,
+        runtime_task_id=getattr(active_run, "id", None),
+        metadata={
+            **permission_metadata,
+            "operator_role": getattr(current_user, "role", None),
+        },
+        materialize_chat_message=False,
+        source="permission_profile_api",
+    )
 
     await db.commit()
 
@@ -1625,6 +1708,7 @@ async def create_session_run(
     )
     db.add(session)
     await db.flush()
+    permission_mode = body.permission_mode or await _resolve_tenant_permission_default(db, session.tenant_id)
     try:
         run = await start_web_chat_run(
             db=db,
@@ -1635,7 +1719,7 @@ async def create_session_run(
             display_content=body.display_content,
             file_name=body.file_name,
             plan_mode_requested=body.plan_mode_requested,
-            extra_metadata=_session_permission_metadata(body.permission_mode, session),
+            extra_metadata=_session_permission_metadata(permission_mode, session),
             attachments=body.attachments,
             parts=body.parts,
         )

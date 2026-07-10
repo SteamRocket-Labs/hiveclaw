@@ -74,8 +74,8 @@ async def _govern(
 
 
 def test_permission_profile_normalizes_cc_mode_names_and_legacy_aliases() -> None:
-    assert PermissionProfileV1().mode == PermissionMode.BYPASS_PERMISSIONS
-    assert build_permission_profile().mode == PermissionMode.BYPASS_PERMISSIONS
+    assert PermissionProfileV1().mode == PermissionMode.DEFAULT
+    assert build_permission_profile().mode == PermissionMode.DEFAULT
     assert build_permission_profile({"mode": "acceptEdits"}).mode == PermissionMode.ACCEPT_EDITS
     assert build_permission_profile({"mode": "accept_edits"}).mode == PermissionMode.ACCEPT_EDITS
     assert build_permission_profile({"mode": "dontAsk"}).mode == PermissionMode.DONT_ASK
@@ -86,7 +86,7 @@ def test_permission_profile_normalizes_cc_mode_names_and_legacy_aliases() -> Non
 
 
 @pytest.mark.asyncio
-async def test_omitted_session_permission_profile_defaults_to_full_access_for_missing_policy() -> None:
+async def test_omitted_session_permission_profile_defaults_to_ask_for_missing_policy() -> None:
     approval_calls: list[dict] = []
     audit_calls: list[dict] = []
     events: list[dict] = []
@@ -103,10 +103,11 @@ async def test_omitted_session_permission_profile_defaults_to_full_access_for_mi
         event_callback=events.append,
     )
 
-    assert message is None
+    assert message is not None
+    assert json.loads(message)["status"] == "session_permission_required"
     assert approval_calls == []
     assert audit_calls == []
-    assert events == []
+    assert events[-1]["status"] == "session_permission_required"
 
 
 @pytest.mark.asyncio

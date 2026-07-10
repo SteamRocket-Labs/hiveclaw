@@ -45,7 +45,7 @@ class PermissionMode(str, Enum):
     BYPASS_PERMISSIONS = "bypassPermissions"
 
 
-DEFAULT_CCPLUS_PERMISSION_MODE = PermissionMode.BYPASS_PERMISSIONS
+DEFAULT_CCPLUS_PERMISSION_MODE = PermissionMode.DEFAULT
 
 
 class SandboxProfile(str, Enum):
@@ -100,6 +100,13 @@ def normalize_permission_mode(value: Any) -> PermissionMode:
     if not text:
         return PermissionMode.DEFAULT
     return _PERMISSION_MODE_ALIASES.get(text, PermissionMode.DEFAULT)
+
+
+def tenant_permission_default_from_value(value: Any) -> str:
+    """Return the only permission modes an organization may set by default."""
+    raw = value.get("mode") if isinstance(value, dict) else None
+    mode = normalize_permission_mode(raw).value if raw else PermissionMode.DEFAULT.value
+    return mode if mode in {PermissionMode.DEFAULT.value, PermissionMode.AUTO.value} else PermissionMode.DEFAULT.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +177,12 @@ class ToolSpecV1:
     sandbox_requirements: tuple[str, ...] = ()
     mcp_info: dict[str, Any] = field(default_factory=dict)
     result_budget: int | None = None
+    timeout_seconds: float = 30.0
+    risk_class: str = "standard"
+    retry_policy: str = "none"
+    idempotency_scope: str = "none"
+    external_visible: bool = False
+    delegated_user_authorized: bool = False
 
 
 @dataclass(frozen=True, slots=True)

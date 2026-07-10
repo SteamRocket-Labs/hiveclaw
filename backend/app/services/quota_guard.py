@@ -13,7 +13,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.database import async_session, enter_rls_bypass
+from app.database import async_session, tenant_scoped_session
+from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_user
 
 
 class QuotaExceeded(Exception):
@@ -108,29 +109,58 @@ async def check_user_token_quota(
     if checked_user_id is None and checked_agent_id is None and checked_tenant_id is None:
         return
 
-    reason_parts = []
-    if checked_user_id is not None:
-        reason_parts.append(f"user {checked_user_id}")
-    if checked_agent_id is not None:
-        reason_parts.append(f"agent {checked_agent_id}")
-    if checked_tenant_id is not None:
-        reason_parts.append(f"tenant {checked_tenant_id}")
-    async with (
-        async_session() as db,
-        enter_rls_bypass(db, reason=f"token quota check for {' / '.join(reason_parts)}"),
-    ):
+    if checked_tenant_id is None and checked_agent_id is not None:
+        checked_tenant_id = await resolve_tenant_for_agent(
+            checked_agent_id,
+            session_factory=async_session,
+        )
+    if checked_tenant_id is None and checked_user_id is not None:
+        checked_tenant_id = await resolve_tenant_for_user(
+            checked_user_id,
+            session_factory=async_session,
+        )
+    if checked_tenant_id is None:
+        return
+
+    async with tenant_scoped_session(
+        checked_tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="token_quota_check",
+    ) as db:
         user = None
         if checked_user_id is not None:
-            user = (await db.execute(select(User).where(User.id == checked_user_id))).scalar_one_or_none()
+            user = (
+                await db.execute(
+                    select(User).where(
+                        User.id == checked_user_id,
+                        User.tenant_id == checked_tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
 
         agent = None
         if checked_agent_id is not None:
-            agent = (await db.execute(select(Agent).where(Agent.id == checked_agent_id))).scalar_one_or_none()
+            agent = (
+                await db.execute(
+                    select(Agent).where(
+                        Agent.id == checked_agent_id,
+                        Agent.tenant_id == checked_tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
             if agent is not None:
                 checked_tenant_id = checked_tenant_id or agent.tenant_id
                 if user is None:
                     checked_user_id = agent.owner_user_id or agent.creator_id
-                    user = (await db.execute(select(User).where(User.id == checked_user_id))).scalar_one_or_none()
+                    user = (
+                        await db.execute(
+                            select(User).where(
+                                User.id == checked_user_id,
+                                User.tenant_id == checked_tenant_id,
+                            )
+                        )
+                    ).scalar_one_or_none()
 
         if checked_tenant_id is None and user is not None:
             checked_tenant_id = user.tenant_id
@@ -190,5 +220,4 @@ async def check_user_token_quota(
                     limit=user.quota_tokens_per_month,
                 )
 
-        if changed:
-            await db.commit()
+        # tenant_scoped_session commits counter resets atomically on exit.

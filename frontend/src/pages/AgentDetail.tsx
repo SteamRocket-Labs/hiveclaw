@@ -128,7 +128,7 @@ function normalizeSessionPermissionModeValue(value: unknown): SessionPermissionM
     return null;
 }
 
-const DEFAULT_SESSION_PERMISSION_MODE: SessionPermissionMode = 'bypassPermissions';
+const DEFAULT_SESSION_PERMISSION_MODE: SessionPermissionMode = 'default';
 
 // B4 transcript windowing: first screen loads a slim newest window; older
 // history pages in on demand.
@@ -223,13 +223,25 @@ export function sessionPermissionModeFromSession(session: unknown): SessionPermi
     const profile = objectValue(sessionRecord.permission_profile);
     const transcriptMetadata = objectValue(sessionRecord.transcript_metadata_json);
     const metadata = objectValue(sessionRecord.metadata);
-    return (
+    const mode = (
         normalizeSessionPermissionModeValue(sessionRecord.permission_mode) ||
         normalizeSessionPermissionModeValue(profile.mode) ||
         normalizeSessionPermissionModeValue(transcriptMetadata.permission_mode) ||
         normalizeSessionPermissionModeValue(metadata.permission_mode) ||
         DEFAULT_SESSION_PERMISSION_MODE
     );
+    if (mode !== 'bypassPermissions') return mode;
+    const breakGlass = objectValue(
+        sessionRecord.break_glass || transcriptMetadata.break_glass || metadata.break_glass,
+    );
+    const expiresAt = Date.parse(stringValueFromUnknown(breakGlass.expires_at));
+    const activeBreakGlass =
+        stringValueFromUnknown(breakGlass.operator_id).length > 0 &&
+        stringValueFromUnknown(breakGlass.reason).length > 0 &&
+        breakGlass.scope === 'session' &&
+        Number.isFinite(expiresAt) &&
+        expiresAt > Date.now();
+    return activeBreakGlass ? mode : DEFAULT_SESSION_PERMISSION_MODE;
 }
 
 function withSessionPermissionMode<T extends Record<string, unknown>>(session: T, mode: SessionPermissionMode): T {

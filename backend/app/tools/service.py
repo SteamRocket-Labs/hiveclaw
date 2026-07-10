@@ -43,6 +43,7 @@ from app.tools.plan_gate_registry import hard_gated_action_kind
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRegistry, ToolExecutionRequest
 from app.tools.backends import LocalToolRuntimeBackend, ToolRuntimeBackend
+from app.tools.decision import ToolDecisionOutcome, build_tool_decision
 from app.tools.validation import validate_tool_arguments
 
 
@@ -55,59 +56,7 @@ FallbackExecutor = Callable[[str, dict, ToolExecutionContext], Awaitable[str] | 
 ActivityLogger = Callable[..., Awaitable[None] | None]
 EnsureRegistry = Callable[[], None]
 
-TOOL_TIMEOUTS: dict[str, float] = {
-    "execute_code": 120.0,
-    "run_command": 120.0,
-    "create_digital_employee": 120.0,
-    # Long-running harness primitives wrap agent/workflow/DR execution and
-    # must not fall back to the generic 30s timeout.
-    "spawn_subagent": 180.0,
-    "start_workflow": 180.0,
-    # Synchronous A2A wraps the target's full LLM turn (including tools like
-    # feishu_wiki_list / document reads) plus reply write-back. Keep this
-    # above AGENT_MESSAGE_TIMEOUT_SECONDS so the wrapper does not preempt the
-    # orchestrator's explicit timeout handling.
-    "send_message_to_agent": 360.0,
-    "web_fetch": 60.0,
-    "web_search": 60.0,
-    "advanced_web_search": 60.0,
-    "advanced_web_fetch": 60.0,
-    "anysearch_get_sub_domains": 60.0,
-    "anysearch_search": 60.0,
-    "anysearch_batch_search": 60.0,
-    "anysearch_extract": 60.0,
-    "exa_search": 60.0,
-    "exa_fetch": 60.0,
-    "tavily_search": 60.0,
-    "tavily_extract": 60.0,
-    "firecrawl_search": 60.0,
-    "firecrawl_fetch": 60.0,
-    "xcrawl_scrape": 60.0,
-    "read_document": 60.0,
-    "send_feishu_message": 45.0,
-    "feishu_doc_read": 45.0,
-    "feishu_url_resolve": 45.0,
-    "feishu_url_read": 90.0,
-    "feishu_drive_file_read": 90.0,
-    "feishu_wiki_read": 45.0,
-}
-
 _TOOL_ERROR_PAYLOAD_RE = re.compile(r"<tool_error>(.*?)</tool_error>", re.DOTALL)
-_EXTERNAL_VISIBLE_TOOLS = frozenset(
-    {
-        "send_feishu_message",
-        "send_web_message",
-        "send_email",
-        "reply_email",
-        "plaza_create_post",
-        "plaza_add_comment",
-    }
-)
-_DELEGATED_USER_AUTHORIZED_TOOLS = frozenset(
-    {
-        "send_feishu_message",
-    }
-)
 _COMPANY_CONFLICT_PATTERNS = (
     "bypass company policy",
     "share credentials",
@@ -178,9 +127,7 @@ async def _renew_runtime_task_lease_before_execution() -> None:
     from app.config import get_settings
     from app.services.runtime_task_fence import renew_current_runtime_task_lease
 
-    await renew_current_runtime_task_lease(
-        lease_seconds=float(get_settings().RUNTIME_TASK_CLAIM_LEASE_SECONDS)
-    )
+    await renew_current_runtime_task_lease(lease_seconds=float(get_settings().RUNTIME_TASK_CLAIM_LEASE_SECONDS))
 
 
 async def _resolve_runtime_context(
@@ -456,6 +403,131 @@ def _tool_trace_metadata(
     return metadata
 
 
+def _record_final_tool_decision(
+    *,
+    trace_metadata_sink: dict[str, Any] | None,
+    runtime_context: ToolExecutionContext,
+    tool_name: str,
+    arguments: dict[str, Any],
+    outcome: ToolDecisionOutcome,
+    reason_codes: tuple[str, ...],
+    tool_call_id: str,
+    governance_context: ToolGovernanceContext | None = None,
+) -> dict[str, Any]:
+    profile = runtime_context.permission_profile
+    if is_dataclass(profile):
+        policy_snapshot = asdict(profile)
+    elif isinstance(profile, dict):
+        policy_snapshot = dict(profile)
+    else:
+        policy_snapshot = {"mode": "default"}
+    if governance_context is not None:
+        guard_policy_snapshot = getattr(governance_context, "guard_policy_snapshot", None)
+        guard_policy_verdict = getattr(governance_context, "guard_policy_verdict", None)
+        if guard_policy_snapshot is not None:
+            policy_snapshot["guard_policy"] = dict(guard_policy_snapshot)
+        if guard_policy_verdict is not None:
+            policy_snapshot["guard_policy_verdict"] = dict(guard_policy_verdict)
+    from app.tools.registry import tool_spec_v1
+
+    spec = tool_spec_v1(tool_name)
+    capability_snapshot = {
+        "descriptor": asdict(spec) if spec is not None else {"tool_name": tool_name},
+    }
+    live_capability_snapshot = getattr(governance_context, "capability_snapshot", None)
+    if live_capability_snapshot is not None:
+        capability_snapshot["live_policy"] = dict(live_capability_snapshot)
+    decision = build_tool_decision(
+        decision_id=getattr(governance_context, "decision_id", None),
+        tenant_id=runtime_context.tenant_id,
+        agent_id=runtime_context.agent_id,
+        actor_user_id=runtime_context.user_id,
+        tool_name=tool_name,
+        arguments=arguments,
+        policy_snapshot=policy_snapshot,
+        capability_snapshot=capability_snapshot,
+        outcome=outcome,
+        reason_codes=reason_codes,
+        delegated_by=getattr(
+            getattr(governance_context, "delegation_token", None),
+            "parent_agent_id",
+            None,
+        ),
+        approval_id=getattr(governance_context, "approval_id", None),
+        runtime_task_id=runtime_context.runtime_task_id,
+        session_id=runtime_context.session_id,
+        trace_id=(runtime_context.round_state or {}).get("trace_id"),
+        idempotency_key=f"tool-call:{tool_call_id}",
+    )
+    payload = decision.to_dict()
+    if trace_metadata_sink is not None:
+        trace_metadata_sink.update(
+            {
+                "tool_decision": payload,
+                "decision_id": decision.decision_id,
+                "input_hash": decision.input_hash,
+                "policy_snapshot_hash": decision.policy_snapshot_hash,
+                "capability_snapshot_hash": decision.capability_snapshot_hash,
+                "idempotency_key": decision.idempotency_key,
+                "authority_policy_snapshot": policy_snapshot,
+                "authority_capability_snapshot": capability_snapshot,
+            }
+        )
+    return payload
+
+
+def _record_precontext_tool_decision(
+    *,
+    trace_metadata_sink: dict[str, Any] | None,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    permission_profile: Any,
+    tool_name: str,
+    arguments: dict[str, Any],
+    outcome: ToolDecisionOutcome,
+    reason_codes: tuple[str, ...],
+    tool_call_id: str,
+    runtime_task_id: str | None,
+    session_id: str | None,
+) -> None:
+    if trace_metadata_sink is None:
+        return
+    if is_dataclass(permission_profile):
+        policy_snapshot = asdict(permission_profile)
+    elif isinstance(permission_profile, dict):
+        policy_snapshot = dict(permission_profile)
+    else:
+        policy_snapshot = {"mode": "default"}
+    from app.tools.registry import tool_spec_v1
+
+    spec = tool_spec_v1(tool_name)
+    decision = build_tool_decision(
+        decision_id=f"decision:{tool_call_id}",
+        tenant_id=None,
+        agent_id=agent_id,
+        actor_user_id=user_id,
+        tool_name=tool_name,
+        arguments=arguments,
+        policy_snapshot=policy_snapshot,
+        capability_snapshot=asdict(spec) if spec is not None else {"tool_name": tool_name},
+        outcome=outcome,
+        reason_codes=reason_codes,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        idempotency_key=f"tool-call:{tool_call_id}",
+    )
+    trace_metadata_sink.update(
+        {
+            "tool_decision": decision.to_dict(),
+            "decision_id": decision.decision_id,
+            "input_hash": decision.input_hash,
+            "policy_snapshot_hash": decision.policy_snapshot_hash,
+            "capability_snapshot_hash": decision.capability_snapshot_hash,
+            "idempotency_key": decision.idempotency_key,
+        }
+    )
+
+
 @dataclass(slots=True)
 class ToolRuntimeService:
     runtime_resolver: Any
@@ -472,7 +544,9 @@ class ToolRuntimeService:
     coordination_runtime: CoordinationRuntime | None = None
     coordination_gateway: CoordinationGateway | None = None
     truth_search_service: Any | None = None
-    capability_group_policy_loader: Callable[[ToolExecutionContext], Awaitable[dict[str, bool]] | dict[str, bool]] | None = None
+    capability_group_policy_loader: (
+        Callable[[ToolExecutionContext], Awaitable[dict[str, bool]] | dict[str, bool]] | None
+    ) = None
     pack_policy_loader: Callable[[ToolExecutionContext], Awaitable[dict[str, bool]] | dict[str, bool]] | None = None
     preflight_enabled: bool = True
     # Confirmation gate. The gate is read-only and stateless; the session factory
@@ -484,6 +558,8 @@ class ToolRuntimeService:
     # seam kept for tests + future intake needs; blocked gated tools now return
     # ``requires_confirmation`` and never enter Plan Mode.
     plan_mode_service: Any | None = None
+    approval_ticket_consumer: Any | None = None
+    approval_ticket_completer: Any | None = None
 
     def __post_init__(self) -> None:
         if self.backend is None:
@@ -510,6 +586,11 @@ class ToolRuntimeService:
             from app.services.plan_mode_service import get_plan_mode_service
 
             self.plan_mode_service = get_plan_mode_service()
+        if self.approval_ticket_consumer is None or self.approval_ticket_completer is None:
+            from app.services.approval_ticket import complete_approval_ticket, consume_approval_ticket
+
+            self.approval_ticket_consumer = self.approval_ticket_consumer or consume_approval_ticket
+            self.approval_ticket_completer = self.approval_ticket_completer or complete_approval_ticket
 
     async def _load_capability_group_policies(self, runtime_context: ToolExecutionContext) -> dict[str, bool]:
         policy_loader = self.capability_group_policy_loader or self.pack_policy_loader
@@ -589,8 +670,22 @@ class ToolRuntimeService:
         trace_metadata_sink: dict[str, Any] | None = None,
         workspace_override: Path | str | None = None,
     ) -> str | ToolContentEnvelope:
+        effective_tool_call_id = tool_call_id or _new_runtime_tool_call_id()
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
+            _record_precontext_tool_decision(
+                trace_metadata_sink=trace_metadata_sink,
+                agent_id=agent_id,
+                user_id=user_id,
+                permission_profile=permission_profile,
+                tool_name=tool_name,
+                arguments=arguments,
+                outcome=ToolDecisionOutcome.DENY,
+                reason_codes=("plan_mode_readonly",),
+                tool_call_id=effective_tool_call_id,
+                runtime_task_id=runtime_task_id,
+                session_id=session_id,
+            )
             return plan_mode_block
 
         plan_block = await self._plan_mode_gate_block(
@@ -601,6 +696,19 @@ class ToolRuntimeService:
             plan_mode_unattended_available=plan_mode_unattended_available,
         )
         if plan_block:
+            _record_precontext_tool_decision(
+                trace_metadata_sink=trace_metadata_sink,
+                agent_id=agent_id,
+                user_id=user_id,
+                permission_profile=permission_profile,
+                tool_name=tool_name,
+                arguments=arguments,
+                outcome=ToolDecisionOutcome.REQUIRE_APPROVAL,
+                reason_codes=("plan_confirmation_required",),
+                tool_call_id=effective_tool_call_id,
+                runtime_task_id=runtime_task_id,
+                session_id=session_id,
+            )
             return plan_block
 
         runtime_context = await _resolve_runtime_context(
@@ -618,7 +726,6 @@ class ToolRuntimeService:
         )
         if workspace_override is not None:
             runtime_context.workspace = Path(workspace_override)
-        effective_tool_call_id = tool_call_id or _new_runtime_tool_call_id()
         original_arguments = dict(arguments or {})
         _record_tool_lifecycle(
             runtime_context,
@@ -647,6 +754,15 @@ class ToolRuntimeService:
                     effective_arguments=dict(arguments or {}),
                     governance_decisions=("pre_tool_hook_block",),
                 )
+                _record_final_tool_decision(
+                    trace_metadata_sink=trace_metadata_sink,
+                    runtime_context=runtime_context,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    outcome=ToolDecisionOutcome.DENY,
+                    reason_codes=("pre_tool_hook_block",),
+                    tool_call_id=effective_tool_call_id,
+                )
                 return "Blocked by hook: " + (hook_result.reason or "policy")
             if hook_result and hook_result.modified_args is not None:
                 arguments = hook_result.modified_args
@@ -660,6 +776,15 @@ class ToolRuntimeService:
                 original_arguments=original_arguments,
                 effective_arguments=dict(arguments or {}),
                 governance_decisions=("validate_input_block",),
+            )
+            _record_final_tool_decision(
+                trace_metadata_sink=trace_metadata_sink,
+                runtime_context=runtime_context,
+                tool_name=tool_name,
+                arguments=arguments,
+                outcome=ToolDecisionOutcome.DENY,
+                reason_codes=("invalid_tool_arguments",),
+                tool_call_id=effective_tool_call_id,
             )
             return validation_block
         _record_tool_lifecycle(
@@ -680,6 +805,15 @@ class ToolRuntimeService:
                 original_arguments=original_arguments,
                 effective_arguments=dict(arguments or {}),
                 governance_decisions=("l2_policy_block",),
+            )
+            _record_final_tool_decision(
+                trace_metadata_sink=trace_metadata_sink,
+                runtime_context=runtime_context,
+                tool_name=tool_name,
+                arguments=arguments,
+                outcome=ToolDecisionOutcome.DENY,
+                reason_codes=("l2_policy_block",),
+                tool_call_id=effective_tool_call_id,
             )
             return l2_policy_block
         governance_kwargs: dict[str, Any] = {
@@ -715,6 +849,22 @@ class ToolRuntimeService:
                 effective_arguments=dict(arguments or {}),
                 governance_decisions=("governance_block",),
             )
+            governance_outcome = (
+                ToolDecisionOutcome.REQUIRE_APPROVAL
+                if "approval_required" in str(governance_block)
+                or "session_permission_required" in str(governance_block)
+                else ToolDecisionOutcome.DENY
+            )
+            _record_final_tool_decision(
+                trace_metadata_sink=trace_metadata_sink,
+                runtime_context=runtime_context,
+                tool_name=tool_name,
+                arguments=arguments,
+                outcome=governance_outcome,
+                reason_codes=("governance_block",),
+                tool_call_id=effective_tool_call_id,
+                governance_context=governance_context,
+            )
             return governance_block
         _record_tool_lifecycle(
             runtime_context,
@@ -741,6 +891,21 @@ class ToolRuntimeService:
                 effective_arguments=dict(arguments or {}),
                 governance_decisions=("preflight_block",),
             )
+            preflight_outcome = (
+                ToolDecisionOutcome.REQUIRE_APPROVAL
+                if "ASK" in str(preflight_block) or "PREPARE_ONLY" in str(preflight_block)
+                else ToolDecisionOutcome.DENY
+            )
+            _record_final_tool_decision(
+                trace_metadata_sink=trace_metadata_sink,
+                runtime_context=runtime_context,
+                tool_name=tool_name,
+                arguments=arguments,
+                outcome=preflight_outcome,
+                reason_codes=("action_preflight_block",),
+                tool_call_id=effective_tool_call_id,
+                governance_context=governance_context,
+            )
             return preflight_block
         _record_tool_lifecycle(
             runtime_context,
@@ -751,7 +916,19 @@ class ToolRuntimeService:
             effective_arguments=dict(arguments or {}),
         )
 
-        timeout_seconds = TOOL_TIMEOUTS.get(tool_name, 30.0)
+        _record_final_tool_decision(
+            trace_metadata_sink=trace_metadata_sink,
+            runtime_context=runtime_context,
+            tool_name=tool_name,
+            arguments=arguments,
+            outcome=ToolDecisionOutcome.ALLOW,
+            reason_codes=("governance_allow", "preflight_allow"),
+            tool_call_id=effective_tool_call_id,
+            governance_context=governance_context,
+        )
+        from app.tools.registry import tool_execution_policy
+
+        timeout_seconds = tool_execution_policy(tool_name).timeout_seconds
         try:
             await _renew_runtime_task_lease_before_execution()
             _record_tool_lifecycle(
@@ -789,12 +966,8 @@ class ToolRuntimeService:
                                 for k, v in arguments.items()
                             },
                             "result": result_text[:300],
-                            "tool_call_lifecycle": _latest_context_record(
-                                runtime_context, "tool_lifecycle_records"
-                            ),
-                            "tool_execution_frame": _latest_context_record(
-                                runtime_context, "tool_execution_frames"
-                            ),
+                            "tool_call_lifecycle": _latest_context_record(runtime_context, "tool_lifecycle_records"),
+                            "tool_execution_frame": _latest_context_record(runtime_context, "tool_execution_frames"),
                         },
                     )
                 )
@@ -827,7 +1000,11 @@ class ToolRuntimeService:
                 )
                 if post_hook_result and post_hook_result.output_rewrite is not None:
                     rewrite = post_hook_result.output_rewrite
-                    return rewrite if isinstance(rewrite, str) else _json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
+                    return (
+                        rewrite
+                        if isinstance(rewrite, str)
+                        else _json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
+                    )
             elif not emit_runtime_hooks:
                 _record_tool_lifecycle(
                     runtime_context,
@@ -1012,58 +1189,81 @@ class ToolRuntimeService:
             metadata=_tool_trace_metadata(runtime_context, tool_call_id=tool_call_id, source=source),
         )
 
-    async def execute_direct(
-        self,
-        tool_name: str,
-        arguments: dict,
-        *,
-        agent_id: uuid.UUID,
-        user_id: uuid.UUID | None = None,
-    ) -> str | ToolContentEnvelope:
-        """Execute a tool after approval, with basic validation.
-
-        Governance is intentionally skipped (approval already granted), but
-        we validate the tool exists and log the execution for audit.
-        """
-        return await self._execute_without_governance(
-            tool_name,
-            arguments,
-            agent_id=agent_id,
-            user_id=user_id,
-            activity_type="tool_call_direct",
-            activity_detail={"approved": True},
-            log_label="execute_direct",
-        )
-
     async def execute_approved(
         self,
-        tool_name: str,
-        arguments: dict,
         *,
-        agent_id: uuid.UUID,
+        approval_id: uuid.UUID,
+        expected_agent_id: uuid.UUID | None = None,
         approved_by_user_id: uuid.UUID | None = None,
-        approval_id: uuid.UUID | None = None,
     ) -> str | ToolContentEnvelope:
-        """Execute a tool after a recorded approval decision.
+        """Consume one immutable approval ticket and execute its exact request.
 
-        This is the public post-approval entrypoint. It skips governance
-        preflight because the approval decision is the governance result, but
-        keeps execution inside ToolRuntimeService for validation and audit.
+        No tool name or arguments are accepted here: callers cannot approve one
+        payload and replace it at execution time.
         """
+        ticket = await _maybe_await(
+            self.approval_ticket_consumer(
+                approval_id=approval_id,
+                expected_agent_id=expected_agent_id,
+                expected_user_id=approved_by_user_id,
+            )
+        )
         detail = {
             "approved": True,
-            "approved_by_user_id": str(approved_by_user_id) if approved_by_user_id else None,
-            "approval_id": str(approval_id) if approval_id else None,
+            "requested_by_user_id": str(ticket.requested_by_user_id),
+            "approved_by_user_id": str(ticket.approved_by_user_id),
+            "approval_id": str(ticket.approval_id),
+            "input_hash": ticket.input_hash,
+            "policy_snapshot_hash": ticket.policy_snapshot_hash,
+            "idempotency_key": ticket.idempotency_key,
+            "decision_id": ticket.decision_id,
         }
-        return await self._execute_without_governance(
-            tool_name,
-            arguments,
-            agent_id=agent_id,
-            user_id=approved_by_user_id,
-            activity_type="tool_call_approved",
-            activity_detail=detail,
-            log_label="execute_approved",
+        receipt = {
+            "tool_name": ticket.tool_name,
+            "requested_by_user_id": str(ticket.requested_by_user_id),
+            "approved_by_user_id": str(ticket.approved_by_user_id),
+            "input_hash": ticket.input_hash,
+            "policy_snapshot_hash": ticket.policy_snapshot_hash,
+            "idempotency_key": ticket.idempotency_key,
+            "decision_id": ticket.decision_id,
+        }
+        try:
+            result = await self._execute_without_governance(
+                ticket.tool_name,
+                ticket.arguments,
+                agent_id=ticket.agent_id,
+                user_id=ticket.requested_by_user_id,
+                activity_type="tool_call_approved",
+                activity_detail=detail,
+                log_label="execute_approved",
+            )
+        except Exception as exc:
+            await _maybe_await(
+                self.approval_ticket_completer(
+                    approval_id=ticket.approval_id,
+                    tenant_id=ticket.tenant_id,
+                    status="failed",
+                    result=f"{type(exc).__name__}: {exc}",
+                    receipt={
+                        **receipt,
+                        "status": "failed",
+                        "error_class": type(exc).__name__,
+                    },
+                )
+            )
+            raise
+        result_text = str(result)
+        execution_status = "failed" if _extract_tool_error_payload(result_text) else "succeeded"
+        await _maybe_await(
+            self.approval_ticket_completer(
+                approval_id=ticket.approval_id,
+                tenant_id=ticket.tenant_id,
+                status=execution_status,
+                result=result_text,
+                receipt={**receipt, "status": execution_status},
+            )
         )
+        return result
 
     async def _execute_without_governance(
         self,
@@ -1081,12 +1281,6 @@ class ToolRuntimeService:
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
             return plan_mode_block
-
-        # Plan Mode early-intercept (§9.2) fires here so both execute_direct and
-        # execute_approved are covered — execute_approved must NOT be a bypass.
-        plan_block = await self._plan_mode_gate_block(tool_name, arguments, agent_id=agent_id)
-        if plan_block:
-            return plan_block
 
         self.ensure_registry()
 
@@ -1123,9 +1317,24 @@ class ToolRuntimeService:
                     effective_arguments=dict(arguments or {}),
                     governance_decisions=("pre_tool_hook_block", log_label),
                 )
-                return "Blocked by hook: " + (hook_result.reason or "policy")
+                return render_tool_error(
+                    tool_name=tool_name,
+                    error_class="approval_hook_block",
+                    message=(
+                        "Approved execution was blocked by the current PRE_TOOL_USE hook: "
+                        f"{hook_result.reason or 'policy'}"
+                    ),
+                    provider="runtime",
+                    retryable=False,
+                    actionable_hint="Review the changed hook or submit a new approval request.",
+                )
             if hook_result and hook_result.modified_args is not None:
-                arguments = hook_result.modified_args
+                modified_arguments = dict(hook_result.modified_args)
+                if modified_arguments != original_arguments:
+                    raise RuntimeError(
+                        "approval_payload_mutation: PRE_TOOL_USE cannot change an immutable approved request"
+                    )
+                arguments = modified_arguments
             validation_block = _validate_tool_arguments_block(tool_name, arguments)
             if validation_block:
                 _record_tool_lifecycle(
@@ -1474,7 +1683,7 @@ class ToolRuntimeService:
         """Return a confirmation-required JSON block when a gated action is blocked.
 
         This is the confirmation backstop, shared by every execution
-        entrypoint (``execute`` / ``execute_direct`` / ``execute_approved``) so
+        entrypoint (normal execution or immutable-ticket approved execution) so
         ``execute_approved`` cannot be used to bypass it. Only tools tagged with
         a real ``ACTION_KIND`` (``ToolMeta.plan_gate_action_kind``) are gated —
         untagged tools and ``bridge:self`` tools (which own their confirmation)
@@ -1674,12 +1883,15 @@ def _build_tool_preflight_input(
     lower_action = f"{tool_name} {args_text}".lower()
     company_conflict = any(pattern in lower_action for pattern in _COMPANY_CONFLICT_PATTERNS)
     execution_identity = getattr(runtime_context, "execution_identity", None) if runtime_context is not None else None
-    explicit_user_authorized = (
-        tool_name in _DELEGATED_USER_AUTHORIZED_TOOLS
+    from app.tools.registry import tool_execution_policy
+
+    execution_policy = tool_execution_policy(tool_name)
+    explicit_user_authorized = bool(
+        execution_policy.delegated_user_authorized
         and getattr(execution_identity, "identity_type", None) == "delegated_user"
     )
 
-    if tool_name in _EXTERNAL_VISIBLE_TOOLS:
+    if execution_policy.external_visible:
         return ActionPreflightInput(
             action=f"send external message via {tool_name}",
             reversibility=BoundaryAxisLevel.MEDIUM,
@@ -1728,9 +1940,13 @@ def _render_preflight_block(
         suffix += " evidence=" + ",".join(preflight.evidence_refs)
     rendered = f"[Preflight:{preflight.decision.value}] {tool_name} was not executed. reasons={reason_text}{suffix}"
     if authorization_decision_entry:
-        rendered += "\n<authorization_decision>" + _json.dumps(
-            authorization_decision_entry,
-            ensure_ascii=False,
-            default=str,
-        ) + "</authorization_decision>"
+        rendered += (
+            "\n<authorization_decision>"
+            + _json.dumps(
+                authorization_decision_entry,
+                ensure_ascii=False,
+                default=str,
+            )
+            + "</authorization_decision>"
+        )
     return rendered

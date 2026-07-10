@@ -812,11 +812,7 @@ def _recovered_mcp_assignment_tool_names(assignments: Any) -> list[str]:
         if not isinstance(item, dict):
             continue
         server = str(
-            item.get("server")
-            or item.get("server_name")
-            or item.get("name")
-            or item.get("server_key")
-            or ""
+            item.get("server") or item.get("server_name") or item.get("name") or item.get("server_key") or ""
         ).strip()
         raw_values: list[Any] = [item.get("tool"), item.get("tool_name"), item.get("mcp_tool_name")]
         for key in ("tools", "tool_names", "mcp_tool_names"):
@@ -1485,7 +1481,21 @@ def _persist_recovery_manifest_checkpoint(
 def _merge_trace_metadata_sink(span_metadata: dict[str, Any], trace_metadata_sink: dict[str, Any]) -> None:
     if not trace_metadata_sink:
         return
-    for key in ("evidence_refs", "truth_evidence_refs", "truth_evidence", "truth_evidence_json", "preflight"):
+    for key in (
+        "evidence_refs",
+        "truth_evidence_refs",
+        "truth_evidence",
+        "truth_evidence_json",
+        "preflight",
+        "tool_decision",
+        "decision_id",
+        "input_hash",
+        "policy_snapshot_hash",
+        "capability_snapshot_hash",
+        "idempotency_key",
+        "authority_policy_snapshot",
+        "authority_capability_snapshot",
+    ):
         value = trace_metadata_sink.get(key)
         if value:
             span_metadata[key] = value
@@ -2260,7 +2270,9 @@ def _recovered_tool_frame_replay_safe(tool_name: str) -> bool:
 
 
 def _remove_recovered_tool_frames_from_metadata(metadata: dict[str, Any], frames: list[dict[str, Any]]) -> None:
-    call_ids = {str(frame.get("tool_call_id") or "").strip() for frame in frames if str(frame.get("tool_call_id") or "")}
+    call_ids = {
+        str(frame.get("tool_call_id") or "").strip() for frame in frames if str(frame.get("tool_call_id") or "")
+    }
     tool_names = {str(frame.get("tool_name") or "").strip() for frame in frames if str(frame.get("tool_name") or "")}
     for key in ("recovered_pending_tool_frames", "pending_tool_frames"):
         existing = metadata.get(key)
@@ -2284,7 +2296,9 @@ def _remove_recovered_tool_frames_from_metadata(metadata: dict[str, Any], frames
     if isinstance(pending, dict):
         pending_call_id = str(pending.get("tool_call_id") or "").strip()
         pending_tool_name = str(pending.get("tool_name") or "").strip()
-        if (pending_call_id and pending_call_id in call_ids) or (not pending_call_id and pending_tool_name in tool_names):
+        if (pending_call_id and pending_call_id in call_ids) or (
+            not pending_call_id and pending_tool_name in tool_names
+        ):
             metadata.pop("pending_tool_frame", None)
 
 
@@ -3638,7 +3652,8 @@ class AgentKernel:
                     user_name=current_user_name or "",
                     channel=session_ctx.channel if session_ctx else "",
                     source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
-                    agent_name=request.agent_name,                    context_section_ledger=dynamic_context_section_ledger,
+                    agent_name=request.agent_name,
+                    context_section_ledger=dynamic_context_section_ledger,
                 )
                 combined_prompt = assemble_runtime_prompt(
                     _cached_prefix,
@@ -3676,7 +3691,8 @@ class AgentKernel:
                     user_name=current_user_name or "",
                     channel=session_ctx.channel if session_ctx else "",
                     source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
-                    agent_name=request.agent_name,                    context_section_ledger=dynamic_context_section_ledger,
+                    agent_name=request.agent_name,
+                    context_section_ledger=dynamic_context_section_ledger,
                 )
                 combined_prompt = assemble_runtime_prompt(
                     prompt_prefix,
@@ -3736,7 +3752,8 @@ class AgentKernel:
                     mcp_server_refs=list(session_ctx.metadata.get("mcp_server_refs") or []),
                     hook_added_context=hook_added_context,
                     available_agent_types=list(session_ctx.metadata.get("available_agent_types") or []),
-                    messages=request.messages,                )
+                    messages=request.messages,
+                )
                 prompt_manifest["dynamic_context_section_ledger"] = {
                     "schema": "hive.ccplus.dynamic_context_section_ledger.v1",
                     "sections": list(dynamic_context_section_ledger),
@@ -3745,7 +3762,9 @@ class AgentKernel:
                 ensure_runtime_assembly_state(session_ctx).record_prompt_manifest(prompt_manifest)
                 session_ctx.metadata["prompt_sections"] = list(prompt_manifest.get("prompt_sections") or [])
                 session_ctx.metadata["active_tool_names"] = list(prompt_manifest.get("active_tool_names") or [])
-                session_ctx.metadata["deferred_tool_names"] = list(prompt_manifest.get("available_deferred_tools") or [])
+                session_ctx.metadata["deferred_tool_names"] = list(
+                    prompt_manifest.get("available_deferred_tools") or []
+                )
                 existing_context_policy = (
                     dict(session_ctx.metadata.get("context_policy") or {})
                     if isinstance(session_ctx.metadata.get("context_policy"), dict)
@@ -4590,7 +4609,8 @@ class AgentKernel:
                                             user_name=current_user_name or "",
                                             channel=session_ctx.channel if session_ctx else "",
                                             source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
-                                            agent_name=request.agent_name,                                        )
+                                            agent_name=request.agent_name,
+                                        )
                                         _ptl_prefix = (
                                             session_ctx.prompt_prefix if session_ctx else None
                                         ) or prompt_prefix
@@ -4688,7 +4708,8 @@ class AgentKernel:
                                             user_name=current_user_name or "",
                                             channel=session_ctx.channel if session_ctx else "",
                                             source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
-                                            agent_name=request.agent_name,                                        )
+                                            agent_name=request.agent_name,
+                                        )
                                         _ptl_prefix = (
                                             session_ctx.prompt_prefix if session_ctx else None
                                         ) or prompt_prefix
@@ -4750,9 +4771,7 @@ class AgentKernel:
                                             },
                                             model_provider=active_model.provider,
                                             model_name=active_model.model,
-                                            max_input_tokens_override=getattr(
-                                                active_model, "max_input_tokens", None
-                                            ),
+                                            max_input_tokens_override=getattr(active_model, "max_input_tokens", None),
                                             tenant_id=runtime_config.tenant_id,
                                             compress_threshold=0.5,
                                             on_compaction=_emit_compaction_event,
@@ -4780,7 +4799,8 @@ class AgentKernel:
                                                 source=(getattr(session_ctx, "source", "") or "")
                                                 if session_ctx
                                                 else "",
-                                                agent_name=request.agent_name,                                            )
+                                                agent_name=request.agent_name,
+                                            )
                                             _ptl_prefix = (
                                                 session_ctx.prompt_prefix if session_ctx else None
                                             ) or prompt_prefix
@@ -5551,7 +5571,8 @@ class AgentKernel:
                                                     user_name=current_user_name or "",
                                                     channel=session_context.channel,
                                                     source=getattr(session_context, "source", "") or "",
-                                                    agent_name=request.agent_name,                                                ),
+                                                    agent_name=request.agent_name,
+                                                ),
                                                 context_window_tokens=_ctx_window,
                                                 budget_profile=budget_profile,
                                             )

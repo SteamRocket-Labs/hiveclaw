@@ -19,10 +19,11 @@ from dataclasses import dataclass
 
 from sqlalchemy import select, text
 
-from app.database import enter_rls_bypass, tenant_scoped_session
+from app.database import tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.runtime.workflow_engine import LeafExecutor, WorkflowRunOutcome
 from app.services.workflow_runtime_service import WorkflowRuntimeService
+from app.services.runtime_task_service import list_active_runtime_task_records
 
 logger = logging.getLogger(__name__)
 
@@ -49,27 +50,22 @@ async def drain_signal_resumes(
     clear the registration, and resume under the run lease."""
     runtime = service or WorkflowRuntimeService(session_factory=session_factory)
 
-    async with tenant_scoped_session(session_factory=session_factory) as session:
-        async with enter_rls_bypass(session, reason="workflow signal daemon — enumerate suspended workflow waits"):
-            rows = (
-                (
-                    await session.execute(
-                        select(RuntimeTask).where(RuntimeTask.task_type == "workflow", RuntimeTask.status == "suspended")
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        waiting = [
-            (
-                row.id,
-                (row.metadata_json or {}).get("tenant_id"),
-                str(row.parent_agent_id) if row.parent_agent_id else None,
-                (row.metadata_json or {}).get("waiting_for_signal"),
-            )
-            for row in rows
-            if (row.metadata_json or {}).get("waiting_for_signal")
-        ]
+    records = await list_active_runtime_task_records(
+        statuses=("suspended",),
+        task_types=("workflow",),
+        limit=None,
+        session_factory=session_factory,
+    )
+    waiting = [
+        (
+            uuid.UUID(str(record["task_id"])),
+            (record.get("metadata") or {}).get("tenant_id") or record.get("tenant_id"),
+            record.get("parent_agent_id"),
+            (record.get("metadata") or {}).get("waiting_for_signal"),
+        )
+        for record in records
+        if (record.get("metadata") or {}).get("waiting_for_signal")
+    ]
 
     resumed: list[SignalResumedRun] = []
     for run_id, tenant_value, agent_value, registration in waiting:

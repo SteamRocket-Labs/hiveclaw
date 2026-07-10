@@ -454,6 +454,9 @@ async def request_shell_escalation(request: ToolExecutionRequest) -> str:
 @tool(
     ToolMeta(
         name="team_create",
+        timeout_seconds=60.0,
+        risk_class="side_effect_governed",
+        idempotency_scope="tool_call",
         description=TEAM_CREATE_DESCRIPTION,
         parameters={
             "type": "object",

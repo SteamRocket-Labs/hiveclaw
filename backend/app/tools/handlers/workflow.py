@@ -19,7 +19,12 @@ from app.runtime.dynamic_workflow import (
     validate_dynamic_workflow_proposal,
 )
 from app.runtime.context_budget import build_tool_execution_shape_decision, execution_shape_from_round_state
-from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow, normalize_workflow_args
+from app.runtime.workflow_admission import (
+    AdmissionLimits,
+    WorkflowAdmissionError,
+    admit_workflow,
+    normalize_workflow_args,
+)
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.runtime.workflow_preview import (
@@ -237,6 +242,8 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="start_workflow",
+        timeout_seconds=180.0,
+        idempotency_scope="runtime_task",
         description=(
             "Start an ephemeral workflow run from a structured definition.\n\n"
             "Use a workflow ONLY when the step order itself is a requirement — a fixed sequence "

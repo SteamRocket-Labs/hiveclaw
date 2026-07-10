@@ -90,8 +90,7 @@ def _patch_db(monkeypatch, agent):
     from app.services import command_escalation_service as svc
 
     db = _FakeDb(agent)
-    monkeypatch.setattr(svc, "async_session", lambda: _AsyncCtx(db))
-    monkeypatch.setattr(svc, "enter_rls_bypass", lambda _db, reason=None: _AsyncCtx(None))
+    monkeypatch.setattr(svc, "tenant_scoped_session", lambda *a, **k: _AsyncCtx(db))
     return db
 
 
@@ -147,8 +146,7 @@ async def test_request_command_escalation_scopes_agent_lookup_to_runtime_tenant(
             return _FakeResult(agent)
 
     db = _TenantAssertingDb(agent)
-    monkeypatch.setattr(svc, "async_session", lambda: _AsyncCtx(db))
-    monkeypatch.setattr(svc, "enter_rls_bypass", lambda _db, reason=None: _AsyncCtx(None))
+    monkeypatch.setattr(svc, "tenant_scoped_session", lambda *a, **k: _AsyncCtx(db))
 
     async def fake_request_approval(db, passed_agent, *, action_type, details):
         return {"allowed": False, "approval_id": "appr-tenant", "message": "Approval requested"}
@@ -251,20 +249,30 @@ async def test_full_escalation_loop_reject_approve_runonce_then_rerequest(monkey
     # 3. APPROVE → RUN ONCE — the post-approval executor replays run_command
     #    with the exact command exactly once (governance preflight is skipped
     #    because the human approval IS the governance decision).
-    calls: list[tuple[str, dict]] = []
+    calls: list[dict] = []
 
-    async def fake_execute_approved_tool(tool_name, arguments, agent_id, **_kw):
-        calls.append((tool_name, dict(arguments)))
+    async def fake_execute_approved_tool(**kwargs):
+        calls.append(kwargs)
         return "executed"
 
     monkeypatch.setattr("app.services.agent_tools.execute_approved_tool", fake_execute_approved_tool)
 
     approver = uuid4()
+    agent_id = uuid4()
+    approval_id = uuid4()
     result = await approval_service._execute_approved_action(
-        uuid4(), action_type, details, approved_by_user_id=approver, approval_id=uuid4()
+        agent_id,
+        approved_by_user_id=approver,
+        approval_id=approval_id,
     )
     assert result == "executed"
-    assert calls == [("run_command", {"command": _BLOCKED_COMMAND})]  # exact command, exactly once
+    assert calls == [
+        {
+            "approval_id": approval_id,
+            "expected_agent_id": agent_id,
+            "approved_by_user_id": approver,
+        }
+    ]
 
     # 4. RE-EXECUTION still needs a fresh request — nothing durable was granted,
     #    so the gate blocks the same command again.

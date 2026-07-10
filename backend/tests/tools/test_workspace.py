@@ -274,6 +274,7 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     from app.tools.workspace import ensure_workspace
 
     agent_id = uuid4()
+    tenant_id = uuid4()
     sync_calls = []
 
     class _FakeScalarResult:
@@ -293,6 +294,12 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
         async def execute(self, _query):
             return _FakeScalarResult(SimpleNamespace(name="投后助手", role_description="负责投后分析"))
 
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            return None
+
     async def fake_sync_tasks(agent_id_arg, workspace):
         sync_calls.append((agent_id_arg, workspace))
 
@@ -300,7 +307,7 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     monkeypatch.setattr("app.tools.workspace.async_session", lambda: _FakeSession())
     monkeypatch.setattr("app.tools.workspace._sync_tasks_to_file", fake_sync_tasks)
 
-    workspace = await ensure_workspace(agent_id, tenant_id="tenant-1")
+    workspace = await ensure_workspace(agent_id, tenant_id=str(tenant_id))
 
     assert workspace == tmp_path / str(agent_id)
     assert (workspace / "skills").is_dir()
@@ -323,7 +330,7 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     soul_content = (workspace / "soul.md").read_text(encoding="utf-8")
     assert "# Soul — 投后助手" in soul_content
     assert "负责投后分析" in soul_content
-    enterprise_dir = tmp_path / "enterprise_info_tenant-1"
+    enterprise_dir = tmp_path / f"enterprise_info_{tenant_id}"
     assert (enterprise_dir / "knowledge_base").is_dir()
     assert (enterprise_dir / "company_profile.md").exists()
     assert sync_calls == [(agent_id, workspace)]
@@ -344,6 +351,7 @@ async def test_ensure_workspace_rebuilds_canonical_t3_index_without_legacy_index
     from app.tools.workspace import ensure_workspace
 
     agent_id = uuid4()
+    tenant_id = uuid4()
     workspace = tmp_path / str(agent_id)
     legacy_index = workspace / "memory" / "INDEX.md"
     legacy_index.parent.mkdir(parents=True)
@@ -363,6 +371,12 @@ async def test_ensure_workspace_rebuilds_canonical_t3_index_without_legacy_index
         async def execute(self, _query):
             return _FakeScalarResult()
 
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            return None
+
     async def fake_sync_tasks(_agent_id_arg, _workspace):
         return None
 
@@ -370,7 +384,7 @@ async def test_ensure_workspace_rebuilds_canonical_t3_index_without_legacy_index
     monkeypatch.setattr("app.tools.workspace.async_session", lambda: _FakeSession())
     monkeypatch.setattr("app.tools.workspace._sync_tasks_to_file", fake_sync_tasks)
 
-    await ensure_workspace(agent_id, tenant_id="tenant-1")
+    await ensure_workspace(agent_id, tenant_id=str(tenant_id))
 
     wiki_map = workspace / "memory" / "indexes" / "wiki_map.md"
     assert wiki_map.exists()
@@ -385,6 +399,7 @@ async def test_ensure_workspace_does_not_precreate_legacy_learnings_files(monkey
     from app.tools.workspace import ensure_workspace
 
     agent_id = uuid4()
+    tenant_id = uuid4()
 
     class _FakeScalarResult:
         def scalar_one_or_none(self):
@@ -400,6 +415,12 @@ async def test_ensure_workspace_does_not_precreate_legacy_learnings_files(monkey
         async def execute(self, _query):
             return _FakeScalarResult()
 
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            return None
+
     async def fake_sync_tasks(_agent_id_arg, _workspace):
         return None
 
@@ -407,7 +428,7 @@ async def test_ensure_workspace_does_not_precreate_legacy_learnings_files(monkey
     monkeypatch.setattr("app.tools.workspace.async_session", lambda: _FakeSession())
     monkeypatch.setattr("app.tools.workspace._sync_tasks_to_file", fake_sync_tasks)
 
-    await ensure_workspace(agent_id, tenant_id="tenant-1")
+    await ensure_workspace(agent_id, tenant_id=str(tenant_id))
 
     workspace = tmp_path / str(agent_id)
     assert not (workspace / "memory" / "learnings").exists()
@@ -442,9 +463,9 @@ def test_migrate_all_workspaces_handles_legacy_memory_file(monkeypatch, tmp_path
     assert not (workspace / "memory" / "learnings").exists()
     archive = workspace / "memory" / ".archive" / "legacy_import"
     assert "Keep the architecture md-first" in (archive / "memory.md").read_text(encoding="utf-8")
-    assert "Prefer weighted promotion over rigid layer upgrades." in (
-        archive / "learnings" / "LEARNINGS.md"
-    ).read_text(encoding="utf-8")
+    assert "Prefer weighted promotion over rigid layer upgrades." in (archive / "learnings" / "LEARNINGS.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_migrate_all_workspaces_repairs_memory_hygiene(monkeypatch, tmp_path):

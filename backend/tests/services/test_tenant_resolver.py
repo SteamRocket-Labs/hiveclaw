@@ -49,3 +49,64 @@ async def test_resolve_tenant_for_agent_caches_successful_agent_lookup(monkeypat
     assert second == tenant_id
     assert len(calls) == 1
 
+
+@pytest.mark.asyncio
+async def test_resolve_tenant_for_runtime_task_is_a_narrow_locator(monkeypatch) -> None:
+    from app.services import tenant_resolver
+
+    task_id = uuid4()
+    tenant_id = uuid4()
+    calls = []
+    monkeypatch.setattr(tenant_resolver, "async_session", lambda: _FakeSession(tenant_id, calls))
+
+    resolved = await tenant_resolver.resolve_tenant_for_runtime_task(task_id)
+
+    assert resolved == tenant_id
+    assert len(calls) == 1
+    assert "runtime_tasks.tenant_id" in str(calls[0])
+    assert "runtime_tasks.id" in str(calls[0])
+
+
+@pytest.mark.asyncio
+async def test_resolve_tenant_for_user_is_a_narrow_locator(monkeypatch) -> None:
+    from app.services import tenant_resolver
+
+    user_id = uuid4()
+    tenant_id = uuid4()
+    calls = []
+    monkeypatch.setattr(tenant_resolver, "async_session", lambda: _FakeSession(tenant_id, calls))
+
+    resolved = await tenant_resolver.resolve_tenant_for_user(user_id)
+
+    assert resolved == tenant_id
+    assert len(calls) == 1
+    assert "users.tenant_id" in str(calls[0])
+    assert "users.id" in str(calls[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("resolver_name", "table_name"),
+    [
+        ("resolve_tenant_for_chat_session", "chat_sessions"),
+        ("resolve_tenant_for_transcript_event", "chat_transcript_events"),
+    ],
+)
+async def test_runtime_control_tenant_resolvers_are_narrow_locators(
+    monkeypatch,
+    resolver_name,
+    table_name,
+) -> None:
+    from app.services import tenant_resolver
+
+    resource_id = uuid4()
+    tenant_id = uuid4()
+    calls = []
+    monkeypatch.setattr(tenant_resolver, "async_session", lambda: _FakeSession(tenant_id, calls))
+
+    resolved = await getattr(tenant_resolver, resolver_name)(resource_id)
+
+    assert resolved == tenant_id
+    assert len(calls) == 1
+    assert f"{table_name}.tenant_id" in str(calls[0])
+    assert f"{table_name}.id" in str(calls[0])

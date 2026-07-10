@@ -11,11 +11,12 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session, enter_rls_bypass, tenant_scoped_session
+from app.database import async_session, tenant_scoped_session
 from app.memory.hygiene import repair_agent_memory_hygiene
 from app.memory.md_store import ensure_t3_layout, rebuild_index
 from app.models.agent import Agent
 from app.models.task import Task
+from app.services.tenant_resolver import resolve_tenant_for_agent
 
 logger = logging.getLogger(__name__)
 
@@ -359,19 +360,34 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         agent_name = str(agent_id)[:8]
         role_desc = "digital assistant"
         try:
-            # soul.md bootstrap reads the whole agent row by PK to seed name/role.
-            # Workspace creation runs both on the tool-resolve path and the
-            # heartbeat daemon; an audited single-row bypass is the sanctioned
-            # chicken-and-egg breaker under enforced RLS (RLS 阶段1).
-            async with (
-                async_session() as db,
-                enter_rls_bypass(db, reason=f"workspace soul.md bootstrap for agent {agent_id}"),
-            ):
-                result = await db.execute(select(Agent).where(Agent.id == agent_id))
-                agent = result.scalar_one_or_none()
-                if agent:
-                    agent_name = agent.name or agent_name
-                    role_desc = agent.role_description or role_desc
+            resolved_tenant_id = None
+            if tenant_id:
+                try:
+                    resolved_tenant_id = uuid.UUID(str(tenant_id))
+                except ValueError:
+                    resolved_tenant_id = None
+            if resolved_tenant_id is None:
+                resolved_tenant_id = await resolve_tenant_for_agent(
+                    agent_id,
+                    session_factory=async_session,
+                )
+            if resolved_tenant_id is not None:
+                async with tenant_scoped_session(
+                    resolved_tenant_id,
+                    session_factory=async_session,
+                    require_tenant=True,
+                    source="workspace_soul_bootstrap",
+                ) as db:
+                    result = await db.execute(
+                        select(Agent).where(
+                            Agent.id == agent_id,
+                            Agent.tenant_id == resolved_tenant_id,
+                        )
+                    )
+                    agent = result.scalar_one_or_none()
+                    if agent:
+                        agent_name = agent.name or agent_name
+                        role_desc = agent.role_description or role_desc
         except Exception as exc:
             logger.warning("[Workspace] Failed to load agent for soul.md: %s", exc)
         soul_content = f"""# Soul — {agent_name}

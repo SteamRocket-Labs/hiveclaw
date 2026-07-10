@@ -88,19 +88,14 @@ const SESSION_PERMISSION_MODE_OPTIONS: Array<{
   description: string;
 }> = [
   {
-    value: 'bypassPermissions',
-    label: 'Full access',
-    description: 'Bypass session prompts, still obey enterprise rules',
+    value: 'default',
+    label: 'Ask first',
+    description: 'Ask before sensitive session actions',
   },
   {
     value: 'auto',
     label: 'Approve for me',
     description: 'Approve low-risk actions and ask for risky ones',
-  },
-  {
-    value: 'default',
-    label: 'Ask first',
-    description: 'Ask before sensitive session actions',
   },
 ];
 

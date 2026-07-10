@@ -15,6 +15,11 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 @tool(
     ToolMeta(
         name="send_feishu_message",
+        timeout_seconds=45.0,
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description=(
             "Send a Feishu IM message to a human colleague.\n\n"
             "Usage:\n"
@@ -67,6 +72,9 @@ async def send_feishu_message(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="send_web_message",
+        risk_class="external_visible",
+        external_visible=True,
+        idempotency_scope="tool_call",
         description=(
             "Send a message to a user on the Hive web platform.\n\n"
             "Usage:\n"
@@ -108,6 +116,8 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="send_message_to_agent",
+        timeout_seconds=360.0,
+        idempotency_scope="runtime_task",
         description=(
             "Send a message to a digital employee colleague and wait for a direct reply.\n\n"
             "Usage:\n"
@@ -452,6 +462,10 @@ async def get_current_time(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="send_channel_message",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description=(
             "Send a text reply back to the current requester on the active channel or persisted reply target.\n\n"
             "Usage:\n"
@@ -491,6 +505,11 @@ async def send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="send_channel_file",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
+        governance="sensitive",
         description=(
             "Send a file to the user via the current IM communication channel "
             "(Feishu, Telegram, Slack, Discord, or WeChat personal). In Hive web chat, use this for IM delivery "
@@ -530,6 +549,11 @@ async def send_channel_file(agent_id: uuid.UUID, workspace: Path, arguments: dic
 @tool(
     ToolMeta(
         name="upload_image",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
+        governance="sensitive",
         description="Upload an image file from your workspace (or from a public URL) to a cloud CDN and get a permanent public URL. Use this when you need to share images externally, embed them in messages/reports, or make workspace images accessible via URL. Supports common formats: PNG, JPG, GIF, WebP, SVG.",
         parameters={
             "type": "object",

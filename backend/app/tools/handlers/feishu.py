@@ -46,6 +46,7 @@ async def _check_feishu_cli_access() -> bool:
 @tool(
     ToolMeta(
         name="feishu_wiki_list",
+        read_only=True,
         description=(
             "List visible pages in a Feishu Wiki (\u77e5\u8bc6\u5e93). "
             "Works with wiki page URLs like 'https://xxx.feishu.cn/wiki/NodeToken' "
@@ -100,6 +101,8 @@ async def feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_doc_read",
+        read_only=True,
+        timeout_seconds=45.0,
         description=(
             "Read the text content of a Feishu document or Wiki page. "
             "Works with both regular docx URLs (https://xxx.feishu.cn/docx/Token) "
@@ -142,6 +145,7 @@ async def feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_url_resolve",
+        timeout_seconds=45.0,
         description=(
             "Resolve a Feishu/Lark URL to its real readable object type and token. "
             "Use this before reading Wiki URLs, Base URL fields, Drive file links, or ambiguous Feishu links. "
@@ -181,6 +185,7 @@ async def feishu_url_resolve(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_url_read",
+        timeout_seconds=90.0,
         description=(
             "Read the actual content behind a Feishu/Lark URL. "
             "Routes docx/wiki/sheet/base/file links to the correct reader. "
@@ -276,6 +281,7 @@ async def feishu_url_read(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_drive_file_read",
+        timeout_seconds=90.0,
         description=(
             "Download and extract text from a Feishu Drive file token, or export an online Feishu doc/sheet/base "
             "to DOCX/XLSX/PDF/CSV and extract readable text. Use this for Wiki obj_type=file and uploaded "
@@ -436,6 +442,10 @@ async def feishu_sheet_read(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_base_app_create",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description=(
             "Create a new Feishu Base app. Use this when you need a fresh Base before adding tables or records."
         ),
@@ -608,6 +618,10 @@ async def feishu_base_record_list(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_base_record_upsert",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description=(
             "Create or update one record in a Feishu Base table using the cloud lark-cli adapter. "
             "Use this after you already know the target base_token, table_id, and writable field names. "
@@ -657,6 +671,10 @@ async def feishu_base_record_upsert(agent_id: uuid.UUID, arguments: dict) -> str
 @tool(
     ToolMeta(
         name="feishu_base_record_delete",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         destructive=True,
         description=(
             "Delete one record from a Feishu Base table. Use this when an existing row must be removed permanently."
@@ -750,6 +768,10 @@ async def feishu_base_field_list(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_base_field_create",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description=(
             "Create a new field (column) in a Feishu Base table. "
             "Use this when you need to add columns to a Base table. "
@@ -804,6 +826,10 @@ async def feishu_base_field_create(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_base_record_upload_attachment",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description=(
             "Upload one local workspace file into a Feishu Base attachment field using the cloud lark-cli adapter. "
             "Use this only when you already know the target record ID, attachment field, and file path inside the agent workspace."
@@ -905,6 +931,10 @@ async def feishu_task_list(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_task_create",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description=(
             "Create a Feishu task with user identity through the cloud lark-cli adapter. "
             "Use this for cloud task reminders, follow-ups, or office workflows that should land in Feishu Tasks. "
@@ -962,6 +992,10 @@ async def feishu_task_create(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_task_complete",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description=(
             "Mark one Feishu task as completed using the cloud lark-cli adapter and user identity. "
             "Use this when the task is done and you have the task ID."
@@ -998,6 +1032,10 @@ async def feishu_task_complete(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_task_comment",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description=(
             "Add a comment to one Feishu task using the cloud lark-cli adapter and user identity. "
             "Use this for task updates, status notes, or review comments."
@@ -1038,6 +1076,10 @@ async def feishu_task_comment(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_doc_create",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description="Create a new Feishu document with a given title. Returns the new document token and URL.",
         parameters={
             "type": "object",
@@ -1072,6 +1114,10 @@ async def feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_doc_delete",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         destructive=True,
         description="Delete a Feishu document by token. Use this when a generated document should be removed from Drive.",
         parameters={
@@ -1106,6 +1152,10 @@ async def feishu_doc_delete(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_doc_append",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description="Append text content to an existing Feishu document. Content is appended as one or more new paragraphs at the end.",
         parameters={
             "type": "object",
@@ -1140,6 +1190,10 @@ async def feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_doc_share",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description=(
             "Manage Feishu document collaborators and permissions. "
             "Can add or remove collaborators with viewer/editor/full_access roles, "
@@ -1195,6 +1249,10 @@ async def feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_approval_create",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
         description="Create a Feishu approval instance with the given approval code, submitter user_id/open_id, and form payload.",
         parameters={
             "type": "object",
@@ -1326,6 +1384,7 @@ async def feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_user_search",
+        read_only=True,
         description=(
             "Search for a colleague in the Feishu (Lark) directory by name. "
             "Returns their open_id, email, and department so you can send messages, "
@@ -1361,6 +1420,7 @@ async def feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_calendar_list",
+        read_only=True,
         description=(
             "Check a candidate attendee's freebusy window and list meetings already created on the "
             "agent/bot calendar. Use this before scheduling so the agent can pick a conflict-free slot."
@@ -1410,6 +1470,11 @@ async def feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_calendar_create",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
+        governance="sensitive",
         description=(
             "Create a meeting on the agent/bot calendar and invite attendees. "
             "Use attendee names, emails, or open_ids when the user asks the agent to arrange a meeting."
@@ -1478,6 +1543,11 @@ async def feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_calendar_update",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
+        governance="sensitive",
         description=(
             "Update an existing meeting previously created on the agent/bot calendar. "
             "Provide the event_id and only the fields you want to change."
@@ -1517,6 +1587,11 @@ async def feishu_calendar_update(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_calendar_delete",
+        risk_class="external_visible",
+        external_visible=True,
+        delegated_user_authorized=True,
+        idempotency_scope="tool_call",
+        governance="sensitive",
         destructive=True,
         description="Delete (cancel) a meeting previously created on the agent/bot calendar.",
         parameters={

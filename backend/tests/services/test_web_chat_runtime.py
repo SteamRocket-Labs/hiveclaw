@@ -992,7 +992,7 @@ def _history_msg(
 
 
 @pytest.mark.asyncio
-async def test_load_runtime_context_resolves_model_before_rls_bypass_transaction_commit(monkeypatch):
+async def test_load_runtime_context_resolves_model_inside_tenant_transaction(monkeypatch):
     import app.services.model_resolution as model_resolution
     import app.services.web_chat_runtime as runtime
 
@@ -1027,7 +1027,6 @@ async def test_load_runtime_context_resolves_model_before_rls_bypass_transaction
 
     class _Session:
         def __init__(self):
-            self.bypass_active = False
             self.commits = 0
             self.calls = 0
 
@@ -1048,25 +1047,21 @@ async def test_load_runtime_context_resolves_model_before_rls_bypass_transaction
             if self.calls == 4:
                 return _QueuedScalarResult(user)
             if self.calls == 5:
-                return _QueuedScalarResult(model if self.bypass_active else None)
+                return _QueuedScalarResult(model)
             return _QueuedScalarResult([])
 
         async def commit(self):
             self.commits += 1
-            # PostgreSQL SET LOCAL scope is transaction-local; a commit inside
-            # enter_rls_bypass clears BYPASS before any later SELECT.
-            self.bypass_active = False
 
-    class _BypassContext:
+    class _TenantContext:
         def __init__(self, db):
             self.db = db
 
         async def __aenter__(self):
-            self.db.bypass_active = True
             return self.db
 
         async def __aexit__(self, *_args):
-            self.db.bypass_active = False
+            await self.db.commit()
             return False
 
     db = _Session()
@@ -1080,8 +1075,11 @@ async def test_load_runtime_context_resolves_model_before_rls_bypass_transaction
     async def no_default_model(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(runtime, "_async_session", lambda: db)
-    monkeypatch.setattr(runtime, "enter_rls_bypass", lambda db, **_kwargs: _BypassContext(db))
+    async def resolve_run_tenant(_run_id, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", resolve_run_tenant)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: _TenantContext(db))
     monkeypatch.setattr(runtime, "_materialize_initial_user_turn_for_worker", noop_materialize)
     monkeypatch.setattr(runtime, "_apply_active_projection_to_history", noop_projection)
     monkeypatch.setattr(model_resolution, "resolve_default_model_for_tenant", no_default_model)
@@ -1142,7 +1140,7 @@ async def test_load_runtime_context_rejects_runtime_task_agent_tenant_mismatch(m
         async def commit(self):
             return None
 
-    class _BypassContext:
+    class _TenantContext:
         def __init__(self, db):
             self.db = db
 
@@ -1159,8 +1157,12 @@ async def test_load_runtime_context_rejects_runtime_task_agent_tenant_mismatch(m
         return messages
 
     db = _Session()
-    monkeypatch.setattr(runtime, "_async_session", lambda: db)
-    monkeypatch.setattr(runtime, "enter_rls_bypass", lambda db, **_kwargs: _BypassContext(db))
+
+    async def resolve_run_tenant(_run_id, **_kwargs):
+        return task_tenant_id
+
+    monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", resolve_run_tenant)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: _TenantContext(db))
     monkeypatch.setattr(runtime, "_materialize_initial_user_turn_for_worker", noop_materialize)
     monkeypatch.setattr(runtime, "_apply_active_projection_to_history", noop_projection)
 
@@ -3740,16 +3742,21 @@ async def test_worker_claim_materializes_pending_mid_run_user_messages(monkeypat
         async def commit(self):
             self.commits += 1
 
-    class _NoopAsyncContext:
+    class _TenantContext:
         async def __aenter__(self):
-            return None
+            return session
 
         async def __aexit__(self, *_args):
+            await session.commit()
             return False
 
     session = _Session()
-    monkeypatch.setattr(runtime, "_async_session", lambda: session)
-    monkeypatch.setattr(runtime, "enter_rls_bypass", lambda *_args, **_kwargs: _NoopAsyncContext())
+
+    async def resolve_run_tenant(_run_id, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", resolve_run_tenant)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: _TenantContext())
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     drained = await runtime._claim_pending_mid_run_user_messages(run_id)
@@ -4313,8 +4320,10 @@ async def test_resume_persisted_web_chat_runs_schedules_running_turns_with_resum
 
     run_id = uuid4()
     agent_id = uuid4()
+    tenant_id = uuid4()
     task = SimpleNamespace(
         id=run_id,
+        tenant_id=tenant_id,
         task_type="web_chat_turn",
         status="running",
         parent_agent_id=agent_id,
@@ -4338,7 +4347,7 @@ async def test_resume_persisted_web_chat_runs_schedules_running_turns_with_resum
 
         async def execute(self, _stmt):
             self.calls += 1
-            return _Rows() if self.calls <= 2 else _ScalarResult(None)
+            return _Rows() if self.calls == 1 else _ScalarResult(None)
 
         async def commit(self):
             self.commits += 1
@@ -4350,7 +4359,13 @@ async def test_resume_persisted_web_chat_runs_schedules_running_turns_with_resum
         coro.close()
         return SimpleNamespace(add_done_callback=lambda _cb: None)
 
-    monkeypatch.setattr(runtime, "_async_session", lambda: _DB())
+    db = _DB()
+
+    async def fake_list_active(**_kwargs):
+        return [{"task_id": run_id.hex, "tenant_id": str(tenant_id)}]
+
+    monkeypatch.setattr(runtime, "list_active_runtime_task_records", fake_list_active)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: db)
     monkeypatch.setattr(runtime, "build_long_task_resume_context", lambda **_kwargs: {"resume_prompt": "resume now"})
     monkeypatch.setattr(runtime.asyncio, "create_task", fake_create_task)
 
@@ -4368,9 +4383,11 @@ async def test_get_active_web_chat_run_reconciles_terminal_transcript_ghost():
 
     run_id = uuid4()
     agent_id = uuid4()
+    tenant_id = uuid4()
     session_id = uuid4()
     task = SimpleNamespace(
         id=run_id,
+        tenant_id=tenant_id,
         task_type="web_chat_turn",
         status="running",
         parent_agent_id=agent_id,
@@ -4416,9 +4433,11 @@ async def test_resume_persisted_web_chat_runs_skips_terminal_transcript_ghost(mo
 
     run_id = uuid4()
     agent_id = uuid4()
+    tenant_id = uuid4()
     session_id = uuid4()
     task = SimpleNamespace(
         id=run_id,
+        tenant_id=tenant_id,
         task_type="web_chat_turn",
         status="running",
         parent_agent_id=agent_id,
@@ -4452,7 +4471,7 @@ async def test_resume_persisted_web_chat_runs_skips_terminal_transcript_ghost(mo
 
         async def execute(self, _stmt):
             self.calls += 1
-            return _Rows() if self.calls <= 2 else _ScalarResult(terminal_event)
+            return _Rows() if self.calls == 1 else _ScalarResult(terminal_event)
 
         async def commit(self):
             self.commits += 1
@@ -4464,7 +4483,13 @@ async def test_resume_persisted_web_chat_runs_skips_terminal_transcript_ghost(mo
         coro.close()
         return SimpleNamespace(add_done_callback=lambda _cb: None)
 
-    monkeypatch.setattr(runtime, "_async_session", lambda: _DB())
+    db = _DB()
+
+    async def fake_list_active(**_kwargs):
+        return [{"task_id": run_id.hex, "tenant_id": str(tenant_id)}]
+
+    monkeypatch.setattr(runtime, "list_active_runtime_task_records", fake_list_active)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: db)
     monkeypatch.setattr(runtime.asyncio, "create_task", fake_create_task)
 
     resumed = await runtime.resume_persisted_web_chat_runs(limit=10)

@@ -103,11 +103,26 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
     monkeypatch.setattr("app.tools.governance_resolver.write_audit_event", fake_write_audit_event)
     monkeypatch.setattr("app.tools.governance_resolver.approval_service", _FakeApprovalService())
 
+    async def fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return tenant_id
+
+    async def fake_build_live_snapshot(**_kwargs):
+        return {"schema": "hive.approval_policy_snapshot.v1", "version": "live-1"}
+
+    monkeypatch.setattr(
+        "app.services.tenant_resolver.resolve_tenant_for_agent",
+        fake_resolve_tenant_for_agent,
+    )
+    monkeypatch.setattr(
+        "app.services.approval_ticket.build_live_approval_policy_snapshot",
+        fake_build_live_snapshot,
+    )
+
     resolver = ToolGovernanceResolver()
     deps = resolver.build_dependencies()
 
     assert await deps.resolve_security_zone(agent_id) == "restricted"
-    assert fake_session.rolled_back is True
+    assert fake_session.rolled_back is False
 
     cap_result = await deps.check_capability(tenant_id, agent_id, "write_file")
     assert cap_result.capability == "workspace.write"
@@ -132,6 +147,10 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
     assert approval_calls[0][3]["args"] == {"path": "workspace/notes.md"}
     assert approval_calls[0][3]["reason"] == "manual escalation"
     assert approval_calls[0][3]["session_id"] == "session-approval"
+    assert approval_calls[0][3]["policy_snapshot"] == {
+        "schema": "hive.approval_policy_snapshot.v1",
+        "version": "live-1",
+    }
 
 
 @pytest.mark.asyncio
@@ -183,31 +202,42 @@ async def test_resolver_mcp_mode_unwraps_target_and_fast_paths(monkeypatch):
     )
 
     resolver = ToolGovernanceResolver()
+    tenant_id = uuid4()
+
+    async def fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(
+        "app.services.tenant_resolver.resolve_tenant_for_agent",
+        fake_resolve_tenant_for_agent,
+    )
 
     # 1. call_mcp_tool unwraps the target from arguments
     mcp_session = _FakeSession(mcp_tool_row)
     monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: mcp_session)
+    monkeypatch.setattr("app.tools.governance_resolver.tenant_scoped_session", lambda *a, **k: mcp_session)
     deps = resolver.build_dependencies()
     assert deps.resolve_mcp_tool_mode is not None
     mode = await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {"tool_name": "notion_search"})
     assert mode == "approval"
     assert mode_calls == [(agent_id, "notion_search")]
-    assert mcp_session.rollback_count == 1
+    assert mcp_session.rollback_count == 0
 
     # 2. dynamic MCP tool name governs itself
     mode = await deps.resolve_mcp_tool_mode(agent_id, "notion_search", {})
     assert mode == "approval"
     assert mode_calls == [(agent_id, "notion_search")]
-    assert mcp_session.rollback_count == 1
+    assert mcp_session.rollback_count == 0
 
     # 3. not an MCP Tool row → None fast path, mode resolution untouched
     mode_calls.clear()
     non_mcp_session = _FakeSession(None)
     monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: non_mcp_session)
+    monkeypatch.setattr("app.tools.governance_resolver.tenant_scoped_session", lambda *a, **k: non_mcp_session)
     deps = resolver.build_dependencies()
     assert await deps.resolve_mcp_tool_mode(agent_id, "read_file", {"path": "x"}) is None
     assert mode_calls == []
-    assert non_mcp_session.rollback_count == 1
+    assert non_mcp_session.rollback_count == 0
 
     # 4. call_mcp_tool without a target name → None (validation happens handler-side)
     assert await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {}) is None
@@ -253,7 +283,17 @@ async def test_resolver_mcp_mode_lookup_is_scoped_to_enabled_agent_assignment(mo
         return "approval"
 
     session = _FakeSession()
+    tenant_id = uuid4()
+
+    async def fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return tenant_id
+
     monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: session)
+    monkeypatch.setattr("app.tools.governance_resolver.tenant_scoped_session", lambda *a, **k: session)
+    monkeypatch.setattr(
+        "app.services.tenant_resolver.resolve_tenant_for_agent",
+        fake_resolve_tenant_for_agent,
+    )
     monkeypatch.setattr(
         "app.services.mcp_server_service.resolve_agent_mcp_tool_mode",
         fake_resolve_agent_mcp_tool_mode,
@@ -262,7 +302,7 @@ async def test_resolver_mcp_mode_lookup_is_scoped_to_enabled_agent_assignment(mo
     deps = ToolGovernanceResolver().build_dependencies()
     assert deps.resolve_mcp_tool_mode is not None
     assert await deps.resolve_mcp_tool_mode(agent_id, "call_mcp_tool", {"tool_name": "notion_search"}) == "approval"
-    assert session.rollback_count == 1
+    assert session.rollback_count == 0
 
     # enter_rls_bypass also records SET LOCAL app.current_tenant_id statements —
     # pick the business query, not the GUC set.
@@ -283,6 +323,7 @@ async def test_governance_resolver_coalesces_concurrent_security_zone_lookup(mon
     from app.tools.governance_resolver import ToolGovernanceResolver
 
     agent_id = uuid4()
+    tenant_id = uuid4()
     sessions = []
 
     class _FakeScalarResult:
@@ -304,7 +345,14 @@ async def test_governance_resolver_coalesces_concurrent_security_zone_lookup(mon
         async def rollback(self):
             return None
 
-    monkeypatch.setattr("app.tools.governance_resolver.async_session", lambda: _FakeSession())
+    async def fake_resolve_tenant_for_agent(_agent_id, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(
+        "app.services.tenant_resolver.resolve_tenant_for_agent",
+        fake_resolve_tenant_for_agent,
+    )
+    monkeypatch.setattr("app.tools.governance_resolver.tenant_scoped_session", lambda *a, **k: _FakeSession())
 
     deps = ToolGovernanceResolver().build_dependencies()
     results = await asyncio.gather(*(deps.resolve_security_zone(agent_id) for _ in range(12)))
@@ -314,6 +362,55 @@ async def test_governance_resolver_coalesces_concurrent_security_zone_lookup(mon
 
     assert await deps.resolve_security_zone(agent_id) == "restricted"
     assert len(sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_governance_runtime_lookup_uses_locator_then_tenant_scope(monkeypatch):
+    from app.tools.governance_resolver import ToolGovernanceResolver
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    opened_tenants = []
+
+    class _FakeScalarResult:
+        def scalar_one_or_none(self):
+            return SimpleNamespace(security_zone="standard")
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, _query):
+            return _FakeScalarResult()
+
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            return None
+
+    async def _resolve_tenant(value, **_kwargs):
+        assert value == agent_id
+        return tenant_id
+
+    def _tenant_scope(value, **kwargs):
+        opened_tenants.append((value, kwargs))
+        return _FakeSession()
+
+    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", _resolve_tenant)
+    monkeypatch.setattr("app.tools.governance_resolver.tenant_scoped_session", _tenant_scope)
+
+    deps = ToolGovernanceResolver().build_dependencies()
+
+    assert await deps.resolve_security_zone(agent_id) == "standard"
+    assert len(opened_tenants) == 1
+    opened_tenant, options = opened_tenants[0]
+    assert opened_tenant == tenant_id
+    assert options["require_tenant"] is True
+    assert options["source"] == "tool_governance_security_zone"
 
 
 @pytest.mark.asyncio

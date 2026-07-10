@@ -1531,6 +1531,8 @@ def _append_hr_creation_t0_event(
 @tool(
     ToolMeta(
         name="create_digital_employee",
+        timeout_seconds=120.0,
+        risk_class="enterprise_asset_mutation",
         description=(
             "Create a new digital employee with the given configuration. "
             "Use this ONLY after confirming the full plan with the user. "
@@ -2361,9 +2363,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             tenant_id=effective_tenant_id,
                             ref=ref,
                         )
-                        external_skill_results.append(
-                            f"{result['folder_name']}: {result['status']}"
-                        )
+                        external_skill_results.append(f"{result['folder_name']}: {result['status']}")
                         await record_capability_install(
                             agent_id=agent.id,
                             kind="external_skill_url",

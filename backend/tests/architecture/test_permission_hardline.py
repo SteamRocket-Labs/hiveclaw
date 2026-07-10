@@ -18,7 +18,7 @@ def test_governance_enterprise_approval_path_is_scoped_to_company_tool_policy() 
     assert "_request_approval_compat(" not in source
     assert "async def _emit_enterprise_approval_result" in source
     assert "deps.request_approval(" in source
-    assert 'approval_origin_type="company_tool_policy"' in source
+    assert 'approval_origin_type: str = "company_tool_policy"' in source
     assert '"status": "session_permission_required"' in source
 
 

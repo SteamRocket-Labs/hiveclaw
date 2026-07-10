@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Set
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any, Iterable
 
 from app.runtime.ccplus_contracts import ToolSpecV1
@@ -166,6 +167,31 @@ _DESTRUCTIVE_NAMES: frozenset[str] | None = None
 _RESULT_CHAR_LIMITS: dict[str, int | None] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ToolExecutionPolicy:
+    timeout_seconds: float = 30.0
+    risk_class: str = "standard"
+    retry_policy: str = "none"
+    idempotency_scope: str = "none"
+    external_visible: bool = False
+    delegated_user_authorized: bool = False
+
+
+def tool_execution_policy(name: str) -> ToolExecutionPolicy:
+    entry = _ensure_tools_registered(name).get(name)
+    if entry is None:
+        return ToolExecutionPolicy()
+    meta, _fn = entry
+    return ToolExecutionPolicy(
+        timeout_seconds=max(0.1, float(meta.timeout_seconds)),
+        risk_class=str(meta.risk_class or "standard"),
+        retry_policy=str(meta.retry_policy or "none"),
+        idempotency_scope=str(meta.idempotency_scope or "none"),
+        external_visible=bool(meta.external_visible),
+        delegated_user_authorized=bool(meta.delegated_user_authorized),
+    )
+
+
 def _ensure_destructive_and_limits() -> None:
     global _DESTRUCTIVE_NAMES, _RESULT_CHAR_LIMITS
     if _DESTRUCTIVE_NAMES is None or _RESULT_CHAR_LIMITS is None:
@@ -272,6 +298,12 @@ def tool_spec_v1(name: str) -> ToolSpecV1 | None:
         always_load=bool(meta.is_default) and not deferred,
         permission_axes=(meta.governance,) if meta.governance else (),
         result_budget=meta.max_result_chars,
+        timeout_seconds=float(meta.timeout_seconds),
+        risk_class=str(meta.risk_class),
+        retry_policy=str(meta.retry_policy),
+        idempotency_scope=str(meta.idempotency_scope),
+        external_visible=bool(meta.external_visible),
+        delegated_user_authorized=bool(meta.delegated_user_authorized),
     )
 
 

@@ -288,7 +288,9 @@ async def test_bridge_transcript_event_to_t0_writes_ledger_and_marks_metadata(mo
         async def __aexit__(self, *_args):
             return None
 
-        async def execute(self, _stmt):
+        async def execute(self, stmt):
+            if "app.current_tenant_id" in str(stmt):
+                return ScalarResult()
             return ScalarResult()
 
         async def get(self, _model, key):
@@ -297,19 +299,18 @@ async def test_bridge_transcript_event_to_t0_writes_ledger_and_marks_metadata(mo
         async def commit(self):
             self.commits += 1
 
-    class Bypass:
-        def __init__(self, session):
-            self.session = session
-
-        async def __aenter__(self):
-            return self.session
-
-        async def __aexit__(self, *_args):
+        async def rollback(self):
             return None
+
+    async def fake_resolve_tenant(_event_id, **_kwargs):
+        return tenant_id
 
     fake_session = FakeSession()
     monkeypatch.setattr("app.database.async_session", lambda: fake_session)
-    monkeypatch.setattr("app.database.enter_rls_bypass", lambda session, **_kwargs: Bypass(session))
+    monkeypatch.setattr(
+        "app.services.tenant_resolver.resolve_tenant_for_transcript_event",
+        fake_resolve_tenant,
+    )
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     assert await bus.bridge_transcript_event_to_t0(transcript_event_id=transcript_event_id) is True

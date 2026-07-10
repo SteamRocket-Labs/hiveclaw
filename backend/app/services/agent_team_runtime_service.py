@@ -15,7 +15,7 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
-from app.database import async_session, enter_rls_bypass, tenant_scoped_session
+from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
 from app.models.chat_session import ChatSession
@@ -131,7 +131,9 @@ def _list_value(value: Any) -> list[Any]:
 
 def _effective_member_turn_status(member: Any) -> str:
     metadata = _metadata_dict(member)
-    return str(metadata.get("last_turn_status") or metadata.get("status") or _object_field(member, "status", "")).lower()
+    return str(
+        metadata.get("last_turn_status") or metadata.get("status") or _object_field(member, "status", "")
+    ).lower()
 
 
 def build_agent_team_decision_entry(
@@ -221,7 +223,9 @@ def build_agent_team_decision_entry(
     }
 
 
-def team_payload(team: AgentTeam, members: list[AgentTeamMember], *, requires_api_persist: bool = False) -> dict[str, Any]:
+def team_payload(
+    team: AgentTeam, members: list[AgentTeamMember], *, requires_api_persist: bool = False
+) -> dict[str, Any]:
     decision_entry = build_agent_team_decision_entry(team, list(members))
     return {
         "requires_api_persist": requires_api_persist,
@@ -579,9 +583,7 @@ async def _wake_parent_session_from_team_member_completion(
     if isinstance(existing, dict) and existing.get("idempotency_key") == idempotency_key:
         return
 
-    team = (
-        await db.execute(select(AgentTeam).where(AgentTeam.id == member.team_id).limit(1))
-    ).scalar_one_or_none()
+    team = (await db.execute(select(AgentTeam).where(AgentTeam.id == member.team_id).limit(1))).scalar_one_or_none()
     if team is None:
         return
     parent_session = (
@@ -594,17 +596,15 @@ async def _wake_parent_session_from_team_member_completion(
             .limit(1)
         )
     ).scalar_one_or_none()
-    parent_agent = (
-        await db.execute(select(Agent).where(Agent.id == team.lead_agent_id).limit(1))
-    ).scalar_one_or_none()
+    parent_agent = (await db.execute(select(Agent).where(Agent.id == team.lead_agent_id).limit(1))).scalar_one_or_none()
     owner_id = (
         getattr(parent_session, "user_id", None)
         or getattr(team, "created_by_user_id", None)
         or getattr(parent_agent, "creator_id", None)
     )
     owner = (
-        await db.execute(select(User).where(User.id == owner_id).limit(1))
-    ).scalar_one_or_none() if owner_id else None
+        (await db.execute(select(User).where(User.id == owner_id).limit(1))).scalar_one_or_none() if owner_id else None
+    )
     if parent_session is None or parent_agent is None or owner is None:
         return
 
@@ -664,10 +664,7 @@ async def project_agent_team_member_completion(
 
     member = (
         await db.execute(
-            select(AgentTeamMember)
-            .where(or_(*filters) if len(filters) > 1 else filters[0])
-            .limit(1)
-            .with_for_update()
+            select(AgentTeamMember).where(or_(*filters) if len(filters) > 1 else filters[0]).limit(1).with_for_update()
         )
     ).scalar_one_or_none()
     if member is None:
@@ -844,18 +841,27 @@ async def create_agent_team_from_tool_request(
     if session_id is None:
         raise ValueError("team_create requires the current session_id")
 
-    async with (
-        async_session() as db,
-        enter_rls_bypass(db, reason=f"agent team tool runtime resolution for agent {request.context.agent_id}"),
-    ):
+    tenant_id = _uuid_or_none(getattr(request.context, "tenant_id", None))
+    if tenant_id is None:
+        tenant_id = await resolve_tenant_for_agent(request.context.agent_id)
+    if tenant_id is None:
+        raise ValueError("Agent tenant not found")
+
+    async with tenant_scoped_session(
+        tenant_id,
+        require_tenant=True,
+        source="agent_team_create_tool_runtime",
+    ) as db:
         agent = (
-            await db.execute(select(Agent).where(Agent.id == request.context.agent_id))
+            await db.execute(
+                select(Agent).where(
+                    Agent.id == request.context.agent_id,
+                    Agent.tenant_id == tenant_id,
+                )
+            )
         ).scalar_one_or_none()
         if agent is None:
             raise ValueError("Agent not found")
-        tenant_id = getattr(agent, "tenant_id", None)
-
-    async with tenant_scoped_session(tenant_id) as db:
         user = (await db.execute(select(User).where(User.id == request.context.user_id))).scalar_one_or_none()
         if user is None:
             raise ValueError("User not found")
@@ -949,16 +955,27 @@ async def spawn_agent_team_member_from_tool_request(
     if not member_name:
         raise ValueError("name is required for teammate spawn")
 
-    async with (
-        async_session() as db,
-        enter_rls_bypass(db, reason=f"agent team teammate spawn runtime resolution for agent {request.context.agent_id}"),
-    ):
-        agent = (await db.execute(select(Agent).where(Agent.id == request.context.agent_id))).scalar_one_or_none()
+    tenant_id = _uuid_or_none(getattr(request.context, "tenant_id", None))
+    if tenant_id is None:
+        tenant_id = await resolve_tenant_for_agent(request.context.agent_id)
+    if tenant_id is None:
+        raise ValueError("Agent tenant not found")
+
+    async with tenant_scoped_session(
+        tenant_id,
+        require_tenant=True,
+        source="agent_team_member_spawn_tool_runtime",
+    ) as db:
+        agent = (
+            await db.execute(
+                select(Agent).where(
+                    Agent.id == request.context.agent_id,
+                    Agent.tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
         if agent is None:
             raise ValueError("Agent not found")
-        tenant_id = getattr(agent, "tenant_id", None)
-
-    async with tenant_scoped_session(tenant_id) as db:
         user = (await db.execute(select(User).where(User.id == request.context.user_id))).scalar_one_or_none()
         parent_session = (
             await db.execute(

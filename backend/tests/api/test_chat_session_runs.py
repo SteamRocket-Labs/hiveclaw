@@ -168,9 +168,10 @@ def test_start_session_run_routes_to_runtime_service(monkeypatch):
     assert captured["session"] is session
     assert captured["content"] == "hello"
     assert captured["extra_metadata"] == {
-        "permission_mode": "bypassPermissions",
+        "permission_mode": "default",
         "writable_roots": ["workspace/"],
-        "permission_profile": {"mode": "bypassPermissions", "allowed_tools": [], "writable_roots": ["workspace/"]},
+        "permission_profile": {"mode": "default", "allowed_tools": [], "writable_roots": ["workspace/"]},
+        "break_glass": None,
     }
 
 
@@ -228,9 +229,10 @@ def test_create_session_run_atomically_creates_human_session_and_starts_runtime(
     assert captured["display_content"] == "hello"
     assert captured["file_name"] == ""
     assert captured["extra_metadata"] == {
-        "permission_mode": "bypassPermissions",
+        "permission_mode": "default",
         "writable_roots": ["workspace/"],
-        "permission_profile": {"mode": "bypassPermissions", "allowed_tools": [], "writable_roots": ["workspace/"]},
+        "permission_profile": {"mode": "default", "allowed_tools": [], "writable_roots": ["workspace/"]},
+        "break_glass": None,
     }
 
 
@@ -266,18 +268,21 @@ def test_start_session_run_threads_ccplus_permission_profile(monkeypatch):
         "permission_mode": "default",
         "writable_roots": ["workspace/"],
         "permission_profile": {"mode": "default", "allowed_tools": ["send_email"], "writable_roots": ["workspace/"]},
+        "break_glass": None,
     }
 
 
 def test_update_session_permission_mode_updates_session_active_run_and_runtime_context(monkeypatch):
     agent_id = uuid4()
+    tenant_id = uuid4()
     user_id = uuid4()
     session_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=uuid4())
-    user = SimpleNamespace(id=user_id, role="member")
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id, role="org_admin", tenant_id=tenant_id)
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
+        tenant_id=tenant_id,
         user_id=user_id,
         transcript_metadata_json={"permission_mode": "default", "session_permission_allowed_tools": ["track_todo"]},
     )
@@ -292,11 +297,25 @@ def test_update_session_permission_mode_updates_session_active_run_and_runtime_c
             return runtime_context
 
     monkeypatch.setattr(chat_sessions_api, "web_chat_broker", _FakeBroker())
+
+    async def fake_append_session_event(**_kwargs):
+        return None
+
+    async def fake_broadcast_web_chat_event(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(chat_sessions_api, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(chat_sessions_api, "broadcast_web_chat_event", fake_broadcast_web_chat_event)
     client = _client(monkeypatch, db=db, user=user, agent=agent)
 
     response = client.patch(
         f"/agents/{agent_id}/sessions/{session_id}/permissions/profile",
-        json={"permission_mode": "bypassPermissions"},
+        json={
+            "permission_mode": "bypassPermissions",
+            "break_glass_reason": "incident containment",
+            "break_glass_scope": "session",
+            "break_glass_ttl_minutes": 15,
+        },
     )
 
     assert response.status_code == 200
@@ -322,6 +341,9 @@ def test_update_session_permission_mode_updates_session_active_run_and_runtime_c
         "writable_roots": ["workspace/"],
     }
     assert runtime_context.metadata["writable_roots"] == ["workspace/"]
+    assert runtime_context.metadata["break_glass"]["operator_id"] == str(user_id)
+    assert runtime_context.metadata["break_glass"]["reason"] == "incident containment"
+    assert runtime_context.metadata["break_glass"]["scope"] == "session"
     assert db.commits == 1
 
 

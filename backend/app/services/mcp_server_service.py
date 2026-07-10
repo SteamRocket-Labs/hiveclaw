@@ -310,24 +310,21 @@ async def get_agent_extensions(db: AsyncSession, agent_id: uuid.UUID) -> dict:
     external_activations: list[dict] = []
     if agent and agent.tenant_id:
         rows = (
-            (
-                await db.execute(
-                    select(TenantInstalledPlugin, AgentPluginAssignment)
-                    .join(
-                        AgentPluginAssignment,
-                        AgentPluginAssignment.installed_plugin_id == TenantInstalledPlugin.id,
-                    )
-                    .where(
-                        TenantInstalledPlugin.tenant_id == agent.tenant_id,
-                        TenantInstalledPlugin.status == "enabled",
-                        AgentPluginAssignment.tenant_id == agent.tenant_id,
-                        AgentPluginAssignment.agent_id == agent_id,
-                    )
-                    .order_by(TenantInstalledPlugin.plugin_key)
+            await db.execute(
+                select(TenantInstalledPlugin, AgentPluginAssignment)
+                .join(
+                    AgentPluginAssignment,
+                    AgentPluginAssignment.installed_plugin_id == TenantInstalledPlugin.id,
                 )
+                .where(
+                    TenantInstalledPlugin.tenant_id == agent.tenant_id,
+                    TenantInstalledPlugin.status == "enabled",
+                    AgentPluginAssignment.tenant_id == agent.tenant_id,
+                    AgentPluginAssignment.agent_id == agent_id,
+                )
+                .order_by(TenantInstalledPlugin.plugin_key)
             )
-            .all()
-        )
+        ).all()
         plugins = [
             {
                 "id": str(plugin.id),
@@ -886,26 +883,17 @@ async def import_mcp_for_agent_and_register(
     that import, preserving agent-scoped install semantics instead of assigning
     the server to every tenant agent.
     """
-    from app.database import async_session, enter_rls_bypass, tenant_scoped_session
+    from app.database import tenant_scoped_session
     from app.services.resource_discovery import import_mcp_direct, import_mcp_from_smithery
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
     config = dict(config or {})
     requested_transport = config.get("transport")
     if mcp_url or requested_transport:
         assert_mcp_cloud_transport_allowed(server_url=mcp_url, transport=requested_transport)
-    # Bootstrap the agent's tenant from the policied ``agents`` table by PK.
-    # Audit-bypass (DD-A): reading an agent's own tenant fail-closes under
-    # enforced RLS otherwise (chicken-and-egg). Reads the whole agent row, so we
-    # wrap the existing query directly rather than the single-column helper.
-    async with (
-        async_session() as db,
-        enter_rls_bypass(db, reason=f"MCP import agent-tenant bootstrap for agent {agent_id}"),
-    ):
-        agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
-        agent = agent_result.scalar_one_or_none()
-        if agent is None or not agent.tenant_id:
-            raise ValueError("Agent tenant not found")
-        tenant_id = agent.tenant_id
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    if tenant_id is None:
+        raise ValueError("Agent tenant not found")
 
     if mcp_url:
         api_key = config.pop("api_key", None)

@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
-from app.database import async_session, enter_rls_bypass
+from app.database import async_session, tenant_scoped_session
 from app.kernel import (
     AgentKernel,
     ExecutionIdentityRef,
@@ -68,6 +68,7 @@ from app.services.memory_service import (
     maybe_compress_messages,
     persist_runtime_memory,
 )
+from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_user
 from app.services.quota_guard import QuotaExceeded, check_user_token_quota
 from app.services.skill_runtime_telemetry import record_skill_runtime_usage_for_invocation
 from app.services.token_tracker import (
@@ -409,7 +410,23 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
         )
 
     try:
-        async with async_session() as db, enter_rls_bypass(db, reason=f"runtime config bootstrap for agent {agent_id}"):
+        tenant_id = await resolve_tenant_for_agent(
+            agent_id,
+            session_factory=async_session,
+        )
+        if tenant_id is None:
+            logger.warning("[Invoker] Agent %s not found in DB — fail-closed", agent_id)
+            return RuntimeConfig(
+                tenant_id=None,
+                max_tool_rounds=200,
+                tenant_resolution_error=f"Agent {agent_id} not found",
+            )
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=async_session,
+            require_tenant=True,
+            source="agent_runtime_config_bootstrap",
+        ) as db:
             result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
@@ -468,7 +485,18 @@ async def _resolve_current_user_name(user_id: uuid.UUID | None) -> str | None:
         return None
 
     try:
-        async with async_session() as db, enter_rls_bypass(db, reason=f"display-name bootstrap for user {user_id}"):
+        tenant_id = await resolve_tenant_for_user(
+            user_id,
+            session_factory=async_session,
+        )
+        if tenant_id is None:
+            return None
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=async_session,
+            require_tenant=True,
+            source="current_user_display_name_bootstrap",
+        ) as db:
             result = await db.execute(select(User).where(User.id == user_id))
             user = result.scalar_one_or_none()
             if user:
@@ -1178,13 +1206,18 @@ async def _resolve_quota_user_id(request: AgentInvocationRequest) -> uuid.UUID |
     if request.agent_id is None:
         return None
 
-    async with (
-        async_session() as db,
-        enter_rls_bypass(
-            db,
-            reason=f"quota user resolution for agent {request.agent_id}",
-        ),
-    ):
+    tenant_id = await resolve_tenant_for_agent(
+        request.agent_id,
+        session_factory=async_session,
+    )
+    if tenant_id is None:
+        return None
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="quota_user_resolution",
+    ) as db:
         result = await db.execute(select(Agent).where(Agent.id == request.agent_id))
         agent = result.scalar_one_or_none()
         if agent is None:
@@ -1230,7 +1263,18 @@ async def _resolve_agent_smart_model_routing(agent_id: uuid.UUID | None) -> dict
         return None
 
     try:
-        async with async_session() as db, enter_rls_bypass(db, reason=f"smart-routing bootstrap for agent {agent_id}"):
+        tenant_id = await resolve_tenant_for_agent(
+            agent_id,
+            session_factory=async_session,
+        )
+        if tenant_id is None:
+            return None
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=async_session,
+            require_tenant=True,
+            source="smart_model_routing_bootstrap",
+        ) as db:
             result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if agent and isinstance(getattr(agent, "smart_model_routing", None), dict):

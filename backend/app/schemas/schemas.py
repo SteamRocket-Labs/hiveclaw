@@ -430,6 +430,15 @@ class ApprovalRequestOut(BaseModel):
     created_at: datetime
     resolved_at: datetime | None = None
     resolved_by: uuid.UUID | None = None
+    decision_id: str | None = None
+    tool_name: str | None = None
+    normalized_arguments: dict | None = None
+    input_hash: str | None = None
+    policy_snapshot_hash: str | None = None
+    expires_at: datetime | None = None
+    consumed_at: datetime | None = None
+    execution_status: str = "pending"
+    execution_receipt: dict | None = None
 
     model_config = {"from_attributes": True}
 
@@ -505,4 +514,3 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     version: str
     components: dict[str, Any] = Field(default_factory=dict)
-

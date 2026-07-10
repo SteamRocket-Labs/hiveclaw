@@ -4712,10 +4712,11 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('aria-checked="false"');
     expect(markup).toContain('Approve for me');
     expect(markup).toContain('Ask first');
-    expect(markup).toContain('Full access');
+    expect(markup).not.toContain('Full access');
     expect(markup).toContain('data-testid="session-composer-permission-mode-auto"');
     expect(markup).toContain('data-testid="session-composer-permission-mode-default"');
-    expect(markup).toContain('data-testid="session-composer-permission-mode-bypassPermissions"');
+    expect(markup).not.toContain('data-testid="session-composer-permission-mode-bypassPermissions"');
+    expect(markup).toContain('data-testid="session-composer-permission-mode-default"');
     expect(markup).not.toContain('Manage access');
     expect(markup).not.toContain('acceptEdits');
     expect(markup).toContain('GPT-5.4');

@@ -85,7 +85,7 @@ describe('AgentDetail session permission state', () => {
         id: 'session-1',
         permission_mode: 'bypassPermissions',
       }),
-    ).toBe('bypassPermissions');
+    ).toBe('default');
 
     expect(
       sessionPermissionModeFromSession({
@@ -104,6 +104,19 @@ describe('AgentDetail session permission state', () => {
     expect(
       sessionPermissionModeFromSession({
         id: 'session-4',
+      }),
+    ).toBe('default');
+
+    expect(
+      sessionPermissionModeFromSession({
+        id: 'session-5',
+        permission_mode: 'bypassPermissions',
+        break_glass: {
+          operator_id: 'admin-1',
+          reason: 'incident response',
+          scope: 'session',
+          expires_at: '2999-01-01T00:00:00Z',
+        },
       }),
     ).toBe('bypassPermissions');
   });

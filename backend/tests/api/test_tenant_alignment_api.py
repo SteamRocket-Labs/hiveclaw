@@ -165,6 +165,50 @@ async def test_feishu_org_sync_setting_scopes_to_selected_tenant():
 
 
 @pytest.mark.asyncio
+async def test_agent_permission_default_read_is_tenant_scoped_and_side_effect_free():
+    import app.api.enterprise as enterprise_api
+
+    tenant_id = uuid4()
+    setting = SimpleNamespace(
+        tenant_id=tenant_id,
+        key="agent_permission_default",
+        value={"mode": "auto"},
+        updated_at=datetime.now(timezone.utc),
+    )
+    db = _FakeDB([_ScalarResult(setting)])
+
+    result = await enterprise_api.get_system_setting(
+        key="agent_permission_default",
+        tenant_id=None,
+        current_user=SimpleNamespace(role="org_admin", tenant_id=tenant_id),
+        db=db,
+    )
+
+    assert result["value"] == {"mode": "auto"}
+    assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_agent_permission_default_rejects_break_glass_as_tenant_default():
+    import app.api.enterprise as enterprise_api
+
+    tenant_id = uuid4()
+    db = _FakeDB([])
+
+    with pytest.raises(HTTPException) as exc_info:
+        await enterprise_api.update_system_setting(
+            key="agent_permission_default",
+            data=enterprise_api.SettingUpdate(value={"mode": "bypassPermissions"}),
+            tenant_id=None,
+            current_user=SimpleNamespace(role="org_admin", tenant_id=tenant_id),
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert db.committed is False
+
+
+@pytest.mark.asyncio
 async def test_behavior_eval_runtime_setting_scopes_to_selected_tenant():
     import app.api.enterprise as enterprise_api
 

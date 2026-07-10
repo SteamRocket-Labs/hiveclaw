@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.database import async_session, enter_rls_bypass
+from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.services.approval_service import approval_service
 
@@ -94,7 +94,11 @@ async def request_command_escalation(
         session_id=session_id,
     )
 
-    async with async_session() as db, enter_rls_bypass(db, reason=f"command escalation request for agent {agent_id}"):
+    async with tenant_scoped_session(
+        tenant_uuid,
+        require_tenant=True,
+        source="command_escalation_request",
+    ) as db:
         result = await db.execute(
             select(Agent).where(
                 Agent.id == agent_id,
@@ -106,7 +110,6 @@ async def request_command_escalation(
         if agent is None:
             return {"allowed": False, "error": "Agent not found for escalation."}
         outcome = await approval_service.request_approval(db, agent, action_type=action_type, details=details)
-        await db.commit()
         return outcome
 
 

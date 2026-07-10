@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -103,6 +102,14 @@ def _make_agent_tool_assignment(*, tool_id, enabled: bool = True):
     )
 
 
+def test_deferred_tool_risk_is_sourced_from_tool_meta_not_name_tokens():
+    from app.services.agent_tools import _deferred_tool_risk_for_name
+
+    assert _deferred_tool_risk_for_name("team_create") == "side_effect_governed"
+    assert _deferred_tool_risk_for_name("mcp__notion__search") == "external_mcp"
+    assert _deferred_tool_risk_for_name("create_totally_unknown_thing") == "unclassified"
+
+
 @pytest.mark.asyncio
 async def test_deferred_tool_candidates_project_activation_keys(monkeypatch):
     from app.services.agent_tools import available_deferred_tool_candidates_for_agent
@@ -158,84 +165,33 @@ async def test_deferred_tool_gatherer_outputs_activation_candidates(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_execute_approved_tool_prefers_tool_registry_executor(monkeypatch):
+async def test_execute_approved_tool_forwards_only_ticket_identity(monkeypatch):
     from app.services.agent_tools import execute_approved_tool
-    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
-    workspace = Path("/tmp/test-agent-workspace")
     agent_id = uuid4()
+    approver_id = uuid4()
+    approval_id = uuid4()
     captured = {}
 
-    async def fake_resolve(self, *, agent_id: object, user_id: object):
-        return ToolExecutionContext(
-            agent_id=agent_id,
-            user_id=user_id,
-            tenant_id="tenant-1",
-            workspace=workspace,
-        )
+    class Runtime:
+        async def execute_approved(self, **kwargs):
+            captured.update(kwargs)
+            return "ticket-ok"
 
-    async def fake_try_execute(request: ToolExecutionRequest):
-        captured["request"] = request
-        return "registry-ok"
-
-    monkeypatch.setattr("app.tools.resolver.ToolRuntimeResolver.resolve", fake_resolve)
-    monkeypatch.setattr("app.services.agent_tools._ensure_tool_execution_registry", lambda: None)
-    monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
+    monkeypatch.setattr("app.services.agent_tools._get_tool_runtime_service", lambda: Runtime())
 
     result = await execute_approved_tool(
-        "execute_code",
-        {"language": "python", "code": "print('hi')"},
-        agent_id,
+        approval_id=approval_id,
+        expected_agent_id=agent_id,
+        approved_by_user_id=approver_id,
     )
 
-    assert result == "registry-ok"
-    assert captured["request"].tool_name == "execute_code"
-    assert captured["request"].arguments == {"language": "python", "code": "print('hi')"}
-    assert captured["request"].context.agent_id == agent_id
-    assert captured["request"].context.workspace == workspace
-
-
-@pytest.mark.asyncio
-async def test_execute_approved_tool_registry_miss_uses_mcp_passthrough(monkeypatch):
-    from app.services.agent_tools import execute_approved_tool
-    from app.tools.runtime import ToolExecutionContext
-
-    workspace = Path("/tmp/test-agent-workspace")
-    called = {}
-
-    async def fake_resolve(self, *, agent_id: object, user_id: object):
-        return ToolExecutionContext(
-            agent_id=agent_id,
-            user_id=user_id,
-            tenant_id="tenant-1",
-            workspace=workspace,
-        )
-
-    async def fake_try_execute(_request):
-        return None
-
-    async def fake_execute_mcp(tool_name, arguments, *, agent_id):
-        called["tool_name"] = tool_name
-        called["arguments"] = arguments
-        called["agent_id"] = agent_id
-        return "mcp-passthrough"
-
-    monkeypatch.setattr("app.tools.resolver.ToolRuntimeResolver.resolve", fake_resolve)
-    monkeypatch.setattr("app.services.agent_tools._ensure_tool_execution_registry", lambda: None)
-    monkeypatch.setattr("app.services.agent_tools._TOOL_EXECUTION_REGISTRY.try_execute", fake_try_execute)
-    monkeypatch.setattr("app.services.agent_tools._execute_mcp_tool", fake_execute_mcp)
-    agent_id = uuid4()
-
-    result = await execute_approved_tool(
-        "execute_code",
-        {"language": "python", "code": "print('hi')"},
-        agent_id,
-    )
-
-    assert result == "mcp-passthrough"
-    assert called["tool_name"] == "execute_code"
-    assert called["arguments"] == {"language": "python", "code": "print('hi')"}
-    assert called["agent_id"] == agent_id
+    assert result == "ticket-ok"
+    assert captured == {
+        "approval_id": approval_id,
+        "expected_agent_id": agent_id,
+        "approved_by_user_id": approver_id,
+    }
 
 
 @pytest.mark.asyncio

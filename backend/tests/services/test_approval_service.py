@@ -108,6 +108,8 @@ async def test_resolve_approval_commits_before_approved_external_action(monkeypa
         id=uuid4(),
         agent_id=uuid4(),
         action_type="write_file",
+        tool_name="write_file",
+        execution_status="pending",
         status="pending",
         created_at=None,
         resolved_at=None,

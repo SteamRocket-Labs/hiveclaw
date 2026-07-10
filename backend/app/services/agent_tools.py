@@ -630,7 +630,9 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
         requested: list[str] = sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES)
         seen: set[str] = set(requested)
     elif any(_direct_tool_match(tool_name) for tool_name in AGENT_TEAM_DEFERRED_TOOL_NAMES):
-        return [next(tool_name for tool_name in sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES) if _direct_tool_match(tool_name))]
+        return [
+            next(tool_name for tool_name in sorted(AGENT_TEAM_DEFERRED_TOOL_NAMES) if _direct_tool_match(tool_name))
+        ]
     else:
         requested = []
         seen = set()
@@ -681,9 +683,10 @@ def _deferred_tool_group_for_name(tool_name: str) -> str:
 def _deferred_tool_risk_for_name(tool_name: str) -> str:
     if tool_name.startswith(("mcp_", "mcp__")):
         return "external_mcp"
-    if any(token in tool_name for token in ("send", "create", "update", "delete", "write", "append")):
-        return "side_effect_governed"
-    return "governed_runtime"
+    from app.tools.registry import tool_spec_v1
+
+    spec = tool_spec_v1(tool_name)
+    return spec.risk_class if spec is not None else "unclassified"
 
 
 def _deferred_tool_activation_keys(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -732,7 +735,9 @@ async def available_deferred_tool_candidates_for_agent(agent_id: uuid.UUID, *, l
     return candidates
 
 
-async def gather_deferred_tool_candidates_for_agent(agent_id: uuid.UUID, *, limit: int = 80) -> list[ActivationCandidate]:
+async def gather_deferred_tool_candidates_for_agent(
+    agent_id: uuid.UUID, *, limit: int = 80
+) -> list[ActivationCandidate]:
     """Project discoverable deferred tools into the shared activation candidate contract."""
     manifests = await available_deferred_tool_candidates_for_agent(agent_id, limit=limit)
     candidates: list[ActivationCandidate] = []
@@ -1025,12 +1030,10 @@ async def get_agent_tools_for_llm(
 
 
 async def execute_approved_tool(
-    tool_name: str,
-    arguments: dict,
-    agent_id: uuid.UUID,
     *,
+    approval_id: uuid.UUID,
+    expected_agent_id: uuid.UUID | None = None,
     approved_by_user_id: uuid.UUID | None = None,
-    approval_id: uuid.UUID | None = None,
 ) -> str | ToolContentEnvelope:
     """Execute a tool after an explicit approval decision.
 
@@ -1038,11 +1041,9 @@ async def execute_approved_tool(
     public entrypoint instead of reaching into ToolRuntimeService internals.
     """
     return await _get_tool_runtime_service().execute_approved(
-        tool_name,
-        arguments,
-        agent_id=agent_id,
-        approved_by_user_id=approved_by_user_id,
         approval_id=approval_id,
+        expected_agent_id=expected_agent_id,
+        approved_by_user_id=approved_by_user_id,
     )
 
 

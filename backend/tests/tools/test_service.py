@@ -64,14 +64,31 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
         tool_name="write_file",
         arguments={"path": "workspace/notes.md", "content": "x"},
     )
+    parent_agent_id = uuid4()
+    delegation_token = SimpleNamespace(parent_agent_id=parent_agent_id)
+    governance_context.delegation_token = delegation_token
     runtime_resolver = _FakeRuntimeResolver(context)
     governance_resolver = _FakeGovernanceResolver(governance_context, SimpleNamespace())
     registry = _FakeRegistry("OK")
     logged = []
     ensured = []
     lease_renewals = []
+    trace_metadata = {}
 
     async def fake_run_governance(_context, _deps, *, event_callback=None):
+        _context.guard_policy_snapshot = {"version": 11, "zone_guard": {}, "egress_guard": {}}
+        _context.guard_policy_verdict = {
+            "decision": "allow",
+            "reason": None,
+            "policy_version": 11,
+            "matched_rules": (),
+        }
+        _context.capability_snapshot = {
+            "allowed": True,
+            "denied": False,
+            "name": "workspace.file.write",
+            "policy_found": True,
+        }
         return None
 
     async def fake_log_activity(*args, **kwargs):
@@ -102,13 +119,14 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
         {"path": "workspace/notes.md", "content": "x"},
         agent_id=context.agent_id,
         user_id=context.user_id,
-        delegation_token="delegation-token-1",
+        delegation_token=delegation_token,
+        trace_metadata_sink=trace_metadata,
     )
 
     assert result == "OK"
     assert runtime_resolver.calls == [(context.agent_id, context.user_id, None)]
     assert governance_resolver.deps_calls == 1
-    assert governance_resolver.context_calls[0][3] == "delegation-token-1"
+    assert governance_resolver.context_calls[0][3] is delegation_token
     assert ensured == [True]
     assert registry.calls[0].tool_name == "write_file"
     assert len(lease_renewals) == 1
@@ -123,6 +141,13 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
     assert context.tool_execution_frames[-1]["tool_call_id"] in tool_call_ids
     assert logged[0][1]["detail"]["tool_call_lifecycle"]["tool_call_id"] in tool_call_ids
     assert logged[0][1]["detail"]["tool_execution_frame"]["status"] == "completed"
+    assert trace_metadata["tool_decision"]["outcome"] == "allow"
+    assert trace_metadata["decision_id"] == trace_metadata["tool_decision"]["decision_id"]
+    assert trace_metadata["input_hash"] == trace_metadata["tool_decision"]["input_hash"]
+    assert trace_metadata["tool_decision"]["delegated_by"] == str(parent_agent_id)
+    assert trace_metadata["authority_policy_snapshot"]["guard_policy"]["version"] == 11
+    assert trace_metadata["authority_policy_snapshot"]["guard_policy_verdict"]["decision"] == "allow"
+    assert trace_metadata["authority_capability_snapshot"]["live_policy"]["name"] == "workspace.file.write"
 
 
 @pytest.mark.asyncio
@@ -187,6 +212,56 @@ async def test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sin
             "confidence": 0.91,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_tool_decision_links_the_durable_approval_ticket():
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="send_email",
+        arguments={"to": "person@example.com", "subject": "hello", "body": "body"},
+    )
+
+    async def require_approval(inner_context, _dependencies, **_kwargs):
+        inner_context.decision_id = "decision-approval-1"
+        inner_context.approval_id = "approval-1"
+        return '{"status":"approval_required","approval_id":"approval-1"}'
+
+    trace_metadata = {}
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=_FakeRegistry("MUST_NOT_EXECUTE"),
+        ensure_registry=lambda: None,
+        governance_runner=require_approval,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+    )
+
+    result = await service.execute(
+        "send_email",
+        {"to": "person@example.com", "subject": "hello", "body": "body"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        trace_metadata_sink=trace_metadata,
+    )
+
+    assert "approval_required" in str(result)
+    assert trace_metadata["tool_decision"]["outcome"] == "require_approval"
+    assert trace_metadata["tool_decision"]["decision_id"] == "decision-approval-1"
+    assert trace_metadata["tool_decision"]["approval_id"] == "approval-1"
 
 
 @pytest.mark.asyncio
@@ -269,7 +344,9 @@ async def test_tool_runtime_service_blocks_disabled_l2_pack_at_call_time(monkeyp
 
     monkeypatch.setattr("app.tools.service.is_l2_tool", lambda tool_name: tool_name == "exa_search", raising=False)
     monkeypatch.setattr("app.tools.service.policy_pack_names_for_tool", lambda tool_name: ("web_pack",), raising=False)
-    monkeypatch.setattr("app.tools.service.is_pack_enabled", lambda policies, pack_name: bool(policies.get(pack_name)), raising=False)
+    monkeypatch.setattr(
+        "app.tools.service.is_pack_enabled", lambda policies, pack_name: bool(policies.get(pack_name)), raising=False
+    )
 
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
@@ -312,7 +389,9 @@ async def test_tool_runtime_service_blocks_disabled_l2_pack_in_execute_with_cont
 
     monkeypatch.setattr("app.tools.service.is_l2_tool", lambda tool_name: tool_name == "exa_search", raising=False)
     monkeypatch.setattr("app.tools.service.policy_pack_names_for_tool", lambda tool_name: ("web_pack",), raising=False)
-    monkeypatch.setattr("app.tools.service.is_pack_enabled", lambda policies, pack_name: bool(policies.get(pack_name)), raising=False)
+    monkeypatch.setattr(
+        "app.tools.service.is_pack_enabled", lambda policies, pack_name: bool(policies.get(pack_name)), raising=False
+    )
 
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
@@ -730,74 +809,56 @@ async def test_tool_runtime_service_returns_governance_block_without_registry_ca
 
 
 @pytest.mark.asyncio
-async def test_tool_runtime_service_execute_direct_uses_direct_fallback():
-    from app.tools.runtime import ToolExecutionContext
+async def test_tool_runtime_service_has_no_direct_governance_bypass():
     from app.tools.service import ToolRuntimeService
 
-    context = ToolExecutionContext(
-        agent_id=uuid4(),
-        user_id=uuid4(),
-        tenant_id="tenant-1",
-        workspace=Path("/tmp/ws"),
-    )
-    runtime_resolver = _FakeRuntimeResolver(context)
-    registry = _FakeRegistry(None)
-    captured = {}
-
-    async def fake_direct_fallback(tool_name, arguments, runtime_context):
-        captured["tool_name"] = tool_name
-        captured["arguments"] = arguments
-        captured["context"] = runtime_context
-        return "DIRECT"
-
-    service = ToolRuntimeService(
-        runtime_resolver=runtime_resolver,
-        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
-        registry=registry,
-        ensure_registry=lambda: None,
-        governance_runner=lambda *_args, **_kwargs: None,
-        fallback_executor=lambda *_args, **_kwargs: "fallback",
-        direct_fallback_executor=fake_direct_fallback,
-        activity_logger=None,
-    )
-
-    result = await service.execute_direct(
-        "execute_code",
-        {"language": "python", "code": "print(1)"},
-        agent_id=context.agent_id,
-    )
-
-    assert result == "DIRECT"
-    assert runtime_resolver.calls == [(context.agent_id, context.agent_id, None)]
-    assert captured["tool_name"] == "execute_code"
-    assert captured["context"] == context
-    assert [record["lifecycle_state"] for record in context.tool_lifecycle_records] == [
-        "created",
-        "validated",
-        "executing",
-        "completed",
-    ]
-    assert context.tool_execution_frames[-1]["status"] == "completed"
+    assert not hasattr(ToolRuntimeService, "execute_direct")
 
 
 @pytest.mark.asyncio
 async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
+    from app.services.approval_ticket import ApprovalExecutionTicket
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
 
     agent_id = uuid4()
+    requested_by = uuid4()
     approved_by = uuid4()
     approval_id = uuid4()
     context = ToolExecutionContext(
         agent_id=agent_id,
-        user_id=approved_by,
+        user_id=requested_by,
         tenant_id="tenant-1",
         workspace=Path("/tmp/ws"),
     )
     logged = []
+    completions = []
 
     async def fake_log_activity(*args, **kwargs):
         logged.append((args, kwargs))
+
+    async def consume_ticket(**kwargs):
+        assert kwargs == {
+            "approval_id": approval_id,
+            "expected_agent_id": agent_id,
+            "expected_user_id": approved_by,
+        }
+        return ApprovalExecutionTicket(
+            approval_id=approval_id,
+            tenant_id=uuid4(),
+            agent_id=agent_id,
+            requested_by_user_id=requested_by,
+            approved_by_user_id=approved_by,
+            tool_name="write_file",
+            arguments={"path": "workspace/notes.md", "content": "done"},
+            input_hash="input-hash",
+            policy_snapshot_hash="policy-hash",
+            idempotency_key=f"approval:{approval_id}",
+            decision_id="decision-approved-1",
+        )
+
+    async def complete_ticket(**kwargs):
+        completions.append(kwargs)
 
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
@@ -808,22 +869,26 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
         fallback_executor=lambda *_args, **_kwargs: "fallback",
         direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
         activity_logger=fake_log_activity,
+        approval_ticket_consumer=consume_ticket,
+        approval_ticket_completer=complete_ticket,
     )
 
     result = await service.execute_approved(
-        "write_file",
-        {"path": "workspace/notes.md", "content": "done"},
-        agent_id=agent_id,
-        approved_by_user_id=approved_by,
         approval_id=approval_id,
+        expected_agent_id=agent_id,
+        approved_by_user_id=approved_by,
     )
 
     assert result == "APPROVED"
-    assert service.runtime_resolver.calls == [(agent_id, approved_by, None)]
+    assert service.runtime_resolver.calls == [(agent_id, requested_by, None)]
     assert logged[0][0][1] == "tool_call_approved"
     assert logged[0][1]["detail"]["approved"] is True
     assert logged[0][1]["detail"]["approved_by_user_id"] == str(approved_by)
+    assert logged[0][1]["detail"]["requested_by_user_id"] == str(requested_by)
     assert logged[0][1]["detail"]["approval_id"] == str(approval_id)
+    assert logged[0][1]["detail"]["input_hash"] == "input-hash"
+    assert completions[0]["status"] == "succeeded"
+    assert completions[0]["receipt"]["decision_id"] == "decision-approved-1"
     assert [record["lifecycle_state"] for record in context.tool_lifecycle_records] == [
         "created",
         "validated",
@@ -835,7 +900,147 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("hook_behavior", "error_code"),
+    [
+        ("modify", "approval_payload_mutation"),
+        ("block", "approval_hook_block"),
+    ],
+)
+async def test_execute_approved_rejects_hook_changes_after_ticket_consumption(
+    hook_behavior,
+    error_code,
+):
+    from app.runtime.hooks import HookEvent, HookResult, hook_registry
+    from app.services.approval_ticket import ApprovalExecutionTicket
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    agent_id = uuid4()
+    requester_id = uuid4()
+    approver_id = uuid4()
+    approval_id = uuid4()
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=requester_id,
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    registry = _FakeRegistry("MUST_NOT_EXECUTE")
+    completions = []
+
+    async def consume_ticket(**_kwargs):
+        return ApprovalExecutionTicket(
+            approval_id=approval_id,
+            tenant_id=uuid4(),
+            agent_id=agent_id,
+            requested_by_user_id=requester_id,
+            approved_by_user_id=approver_id,
+            tool_name="write_file",
+            arguments={"path": "workspace/approved.md", "content": "approved"},
+            input_hash="input-hash",
+            policy_snapshot_hash="policy-hash",
+            idempotency_key=f"approval:{approval_id}",
+            decision_id="decision-immutable-payload",
+        )
+
+    async def complete_ticket(**kwargs):
+        completions.append(kwargs)
+
+    def mutate_after_approval(_context):
+        if hook_behavior == "block":
+            return HookResult(block=True, reason="policy changed")
+        return HookResult(modified_args={"path": "workspace/replaced.md", "content": "different"})
+
+    hook_registry.clear()
+    hook_registry.register(HookEvent.PRE_TOOL_USE, mutate_after_approval)
+    try:
+        service = ToolRuntimeService(
+            runtime_resolver=_FakeRuntimeResolver(context),
+            governance_resolver=SimpleNamespace(),
+            registry=registry,
+            ensure_registry=lambda: None,
+            governance_runner=lambda *_args, **_kwargs: None,
+            fallback_executor=lambda *_args, **_kwargs: "fallback",
+            direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+            approval_ticket_consumer=consume_ticket,
+            approval_ticket_completer=complete_ticket,
+        )
+
+        result = await service.execute_approved(
+            approval_id=approval_id,
+            expected_agent_id=agent_id,
+            approved_by_user_id=approver_id,
+        )
+    finally:
+        hook_registry.clear()
+
+    assert error_code in str(result)
+    assert registry.calls == []
+    assert completions[0]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_execute_approved_records_failed_receipt_when_runtime_bootstrap_raises():
+    from app.services.approval_ticket import ApprovalExecutionTicket
+    from app.tools.service import ToolRuntimeService
+
+    approval_id = uuid4()
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    approved_by = uuid4()
+    completions = []
+
+    async def consume_ticket(**_kwargs):
+        return ApprovalExecutionTicket(
+            approval_id=approval_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            requested_by_user_id=approved_by,
+            approved_by_user_id=approved_by,
+            tool_name="write_file",
+            arguments={"path": "workspace/notes.md", "content": "done"},
+            input_hash="input-hash",
+            policy_snapshot_hash="policy-hash",
+            idempotency_key=f"approval:{approval_id}",
+            decision_id="decision-failed-1",
+        )
+
+    async def complete_ticket(**kwargs):
+        completions.append(kwargs)
+
+    class CrashingRuntimeResolver:
+        async def resolve(self, **_kwargs):
+            raise RuntimeError("runtime bootstrap unavailable")
+
+    service = ToolRuntimeService(
+        runtime_resolver=CrashingRuntimeResolver(),
+        governance_resolver=SimpleNamespace(),
+        registry=_FakeRegistry("unused"),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        approval_ticket_consumer=consume_ticket,
+        approval_ticket_completer=complete_ticket,
+    )
+
+    with pytest.raises(RuntimeError, match="runtime bootstrap unavailable"):
+        await service.execute_approved(
+            approval_id=approval_id,
+            expected_agent_id=agent_id,
+            approved_by_user_id=approved_by,
+        )
+
+    assert completions[0]["status"] == "failed"
+    assert completions[0]["receipt"]["error_class"] == "RuntimeError"
+    assert completions[0]["receipt"]["idempotency_key"] == f"approval:{approval_id}"
+    assert completions[0]["receipt"]["decision_id"] == "decision-failed-1"
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_execute_approved_logs_readonly_tools():
+    from app.services.approval_ticket import ApprovalExecutionTicket
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
 
@@ -848,9 +1053,28 @@ async def test_tool_runtime_service_execute_approved_logs_readonly_tools():
         workspace=Path("/tmp/ws"),
     )
     logged = []
+    approval_id = uuid4()
 
     async def fake_log_activity(*args, **kwargs):
         logged.append((args, kwargs))
+
+    async def consume_ticket(**_kwargs):
+        return ApprovalExecutionTicket(
+            approval_id=approval_id,
+            tenant_id=uuid4(),
+            agent_id=agent_id,
+            requested_by_user_id=approved_by,
+            approved_by_user_id=approved_by,
+            tool_name="read_file",
+            arguments={"path": "workspace/notes.md"},
+            input_hash="input-hash",
+            policy_snapshot_hash="policy-hash",
+            idempotency_key=f"approval:{approval_id}",
+            decision_id="decision-readonly-1",
+        )
+
+    async def complete_ticket(**_kwargs):
+        return None
 
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
@@ -861,12 +1085,13 @@ async def test_tool_runtime_service_execute_approved_logs_readonly_tools():
         fallback_executor=lambda *_args, **_kwargs: "fallback",
         direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
         activity_logger=fake_log_activity,
+        approval_ticket_consumer=consume_ticket,
+        approval_ticket_completer=complete_ticket,
     )
 
     result = await service.execute_approved(
-        "read_file",
-        {"path": "workspace/notes.md"},
-        agent_id=agent_id,
+        approval_id=approval_id,
+        expected_agent_id=agent_id,
         approved_by_user_id=approved_by,
     )
 
@@ -1341,7 +1566,10 @@ def test_interactive_plan_mode_allows_only_narrow_readonly_subagent_lane():
             is None
         )
         assert ToolRuntimeService._interactive_plan_mode_readonly_block("preview_workflow", {"definition": {}}) is None
-        assert ToolRuntimeService._interactive_plan_mode_readonly_block("propose_dynamic_workflow", {"goal": "audit"}) is None
+        assert (
+            ToolRuntimeService._interactive_plan_mode_readonly_block("propose_dynamic_workflow", {"goal": "audit"})
+            is None
+        )
         assert ToolRuntimeService._interactive_plan_mode_readonly_block("check_subagent", {}) is None
         start = ToolRuntimeService._interactive_plan_mode_readonly_block("start_workflow", {"definition": {}})
         assert start is not None and "plan_mode_readonly_violation" in start

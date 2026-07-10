@@ -157,22 +157,35 @@ async def _load_session_lifecycle_messages(
     if not session_id:
         return []
 
-    from app.database import async_session, enter_rls_bypass
+    from app.database import async_session, tenant_scoped_session
     from app.models.audit import ChatMessage
+    from app.services.tenant_resolver import resolve_tenant_for_chat_session
 
-    filters = [ChatMessage.conversation_id == str(session_id)]
+    tenant_id = await resolve_tenant_for_chat_session(
+        session_id,
+        session_factory=async_session,
+    )
+    if tenant_id is None:
+        return []
+
+    filters = [
+        ChatMessage.tenant_id == tenant_id,
+        ChatMessage.conversation_id == str(session_id),
+    ]
     agent_uuid = _uuid_or_none(agent_id)
     if agent_uuid is not None:
         filters.append(ChatMessage.agent_id == agent_uuid)
 
-    async with async_session() as db:
-        async with enter_rls_bypass(
-            db, reason=f"runtime control lifecycle hook session load {session_id}"
-        ) as bypass_db:
-            result = await bypass_db.execute(
-                select(ChatMessage).where(*filters).order_by(ChatMessage.created_at.desc()).limit(max(1, limit))
-            )
-            rows = list(result.scalars().all())
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="runtime_control_bus.lifecycle_messages",
+    ) as db:
+        result = await db.execute(
+            select(ChatMessage).where(*filters).order_by(ChatMessage.created_at.desc()).limit(max(1, limit))
+        )
+        rows = list(result.scalars().all())
 
     rows.reverse()
     return [{"role": row.role, "content": row.content} for row in rows if row.content is not None]
@@ -217,18 +230,34 @@ async def bridge_transcript_event_to_t0(
         _STATE["last_error"] = f"ValueError: invalid transcript_event_id {transcript_event_id!r}"
         return False
 
-    from app.database import async_session, enter_rls_bypass
+    from app.database import async_session, tenant_scoped_session
     from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_events
     from app.models.audit import ChatMessage
     from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.tenant_resolver import resolve_tenant_for_transcript_event
 
     attempts = max(1, attempts)
     for attempt in range(attempts):
         predecessor_event_id: UUID | None = None
-        async with async_session() as db:
-            async with enter_rls_bypass(db, reason=f"runtime control transcript T0 bridge {event_uuid}") as bypass_db:
-                result = await bypass_db.execute(
-                    select(ChatTranscriptEvent).where(ChatTranscriptEvent.id == event_uuid).with_for_update()
+        projection_failed = False
+        tenant_id = await resolve_tenant_for_transcript_event(
+            event_uuid,
+            session_factory=async_session,
+        )
+        if tenant_id is not None:
+            async with tenant_scoped_session(
+                tenant_id,
+                session_factory=async_session,
+                require_tenant=True,
+                source="runtime_control_bus.transcript_t0_bridge",
+            ) as db:
+                result = await db.execute(
+                    select(ChatTranscriptEvent)
+                    .where(
+                        ChatTranscriptEvent.id == event_uuid,
+                        ChatTranscriptEvent.tenant_id == tenant_id,
+                    )
+                    .with_for_update()
                 )
                 transcript_event = result.scalar_one_or_none()
                 if transcript_event is not None:
@@ -240,7 +269,7 @@ async def bridge_transcript_event_to_t0(
                         return True
 
                     predecessor_event_id = await _prior_unprojected_transcript_event_id(
-                        bypass_db,
+                        db,
                         transcript_event=transcript_event,
                     )
                     if predecessor_event_id is None:
@@ -252,7 +281,7 @@ async def bridge_transcript_event_to_t0(
 
                         chat_message = None
                         if transcript_event.message_id:
-                            chat_message = await bypass_db.get(ChatMessage, transcript_event.message_id)
+                            chat_message = await db.get(ChatMessage, transcript_event.message_id)
                         actor_id = getattr(chat_message, "user_id", None) or transcript_event.agent_id
                         role = metadata.get("t0_role") or metadata.get("role")
                         source = str(metadata.get("source") or "runtime_control")
@@ -291,7 +320,7 @@ async def bridge_transcript_event_to_t0(
                                 segment_id = existing_t0_event.segment_id
                                 t0_event_id = existing_t0_event.event_id
                                 t0_sequence = existing_t0_event.sequence
-                        except Exception as exc:  # noqa: BLE001 - persist the retryable projection failure.
+                        except Exception as exc:  # noqa: BLE001 - persist retryable projection failure.
                             projection_error = f"{type(exc).__name__}: {str(exc)[:1000]}"
                             transcript_event.projection_status = "failed"
                             transcript_event.projection_error = projection_error
@@ -303,28 +332,27 @@ async def bridge_transcript_event_to_t0(
                                 }
                             )
                             transcript_event.metadata_json = metadata
-                            await bypass_db.commit()
                             _STATE["last_error"] = projection_error
-                            if attempt < attempts - 1:
-                                await asyncio.sleep(retry_delay_seconds)
-                                continue
-                            return False
-                        metadata.update(
-                            {
-                                "t0_bridge_pending": False,
-                                "t0_bridge_relayed_at": _now_iso(),
-                                "t0_bridge_relay_source": "runtime_control_bus",
-                                "t0_bridge_segment_id": segment_id,
-                                "t0_bridge_event_id": t0_event_id,
-                                "t0_bridge_sequence": t0_sequence,
-                            }
-                        )
-                        transcript_event.metadata_json = metadata
-                        transcript_event.projection_status = "projected"
-                        transcript_event.projection_error = None
-                        transcript_event.projected_at = datetime.now(timezone.utc)
-                        await bypass_db.commit()
-                        return True
+                            projection_failed = True
+                        else:
+                            metadata.update(
+                                {
+                                    "t0_bridge_pending": False,
+                                    "t0_bridge_relayed_at": _now_iso(),
+                                    "t0_bridge_relay_source": "runtime_control_bus",
+                                    "t0_bridge_segment_id": segment_id,
+                                    "t0_bridge_event_id": t0_event_id,
+                                    "t0_bridge_sequence": t0_sequence,
+                                }
+                            )
+                            transcript_event.metadata_json = metadata
+                            transcript_event.projection_status = "projected"
+                            transcript_event.projection_error = None
+                            transcript_event.projected_at = datetime.now(timezone.utc)
+                            return True
+
+        if projection_failed and attempt >= attempts - 1:
+            return False
 
         if predecessor_event_id is not None:
             if await bridge_transcript_event_to_t0(

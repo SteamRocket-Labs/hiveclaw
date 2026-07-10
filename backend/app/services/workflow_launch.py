@@ -276,22 +276,36 @@ async def execute_claimed_workflow_run(
     service = WorkflowRuntimeService(session_factory=session_factory)
     from sqlalchemy import select
 
-    from app.database import async_session, enter_rls_bypass
+    from app.database import async_session, tenant_scoped_session
     from app.models.runtime_task import RuntimeTask
+    from app.services.tenant_resolver import resolve_tenant_for_runtime_task
 
-    async with async_session() as db, enter_rls_bypass(db, reason="workflow worker claim tenant resolve"):
+    run_uuid = uuid.UUID(str(run_id))
+    factory = session_factory or async_session
+    tenant_value = await resolve_tenant_for_runtime_task(
+        run_uuid,
+        session_factory=factory,
+    )
+    if tenant_value is None:
+        raise LookupError(f"workflow run {run_id} not found")
+    async with tenant_scoped_session(
+        tenant_value,
+        session_factory=factory,
+        require_tenant=True,
+        source="workflow_worker_claim_runtime_load",
+    ) as db:
         task = (
-            await db.execute(select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(str(run_id))))
+            await db.execute(
+                select(RuntimeTask).where(
+                    RuntimeTask.id == run_uuid,
+                    RuntimeTask.tenant_id == tenant_value,
+                )
+            )
         ).scalar_one_or_none()
     if task is None or task.task_type != "workflow":
         raise LookupError(f"workflow run {run_id} not found")
-    tenant_value = (task.metadata_json or {}).get("tenant_id") or task.tenant_id
-    if not tenant_value:
-        raise LookupError(f"workflow run {run_id} has no tenant")
     executor = build_resumable_workflow_leaf_executor(session_factory=session_factory, spawn=spawn)
-    return await service.resume_run(
-        uuid.UUID(str(run_id)), tenant_id=uuid.UUID(str(tenant_value)), leaf_executor=executor
-    )
+    return await service.resume_run(run_uuid, tenant_id=uuid.UUID(str(tenant_value)), leaf_executor=executor)
 
 
 def build_resumable_workflow_leaf_executor(

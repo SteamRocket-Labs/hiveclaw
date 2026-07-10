@@ -316,6 +316,7 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None) 
 @tool(
     ToolMeta(
         name="read_document",
+        timeout_seconds=60.0,
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description="Read office document contents (PDF, Word, Excel, PPT, etc.) and extract text. Suitable for reading knowledge base documents.",
         parameters={
@@ -381,6 +382,8 @@ async def read_document(workspace: Path, arguments: dict, tenant_id: str | None 
 @tool(
     ToolMeta(
         name="execute_code",
+        timeout_seconds=120.0,
+        risk_class="code_execution",
         description=(
             "Execute code (Python, Bash, or Node.js) in a sandboxed environment within your workspace directory.\n\n"
             "Usage:\n"
@@ -431,6 +434,8 @@ async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None =
 @tool(
     ToolMeta(
         name="run_command",
+        timeout_seconds=120.0,
+        risk_class="code_execution",
         description=(
             "Run a shell command inside the configured sandbox provider and the agent workspace directory.\n\n"
             "Usage:\n"

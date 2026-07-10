@@ -348,7 +348,9 @@ class _ToolLoopClient:
                         "type": "function",
                         "function": {
                             "name": "read_file",
-                            "arguments": f'{{"path": "x-{self._remaining}"}}' if self._distinct_args else '{"path": "x"}',
+                            "arguments": f'{{"path": "x-{self._remaining}"}}'
+                            if self._distinct_args
+                            else '{"path": "x"}',
                         },
                     }
                 ],

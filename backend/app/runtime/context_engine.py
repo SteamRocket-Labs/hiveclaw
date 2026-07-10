@@ -125,7 +125,7 @@ class DefaultContextEngine:
                 }
             )
             if len(artifacts) > self.artifact_limit:
-                del artifacts[:-self.artifact_limit]
+                del artifacts[: -self.artifact_limit]
 
         safe_kind = escape(kind, quote=True)
         safe_source = escape(source, quote=True)

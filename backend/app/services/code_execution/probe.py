@@ -397,7 +397,10 @@ async def start_code_execution_sandbox_probe_scheduler() -> None:
     try:
         timeout = max(
             1,
-            int(os.environ.get("HIVE_CODE_EXEC_PROBE_TIMEOUT_SECONDS") or CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_TIMEOUT_SECONDS),
+            int(
+                os.environ.get("HIVE_CODE_EXEC_PROBE_TIMEOUT_SECONDS")
+                or CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_TIMEOUT_SECONDS
+            ),
         )
     except ValueError:
         timeout = CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_TIMEOUT_SECONDS

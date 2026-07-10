@@ -325,7 +325,9 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
     assert child_session.source_channel == "subagent"
     assert child_session.session_kind == "subagent"
     assert child_session.parent_session_id == parent_session_id
-    assert child_session.transcript_metadata_json["session_contract"]["continuation_address"] == started.child_session_id
+    assert (
+        child_session.transcript_metadata_json["session_contract"]["continuation_address"] == started.child_session_id
+    )
     assert child_session.transcript_metadata_json["session_contract"]["run_id"] == started.run_id
     assert runtime_task.task_type == svc.SUBAGENT_RUN_TASK_TYPE
     # Durable enqueue semantics (RTD-32 / budget plane): the run is created
@@ -496,7 +498,9 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
     assert "Skill fork worker `Research` executed through `spawn_subagent`." in result
 
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
-        child_session = (await session.execute(select(ChatSession).where(ChatSession.id == child_session_id))).scalar_one()
+        child_session = (
+            await session.execute(select(ChatSession).where(ChatSession.id == child_session_id))
+        ).scalar_one()
         runtime_task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
         start_event = (
             await session.execute(
@@ -717,18 +721,20 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
     assert parent_event["metadata"]["subagent_decision_entry"]["schema"] == "hive.ccplus.subagent_decision_entry.v1"
     assert parent_event["metadata"]["subagent_decision_entry"]["status"] == "completed"
     assert parent_event["metadata"]["subagent_decision_entry"]["safe_to_retry"] is True
-    assert parent_event["parts"] == [{
-        "type": "event",
-        "event_type": "child_session",
-        "title": "Child Session",
-        "text": "done",
-        "status": "completed",
-        "runtime_task_id": "run-1",
-        "child_session_id": str(child_session_id),
-        "parent_session_id": str(parent_session_id),
-        "root_session_id": str(parent_session_id),
-        "reason": "subagent_task_completed",
-    }]
+    assert parent_event["parts"] == [
+        {
+            "type": "event",
+            "event_type": "child_session",
+            "title": "Child Session",
+            "text": "done",
+            "status": "completed",
+            "runtime_task_id": "run-1",
+            "child_session_id": str(child_session_id),
+            "parent_session_id": str(parent_session_id),
+            "root_session_id": str(parent_session_id),
+            "reason": "subagent_task_completed",
+        }
+    ]
     assert captured_wakeups == [
         {
             "run_id": "run-1",
@@ -1473,7 +1479,7 @@ async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(
     monkeypatch.setattr(
         svc,
         "make_llm_how_distiller",
-        lambda *_args, **_kwargs: (lambda _run_log: [("pitfall", "Avoid stale restart assumptions.")]),
+        lambda *_args, **_kwargs: lambda _run_log: [("pitfall", "Avoid stale restart assumptions.")],
         raising=False,
     )
     monkeypatch.setattr(svc, "spawn_subagent", real_spawn_with_fake_invoke, raising=False)
@@ -2092,7 +2098,9 @@ async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hyd
 
     async def fake_spawn_subagent(runtime, spec, *_args, **_kwargs):
         assert runtime.cancel_event.is_set() is True
-        return SimpleNamespace(result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="ignored"))
+        return SimpleNamespace(
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="ignored")
+        )
 
     async def fake_update_runtime_task_record(task_id, **kwargs):
         updates.append((task_id, kwargs))

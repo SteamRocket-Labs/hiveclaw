@@ -198,7 +198,9 @@ class DecisionTraceStore:
             checkpoint_id=_optional_str(checkpoint_id),
         )
         self._decisions[decision.id] = decision
-        self._append({"schema": "decision_trace_event.v1", "event": "decision", "decision": self._decision_to_dict(decision)})
+        self._append(
+            {"schema": "decision_trace_event.v1", "event": "decision", "decision": self._decision_to_dict(decision)}
+        )
         return decision
 
     def record_feedback(
@@ -222,7 +224,9 @@ class DecisionTraceStore:
             rationale_from_owner=rationale_from_owner,
         )
         self._feedback.append(feedback)
-        self._append({"schema": "decision_trace_event.v1", "event": "feedback", "feedback": self._feedback_to_dict(feedback)})
+        self._append(
+            {"schema": "decision_trace_event.v1", "event": "feedback", "feedback": self._feedback_to_dict(feedback)}
+        )
         return feedback
 
     def feedback_for_decision(self, decision_id: str) -> list[FeedbackSignal]:
@@ -479,7 +483,9 @@ class SqlDecisionTraceStore:
         from app.models.decision_trace import DecisionTraceRecord
 
         normalized_id = decision_id_from_ref(decision.id)
-        result = await self._session.execute(select(DecisionTraceRecord).where(DecisionTraceRecord.decision_id == normalized_id))
+        result = await self._session.execute(
+            select(DecisionTraceRecord).where(DecisionTraceRecord.decision_id == normalized_id)
+        )
         existing = result.scalar_one_or_none()
         if existing is not None:
             imported = _decision_from_record(existing)
@@ -518,7 +524,9 @@ class SqlDecisionTraceStore:
         from app.models.decision_trace import DecisionTraceFeedbackRecord, DecisionTraceRecord
 
         feedback_id = _stable_uuid(feedback.id, namespace="decision_trace_feedback")
-        result = await self._session.execute(select(DecisionTraceFeedbackRecord).where(DecisionTraceFeedbackRecord.id == feedback_id))
+        result = await self._session.execute(
+            select(DecisionTraceFeedbackRecord).where(DecisionTraceFeedbackRecord.id == feedback_id)
+        )
         existing_feedback = result.scalar_one_or_none()
         if existing_feedback is not None:
             return _feedback_from_record(existing_feedback)
@@ -552,7 +560,9 @@ class SqlDecisionTraceStore:
         from app.models.decision_trace import DecisionTraceRecord
 
         normalized_id = decision_id_from_ref(decision_id)
-        result = await self._session.execute(select(DecisionTraceRecord).where(DecisionTraceRecord.decision_id == normalized_id))
+        result = await self._session.execute(
+            select(DecisionTraceRecord).where(DecisionTraceRecord.decision_id == normalized_id)
+        )
         row = result.scalar_one_or_none()
         if row is None:
             raise KeyError(normalized_id)
@@ -618,9 +628,7 @@ async def backfill_decision_trace_jsonl_to_sql(
     legacy_store = DecisionTraceStore(path=path)
     decisions = legacy_store.decisions()
     feedback_items = [
-        feedback
-        for decision in decisions
-        for feedback in legacy_store.feedback_for_decision(decision.id)
+        feedback for decision in decisions for feedback in legacy_store.feedback_for_decision(decision.id)
     ]
     result = {
         "schema": "decision_trace_jsonl_backfill.v1",

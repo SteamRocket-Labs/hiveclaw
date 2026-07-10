@@ -310,7 +310,9 @@ async def load_context_from(db: AsyncSession, *, agent_id: uuid.UUID, context_re
                 .limit(6)
             )
             messages = list(reversed(result.scalars().all()))
-            lines = [f"Context from {getattr(session, 'title', None) or getattr(session, 'external_conv_id', None) or session.id}:"]
+            lines = [
+                f"Context from {getattr(session, 'title', None) or getattr(session, 'external_conv_id', None) or session.id}:"
+            ]
             for message in messages:
                 content = str(getattr(message, "content", "") or "").strip()
                 if content:

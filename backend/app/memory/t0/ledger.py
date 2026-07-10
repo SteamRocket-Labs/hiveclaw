@@ -840,7 +840,9 @@ def _event_from_record(
         message_id=str(record.get("message_id")) if record.get("message_id") else None,
         actor_id=str(record.get("actor_id")) if record.get("actor_id") else None,
         runtime_task_id=str(record.get("runtime_task_id")) if record.get("runtime_task_id") else None,
-        turn_id=str(record.get("turn_id") or metadata.get("turn_id")) if record.get("turn_id") or metadata.get("turn_id") else None,
+        turn_id=str(record.get("turn_id") or metadata.get("turn_id"))
+        if record.get("turn_id") or metadata.get("turn_id")
+        else None,
         intent_id=str(record.get("intent_id") or metadata.get("intent_id"))
         if record.get("intent_id") or metadata.get("intent_id")
         else None,

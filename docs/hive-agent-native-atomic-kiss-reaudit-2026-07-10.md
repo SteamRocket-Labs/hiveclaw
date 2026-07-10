@@ -21,6 +21,7 @@ Hive 已经不是一个“缺核心 Agent 能力”的系统。当前真实状�
 5. **Personal KB 已固定为 Tool-first 资产并完成受治理写入**：它不参与原始上下文组装；Agent 只能创建 owner-scoped proposal，经权威判断、owner review、commit、revision、audit 与 rollback 后成为知识，内部机械核心也已按四职责拆分。
 6. **Company KB 是明确的第二部分已知缺失**：当前 `/enterprise/knowledge-base` 文件树不是新的企业知识权威平面。第一部分不得偷建 Company KB，也不得把它自动塞入原始上下文。
 7. **UI/UX 已从字符串事件投影收敛为稳定协议**：后端持久化并输出 schema-versioned `ThreadItem` 判别联合，前端类型由 Pydantic schema 生成；timeline、renderer、inspector、composer、run controls 与 responsive shell 已物理拆分并由生产页面消费。
+8. **代码洁净度门禁已机械收敛**：本轮末尾发现全仓 `ruff format --check app tests` 有 370 个既有偏差；已用同一 formatter 独立归一，当前 1,400 个 Python/test 文件全部通过 format check，且全仓回归保持 6,025 passed。
 
 ### 最终判断
 
@@ -1386,3 +1387,34 @@ cd backend && alembic heads
 ```
 
 本包没有建设 Company KB，没有把 Personal/Company KB 注入原始上下文，没有新增 UI 侧副作用入口，也没有部署生产。本包独立提交标题：`Close typed session workbench and UI protocol`。
+
+### 15.8 KISS 代码格式基线收敛（2026-07-10）
+
+这是 F 完成后的独立机械门禁提交，不改变产品协议、权限、数据库、执行语义或 UI：
+
+1. 先运行报告 13.1 规定的仓库级 `ruff format --check app tests`，真实暴露 370 个历史格式偏差；没有把“本轮变更文件已格式化”冒充全仓门禁通过。
+2. 使用项目既有 Ruff formatter 一次归一 `backend/app` 与 `backend/tests`，不引入新 formatter、lint 规则或手工语义重写。
+3. 机械结果为 370 files reformatted、1,030 files unchanged；随后 1,400 files already formatted，`ruff check app tests`、`git diff --check` 均通过。
+4. 格式化后再次运行全仓后端测试，结果与 F 功能提交一致：6,025 passed、1 skipped；因此该提交只关闭代码洁净度基线，不把 formatter 当成功能证据。
+
+验证证据：
+
+```text
+cd backend && source .venv/bin/activate
+ruff format app tests
+-> 370 files reformatted, 1030 files left unchanged
+
+ruff check app tests
+-> All checks passed!
+
+ruff format --check app tests
+-> 1400 files already formatted
+
+pytest tests -q
+-> 6025 passed, 1 skipped, 5 warnings in 126.38s
+
+git diff --check
+-> passed
+```
+
+该提交不修改 Company KB 边界、不部署生产，也不执行任何不可逆数据操作。独立提交标题：`Normalize backend formatting baseline`。

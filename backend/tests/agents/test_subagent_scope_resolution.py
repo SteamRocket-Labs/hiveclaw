@@ -85,12 +85,7 @@ def test_legacy_worker_definition_type_canonicalizes_on_read(tmp_path):
     path = tmp_path / str(AGENT_ID) / "subagents" / "legacy-writer.md"
     path.parent.mkdir(parents=True)
     path.write_text(
-        "---\n"
-        "name: legacy-writer\n"
-        "description: d\n"
-        "type: worker\n"
-        "---\n"
-        "legacy prompt\n",
+        "---\nname: legacy-writer\ndescription: d\ntype: worker\n---\nlegacy prompt\n",
         encoding="utf-8",
     )
 

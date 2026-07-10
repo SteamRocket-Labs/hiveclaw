@@ -60,11 +60,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
                     "请直接在飞书知识库中管理成员权限。"
                 )
             if _c in (99991672, 99991668):
-                return (
-                    f"❌ 权限不足（code {_c}）\n"
-                    "需要在飞书开放平台开通：\n"
-                    "• drive:drive（云文档权限管理）"
-                )
+                return f"❌ 权限不足（code {_c}）\n需要在飞书开放平台开通：\n• drive:drive（云文档权限管理）"
             return f"❌ 获取协作者列表失败：{data.get('msg')} (code {_c})"
 
         members = data.get("data", {}).get("items", [])
@@ -76,7 +72,9 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
             perm = m.get("perm", "")
             member_type = m.get("member_type", "")
             member_id = m.get("member_id", "")
-            _type_label = {"openid": "用户", "openchat": "群组", "opendepartmentid": "部门"}.get(member_type, member_type)
+            _type_label = {"openid": "用户", "openchat": "群组", "opendepartmentid": "部门"}.get(
+                member_type, member_type
+            )
             lines.append(f"• {_type_label} `{member_id}` | 权限: **{perm}**")
         return "\n".join(lines)
 
@@ -93,7 +91,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
     resolved: list[tuple[str, str]] = []  # (display_name, open_id)
     for name in member_names:
         sr = await _feishu_user_search(agent_id, {"name": name})
-        m = _re.search(r'open_id: `(ou_[A-Za-z0-9]+)`', sr)
+        m = _re.search(r"open_id: `(ou_[A-Za-z0-9]+)`", sr)
         if m:
             resolved.append((name, m.group(1)))
         else:
@@ -126,10 +124,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
                         results.append(f"ℹ️ 「{display}」已经是知识库成员，无需重复添加")
                     elif _c == 131101:
                         # Public wiki space — everyone already has access
-                        results.append(
-                            f"ℹ️ 这是一个**公开知识库**，所有人已可访问。\n"
-                            f"「{display}」无需单独添加权限。"
-                        )
+                        results.append(f"ℹ️ 这是一个**公开知识库**，所有人已可访问。\n「{display}」无需单独添加权限。")
                     else:
                         results.append(f"❌ 添加「{display}」到知识库失败：{d.get('msg')} (code {_c})")
                     continue
@@ -159,11 +154,7 @@ async def _feishu_doc_share(agent_id: uuid.UUID, arguments: dict) -> str:
                             "请手动操作：打开文档 → 右上角「分享」→ 添加自己并设置权限。"
                         )
                     elif _c in (99991672, 99991668):
-                        return (
-                            f"❌ 权限不足（code {_c}）\n"
-                            "需要在飞书开放平台开通：\n"
-                            "• drive:drive（云文档权限管理）"
-                        )
+                        return f"❌ 权限不足（code {_c}）\n需要在飞书开放平台开通：\n• drive:drive（云文档权限管理）"
                     else:
                         results.append(f"❌ 添加「{display}」失败：{d.get('msg')} (code {_c})")
 

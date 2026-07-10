@@ -6,10 +6,7 @@ from pathlib import Path
 
 def _load_migration():
     migration_path = (
-        Path(__file__).resolve().parents[2]
-        / "alembic"
-        / "versions"
-        / "add_sso_scan_sessions_updated_at_0419.py"
+        Path(__file__).resolve().parents[2] / "alembic" / "versions" / "add_sso_scan_sessions_updated_at_0419.py"
     )
     spec = importlib.util.spec_from_file_location("add_sso_scan_sessions_updated_at_0419", migration_path)
     assert spec is not None
@@ -39,10 +36,7 @@ def test_upgrade_adds_missing_sso_scan_session_updated_at_column() -> None:
     module.upgrade()
 
     assert fake_op.statements == [
-        (
-            "ALTER TABLE sso_scan_sessions "
-            "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
-        )
+        ("ALTER TABLE sso_scan_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()")
     ]
 
 

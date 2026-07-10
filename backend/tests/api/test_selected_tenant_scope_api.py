@@ -180,11 +180,13 @@ async def test_get_selected_tenant_memory_config_defaults_models_to_default_mode
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
     default_model_id = uuid4()
-    db = _FakeDB([
-        _ScalarResult(None),
-        _ScalarResult({"model_id": str(default_model_id)}),
-        _ScalarResult(default_model_id),
-    ])
+    db = _FakeDB(
+        [
+            _ScalarResult(None),
+            _ScalarResult({"model_id": str(default_model_id)}),
+            _ScalarResult(default_model_id),
+        ]
+    )
 
     result = await memory_api.get_memory_config(
         tenant_id=str(target_tenant_id),
@@ -253,14 +255,16 @@ async def test_platform_admin_can_get_selected_tenant_oidc_config():
 
     own_tenant_id = uuid4()
     target_tenant_id = uuid4()
-    setting = SimpleNamespace(value={
-        "issuer_url": "https://issuer.example.com",
-        "client_id": "client-id",
-        "client_secret": "secret",
-        "scopes": "openid profile email",
-        "auto_provision": True,
-        "display_name": "SSO",
-    })
+    setting = SimpleNamespace(
+        value={
+            "issuer_url": "https://issuer.example.com",
+            "client_id": "client-id",
+            "client_secret": "secret",
+            "scopes": "openid profile email",
+            "auto_provision": True,
+            "display_name": "SSO",
+        }
+    )
     db = _FakeDB([_ScalarResult(setting)])
 
     result = await enterprise_api.get_oidc_config(

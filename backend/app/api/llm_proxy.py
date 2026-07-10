@@ -32,6 +32,7 @@ router = APIRouter(prefix="/llm/v1", tags=["llm-proxy"])
 # Schemas
 # ---------------------------------------------------------------------------
 
+
 class ModelListItem(BaseModel):
     id: str
     object: str = "model"
@@ -47,6 +48,7 @@ class ModelListResponse(BaseModel):
 # GET /models — list models this user's tenant has access to
 # ---------------------------------------------------------------------------
 
+
 @router.get("/models")
 async def list_models(
     current_user: User = Depends(get_current_user),
@@ -60,17 +62,13 @@ async def list_models(
         )
     )
     models = result.scalars().all()
-    return ModelListResponse(
-        data=[
-            ModelListItem(id=m.model, name=m.label or m.model)
-            for m in models
-        ]
-    )
+    return ModelListResponse(data=[ModelListItem(id=m.model, name=m.label or m.model) for m in models])
 
 
 # ---------------------------------------------------------------------------
 # POST /chat/completions — OpenAI-compatible streaming proxy
 # ---------------------------------------------------------------------------
+
 
 @router.post("/chat/completions")
 async def proxy_chat_completions(
@@ -104,10 +102,13 @@ async def proxy_chat_completions(
     base_url = llm_model.base_url
     if not base_url:
         from app.services.llm_client import get_provider_spec
+
         spec = get_provider_spec(llm_model.provider or "")
         base_url = spec.default_base_url if spec else None
     if not base_url:
-        raise HTTPException(400, f"Model '{model_id}' has no base_url and provider '{llm_model.provider}' has no default")
+        raise HTTPException(
+            400, f"Model '{model_id}' has no base_url and provider '{llm_model.provider}' has no default"
+        )
 
     # 3. Build upstream request
     headers = {
@@ -129,9 +130,7 @@ async def proxy_chat_completions(
     # 4. Streaming: SSE passthrough
     async def _stream_proxy():
         async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream(
-                "POST", upstream_url, headers=headers, json=body
-            ) as resp:
+            async with client.stream("POST", upstream_url, headers=headers, json=body) as resp:
                 if resp.status_code != 200:
                     error_body = await resp.aread()
                     yield f"data: {json.dumps({'error': error_body.decode()})}\n\n"

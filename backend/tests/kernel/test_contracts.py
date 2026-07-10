@@ -4,6 +4,7 @@ Mostly defensive — these dataclasses are pure data, but we lock down field
 defaults that other layers rely on as sentinels (e.g. quota_message and the
 new tenant_resolution_error sentinel introduced for P0-1b).
 """
+
 from __future__ import annotations
 
 import uuid

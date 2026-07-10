@@ -19,21 +19,23 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Paths that don't require tenant context
-_PUBLIC_PATHS = frozenset({
-    "/api/health",
-    "/api/auth/login",
-    "/api/auth/register",
-    "/api/auth/registration-config",
-    "/api/auth/feishu/sso/available",
-    "/api/auth/feishu/sso/init",
-    "/api/auth/feishu/sso/poll",
-    "/api/auth/feishu/callback",
-    "/api/auth/feishu/authorize",
-    "/api/auth/feishu/callback-desktop",
-    "/docs",
-    "/openapi.json",
-    "/redoc",
-})
+_PUBLIC_PATHS = frozenset(
+    {
+        "/api/health",
+        "/api/auth/login",
+        "/api/auth/register",
+        "/api/auth/registration-config",
+        "/api/auth/feishu/sso/available",
+        "/api/auth/feishu/sso/init",
+        "/api/auth/feishu/sso/poll",
+        "/api/auth/feishu/callback",
+        "/api/auth/feishu/authorize",
+        "/api/auth/feishu/callback-desktop",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+    }
+)
 
 # Path prefixes that don't require tenant context
 _PUBLIC_PREFIXES = (
@@ -73,8 +75,10 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 token = auth_header[7:]
                 try:
                     from jose import jwt as jose_jwt
+
                     payload = jose_jwt.decode(
-                        token, settings.JWT_SECRET_KEY,
+                        token,
+                        settings.JWT_SECRET_KEY,
                         algorithms=[settings.JWT_ALGORITHM],
                         options={"verify_exp": False},  # Expiry checked by route dependency
                     )

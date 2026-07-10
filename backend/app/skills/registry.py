@@ -135,10 +135,7 @@ class SkillRegistry:
         row_budget = budget_chars - overhead
 
         # Level 1: try full descriptions
-        full_rows = [
-            f"| {s.metadata.name} | {_catalog_description(s)} | {s.relative_path} |"
-            for s in visible_skills
-        ]
+        full_rows = [f"| {s.metadata.name} | {_catalog_description(s)} | {s.relative_path} |" for s in visible_skills]
         if sum(len(r) + 1 for r in full_rows) <= row_budget:
             return header + table_header + "\n".join(full_rows) + footer
 
@@ -146,10 +143,7 @@ class SkillRegistry:
         system_skills = [s for s in visible_skills if s.metadata.is_system]
         user_skills = [s for s in visible_skills if not s.metadata.is_system]
 
-        system_rows = [
-            f"| {s.metadata.name} | {_catalog_description(s)} | {s.relative_path} |"
-            for s in system_skills
-        ]
+        system_rows = [f"| {s.metadata.name} | {_catalog_description(s)} | {s.relative_path} |" for s in system_skills]
         system_chars = sum(len(r) + 1 for r in system_rows)
         remaining = row_budget - system_chars
         max_desc = max(20, remaining // max(len(user_skills), 1) - 20) if user_skills else 0

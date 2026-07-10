@@ -642,7 +642,9 @@ def validate_generated_source_permissions(
                 allowed_sources.append(source)
         elif source not in forbidden_sources:
             forbidden_sources.append(source)
-    resource = forbidden_sources[0] if forbidden_sources else (allowed_sources[0] if allowed_sources else "generated_source")
+    resource = (
+        forbidden_sources[0] if forbidden_sources else (allowed_sources[0] if allowed_sources else "generated_source")
+    )
     authorization_decision_entry = build_authorization_decision_entry(
         resource=resource,
         action="render_generated_connector_source",

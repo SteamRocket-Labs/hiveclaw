@@ -66,7 +66,9 @@ def test_get_agent_channel_capabilities(monkeypatch):
         ]
 
     monkeypatch.setattr(agents_mod, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr("app.services.channel_delivery_service.ChannelDeliveryService.resolve_agent_capabilities", fake_resolve)
+    monkeypatch.setattr(
+        "app.services.channel_delivery_service.ChannelDeliveryService.resolve_agent_capabilities", fake_resolve
+    )
 
     response = client.get(f"/agents/{expected_agent_id}/channel-capabilities")
 

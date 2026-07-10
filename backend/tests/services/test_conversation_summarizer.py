@@ -103,6 +103,7 @@ async def test_llm_summarize_sends_full_history_and_raised_max_tokens(monkeypatc
     assert "unique-marker-0-end" in captured["user_text"]  # old code kept only last 40
     assert captured["closed"] is True
 
+
 # ``_extract_summary`` (mechanical 11-section fallback) and its helpers were
 # removed as dead code (B-6) — they had no live caller. Compaction now runs
 # only through the LLM summarizer path, so no replacement test is added here.

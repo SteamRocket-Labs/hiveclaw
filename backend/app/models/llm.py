@@ -16,7 +16,9 @@ class LLMModel(Base):
     __tablename__ = "llm_models"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True, index=True)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True, index=True
+    )
     provider: Mapped[str] = mapped_column(String(50), nullable=False)  # anthropic, openai, deepseek, etc.
     model: Mapped[str] = mapped_column(String(100), nullable=False)  # claude-opus-4-6, gpt-4o, etc.
     api_key_encrypted: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -25,7 +27,9 @@ class LLMModel(Base):
     max_tokens_per_day: Mapped[int | None] = mapped_column(Integer)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     supports_vision: Mapped[bool] = mapped_column(Boolean, default=False)
-    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Per-model output token limit override
+    max_output_tokens: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )  # Per-model output token limit override
     max_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Context window override
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
     reasoning_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -44,4 +48,5 @@ class LLMModel(Base):
     def api_key(self) -> str:
         """Return decrypted API key (transparent envelope decryption)."""
         from app.services.secrets_provider import get_secrets_provider
+
         return get_secrets_provider().decrypt(self.api_key_encrypted)

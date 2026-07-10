@@ -297,9 +297,7 @@ def test_tail_replay_skips_older_segments_when_tail_is_enough(monkeypatch, tmp_p
                 data_root=tmp_path,
             )
         if segment < 2:
-            seal_t0_session_segment(
-                agent_id=agent_id, session_id=session_id, reason="session_idle", data_root=tmp_path
-            )
+            seal_t0_session_segment(agent_id=agent_id, session_id=session_id, reason="session_idle", data_root=tmp_path)
 
     parse_calls: list[str] = []
     real_parse = ledger_module._parse_events_from_jsonl

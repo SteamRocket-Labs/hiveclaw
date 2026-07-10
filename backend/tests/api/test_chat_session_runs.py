@@ -573,7 +573,9 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
     monkeypatch.setattr(chat_sessions_api, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(chat_sessions_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
     monkeypatch.setattr(chat_sessions_api, "start_web_chat_run", fake_start_web_chat_run)
-    monkeypatch.setattr(chat_sessions_api, "start_channel_chat_run_from_saved_turn", fake_start_channel_chat_run_from_saved_turn)
+    monkeypatch.setattr(
+        chat_sessions_api, "start_channel_chat_run_from_saved_turn", fake_start_channel_chat_run_from_saved_turn
+    )
     client = _client(monkeypatch, db=db, user=user, agent=agent)
 
     response = client.post(
@@ -699,7 +701,9 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
     monkeypatch.setattr(chat_sessions_api, "_persist_tool_call", fake_persist_tool_call)
     monkeypatch.setattr(chat_sessions_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
     monkeypatch.setattr(chat_sessions_api, "start_web_chat_run", fake_start_web_chat_run)
-    monkeypatch.setattr(chat_sessions_api, "start_channel_chat_run_from_saved_turn", fake_start_channel_chat_run_from_saved_turn)
+    monkeypatch.setattr(
+        chat_sessions_api, "start_channel_chat_run_from_saved_turn", fake_start_channel_chat_run_from_saved_turn
+    )
     monkeypatch.setattr(agent_tools_service, "execute_session_permission_tool", fake_execute_session_permission_tool)
     client = _client(monkeypatch, db=db, user=user, agent=agent, raise_server_exceptions=False)
 

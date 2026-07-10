@@ -185,20 +185,24 @@ class ChannelUserService:
 
     async def _get_tenant_provider(self, db: AsyncSession, tenant_id: uuid.UUID | None) -> IdentityProvider | None:
         result = await db.execute(
-            select(IdentityProvider).where(
+            select(IdentityProvider)
+            .where(
                 IdentityProvider.provider_type == "feishu",
                 IdentityProvider.tenant_id == tenant_id,
-            ).limit(1)
+            )
+            .limit(1)
         )
         provider = result.scalar_one_or_none()
         if provider:
             return provider
 
         result = await db.execute(
-            select(IdentityProvider).where(
+            select(IdentityProvider)
+            .where(
                 IdentityProvider.provider_type == "feishu",
                 IdentityProvider.tenant_id.is_(None),
-            ).limit(1)
+            )
+            .limit(1)
         )
         return result.scalar_one_or_none()
 
@@ -223,10 +227,12 @@ class ChannelUserService:
                 return user
 
         result = await db.execute(
-            select(User).where(
+            select(User)
+            .where(
                 User.feishu_user_id == provider_user_id,
                 User.tenant_id == tenant_id,
-            ).limit(1)
+            )
+            .limit(1)
         )
         return result.scalar_one_or_none()
 
@@ -251,10 +257,12 @@ class ChannelUserService:
                 return user
 
         result = await db.execute(
-            select(User).where(
+            select(User)
+            .where(
                 User.feishu_open_id == provider_open_id,
                 User.tenant_id == tenant_id,
-            ).limit(1)
+            )
+            .limit(1)
         )
         return result.scalar_one_or_none()
 

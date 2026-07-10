@@ -50,10 +50,12 @@ async def test_broadcast_notification_sends_to_current_tenant_and_counts_agents(
     tenant_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     member = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, is_active=True)
-    db = _FakeDB([
-        _ListResult([current_user, member]),
-        _ScalarResult(2),
-    ])
+    db = _FakeDB(
+        [
+            _ListResult([current_user, member]),
+            _ScalarResult(2),
+        ]
+    )
 
     async def fake_send_notification(*, db, user_id, type, title, body="", link=None, ref_id=None):
         db.add(SimpleNamespace(user_id=user_id, type=type, title=title, body=body, link=link, ref_id=ref_id))

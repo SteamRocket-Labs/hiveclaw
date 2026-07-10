@@ -26,4 +26,3 @@ def test_external_skill_import_surfaces_use_skill_guard() -> None:
 
     for source in (skill_api_source, files_api_source, hr_source, skill_tool_source):
         assert "skill_guard" in source or "scan_skill_files" in source
-

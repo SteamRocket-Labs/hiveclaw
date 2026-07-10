@@ -1510,8 +1510,7 @@ async def test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt(m
     assert section_decisions["dynamic:runtime:runtime_metadata"]["selected"] is True
     assert section_decisions["dynamic:skill:skill_catalog"]["budget_key"] == "skill_catalog_budget_chars"
     assert (
-        session_context.metadata["runtime_assembly_state"]["dynamic_context_section_ledger"]
-        == dynamic_section_ledger
+        session_context.metadata["runtime_assembly_state"]["dynamic_context_section_ledger"] == dynamic_section_ledger
     )
     assert "dynamic_context_section_ledger" not in session_context.metadata
     artifacts = session_context.metadata["context_artifacts"]

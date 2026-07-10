@@ -260,4 +260,3 @@ def _write_atomic_text(path: Path, content: str) -> None:
     tmp_path = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
     tmp_path.write_text(content, encoding="utf-8")
     tmp_path.replace(path)
-

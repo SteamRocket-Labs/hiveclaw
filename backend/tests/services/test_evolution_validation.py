@@ -137,9 +137,7 @@ def test_validate_evolution_ledger_accepts_rejected_decision_with_reason(tmp_pat
 
     report = validate_evolution_ledger(workspace)
 
-    rejected_checks = [
-        check for check in report["checks"] if check["id"] == "rejected_decision_has_reason"
-    ]
+    rejected_checks = [check for check in report["checks"] if check["id"] == "rejected_decision_has_reason"]
     assert rejected_checks
     assert rejected_checks[0]["status"] == "pass"
 

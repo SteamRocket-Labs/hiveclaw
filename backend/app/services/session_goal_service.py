@@ -82,12 +82,11 @@ def _sync_goal_attention_seeds(
         if clear:
             state = clear_pinned_items(state)
         if attention_set:
-            state = pin_attention_set(
-                state, _resolve_attention_refs(agent_id, attention_set, data_root=data_root)
-            )
+            state = pin_attention_set(state, _resolve_attention_refs(agent_id, attention_set, data_root=data_root))
         save_working_set(data_root, agent_id, str(session_uuid), state)
     except (OSError, ValueError) as exc:
         logger.warning("[session_goal] attention seed sync failed for %s: %s", session_uuid, exc)
+
 
 # Statuses the model may set through the update_goal tool. Hive-native terminal
 # states (usage_limited/budget_limited/cancelled) are set by the runtime loop or

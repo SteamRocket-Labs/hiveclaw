@@ -1567,9 +1567,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             if request.session_context
             else [],
             "last_successful_step": result.content[:300],
-            "activation_events": list(
-                ensure_runtime_assembly_state(request.session_context).activation_events
-            )
+            "activation_events": list(ensure_runtime_assembly_state(request.session_context).activation_events)
             if request.session_context
             else [],
         }

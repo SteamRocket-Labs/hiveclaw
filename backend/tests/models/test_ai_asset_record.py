@@ -34,9 +34,7 @@ def test_ai_asset_record_is_a_thin_tenant_control_index() -> None:
     } <= columns
 
     constraints = AIAssetRecord.__table__.constraints
-    assert any(
-        isinstance(item, UniqueConstraint) and item.name == "uq_ai_asset_native_key" for item in constraints
-    )
+    assert any(isinstance(item, UniqueConstraint) and item.name == "uq_ai_asset_native_key" for item in constraints)
     assert {item.name for item in constraints if isinstance(item, CheckConstraint)} >= {
         "ck_ai_asset_type",
         "ck_ai_asset_lifecycle_status",

@@ -20,6 +20,7 @@ FEISHU_API = "https://open.feishu.cn/open-apis"
 
 # ── Render helpers (unchanged) ───────────────────────────────────────
 
+
 def _render_tasks(items: list[dict]) -> str:
     lines = ["✅ **Feishu tasks**"]
     if not items:
@@ -71,6 +72,7 @@ def _render_task_comment(payload: dict) -> str:
 
 # ── Shared helpers ───────────────────────────────────────────────────
 
+
 def _render_invalid_input(message: str, *, tool_name: str, actionable_hint: str | None = None) -> str:
     return render_tool_error(
         tool_name=tool_name,
@@ -93,6 +95,7 @@ def _not_configured_error(tool_name: str) -> str:
 
 
 # ── CLI fallback helpers ─────────────────────────────────────────────
+
 
 async def _run_feishu_task_shortcut(args: list[str]) -> dict:
     settings = get_settings()
@@ -118,7 +121,10 @@ async def _run_feishu_task_shortcut(args: list[str]) -> dict:
 
 # ── OpenAPI helpers ──────────────────────────────────────────────────
 
-async def _task_api_request(method: str, token: str, path: str, body: dict | None = None, params: dict | None = None) -> dict:
+
+async def _task_api_request(
+    method: str, token: str, path: str, body: dict | None = None, params: dict | None = None
+) -> dict:
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.request(
             method,
@@ -134,6 +140,7 @@ async def _task_api_request(method: str, token: str, path: str, body: dict | Non
 
 
 # ── Public entry points (OpenAPI first, CLI fallback) ────────────────
+
 
 async def _feishu_task_list(agent_id, arguments: dict) -> str:
     creds = await _get_feishu_token(agent_id)
@@ -248,7 +255,9 @@ async def _feishu_task_complete(agent_id, arguments: dict) -> str:
         try:
             now_ts = str(int(datetime.now(UTC).timestamp() * 1000))
             data = await _task_api_request(
-                "PATCH", token, f"/task/v2/tasks/{task_id}",
+                "PATCH",
+                token,
+                f"/task/v2/tasks/{task_id}",
                 body={"task": {"completed_at": now_ts}, "update_fields": ["completed_at"]},
             )
             return _render_completed_task(data)
@@ -283,7 +292,9 @@ async def _feishu_task_comment(agent_id, arguments: dict) -> str:
         _, token = creds
         try:
             data = await _task_api_request(
-                "POST", token, "/task/v2/comments",
+                "POST",
+                token,
+                "/task/v2/comments",
                 body={"content": content, "resource_type": "task", "resource_id": task_id},
             )
             return _render_task_comment(data)
@@ -293,7 +304,5 @@ async def _feishu_task_comment(agent_id, arguments: dict) -> str:
     if not await _feishu_cli_available():
         return _not_configured_error("feishu_task_comment")
 
-    payload = await _run_feishu_task_shortcut(
-        ["task", "+comment", "--task-id", task_id, "--content", content]
-    )
+    payload = await _run_feishu_task_shortcut(["task", "+comment", "--task-id", task_id, "--content", content])
     return _render_task_comment(payload)

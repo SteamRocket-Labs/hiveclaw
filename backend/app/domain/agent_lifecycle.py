@@ -126,6 +126,7 @@ _GUARDS = [
 
 # ── Public API ─────────────────────────────────────────────
 
+
 def transition(current: str, target: str, ctx: TransitionContext | None = None) -> str:
     """Validate and execute a state transition. Returns the new state.
 

@@ -57,7 +57,9 @@ def test_stale_online_presence_is_offline_while_login_stays_active() -> None:
 
 
 def test_disconnected_runner_presence_is_offline_while_login_stays_active() -> None:
-    channel = SimpleNamespace(status="stale", runtime_kind="codex", last_seen_at=datetime(2026, 6, 23, tzinfo=timezone.utc))
+    channel = SimpleNamespace(
+        status="stale", runtime_kind="codex", last_seen_at=datetime(2026, 6, 23, tzinfo=timezone.utc)
+    )
 
     payload = serialize_connection_for_list(_connection(status="active"), channel=channel)
 

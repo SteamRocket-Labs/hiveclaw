@@ -320,10 +320,14 @@ async def test_tenant_scoped_decision_feedback_resolves_tenant_under_nonowner_rl
 
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
         rows = (
-            await session.execute(
-                select(DecisionTraceFeedbackRecord).where(DecisionTraceFeedbackRecord.decision_id == decision_id)
+            (
+                await session.execute(
+                    select(DecisionTraceFeedbackRecord).where(DecisionTraceFeedbackRecord.decision_id == decision_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     assert feedback.refs == f"decision/{decision_id}"
     assert len(rows) == 1

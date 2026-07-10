@@ -55,6 +55,7 @@ async def _enterprise_dir_async(tenant_id: uuid.UUID) -> Path:
 
 # ─── Company Profile ────────────────────────────────────
 
+
 async def sync_company_profile(db: AsyncSession, tenant_id: uuid.UUID) -> None:
     """Write company info from DB to company_profile.md."""
     from app.models.tenant import Tenant
@@ -93,6 +94,7 @@ async def sync_company_profile(db: AsyncSession, tenant_id: uuid.UUID) -> None:
 
 # ─── Organization Structure ─────────────────────────────
 
+
 async def sync_org_structure(db: AsyncSession, tenant_id: uuid.UUID) -> None:
     """Write org structure from DB to org_structure.md."""
     from app.models.org import OrgDepartment, OrgMember
@@ -104,9 +106,7 @@ async def sync_org_structure(db: AsyncSession, tenant_id: uuid.UUID) -> None:
     departments = dept_result.scalars().all()
 
     # Members
-    member_result = await db.execute(
-        select(OrgMember).where(OrgMember.tenant_id == tenant_id).order_by(OrgMember.name)
-    )
+    member_result = await db.execute(select(OrgMember).where(OrgMember.tenant_id == tenant_id).order_by(OrgMember.name))
     members = member_result.scalars().all()
 
     # Write markdown
@@ -137,6 +137,7 @@ async def sync_org_structure(db: AsyncSession, tenant_id: uuid.UUID) -> None:
 
 # ─── Agent A2A Projection ────────────────────────────────
 
+
 async def sync_agent_relationships(db: AsyncSession, agent_id: uuid.UUID) -> None:
     """No-op compatibility shim.
 
@@ -149,12 +150,11 @@ async def sync_agent_relationships(db: AsyncSession, agent_id: uuid.UUID) -> Non
 
 # ─── Full Sync ──────────────────────────────────────────
 
+
 async def sync_all_for_tenant(db: AsyncSession, tenant_id: uuid.UUID) -> int:
     """Full sync: company profile + org."""
     await sync_company_profile(db, tenant_id)
     await sync_org_structure(db, tenant_id)
 
-    result = await db.execute(
-        select(Agent).where(Agent.tenant_id == tenant_id)
-    )
+    result = await db.execute(select(Agent).where(Agent.tenant_id == tenant_id))
     return len(result.scalars().all())

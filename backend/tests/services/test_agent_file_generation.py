@@ -46,4 +46,3 @@ def test_render_agent_soul_from_blueprint_includes_operating_contract_sections()
     assert "## Tool Preferences" not in soul
     assert "## Operating Cadence" not in soul
     assert "## Early Focus" not in soul
-

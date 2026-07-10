@@ -103,8 +103,9 @@ def _stub_side_effects():
     """
     from unittest.mock import AsyncMock
 
-    with patch("app.core.policy.write_audit_event", new_callable=AsyncMock, return_value=None), patch(
-        "app.api.auth.create_access_token", return_value="jwt-stub"
+    with (
+        patch("app.core.policy.write_audit_event", new_callable=AsyncMock, return_value=None),
+        patch("app.api.auth.create_access_token", return_value="jwt-stub"),
     ):
         yield
 
@@ -177,9 +178,12 @@ def test_login_success_rolls_back_session_after_audit_failure():
     user = _fake_user(username="alice", email="alice@example.com")
     db = _FakeDB([user])
 
-    with patch("app.api.auth.verify_password", return_value=True), patch(
-        "app.core.policy.write_audit_event",
-        new=AsyncMock(side_effect=Exception("audit insert rejected by RLS")),
+    with (
+        patch("app.api.auth.verify_password", return_value=True),
+        patch(
+            "app.core.policy.write_audit_event",
+            new=AsyncMock(side_effect=Exception("audit insert rejected by RLS")),
+        ),
     ):
         resp = _make_client(db).post(
             "/api/auth/login",

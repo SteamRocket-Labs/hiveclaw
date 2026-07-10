@@ -253,7 +253,9 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
         [
             SimpleNamespace(
                 content="",
-                tool_calls=[{"id": "call_1", "function": {"name": "tool_search", "arguments": '{"query":"web_search"}'}}],
+                tool_calls=[
+                    {"id": "call_1", "function": {"name": "tool_search", "arguments": '{"query":"web_search"}'}}
+                ],
                 reasoning_content=None,
                 usage={"total_tokens": 3},
             ),

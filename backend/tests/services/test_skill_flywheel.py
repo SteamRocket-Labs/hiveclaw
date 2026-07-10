@@ -36,7 +36,11 @@ def test_skill_flywheel_creates_candidate_draft_from_repeated_fast_reflection(tm
 
     entries = load_evolution_ledger(workspace)
     skill_candidate = [entry for entry in entries if entry.get("target_type") == "skill_candidate"][-1]
-    eval_run = [entry for entry in entries if entry.get("event") == "eval_run" and entry.get("candidate_id") == result["candidate_id"]][-1]
+    eval_run = [
+        entry
+        for entry in entries
+        if entry.get("event") == "eval_run" and entry.get("candidate_id") == result["candidate_id"]
+    ][-1]
     assert skill_candidate["metadata"]["schema"] == "skill_candidate_manifest.v1"
     assert skill_candidate["metadata"]["guard"]["allowed"] is True
     assert skill_candidate["metadata"]["progressive_disclosure"]["kind"] == "candidate_summary"

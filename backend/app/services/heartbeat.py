@@ -141,7 +141,9 @@ async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid
                         "profile": getattr(policy, "profile", None),
                         "max_team_sessions": getattr(policy, "max_team_sessions", None),
                         "default_child_token_reservation": getattr(policy, "default_child_token_reservation", None),
-                        "default_llm_call_token_reservation": getattr(policy, "default_llm_call_token_reservation", None),
+                        "default_llm_call_token_reservation": getattr(
+                            policy, "default_llm_call_token_reservation", None
+                        ),
                         "policy_json": getattr(policy, "policy_json", None),
                     },
                 )
@@ -1704,6 +1706,7 @@ async def _heartbeat_tick():
     except Exception as e:
         logger.opt(exception=True).error("Heartbeat tick error: {}", e)
         await write_audit_log("heartbeat_error", {"error": str(e)[:300]})
+
 
 async def _sync_one_tenant(tenant_id: uuid.UUID) -> None:
     """Run sync_all_for_tenant in an isolated session with one retry."""

@@ -87,7 +87,9 @@ def test_all_skill_templates_meet_skill_creator_quality_bar() -> None:
             failures.append(f"{rel}: missing description")
         elif len(description.split()) < 18:
             failures.append(f"{rel}: description is too thin for reliable triggering")
-        elif not re.search(r"\b(use when|when|for|asks?|needs?|create|generate|audit|research|manage)\b", description, re.I):
+        elif not re.search(
+            r"\b(use when|when|for|asks?|needs?|create|generate|audit|research|manage)\b", description, re.I
+        ):
             failures.append(f"{rel}: description lacks trigger context")
 
         if len(body.splitlines()) < 30:

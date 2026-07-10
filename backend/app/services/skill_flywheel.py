@@ -119,7 +119,9 @@ def propose_skill_candidate_from_fast_reflection(
         rendered_markdown=draft,
         skill_name=skill_name,
         package_type=route,
-        target_path=f"skills/{_slug(skill_name)}/SKILL.md" if route == "new_class_skill" else f"skills/{_slug(skill_name)}/SKILL.md",
+        target_path=f"skills/{_slug(skill_name)}/SKILL.md"
+        if route == "new_class_skill"
+        else f"skills/{_slug(skill_name)}/SKILL.md",
         source_refs=source_attempt_ids,
         reason=lesson or f"Created from fast reflection route={route}",
         declared_tools=[],

@@ -264,13 +264,7 @@ async def seed_skills():
                 logger.warning(f"[SkillSeeder] {s['folder_name']}/ not found in templates/system_skills/")
 
         # Agent behavioral & discovery skills — load ALL files from templates/skills/<folder>/
-        elif (
-            s["folder_name"]
-            in (
-                "skill-marketplace",
-            )
-            and not s["files"]
-        ):
+        elif s["folder_name"] in ("skill-marketplace",) and not s["files"]:
             _agent_skills_dir = Path(__file__).parent.parent / "templates" / "skills"
             skill_dir = _agent_skills_dir / s["folder_name"]
             if skill_dir.exists():

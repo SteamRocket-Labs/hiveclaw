@@ -158,9 +158,7 @@ def test_authoritative_connector_item_accepts_document_user_acl_and_blocks_other
 
     assert item["acl"] == {"tenant_ids": [str(tenant_id)], "user_ids": [str(allowed_user_id)]}
     assert item["metadata"]["acl_authority"] == "connector_verified"
-    assert (
-        connector_item_visible(item, tenant_id=tenant_id, current_user_id=allowed_user_id, agent_id=agent_id) is True
-    )
+    assert connector_item_visible(item, tenant_id=tenant_id, current_user_id=allowed_user_id, agent_id=agent_id) is True
     assert (
         connector_item_visible(item, tenant_id=tenant_id, current_user_id=blocked_user_id, agent_id=agent_id) is False
     )
@@ -189,7 +187,9 @@ def test_tool_content_envelope_agent_only_acl_is_not_authoritative_for_connector
         agent_id=agent_id,
         protected_text="visible",
     )
-    result = ToolContentEnvelope(text="📄 Document content (`doc-1`):\n\nvisible", metadata={CONNECTOR_SOURCE_ITEMS_METADATA_KEY: [source_item]})
+    result = ToolContentEnvelope(
+        text="📄 Document content (`doc-1`):\n\nvisible", metadata={CONNECTOR_SOURCE_ITEMS_METADATA_KEY: [source_item]}
+    )
 
     assert register_connector_source_payload(ctx, result, origin="tool:feishu_doc_read") == 1
     assert ctx.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY][0]["acl"] == {"deny_by_default": True}

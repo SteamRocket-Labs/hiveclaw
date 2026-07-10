@@ -162,6 +162,7 @@ async def _invalidate_flag_cache(key: str) -> None:
     """Remove a flag from Redis cache so the next evaluation reads from DB."""
     try:
         from app.core.events import get_redis
+
         r = await get_redis()
         await r.delete(f"ff:{key}")
     except Exception as e:

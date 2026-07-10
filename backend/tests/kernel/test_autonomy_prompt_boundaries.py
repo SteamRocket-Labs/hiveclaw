@@ -67,7 +67,10 @@ async def test_tool_round_warnings_record_state_in_work_ledger() -> None:
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [
-                {"type": "function", "function": {"name": "noop_tool", "description": "", "parameters": {"type": "object"}}}
+                {
+                    "type": "function",
+                    "function": {"name": "noop_tool", "description": "", "parameters": {"type": "object"}},
+                }
             ],
             maybe_compress_messages=lambda messages, **_kwargs: messages,
             create_client=lambda _model: fake_client,
@@ -97,7 +100,9 @@ async def test_tool_round_warnings_record_state_in_work_ledger() -> None:
         msg.content
         for call in fake_client.calls
         for msg in call["messages"]
-        if msg.role == "system" and isinstance(msg.content, str) and ("tool rounds" in msg.content or "Only 2" in msg.content)
+        if msg.role == "system"
+        and isinstance(msg.content, str)
+        and ("tool rounds" in msg.content or "Only 2" in msg.content)
     ]
     joined = "\n".join(system_reminders)
 

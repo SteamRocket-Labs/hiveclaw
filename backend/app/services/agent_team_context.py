@@ -139,7 +139,9 @@ def render_team_context_block(
         for task in shared_task_rows[: max(1, task_limit)]:
             lines.append(_shared_task_line(task))
         if len(shared_task_rows) > task_limit:
-            lines.append(f"- ... {len(shared_task_rows) - task_limit} more shared task(s); call read_ledger for detail.")
+            lines.append(
+                f"- ... {len(shared_task_rows) - task_limit} more shared task(s); call read_ledger for detail."
+            )
 
     if task_rows:
         if lines:
@@ -275,8 +277,10 @@ async def build_prompt_facing_team_context(
         ]
         if not teams and session_uuid is not None:
             member_rows = (
-                await db.execute(select(AgentTeamMember).where(AgentTeamMember.chat_session_id == session_uuid))
-            ).scalars().all()
+                (await db.execute(select(AgentTeamMember).where(AgentTeamMember.chat_session_id == session_uuid)))
+                .scalars()
+                .all()
+            )
             member_team_ids = [member.team_id for member in member_rows if getattr(member, "team_id", None)]
             if member_team_ids:
                 teams = [
@@ -306,9 +310,7 @@ async def build_prompt_facing_team_context(
             )
             members = [
                 item
-                for item in (
-                    _member_to_dict(member) for member in (await db.execute(member_stmt)).scalars().all()
-                )
+                for item in (_member_to_dict(member) for member in (await db.execute(member_stmt)).scalars().all())
                 if item is not None
             ]
             by_team = {str(team["id"]): team for team in teams}

@@ -65,7 +65,7 @@ def _stage_held_candidate(
     current = (ws / "soul.md").read_text(encoding="utf-8")
     next_text = soul_next or (
         current
-        + '<soul_quality>\n## Quality\n交付前自查证据链。\n<source_ref>t3:worker.md#wr-1</source_ref>\n</soul_quality>\n'
+        + "<soul_quality>\n## Quality\n交付前自查证据链。\n<source_ref>t3:worker.md#wr-1</source_ref>\n</soul_quality>\n"
     )
     (package_dir / "soul.md.next").write_text(next_text, encoding="utf-8")
     (package_dir / "soul_pitch.md").write_text("长期稳定的质量标准,提名入魂。", encoding="utf-8")

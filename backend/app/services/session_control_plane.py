@@ -117,9 +117,7 @@ def _prompt_manifest_payload(*, active_run: Any, session: ChatSession, turn_enve
 
     active_metadata = _active_run_metadata(active_run)
     session_metadata = _session_metadata(session)
-    runtime_manifest = _mapping(
-        runtime_assembly_metadata(active_metadata).get("prompt_assembly_manifest")
-    ) or _mapping(
+    runtime_manifest = _mapping(runtime_assembly_metadata(active_metadata).get("prompt_assembly_manifest")) or _mapping(
         runtime_assembly_metadata(session_metadata).get("prompt_assembly_manifest")
     )
     if runtime_manifest:
@@ -307,9 +305,10 @@ def _runtime_task_runtime_row(task: RuntimeTask, *, runtime_kind: str | None = N
     metadata = _mapping(getattr(task, "metadata_json", None))
     child_session_id = getattr(task, "child_session_id", None)
     row_runtime_kind = runtime_kind or getattr(task, "task_type", None)
-    is_subagent_row = str(row_runtime_kind or "").strip().lower() == "subagent" or str(
-        getattr(task, "task_type", None) or ""
-    ).strip().lower() == "subagent"
+    is_subagent_row = (
+        str(row_runtime_kind or "").strip().lower() == "subagent"
+        or str(getattr(task, "task_type", None) or "").strip().lower() == "subagent"
+    )
     row = {
         "runtime_task_id": str(getattr(task, "id", "")),
         "task_type": getattr(task, "task_type", None),
@@ -683,7 +682,9 @@ def _prompt_manifest_with_runtime_reminders(
     manifest = dict(prompt_manifest)
     existing_candidates = list(manifest.get("context_candidates") or [])
     existing_refs = list(manifest.get("context_candidate_refs") or [])
-    manifest["context_candidates"] = existing_candidates + [dict(candidate) for candidate in runtime_reminder_candidates]
+    manifest["context_candidates"] = existing_candidates + [
+        dict(candidate) for candidate in runtime_reminder_candidates
+    ]
     manifest["context_candidate_refs"] = existing_refs + [
         dict(candidate["candidate_ref"]) for candidate in runtime_reminder_candidates if isinstance(candidate, dict)
     ]

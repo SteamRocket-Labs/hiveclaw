@@ -188,7 +188,7 @@ def test_save_skill_requests_patch_package_without_overwriting_active_skill(tmp_
     skill_dir.mkdir(parents=True)
     skill_path = skill_dir / "SKILL.md"
     skill_path.write_text(
-        "---\nname: \"Research\"\ndescription: \"Old\"\n---\n# Research\nOld steps.\n",
+        '---\nname: "Research"\ndescription: "Old"\n---\n# Research\nOld steps.\n',
         encoding="utf-8",
     )
 

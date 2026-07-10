@@ -62,7 +62,8 @@ def _write_t2_package(
         encoding="utf-8",
     )
     (package_dir / "labels.md").write_text(
-        labels or "<t2_labels><continuity_state>standalone</continuity_state><event_label>feedback</event_label></t2_labels>",
+        labels
+        or "<t2_labels><continuity_state>standalone</continuity_state><event_label>feedback</event_label></t2_labels>",
         encoding="utf-8",
     )
     (package_dir / "review.md").write_text(review, encoding="utf-8")

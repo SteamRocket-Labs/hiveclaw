@@ -181,7 +181,9 @@ async def test_command_hook_parses_hook_json_output_shape(tmp_path: Path) -> Non
 
     result = await runner.run(
         HookSpec(key="rewrite", event=HookEvent.PRE_TOOL_USE, type="command", command="rewrite"),
-        HookContext(event=HookEvent.PRE_TOOL_USE, session_id="s1", tool_name="read_file", tool_args={"path": "report.md"}),
+        HookContext(
+            event=HookEvent.PRE_TOOL_USE, session_id="s1", tool_name="read_file", tool_args={"path": "report.md"}
+        ),
     )
 
     assert result.status == "success"

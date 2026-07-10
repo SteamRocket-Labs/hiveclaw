@@ -112,4 +112,3 @@ async def test_platform_admin_backfill_prose_endpoint_is_retired(monkeypatch):
     )
 
     assert result["status"] == "retired"
-

@@ -132,7 +132,8 @@ def _build_task_notification_runtime_action_payload(
     payload: dict[str, Any] = {
         "type": event_type,
         "status": _text(status) or "info",
-        "message": _text(summary) or _task_notification_display_content(
+        "message": _text(summary)
+        or _task_notification_display_content(
             child_agent_name=child_agent_name,
             status=status,
             summary=summary,
@@ -512,7 +513,11 @@ async def continue_parent_session_with_task_notification(
         artifacts=artifacts,
     )
     artifact_paths = [str(part.get("path")) for part in artifacts or [] if part.get("path")]
-    artifact_ids = [str(part.get("artifact_id") or part.get("id")) for part in artifacts or [] if part.get("artifact_id") or part.get("id")]
+    artifact_ids = [
+        str(part.get("artifact_id") or part.get("id"))
+        for part in artifacts or []
+        if part.get("artifact_id") or part.get("id")
+    ]
     task_metadata = {
         "task_notification": True,
         "task_id": task_id,

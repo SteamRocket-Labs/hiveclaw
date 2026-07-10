@@ -76,9 +76,7 @@ class _FailingPlanService(_PlanService):
             plan_version=1,
             plan_hash=None,
             plan_json={},
-            metadata_json={
-                "planning_errors": ["user-visible plan leaks internal workflow detail: load_skill"]
-            },
+            metadata_json={"planning_errors": ["user-visible plan leaks internal workflow detail: load_skill"]},
         )
 
 

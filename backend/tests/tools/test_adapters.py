@@ -28,8 +28,12 @@ def _make_request(**overrides) -> ToolExecutionRequest:
 
 def _make_meta(adapter: str) -> ToolMeta:
     return ToolMeta(
-        name="test_tool", description="x", parameters={},
-        category="test", display_name="X", adapter=adapter,
+        name="test_tool",
+        description="x",
+        parameters={},
+        category="test",
+        display_name="X",
+        adapter=adapter,
     )
 
 
@@ -141,6 +145,7 @@ async def test_adapter_workspace_args():
 @pytest.mark.asyncio
 async def test_adapter_sync_handler():
     """Sync handlers should also work."""
+
     def handler(arguments: dict) -> str:
         return f"sync-{arguments['q']}"
 

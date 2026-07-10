@@ -53,9 +53,7 @@ class ExternalCapabilitySnapshot(Base):
     """Immutable-ish approved source snapshot used by later activation."""
 
     __tablename__ = "external_capability_snapshots"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "snapshot_key", name="uq_external_snapshot_key"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "snapshot_key", name="uq_external_snapshot_key"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(
@@ -99,7 +97,10 @@ class ExternalExtensionCatalogEntry(Base):
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     snapshot_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     component_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     component_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
@@ -134,7 +135,10 @@ class ExternalExtensionComponent(Base):
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     snapshot_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     component_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     component_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
@@ -163,10 +167,16 @@ class ExternalExtensionHookRegistration(Base):
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     snapshot_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     component_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("external_extension_components.id", ondelete="CASCADE"), nullable=True, index=True
+        UUID(as_uuid=True),
+        ForeignKey("external_extension_components.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     qualified_name: Mapped[str] = mapped_column(String(300), nullable=False)
     event: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
@@ -186,9 +196,7 @@ class ExternalMarketplaceSource(Base):
     """Workspace-managed discovery source for external capabilities."""
 
     __tablename__ = "external_marketplace_sources"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "source_uri", name="uq_external_marketplace_source_uri"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "source_uri", name="uq_external_marketplace_source_uri"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(
@@ -224,7 +232,10 @@ class ExternalMarketplaceEntry(Base):
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     source_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("external_marketplace_sources.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("external_marketplace_sources.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     external_key: Mapped[str] = mapped_column(String(260), nullable=False)
     display_name: Mapped[str] = mapped_column(String(260), nullable=False)
@@ -239,7 +250,10 @@ class ExternalMarketplaceEntry(Base):
         UUID(as_uuid=True), ForeignKey("external_capability_reviews.id", ondelete="SET NULL"), nullable=True, index=True
     )
     snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("external_capability_snapshots.id", ondelete="SET NULL"), nullable=True, index=True
+        UUID(as_uuid=True),
+        ForeignKey("external_capability_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -280,7 +294,10 @@ class ExternalExtensionActivation(Base):
         UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
     )
     snapshot_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("external_capability_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active", index=True)
     activation_scope: Mapped[str] = mapped_column(String(30), nullable=False, default="agent", index=True)

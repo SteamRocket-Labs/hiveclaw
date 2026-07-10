@@ -25,7 +25,9 @@ async def test_stage_mcp_prompt_as_skill_review_does_not_install_active_skill(tm
             "source_uri": source_uri,
         }
 
-    monkeypatch.setattr(prompt_trust, "stage_external_skill_package_review_for_agent_workspace", fake_stage_for_workspace)
+    monkeypatch.setattr(
+        prompt_trust, "stage_external_skill_package_review_for_agent_workspace", fake_stage_for_workspace
+    )
 
     result = await prompt_trust.stage_mcp_prompt_as_skill_review(
         workspace=tmp_path,

@@ -162,8 +162,7 @@ def _normalize_approval_form_with_definition(form, definition: dict) -> tuple[st
             if widget.get("id")
         ]
         return None, (
-            "审批表单字段无法匹配到真实控件 ID："
-            f"{', '.join(unmatched)}。可用字段：{', '.join(available) or '无'}"
+            f"审批表单字段无法匹配到真实控件 ID：{', '.join(unmatched)}。可用字段：{', '.join(available) or '无'}"
         )
 
     return json.dumps(normalized, ensure_ascii=False), None
@@ -241,7 +240,11 @@ async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
         user_id,
         prepared_form,
     )
-    instance = payload.get("instance_code") or payload.get("instance_id") or payload.get("instance", {}).get("instance_code", "")
+    instance = (
+        payload.get("instance_code")
+        or payload.get("instance_id")
+        or payload.get("instance", {}).get("instance_code", "")
+    )
     lines = ["✅ 已创建飞书审批实例"]
     if instance:
         lines.append(f"- Instance ID: `{instance}`")
@@ -262,10 +265,7 @@ async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
     app_id, app_secret = creds
     payload = await feishu_service.query_approval_instances(app_id, app_secret, approval_code, status=status)
     instances = (
-        payload.get("instance_code_list")
-        or payload.get("instance_id_list")
-        or payload.get("instance_list")
-        or []
+        payload.get("instance_code_list") or payload.get("instance_id_list") or payload.get("instance_list") or []
     )
     lines = [f"📋 **Feishu approval instances** (`{approval_code}`)"]
     if not instances:

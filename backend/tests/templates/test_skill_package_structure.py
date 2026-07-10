@@ -60,11 +60,7 @@ def _all_package_dirs() -> list[Path]:
     for pack_root in PACK_ROOTS:
         if not pack_root.is_dir():
             continue
-        roots.extend(
-            pack_dir / "skills"
-            for pack_dir in sorted(pack_root.iterdir())
-            if (pack_dir / "skills").is_dir()
-        )
+        roots.extend(pack_dir / "skills" for pack_dir in sorted(pack_root.iterdir()) if (pack_dir / "skills").is_dir())
     return [skill_dir for root in roots for skill_dir in sorted(root.iterdir()) if skill_dir.is_dir()]
 
 

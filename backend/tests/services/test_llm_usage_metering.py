@@ -105,9 +105,7 @@ async def test_config_factory_does_not_meter_without_usage_context(monkeypatch) 
         raising=False,
     )
 
-    client = llm_client.create_llm_client_from_config(
-        {"provider": "openai", "api_key": "k", "model": "fake-model"}
-    )
+    client = llm_client.create_llm_client_from_config({"provider": "openai", "api_key": "k", "model": "fake-model"})
 
     await client.complete([LLMMessage(role="user", content="hi")])
 

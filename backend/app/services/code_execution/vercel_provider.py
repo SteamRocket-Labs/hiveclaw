@@ -53,9 +53,7 @@ def _network_allowlist(policy: str) -> list[str]:
 
 def _brokered_credentials(env: dict[str, str]) -> tuple[dict[str, str], dict]:
     configured = [
-        key.strip()
-        for key in os.environ.get("HIVE_CODE_EXEC_BROKERED_CREDENTIAL_KEYS", "").split(",")
-        if key.strip()
+        key.strip() for key in os.environ.get("HIVE_CODE_EXEC_BROKERED_CREDENTIAL_KEYS", "").split(",") if key.strip()
     ]
     handles: dict[str, str] = {}
     for key in configured:
@@ -85,7 +83,8 @@ def _vercel_evidence(
         "network_policy": network_policy,
         "network_allowlist": _network_allowlist(network_policy),
         "credential_egress": "blocked_by_env_allowlist",
-        "credential_broker": credential_broker or {
+        "credential_broker": credential_broker
+        or {
             "mode": "explicit_handles",
             "values_included": False,
             "configured_keys": [],

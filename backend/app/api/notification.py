@@ -125,9 +125,7 @@ async def broadcast_notifications(
             body=data.body or "",
         )
 
-    agent_count_result = await db.execute(
-        select(func.count(Agent.id)).where(Agent.tenant_id == current_user.tenant_id)
-    )
+    agent_count_result = await db.execute(select(func.count(Agent.id)).where(Agent.tenant_id == current_user.tenant_id))
     await db.commit()
     return {
         "users_notified": len(users),

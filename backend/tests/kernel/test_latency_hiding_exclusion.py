@@ -125,8 +125,7 @@ def test_skill_prefetch_and_memory_prefetch_overlap_deliberately_excluded() -> N
     # No latency-hiding prefetch-overlap scheduler is wired onto the kernel engine.
     for symbol in ("PrefetchScheduler", "ToolUseSummaryPrefetcher", "StreamingPrefetch"):
         assert not hasattr(kernel_engine, symbol), (
-            f"{symbol} must be absent — D-23 prefetch/overlap latency hiding is "
-            "deliberately deferred for V1."
+            f"{symbol} must be absent — D-23 prefetch/overlap latency hiding is deliberately deferred for V1."
         )
 
     assert _EXCLUSION_DOC.is_file(), "D-23 exclusion ruling doc must exist."

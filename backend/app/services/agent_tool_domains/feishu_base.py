@@ -229,11 +229,7 @@ def _record_matches_filter(item: dict, *, field_name: str, op: str, expected) ->
 def _filter_records(items: list[dict], *, field_name: str, op: str, expected) -> list[dict]:
     if not field_name or not op:
         return items
-    return [
-        item
-        for item in items
-        if _record_matches_filter(item, field_name=field_name, op=op, expected=expected)
-    ]
+    return [item for item in items if _record_matches_filter(item, field_name=field_name, op=op, expected=expected)]
 
 
 def _render_base_upsert(table_id: str, payload: dict) -> str:
@@ -706,8 +702,10 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
             items = data.get("items", [])
             if not isinstance(items, list):
                 items = []
-            has_more = bool(data.get("has_more")) if page_token else _payload_has_more(
-                data, returned_count=len(items), offset=offset
+            has_more = (
+                bool(data.get("has_more"))
+                if page_token
+                else _payload_has_more(data, returned_count=len(items), offset=offset)
             )
             next_page_token = str(data.get("page_token") or "").strip() if has_more else ""
             filtered_items = _filter_records(

@@ -46,9 +46,7 @@ def test_provider_prompt_ledger_accounts_tool_schema_tokens() -> None:
     assert categories["messages"]["tokens"] > 0
     assert categories["tool_schemas"]["tokens"] > categories["messages"]["tokens"]
     assert ledger["tool_schema_tokens"] == categories["tool_schemas"]["tokens"]
-    assert ledger["projected_input_tokens"] >= (
-        categories["messages"]["tokens"] + categories["tool_schemas"]["tokens"]
-    )
+    assert ledger["projected_input_tokens"] >= (categories["messages"]["tokens"] + categories["tool_schemas"]["tokens"])
     assert ledger["projected_uncached_input_tokens"] >= ledger["tool_schema_tokens"]
     assert ledger["cache_hints_applied"] is True
 

@@ -21,13 +21,23 @@ _USER_ID = uuid4()
 _MAIN_AGENT_ID = uuid4()
 
 _ADMIN = SimpleNamespace(
-    id=uuid4(), username="admin", role="org_admin", tenant_id=_TENANT_ID, is_active=True,
+    id=uuid4(),
+    username="admin",
+    role="org_admin",
+    tenant_id=_TENANT_ID,
+    is_active=True,
 )
 
 _EXISTING_CONFIG = SimpleNamespace(
-    id=uuid4(), tenant_id=_TENANT_ID, channel_type="feishu",
-    app_id="cli_company", app_secret="secret", encrypt_key="enc123",
-    verification_token="vt123", extra_config={}, is_active=True,
+    id=uuid4(),
+    tenant_id=_TENANT_ID,
+    channel_type="feishu",
+    app_id="cli_company",
+    app_secret="secret",
+    encrypt_key="enc123",
+    verification_token="vt123",
+    extra_config={},
+    is_active=True,
 )
 
 
@@ -130,10 +140,15 @@ def test_list_tenant_channels():
 
 def test_upsert_creates_new_config():
     client, fake_db = _build_client(config=None)
-    resp = client.put("/tenant-channels/feishu", json={
-        "app_id": "cli_new", "app_secret": "secret_new",
-        "encrypt_key": "enc", "verification_token": "vt",
-    })
+    resp = client.put(
+        "/tenant-channels/feishu",
+        json={
+            "app_id": "cli_new",
+            "app_secret": "secret_new",
+            "encrypt_key": "enc",
+            "verification_token": "vt",
+        },
+    )
     assert resp.status_code == 200
     assert resp.json()["app_id"] == "cli_new"
     assert len(fake_db.added) == 1
@@ -141,9 +156,13 @@ def test_upsert_creates_new_config():
 
 def test_upsert_updates_existing_config():
     client, _ = _build_client(config=_EXISTING_CONFIG)
-    resp = client.put("/tenant-channels/feishu", json={
-        "app_id": "cli_updated", "app_secret": "new_secret",
-    })
+    resp = client.put(
+        "/tenant-channels/feishu",
+        json={
+            "app_id": "cli_updated",
+            "app_secret": "new_secret",
+        },
+    )
     assert resp.status_code == 200
     assert _EXISTING_CONFIG.app_id == "cli_updated"
 
@@ -203,9 +222,12 @@ def test_webhook_challenge_response():
     app.dependency_overrides[get_db] = override_db
     client = TestClient(app, raise_server_exceptions=False)
 
-    resp = client.post(f"/channel/feishu/tenant/{_TENANT_ID}/webhook", json={
-        "challenge": "test_challenge_token",
-    })
+    resp = client.post(
+        f"/channel/feishu/tenant/{_TENANT_ID}/webhook",
+        json={
+            "challenge": "test_challenge_token",
+        },
+    )
     assert resp.status_code == 200
     assert resp.json()["challenge"] == "test_challenge_token"
     assert fake_db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(_TENANT_ID)
@@ -281,8 +303,11 @@ def test_webhook_no_tenant_config():
     app.dependency_overrides[get_db] = override_db
 
     client = TestClient(app, raise_server_exceptions=False)
-    resp = client.post(f"/channel/feishu/tenant/{_TENANT_ID}/webhook", json={
-        "header": {"event_type": "im.message.receive_v1"},
-        "event": {"sender": {"sender_id": {"user_id": "x"}}},
-    })
+    resp = client.post(
+        f"/channel/feishu/tenant/{_TENANT_ID}/webhook",
+        json={
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {"sender": {"sender_id": {"user_id": "x"}}},
+        },
+    )
     assert resp.status_code == 404

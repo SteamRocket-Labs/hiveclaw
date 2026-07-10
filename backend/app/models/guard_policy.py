@@ -22,11 +22,17 @@ class GuardPolicy(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, unique=True, index=True,
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id"),
+        nullable=False,
+        unique=True,
+        index=True,
     )
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
     zone_guard: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     egress_guard: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
     )

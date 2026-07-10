@@ -617,7 +617,11 @@ def test_platform_runtime_source_must_not_create_agent_session():
         ("edit_file", {"path": "workspace/b.md"}, ["workspace/b.md"]),
         ("fs_write", {"path": "workspace/c.md"}, ["workspace/c.md"]),
         ("office_document_create", {"path": "workspace/d.docx"}, ["workspace/d.docx"]),
-        ("office_document_apply", {"output_path": "workspace/e.docx", "path": "workspace/src.docx"}, ["workspace/e.docx"]),
+        (
+            "office_document_apply",
+            {"output_path": "workspace/e.docx", "path": "workspace/src.docx"},
+            ["workspace/e.docx"],
+        ),
         ("office_document_apply", {"path": "workspace/src.docx"}, ["workspace/src.docx"]),
     ],
 )

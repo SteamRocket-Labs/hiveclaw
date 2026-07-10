@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 INDEX_DB_FILENAME = "index.sqlite"
 ARCHIVE_LOG_RELATIVE = Path(".archive") / "t2" / "archive_log.jsonl"
 
+
 @dataclass(frozen=True, slots=True)
 class ReferenceIndexRebuildReport:
     agent_id: str

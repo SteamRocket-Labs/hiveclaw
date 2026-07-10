@@ -126,8 +126,12 @@ def build_provider_prompt_ledger(
             item_count=sum(1 for message in prompt_messages if _message_role(message) == "system"),
             cacheability="frozen",
         ),
-        _category("messages", payload=non_system_payload, item_count=len(non_system_payload), cacheability="transcript"),
-        _category("dynamic_notice", text=dynamic_notice, item_count=1 if dynamic_notice else 0, cacheability="volatile"),
+        _category(
+            "messages", payload=non_system_payload, item_count=len(non_system_payload), cacheability="transcript"
+        ),
+        _category(
+            "dynamic_notice", text=dynamic_notice, item_count=1 if dynamic_notice else 0, cacheability="volatile"
+        ),
         _category(
             "runtime_reminders",
             text=runtime_reminders,
@@ -142,7 +146,9 @@ def build_provider_prompt_ledger(
             item_count=len(tools or []),
             cacheability="provider_tool_schema",
         ),
-        _category("vision_payloads", text=vision_payloads, item_count=1 if vision_payloads else 0, cacheability="volatile"),
+        _category(
+            "vision_payloads", text=vision_payloads, item_count=1 if vision_payloads else 0, cacheability="volatile"
+        ),
     ]
     projected_input_tokens = sum(int(item["tokens"]) for item in categories)
     projected_uncached_input_tokens = sum(

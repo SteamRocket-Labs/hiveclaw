@@ -26,7 +26,9 @@ class _ListResult:
 
 
 class _MessagesDB:
-    def __init__(self, *, created_agent_rows=None, permission_rows=None, sessions=None, messages=None, participants=None):
+    def __init__(
+        self, *, created_agent_rows=None, permission_rows=None, sessions=None, messages=None, participants=None
+    ):
         self.created_agent_rows = created_agent_rows or []
         self.permission_rows = permission_rows or []
         self.sessions = sessions or []

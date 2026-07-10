@@ -25,9 +25,7 @@ async def _get_email_agent_tool(db: AsyncSession, agent_id: uuid.UUID) -> AgentT
     tool = r.scalar_one_or_none()
     if not tool:
         return None
-    at_r = await db.execute(
-        select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool.id)
-    )
+    at_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool.id))
     return at_r.scalar_one_or_none()
 
 
@@ -54,9 +52,7 @@ async def configure_email_channel(
         tool = r.scalar_one_or_none()
         if not tool:
             continue
-        at_r = await db.execute(
-            select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool.id)
-        )
+        at_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool.id))
         at = at_r.scalar_one_or_none()
         if at:
             if at.tenant_id is None:
@@ -81,7 +77,10 @@ async def configure_email_channel(
         "is_configured": bool(email_config["email_address"] and email_config["auth_code"]),
         "app_id": email_config["email_provider"],
         "app_secret": "***" if email_config["auth_code"] else None,
-        "extra_config": {"email_address": email_config["email_address"], "email_provider": email_config["email_provider"]},
+        "extra_config": {
+            "email_address": email_config["email_address"],
+            "email_provider": email_config["email_provider"],
+        },
     }
 
 
@@ -101,7 +100,10 @@ async def get_email_channel(
         "is_configured": bool(cfg.get("email_address") and cfg.get("auth_code")),
         "app_id": cfg.get("email_provider", ""),
         "app_secret": "***" if cfg.get("auth_code") else None,
-        "extra_config": {"email_address": cfg.get("email_address", ""), "email_provider": cfg.get("email_provider", "")},
+        "extra_config": {
+            "email_address": cfg.get("email_address", ""),
+            "email_provider": cfg.get("email_provider", ""),
+        },
     }
 
 
@@ -119,9 +121,9 @@ async def delete_email_channel(
         tool = r.scalar_one_or_none()
         if not tool:
             continue
-        at_r = await db.execute(
-            select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool.id)
-        )
+        at_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool.id))
         at = at_r.scalar_one_or_none()
         if at and at.config:
-            at.config = {k: v for k, v in at.config.items() if k not in ("email_provider", "email_address", "auth_code")}
+            at.config = {
+                k: v for k, v in at.config.items() if k not in ("email_provider", "email_address", "auth_code")
+            }

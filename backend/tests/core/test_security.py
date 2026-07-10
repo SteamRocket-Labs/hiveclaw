@@ -141,10 +141,13 @@ async def test_platform_admin_selected_tenant_override_rejects_missing_target_te
     request = SimpleNamespace(headers={"x-tenant-id": str(selected_tenant_id)})
     credentials = SimpleNamespace(credentials="jwt")
 
-    with patch(
-        "app.core.security.decode_access_token",
-        return_value={"sub": str(user_id), "role": "platform_admin", "tid": str(home_tenant_id)},
-    ), pytest.raises(HTTPException) as exc_info:
+    with (
+        patch(
+            "app.core.security.decode_access_token",
+            return_value={"sub": str(user_id), "role": "platform_admin", "tid": str(home_tenant_id)},
+        ),
+        pytest.raises(HTTPException) as exc_info,
+    ):
         await get_current_user(request=request, credentials=credentials, db=db)
 
     assert exc_info.value.status_code == 404

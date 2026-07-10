@@ -40,9 +40,7 @@ def test_system_skill_templates_reference_supported_runtime_contracts():
     assert "send_dingtalk_message" not in dingtalk_skill
     assert "dingtalk_user_search" not in dingtalk_skill
 
-    send_feishu_row = next(
-        line for line in feishu_skill.splitlines() if "| `send_feishu_message` |" in line
-    )
+    send_feishu_row = next(line for line in feishu_skill.splitlines() if "| `send_feishu_message` |" in line)
     assert "`member_name`" in send_feishu_row
     assert "`user_id`" in send_feishu_row
     assert "`open_id`" in send_feishu_row
@@ -65,7 +63,7 @@ def test_system_skill_templates_reference_supported_runtime_contracts():
     assert "feishu_task_list" in feishu_skill
     assert "feishu_task_create" in feishu_skill
     assert "Trigger Management Guide" not in dingtalk_skill
-    assert "trigger_class=\"scheduled_job\"" in dingtalk_skill
+    assert 'trigger_class="scheduled_job"' in dingtalk_skill
 
 
 def test_system_skill_templates_declare_non_core_action_tools() -> None:
@@ -82,9 +80,7 @@ def test_system_skill_templates_declare_non_core_action_tools() -> None:
             default_name=skill_dir.name,
         )
         referenced_tools = {
-            match.group(1)
-            for match in tool_reference_pattern.finditer(parsed.body)
-            if match.group(1) in all_tools
+            match.group(1) for match in tool_reference_pattern.finditer(parsed.body) if match.group(1) in all_tools
         }
         missing = sorted(
             tool_name

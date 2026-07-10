@@ -52,7 +52,7 @@ def test_agent_list_summary_omits_detail_heavy_fields_and_truncates_description(
 def test_agent_list_route_uses_summary_projection_not_full_agent_rows():
     project_root = Path(__file__).resolve().parents[3]
     source = (project_root / "backend/app/api/agents.py").read_text(encoding="utf-8")
-    list_source = source.split("@router.get(\"/\", response_model=list[AgentOut])", 1)[1].split("HR_AGENT_NAME", 1)[0]
+    list_source = source.split('@router.get("/", response_model=list[AgentOut])', 1)[1].split("HR_AGENT_NAME", 1)[0]
 
     assert "_agent_list_summary_stmt" in list_source
     assert "select(Agent)" not in list_source

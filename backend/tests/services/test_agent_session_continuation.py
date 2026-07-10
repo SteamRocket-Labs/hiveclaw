@@ -172,9 +172,10 @@ async def test_task_notification_continuation_is_system_runtime_context_not_user
     assert "<task-notification>" not in captured["append"]["content"]
     assert "<task-notification>" in captured["append"]["metadata"]["task_notification_envelope"]
     assert "<task-id>task-1</task-id>" in captured["append"]["metadata"]["task_notification_envelope"]
-    assert "<child-session-id>child-session-1</child-session-id>" in captured["append"]["metadata"][
-        "task_notification_envelope"
-    ]
+    assert (
+        "<child-session-id>child-session-1</child-session-id>"
+        in captured["append"]["metadata"]["task_notification_envelope"]
+    )
     assert captured["start"]["append_user_message"] is False
     assert "<task-notification>" not in captured["start"]["content"]
     assert "Runtime task notification" in captured["start"]["content"]
@@ -294,12 +295,13 @@ async def test_task_notification_carries_a2a_artifact_refs_to_parent_turn(monkey
     assert captured["append"]["parts"] == artifact_parts
     assert captured["append"]["metadata"]["artifacts"] == artifact_parts
     assert captured["start"]["extra_metadata"]["artifacts"] == artifact_parts
-    assert "<artifact-path>workspace/web3-report.md</artifact-path>" in captured["append"]["metadata"][
-        "task_notification_envelope"
-    ]
-    assert "<download-agent-id>agent-b</download-agent-id>" in captured["append"]["metadata"][
-        "task_notification_envelope"
-    ]
+    assert (
+        "<artifact-path>workspace/web3-report.md</artifact-path>"
+        in captured["append"]["metadata"]["task_notification_envelope"]
+    )
+    assert (
+        "<download-agent-id>agent-b</download-agent-id>" in captured["append"]["metadata"]["task_notification_envelope"]
+    )
     assert "workspace/web3-report.md" in captured["start"]["content"]
 
 

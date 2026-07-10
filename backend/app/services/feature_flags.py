@@ -126,14 +126,17 @@ async def evaluate_all(
     output = {}
     for flag in flags:
         # Cache each flag individually
-        await _set_flag_cache(flag.key, {
-            "enabled": flag.enabled,
-            "flag_type": flag.flag_type,
-            "rollout_percentage": flag.rollout_percentage,
-            "allowed_tenant_ids": [str(t) for t in flag.allowed_tenant_ids] if flag.allowed_tenant_ids else [],
-            "allowed_user_ids": [str(u) for u in flag.allowed_user_ids] if flag.allowed_user_ids else [],
-            "overrides": flag.overrides or {},
-            "expires_at": flag.expires_at.isoformat() if flag.expires_at else None,
-        })
+        await _set_flag_cache(
+            flag.key,
+            {
+                "enabled": flag.enabled,
+                "flag_type": flag.flag_type,
+                "rollout_percentage": flag.rollout_percentage,
+                "allowed_tenant_ids": [str(t) for t in flag.allowed_tenant_ids] if flag.allowed_tenant_ids else [],
+                "allowed_user_ids": [str(u) for u in flag.allowed_user_ids] if flag.allowed_user_ids else [],
+                "overrides": flag.overrides or {},
+                "expires_at": flag.expires_at.isoformat() if flag.expires_at else None,
+            },
+        )
         output[flag.key] = await is_enabled(db, flag.key, tenant_id=tenant_id, user_id=user_id)
     return output

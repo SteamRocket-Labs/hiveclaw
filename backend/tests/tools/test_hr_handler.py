@@ -254,9 +254,7 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
     assert payload["blueprint"]["source_attributions"][0]["source_type"] == "supported_by_company_kb"
     assert payload["source_attribution_policy"]["company_knowledge_lane"] == "authoritative"
     assert payload["source_attribution_policy"]["history_suggestion_lane"] == "advisory"
-    assert any(
-        item["source_type"] == "unknown_or_needs_company_source" for item in payload["knowledge_debt"]
-    )
+    assert any(item["source_type"] == "unknown_or_needs_company_source" for item in payload["knowledge_debt"])
     assert "supported_by_company_kb" in payload["confirmation_requirements"]["source_types_to_present"]
     assert "suggested_by_history" in payload["confirmation_requirements"]["source_types_to_present"]
     assert payload["creation_flow"]["mode"] == "dynamic_rounds_mandatory_gates"
@@ -297,9 +295,7 @@ def test_build_blueprint_preview_payload_defaults_missing_source_type_to_unknown
             "primary_users": ["投研团队"],
             "core_outputs": ["日报"],
             "focus_content": "先完成日报",
-            "source_attributions": [
-                {"field": "core_outputs", "value_summary": "日报需要进一步确认来源"}
-            ],
+            "source_attributions": [{"field": "core_outputs", "value_summary": "日报需要进一步确认来源"}],
         }
     )
 
@@ -417,9 +413,7 @@ def test_blueprint_hash_is_stable_when_source_type_missing_then_defaulted() -> N
             "boundaries": "不伪造引用",
             "focus_content": "等待用户首次具体指派",
             "permission_scope": "self",
-            "source_attributions": [
-                {"field": "name", "value_summary": "通用助理"}
-            ],
+            "source_attributions": [{"field": "name", "value_summary": "通用助理"}],
         }
     )
     explicit_unknown = _build_blueprint_preview_payload(
@@ -441,7 +435,9 @@ def test_blueprint_hash_is_stable_when_source_type_missing_then_defaulted() -> N
         }
     )
 
-    assert missing_source_type["blueprint"]["source_attributions"] == explicit_unknown["blueprint"]["source_attributions"]
+    assert (
+        missing_source_type["blueprint"]["source_attributions"] == explicit_unknown["blueprint"]["source_attributions"]
+    )
     assert missing_source_type["blueprint_hash"] == explicit_unknown["blueprint_hash"]
 
 
@@ -619,13 +615,16 @@ async def test_install_external_skill_from_url_stages_review_without_active_inst
 
 
 @pytest.mark.asyncio
-async def test_install_external_skill_from_skills_ref_stages_review_without_active_install(tmp_path, monkeypatch) -> None:
+async def test_install_external_skill_from_skills_ref_stages_review_without_active_install(
+    tmp_path, monkeypatch
+) -> None:
     from pathlib import Path
 
     import app.tools.handlers.hr as hr_mod
     from app.services.code_execution.contracts import CodeExecutionResult
 
     agent_id = uuid4()
+
     def fake_mkdtemp(prefix):
         target = tmp_path / ("skill-work" if "work" in prefix else "exec-home")
         target.mkdir(parents=True, exist_ok=True)
@@ -686,6 +685,7 @@ async def test_install_external_skill_from_skills_ref_fails_closed_without_sandb
     from app.services.code_execution.contracts import CodeExecutionResult
 
     agent_id = uuid4()
+
     def fake_mkdtemp(prefix):
         target = tmp_path / ("skill-work" if "work" in prefix else "exec-home")
         target.mkdir(parents=True, exist_ok=True)

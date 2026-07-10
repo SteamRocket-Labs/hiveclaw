@@ -87,8 +87,7 @@ def test_agent_tools_exposes_only_public_approved_execution_boundary() -> None:
 def test_focus_workspace_surface_is_fully_retired_from_live_code() -> None:
     forbidden_tokens = ("focus.md", "focus_ref", "focus_state")
     roots = [APP_ROOT, PROJECT_ROOT / "frontend/src"]
-    allowed_files = {
-    }
+    allowed_files = {}
     violations: list[str] = []
 
     for root in roots:

@@ -49,6 +49,7 @@ async def _store_oauth_state(nonce: str, device_id: str) -> None:
     """Store nonce→device_id in Redis; fall back to in-memory cache."""
     try:
         from app.core.events import get_redis
+
         r = await get_redis()
         await r.set(f"{_OAUTH_STATE_PREFIX}{nonce}", device_id, ex=_OAUTH_STATE_TTL)
     except Exception:
@@ -63,6 +64,7 @@ async def _consume_oauth_state(nonce: str) -> str | None:
     """
     try:
         from app.core.events import get_redis
+
         r = await get_redis()
         # GETDEL is atomic: returns the value and deletes the key in one round-trip
         device_id = await r.getdel(f"{_OAUTH_STATE_PREFIX}{nonce}")
@@ -154,12 +156,14 @@ async def feishu_callback_desktop(
     )
     refresh_token_raw = await create_refresh_token(db, user.id, device_id)
 
-    params = urlencode({
-        "token": access_token,
-        "refresh_token": refresh_token_raw,
-        "user_id": str(user.id),
-        "display_name": user.display_name or user.username,
-    })
+    params = urlencode(
+        {
+            "token": access_token,
+            "refresh_token": refresh_token_raw,
+            "user_id": str(user.id),
+            "display_name": user.display_name or user.username,
+        }
+    )
     deep_link = f"{settings.DESKTOP_DEEP_LINK_SCHEME}://auth/callback?{params}"
 
     logger.info(f"[desktop-auth] User {user.username} authenticated via Feishu, redirecting to Desktop")
@@ -183,7 +187,9 @@ async def exchange_refresh_token(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive")
 
     access_token = create_access_token(
-        str(user.id), user.role, tenant_id=str(user.tenant_id) if user.tenant_id else None,
+        str(user.id),
+        user.role,
+        tenant_id=str(user.tenant_id) if user.tenant_id else None,
     )
     return DesktopExchangeResponse(access_token=access_token)
 

@@ -55,6 +55,4 @@ class Tenant(Base):
 
     # Deprecated compatibility field. Native T3 Markdown is the only memory
     # backend; non-null legacy values are ignored by app.memory.backend.
-    memory_backend: Mapped[str | None] = mapped_column(
-        String(32), default=None, nullable=True
-    )
+    memory_backend: Mapped[str | None] = mapped_column(String(32), default=None, nullable=True)

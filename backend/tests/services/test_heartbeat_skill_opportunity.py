@@ -130,9 +130,7 @@ async def test_skill_opportunity_fires_for_new_tool_set(monkeypatch, workspace):
     agent_id = uuid.uuid4()
 
     web_activities = _repeat_activities("web_search", 3) + _repeat_activities("web_fetch", 3)
-    feishu_activities = _repeat_activities("feishu_doc_create", 3) + _repeat_activities(
-        "feishu_doc_append", 3
-    )
+    feishu_activities = _repeat_activities("feishu_doc_create", 3) + _repeat_activities("feishu_doc_append", 3)
 
     out1 = await hb._build_evolution_context(agent_id, web_activities, tick_count=1)
     assert "Skill Candidate Opportunity" in out1

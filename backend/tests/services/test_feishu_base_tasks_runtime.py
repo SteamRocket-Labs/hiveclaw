@@ -244,10 +244,7 @@ async def test_feishu_base_record_list_openapi_emulates_offset_with_page_tokens(
             "items": [
                 {"record_id": "rec_200", "fields": {"公司": "共模半导体", "净利润": "-2,000万"}},
                 {"record_id": "rec_201", "fields": {"公司": "竹间智能", "净利润": "-3,998万"}},
-                *[
-                    {"record_id": f"rec_{idx}", "fields": {"公司": f"后页{idx}"}}
-                    for idx in range(202, 398)
-                ],
+                *[{"record_id": f"rec_{idx}", "fields": {"公司": f"后页{idx}"}} for idx in range(202, 398)],
             ],
             "total": 398,
             "has_more": False,

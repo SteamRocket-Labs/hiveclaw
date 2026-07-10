@@ -234,9 +234,7 @@ async def test_hook_loader_failure_is_fail_closed():
 @pytest.mark.asyncio
 async def test_managed_allow_suppresses_tenant_ask_within_hook_lane():
     deps = _deps(
-        load_governance_hooks=_loader(
-            [_declarative("ask", layer="company"), _declarative("allow", layer="managed")]
-        )
+        load_governance_hooks=_loader([_declarative("ask", layer="company"), _declarative("allow", layer="managed")])
     )
     result = await run_tool_governance(_context(), deps)
     assert result is None

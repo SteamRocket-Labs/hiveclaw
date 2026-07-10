@@ -33,4 +33,3 @@ def test_company_admin_can_access_company_sensitive_memory() -> None:
 
     assert stack.can_access_sensitivity("PL3_sensitive")
     assert not stack.can_access_sensitivity("PL4_credential")
-

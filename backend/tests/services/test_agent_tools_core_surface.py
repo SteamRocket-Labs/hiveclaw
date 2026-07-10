@@ -272,9 +272,7 @@ def test_l2_taxonomy_decorator_and_pack_manifests_are_consistent():
         if (tools := {tool for tool in spec.tools if tool not in CORE_TOOL_NAMES})
     }
     decorator_groups = {
-        name: set(tools)
-        for name, tools in collect_tools().pack_tool_groups.items()
-        if name in taxonomy
+        name: set(tools) for name, tools in collect_tools().pack_tool_groups.items() if name in taxonomy
     }
     manifest_groups: dict[str, set[str]] = {}
     for packs_dir in find_pack_dirs(Path(__file__).resolve()):
@@ -380,7 +378,9 @@ def test_command_pack_no_longer_owns_agent_team_runtime_discovery():
     from app.services.capability_group_policy_service import policy_capability_group_names_for_tool
     from app.tools.collector import collect_tools
 
-    command_pack = next((descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack"), None)
+    command_pack = next(
+        (descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack"), None
+    )
 
     assert command_pack is None or "team_create" not in command_pack.tools
     assert "team_create" not in collect_tools().pack_tool_groups.get("command_pack", [])
@@ -393,7 +393,9 @@ def test_command_pack_task_wrappers_do_not_duplicate_work_ledger_runtime_surface
     from app.services.capability_group_policy_service import policy_capability_group_names_for_tool
     from app.tools.collector import collect_tools
 
-    command_pack = next((descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack"), None)
+    command_pack = next(
+        (descriptor for descriptor in iter_runtime_l2_capabilities() if descriptor.name == "command_pack"), None
+    )
 
     assert {"track_todo", "record_finding", "read_ledger"} <= CORE_TOOL_NAMES
     assert COMMAND_PARITY_TOOLS <= CORE_TOOL_NAMES
@@ -413,7 +415,9 @@ def test_all_pack_manifests_root_backend_consistent():
     backend_packs = repo / "backend" / "packs"
     root_packs = repo / "packs"
 
-    backend_manifests = {path.parent.name: path.read_text(encoding="utf-8") for path in backend_packs.glob("*/pack.yaml")}
+    backend_manifests = {
+        path.parent.name: path.read_text(encoding="utf-8") for path in backend_packs.glob("*/pack.yaml")
+    }
     root_manifests = {path.parent.name: path.read_text(encoding="utf-8") for path in root_packs.glob("*/pack.yaml")}
 
     assert root_manifests.keys() == backend_manifests.keys()

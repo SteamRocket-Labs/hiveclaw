@@ -142,7 +142,9 @@ async def test_task_update_completed_emits_task_completed_hook(tmp_path, monkeyp
     monkeypatch.setattr(command_parity, "emit_hook", fake_emit_hook, raising=False)
     agent_id = uuid4()
     session_id = uuid4()
-    create_request = _request("task_create", {"subject": "Inspect hooks"}, tmp_path, agent_id=agent_id, session_id=session_id)
+    create_request = _request(
+        "task_create", {"subject": "Inspect hooks"}, tmp_path, agent_id=agent_id, session_id=session_id
+    )
     created = json.loads(await command_parity.task_create(create_request))
     emitted.clear()
     request = _request(

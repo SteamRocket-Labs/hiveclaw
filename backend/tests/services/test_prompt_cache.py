@@ -197,7 +197,10 @@ class TestUniversalMetricsProbe:
     def test_qwen_nested_write_tokens(self):
         """Qwen reports cache_creation_input_tokens nested in prompt_tokens_details."""
         m = extract_cache_metrics(
-            {"prompt_tokens": 1000, "prompt_tokens_details": {"cached_tokens": 700, "cache_creation_input_tokens": 200}},
+            {
+                "prompt_tokens": 1000,
+                "prompt_tokens_details": {"cached_tokens": 700, "cache_creation_input_tokens": 200},
+            },
             "qwen-max",
         )
         assert m.cache_hit is True
@@ -270,7 +273,11 @@ class TestUniversalMetricsProbe:
         assert d["cache_hit"] is True
         assert d["cache_hit_rate"] == 0.8
         assert set(d.keys()) == {
-            "provider", "cache_write_tokens", "cache_read_tokens",
-            "uncached_input_tokens", "total_input_tokens",
-            "cache_hit", "cache_hit_rate",
+            "provider",
+            "cache_write_tokens",
+            "cache_read_tokens",
+            "uncached_input_tokens",
+            "total_input_tokens",
+            "cache_hit",
+            "cache_hit_rate",
         }

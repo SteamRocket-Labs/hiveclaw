@@ -17,6 +17,7 @@ router = APIRouter(prefix="/org", tags=["organization"])
 
 # ─── Departments ────────────────────────────────────────
 
+
 @router.get("/departments", response_model=list[DepartmentTree])
 async def get_department_tree(
     tenant_id: str | None = None,
@@ -26,9 +27,7 @@ async def get_department_tree(
     """Get full department tree."""
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(
-        select(Department)
-        .where(Department.tenant_id == target_tenant_id)
-        .order_by(Department.sort_order)
+        select(Department).where(Department.tenant_id == target_tenant_id).order_by(Department.sort_order)
     )
     departments = [dept for dept in result.scalars().all() if getattr(dept, "tenant_id", None) == target_tenant_id]
 
@@ -47,9 +46,13 @@ async def get_department_tree(
         member_count = member_count_result.scalar() or 0
 
         node = DepartmentTree(
-            id=dept.id, name=dept.name, parent_id=dept.parent_id,
-            manager_id=dept.manager_id, sort_order=dept.sort_order,
-            created_at=dept.created_at, member_count=member_count,
+            id=dept.id,
+            name=dept.name,
+            parent_id=dept.parent_id,
+            manager_id=dept.manager_id,
+            sort_order=dept.sort_order,
+            created_at=dept.created_at,
+            member_count=member_count,
         )
         dept_map[dept.id] = node
 
@@ -134,6 +137,7 @@ async def delete_department(
 
 # ─── Users Management ──────────────────────────────────
 
+
 @router.get("/users", response_model=list[UserOut])
 async def list_users(
     department_id: uuid.UUID | None = None,
@@ -160,9 +164,7 @@ async def admin_update_user(
     db: AsyncSession = Depends(get_db),
 ):
     """Admin update user profile (role, department). Tenant-scoped."""
-    result = await db.execute(
-        select(User).where(User.id == user_id, User.tenant_id == current_user.tenant_id)
-    )
+    result = await db.execute(select(User).where(User.id == user_id, User.tenant_id == current_user.tenant_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")

@@ -469,9 +469,7 @@ def serialize_connection_for_list(
 
 
 async def get_connection_presence(db: AsyncSession, *, connection_id: uuid.UUID) -> dict[str, Any]:
-    result = await db.execute(
-        select(LocalAgentBridgeConnection).where(LocalAgentBridgeConnection.id == connection_id)
-    )
+    result = await db.execute(select(LocalAgentBridgeConnection).where(LocalAgentBridgeConnection.id == connection_id))
     connection = result.scalar_one_or_none()
     if connection is None:
         return {
@@ -480,9 +478,7 @@ async def get_connection_presence(db: AsyncSession, *, connection_id: uuid.UUID)
             "runtime_kind": None,
         }
 
-    channel_result = await db.execute(
-        select(LocalAgentChannel).where(LocalAgentChannel.connection_id == connection_id)
-    )
+    channel_result = await db.execute(select(LocalAgentChannel).where(LocalAgentChannel.connection_id == connection_id))
     channel = channel_result.scalar_one_or_none()
     return {
         "presence_status": _presence_status_for(connection, channel),
@@ -515,10 +511,7 @@ async def list_connections(
         select(LocalAgentChannel).where(LocalAgentChannel.connection_id.in_(connection_ids))
     )
     channels_by_connection = {channel.connection_id: channel for channel in channel_result.scalars().all()}
-    return [
-        serialize_connection_for_list(conn, channel=channels_by_connection.get(conn.id))
-        for conn in connections
-    ]
+    return [serialize_connection_for_list(conn, channel=channels_by_connection.get(conn.id)) for conn in connections]
 
 
 async def revoke_connection(

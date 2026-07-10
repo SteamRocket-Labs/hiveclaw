@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+
 def _message_digest(messages: list[dict[str, Any]]) -> str:
     snippets = []
     for msg in messages[-6:]:

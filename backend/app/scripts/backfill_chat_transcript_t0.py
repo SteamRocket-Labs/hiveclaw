@@ -32,17 +32,23 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _dry_run(*, agent_id: uuid.UUID, tenant_id: uuid.UUID | None, recent_days: int, limit_sessions: int) -> dict[str, Any]:
+async def _dry_run(
+    *, agent_id: uuid.UUID, tenant_id: uuid.UUID | None, recent_days: int, limit_sessions: int
+) -> dict[str, Any]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=recent_days)
     async with tenant_scoped_session(tenant_id) as db:
         sessions = (
-            await db.execute(
-                select(ChatSession)
-                .where(ChatSession.agent_id == agent_id, ChatSession.created_at >= cutoff)
-                .order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc())
-                .limit(limit_sessions)
+            (
+                await db.execute(
+                    select(ChatSession)
+                    .where(ChatSession.agent_id == agent_id, ChatSession.created_at >= cutoff)
+                    .order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc())
+                    .limit(limit_sessions)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         rows: list[dict[str, Any]] = []
         total_messages = 0
         missing_transcript_sessions = 0
@@ -108,7 +114,12 @@ async def _main() -> None:
             limit_sessions=args.limit_sessions,
             tenant_id=args.tenant_id,
         )
-        report = {"mode": "apply", "agent_id": str(args.agent_id), "tenant_id": str(args.tenant_id) if args.tenant_id else None, **report}
+        report = {
+            "mode": "apply",
+            "agent_id": str(args.agent_id),
+            "tenant_id": str(args.tenant_id) if args.tenant_id else None,
+            **report,
+        }
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
 
 

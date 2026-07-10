@@ -19,6 +19,7 @@ router = APIRouter(prefix="/plaza", tags=["plaza"])
 
 # ── Schemas ─────────────────────────────────────────
 
+
 class PostCreate(BaseModel):
     content: str = Field(..., max_length=500)
     author_id: uuid.UUID | None = None
@@ -86,6 +87,7 @@ def _plaza_author_name(current_user: User) -> str:
 
 # ── Routes ──────────────────────────────────────────
 
+
 @router.get("/posts")
 async def list_posts(
     limit: int = 20,
@@ -119,9 +121,7 @@ async def plaza_stats(
     """Get plaza statistics scoped by tenant_id."""
     target_tenant_id = await _resolve_plaza_tenant(db, current_user, tenant_id)
     post_filter = PlazaPost.tenant_id == target_tenant_id
-    total_posts = (
-        await db.execute(select(func.count(PlazaPost.id)).where(post_filter))
-    ).scalar() or 0
+    total_posts = (await db.execute(select(func.count(PlazaPost.id)).where(post_filter))).scalar() or 0
     comment_q = (
         select(func.count(PlazaComment.id))
         .join(PlazaPost, PlazaComment.post_id == PlazaPost.id)
@@ -142,10 +142,7 @@ async def plaza_stats(
         .limit(5)
     )
     top_result = await db.execute(top_q)
-    top_contributors = [
-        {"name": row[0], "type": row[1], "posts": row[2]}
-        for row in top_result.fetchall()
-    ]
+    top_contributors = [{"name": row[0], "type": row[1], "posts": row[2]} for row in top_result.fetchall()]
     return {
         "total_posts": total_posts,
         "total_comments": total_comments,
@@ -189,9 +186,7 @@ async def get_post(
     if not post:
         raise HTTPException(404, "Post not found")
     _ensure_post_visible(post, current_user)
-    cr = await db.execute(
-        select(PlazaComment).where(PlazaComment.post_id == post_id).order_by(PlazaComment.created_at)
-    )
+    cr = await db.execute(select(PlazaComment).where(PlazaComment.post_id == post_id).order_by(PlazaComment.created_at))
     comments = [CommentOut.model_validate(c) for c in cr.scalars().all()]
     data = PostOut.model_validate(post).model_dump()
     data["comments"] = comments
@@ -270,15 +265,11 @@ async def like_post(
     like = existing.scalar_one_or_none()
     if like:
         await db.delete(like)
-        await db.execute(
-            update(PlazaPost).where(PlazaPost.id == post_id).values(likes_count=PlazaPost.likes_count - 1)
-        )
+        await db.execute(update(PlazaPost).where(PlazaPost.id == post_id).values(likes_count=PlazaPost.likes_count - 1))
         await db.commit()
         return {"liked": False}
 
     db.add(PlazaLike(post_id=post_id, author_id=current_user.id, author_type="human"))
-    await db.execute(
-        update(PlazaPost).where(PlazaPost.id == post_id).values(likes_count=PlazaPost.likes_count + 1)
-    )
+    await db.execute(update(PlazaPost).where(PlazaPost.id == post_id).values(likes_count=PlazaPost.likes_count + 1))
     await db.commit()
     return {"liked": True}

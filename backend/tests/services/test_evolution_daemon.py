@@ -238,9 +238,7 @@ def test_trigger_daemon_no_longer_starts_heartbeat_or_workspace() -> None:
 
 
 def test_heartbeat_source_no_longer_owns_peripheral_evolution_jobs() -> None:
-    src = Path(Path(__file__).parent.parent.parent / "app" / "services" / "heartbeat.py").read_text(
-        encoding="utf-8"
-    )
+    src = Path(Path(__file__).parent.parent.parent / "app" / "services" / "heartbeat.py").read_text(encoding="utf-8")
 
     assert "run_skill_distillation_cycle" not in src
     assert "run_skill_curator_pass" not in src

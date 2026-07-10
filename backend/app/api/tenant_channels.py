@@ -163,6 +163,7 @@ async def feishu_tenant_webhook(
     body_bytes = await request.body()
     body_str = body_bytes.decode("utf-8")
     import json as _json_tw
+
     body = _json_tw.loads(body_str)
 
     await pin_rls_tenant_context(db, tenant_id)
@@ -195,7 +196,9 @@ async def feishu_tenant_webhook(
                 body = _decrypt_feishu_payload(config.encrypt_key, body["encrypt"])
             except Exception as exc:
                 logger.warning(f"[tenant-webhook] Failed to decrypt for tenant {tenant_id}: {exc}")
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid encrypted payload") from exc
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid encrypted payload"
+                ) from exc
     elif config.verification_token:
         if body.get("token") != config.verification_token:
             logger.warning(f"[tenant-webhook] Verification token mismatch for tenant {tenant_id}")
@@ -227,14 +230,17 @@ async def feishu_tenant_webhook(
 
     # Delegate to existing per-agent event processing
     from app.api.feishu import process_feishu_event
+
     await process_feishu_event(target_agent_id, body, db, tenant_channel_config=config)
 
     return {"ok": True, "routed": True}
 
 
-
 async def _resolve_sender_agent(
-    db: AsyncSession, tenant_id: uuid.UUID, feishu_user_id: str, feishu_open_id: str,
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    feishu_user_id: str,
+    feishu_open_id: str,
 ) -> uuid.UUID | None:
     """Resolve a Feishu sender to their agent within the tenant.
 
@@ -253,9 +259,11 @@ async def _resolve_sender_agent(
 
     # Find user's owned agent
     result = await db.execute(
-        select(Agent.id).where(
+        select(Agent.id)
+        .where(
             Agent.owner_user_id == user.id,
             Agent.tenant_id == tenant_id,
-        ).limit(1)
+        )
+        .limit(1)
     )
     return result.scalar_one_or_none()

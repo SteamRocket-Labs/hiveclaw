@@ -21,14 +21,27 @@ _TENANT_ID = uuid4()
 _TEMPLATE_ID = uuid4()
 
 _ADMIN_USER = SimpleNamespace(
-    id=uuid4(), username="admin", role="org_admin", tenant_id=_TENANT_ID, is_active=True,
+    id=uuid4(),
+    username="admin",
+    role="org_admin",
+    tenant_id=_TENANT_ID,
+    is_active=True,
 )
 
 _EXISTING_TEMPLATE = SimpleNamespace(
-    id=_TEMPLATE_ID, name="销售助理", description="销售部门模板",
-    icon="💼", category="sales", soul_template="你是销售助理",
-    default_skills=["crm"], department_id=None, model_id=None,
-    tenant_id=_TENANT_ID, config_version=1, is_builtin=False, created_by=_ADMIN_USER.id,
+    id=_TEMPLATE_ID,
+    name="销售助理",
+    description="销售部门模板",
+    icon="💼",
+    category="sales",
+    soul_template="你是销售助理",
+    default_skills=["crm"],
+    department_id=None,
+    model_id=None,
+    tenant_id=_TENANT_ID,
+    config_version=1,
+    is_builtin=False,
+    created_by=_ADMIN_USER.id,
 )
 
 
@@ -113,12 +126,15 @@ def test_list_empty():
 def test_create_role_template():
     client, fake_db = _build_client()
     with patch.object(rt_mod, "bump_sync_version", new_callable=AsyncMock, return_value=2):
-        resp = client.post("/role-templates", json={
-            "name": "研发助理",
-            "description": "研发部门默认模板",
-            "category": "default",
-            "soul_template": "你是研发助理",
-        })
+        resp = client.post(
+            "/role-templates",
+            json={
+                "name": "研发助理",
+                "description": "研发部门默认模板",
+                "category": "default",
+                "soul_template": "你是研发助理",
+            },
+        )
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "研发助理"
@@ -146,7 +162,10 @@ def test_update_nonexistent_returns_404():
 
 def test_update_other_tenant_returns_403():
     other_template = SimpleNamespace(
-        id=uuid4(), tenant_id=uuid4(), is_builtin=False, config_version=1,
+        id=uuid4(),
+        tenant_id=uuid4(),
+        is_builtin=False,
+        config_version=1,
     )
     client, _ = _build_client(by_id={other_template.id: other_template})
     resp = client.patch(f"/role-templates/{other_template.id}", json={"name": "hijack"})
@@ -155,7 +174,10 @@ def test_update_other_tenant_returns_403():
 
 def test_update_builtin_returns_403():
     builtin = SimpleNamespace(
-        id=uuid4(), tenant_id=_TENANT_ID, is_builtin=True, config_version=1,
+        id=uuid4(),
+        tenant_id=_TENANT_ID,
+        is_builtin=True,
+        config_version=1,
     )
     client, _ = _build_client(by_id={builtin.id: builtin})
     resp = client.patch(f"/role-templates/{builtin.id}", json={"name": "nope"})

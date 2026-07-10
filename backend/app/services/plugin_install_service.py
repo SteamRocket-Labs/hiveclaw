@@ -237,7 +237,9 @@ def _hook_registration_payload(handler: str, hook: dict) -> dict:
     }
 
 
-async def _upsert_plugin_record(db, tenant_id: uuid.UUID, resolved: ResolvedPlugin, *, config: dict | None) -> TenantInstalledPlugin:
+async def _upsert_plugin_record(
+    db, tenant_id: uuid.UUID, resolved: ResolvedPlugin, *, config: dict | None
+) -> TenantInstalledPlugin:
     manifest = resolved.manifest
     existing = (
         await db.execute(
@@ -333,11 +335,7 @@ async def _sync_agent_assignments(
     agent_ids: list[uuid.UUID] | tuple[uuid.UUID, ...] | None,
 ) -> None:
     if agent_ids is None:
-        ids = (
-            (await db.execute(select(Agent.id).where(Agent.tenant_id == tenant_id)))
-            .scalars()
-            .all()
-        )
+        ids = (await db.execute(select(Agent.id).where(Agent.tenant_id == tenant_id))).scalars().all()
     else:
         ids = [uuid.UUID(str(agent_id)) for agent_id in agent_ids]
     if not ids:

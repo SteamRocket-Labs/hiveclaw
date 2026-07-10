@@ -36,8 +36,12 @@ class RuntimeBudgetPolicy(Base):
     agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     trigger_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
-    enforcement_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="enforce", server_default="enforce")
-    fail_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="fail_closed", server_default="fail_closed")
+    enforcement_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="enforce", server_default="enforce"
+    )
+    fail_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="fail_closed", server_default="fail_closed"
+    )
 
     max_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     max_cache_miss_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -92,9 +96,15 @@ class RuntimeBudgetRun(Base):
     profile: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
 
     # active | completed | exhausted | hard_stopped | expired | cancelled
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="active", server_default="active", index=True)
-    enforcement_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="enforce", server_default="enforce")
-    fail_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="fail_closed", server_default="fail_closed")
+    status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="active", server_default="active", index=True
+    )
+    enforcement_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="enforce", server_default="enforce"
+    )
+    fail_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="fail_closed", server_default="fail_closed"
+    )
     terminal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     max_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

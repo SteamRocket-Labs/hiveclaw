@@ -144,8 +144,7 @@ async def run_heartbeat_t3_core(
         status = str(getattr(gate_result, "status", "held") or "held")
         issues = tuple(str(issue) for issue in getattr(gate_result, "issues", ()) or ())
         artifact_paths = tuple(
-            path.relative_to(root / str(resolved_agent_id)).as_posix()
-            for path in (pitch_path, patch_path, review_path)
+            path.relative_to(root / str(resolved_agent_id)).as_posix() for path in (pitch_path, patch_path, review_path)
         )
         committed_paths = tuple(str(path) for path in getattr(gate_result, "committed_paths", ()) or ())
         committed_blocks = tuple(str(block) for block in getattr(gate_result, "committed_blocks", ()) or ())
@@ -236,8 +235,8 @@ async def _call_memory_gate_review(
     system_prompt = (
         "You are the Memory Gate reviewer for a T3 consolidation job. "
         "Review the exact revised_patch.md against source_bundle.json and t3_neighborhood.md. "
-        "Return JSON only with key \"review_md\". The review_md must contain "
-        "<memory_gate_review schema_version=\"t3.memory_gate_review.v1\"> and a decision."
+        'Return JSON only with key "review_md". The review_md must contain '
+        '<memory_gate_review schema_version="t3.memory_gate_review.v1"> and a decision.'
     )
     user_prompt = _truncate(
         "\n\n".join(
@@ -390,4 +389,6 @@ def _record_job_direct_core_summary(
         "artifact_paths": list(artifact_paths),
         "updated_at": datetime.now(UTC).isoformat(),
     }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )

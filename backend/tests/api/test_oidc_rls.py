@@ -43,12 +43,14 @@ async def test_oidc_public_config_pins_resolved_tenant_before_setting_read():
 
     tenant_id = uuid4()
     tenant = SimpleNamespace(id=tenant_id, slug="acme")
-    setting = SimpleNamespace(value={
-        "issuer_url": "https://issuer.example.com",
-        "client_id": "client-id",
-        "scopes": "openid email",
-        "display_name": "Acme SSO",
-    })
+    setting = SimpleNamespace(
+        value={
+            "issuer_url": "https://issuer.example.com",
+            "client_id": "client-id",
+            "scopes": "openid email",
+            "display_name": "Acme SSO",
+        }
+    )
     db = _FakeDB([tenant, setting])
 
     with patch("app.services.oidc_service.discover_oidc", new_callable=AsyncMock) as discover:
@@ -87,12 +89,14 @@ async def test_oidc_callback_pins_explicit_tenant_before_login_or_register():
         tokens_used_total=0,
         created_at=datetime.now(timezone.utc),
     )
-    setting = SimpleNamespace(value={
-        "issuer_url": "https://issuer.example.com",
-        "client_id": "client-id",
-        "client_secret": "secret",
-        "auto_provision": True,
-    })
+    setting = SimpleNamespace(
+        value={
+            "issuer_url": "https://issuer.example.com",
+            "client_id": "client-id",
+            "client_secret": "secret",
+            "auto_provision": True,
+        }
+    )
     db = _FakeDB([setting])
 
     with (
@@ -100,7 +104,11 @@ async def test_oidc_callback_pins_explicit_tenant_before_login_or_register():
         patch("app.services.oidc_service.login_or_register", new_callable=AsyncMock) as login_or_register,
         patch("app.core.policy.write_audit_event", new_callable=AsyncMock),
     ):
-        exchange_code.return_value = {"sub": "sub-1", "email": "oidc@example.com", "issuer": "https://issuer.example.com"}
+        exchange_code.return_value = {
+            "sub": "sub-1",
+            "email": "oidc@example.com",
+            "issuer": "https://issuer.example.com",
+        }
         login_or_register.return_value = (user, "jwt-token")
         result = await oidc_api.oidc_callback(
             oidc_api.OIDCCallbackRequest(

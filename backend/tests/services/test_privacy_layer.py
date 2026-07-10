@@ -75,5 +75,6 @@ def test_pl3_is_suppressed_for_non_owner_current_user() -> None:
         current_user=Principal(PrincipalRole.CURRENT_USER, "viewer", "Viewer"),
     )
 
-    assert PrivacyLayer.redact_for_principal("Q3 salary plan", SensitivityLevel.PL3_SENSITIVE, stack) == "[REDACTED_PL3]"
-
+    assert (
+        PrivacyLayer.redact_for_principal("Q3 salary plan", SensitivityLevel.PL3_SENSITIVE, stack) == "[REDACTED_PL3]"
+    )

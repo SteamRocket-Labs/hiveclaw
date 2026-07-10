@@ -85,7 +85,11 @@ async def test_runtime_budget_service_uses_audited_bypass_for_background_session
     owner_sessionmaker,
 ):
     from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
-    from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService, RuntimeBudgetSettlement
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlement,
+    )
 
     tenant_id = await _seed_tenant(owner_sessionmaker)
     service = RuntimeBudgetService(session_factory=app_user_sessionmaker)
@@ -113,12 +117,16 @@ async def test_runtime_budget_service_uses_audited_bypass_for_background_session
     async with owner_sessionmaker() as db:
         stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
         events = (
-            await db.execute(
-                select(RuntimeBudgetEvent)
-                .where(RuntimeBudgetEvent.budget_run_id == run.id)
-                .order_by(RuntimeBudgetEvent.created_at)
+            (
+                await db.execute(
+                    select(RuntimeBudgetEvent)
+                    .where(RuntimeBudgetEvent.budget_run_id == run.id)
+                    .order_by(RuntimeBudgetEvent.created_at)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     assert stored.tenant_id == tenant_id
     assert stored.reserved_provider_calls == 0
@@ -390,11 +398,14 @@ async def test_interactive_company_policy_matches_web_chat_lookup(owner_sessionm
 def test_reservation_estimate_uses_default_prompt_and_observed_floor():
     from app.services.runtime_budget_service import estimate_reservation_tokens
 
-    assert estimate_reservation_tokens(
-        default_tokens=1_000,
-        prompt_tokens=2_500,
-        observed_floor_tokens=84_868,
-    ) == 84_868
+    assert (
+        estimate_reservation_tokens(
+            default_tokens=1_000,
+            prompt_tokens=2_500,
+            observed_floor_tokens=84_868,
+        )
+        == 84_868
+    )
 
 
 @pytest.mark.parametrize(
@@ -415,7 +426,9 @@ def test_builtin_policy_unit_defaults_match_documented_profiles(
 ):
     from app.services import runtime_budget_service as module
 
-    policy = module._builtin_policy(module.RuntimeBudgetPolicyLookup(tenant_id=uuid.uuid4(), source=profile, profile=profile))
+    policy = module._builtin_policy(
+        module.RuntimeBudgetPolicyLookup(tenant_id=uuid.uuid4(), source=profile, profile=profile)
+    )
 
     assert policy.max_tokens == max_tokens
     assert policy.max_cache_miss_tokens == max_cache_miss_tokens
@@ -538,10 +551,16 @@ async def test_enforce_reservation_denies_without_incrementing(owner_sessionmake
         stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
         task = (await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id))).scalar_one()
         events = (
-            await db.execute(
-                select(RuntimeBudgetEvent).where(RuntimeBudgetEvent.budget_run_id == run.id).order_by(RuntimeBudgetEvent.created_at)
+            (
+                await db.execute(
+                    select(RuntimeBudgetEvent)
+                    .where(RuntimeBudgetEvent.budget_run_id == run.id)
+                    .order_by(RuntimeBudgetEvent.created_at)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     assert stored.reserved_subagents == 1
     assert stored.used_subagents == 0
@@ -572,7 +591,9 @@ async def test_observe_mode_records_would_deny_but_allows(owner_sessionmaker):
 
     async with owner_sessionmaker() as db:
         stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
-        event = (await db.execute(select(RuntimeBudgetEvent).where(RuntimeBudgetEvent.budget_run_id == run.id))).scalar_one()
+        event = (
+            await db.execute(select(RuntimeBudgetEvent).where(RuntimeBudgetEvent.budget_run_id == run.id))
+        ).scalar_one()
 
     assert result.allowed is True
     assert result.would_deny is True
@@ -729,7 +750,11 @@ async def test_concurrent_reservations_do_not_overspend_same_run(owner_sessionma
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_settlement_releases_reserved_and_records_actual_usage(owner_sessionmaker):
     from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
-    from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService, RuntimeBudgetSettlement
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlement,
+    )
 
     tenant_id = await _seed_tenant(owner_sessionmaker)
     service = RuntimeBudgetService(session_factory=owner_sessionmaker)
@@ -757,10 +782,16 @@ async def test_settlement_releases_reserved_and_records_actual_usage(owner_sessi
     async with owner_sessionmaker() as db:
         stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
         events = (
-            await db.execute(
-                select(RuntimeBudgetEvent).where(RuntimeBudgetEvent.budget_run_id == run.id).order_by(RuntimeBudgetEvent.created_at)
+            (
+                await db.execute(
+                    select(RuntimeBudgetEvent)
+                    .where(RuntimeBudgetEvent.budget_run_id == run.id)
+                    .order_by(RuntimeBudgetEvent.created_at)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     assert stored.reserved_tokens == 0
     assert stored.used_tokens == 80
@@ -851,12 +882,16 @@ async def test_reconcile_orphaned_reservations_releases_terminal_task_reservatio
     async with owner_sessionmaker() as db:
         stored_run = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
         events = (
-            await db.execute(
-                select(RuntimeBudgetEvent)
-                .where(RuntimeBudgetEvent.budget_run_id == run.id)
-                .order_by(RuntimeBudgetEvent.created_at)
+            (
+                await db.execute(
+                    select(RuntimeBudgetEvent)
+                    .where(RuntimeBudgetEvent.budget_run_id == run.id)
+                    .order_by(RuntimeBudgetEvent.created_at)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     assert reconciled == 1
     assert stored_run.reserved_subagents == 0
@@ -900,7 +935,9 @@ async def test_policy_write_approve_overrun_and_tenant_mode_switch(owner_session
     )
 
     async with owner_sessionmaker() as db:
-        stored_policy = (await db.execute(select(RuntimeBudgetPolicy).where(RuntimeBudgetPolicy.id == policy.id))).scalar_one()
+        stored_policy = (
+            await db.execute(select(RuntimeBudgetPolicy).where(RuntimeBudgetPolicy.id == policy.id))
+        ).scalar_one()
         stored_run = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
         event = (
             await db.execute(
@@ -959,15 +996,11 @@ async def test_summary_lane_admits_finalization_provider_call_despite_exhausted_
 
     # Exhaust the token dimension: the run trips into summary_only.
     await service.reserve(
-        RuntimeBudgetReservation(
-            budget_run_id=run.id, reservation_key="burn", tokens=1_000, reason="burn"
-        )
+        RuntimeBudgetReservation(budget_run_id=run.id, reservation_key="burn", tokens=1_000, reason="burn")
     )
     with pytest.raises(RuntimeBudgetDenied):
         await service.reserve(
-            RuntimeBudgetReservation(
-                budget_run_id=run.id, reservation_key="over", tokens=100, reason="over budget"
-            )
+            RuntimeBudgetReservation(budget_run_id=run.id, reservation_key="over", tokens=100, reason="over budget")
         )
     async with owner_sessionmaker() as db:
         stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
@@ -1018,12 +1051,18 @@ async def test_summary_lane_admits_finalization_provider_call_despite_exhausted_
     )
     async with owner_sessionmaker() as db:
         events = (
-            await db.execute(
-                select(RuntimeBudgetEvent)
-                .where(RuntimeBudgetEvent.budget_run_id == run.id, RuntimeBudgetEvent.reservation_key == "summary-call")
-                .order_by(RuntimeBudgetEvent.created_at)
+            (
+                await db.execute(
+                    select(RuntimeBudgetEvent)
+                    .where(
+                        RuntimeBudgetEvent.budget_run_id == run.id, RuntimeBudgetEvent.reservation_key == "summary-call"
+                    )
+                    .order_by(RuntimeBudgetEvent.created_at)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert [event.event_type for event in events] == ["reservation", "settlement"]
     assert events[0].reason == "budget_summary_turn_lane"
 
@@ -1042,14 +1081,10 @@ async def test_hard_stop_run_closes_summary_only_lane(owner_sessionmaker):
     run = await _create_run(service, tenant_id, fail_mode="summary_only", max_tokens=1_000)
     with pytest.raises(RuntimeBudgetDenied):
         await service.reserve(
-            RuntimeBudgetReservation(
-                budget_run_id=run.id, reservation_key="trip", tokens=5_000, reason="trip"
-            )
+            RuntimeBudgetReservation(budget_run_id=run.id, reservation_key="trip", tokens=5_000, reason="trip")
         )
 
-    stopped = await service.hard_stop_run(
-        tenant_id=tenant_id, budget_run_id=run.id, reason="budget_summary_completed"
-    )
+    stopped = await service.hard_stop_run(tenant_id=tenant_id, budget_run_id=run.id, reason="budget_summary_completed")
     assert stopped is not None
     assert stopped.status == "hard_stopped"
 

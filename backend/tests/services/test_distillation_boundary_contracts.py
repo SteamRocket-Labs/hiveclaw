@@ -48,7 +48,9 @@ def test_dream_prompts_do_not_promote_operational_autonomy_state_to_soul() -> No
 
 
 def test_dream_template_requires_source_refs_without_owning_t2_retention() -> None:
-    dream_template = _normalized((PROJECT_ROOT / "backend" / "app" / "templates" / "DREAM.md").read_text(encoding="utf-8"))
+    dream_template = _normalized(
+        (PROJECT_ROOT / "backend" / "app" / "templates" / "DREAM.md").read_text(encoding="utf-8")
+    )
 
     assert "source references are precise enough" in dream_template
     assert "soul_candidate" in dream_template

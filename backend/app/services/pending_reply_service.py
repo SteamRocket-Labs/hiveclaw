@@ -128,25 +128,25 @@ def sender_identity_from_external_conv_id(external_conv_id: str) -> str:
     if not ext:
         return ""
     if ext.startswith("feishu_p2p_"):
-        return normalize_identity("feishu", ext[len("feishu_p2p_"):])
+        return normalize_identity("feishu", ext[len("feishu_p2p_") :])
     if ext.startswith("web_"):
-        return normalize_identity("web", ext[len("web_"):])
+        return normalize_identity("web", ext[len("web_") :])
     if ext.startswith("slack_"):
-        return normalize_identity("slack", ext[len("slack_"):])
+        return normalize_identity("slack", ext[len("slack_") :])
     if ext.startswith("tg_"):
         parts = ext.split("_", 2)
         if len(parts) == 3 and parts[1] and parts[2]:
             return f"telegram:{parts[1]}:{parts[2]}"
     if ext.startswith("wecom_p2p_"):
-        return normalize_identity("wecom", ext[len("wecom_p2p_"):])
+        return normalize_identity("wecom", ext[len("wecom_p2p_") :])
     if ext.startswith("wecom_group_"):
-        payload = ext[len("wecom_group_"):]
+        payload = ext[len("wecom_group_") :]
         if "_" in payload:
             _chat_id, user_id = payload.rsplit("_", 1)
             if user_id:
                 return normalize_identity("wecom", user_id)
     if ext.startswith("wechat_p2p_"):
-        return normalize_identity("wechat_personal", ext[len("wechat_p2p_"):])
+        return normalize_identity("wechat_personal", ext[len("wechat_p2p_") :])
     return ""
 
 
@@ -246,7 +246,10 @@ async def capture_pending_reply(
     await db.flush()
     logger.info(
         "[PendingReply] Captured for agent %s → %s (%s), expires %s",
-        agent_id, recipient["name"], recipient["identity"], record.expires_at,
+        agent_id,
+        recipient["name"],
+        recipient["identity"],
+        record.expires_at,
     )
     return record
 
@@ -311,7 +314,9 @@ async def claim_and_fulfill_pending_replies(
     )
     rows = list(result.scalars().all())
     if rows:
-        logger.info("[PendingReply] Claimed %d pending reply(ies) for agent %s, sender %s", len(rows), agent_id, sender_identity)
+        logger.info(
+            "[PendingReply] Claimed %d pending reply(ies) for agent %s, sender %s", len(rows), agent_id, sender_identity
+        )
     return rows
 
 
@@ -343,18 +348,20 @@ def format_pending_reply_context(pending_replies: list[PendingReplyContext]) -> 
                 parts.append(f"- 创建时间：{created_at.astimezone(timezone.utc).isoformat()}")
             except Exception:
                 parts.append(f"- 创建时间：{created_at}")
-        parts.append(f"- 已发送内容：\"{pr.outbound_message[:300]}\"")
+        parts.append(f'- 已发送内容："{pr.outbound_message[:300]}"')
         if pr.task_summary:
             parts.append(f"- 原始请求：{pr.task_summary[:300]}")
         if pr.expected_action:
             parts.append(f"- 期望操作：{pr.expected_action[:300]}")
         parts.append("")
 
-    parts.extend([
-        "重要：将用户回复与上述任务匹配。如果相关，执行期望操作。",
-        "不要重复询问上述已有信息。",
-        "=============================",
-    ])
+    parts.extend(
+        [
+            "重要：将用户回复与上述任务匹配。如果相关，执行期望操作。",
+            "不要重复询问上述已有信息。",
+            "=============================",
+        ]
+    )
     return "\n".join(parts)
 
 
@@ -382,7 +389,9 @@ async def fulfill_pending_replies(
     )
     count = result.rowcount
     if count:
-        logger.info("[PendingReply] Fulfilled %d pending replies for agent %s, sender %s", count, agent_id, sender_identity)
+        logger.info(
+            "[PendingReply] Fulfilled %d pending replies for agent %s, sender %s", count, agent_id, sender_identity
+        )
     return count
 
 

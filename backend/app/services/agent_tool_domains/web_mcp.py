@@ -1083,9 +1083,7 @@ async def _advanced_web_fetch(arguments: dict) -> str:
         if name == "anysearch":
             return await _anysearch_extract({"url": normalized_url})
         if name == "xcrawl":
-            return await _xcrawl_scrape(
-                {"url": normalized_url, "max_chars": max_chars, _SKIP_FIRECRAWL_FALLBACK: True}
-            )
+            return await _xcrawl_scrape({"url": normalized_url, "max_chars": max_chars, _SKIP_FIRECRAWL_FALLBACK: True})
         return render_tool_error(
             tool_name="advanced_web_fetch",
             error_class="bad_arguments",
@@ -1495,7 +1493,9 @@ async def _firecrawl_search(arguments: dict) -> str:
             )
 
         payload = data.get("data", data) if isinstance(data, dict) else data
-        raw_results = payload if isinstance(payload, list) else payload.get("results", []) if isinstance(payload, dict) else []
+        raw_results = (
+            payload if isinstance(payload, list) else payload.get("results", []) if isinstance(payload, dict) else []
+        )
         results = []
         for item in raw_results[:max_results]:
             if not isinstance(item, dict):
@@ -1590,13 +1590,7 @@ async def _tavily_extract(arguments: dict) -> str:
             )
         results = data.get("results", []) if isinstance(data, dict) else []
         first = next((item for item in results if isinstance(item, dict)), {})
-        text = (
-            first.get("raw_content")
-            or first.get("content")
-            or first.get("markdown")
-            or first.get("text")
-            or ""
-        )
+        text = first.get("raw_content") or first.get("content") or first.get("markdown") or first.get("text") or ""
         text = _truncate_result_text(text, max_chars)
         if not text:
             return render_tool_error(

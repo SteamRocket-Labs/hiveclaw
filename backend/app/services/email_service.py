@@ -91,6 +91,7 @@ def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     """Wrapper that forces AF_INET (IPv4) to avoid IPv6 failures in Docker."""
     return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 
+
 _original_getaddrinfo = socket.getaddrinfo
 _EMAIL_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -187,8 +188,7 @@ def validate_email_tool_request(
     if tool_name == "send_email":
         recipients = [item.strip() for item in str(arguments.get("to", "")).split(",") if item.strip()]
         invalid_recipients = [
-            recipient for recipient in recipients
-            if not _EMAIL_ADDRESS_RE.match(parseaddr(recipient)[1] or recipient)
+            recipient for recipient in recipients if not _EMAIL_ADDRESS_RE.match(parseaddr(recipient)[1] or recipient)
         ]
         if not recipients or invalid_recipients:
             return _render_email_error(
@@ -226,7 +226,8 @@ def validate_email_tool_request(
                     actionable_hint="Generate attachments inside the agent workspace before sending.",
                 )
             missing_attachments = [
-                rel_path for rel_path in attachments
+                rel_path
+                for rel_path in attachments
                 if not (workspace_path / rel_path).exists() or not (workspace_path / rel_path).is_file()
             ]
             if missing_attachments:
@@ -281,7 +282,9 @@ def _classify_email_exception(exc: Exception) -> tuple[str, bool, str | None]:
             False,
             "The mailbox sender identity was rejected. Check mailbox sender policy and provider permissions.",
         )
-    if isinstance(exc, smtplib.SMTPConnectError | smtplib.SMTPServerDisconnected | TimeoutError | socket.gaierror | ssl.SSLError):
+    if isinstance(
+        exc, smtplib.SMTPConnectError | smtplib.SMTPServerDisconnected | TimeoutError | socket.gaierror | ssl.SSLError
+    ):
         return (
             "provider_unavailable",
             True,
@@ -398,29 +401,29 @@ async def send_email(
                 msg.attach(part)
 
     try:
-      with _force_ipv4():
-        if cfg.get("smtp_ssl", True):
-            # Direct SSL connection (port 465)
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=context, timeout=15) as server:
-                server.login(addr, password)
-                recipients = [r.strip() for r in to.split(",")]
-                if cc:
-                    recipients += [r.strip() for r in cc.split(",")]
-                server.sendmail(addr, recipients, msg.as_string())
-        else:
-            # STARTTLS connection (port 587)
-            with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as server:
-                server.ehlo()
-                server.starttls(context=ssl.create_default_context())
-                server.ehlo()
-                server.login(addr, password)
-                recipients = [r.strip() for r in to.split(",")]
-                if cc:
-                    recipients += [r.strip() for r in cc.split(",")]
-                server.sendmail(addr, recipients, msg.as_string())
+        with _force_ipv4():
+            if cfg.get("smtp_ssl", True):
+                # Direct SSL connection (port 465)
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=context, timeout=15) as server:
+                    server.login(addr, password)
+                    recipients = [r.strip() for r in to.split(",")]
+                    if cc:
+                        recipients += [r.strip() for r in cc.split(",")]
+                    server.sendmail(addr, recipients, msg.as_string())
+            else:
+                # STARTTLS connection (port 587)
+                with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as server:
+                    server.ehlo()
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                    server.login(addr, password)
+                    recipients = [r.strip() for r in to.split(",")]
+                    if cc:
+                        recipients += [r.strip() for r in cc.split(",")]
+                    server.sendmail(addr, recipients, msg.as_string())
 
-        return f"✅ Email sent to {to}" + (f" (CC: {cc})" if cc else "")
+            return f"✅ Email sent to {to}" + (f" (CC: {cc})" if cc else "")
     except Exception as e:
         error_class, retryable, hint = _classify_email_exception(e)
         return _render_email_error(
@@ -466,54 +469,54 @@ async def read_emails(
     limit = min(limit, 30)  # Cap at 30
 
     try:
-      with _force_ipv4():
-        context = ssl.create_default_context()
-        with imaplib.IMAP4_SSL(cfg["imap_host"], cfg["imap_port"], ssl_context=context) as mail:
-            mail.login(addr, password)
-            mail.select(folder, readonly=True)
+        with _force_ipv4():
+            context = ssl.create_default_context()
+            with imaplib.IMAP4_SSL(cfg["imap_host"], cfg["imap_port"], ssl_context=context) as mail:
+                mail.login(addr, password)
+                mail.select(folder, readonly=True)
 
-            # Search
-            if search:
-                _, msg_nums = mail.search(None, search)
-            else:
-                _, msg_nums = mail.search(None, "ALL")
+                # Search
+                if search:
+                    _, msg_nums = mail.search(None, search)
+                else:
+                    _, msg_nums = mail.search(None, "ALL")
 
-            msg_ids = msg_nums[0].split()
-            if not msg_ids:
-                return "📭 No emails found."
+                msg_ids = msg_nums[0].split()
+                if not msg_ids:
+                    return "📭 No emails found."
 
-            # Get latest N emails
-            latest_ids = msg_ids[-limit:]
-            latest_ids.reverse()  # Newest first
+                # Get latest N emails
+                latest_ids = msg_ids[-limit:]
+                latest_ids.reverse()  # Newest first
 
-            results = []
-            for mid in latest_ids:
-                _, msg_data = mail.fetch(mid, "(RFC822)")
-                if not msg_data or not msg_data[0]:
-                    continue
-                raw = msg_data[0][1]
-                msg = email_lib.message_from_bytes(raw)
+                results = []
+                for mid in latest_ids:
+                    _, msg_data = mail.fetch(mid, "(RFC822)")
+                    if not msg_data or not msg_data[0]:
+                        continue
+                    raw = msg_data[0][1]
+                    msg = email_lib.message_from_bytes(raw)
 
-                from_addr = _decode_header_value(msg.get("From", ""))
-                subject = _decode_header_value(msg.get("Subject", "(No subject)"))
-                date_str = msg.get("Date", "")
-                message_id = msg.get("Message-ID", "")
-                body = _extract_body(msg)
-                # Truncate body for readability
-                if len(body) > 500:
-                    body = body[:500] + "..."
+                    from_addr = _decode_header_value(msg.get("From", ""))
+                    subject = _decode_header_value(msg.get("Subject", "(No subject)"))
+                    date_str = msg.get("Date", "")
+                    message_id = msg.get("Message-ID", "")
+                    body = _extract_body(msg)
+                    # Truncate body for readability
+                    if len(body) > 500:
+                        body = body[:500] + "..."
 
-                results.append(
-                    f"---\n"
-                    f"**From:** {from_addr}\n"
-                    f"**Subject:** {subject}\n"
-                    f"**Date:** {date_str}\n"
-                    f"**Message-ID:** {message_id}\n"
-                    f"**Body:**\n{body}"
-                )
+                    results.append(
+                        f"---\n"
+                        f"**From:** {from_addr}\n"
+                        f"**Subject:** {subject}\n"
+                        f"**Date:** {date_str}\n"
+                        f"**Message-ID:** {message_id}\n"
+                        f"**Body:**\n{body}"
+                    )
 
-            header = f"📬 {len(results)} email(s) from {folder}:\n\n"
-            return header + "\n\n".join(results)
+                header = f"📬 {len(results)} email(s) from {folder}:\n\n"
+                return header + "\n\n".join(results)
 
     except Exception as e:
         error_class, retryable, hint = _classify_email_exception(e)
@@ -559,60 +562,62 @@ async def reply_email(
     password = cfg["auth_code"]
 
     try:
-      with _force_ipv4():
-        # First, fetch the original email to get From/Subject
-        context = ssl.create_default_context()
-        original_from = ""
-        original_subject = ""
+        with _force_ipv4():
+            # First, fetch the original email to get From/Subject
+            context = ssl.create_default_context()
+            original_from = ""
+            original_subject = ""
 
-        with imaplib.IMAP4_SSL(cfg["imap_host"], cfg["imap_port"], ssl_context=context) as mail:
-            mail.login(addr, password)
-            mail.select(folder, readonly=True)
-            _, msg_nums = mail.search(None, f'HEADER Message-ID "{message_id}"')
-            msg_ids = msg_nums[0].split()
-            if not msg_ids:
-                return _render_email_error(
-                    tool_name="reply_email",
-                    config=config,
-                    error_class="not_found",
-                    message=f"Original email not found with Message-ID: {message_id}",
-                    actionable_hint="Use read_emails first and choose a Message-ID from the returned messages.",
-                )
+            with imaplib.IMAP4_SSL(cfg["imap_host"], cfg["imap_port"], ssl_context=context) as mail:
+                mail.login(addr, password)
+                mail.select(folder, readonly=True)
+                _, msg_nums = mail.search(None, f'HEADER Message-ID "{message_id}"')
+                msg_ids = msg_nums[0].split()
+                if not msg_ids:
+                    return _render_email_error(
+                        tool_name="reply_email",
+                        config=config,
+                        error_class="not_found",
+                        message=f"Original email not found with Message-ID: {message_id}",
+                        actionable_hint="Use read_emails first and choose a Message-ID from the returned messages.",
+                    )
 
-            _, msg_data = mail.fetch(msg_ids[0], "(RFC822)")
-            raw = msg_data[0][1]
-            original = email_lib.message_from_bytes(raw)
-            original_from = original.get("From", "")
-            original_subject = _decode_header_value(original.get("Subject", ""))
+                _, msg_data = mail.fetch(msg_ids[0], "(RFC822)")
+                raw = msg_data[0][1]
+                original = email_lib.message_from_bytes(raw)
+                original_from = original.get("From", "")
+                original_subject = _decode_header_value(original.get("Subject", ""))
 
-        # Build reply
-        reply_subject = original_subject if original_subject.lower().startswith("re:") else f"Re: {original_subject}"
+            # Build reply
+            reply_subject = (
+                original_subject if original_subject.lower().startswith("re:") else f"Re: {original_subject}"
+            )
 
-        reply_msg = MIMEMultipart()
-        reply_msg["From"] = addr
-        reply_msg["To"] = parseaddr(original_from)[1] or original_from
-        reply_msg["Subject"] = reply_subject
-        reply_msg["In-Reply-To"] = message_id
-        reply_msg["References"] = message_id
-        reply_msg["Message-ID"] = make_msgid()
+            reply_msg = MIMEMultipart()
+            reply_msg["From"] = addr
+            reply_msg["To"] = parseaddr(original_from)[1] or original_from
+            reply_msg["Subject"] = reply_subject
+            reply_msg["In-Reply-To"] = message_id
+            reply_msg["References"] = message_id
+            reply_msg["Message-ID"] = make_msgid()
 
-        reply_msg.attach(MIMEText(body, "plain", "utf-8"))
+            reply_msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        # Send
-        if cfg.get("smtp_ssl", True):
-            ctx = ssl.create_default_context()
-            with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=ctx, timeout=15) as server:
-                server.login(addr, password)
-                server.sendmail(addr, [reply_msg["To"]], reply_msg.as_string())
-        else:
-            with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as server:
-                server.ehlo()
-                server.starttls(context=ssl.create_default_context())
-                server.ehlo()
-                server.login(addr, password)
-                server.sendmail(addr, [reply_msg["To"]], reply_msg.as_string())
+            # Send
+            if cfg.get("smtp_ssl", True):
+                ctx = ssl.create_default_context()
+                with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=ctx, timeout=15) as server:
+                    server.login(addr, password)
+                    server.sendmail(addr, [reply_msg["To"]], reply_msg.as_string())
+            else:
+                with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=15) as server:
+                    server.ehlo()
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                    server.login(addr, password)
+                    server.sendmail(addr, [reply_msg["To"]], reply_msg.as_string())
 
-        return f"✅ Reply sent to {reply_msg['To']} (Subject: {reply_subject})"
+            return f"✅ Reply sent to {reply_msg['To']} (Subject: {reply_subject})"
 
     except Exception as e:
         error_class, retryable, hint = _classify_email_exception(e)
@@ -669,15 +674,15 @@ async def test_connection(config: dict) -> dict:
 
     # Test IMAP
     try:
-      with _force_ipv4():
-        context = ssl.create_default_context()
-        with imaplib.IMAP4_SSL(cfg["imap_host"], cfg["imap_port"], ssl_context=context) as mail:
-            mail.login(addr, password)
-            mail.select("INBOX", readonly=True)
-            _, msg_nums = mail.search(None, "ALL")
-            count = len(msg_nums[0].split()) if msg_nums[0] else 0
-            result["imap"] = f"✅ IMAP connected ({count} emails in INBOX)"
-            result["checks"]["imap"] = {"ok": True, "message": result["imap"]}
+        with _force_ipv4():
+            context = ssl.create_default_context()
+            with imaplib.IMAP4_SSL(cfg["imap_host"], cfg["imap_port"], ssl_context=context) as mail:
+                mail.login(addr, password)
+                mail.select("INBOX", readonly=True)
+                _, msg_nums = mail.search(None, "ALL")
+                count = len(msg_nums[0].split()) if msg_nums[0] else 0
+                result["imap"] = f"✅ IMAP connected ({count} emails in INBOX)"
+                result["checks"]["imap"] = {"ok": True, "message": result["imap"]}
     except imaplib.IMAP4.error as e:
         error_class, retryable, hint = _classify_email_exception(e)
         result["ok"] = False
@@ -703,28 +708,26 @@ async def test_connection(config: dict) -> dict:
 
     # Test SMTP
     try:
-      with _force_ipv4():
-        if cfg.get("smtp_ssl", True):
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=context, timeout=10) as server:
-                server.login(addr, password)
-                result["smtp"] = "✅ SMTP connected"
-                result["checks"]["smtp"] = {"ok": True, "message": result["smtp"]}
-        else:
-            with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=10) as server:
-                server.ehlo()
-                server.starttls(context=ssl.create_default_context())
-                server.ehlo()
-                server.login(addr, password)
-                result["smtp"] = "✅ SMTP connected"
-                result["checks"]["smtp"] = {"ok": True, "message": result["smtp"]}
+        with _force_ipv4():
+            if cfg.get("smtp_ssl", True):
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=context, timeout=10) as server:
+                    server.login(addr, password)
+                    result["smtp"] = "✅ SMTP connected"
+                    result["checks"]["smtp"] = {"ok": True, "message": result["smtp"]}
+            else:
+                with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=10) as server:
+                    server.ehlo()
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                    server.login(addr, password)
+                    result["smtp"] = "✅ SMTP connected"
+                    result["checks"]["smtp"] = {"ok": True, "message": result["smtp"]}
     except Exception as e:
         error_class, retryable, hint = _classify_email_exception(e)
         result["ok"] = False
         result["smtp"] = (
-            "❌ SMTP authentication failed"
-            if error_class == "auth_or_permission"
-            else f"❌ SMTP error: {str(e)[:150]}"
+            "❌ SMTP authentication failed" if error_class == "auth_or_permission" else f"❌ SMTP error: {str(e)[:150]}"
         )
         result["checks"]["smtp"] = {
             "ok": False,

@@ -135,7 +135,9 @@ async def test_chat_upload_skip_personal_kb_does_not_ingest(monkeypatch, tmp_pat
     _install_fake_markitdown(monkeypatch, "# Notes\n\nConverted markdown")
     monkeypatch.setattr(upload_api, "WORKSPACE_ROOT", tmp_path)
     monkeypatch.setattr(upload_api, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr(upload_api, "PersonalKnowledgeService", lambda: _FailingPersonalKnowledgeService(), raising=False)
+    monkeypatch.setattr(
+        upload_api, "PersonalKnowledgeService", lambda: _FailingPersonalKnowledgeService(), raising=False
+    )
 
     agent_id = uuid.uuid4()
     file = UploadFile(io.BytesIO(b"# notes"), filename="notes.md")
@@ -165,7 +167,9 @@ async def test_chat_upload_rejects_oversized_file_before_workspace_or_personal_k
     monkeypatch.setattr(upload_api, "WORKSPACE_ROOT", tmp_path)
     monkeypatch.setattr(upload_api, "CHAT_UPLOAD_MAX_BYTES", 4)
     monkeypatch.setattr(upload_api, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr(upload_api, "PersonalKnowledgeService", lambda: _FailingPersonalKnowledgeService(), raising=False)
+    monkeypatch.setattr(
+        upload_api, "PersonalKnowledgeService", lambda: _FailingPersonalKnowledgeService(), raising=False
+    )
 
     agent_id = uuid.uuid4()
     file = UploadFile(io.BytesIO(b"12345"), filename="large.md")

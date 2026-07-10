@@ -94,7 +94,9 @@ async def test_signal_resume_enumerates_waiting_runs_under_nonowner_rls(
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
         step = (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id))).scalar_one()
         task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
-        signal = (await session.execute(select(CoordinationSignal).where(CoordinationSignal.id == signal_id))).scalar_one_or_none()
+        signal = (
+            await session.execute(select(CoordinationSignal).where(CoordinationSignal.id == signal_id))
+        ).scalar_one_or_none()
 
     assert step.status == "done"
     assert "approved" in (step.result_ref or "")

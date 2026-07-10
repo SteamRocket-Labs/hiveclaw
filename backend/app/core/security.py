@@ -41,12 +41,13 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(
-    user_id: str, role: str, tenant_id: str | None = None, expires_delta: timedelta | None = None,
+    user_id: str,
+    role: str,
+    tenant_id: str | None = None,
+    expires_delta: timedelta | None = None,
 ) -> str:
     """Create a JWT access token."""
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode = {
         "sub": user_id,
         "role": role,
@@ -141,9 +142,7 @@ async def get_current_user(
             target_id = uuid.UUID(requested_tenant)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid X-Tenant-Id")
-        target_result = await db.execute(
-            select(Tenant.is_active).where(Tenant.id == target_id)
-        )
+        target_result = await db.execute(select(Tenant.is_active).where(Tenant.id == target_id))
         target_active = target_result.scalar_one_or_none()
         if target_active is None:
             raise HTTPException(status_code=404, detail="Target tenant not found")
@@ -184,6 +183,7 @@ def require_role(*allowed_roles: str):
         @router.post("/", dependencies=[Depends(require_role("org_admin", "platform_admin"))])
         async def my_endpoint(...):
     """
+
     async def _check(current_user=Depends(get_current_user)):
         if current_user.role not in allowed_roles:
             raise HTTPException(
@@ -191,12 +191,14 @@ def require_role(*allowed_roles: str):
                 detail=f"需要以下角色之一: {', '.join(allowed_roles)}",
             )
         return current_user
+
     return _check
 
 
 # ---------------------------------------------------------------------------
 # Refresh token helpers (Desktop Auth Bridge)
 # ---------------------------------------------------------------------------
+
 
 def _hash_refresh_token(raw_token: str) -> str:
     """SHA-256 hash of the raw refresh token for DB storage."""
@@ -219,12 +221,14 @@ async def create_refresh_token(
     token_hash = _hash_refresh_token(raw_token)
     expires_at = datetime.now(timezone.utc) + (expires_delta or timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
 
-    db.add(RefreshToken(
-        user_id=user_id,
-        token_hash=token_hash,
-        device_id=device_id,
-        expires_at=expires_at,
-    ))
+    db.add(
+        RefreshToken(
+            user_id=user_id,
+            token_hash=token_hash,
+            device_id=device_id,
+            expires_at=expires_at,
+        )
+    )
     await db.flush()
     return raw_token
 

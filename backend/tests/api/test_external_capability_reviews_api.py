@@ -219,7 +219,10 @@ def test_marketplace_source_routes_thread_admin_and_tenant(monkeypatch):
     )
     assert create_resp.status_code == 200
     assert create_resp.json() == source
-    assert client.post(f"/enterprise/external-capabilities/marketplace-sources/{source_id}/sync").json()["entries_seen"] == 1
+    assert (
+        client.post(f"/enterprise/external-capabilities/marketplace-sources/{source_id}/sync").json()["entries_seen"]
+        == 1
+    )
     assert client.get("/enterprise/external-capabilities/marketplace-entries").json() == [entry]
     submit_resp = client.post(f"/enterprise/external-capabilities/marketplace-entries/{entry_id}/submit-review")
     assert submit_resp.status_code == 200
@@ -318,8 +321,19 @@ def test_stage_cc_plugin_import_api_routes_source_through_adapter(monkeypatch, t
         "materialization": {"status": "quarantined"},
     }
 
-    async def fake_import(db_session, *, tenant_id, created_by_user_id, source_kind, source_ref,
-                          quarantine_root, package_name, ref, version, allowed_roots):
+    async def fake_import(
+        db_session,
+        *,
+        tenant_id,
+        created_by_user_id,
+        source_kind,
+        source_ref,
+        quarantine_root,
+        package_name,
+        ref,
+        version,
+        allowed_roots,
+    ):
         assert db_session is fake_db
         assert tenant_id == current_user.tenant_id
         assert created_by_user_id == current_user.id

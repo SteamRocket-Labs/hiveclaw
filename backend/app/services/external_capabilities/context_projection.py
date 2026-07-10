@@ -32,7 +32,9 @@ def build_agent_extension_context(
             plugin_names.append(bundle.plugin_name)
         for component in bundle.components:
             plugin_component_names.append(component.qualified_name)
-            _append_component(component, commands=commands, agents=agents, skills=skills, mcp_servers=mcp_servers, hooks=hooks)
+            _append_component(
+                component, commands=commands, agents=agents, skills=skills, mcp_servers=mcp_servers, hooks=hooks
+            )
 
     return AgentExtensionContextSnapshot(
         native_tool_names=tuple(native_tool_names),
@@ -68,4 +70,3 @@ def _append_component(
         mcp_servers.append(component.qualified_name)
     elif component.component_type == "hook":
         hooks.append(component.qualified_name)
-

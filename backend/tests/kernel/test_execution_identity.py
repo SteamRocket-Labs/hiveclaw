@@ -40,7 +40,12 @@ async def test_agent_kernel_sets_execution_identity_for_tool_resolution():
         return ""
 
     async def get_tools(_agent_id, _core_only):
-        return [{"type": "function", "function": {"name": "write_file", "description": "", "parameters": {"type": "object"}}}]
+        return [
+            {
+                "type": "function",
+                "function": {"name": "write_file", "description": "", "parameters": {"type": "object"}},
+            }
+        ]
 
     async def maybe_compress_messages(messages, **kwargs):
         return messages
@@ -62,23 +67,30 @@ async def test_agent_kernel_sets_execution_identity_for_tool_resolution():
             resolve_memory_context=resolve_memory_context,
             get_tools=get_tools,
             maybe_compress_messages=maybe_compress_messages,
-            create_client=lambda model: _FakeClient([
-                SimpleNamespace(
-                    content="",
-                    tool_calls=[{
-                        "id": "call_1",
-                        "function": {"name": "write_file", "arguments": '{"path":"workspace/notes.md","content":"x"}'},
-                    }],
-                    reasoning_content=None,
-                    usage={"total_tokens": 2},
-                ),
-                SimpleNamespace(
-                    content="done",
-                    tool_calls=[],
-                    reasoning_content=None,
-                    usage={"total_tokens": 1},
-                ),
-            ]),
+            create_client=lambda model: _FakeClient(
+                [
+                    SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": '{"path":"workspace/notes.md","content":"x"}',
+                                },
+                            }
+                        ],
+                        reasoning_content=None,
+                        usage={"total_tokens": 2},
+                    ),
+                    SimpleNamespace(
+                        content="done",
+                        tool_calls=[],
+                        reasoning_content=None,
+                        usage={"total_tokens": 1},
+                    ),
+                ]
+            ),
             execute_tool=execute_tool,
             persist_memory=persist_memory,
             record_token_usage=lambda *args, **kwargs: None,
@@ -91,7 +103,9 @@ async def test_agent_kernel_sets_execution_identity_for_tool_resolution():
     clear_execution_identity()
     result = await kernel.handle(
         InvocationRequest(
-            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None),
+            model=SimpleNamespace(
+                provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None
+            ),
             messages=[{"role": "user", "content": "hello"}],
             agent_name="Agent",
             role_description="desc",
@@ -134,7 +148,9 @@ async def test_runtime_invoker_captures_current_execution_identity(monkeypatch):
 
     result = await invoke_agent(
         AgentInvocationRequest(
-            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None),
+            model=SimpleNamespace(
+                provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None
+            ),
             messages=[{"role": "user", "content": "hello"}],
             agent_name="Agent",
             role_description="desc",

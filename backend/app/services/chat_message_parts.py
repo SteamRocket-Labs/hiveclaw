@@ -270,57 +270,65 @@ def serialize_chat_message(
                     entry["eventRetryable"] = data["retryable"]
                 if data.get("retry_reason"):
                     entry["eventRetryReason"] = data["retry_reason"]
-                entry["parts"] = [_build_event_part(
-                    "permission",
-                    event_title,
-                    event_text,
-                    status=event_status,
-                    tool_name=data.get("tool_name"),
-                    approval_id=data.get("approval_id"),
-                    security_zone=data.get("security_zone"),
-                    capability=data.get("capability"),
-                    approval_required=data.get("approval_required"),
-                    reason=data.get("reason"),
-                    next_step=data.get("next_step"),
-                    retryable=data.get("retryable"),
-                    retry_reason=data.get("retry_reason"),
-                    permission_request_id=data.get("permission_request_id"),
-                    permission_request=data.get("permission_request"),
-                )]
+                entry["parts"] = [
+                    _build_event_part(
+                        "permission",
+                        event_title,
+                        event_text,
+                        status=event_status,
+                        tool_name=data.get("tool_name"),
+                        approval_id=data.get("approval_id"),
+                        security_zone=data.get("security_zone"),
+                        capability=data.get("capability"),
+                        approval_required=data.get("approval_required"),
+                        reason=data.get("reason"),
+                        next_step=data.get("next_step"),
+                        retryable=data.get("retryable"),
+                        retry_reason=data.get("retry_reason"),
+                        permission_request_id=data.get("permission_request_id"),
+                        permission_request=data.get("permission_request"),
+                    )
+                ]
             elif event_type == "session_compact":
-                entry["parts"] = [_build_event_part(
-                    "session_compact",
-                    event_title,
-                    event_text,
-                    status=event_status,
-                    original_message_count=data.get("original_message_count"),
-                    kept_message_count=data.get("kept_message_count"),
-                    continuity_sections_injected=data.get("continuity_sections_injected"),
-                )]
+                entry["parts"] = [
+                    _build_event_part(
+                        "session_compact",
+                        event_title,
+                        event_text,
+                        status=event_status,
+                        original_message_count=data.get("original_message_count"),
+                        kept_message_count=data.get("kept_message_count"),
+                        continuity_sections_injected=data.get("continuity_sections_injected"),
+                    )
+                ]
             elif event_type == "tool_group_activation":
                 # Historical reader shim: normalize legacy "packs" payload to
                 # "tool_groups" on read while still surfacing the old key.
                 _tool_groups = data.get("tool_groups")
                 if _tool_groups is None:
                     _tool_groups = data.get("packs")
-                entry["parts"] = [_build_event_part(
-                    "tool_group_activation",
-                    event_title,
-                    event_text,
-                    status=event_status,
-                    packs=data.get("packs"),
-                    tool_groups=_tool_groups,
-                    skill_name=data.get("skill_name"),
-                    trigger_tool=data.get("trigger_tool"),
-                )]
+                entry["parts"] = [
+                    _build_event_part(
+                        "tool_group_activation",
+                        event_title,
+                        event_text,
+                        status=event_status,
+                        packs=data.get("packs"),
+                        tool_groups=_tool_groups,
+                        skill_name=data.get("skill_name"),
+                        trigger_tool=data.get("trigger_tool"),
+                    )
+                ]
             else:
-                entry["parts"] = [_build_event_part(
-                    event_type,
-                    event_title,
-                    event_text,
-                    status=event_status,
-                    **_session_native_event_metadata(data),
-                )]
+                entry["parts"] = [
+                    _build_event_part(
+                        event_type,
+                        event_title,
+                        event_text,
+                        status=event_status,
+                        **_session_native_event_metadata(data),
+                    )
+                ]
         else:
             entry["parts"] = _build_text_parts(message.content or "", thinking)
     else:
@@ -345,7 +353,7 @@ def split_inline_tools(content: str, sender_name: str | None = None) -> list[dic
     last_end = 0
 
     for match in pattern.finditer(content):
-        text_before = content[last_end:match.start()].strip()
+        text_before = content[last_end : match.start()].strip()
         if text_before:
             entry = {
                 "role": "assistant",
@@ -372,13 +380,15 @@ def split_inline_tools(content: str, sender_name: str | None = None) -> list[dic
             "toolArgs": tool_args,
             "toolStatus": "done",
             "toolResult": "",
-            "parts": [{
-                "type": "tool_call",
-                "name": tool_name,
-                "args": tool_args,
-                "status": "done",
-                "result": "",
-            }],
+            "parts": [
+                {
+                    "type": "tool_call",
+                    "name": tool_name,
+                    "args": tool_args,
+                    "status": "done",
+                    "result": "",
+                }
+            ],
         }
         if sender_name:
             tool_entry["sender_name"] = sender_name

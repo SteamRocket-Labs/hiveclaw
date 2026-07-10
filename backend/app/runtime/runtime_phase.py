@@ -39,9 +39,7 @@ class RuntimePhase(str, Enum):
     CANCELLED = "cancelled"
 
 
-TERMINAL_PHASES: frozenset[RuntimePhase] = frozenset(
-    {RuntimePhase.DONE, RuntimePhase.FAILED, RuntimePhase.CANCELLED}
-)
+TERMINAL_PHASES: frozenset[RuntimePhase] = frozenset({RuntimePhase.DONE, RuntimePhase.FAILED, RuntimePhase.CANCELLED})
 
 PHASE_EVENT_TYPE = "phase"
 
@@ -103,9 +101,7 @@ class RunPhaseEmitter:
         self._current = resolved
         self._current_detail = normalized_detail
         try:
-            await self._broadcast(
-                build_phase_event(resolved, run_id=self._run_id, detail=normalized_detail)
-            )
+            await self._broadcast(build_phase_event(resolved, run_id=self._run_id, detail=normalized_detail))
         except Exception as exc:  # noqa: BLE001 - UI signal must not break the run
             logger.warning(
                 "[RuntimePhase] broadcast failed for run {} phase {}: {}",

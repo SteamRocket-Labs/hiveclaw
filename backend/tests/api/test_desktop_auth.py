@@ -83,12 +83,16 @@ def _build_app() -> tuple[FastAPI, _FakeDB]:
 def test_authorize_redirects_to_feishu():
     """authorize must redirect to Feishu OAuth with CSRF nonce in state (not device_id)."""
     app, _ = _build_app()
-    with patch.object(desktop_auth_mod, "settings", SimpleNamespace(
-        FEISHU_APP_ID="cli_test_app_id",
-        FEISHU_APP_SECRET="secret",
-        FEISHU_REDIRECT_URI="",
-        DESKTOP_DEEP_LINK_SCHEME="copaw",
-    )):
+    with patch.object(
+        desktop_auth_mod,
+        "settings",
+        SimpleNamespace(
+            FEISHU_APP_ID="cli_test_app_id",
+            FEISHU_APP_SECRET="secret",
+            FEISHU_REDIRECT_URI="",
+            DESKTOP_DEEP_LINK_SCHEME="copaw",
+        ),
+    ):
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/auth/feishu/authorize?device_id=dev123", follow_redirects=False)
 
@@ -112,11 +116,15 @@ def test_authorize_stores_nonce_in_fallback():
         raise ConnectionError("no redis in test")
 
     with (
-        patch.object(desktop_auth_mod, "settings", SimpleNamespace(
-            FEISHU_APP_ID="cli_test_app_id",
-            FEISHU_APP_SECRET="secret",
-            DESKTOP_DEEP_LINK_SCHEME="copaw",
-        )),
+        patch.object(
+            desktop_auth_mod,
+            "settings",
+            SimpleNamespace(
+                FEISHU_APP_ID="cli_test_app_id",
+                FEISHU_APP_SECRET="secret",
+                DESKTOP_DEEP_LINK_SCHEME="copaw",
+            ),
+        ),
         patch("app.core.events.get_redis", new=_no_redis),
     ):
         client = TestClient(app, raise_server_exceptions=False)
@@ -131,11 +139,15 @@ def test_authorize_stores_nonce_in_fallback():
 def test_authorize_returns_503_when_feishu_not_configured():
     """authorize must fail gracefully if Feishu app is not configured."""
     app, _ = _build_app()
-    with patch.object(desktop_auth_mod, "settings", SimpleNamespace(
-        FEISHU_APP_ID="",
-        FEISHU_APP_SECRET="",
-        DESKTOP_DEEP_LINK_SCHEME="copaw",
-    )):
+    with patch.object(
+        desktop_auth_mod,
+        "settings",
+        SimpleNamespace(
+            FEISHU_APP_ID="",
+            FEISHU_APP_SECRET="",
+            DESKTOP_DEEP_LINK_SCHEME="copaw",
+        ),
+    ):
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/auth/feishu/authorize?device_id=dev1")
 
@@ -162,12 +174,21 @@ def test_callback_desktop_redirects_to_deep_link():
     _oauth_state_fallback[test_nonce] = "dev1"
 
     with (
-        patch.object(desktop_auth_mod.feishu_auth_provider, "authenticate_with_code", new_callable=AsyncMock, return_value=(_FAKE_USER, "jwt_access_token_here")),
-        patch.object(desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh_token_here"),
+        patch.object(
+            desktop_auth_mod.feishu_auth_provider,
+            "authenticate_with_code",
+            new_callable=AsyncMock,
+            return_value=(_FAKE_USER, "jwt_access_token_here"),
+        ),
+        patch.object(
+            desktop_auth_mod, "create_refresh_token", new_callable=AsyncMock, return_value="raw_refresh_token_here"
+        ),
         patch.object(desktop_auth_mod, "settings", SimpleNamespace(DESKTOP_DEEP_LINK_SCHEME="copaw")),
     ):
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get(f"/auth/feishu/callback-desktop?code=auth_code_123&state={test_nonce}", follow_redirects=False)
+        resp = client.get(
+            f"/auth/feishu/callback-desktop?code=auth_code_123&state={test_nonce}", follow_redirects=False
+        )
 
     assert resp.status_code == 302
     location = resp.headers["location"]
@@ -197,7 +218,9 @@ def test_callback_desktop_pins_user_tenant_before_refresh_token_writes():
         patch.object(desktop_auth_mod, "settings", SimpleNamespace(DESKTOP_DEEP_LINK_SCHEME="copaw")),
     ):
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get(f"/auth/feishu/callback-desktop?code=auth_code_123&state={test_nonce}", follow_redirects=False)
+        resp = client.get(
+            f"/auth/feishu/callback-desktop?code=auth_code_123&state={test_nonce}", follow_redirects=False
+        )
 
     assert resp.status_code == 302
     assert any(f"SET LOCAL app.current_tenant_id = '{_TENANT_ID}'" in stmt for stmt in fake_db.statements)
@@ -223,7 +246,12 @@ def test_callback_desktop_handles_feishu_error_without_leaking():
     app, _ = _build_app()
 
     with (
-        patch.object(desktop_auth_mod.feishu_auth_provider, "authenticate_with_code", new_callable=AsyncMock, side_effect=RuntimeError("secret internal error: API key xxx")),
+        patch.object(
+            desktop_auth_mod.feishu_auth_provider,
+            "authenticate_with_code",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("secret internal error: API key xxx"),
+        ),
         patch.object(desktop_auth_mod, "settings", SimpleNamespace(DESKTOP_DEEP_LINK_SCHEME="copaw")),
     ):
         client = TestClient(app, raise_server_exceptions=False)
@@ -244,15 +272,20 @@ def test_exchange_returns_new_access_token():
     """Valid refresh token exchange must return a new access token."""
     app, _ = _build_app()
     token_row = SimpleNamespace(
-        user_id=_USER_ID, revoked=False,
+        user_id=_USER_ID,
+        revoked=False,
         expires_at=datetime.now(timezone.utc) + timedelta(days=7),
     )
 
     with patch.object(desktop_auth_mod, "verify_refresh_token", new_callable=AsyncMock, return_value=token_row):
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post("/auth/desktop/exchange", json={
-            "refresh_token": "valid_raw_token", "device_id": "dev1",
-        })
+        resp = client.post(
+            "/auth/desktop/exchange",
+            json={
+                "refresh_token": "valid_raw_token",
+                "device_id": "dev1",
+            },
+        )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -263,6 +296,7 @@ def test_exchange_returns_new_access_token():
 def test_exchange_rejects_invalid_refresh_token():
     """Invalid refresh token must return 401."""
     from fastapi import HTTPException
+
     app, _ = _build_app()
 
     async def _reject(*a, **kw):
@@ -270,9 +304,13 @@ def test_exchange_rejects_invalid_refresh_token():
 
     with patch.object(desktop_auth_mod, "verify_refresh_token", new=_reject):
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post("/auth/desktop/exchange", json={
-            "refresh_token": "garbage_token", "device_id": "dev1",
-        })
+        resp = client.post(
+            "/auth/desktop/exchange",
+            json={
+                "refresh_token": "garbage_token",
+                "device_id": "dev1",
+            },
+        )
 
     assert resp.status_code == 401
 
@@ -280,6 +318,7 @@ def test_exchange_rejects_invalid_refresh_token():
 def test_exchange_rejects_wrong_device_id():
     """Exchange with a different device_id than the token was issued for must return 401."""
     from fastapi import HTTPException
+
     app, _ = _build_app()
 
     async def _reject_device(*a, **kw):
@@ -287,9 +326,13 @@ def test_exchange_rejects_wrong_device_id():
 
     with patch.object(desktop_auth_mod, "verify_refresh_token", new=_reject_device):
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post("/auth/desktop/exchange", json={
-            "refresh_token": "valid_token_wrong_device", "device_id": "attacker_device",
-        })
+        resp = client.post(
+            "/auth/desktop/exchange",
+            json={
+                "refresh_token": "valid_token_wrong_device",
+                "device_id": "attacker_device",
+            },
+        )
 
     assert resp.status_code == 401
     assert "Device mismatch" in resp.json()["detail"]
@@ -299,15 +342,20 @@ def test_exchange_rejects_inactive_user():
     """Exchange must fail if the user has been deactivated."""
     app, _ = _build_app()
     token_row = SimpleNamespace(
-        user_id=uuid4(), revoked=False,
+        user_id=uuid4(),
+        revoked=False,
         expires_at=datetime.now(timezone.utc) + timedelta(days=7),
     )
 
     with patch.object(desktop_auth_mod, "verify_refresh_token", new_callable=AsyncMock, return_value=token_row):
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post("/auth/desktop/exchange", json={
-            "refresh_token": "token_for_gone_user", "device_id": "dev1",
-        })
+        resp = client.post(
+            "/auth/desktop/exchange",
+            json={
+                "refresh_token": "token_for_gone_user",
+                "device_id": "dev1",
+            },
+        )
 
     assert resp.status_code == 401
 
@@ -321,10 +369,13 @@ def test_logout_revokes_refresh_token():
 
     with patch.object(desktop_auth_mod, "revoke_refresh_token", new_callable=AsyncMock) as mock_revoke:
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post("/auth/desktop/logout", json={
-            "refresh_token": "token_to_revoke",
-            "device_id": "dev1",
-        })
+        resp = client.post(
+            "/auth/desktop/logout",
+            json={
+                "refresh_token": "token_to_revoke",
+                "device_id": "dev1",
+            },
+        )
 
     assert resp.status_code == 204
     mock_revoke.assert_called_once()

@@ -36,6 +36,7 @@ PROMPT_CACHE_BOUNDARY = "__PROMPT_DYNAMIC_BOUNDARY__"
 
 # ── Cache metrics (provider-agnostic) ───────────────────────────
 
+
 @dataclass(slots=True)
 class CacheMetrics:
     """Structured cache observation extracted from an LLM response."""
@@ -70,6 +71,7 @@ class CacheMetrics:
 # explicit `cache_control` content blocks? Capability metadata is the source
 # of truth; unknown providers default to safe passthrough.
 
+
 def _supports_cache_control(provider: str) -> bool:
     """Does this provider's API accept cache_control markers in content blocks?
 
@@ -89,6 +91,7 @@ def _supports_cache_control(provider: str) -> bool:
 
 
 # ── Hint injection ──────────────────────────────────────────────
+
 
 def apply_cache_hints(
     messages: list,
@@ -229,6 +232,7 @@ def _clone_msg(msg, **overrides):
 # Cache miss (DeepSeek-specific):
 #   prompt_cache_miss_tokens                 — DeepSeek
 
+
 def _probe_int(usage: dict, *keys: str) -> int:
     """Try multiple keys in order, return the first non-zero int found."""
     for key in keys:
@@ -260,10 +264,10 @@ def extract_cache_metrics(usage: dict | None, provider: str = "") -> CacheMetric
     merged = {**usage, **details}
     metrics.cache_read_tokens = _probe_int(
         merged,
-        "cache_read_input_tokens",     # Anthropic, MiniMax (Anthropic-compat)
-        "cached_tokens",               # OpenAI, Zhipu GLM, MiniMax (OAI), Kimi
-        "prompt_cache_hit_tokens",     # DeepSeek
-        "cachedContentTokenCount",     # Gemini
+        "cache_read_input_tokens",  # Anthropic, MiniMax (Anthropic-compat)
+        "cached_tokens",  # OpenAI, Zhipu GLM, MiniMax (OAI), Kimi
+        "prompt_cache_hit_tokens",  # DeepSeek
+        "cachedContentTokenCount",  # Gemini
     )
 
     # ── Cache write tokens ──
@@ -275,9 +279,9 @@ def extract_cache_metrics(usage: dict | None, provider: str = "") -> CacheMetric
     # ── Total input tokens ──
     metrics.total_input_tokens = _probe_int(
         usage,
-        "input_tokens",        # Anthropic, generic
-        "prompt_tokens",       # OpenAI, DeepSeek, generic
-        "promptTokenCount",    # Gemini
+        "input_tokens",  # Anthropic, generic
+        "prompt_tokens",  # OpenAI, DeepSeek, generic
+        "promptTokenCount",  # Gemini
     )
     # DeepSeek special: total = hit + miss
     if metrics.total_input_tokens == 0:

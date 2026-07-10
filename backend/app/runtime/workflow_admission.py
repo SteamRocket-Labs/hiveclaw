@@ -107,7 +107,12 @@ def _validate_args(compiled: CompiledWorkflow, args: dict) -> None:
 
 
 def _normalize_arg_value(spec: ArgSpec, value: Any) -> Any:
-    if spec.type == "array" and isinstance(value, dict) and set(value) == {"item"} and isinstance(value.get("item"), list):
+    if (
+        spec.type == "array"
+        and isinstance(value, dict)
+        and set(value) == {"item"}
+        and isinstance(value.get("item"), list)
+    ):
         return value["item"]
     return value
 

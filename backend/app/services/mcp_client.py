@@ -214,7 +214,9 @@ class MCPClient:
 
                 # Phase 2: MCP handshake — initialize + initialized notification
                 init_body = {
-                    "jsonrpc": "2.0", "id": 0, "method": "initialize",
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "method": "initialize",
                     "params": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
@@ -290,11 +292,7 @@ class MCPClient:
             self._transport = "sse"
             return result
         except Exception as sse_err:
-            raise Exception(
-                f"Both transports failed. "
-                f"Streamable HTTP: {streamable_err}; "
-                f"SSE: {sse_err}"
-            )
+            raise Exception(f"Both transports failed. Streamable HTTP: {streamable_err}; SSE: {sse_err}")
 
     # ── Public API ───────────────────────────────────────────────
 

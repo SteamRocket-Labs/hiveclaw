@@ -45,9 +45,7 @@ class GuardPolicyUpdate(BaseModel):
 
 async def _get_or_create_policy(db: AsyncSession, tenant_id: uuid.UUID) -> GuardPolicy:
     """Get existing policy or create a default empty one for the tenant."""
-    result = await db.execute(
-        select(GuardPolicy).where(GuardPolicy.tenant_id == tenant_id)
-    )
+    result = await db.execute(select(GuardPolicy).where(GuardPolicy.tenant_id == tenant_id))
     policy = result.scalar_one_or_none()
     if not policy:
         policy = GuardPolicy(tenant_id=tenant_id)

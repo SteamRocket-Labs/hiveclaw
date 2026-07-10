@@ -71,12 +71,14 @@ async def test_org_admin_delete_own_tenant_detaches_users_and_requires_setup():
     )
     running_agent = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, status="running")
     target_tenant = _tenant(tenant_id)
-    db = _FakeDB([
-        _ScalarResult(target_tenant),
-        _ListResult([running_agent]),
-        _ListResult([current_user, member]),
-        _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
-    ])
+    db = _FakeDB(
+        [
+            _ScalarResult(target_tenant),
+            _ListResult([running_agent]),
+            _ListResult([current_user, member]),
+            _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
+        ]
+    )
 
     result = await tenants_api.delete_tenant(
         tenant_id=tenant_id,
@@ -124,13 +126,15 @@ async def test_platform_admin_delete_tenant_returns_fallback_and_rehomes_platfor
     running_agent = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, status="running")
     target_tenant = _tenant(tenant_id)
     fallback_tenant = _tenant(fallback_tenant_id)
-    db = _FakeDB([
-        _ScalarResult(target_tenant),
-        _ScalarResult(fallback_tenant),
-        _ListResult([running_agent]),
-        _ListResult([current_user, another_platform_admin, member]),
-        _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
-    ])
+    db = _FakeDB(
+        [
+            _ScalarResult(target_tenant),
+            _ScalarResult(fallback_tenant),
+            _ListResult([running_agent]),
+            _ListResult([current_user, another_platform_admin, member]),
+            _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
+        ]
+    )
     bypass_calls: list[dict] = []
 
     @contextlib.asynccontextmanager

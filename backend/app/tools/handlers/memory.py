@@ -222,7 +222,9 @@ def _maybe_apply_t3_platform_gate(*, agent_id: uuid.UUID, data_root: Path, job_i
         adapter="agent_args",
     )
 )
-def submit_t3_consolidation_pitch(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
+def submit_t3_consolidation_pitch(
+    agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None
+) -> str:
     from app.config import get_settings
     from app.memory.t3_consolidation import write_t3_job_artifact
 
@@ -474,7 +476,9 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
         explicit_entry = explicit_entries[0] if explicit_entries else None
         if explicit_entry is not None and explicit_entry.status == "active":
             raw_refs = arguments.get("source_refs")
-            source_refs = [str(ref).strip() for ref in raw_refs if str(ref).strip()] if isinstance(raw_refs, list) else []
+            source_refs = (
+                [str(ref).strip() for ref in raw_refs if str(ref).strip()] if isinstance(raw_refs, list) else []
+            )
             source_refs.extend([f"memory:{memory_id}", "tool:update_memory"])
             result = await write_explicit_memory_overlay(
                 agent_id,
@@ -637,7 +641,9 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
             timestamp=row.get("timestamp", ""),
             metadata={},
         )
-        for row in load_plane_entries(data_root, agent_id, [entry_id for entry_id in ids if entry_id not in explicit_ids])
+        for row in load_plane_entries(
+            data_root, agent_id, [entry_id for entry_id in ids if entry_id not in explicit_ids]
+        )
     ]
     if not entries and not explicit_entries:
         return f"No memory entries found for ids: {', '.join(ids)}"
@@ -735,7 +741,7 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
     from pathlib import Path
 
     from app.config import get_settings
-    
+
     query = (arguments.get("query") or "").strip()
     if not query:
         return "[Error] query is required."
@@ -768,7 +774,7 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                 target_hint = f.get("target_hint", "unknown")
                 results.append(
                     f"- id={entry_id} [{cat}] source=explicit_overlay target={target_hint} "
-                    f"{preview} load_memory(ids=[\"{entry_id}\"])"
+                    f'{preview} load_memory(ids=["{entry_id}"])'
                 )
 
         from app.memory.plane_read import search_plane_facts

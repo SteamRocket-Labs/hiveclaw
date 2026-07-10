@@ -43,9 +43,13 @@ class _FakeAsyncClient:
 async def test_get_tenant_access_token_prefers_tenant_token(monkeypatch):
     from app.services.feishu_service import FeishuService
 
-    fake_client = _FakeAsyncClient([
-        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token", "app_access_token": "app-token"}),
-    ])
+    fake_client = _FakeAsyncClient(
+        [
+            _FakeResponse(
+                status_code=200, payload={"tenant_access_token": "tenant-token", "app_access_token": "app-token"}
+            ),
+        ]
+    )
     monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
 
     service = FeishuService()
@@ -60,10 +64,12 @@ async def test_get_tenant_access_token_prefers_tenant_token(monkeypatch):
 async def test_send_message_raises_with_stage_on_invalid_json(monkeypatch):
     from app.services.feishu_service import FeishuService
 
-    fake_client = _FakeAsyncClient([
-        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
-        _FakeResponse(status_code=200, json_error=ValueError("not json")),
-    ])
+    fake_client = _FakeAsyncClient(
+        [
+            _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
+            _FakeResponse(status_code=200, json_error=ValueError("not json")),
+        ]
+    )
     monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
 
     service = FeishuService()
@@ -74,7 +80,7 @@ async def test_send_message_raises_with_stage_on_invalid_json(monkeypatch):
             "tenant-secret",
             "ou_xxx",
             "text",
-            "{\"text\":\"hi\"}",
+            '{"text":"hi"}',
             receive_id_type="open_id",
             stage="send_text",
         )
@@ -84,10 +90,12 @@ async def test_send_message_raises_with_stage_on_invalid_json(monkeypatch):
 async def test_send_approval_card_uses_delivery_id_type_and_agent_name(monkeypatch):
     from app.services.feishu_service import FeishuService
 
-    fake_client = _FakeAsyncClient([
-        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
-        _FakeResponse(status_code=200, payload={"code": 0, "data": {"message_id": "om_1"}}),
-    ])
+    fake_client = _FakeAsyncClient(
+        [
+            _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
+            _FakeResponse(status_code=200, payload={"code": 0, "data": {"message_id": "om_1"}}),
+        ]
+    )
     monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
 
     service = FeishuService()
@@ -112,10 +120,12 @@ async def test_send_approval_card_uses_delivery_id_type_and_agent_name(monkeypat
 async def test_create_approval_instance_uses_user_id_field_for_tenant_user_ids(monkeypatch):
     from app.services.feishu_service import FeishuService
 
-    fake_client = _FakeAsyncClient([
-        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
-        _FakeResponse(status_code=200, payload={"code": 0, "data": {"instance_code": "ins_user"}}),
-    ])
+    fake_client = _FakeAsyncClient(
+        [
+            _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
+            _FakeResponse(status_code=200, payload={"code": 0, "data": {"instance_code": "ins_user"}}),
+        ]
+    )
     monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
 
     service = FeishuService()
@@ -124,7 +134,7 @@ async def test_create_approval_instance_uses_user_id_field_for_tenant_user_ids(m
         "tenant-secret",
         "approval-code",
         "u_submitter",
-        "{\"foo\":\"bar\"}",
+        '{"foo":"bar"}',
     )
 
     assert payload == {"instance_code": "ins_user"}
@@ -132,7 +142,7 @@ async def test_create_approval_instance_uses_user_id_field_for_tenant_user_ids(m
     assert create_call[2]["json"] == {
         "approval_code": "approval-code",
         "user_id": "u_submitter",
-        "form": "{\"foo\":\"bar\"}",
+        "form": '{"foo":"bar"}',
     }
 
 
@@ -140,10 +150,12 @@ async def test_create_approval_instance_uses_user_id_field_for_tenant_user_ids(m
 async def test_create_approval_instance_keeps_open_id_field_for_open_ids(monkeypatch):
     from app.services.feishu_service import FeishuService
 
-    fake_client = _FakeAsyncClient([
-        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
-        _FakeResponse(status_code=200, payload={"code": 0, "data": {"instance_code": "ins_open"}}),
-    ])
+    fake_client = _FakeAsyncClient(
+        [
+            _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
+            _FakeResponse(status_code=200, payload={"code": 0, "data": {"instance_code": "ins_open"}}),
+        ]
+    )
     monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
 
     service = FeishuService()
@@ -152,7 +164,7 @@ async def test_create_approval_instance_keeps_open_id_field_for_open_ids(monkeyp
         "tenant-secret",
         "approval-code",
         "ou_submitter",
-        "{\"foo\":\"bar\"}",
+        '{"foo":"bar"}',
     )
 
     assert payload == {"instance_code": "ins_open"}
@@ -160,7 +172,7 @@ async def test_create_approval_instance_keeps_open_id_field_for_open_ids(monkeyp
     assert create_call[2]["json"] == {
         "approval_code": "approval-code",
         "open_id": "ou_submitter",
-        "form": "{\"foo\":\"bar\"}",
+        "form": '{"foo":"bar"}',
     }
 
 
@@ -168,23 +180,25 @@ async def test_create_approval_instance_keeps_open_id_field_for_open_ids(monkeyp
 async def test_get_approval_definition_fetches_form_schema(monkeypatch):
     from app.services.feishu_service import FeishuService
 
-    fake_client = _FakeAsyncClient([
-        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
-        _FakeResponse(
-            status_code=200,
-            payload={
-                "code": 0,
-                "data": {
-                    "approval_code": "approval-code",
-                    "form": {
-                        "form_content": (
-                            '[{"id":"widget_project","name":"项目名称","type":"input","required":true}]'
-                        )
+    fake_client = _FakeAsyncClient(
+        [
+            _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
+            _FakeResponse(
+                status_code=200,
+                payload={
+                    "code": 0,
+                    "data": {
+                        "approval_code": "approval-code",
+                        "form": {
+                            "form_content": (
+                                '[{"id":"widget_project","name":"项目名称","type":"input","required":true}]'
+                            )
+                        },
                     },
                 },
-            },
-        ),
-    ])
+            ),
+        ]
+    )
     monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
 
     service = FeishuService()
@@ -201,10 +215,12 @@ async def test_get_approval_definition_fetches_form_schema(monkeypatch):
 async def test_patch_message_raises_with_stage_on_business_error(monkeypatch):
     from app.services.feishu_service import FeishuService
 
-    fake_client = _FakeAsyncClient([
-        _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
-        _FakeResponse(status_code=200, payload={"code": 999001, "msg": "rate limited"}),
-    ])
+    fake_client = _FakeAsyncClient(
+        [
+            _FakeResponse(status_code=200, payload={"tenant_access_token": "tenant-token"}),
+            _FakeResponse(status_code=200, payload={"code": 999001, "msg": "rate limited"}),
+        ]
+    )
     monkeypatch.setattr("app.services.feishu_service.httpx.AsyncClient", lambda *args, **kwargs: fake_client)
 
     service = FeishuService()
@@ -214,6 +230,6 @@ async def test_patch_message_raises_with_stage_on_business_error(monkeypatch):
             "tenant-app",
             "tenant-secret",
             "om_dc132",
-            "{\"content\":\"...\"}",
+            '{"content":"..."}',
             stage="stream_patch",
         )

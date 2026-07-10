@@ -1394,10 +1394,16 @@ def _validate_activation_keys(*, labels: ET.Element | None, issues: list[str]) -
         ):
             issues.append("labels.md activation_keys temporal_hint kind must be controlled enum")
     for decision in node.findall("decision"):
-        if _xml_text(decision) and (decision.attrib.get("status") or "").strip() not in _ALLOWED_ACTIVATION_DECISION_STATUSES:
+        if (
+            _xml_text(decision)
+            and (decision.attrib.get("status") or "").strip() not in _ALLOWED_ACTIVATION_DECISION_STATUSES
+        ):
             issues.append("labels.md activation_keys decision status must be controlled enum")
     for relation_seed in node.findall("relation_seed"):
-        if _xml_text(relation_seed) and (relation_seed.attrib.get("rel") or "").strip() not in _ALLOWED_ACTIVATION_RELATION_RELS:
+        if (
+            _xml_text(relation_seed)
+            and (relation_seed.attrib.get("rel") or "").strip() not in _ALLOWED_ACTIVATION_RELATION_RELS
+        ):
             issues.append("labels.md activation_keys relation_seed rel must be controlled enum")
     for risk_flag in node.findall("risk_flag"):
         if _xml_text(risk_flag) and _xml_text(risk_flag) not in _ALLOWED_ACTIVATION_RISK_FLAGS:

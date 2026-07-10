@@ -14,9 +14,7 @@ class ConfigRevision(Base):
     """Immutable snapshot of a versionable entity's configuration."""
 
     __tablename__ = "config_revisions"
-    __table_args__ = (
-        UniqueConstraint("entity_type", "entity_id", "version", name="uq_config_revision_version"),
-    )
+    __table_args__ = (UniqueConstraint("entity_type", "entity_id", "version", name="uq_config_revision_version"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     entity_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)

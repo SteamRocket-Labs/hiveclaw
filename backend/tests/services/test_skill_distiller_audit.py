@@ -31,11 +31,13 @@ def capture_audit_writes(monkeypatch):
     captured: list[dict] = []
 
     async def _fake_write(action, details=None, agent_id=None, user_id=None):
-        captured.append({
-            "action": action,
-            "details": details,
-            "agent_id": agent_id,
-        })
+        captured.append(
+            {
+                "action": action,
+                "details": details,
+                "agent_id": agent_id,
+            }
+        )
 
     monkeypatch.setattr("app.services.audit_logger.write_audit_log", _fake_write)
     return captured
@@ -64,9 +66,7 @@ def _make_workspace(tmp_path: Path) -> Path:
 
 
 @pytest.mark.asyncio
-async def test_successful_draft_records_success_metric_and_audit(
-    monkeypatch, tmp_path, capture_audit_writes
-):
+async def test_successful_draft_records_success_metric_and_audit(monkeypatch, tmp_path, capture_audit_writes):
     payload = {
         "decision": "defer",
         "confidence": 0.5,
@@ -114,9 +114,7 @@ async def test_successful_draft_records_success_metric_and_audit(
 
 
 @pytest.mark.asyncio
-async def test_llm_exception_records_failure_and_reraises(
-    monkeypatch, tmp_path, capture_audit_writes
-):
+async def test_llm_exception_records_failure_and_reraises(monkeypatch, tmp_path, capture_audit_writes):
     class _BoomClient:
         async def complete(self, **_kw):
             raise TimeoutError("upstream slow")
@@ -146,9 +144,7 @@ async def test_llm_exception_records_failure_and_reraises(
 
 
 @pytest.mark.asyncio
-async def test_unparseable_json_records_failure_and_reraises(
-    monkeypatch, tmp_path, capture_audit_writes
-):
+async def test_unparseable_json_records_failure_and_reraises(monkeypatch, tmp_path, capture_audit_writes):
     class _GarbageClient:
         async def complete(self, **_kw):
             return SimpleNamespace(content="not json at all")

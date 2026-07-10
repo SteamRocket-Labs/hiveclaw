@@ -37,7 +37,9 @@ class _FakeClient:
 
 
 class _FakeStatusResponse:
-    def __init__(self, status_code: int, *, body: str = "", lines: list[str] | None = None, headers: dict | None = None):
+    def __init__(
+        self, status_code: int, *, body: str = "", lines: list[str] | None = None, headers: dict | None = None
+    ):
         self.status_code = status_code
         self._body = body
         self._lines = lines or []

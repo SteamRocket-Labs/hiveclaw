@@ -109,12 +109,16 @@ class SkillParser:
                     ),
                     default=False,
                 )
-                or not self._bool_value(frontmatter_value("model-invocable", "model_invocable", default=True), default=True),
+                or not self._bool_value(
+                    frontmatter_value("model-invocable", "model_invocable", default=True), default=True
+                ),
                 user_invocable=self._bool_value(
                     frontmatter_value("user-invocable", "user_invocable", default=True),
                     default=True,
                 ),
-                hidden=self._bool_value(frontmatter_value("hidden", "isHidden", "is_hidden", default=False), default=False),
+                hidden=self._bool_value(
+                    frontmatter_value("hidden", "isHidden", "is_hidden", default=False), default=False
+                ),
                 when_to_use=self._string_value(frontmatter_value("when_to_use", "when-to-use")),
                 context=self._string_value(frontmatter_value("context")),
                 agent=self._string_value(frontmatter_value("agent")),

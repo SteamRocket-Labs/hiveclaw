@@ -139,7 +139,9 @@ def test_runtime_prompt_manifest_includes_context_usage_ledger():
     assert ledger["schema"] == "hive.ccplus.context_usage_ledger.v1"
     assert ledger["model_window_tokens"] == 1000
     assert ledger["deferred_tool_index_tokens"] == categories["deferred_tool_index"]["tokens"]
-    assert ledger["loaded_tool_schema_tokens"] == categories["system_tools"]["tokens"] + categories["mcp_tools"]["tokens"]
+    assert (
+        ledger["loaded_tool_schema_tokens"] == categories["system_tools"]["tokens"] + categories["mcp_tools"]["tokens"]
+    )
     assert categories["system_prompt"]["tokens"] > 0
     assert categories["system_tools"]["tokens"] > 0
     assert categories["custom_agents"]["tokens"] > 0
@@ -149,9 +151,7 @@ def test_runtime_prompt_manifest_includes_context_usage_ledger():
     assert categories["mcp_tools"]["tokens"] > 0
     assert categories["deferred_tool_index"]["item_count"] == 1
     assert categories["free_space"]["tokens"] >= 0
-    assert ledger["used_tokens"] == sum(
-        item["tokens"] for item in ledger["categories"] if item["name"] != "free_space"
-    )
+    assert ledger["used_tokens"] == sum(item["tokens"] for item in ledger["categories"] if item["name"] != "free_space")
 
 
 def test_context_usage_ledger_accounts_selected_memory_values_without_double_counting() -> None:
@@ -227,9 +227,7 @@ def test_runtime_prompt_manifest_records_selection_reasons_source_hashes_and_bud
         retrieval_context="knowledge text",
         skill_catalog="## Skills\n- python",
         active_skill_names=["python"],
-        skill_ranking=[
-            {"skill_name": "python", "rank": 1, "score": 300, "reasons": ["scenario_overlap:python"]}
-        ],
+        skill_ranking=[{"skill_name": "python", "rank": 1, "score": 300, "reasons": ["scenario_overlap:python"]}],
         available_deferred_tools=[
             {
                 "name": "firecrawl_fetch",

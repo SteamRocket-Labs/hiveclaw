@@ -228,9 +228,7 @@ def test_repeated_workflow_signal_bridges_to_skill_candidate(tmp_path) -> None:
 
     workspace = tmp_path / str(agent_id)
     candidate_targets = {
-        entry.get("target_type")
-        for entry in load_evolution_ledger(workspace)
-        if entry.get("event") == "candidate"
+        entry.get("target_type") for entry in load_evolution_ledger(workspace) if entry.get("event") == "candidate"
     }
     assert {"fast_reflection", "skill_candidate"} <= candidate_targets
     candidate_dir = workspace / "evolution" / "skill_candidates" / skill["candidate_id"]
@@ -266,9 +264,7 @@ def test_skill_candidate_loop_flag_disables_skill_bridge_only(tmp_path) -> None:
 
     workspace = tmp_path / str(agent_id)
     candidate_targets = [
-        entry.get("target_type")
-        for entry in load_evolution_ledger(workspace)
-        if entry.get("event") == "candidate"
+        entry.get("target_type") for entry in load_evolution_ledger(workspace) if entry.get("event") == "candidate"
     ]
     assert candidate_targets == ["fast_reflection"]
     assert not (workspace / "evolution" / "skill_candidates").exists()

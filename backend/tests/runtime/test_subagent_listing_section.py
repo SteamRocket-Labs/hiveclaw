@@ -129,7 +129,9 @@ def test_subagent_gatherer_outputs_activation_candidates_for_builtin_and_custom(
     )
 
     candidates = gather_subagent_candidates(agent_id=agent_id, agent_data_dir=tmp_path)
-    manifests = {candidate.to_manifest()["key_features"]["name"][0]: candidate.to_manifest() for candidate in candidates}
+    manifests = {
+        candidate.to_manifest()["key_features"]["name"][0]: candidate.to_manifest() for candidate in candidates
+    }
 
     builtin = manifests["critic"]
     custom = manifests["code-critic"]

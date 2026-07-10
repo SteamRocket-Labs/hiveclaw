@@ -95,10 +95,7 @@ async def audit() -> RlsCoverageReport:
         )
         app_role_is_owner = bool(owner_row.scalar_one_or_none())
 
-        tables = [
-            TableRls(name, name in scoped, enabled, forced)
-            for name, (enabled, forced) in flags.items()
-        ]
+        tables = [TableRls(name, name in scoped, enabled, forced) for name, (enabled, forced) in flags.items()]
         report = analyze_rls_coverage(tables, app_role_is_owner=app_role_is_owner)
 
         logger.info("[rls-audit] app role owns 'agents' table: {} (owner => ENABLE is inert)", app_role_is_owner)

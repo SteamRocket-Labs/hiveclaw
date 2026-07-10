@@ -176,7 +176,9 @@ async def test_spawn_tool_returns_execution_shape_recommendation(monkeypatch):
     monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
 
     out = await handler_mod.spawn_subagent_tool(
-        _tool_request({"task": "run fixed ordered steps", "name": "scout"}, round_state={"execution_shape": "fixed_sequence"})
+        _tool_request(
+            {"task": "run fixed ordered steps", "name": "scout"}, round_state={"execution_shape": "fixed_sequence"}
+        )
     )
     data = json.loads(out)
 
@@ -1020,7 +1022,10 @@ async def test_send_agent_session_message_accepts_a2a_peer_child_session(monkeyp
         return getattr(right, "value", None) == value
 
     def _statement_has_column_value(stmt, column_name: str, value) -> bool:
-        return any(_criterion_has_column_value(criteria, column_name, value) for criteria in getattr(stmt, "_where_criteria", ()))
+        return any(
+            _criterion_has_column_value(criteria, column_name, value)
+            for criteria in getattr(stmt, "_where_criteria", ())
+        )
 
     class _ScalarResult:
         def __init__(self, row):

@@ -281,7 +281,9 @@ def ensure_runtime_assembly_state(session: SessionContext | None) -> RuntimeAsse
             str(item) for item in _list_payload(session.metadata.get("available_deferred_tools")) if str(item).strip()
         ]
     if not state.skill_catalog_ranking:
-        state.skill_catalog_ranking = [dict(item) for item in _list_payload(session.metadata.get("skill_catalog_ranking"))]
+        state.skill_catalog_ranking = [
+            dict(item) for item in _list_payload(session.metadata.get("skill_catalog_ranking"))
+        ]
     if not state.skill_catalog_ranking_inputs:
         state.skill_catalog_ranking_inputs = _dict_payload(session.metadata.get("skill_catalog_ranking_inputs"))
     session.runtime_assembly_state = state

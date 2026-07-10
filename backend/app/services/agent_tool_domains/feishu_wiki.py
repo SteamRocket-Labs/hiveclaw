@@ -121,7 +121,7 @@ def _format_wiki_pages(target_kind: str, target_id: str, pages: list[dict]) -> s
         "file/Office/PDF/PPT/Excel 附件用 `feishu_drive_file_read`。"
         '\n   对有子页面的条目，再次调用 `feishu_wiki_list(node_token="...")` 继续展开；'
         '要看当前页面同目录页面，调用 `feishu_wiki_list(node_token="...", scope="siblings")`。'
-        "\n   如果拿到的是完整 Feishu URL，优先用 `feishu_url_read(url=\"...\")` 让工具自动解析并读取。"
+        '\n   如果拿到的是完整 Feishu URL，优先用 `feishu_url_read(url="...")` 让工具自动解析并读取。'
     )
     return "\n".join(lines)
 

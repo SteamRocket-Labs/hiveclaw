@@ -177,9 +177,7 @@ async def test_exchange_raises_on_http_error(monkeypatch):
 async def test_refresh_keeps_prior_refresh_token_when_omitted(monkeypatch):
     fake = _FakeAsyncClient(_FakeResponse(200, {"access_token": "new-at", "expires_in": 3600}))
     monkeypatch.setattr(mcp_oauth.httpx, "AsyncClient", lambda *a, **k: fake)
-    tok = await refresh_access_token(
-        token_endpoint="https://t", client_id="c", refresh_token="orig-rt", now=1000.0
-    )
+    tok = await refresh_access_token(token_endpoint="https://t", client_id="c", refresh_token="orig-rt", now=1000.0)
     assert tok.access_token == "new-at"
     assert tok.refresh_token == "orig-rt"  # provider omitted it → prior kept
     assert AUTH_CONFIGURED == "configured"

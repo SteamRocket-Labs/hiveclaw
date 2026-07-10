@@ -38,6 +38,7 @@ router = APIRouter(tags=["wechat-personal"])
 
 # ── Request / Response schemas ───────────────────────────
 
+
 class QrStartResponse(BaseModel):
     session_key: str
     qr_image_url: str | None = None
@@ -67,6 +68,7 @@ class StatusResponse(BaseModel):
 
 
 # ── Routes ───────────────────────────────────────────────
+
 
 @router.post("/agents/{agent_id}/wechat-personal/qr-start", response_model=QrStartResponse)
 async def qr_start(
@@ -213,6 +215,7 @@ async def disconnect(
     # Stop the streaming client first
     try:
         from app.services.wechat_personal_stream import wechat_personal_stream_manager
+
         await wechat_personal_stream_manager.stop_client(agent_id)
     except Exception as e:
         logger.warning(f"[WeChatPersonal] Failed to stop stream on disconnect: {e}")

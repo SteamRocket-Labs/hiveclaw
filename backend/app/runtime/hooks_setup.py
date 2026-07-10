@@ -774,7 +774,9 @@ async def _summarize_activation_feedback_on_turn_stop(ctx: HookContext) -> None:
     from app.runtime.context import runtime_assembly_metadata
 
     raw_events = runtime_assembly_metadata(ctx.metadata).get("activation_events")
-    events = [dict(item) for item in raw_events if isinstance(item, dict)] if isinstance(raw_events, list | tuple) else []
+    events = (
+        [dict(item) for item in raw_events if isinstance(item, dict)] if isinstance(raw_events, list | tuple) else []
+    )
     if not events:
         return
     success_count = sum(1 for event in events if event.get("event_type") == "tool_success")

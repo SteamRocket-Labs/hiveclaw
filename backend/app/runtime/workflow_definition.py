@@ -176,9 +176,7 @@ class WaitUntilStep(_StepBase):
         return self
 
 
-Step = Annotated[
-    Union[AgentStep, FanoutStep, GateStep, WaitUntilStep, WaitSignalStep], Field(discriminator="type")
-]
+Step = Annotated[Union[AgentStep, FanoutStep, GateStep, WaitUntilStep, WaitSignalStep], Field(discriminator="type")]
 
 
 class BudgetSpec(BaseModel):
@@ -231,9 +229,7 @@ def normalize_args_schema(args_schema: Any) -> Any:
     properties = args_schema.get("properties")
     if _schema_type(args_schema.get("type")) == "object" and isinstance(properties, dict):
         required = {
-            str(item).strip()
-            for item in args_schema.get("required", [])
-            if isinstance(item, str) and item.strip()
+            str(item).strip() for item in args_schema.get("required", []) if isinstance(item, str) and item.strip()
         }
         return {
             str(name): _arg_spec_from_json_schema(schema, required=str(name) in required)

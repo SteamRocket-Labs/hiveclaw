@@ -19,25 +19,40 @@ _DEPT_ID = uuid4()
 _TEMPLATE_ID = uuid4()
 
 _USER_WITH_DEPT = SimpleNamespace(
-    id=_USER_ID, username="zhangsan", tenant_id=_TENANT_ID, department_id=_DEPT_ID,
+    id=_USER_ID,
+    username="zhangsan",
+    tenant_id=_TENANT_ID,
+    department_id=_DEPT_ID,
 )
 
 _USER_NO_DEPT = SimpleNamespace(
-    id=_USER_ID, username="lisi", tenant_id=_TENANT_ID, department_id=None,
+    id=_USER_ID,
+    username="lisi",
+    tenant_id=_TENANT_ID,
+    department_id=None,
 )
 
 _USER_NO_TENANT = SimpleNamespace(
-    id=_USER_ID, username="orphan", tenant_id=None, department_id=None,
+    id=_USER_ID,
+    username="orphan",
+    tenant_id=None,
+    department_id=None,
 )
 
 _DEPT_TEMPLATE = SimpleNamespace(
-    id=_TEMPLATE_ID, name="研发助理", description="研发默认",
-    soul_template="你是研发助理", model_id=uuid4(),
+    id=_TEMPLATE_ID,
+    name="研发助理",
+    description="研发默认",
+    soul_template="你是研发助理",
+    model_id=uuid4(),
 )
 
 _DEFAULT_TEMPLATE = SimpleNamespace(
-    id=uuid4(), name="默认助理", description="公司默认",
-    soul_template="你是默认助理", model_id=None,
+    id=uuid4(),
+    name="默认助理",
+    description="公司默认",
+    soul_template="你是默认助理",
+    model_id=None,
 )
 
 

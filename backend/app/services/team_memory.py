@@ -121,7 +121,7 @@ def _parse_entry_markdown(path: Path) -> tuple[dict[str, str], str]:
     body_text = body.strip()
     heading = f"# {metadata.get('title', '')}".strip()
     if heading != "#" and body_text.startswith(heading):
-        body_text = body_text[len(heading):].lstrip()
+        body_text = body_text[len(heading) :].lstrip()
     return metadata, body_text
 
 
@@ -396,7 +396,9 @@ class TeamMemoryStore:
             ),
         )
 
-    def list_entries(self, tenant_id: str, workspace_key: str, *, include_deleted: bool = False) -> list[TeamMemoryEntry]:
+    def list_entries(
+        self, tenant_id: str, workspace_key: str, *, include_deleted: bool = False
+    ) -> list[TeamMemoryEntry]:
         root = self._workspace_dir(tenant_id, workspace_key)
         entries = [
             entry

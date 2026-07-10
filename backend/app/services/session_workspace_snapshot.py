@@ -65,7 +65,9 @@ def _safe_checkpoint_slug(checkpoint_event_id: Any) -> str:
     return re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw)[:160]
 
 
-def _snapshot_dir(agent_id: Any, session_id: Any, checkpoint_event_id: Any, *, data_root: Path | str | None = None) -> Path:
+def _snapshot_dir(
+    agent_id: Any, session_id: Any, checkpoint_event_id: Any, *, data_root: Path | str | None = None
+) -> Path:
     return (
         _agent_root(agent_id, data_root=data_root)
         / "runtime_artifacts"
@@ -166,7 +168,9 @@ def capture_workspace_snapshot(
     }
 
 
-def _load_manifest(agent_id: Any, snapshot: dict[str, Any], *, data_root: Path | str | None = None) -> tuple[Path, dict[str, Any]]:
+def _load_manifest(
+    agent_id: Any, snapshot: dict[str, Any], *, data_root: Path | str | None = None
+) -> tuple[Path, dict[str, Any]]:
     agent_root = _agent_root(agent_id, data_root=data_root)
     rel_manifest = Path(str(snapshot.get("manifest_path") or ""))
     manifest_path = (agent_root / rel_manifest).resolve()
@@ -273,7 +277,9 @@ def restore_workspace_snapshot(
         shutil.copy2(source, target)
         restored.append(rel)
 
-    for directory in sorted((path for path in workspace.rglob("*") if path.is_dir()), key=lambda p: len(p.parts), reverse=True):
+    for directory in sorted(
+        (path for path in workspace.rglob("*") if path.is_dir()), key=lambda p: len(p.parts), reverse=True
+    ):
         try:
             directory.rmdir()
         except OSError:

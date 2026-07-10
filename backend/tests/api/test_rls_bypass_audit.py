@@ -69,10 +69,7 @@ async def test_enter_rls_bypass_writes_warning_log(caplog) -> None:
         async with enter_rls_bypass(spy, reason="cross-tenant audit", actor_id="admin-42"):
             pass
 
-    bypass_warnings = [
-        rec for rec in caplog.records
-        if rec.levelno == logging.WARNING and "BYPASS" in rec.message
-    ]
+    bypass_warnings = [rec for rec in caplog.records if rec.levelno == logging.WARNING and "BYPASS" in rec.message]
     assert bypass_warnings, "No WARNING log recorded for BYPASS entry"
     msg = bypass_warnings[0].getMessage()
     assert "cross-tenant audit" in msg

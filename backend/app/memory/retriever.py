@@ -218,7 +218,9 @@ class MemoryRetriever:
             )
         # Rank on the unclamped score: the display score saturates at 1.0,
         # which would erase ordering between highly-relevant items.
-        return sorted(activated, key=lambda item: float(item.metadata.get("activation_raw_score") or item.score), reverse=True)
+        return sorted(
+            activated, key=lambda item: float(item.metadata.get("activation_raw_score") or item.score), reverse=True
+        )
 
     def _join_context_boost(
         self,

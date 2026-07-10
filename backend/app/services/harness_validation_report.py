@@ -151,11 +151,7 @@ def _audit_h4_long_tasks(
     runtime_tasks: list[Any],
     data_root: str | Path | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    runtime_by_id = {
-        task_id: task
-        for task in runtime_tasks
-        if (task_id := _runtime_task_id(task)) is not None
-    }
+    runtime_by_id = {task_id: task for task in runtime_tasks if (task_id := _runtime_task_id(task)) is not None}
     long_task_ids = _long_task_ids_from_artifacts(agent_id, data_root=data_root)
     long_task_ids.update(_long_task_ids_from_runtime(runtime_tasks))
 
@@ -188,25 +184,29 @@ def _audit_h4_long_tasks(
         }
         items.append(item)
         if not validation["passed"]:
-            findings.append(_finding(
-                severity="error",
-                category="long_task_validation_failed",
-                agent_id=agent_id,
-                runtime_task_id=runtime_task_id.hex,
-                message="Long-task validation failed for an observed RuntimeTask/artifact.",
-                evidence=item,
-                recommendation="Inspect plan/progress/status evidence and generate a durable validation report after fixing the task trail.",
-            ))
+            findings.append(
+                _finding(
+                    severity="error",
+                    category="long_task_validation_failed",
+                    agent_id=agent_id,
+                    runtime_task_id=runtime_task_id.hex,
+                    message="Long-task validation failed for an observed RuntimeTask/artifact.",
+                    evidence=item,
+                    recommendation="Inspect plan/progress/status evidence and generate a durable validation report after fixing the task trail.",
+                )
+            )
         if (plan_present or progress_present or runtime_task is not None) and not validation_report_present:
-            findings.append(_finding(
-                severity="warning",
-                category="long_task_validation_report_missing",
-                agent_id=agent_id,
-                runtime_task_id=runtime_task_id.hex,
-                message="Long-task evidence exists but validation_report.json is missing.",
-                evidence={"plan_present": plan_present, "progress_present": progress_present},
-                recommendation="Generate validation_report.json for this long task so future audits have durable validation evidence.",
-            ))
+            findings.append(
+                _finding(
+                    severity="warning",
+                    category="long_task_validation_report_missing",
+                    agent_id=agent_id,
+                    runtime_task_id=runtime_task_id.hex,
+                    message="Long-task evidence exists but validation_report.json is missing.",
+                    evidence={"plan_present": plan_present, "progress_present": progress_present},
+                    recommendation="Generate validation_report.json for this long task so future audits have durable validation evidence.",
+                )
+            )
 
     totals = {
         "long_tasks": len(items),
@@ -247,23 +247,27 @@ def _audit_h5_evolution(
     }
     findings: list[dict[str, Any]] = []
     if ledger_present and not validation_report["passed"]:
-        findings.append(_finding(
-            severity="error",
-            category="evolution_validation_failed",
-            agent_id=agent_id,
-            message="Self-evolution ledger validation failed.",
-            evidence={"summary": validation_report["summary"], "totals": validation_report.get("totals", {})},
-            recommendation="Hold or roll back invalid promotions, then rerun evolution validation.",
-        ))
+        findings.append(
+            _finding(
+                severity="error",
+                category="evolution_validation_failed",
+                agent_id=agent_id,
+                message="Self-evolution ledger validation failed.",
+                evidence={"summary": validation_report["summary"], "totals": validation_report.get("totals", {})},
+                recommendation="Hold or roll back invalid promotions, then rerun evolution validation.",
+            )
+        )
     if ledger_present and not validation_report_present:
-        findings.append(_finding(
-            severity="warning",
-            category="evolution_validation_report_missing",
-            agent_id=agent_id,
-            message="Evolution ledger exists but evolution_validation_report.json is missing.",
-            evidence={"ledger_entries": len(ledger_entries)},
-            recommendation="Run validate_evolution_ledger(write_report=True) after the next self-evolution cycle.",
-        ))
+        findings.append(
+            _finding(
+                severity="warning",
+                category="evolution_validation_report_missing",
+                agent_id=agent_id,
+                message="Evolution ledger exists but evolution_validation_report.json is missing.",
+                evidence={"ledger_entries": len(ledger_entries)},
+                recommendation="Run validate_evolution_ledger(write_report=True) after the next self-evolution cycle.",
+            )
+        )
     return h5, findings
 
 
@@ -292,14 +296,16 @@ def audit_agent_harness_snapshot(
     has_autonomy = heartbeat_enabled or enabled_trigger_count > 0
     has_harness_evidence = h4["totals"]["long_tasks"] > 0 or h5["ledger_present"]
     if has_autonomy and not has_harness_evidence:
-        findings.append(_finding(
-            severity="warning",
-            category="autonomy_without_harness_evidence",
-            agent_id=agent_id,
-            message="Agent has autonomous wake paths but no observed H4 long-task or H5 self-evolution evidence.",
-            evidence={"heartbeat_enabled": heartbeat_enabled, "enabled_triggers": enabled_trigger_count},
-            recommendation="Run a real long task or skill distillation cycle, then inspect validation reports.",
-        ))
+        findings.append(
+            _finding(
+                severity="warning",
+                category="autonomy_without_harness_evidence",
+                agent_id=agent_id,
+                message="Agent has autonomous wake paths but no observed H4 long-task or H5 self-evolution evidence.",
+                evidence={"heartbeat_enabled": heartbeat_enabled, "enabled_triggers": enabled_trigger_count},
+                recommendation="Run a real long task or skill distillation cycle, then inspect validation reports.",
+            )
+        )
 
     return {
         "agent_id": str(agent_id),
@@ -332,14 +338,11 @@ def build_harness_validation_payload(
         "passed": sum(int(report.get("h4", {}).get("totals", {}).get("passed", 0)) for report in agent_reports),
         "failed": sum(int(report.get("h4", {}).get("totals", {}).get("failed", 0)) for report in agent_reports),
         "validation_reports_present": sum(
-            int(report.get("h4", {}).get("totals", {}).get("validation_reports_present", 0))
-            for report in agent_reports
+            int(report.get("h4", {}).get("totals", {}).get("validation_reports_present", 0)) for report in agent_reports
         ),
     }
     h5_validation_reports = [
-        report.get("h5", {})
-        for report in agent_reports
-        if report.get("h5", {}).get("ledger_present")
+        report.get("h5", {}) for report in agent_reports if report.get("h5", {}).get("ledger_present")
     ]
     h5_totals = {
         "ledgers_present": sum(1 for report in agent_reports if report.get("h5", {}).get("ledger_present")),

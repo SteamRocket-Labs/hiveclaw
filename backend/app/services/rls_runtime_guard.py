@@ -69,10 +69,7 @@ class RlsRuntimeRoleSnapshot:
 def normalize_rls_runtime_role_enforcement(value: str | None) -> str:
     normalized = (value or "strict").strip().lower()
     if normalized not in _ENFORCEMENT_VALUES:
-        raise ValueError(
-            "RLS_RUNTIME_ROLE_ENFORCEMENT must be one of "
-            f"{sorted(_ENFORCEMENT_VALUES)}, got {value!r}"
-        )
+        raise ValueError(f"RLS_RUNTIME_ROLE_ENFORCEMENT must be one of {sorted(_ENFORCEMENT_VALUES)}, got {value!r}")
     return normalized
 
 
@@ -160,8 +157,7 @@ async def check_runtime_rls_role(
 
     if snapshot.violations:
         message = (
-            "Unsafe RLS runtime database role "
-            f"{snapshot.role_name!r}: violations={', '.join(snapshot.violations)}"
+            f"Unsafe RLS runtime database role {snapshot.role_name!r}: violations={', '.join(snapshot.violations)}"
         )
         if effective_enforcement == "strict":
             raise RuntimeError(message)

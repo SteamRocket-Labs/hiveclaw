@@ -137,7 +137,9 @@ def build_turn_envelope(
 
 def build_prompt_assembly_manifest(turn_envelope: dict[str, Any]) -> dict[str, Any]:
     sections = [section for section in turn_envelope.get("prompt_sections", []) if isinstance(section, dict)]
-    frozen = [str(section.get("name")) for section in sections if section.get("kind") == "frozen" and section.get("name")]
+    frozen = [
+        str(section.get("name")) for section in sections if section.get("kind") == "frozen" and section.get("name")
+    ]
     dynamic = [
         str(section.get("name")) for section in sections if section.get("kind") != "frozen" and section.get("name")
     ]
@@ -293,7 +295,9 @@ def _is_mcp_tool_name(name: str) -> bool:
     return normalized.startswith("mcp_") or normalized.startswith(("list_mcp", "read_mcp", "import_mcp", "call_mcp"))
 
 
-def _split_tool_schemas(tools_for_llm: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _split_tool_schemas(
+    tools_for_llm: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     system_tools: list[dict[str, Any]] = []
     mcp_tools: list[dict[str, Any]] = []
     for tool in tools_for_llm or []:

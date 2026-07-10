@@ -92,5 +92,7 @@ def test_user_scoped_bridge_upload_saves_to_local_agent_user_workspace(monkeypat
 
     assert resp.status_code == 200
     assert resp.json()["workspace_path"] == "workspace/uploads/report.md"
-    saved_path = tmp_path / "local_agents" / str(tenant_id) / "users" / str(user_id) / "workspace" / "uploads" / "report.md"
+    saved_path = (
+        tmp_path / "local_agents" / str(tenant_id) / "users" / str(user_id) / "workspace" / "uploads" / "report.md"
+    )
     assert saved_path.read_text(encoding="utf-8") == "# user scoped upload\n"

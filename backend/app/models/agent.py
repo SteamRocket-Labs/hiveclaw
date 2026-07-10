@@ -58,7 +58,16 @@ class Agent(Base):
 
     # Runtime
     status: Mapped[str] = mapped_column(
-        Enum("draft", "creating", "running", "idle", "stopped", "error", name="agent_status_enum", create_constraint=False),
+        Enum(
+            "draft",
+            "creating",
+            "running",
+            "idle",
+            "stopped",
+            "error",
+            name="agent_status_enum",
+            create_constraint=False,
+        ),
         default="creating",
         nullable=False,
     )
@@ -79,14 +88,15 @@ class Agent(Base):
     tokens_used_total: Mapped[int] = mapped_column(Integer, default=0)
     context_window_size: Mapped[int] = mapped_column(Integer, default=100)
     max_tool_rounds: Mapped[int] = mapped_column(Integer, default=200, server_default="200")
-    execution_mode: Mapped[str] = mapped_column(String(30), default="standard", nullable=False, server_default="standard")
+    execution_mode: Mapped[str] = mapped_column(
+        String(30), default="standard", nullable=False, server_default="standard"
+    )
     smart_model_routing: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Trigger limits (per-agent, configurable from Settings UI)
     max_triggers: Mapped[int] = mapped_column(Integer, default=20)
     min_poll_interval_min: Mapped[int] = mapped_column(Integer, default=5)
     webhook_rate_limit: Mapped[int] = mapped_column(Integer, default=5)
-
 
     # Template
     template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_templates.id"))
@@ -101,10 +111,14 @@ class Agent(Base):
     timezone: Mapped[str | None] = mapped_column(String(50), default=None, nullable=True)
 
     parent_agent_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True,
+        UUID(as_uuid=True),
+        ForeignKey("agents.id"),
+        nullable=True,
     )
     owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True,
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=True,
     )
     channel_perms: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
     config_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")

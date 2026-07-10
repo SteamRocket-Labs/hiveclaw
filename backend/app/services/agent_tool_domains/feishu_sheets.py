@@ -140,7 +140,9 @@ async def _feishu_sheet_info_via_openapi(agent_id: uuid.UUID, arguments: dict) -
 
     spreadsheet_payload = spreadsheet_resp.json()
     if spreadsheet_payload.get("code") != 0:
-        return f"❌ Failed to read spreadsheet: {spreadsheet_payload.get('msg')} (code {spreadsheet_payload.get('code')})"
+        return (
+            f"❌ Failed to read spreadsheet: {spreadsheet_payload.get('msg')} (code {spreadsheet_payload.get('code')})"
+        )
 
     sheets_payload = sheets_resp.json()
     if sheets_payload.get("code") != 0:

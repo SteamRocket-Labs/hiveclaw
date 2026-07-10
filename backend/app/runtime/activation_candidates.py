@@ -162,7 +162,11 @@ class ActivationCandidate:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        surface = self.surface if isinstance(self.surface, ActivationSurface) else ActivationSurface.from_manifest(self.surface)
+        surface = (
+            self.surface
+            if isinstance(self.surface, ActivationSurface)
+            else ActivationSurface.from_manifest(self.surface)
+        )
         score = self.score
         if score is not None and not isinstance(score, ActivationScore):
             score = ActivationScore.from_manifest(score)
@@ -214,7 +218,9 @@ class ActivationCandidate:
             value_pointer=_dict_payload(manifest.get("value_pointer")),
             surface=ActivationSurface.from_manifest(_dict_payload(manifest.get("surface"))),
             source_refs=_string_tuple(manifest.get("source_refs")),
-            score=ActivationScore.from_manifest(_dict_payload(manifest.get("score"))) if manifest.get("score") else None,
+            score=ActivationScore.from_manifest(_dict_payload(manifest.get("score")))
+            if manifest.get("score")
+            else None,
             metadata=_dict_payload(manifest.get("metadata")),
         )
 

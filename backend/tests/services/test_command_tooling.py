@@ -228,7 +228,9 @@ async def test_execute_code_stages_sandbox_installed_skill_review_without_activa
             "source_uri": source_uri,
         }
 
-    monkeypatch.setattr(code_exec, "stage_external_skill_package_review_for_agent_workspace", fake_stage_for_agent_workspace)
+    monkeypatch.setattr(
+        code_exec, "stage_external_skill_package_review_for_agent_workspace", fake_stage_for_agent_workspace
+    )
 
     result = await code_exec._execute_code(
         tmp_path,

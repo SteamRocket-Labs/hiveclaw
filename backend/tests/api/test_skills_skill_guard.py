@@ -80,7 +80,9 @@ async def test_import_from_url_stages_high_risk_skill_review_before_db_save(monk
     monkeypatch.setattr(skills_api, "_get_github_token", fake_token)
     monkeypatch.setattr(skills_api, "_find_existing_skill_by_folder_name", fake_find_existing)
     monkeypatch.setattr(skills_api, "_save_skill_to_db", fail_save)
-    monkeypatch.setattr(skills_api, "stage_remote_external_skill_source_review_for_tenant", fake_stage_remote_for_tenant)
+    monkeypatch.setattr(
+        skills_api, "stage_remote_external_skill_source_review_for_tenant", fake_stage_remote_for_tenant
+    )
 
     result = await skills_api.import_from_url(
         skills_api.UrlImportIn(url="https://github.com/acme/skills/tree/main/risky"),
@@ -166,7 +168,9 @@ async def test_install_from_clawhub_stages_remote_materializer_review(monkeypatc
     monkeypatch.setattr(skills_api, "_find_existing_skill_by_folder_name", fake_find_existing)
     monkeypatch.setattr(skills_api, "_fetch_github_directory", fail_fetch)
     monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: _Client())
-    monkeypatch.setattr(skills_api, "stage_remote_external_skill_source_review_for_tenant", fake_stage_remote_for_tenant)
+    monkeypatch.setattr(
+        skills_api, "stage_remote_external_skill_source_review_for_tenant", fake_stage_remote_for_tenant
+    )
 
     result = await skills_api.install_from_clawhub(
         skills_api.ClawhubInstallIn(slug="market-research-agent"),

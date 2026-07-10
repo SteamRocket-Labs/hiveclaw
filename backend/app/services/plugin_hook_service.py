@@ -254,23 +254,22 @@ def _unregister_plugin_keys(registry: HookRegistry, *, tenant_id: uuid.UUID | No
     registry.unregister_key_prefix(prefix)
 
 
-async def _load_rows_for_tenant(tenant_id: uuid.UUID) -> tuple[list[tuple[PluginHookRegistration, TenantInstalledPlugin]], dict[uuid.UUID, list[str]]]:
+async def _load_rows_for_tenant(
+    tenant_id: uuid.UUID,
+) -> tuple[list[tuple[PluginHookRegistration, TenantInstalledPlugin]], dict[uuid.UUID, list[str]]]:
     async with tenant_scoped_session(tenant_id) as db:
         rows = (
-            (
-                await db.execute(
-                    select(PluginHookRegistration, TenantInstalledPlugin)
-                    .join(TenantInstalledPlugin, TenantInstalledPlugin.id == PluginHookRegistration.installed_plugin_id)
-                    .where(
-                        PluginHookRegistration.tenant_id == tenant_id,
-                        PluginHookRegistration.enabled.is_(True),
-                        TenantInstalledPlugin.tenant_id == tenant_id,
-                        TenantInstalledPlugin.status == "enabled",
-                    )
+            await db.execute(
+                select(PluginHookRegistration, TenantInstalledPlugin)
+                .join(TenantInstalledPlugin, TenantInstalledPlugin.id == PluginHookRegistration.installed_plugin_id)
+                .where(
+                    PluginHookRegistration.tenant_id == tenant_id,
+                    PluginHookRegistration.enabled.is_(True),
+                    TenantInstalledPlugin.tenant_id == tenant_id,
+                    TenantInstalledPlugin.status == "enabled",
                 )
             )
-            .all()
-        )
+        ).all()
         assignments = (
             (
                 await db.execute(
@@ -343,7 +342,10 @@ async def register_installed_plugin_hooks(*, registry: HookRegistry | None = Non
                 (
                     await db.execute(
                         select(PluginHookRegistration.tenant_id)
-                        .join(TenantInstalledPlugin, TenantInstalledPlugin.id == PluginHookRegistration.installed_plugin_id)
+                        .join(
+                            TenantInstalledPlugin,
+                            TenantInstalledPlugin.id == PluginHookRegistration.installed_plugin_id,
+                        )
                         .where(
                             PluginHookRegistration.enabled.is_(True),
                             TenantInstalledPlugin.status == "enabled",

@@ -125,12 +125,15 @@ def test_create_sub_agent_success():
         patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=2),
         patch.object(agents_mod, "ensure_main_agent", new_callable=AsyncMock, return_value=_FAKE_MAIN_AGENT),
     ):
-        resp = client.post("/desktop/agents", json={
-            "name": "代码助手",
-            "role_description": "写代码",
-            "execution_mode": "coordinator",
-            "smart_model_routing": {"enabled": True, "max_simple_chars": 120, "max_simple_words": 18},
-        })
+        resp = client.post(
+            "/desktop/agents",
+            json={
+                "name": "代码助手",
+                "role_description": "写代码",
+                "execution_mode": "coordinator",
+                "smart_model_routing": {"enabled": True, "max_simple_chars": 120, "max_simple_words": 18},
+            },
+        )
 
     assert resp.status_code == 201
     data = resp.json()

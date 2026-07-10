@@ -33,10 +33,7 @@ class _FakeDB:
 
 
 def _build_request(body: bytes, headers: dict[str, str] | None = None) -> Request:
-    raw_headers = [
-        (key.lower().encode("utf-8"), value.encode("utf-8"))
-        for key, value in (headers or {}).items()
-    ]
+    raw_headers = [(key.lower().encode("utf-8"), value.encode("utf-8")) for key, value in (headers or {}).items()]
     scope = {
         "type": "http",
         "http_version": "1.1",
@@ -199,13 +196,13 @@ async def test_feishu_webhook_decrypts_encrypted_payload_before_processing(monke
     result = await feishu_api.feishu_event_webhook(
         agent_id=agent_id,
         request=request,
-            db=_FakeDB(
-                SimpleNamespace(
-                    agent_id=agent_id,
-                    tenant_id=uuid4(),
-                    channel_type="feishu",
-                    encrypt_key=encrypt_key,
-                    verification_token=None,
+        db=_FakeDB(
+            SimpleNamespace(
+                agent_id=agent_id,
+                tenant_id=uuid4(),
+                channel_type="feishu",
+                encrypt_key=encrypt_key,
+                verification_token=None,
             )
         ),
     )

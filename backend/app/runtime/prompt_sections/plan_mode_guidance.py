@@ -53,7 +53,4 @@ def should_show_plan_mode_guidance(source: str = "", channel: str = "") -> bool:
 
     normalized_source = str(source or "").lower()
     normalized_channel = str(channel or "").lower()
-    return (
-        normalized_source in _INTERACTIVE_PLAN_CHAT_SURFACES
-        or normalized_channel in _INTERACTIVE_PLAN_CHAT_SURFACES
-    )
+    return normalized_source in _INTERACTIVE_PLAN_CHAT_SURFACES or normalized_channel in _INTERACTIVE_PLAN_CHAT_SURFACES

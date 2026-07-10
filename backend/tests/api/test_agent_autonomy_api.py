@@ -46,8 +46,7 @@ def _client(monkeypatch, db=None, *, user=None, access_level="manage", agent=Non
 
     async def allow_access(_db, _user, agent_id):
         return (
-            agent
-            or SimpleNamespace(id=agent_id, tenant_id=_user.tenant_id, creator_id=uuid4()),
+            agent or SimpleNamespace(id=agent_id, tenant_id=_user.tenant_id, creator_id=uuid4()),
             access_level,
         )
 

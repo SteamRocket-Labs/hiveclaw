@@ -323,7 +323,9 @@ def _stable_dict_key(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
-def _append_unique_dicts(target: list[dict[str, Any]], values: list[dict[str, Any]], *, limit: int | None = None) -> None:
+def _append_unique_dicts(
+    target: list[dict[str, Any]], values: list[dict[str, Any]], *, limit: int | None = None
+) -> None:
     seen = {_stable_dict_key(item) for item in target if isinstance(item, dict)}
     for value in values:
         if not isinstance(value, dict) or not value:
@@ -436,7 +438,9 @@ def hydrate_session_context_from_recovery_manifest(session_context: Any, manifes
         _merge_metadata_dict_list(metadata, key, values)
     _merge_metadata_string_list(metadata, "truth_evidence_refs", manifest.truth_evidence_refs)
     _merge_metadata_string_list(metadata, "evidence_refs", manifest.truth_evidence_refs)
-    _merge_metadata_string_list(metadata, "mcp_server_refs", _mcp_server_refs_from_assignments(manifest.mcp_assignments))
+    _merge_metadata_string_list(
+        metadata, "mcp_server_refs", _mcp_server_refs_from_assignments(manifest.mcp_assignments)
+    )
     if manifest.permission_profile:
         metadata["permission_profile"] = dict(manifest.permission_profile)
     if manifest.pending_tool_frames:

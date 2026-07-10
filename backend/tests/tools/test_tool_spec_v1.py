@@ -95,6 +95,7 @@ def test_tool_spec_v1_repairs_partial_registry_import_order() -> None:
     clear_registry()
 
     try:
+
         @tool(
             ToolMeta(
                 name="local_only_test_tool",

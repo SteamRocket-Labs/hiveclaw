@@ -10,22 +10,23 @@ from pathlib import Path
 
 from loguru import logger
 
+
 def validate_skill(skill_path):
     """Basic validation of a skill"""
     skill_path = Path(skill_path)
 
     # Check SKILL.md exists
-    skill_md = skill_path / 'SKILL.md'
+    skill_md = skill_path / "SKILL.md"
     if not skill_md.exists():
         return False, "SKILL.md not found"
 
     # Read and validate frontmatter
     content = skill_md.read_text()
-    if not content.startswith('---'):
+    if not content.startswith("---"):
         return False, "No YAML frontmatter found"
 
     # Extract frontmatter
-    match = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
+    match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
     if not match:
         return False, "Invalid frontmatter format"
 
@@ -41,15 +42,15 @@ def validate_skill(skill_path):
 
     # Define allowed properties
     ALLOWED_PROPERTIES = {
-        'name',
-        'description',
-        'license',
-        'allowed-tools',
-        'tools',
-        'metadata',
-        'compatibility',
-        'is_system',
-        'is_default',
+        "name",
+        "description",
+        "license",
+        "allowed-tools",
+        "tools",
+        "metadata",
+        "compatibility",
+        "is_system",
+        "is_default",
     }
 
     # Check for unexpected properties (excluding nested keys under metadata)
@@ -61,66 +62,68 @@ def validate_skill(skill_path):
         )
 
     # Check required fields
-    if 'name' not in frontmatter:
+    if "name" not in frontmatter:
         return False, "Missing 'name' in frontmatter"
-    if 'description' not in frontmatter:
+    if "description" not in frontmatter:
         return False, "Missing 'description' in frontmatter"
 
     # Extract name for validation
-    name = frontmatter.get('name', '')
+    name = frontmatter.get("name", "")
     if not isinstance(name, str):
         return False, f"Name must be a string, got {type(name).__name__}"
     name = name.strip()
     if name:
         # Support both portable kebab-case skills and built-in display-name skills used by Hive.
-        if not re.match(r'^[A-Za-z0-9][A-Za-z0-9 _-]*$', name):
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9 _-]*$", name):
             return False, (
-                f"Name '{name}' contains unsupported characters. "
-                "Use letters, digits, spaces, underscores, or hyphens."
+                f"Name '{name}' contains unsupported characters. Use letters, digits, spaces, underscores, or hyphens."
             )
         if len(name) > 64:
             return False, f"Name is too long ({len(name)} characters). Maximum is 64 characters."
 
     # Extract and validate description
-    description = frontmatter.get('description', '')
+    description = frontmatter.get("description", "")
     if not isinstance(description, str):
         return False, f"Description must be a string, got {type(description).__name__}"
     description = description.strip()
     if description:
         # Check for angle brackets
-        if '<' in description or '>' in description:
+        if "<" in description or ">" in description:
             return False, "Description cannot contain angle brackets (< or >)"
         # Check description length (max 1024 characters per spec)
         if len(description) > 1024:
             return False, f"Description is too long ({len(description)} characters). Maximum is 1024 characters."
 
     # Validate compatibility field if present (optional)
-    compatibility = frontmatter.get('compatibility', '')
+    compatibility = frontmatter.get("compatibility", "")
     if compatibility:
         if not isinstance(compatibility, str):
             return False, f"Compatibility must be a string, got {type(compatibility).__name__}"
         if len(compatibility) > 500:
             return False, f"Compatibility is too long ({len(compatibility)} characters). Maximum is 500 characters."
 
-    tools = frontmatter.get('tools')
+    tools = frontmatter.get("tools")
     if tools is not None:
         if not isinstance(tools, list) or not all(isinstance(item, str) and item.strip() for item in tools):
             return False, "tools must be a list of non-empty strings"
 
-    allowed_tools = frontmatter.get('allowed-tools')
+    allowed_tools = frontmatter.get("allowed-tools")
     if allowed_tools is not None:
-        if not isinstance(allowed_tools, list) or not all(isinstance(item, str) and item.strip() for item in allowed_tools):
+        if not isinstance(allowed_tools, list) or not all(
+            isinstance(item, str) and item.strip() for item in allowed_tools
+        ):
             return False, "allowed-tools must be a list of non-empty strings"
 
-    is_system = frontmatter.get('is_system')
+    is_system = frontmatter.get("is_system")
     if is_system is not None and not isinstance(is_system, bool):
         return False, f"is_system must be a boolean, got {type(is_system).__name__}"
 
-    is_default = frontmatter.get('is_default')
+    is_default = frontmatter.get("is_default")
     if is_default is not None and not isinstance(is_default, bool):
         return False, f"is_default must be a boolean, got {type(is_default).__name__}"
 
     return True, "Skill is valid!"
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:

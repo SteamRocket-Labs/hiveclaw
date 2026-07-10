@@ -387,7 +387,9 @@ async def test_team_member_completion_projects_to_member_metadata_and_event():
     event_types = [item.event_type for item in db.added if isinstance(item, AgentTeamEvent)]
     assert "member_completed" in event_types
     assert "member_idle" in event_types
-    idle_event = next(item for item in db.added if isinstance(item, AgentTeamEvent) and item.event_type == "member_idle")
+    idle_event = next(
+        item for item in db.added if isinstance(item, AgentTeamEvent) and item.event_type == "member_idle"
+    )
     assert idle_event.receiver_member_id == member.id
     assert idle_event.payload_json["summary"] == "review passed"
     assert payload["agent_team_decision_entry"]["team_outcome"] == "idle"

@@ -82,7 +82,11 @@ def validate_workflow_preview_binding(
     if preview_id:
         record = get_workflow_preview(preview_id)
         if record is None:
-            return False, "start_workflow requires a fresh preview_workflow result; preview_id is unknown or expired", None
+            return (
+                False,
+                "start_workflow requires a fresh preview_workflow result; preview_id is unknown or expired",
+                None,
+            )
         if record.get("agent_id") != str(agent_id):
             return False, "start_workflow preview_id belongs to another agent", None
         if record.get("definition_hash") != actual_definition_hash or record.get("args_hash") != actual_args_hash:

@@ -92,12 +92,16 @@ def _parse_case(payload: dict[str, Any]) -> PersonalKBScorecardCase:
         raise ValueError("Personal KB scorecard case is missing id")
     expected_refs = tuple(
         ref
-        for ref in (_clean_ref(value) for value in _as_list(payload.get("expected_refs") or payload.get("expected_source_refs")))
+        for ref in (
+            _clean_ref(value) for value in _as_list(payload.get("expected_refs") or payload.get("expected_source_refs"))
+        )
         if ref
     )
     forbidden_refs = tuple(
         ref
-        for ref in (_clean_ref(value) for value in _as_list(payload.get("forbidden_refs") or payload.get("denied_refs")))
+        for ref in (
+            _clean_ref(value) for value in _as_list(payload.get("forbidden_refs") or payload.get("denied_refs"))
+        )
         if ref
     )
     k_raw = payload.get("k", 5)
@@ -123,7 +127,11 @@ def _provider_kind(provider_name: str) -> str:
 
 def _score_case(case: PersonalKBScorecardCase, result: dict[str, Any] | None) -> dict[str, Any]:
     result = result or {}
-    items = [item for item in _as_list(result.get("items") or result.get("hits") or result.get("results")) if isinstance(item, dict)]
+    items = [
+        item
+        for item in _as_list(result.get("items") or result.get("hits") or result.get("results"))
+        if isinstance(item, dict)
+    ]
     top_items = items[: case.k]
     item_refs = [refs_from_result_item(item) for item in top_items]
     retrieved_refs = _dedupe([ref for refs in item_refs for ref in refs])
@@ -170,9 +178,13 @@ def _score_provider(provider_name: str, cases: list[PersonalKBScorecardCase], re
 
     case_reports = {case.id: _score_case(case, result_by_case.get(case.id)) for case in cases}
     case_count = len(cases)
-    recall = sum(case_report["recall_at_k"] for case_report in case_reports.values()) / case_count if case_count else 0.0
+    recall = (
+        sum(case_report["recall_at_k"] for case_report in case_reports.values()) / case_count if case_count else 0.0
+    )
     citation_accuracy = (
-        sum(case_report["citation_accuracy"] for case_report in case_reports.values()) / case_count if case_count else 0.0
+        sum(case_report["citation_accuracy"] for case_report in case_reports.values()) / case_count
+        if case_count
+        else 0.0
     )
     acl_leakage_count = sum(case_report["acl_leakage_count"] for case_report in case_reports.values())
     latencies = [case_report["latency_ms"] for case_report in case_reports.values() if case_report["latency_ms"]]
@@ -210,6 +222,8 @@ def score_personal_kb_benchmark(payload: dict[str, Any]) -> dict[str, Any]:
         "case_count": len(cases),
         "providers": providers,
         "hard_gates": {
-            "acl_leakage_zero": all(provider["acl_leakage_zero"] for provider in providers.values()) if providers else True,
+            "acl_leakage_zero": all(provider["acl_leakage_zero"] for provider in providers.values())
+            if providers
+            else True,
         },
     }

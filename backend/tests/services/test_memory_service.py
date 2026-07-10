@@ -448,7 +448,8 @@ async def test_build_memory_context_never_requests_rerank_config(monkeypatch, tm
 
     monkeypatch.setattr(memory_service, "_get_rerank_model_config", spy, raising=False)
     monkeypatch.setattr(
-        memory_service, "get_settings",
+        memory_service,
+        "get_settings",
         lambda: type("S", (), {"AGENT_DATA_DIR": str(tmp_path), "MEMORY_RESIDENT_BUDGET_CHARS": 12000.0})(),
     )
     from app.memory.activation import ActivationContext
@@ -581,7 +582,10 @@ async def test_build_memory_context_omits_pl3_for_non_owner(monkeypatch, tmp_pat
     import json as _json
 
     (overlay / "manifest.jsonl").write_text(
-        _json.dumps({"id": "salary-private", "status": "active", "category": "constraint", "sensitivity": "PL3_sensitive"}) + "\n",
+        _json.dumps(
+            {"id": "salary-private", "status": "active", "category": "constraint", "sensitivity": "PL3_sensitive"}
+        )
+        + "\n",
         encoding="utf-8",
     )
     (overlay / "entries" / "salary-private.md").write_text(
@@ -590,7 +594,10 @@ async def test_build_memory_context_omits_pl3_for_non_owner(monkeypatch, tmp_pat
     )
     with (overlay / "manifest.jsonl").open("a", encoding="utf-8") as _handle:
         _handle.write(
-            _json.dumps({"id": "salary-public", "status": "active", "category": "constraint", "sensitivity": "PL1_public"}) + "\n"
+            _json.dumps(
+                {"id": "salary-public", "status": "active", "category": "constraint", "sensitivity": "PL1_public"}
+            )
+            + "\n"
         )
     (overlay / "entries" / "salary-public.md").write_text(
         "<normalized_memory>Acme salary planning policy uses the approved budget template</normalized_memory>",

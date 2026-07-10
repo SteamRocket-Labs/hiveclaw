@@ -166,9 +166,7 @@ async def test_join_company_uses_audited_bypass_for_invite_lookup_then_scopes_ta
     assert code.used_count == 1
     assert result.role == "member"
     assert result.access_token == "new-tenant-token"
-    assert token_calls == [
-        {"user_id": str(current_user.id), "role": "member", "tenant_id": str(tenant_id)}
-    ]
+    assert token_calls == [{"user_id": str(current_user.id), "role": "member", "tenant_id": str(tenant_id)}]
     assert db.flushed is True
     assert db.committed is True
 

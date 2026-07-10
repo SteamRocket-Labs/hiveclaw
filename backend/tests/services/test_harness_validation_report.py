@@ -176,12 +176,7 @@ def test_harness_validation_report_flags_missing_reports_and_failed_evolution(tm
     assert "evolution_validation_report_missing" in categories
     assert not (workspace / "evolution" / "evolution_validation_report.json").exists()
     assert not (
-        tmp_path
-        / str(agent_id)
-        / "runtime_artifacts"
-        / "long_tasks"
-        / runtime_task_id.hex
-        / "validation_report.json"
+        tmp_path / str(agent_id) / "runtime_artifacts" / "long_tasks" / runtime_task_id.hex / "validation_report.json"
     ).exists()
 
 
@@ -200,9 +195,7 @@ def test_harness_validation_report_warns_autonomy_without_harness_evidence(tmp_p
 
     assert report["h4"]["totals"]["long_tasks"] == 0
     assert report["h5"]["ledger_present"] is False
-    assert "autonomy_without_harness_evidence" in {
-        finding["category"] for finding in report["findings"]
-    }
+    assert "autonomy_without_harness_evidence" in {finding["category"] for finding in report["findings"]}
 
 
 def test_build_harness_validation_payload_aggregates_agent_reports(tmp_path):

@@ -3749,9 +3749,7 @@ class AgentKernel:
                     retrieval_context=resolved_retrieval_context,
                     skill_catalog=request.skill_catalog,
                     active_skill_names=session_ctx.active_skills,
-                    skill_ranking=list(
-                        ensure_runtime_assembly_state(session_ctx).skill_catalog_ranking
-                    ),
+                    skill_ranking=list(ensure_runtime_assembly_state(session_ctx).skill_catalog_ranking),
                     system_prompt_suffix=_system_prompt_suffix,
                     system_prompt_suffix_sections=_system_prompt_suffix_sections(),
                     mcp_server_refs=list(session_ctx.metadata.get("mcp_server_refs") or []),

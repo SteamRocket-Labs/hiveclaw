@@ -322,7 +322,9 @@ async def create_conversation_branch(
             user=user,
         ),
         created_at=now,
-        last_message_at=now if mode_text not in {"fork", "branch"} else getattr(source_session, "last_message_at", None),
+        last_message_at=now
+        if mode_text not in {"fork", "branch"}
+        else getattr(source_session, "last_message_at", None),
     )
     db.add(branch_session)
     if hasattr(db, "flush"):

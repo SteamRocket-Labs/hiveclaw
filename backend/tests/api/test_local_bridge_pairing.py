@@ -118,9 +118,14 @@ def test_install_guide_exposes_hive_connect_only() -> None:
     assert body["npm_package"] == "@hiveclaw243/hive-connect"
     assert body["binary_name"] == "hive-connect"
     assert body["login_command"] == "hive-connect login"
-    assert body["instructions"][6] == "5. 执行 hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。"
+    assert (
+        body["instructions"][6]
+        == "5. 执行 hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。"
+    )
     assert body["instructions"][7] == "6. 执行 hive-connect daemon status，确认后台服务正在运行。"
-    assert body["instructions"][8] == "7. 可选：执行 hive-connect status，确认本机仍保留 Hive 登录绑定（这不代表在线）。"
+    assert (
+        body["instructions"][8] == "7. 可选：执行 hive-connect status，确认本机仍保留 Hive 登录绑定（这不代表在线）。"
+    )
     assert (
         body["instructions"][9]
         == "8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。"

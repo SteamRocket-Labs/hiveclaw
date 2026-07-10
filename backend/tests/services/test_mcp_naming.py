@@ -86,7 +86,9 @@ def test_charset_is_provider_safe():
 
 def test_plan_renames_legacy_names():
     rows = [
-        McpNameRow(tool_id="t1", name="mcp_github_issue_search", mcp_server_name="GitHub", mcp_tool_name="issue_search"),
+        McpNameRow(
+            tool_id="t1", name="mcp_github_issue_search", mcp_server_name="GitHub", mcp_tool_name="issue_search"
+        ),
     ]
     plan = plan_mcp_name_canonicalization(rows)
     assert len(plan) == 1
@@ -96,7 +98,9 @@ def test_plan_renames_legacy_names():
 
 def test_plan_skips_already_canonical():
     rows = [
-        McpNameRow(tool_id="t1", name="mcp__github__issue-search", mcp_server_name="GitHub", mcp_tool_name="issue_search"),
+        McpNameRow(
+            tool_id="t1", name="mcp__github__issue-search", mcp_server_name="GitHub", mcp_tool_name="issue_search"
+        ),
     ]
     assert plan_mcp_name_canonicalization(rows) == []
 
@@ -117,7 +121,9 @@ def test_plan_disambiguates_collision_within_tenant():
 def test_plan_reserves_canonical_before_renaming_sibling():
     # t1 already canonical; a legacy sibling that wants the same name must not steal it.
     rows = [
-        McpNameRow(tool_id="t1", name="mcp__github__search", mcp_server_name="GitHub", mcp_tool_name="search", tenant_id="x"),
+        McpNameRow(
+            tool_id="t1", name="mcp__github__search", mcp_server_name="GitHub", mcp_tool_name="search", tenant_id="x"
+        ),
         McpNameRow(tool_id="t2", name="legacy", mcp_server_name="git.hub", mcp_tool_name="search", tenant_id="x"),
     ]
     plan = plan_mcp_name_canonicalization(rows)

@@ -31,22 +31,24 @@ async def test_get_agent_tool_failure_summary_returns_aggregated_payload(monkeyp
 
     agent_id = uuid4()
     user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4())
-    db = _FakeDB([
+    db = _FakeDB(
         [
-            SimpleNamespace(
-                action_type="error",
-                summary="Tool firecrawl_fetch failed",
-                detail_json={
-                    "tool_name": "firecrawl_fetch",
-                    "provider": "firecrawl",
-                    "error_class": "quota_or_billing",
-                    "http_status": 402,
-                    "retryable": False,
-                },
-                created_at=datetime.now(UTC),
-            )
+            [
+                SimpleNamespace(
+                    action_type="error",
+                    summary="Tool firecrawl_fetch failed",
+                    detail_json={
+                        "tool_name": "firecrawl_fetch",
+                        "provider": "firecrawl",
+                        "error_class": "quota_or_billing",
+                        "http_status": 402,
+                        "retryable": False,
+                    },
+                    created_at=datetime.now(UTC),
+                )
+            ]
         ]
-    ])
+    )
 
     async def fake_check_agent_access(db_session, current_user, target_agent_id):
         assert db_session is db

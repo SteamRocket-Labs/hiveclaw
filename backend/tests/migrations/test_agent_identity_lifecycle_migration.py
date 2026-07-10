@@ -5,12 +5,7 @@ from pathlib import Path
 
 
 def _load_migration():
-    migration_path = (
-        Path(__file__).resolve().parents[2]
-        / "alembic"
-        / "versions"
-        / "agent_identity_lifecycle_0613.py"
-    )
+    migration_path = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "agent_identity_lifecycle_0613.py"
     spec = importlib.util.spec_from_file_location("agent_identity_lifecycle_0613", migration_path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)

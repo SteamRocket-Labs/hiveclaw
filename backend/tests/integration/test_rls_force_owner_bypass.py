@@ -127,9 +127,7 @@ async def test_production_owner_connection_is_superuser_bypassrls(owner_engine):
     which is what production actually ships today."""
     async with owner_engine.connect() as conn:
         row = (
-            await conn.execute(
-                text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
-            )
+            await conn.execute(text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"))
         ).one()
     rolsuper, rolbypassrls = row
     # Observed truth on postgres:16-alpine Testcontainer default ``test`` user.
@@ -161,9 +159,7 @@ async def test_production_owner_connection_bypasses_force_rls_PRODUCTION_RISK(ow
     try:
         async with owner_engine.connect() as conn:
             await conn.execute(text(f"SET LOCAL app.current_tenant_id = '{TENANT_A}'"))
-            rows = sorted(
-                (await conn.execute(text("SELECT tenant_id::text FROM rls_force_probe"))).scalars().all()
-            )
+            rows = sorted((await conn.execute(text("SELECT tenant_id::text FROM rls_force_probe"))).scalars().all())
         # FORCE is inert against a superuser/BYPASSRLS connection — both rows leak.
         assert rows == sorted([TENANT_A, TENANT_B]), (
             "PRODUCTION RISK CONFIRMED: superuser+owner runtime connection reads "
@@ -188,17 +184,13 @@ async def test_non_superuser_owner_is_constrained_by_force_rls(owner_engine):
     await _ensure_force_owner_role(owner_engine)
     # Created by the superuser, then ownership handed to the non-superuser role.
     await _create_force_probe(owner_engine, granted_owner=FORCE_OWNER)
-    force_owner_url = make_url(owner_engine.url).set(
-        username=FORCE_OWNER, password=FORCE_OWNER_PASSWORD
-    )
+    force_owner_url = make_url(owner_engine.url).set(username=FORCE_OWNER, password=FORCE_OWNER_PASSWORD)
     force_owner_engine = create_async_engine(force_owner_url, poolclass=NullPool)
     try:
         async with force_owner_engine.connect() as conn:
             # Sanity: this connection really is the table owner and not a superuser.
             attrs = (
-                await conn.execute(
-                    text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
-                )
+                await conn.execute(text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"))
             ).one()
             assert attrs == (False, False), "force-owner role must be non-superuser to isolate the FORCE effect"
             await conn.execute(text(f"SET LOCAL app.current_tenant_id = '{TENANT_A}'"))

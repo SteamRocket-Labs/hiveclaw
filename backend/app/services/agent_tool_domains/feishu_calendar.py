@@ -40,8 +40,9 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
         """Return an ISO-8601 string with timezone for freebusy API."""
         if not t:
             return default.strftime("%Y-%m-%dT%H:%M:%S+00:00")
-        if _re.fullmatch(r'\d+', t.strip()):
+        if _re.fullmatch(r"\d+", t.strip()):
             from datetime import datetime as _dt2
+
             return _dt2.fromtimestamp(int(t.strip()), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         return t.strip()
 
@@ -49,10 +50,11 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
         """Convert ISO-8601 / Unix string / None to Unix timestamp string."""
         if not t:
             return str(int(default.timestamp()))
-        if _re.fullmatch(r'\d+', t.strip()):
+        if _re.fullmatch(r"\d+", t.strip()):
             return t.strip()
         try:
             from datetime import datetime as _dt2
+
             for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
                 try:
                     dt = _dt2.strptime(t.strip(), fmt)
@@ -62,6 +64,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
                 except ValueError:
                     continue
             from dateutil import parser as _dp
+
             return str(int(_dp.parse(t).timestamp()))
         except Exception:
             return str(int(default.timestamp()))
@@ -103,6 +106,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
                 if busy_slots:
                     from datetime import datetime as _dt2
                     from zoneinfo import ZoneInfo
+
                     tz_cn = ZoneInfo("Asia/Shanghai")
                     busy_lines = []
                     for slot in sorted(busy_slots, key=lambda x: x.get("start_time", "")):
@@ -168,6 +172,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
         event_id = ev.get("event_id", "")
         try:
             from datetime import datetime as _dt
+
             s = _dt.fromtimestamp(int(start), tz=timezone.utc).strftime("%m-%d %H:%M") if start else "?"
             e = _dt.fromtimestamp(int(end_t), tz=timezone.utc).strftime("%H:%M") if end_t else "?"
         except Exception:
@@ -202,7 +207,9 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
     if user_email:
         organizer_open_id = await _feishu_resolve_open_id(token, user_email)
         if not organizer_open_id:
-            logger.warning(f"[Feishu Calendar] Could not resolve open_id for '{user_email}', continuing without organizer invite")
+            logger.warning(
+                f"[Feishu Calendar] Could not resolve open_id for '{user_email}', continuing without organizer invite"
+            )
 
     agent_cal_id, cal_err = await _get_agent_calendar_id(token)
     if not agent_cal_id:
@@ -238,7 +245,7 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
     attendee_display: list[str] = []  # for summary message
 
     # 1. Direct open_ids provided by caller
-    for oid in (arguments.get("attendee_open_ids") or []):
+    for oid in arguments.get("attendee_open_ids") or []:
         if oid and oid not in attendee_open_ids:
             attendee_open_ids.append(oid)
             attendee_display.append(oid)
@@ -247,19 +254,19 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
     import re as _re_oid
     from app.services.agent_tool_domains.feishu_users import _feishu_user_search
 
-    for aname in (arguments.get("attendee_names") or []):
+    for aname in arguments.get("attendee_names") or []:
         aname = aname.strip()
         if not aname:
             continue
         _sr = await _feishu_user_search(agent_id, {"name": aname})
-        _m = _re_oid.search(r'open_id: `(ou_[A-Za-z0-9]+)`', _sr)
+        _m = _re_oid.search(r"open_id: `(ou_[A-Za-z0-9]+)`", _sr)
         if _m:
             _oid = _m.group(1)
             if _oid not in attendee_open_ids:
                 attendee_open_ids.append(_oid)
                 attendee_display.append(aname)
         else:
-                logger.warning(f"[Calendar] Could not resolve attendee '{aname}': {_sr[:100]}")
+            logger.warning(f"[Calendar] Could not resolve attendee '{aname}': {_sr[:100]}")
 
     # 3. From explicit attendee_emails
     attendee_emails: list[str] = list(arguments.get("attendee_emails") or [])

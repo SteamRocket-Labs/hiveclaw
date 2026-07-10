@@ -1286,6 +1286,7 @@ async def test_agent_teams_api_creates_container_only(monkeypatch):
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
 
     monkeypatch.setattr(teams_api, "check_agent_access", fake_access)
+
     async def fake_load_parent_session(*_args, **_kwargs):
         return SimpleNamespace(id=parent_session_id, root_session_id=parent_session_id)
 

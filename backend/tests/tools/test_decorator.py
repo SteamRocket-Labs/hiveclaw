@@ -59,9 +59,15 @@ def test_tool_decorator_registers_aliases():
 
 
 def test_clear_registry_empties_all():
-    @tool(ToolMeta(
-        name="temp", description="x", parameters={}, category="test", display_name="Temp",
-    ))
+    @tool(
+        ToolMeta(
+            name="temp",
+            description="x",
+            parameters={},
+            category="test",
+            display_name="Temp",
+        )
+    )
     async def temp(args: dict) -> str:
         return ""
 
@@ -74,7 +80,11 @@ def test_tool_meta_frozen():
     import pytest
 
     meta = ToolMeta(
-        name="frozen_test", description="x", parameters={}, category="test", display_name="X",
+        name="frozen_test",
+        description="x",
+        parameters={},
+        category="test",
+        display_name="X",
     )
     with pytest.raises(AttributeError):
         meta.name = "changed"  # type: ignore[misc]
@@ -82,7 +92,11 @@ def test_tool_meta_frozen():
 
 def test_tool_meta_defaults():
     meta = ToolMeta(
-        name="defaults", description="x", parameters={}, category="test", display_name="X",
+        name="defaults",
+        description="x",
+        parameters={},
+        category="test",
+        display_name="X",
     )
     assert meta.icon == "\U0001f527"
     assert meta.is_default is True

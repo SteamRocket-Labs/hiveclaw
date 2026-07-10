@@ -151,11 +151,7 @@ def create_fast_reflection_candidate(
     classification_method = str(signal.get("method") or "unknown")
     workspace = Path(data_root) / str(agent_id)
     normalized_session_id = str(session_id or metadata.get("session_id") or "unknown-session")
-    metadata_source_refs = [
-        str(ref).strip()
-        for ref in (metadata.get("source_refs") or [])
-        if str(ref).strip()
-    ]
+    metadata_source_refs = [str(ref).strip() for ref in (metadata.get("source_refs") or []) if str(ref).strip()]
     source_attempt_ids = metadata_source_refs or [normalized_session_id]
     payload = {
         "schema": "fast_reflection_candidate.v1",
@@ -195,7 +191,9 @@ def create_fast_reflection_candidate(
         session_id=normalized_session_id,
         candidate_id=candidate["candidate_id"],
         lesson=lesson,
-        source_refs=source_attempt_ids if metadata_source_refs else [f"runtime_task:{item}" for item in source_attempt_ids],
+        source_refs=source_attempt_ids
+        if metadata_source_refs
+        else [f"runtime_task:{item}" for item in source_attempt_ids],
         evidence="user_stated" if signal_type == "user_preference_correction" else "system_observed",
         ttl_minutes=60,
     )

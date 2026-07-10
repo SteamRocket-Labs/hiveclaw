@@ -156,7 +156,11 @@ async def update_memory_config(
 
     # Validate model IDs belong to the same tenant
     from app.models.llm import LLMModel
-    for field_name, model_id in [("summary_model_id", data.summary_model_id), ("rerank_model_id", data.rerank_model_id)]:
+
+    for field_name, model_id in [
+        ("summary_model_id", data.summary_model_id),
+        ("rerank_model_id", data.rerank_model_id),
+    ]:
         if model_id:
             model_r = await db.execute(
                 select(LLMModel.id).where(
@@ -189,6 +193,7 @@ async def get_agent_memory(
 ):
     """View agent's structured memory facts (requires agent access)."""
     from app.core.permissions import check_agent_access
+
     await check_agent_access(db, current_user, agent_id)
 
     # Two-plane read model: profile-plane entries (self/profiles) plus
@@ -245,7 +250,10 @@ async def list_team_memory(
 
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
     store = TeamMemoryStore()
-    return [asdict(entry) for entry in store.list_entries(str(target_tenant_id), workspace_key, include_deleted=include_deleted)]
+    return [
+        asdict(entry)
+        for entry in store.list_entries(str(target_tenant_id), workspace_key, include_deleted=include_deleted)
+    ]
 
 
 @router.get("/shared/search")

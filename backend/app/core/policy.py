@@ -166,6 +166,7 @@ def _evaluate_conditions(conditions: dict, context: dict) -> bool:
                 return False
         elif key == "time_range":
             from datetime import datetime, timezone
+
             now = datetime.now(timezone.utc)
             hour_str = now.strftime("%H:%M")
             start = value.get("start", "00:00")
@@ -250,6 +251,7 @@ async def write_audit_event(
     exec_identity_label = None
     try:
         from app.core.execution_context import get_execution_identity
+
         identity = get_execution_identity()
         if identity:
             exec_identity_type = identity.identity_type

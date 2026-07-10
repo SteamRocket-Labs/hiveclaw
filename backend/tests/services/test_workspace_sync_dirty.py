@@ -88,8 +88,7 @@ async def test_broadcast_publishes_to_redis(monkeypatch):
     await asyncio.sleep(0)
 
     assert any(
-        channel == "workspace_sync:dirty" and data == {"type": "tenant", "id": str(t1)}
-        for channel, data in captured
+        channel == "workspace_sync:dirty" and data == {"type": "tenant", "id": str(t1)} for channel, data in captured
     )
 
 

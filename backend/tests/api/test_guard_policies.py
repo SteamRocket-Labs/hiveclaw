@@ -136,9 +136,12 @@ def test_update_policy_bumps_version():
     )
     client, _ = _build_client(policy=existing)
     with patch.object(gp_mod, "bump_sync_version", new_callable=AsyncMock, return_value=6):
-        resp = client.put("/guard-policies", json={
-            "zone_guard": {"blocked_zones": ["sandbox"]},
-        })
+        resp = client.put(
+            "/guard-policies",
+            json={
+                "zone_guard": {"blocked_zones": ["sandbox"]},
+            },
+        )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -158,9 +161,12 @@ def test_update_policy_partial_update():
     )
     client, _ = _build_client(policy=existing)
     with patch.object(gp_mod, "bump_sync_version", new_callable=AsyncMock, return_value=3):
-        resp = client.put("/guard-policies", json={
-            "egress_guard": {"block_all": True},
-        })
+        resp = client.put(
+            "/guard-policies",
+            json={
+                "egress_guard": {"block_all": True},
+            },
+        )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -171,7 +177,11 @@ def test_update_policy_partial_update():
 def test_get_policy_no_tenant():
     """User without tenant gets 400."""
     no_tenant_user = SimpleNamespace(
-        id=uuid4(), username="orphan", role="org_admin", tenant_id=None, is_active=True,
+        id=uuid4(),
+        username="orphan",
+        role="org_admin",
+        tenant_id=None,
+        is_active=True,
     )
     client, _ = _build_client(user=no_tenant_user)
     resp = client.get("/guard-policies")

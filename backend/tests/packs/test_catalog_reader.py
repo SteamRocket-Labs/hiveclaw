@@ -127,11 +127,17 @@ def test_repo_and_deploy_pack_manifests_are_full_skill_packages():
             for skill_ref in manifest.skills:
                 skill_dir = pack_dir / skill_ref
                 if not (skill_dir / "SKILL.md").is_file():
-                    failures.append(f"{manifest.name} skill {skill_ref} missing SKILL.md in {pack_dir.relative_to(REPO_ROOT)}")
+                    failures.append(
+                        f"{manifest.name} skill {skill_ref} missing SKILL.md in {pack_dir.relative_to(REPO_ROOT)}"
+                    )
                 if not (skill_dir / "references").is_dir():
-                    failures.append(f"{manifest.name} skill {skill_ref} missing references/ in {pack_dir.relative_to(REPO_ROOT)}")
+                    failures.append(
+                        f"{manifest.name} skill {skill_ref} missing references/ in {pack_dir.relative_to(REPO_ROOT)}"
+                    )
                 if not (skill_dir / "templates").is_dir():
-                    failures.append(f"{manifest.name} skill {skill_ref} missing templates/ in {pack_dir.relative_to(REPO_ROOT)}")
+                    failures.append(
+                        f"{manifest.name} skill {skill_ref} missing templates/ in {pack_dir.relative_to(REPO_ROOT)}"
+                    )
                 # Decorative evals/eval.yaml retired (eval-system-spec §3.1).
                 if (skill_dir / "evals" / "eval.yaml").exists():
                     failures.append(
@@ -152,7 +158,9 @@ def test_pack_manifest_tools_are_registered_backend_tools():
         for manifest in reader.list_packs():
             for tool_name in manifest.tool_names:
                 if tool_name not in registered_tools:
-                    failures.append(f"{manifest.manifest_path.relative_to(REPO_ROOT)} references unknown tool {tool_name}")
+                    failures.append(
+                        f"{manifest.manifest_path.relative_to(REPO_ROOT)} references unknown tool {tool_name}"
+                    )
 
     assert not failures, "\n".join(failures)
 

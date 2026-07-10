@@ -152,10 +152,14 @@ async def test_stage2b_policy_isolates_non_owner_after_backfill(owner_sessionmak
     async with app_user_engine.connect() as conn:
         await conn.execute(text(f"SET LOCAL app.current_tenant_id = '{tid_a}'"))
         visible = (
-            await conn.execute(
-                text("SELECT id::text FROM chat_messages WHERE id::text = ANY(:ids)"),
-                {"ids": [str(ma_id), str(mb_id)]},
+            (
+                await conn.execute(
+                    text("SELECT id::text FROM chat_messages WHERE id::text = ANY(:ids)"),
+                    {"ids": [str(ma_id), str(mb_id)]},
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert str(ma_id) in visible
     assert str(mb_id) not in visible

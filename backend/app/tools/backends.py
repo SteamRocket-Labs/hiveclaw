@@ -51,8 +51,7 @@ class DockerToolRuntimeBackend:
                 tool_name=request.tool_name,
                 error_class="backend_unavailable",
                 message=(
-                    f"Tool runtime backend '{self.name}' is configured with image '{self.image}' "
-                    "but is not enabled."
+                    f"Tool runtime backend '{self.name}' is configured with image '{self.image}' but is not enabled."
                 ),
                 provider="tool_runtime_backend",
                 retryable=False,

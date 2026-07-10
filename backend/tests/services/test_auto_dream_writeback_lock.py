@@ -125,6 +125,7 @@ async def test_concurrent_apply_calls_serialize(agent_workspace, monkeypatch) ->
         order.append("start")
         # Hold the lock for a beat so the second call has to wait.
         import time
+
         time.sleep(0.05)
         order.append("end")
         return {}

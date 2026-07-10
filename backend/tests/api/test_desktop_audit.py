@@ -63,12 +63,15 @@ def _build_client():
 def test_ingest_audit_events_batch():
     """Batch upload of audit events succeeds and stores all entries."""
     client, fake_db = _build_client()
-    resp = client.post("/desktop/audit/events", json={
-        "events": [
-            {"action": "tool_execute", "agent_id": str(_AGENT_ID), "details": {"tool": "web_search"}},
-            {"action": "file_write", "details": {"path": "/workspace/note.md"}},
-        ]
-    })
+    resp = client.post(
+        "/desktop/audit/events",
+        json={
+            "events": [
+                {"action": "tool_execute", "agent_id": str(_AGENT_ID), "details": {"tool": "web_search"}},
+                {"action": "file_write", "details": {"path": "/workspace/note.md"}},
+            ]
+        },
+    )
 
     assert resp.status_code == 201
     data = resp.json()
@@ -88,9 +91,7 @@ def test_ingest_empty_events():
 def test_audit_event_action_prefixed():
     """Stored audit action must be prefixed with 'desktop:'."""
     client, fake_db = _build_client()
-    client.post("/desktop/audit/events", json={
-        "events": [{"action": "mcp_call", "details": {}}]
-    })
+    client.post("/desktop/audit/events", json={"events": [{"action": "mcp_call", "details": {}}]})
 
     log = fake_db.added[0]
     assert log.action == "desktop:mcp_call"
@@ -103,17 +104,20 @@ def test_audit_event_action_prefixed():
 def test_ingest_guard_events():
     """Guard interception events are stored with rule metadata."""
     client, fake_db = _build_client()
-    resp = client.post("/desktop/audit/guard-events", json={
-        "events": [
-            {
-                "action": "egress_blocked",
-                "agent_id": str(_AGENT_ID),
-                "rule": "deny_external_http",
-                "blocked": True,
-                "details": {"url": "https://evil.com"},
-            },
-        ]
-    })
+    resp = client.post(
+        "/desktop/audit/guard-events",
+        json={
+            "events": [
+                {
+                    "action": "egress_blocked",
+                    "agent_id": str(_AGENT_ID),
+                    "rule": "deny_external_http",
+                    "blocked": True,
+                    "details": {"url": "https://evil.com"},
+                },
+            ]
+        },
+    )
 
     assert resp.status_code == 201
     assert resp.json()["accepted"] == 1

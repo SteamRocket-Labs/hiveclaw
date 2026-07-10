@@ -97,7 +97,9 @@ class OfficeDocumentService:
         self._save_manifest(normalized, manifest)
         return {"path": normalized, "kind": kind, "size": target.stat().st_size}
 
-    def set_active_editor_session(self, rel_path: str, *, session_id: str, user_id: str | None = None) -> dict[str, Any]:
+    def set_active_editor_session(
+        self, rel_path: str, *, session_id: str, user_id: str | None = None
+    ) -> dict[str, Any]:
         normalized = self._normalize_rel_path(rel_path)
         manifest = self._load_manifest(normalized)
         session = {

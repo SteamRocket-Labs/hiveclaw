@@ -14,6 +14,7 @@ abort tests that target unrelated invoke_agent behaviour. Tests that
 specifically exercise tenant resolution can opt out via monkeypatch
 themselves (see test_resolve_runtime_config_*).
 """
+
 from __future__ import annotations
 
 import uuid

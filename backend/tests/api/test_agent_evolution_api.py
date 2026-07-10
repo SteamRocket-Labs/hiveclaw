@@ -125,9 +125,7 @@ async def test_get_agent_evolution_returns_structured_view(monkeypatch, tmp_path
         return SimpleNamespace(id=expected_agent_id), "use"
 
     monkeypatch.setattr(agents_mod, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr(
-        agents_mod, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path))
-    )
+    monkeypatch.setattr(agents_mod, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     response = client.get(f"/agents/{expected_agent_id}/evolution")
 
@@ -153,9 +151,7 @@ async def test_get_agent_evolution_empty_when_no_workspace(monkeypatch, tmp_path
         return SimpleNamespace(id=expected_agent_id), "use"
 
     monkeypatch.setattr(agents_mod, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr(
-        agents_mod, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path))
-    )
+    monkeypatch.setattr(agents_mod, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     response = client.get(f"/agents/{expected_agent_id}/evolution")
 

@@ -246,16 +246,13 @@ class WorkflowOpsService:
                 .all()
             )
             running_leaves = (
-                (
-                    await session.execute(
-                        select(WorkflowLeafCall.step_id, WorkflowLeafCall.leaf_id).where(
-                            WorkflowLeafCall.run_id == run_uuid,
-                            WorkflowLeafCall.status == "running",
-                        )
+                await session.execute(
+                    select(WorkflowLeafCall.step_id, WorkflowLeafCall.leaf_id).where(
+                        WorkflowLeafCall.run_id == run_uuid,
+                        WorkflowLeafCall.status == "running",
                     )
                 )
-                .all()
-            )
+            ).all()
             if running_steps or running_leaves:
                 raise WorkflowOpsConflict(
                     "workflow run has in-flight journal rows; wait for force-suspend to quiesce before replay"

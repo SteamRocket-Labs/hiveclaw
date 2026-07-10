@@ -166,8 +166,7 @@ def _callback_url(agent_id: uuid.UUID, path: str) -> str:
 
 def _document_command_url(document_key: str) -> str:
     docs_url = (
-        getattr(settings, "ONLYOFFICE_INTERNAL_DOCS_URL", "")
-        or getattr(settings, "ONLYOFFICE_DOCS_URL", "")
+        getattr(settings, "ONLYOFFICE_INTERNAL_DOCS_URL", "") or getattr(settings, "ONLYOFFICE_DOCS_URL", "")
     ).rstrip("/")
     if not docs_url:
         raise HTTPException(status_code=503, detail="ONLYOFFICE document server is not configured")
@@ -279,7 +278,11 @@ async def force_save_document(
 
     active_session = service.get_active_editor_session(body.path)
     active_session_id = active_session.get("session_id") if active_session else None
-    document_key = active_session_id if active_session_id and active_session_id != "onlyoffice" else _document_key(target, body.path)
+    document_key = (
+        active_session_id
+        if active_session_id and active_session_id != "onlyoffice"
+        else _document_key(target, body.path)
+    )
     command: dict[str, str] = {
         "c": "forcesave",
         "key": document_key,
@@ -298,7 +301,7 @@ def _rewrite_to_internal_docs_url(url: str) -> str:
     external = getattr(settings, "ONLYOFFICE_DOCS_URL", "").rstrip("/")
     internal = getattr(settings, "ONLYOFFICE_INTERNAL_DOCS_URL", "").rstrip("/")
     if external and internal and url.startswith(external):
-        return internal + url[len(external):]
+        return internal + url[len(external) :]
     return url
 
 

@@ -403,9 +403,7 @@ async def test_update_agent_tools_rejects_agent_base_tool_toggle(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         await tools_api.update_agent_tools(
             agent_id=agent_id,
-            data=tools_api.AgentToolsUpdateIn(
-                tools=[tools_api.AgentToolToggleIn(tool_id=str(tool_id), enabled=False)]
-            ),
+            data=tools_api.AgentToolsUpdateIn(tools=[tools_api.AgentToolToggleIn(tool_id=str(tool_id), enabled=False)]),
             current_user=current_user,
             db=db,
         )

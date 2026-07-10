@@ -66,7 +66,10 @@ def _looks_like_actual_tool_result_claim(content: str, tool_name: str) -> bool:
     window_start = max(0, match.start() - 24)
     window_end = min(len(content), match.end() + 36)
     local_window = content[window_start:window_end].lower()
-    if any(marker in local_window or marker in content[window_start:window_end] for marker in _NON_ASSERTIVE_CONTEXT_MARKERS):
+    if any(
+        marker in local_window or marker in content[window_start:window_end]
+        for marker in _NON_ASSERTIVE_CONTEXT_MARKERS
+    ):
         return False
     return True
 
@@ -93,11 +96,7 @@ def verify_final_answer_tool_evidence(
             and _looks_like_actual_tool_result_claim(content, name)
         ]
     else:
-        missing = [
-            name
-            for name in sorted(available_tool_names)
-            if _looks_like_actual_tool_result_claim(content, name)
-        ]
+        missing = [name for name in sorted(available_tool_names) if _looks_like_actual_tool_result_claim(content, name)]
     if not missing:
         return content
     names = ", ".join(f"`{name}`" for name in missing[:8])

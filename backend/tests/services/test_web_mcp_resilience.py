@@ -132,9 +132,7 @@ def _pin_tool_config(monkeypatch, web_mcp, tool):
     async def _resolver_miss(_tool_name, _tenant_id):
         raise RuntimeError("resolve_tool_config disabled for this unit test")
 
-    monkeypatch.setattr(
-        "app.services.tool_config_service.resolve_tool_config", _resolver_miss
-    )
+    monkeypatch.setattr("app.services.tool_config_service.resolve_tool_config", _resolver_miss)
 
 
 @pytest.mark.asyncio
@@ -1426,9 +1424,7 @@ async def test_advanced_web_search_routes_current_news_to_tavily(monkeypatch):
 
     monkeypatch.setattr(web_mcp, "_tavily_search", fake_tavily_search)
 
-    result = await web_mcp._advanced_web_search(
-        {"query": "latest ai policy", "intent": "news", "max_results": 4}
-    )
+    result = await web_mcp._advanced_web_search({"query": "latest ai policy", "intent": "news", "max_results": 4})
 
     assert result == "tavily current result"
     assert calls == [{"query": "latest ai policy", "max_results": 4, "topic": "news"}]

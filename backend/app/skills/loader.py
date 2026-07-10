@@ -139,7 +139,11 @@ class WorkspaceSkillLoader:
             if not path.is_dir() or path.name != _SKILLS_DIR_NAME:
                 return
             resolved = path.resolve()
-            if resolved in seen or not self._is_inside_workspace(resolved, workspace_root) or not allowed_session_path(resolved):
+            if (
+                resolved in seen
+                or not self._is_inside_workspace(resolved, workspace_root)
+                or not allowed_session_path(resolved)
+            ):
                 return
             seen.add(resolved)
             discovered.append(resolved)
@@ -196,7 +200,9 @@ class WorkspaceSkillLoader:
                             )
                         )
                         break
-            elif entry.is_file() and entry.suffix == ".md" and self._is_inside_workspace(entry.resolve(), workspace_root):
+            elif (
+                entry.is_file() and entry.suffix == ".md" and self._is_inside_workspace(entry.resolve(), workspace_root)
+            ):
                 skills.append(
                     self.parser.parse_file(
                         entry,

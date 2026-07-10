@@ -24,7 +24,9 @@ class _FakeLLMClient(LLMClient):
         self.complete_calls += 1
         return self.response
 
-    async def stream(self, messages, tools=None, temperature=0.7, max_tokens=None, on_chunk=None, on_thinking=None, **kwargs):
+    async def stream(
+        self, messages, tools=None, temperature=0.7, max_tokens=None, on_chunk=None, on_thinking=None, **kwargs
+    ):
         self.stream_calls += 1
         return self.response
 

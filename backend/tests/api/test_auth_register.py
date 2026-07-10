@@ -145,8 +145,7 @@ def test_register_first_user_pins_bootstrap_tenant_before_user_insert(monkeypatc
     user = next(obj for obj in db.added if obj.__class__.__name__ == "User")
     assert user.tenant_id is not None
     assert any(
-        f"SET LOCAL app.current_tenant_id = '{user.tenant_id}'" in statement
-        for statement in db.executed_statements
+        f"SET LOCAL app.current_tenant_id = '{user.tenant_id}'" in statement for statement in db.executed_statements
     )
 
 

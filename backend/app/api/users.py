@@ -39,7 +39,7 @@ class UserOut(BaseModel):
     # Source info
     feishu_open_id: str | None = None
     created_at: str | None = None
-    source: str = 'registered'
+    source: str = "registered"
 
     model_config = {"from_attributes": True}
 
@@ -58,17 +58,15 @@ async def list_users(
     tid = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     # Filter users by tenant — platform_admins only shown in their own tenant
-    result = await db.execute(
-        select(User).where(
-            User.tenant_id == tid
-        ).order_by(User.created_at.asc())
-    )
+    result = await db.execute(select(User).where(User.tenant_id == tid).order_by(User.created_at.asc()))
     users = result.scalars().all()
 
     out = []
     for u in users:
         count_result = await db.execute(
-            select(func.count()).select_from(Agent).where(
+            select(func.count())
+            .select_from(Agent)
+            .where(
                 Agent.creator_id == u.id,
                 Agent.tenant_id == tid,
             )
@@ -88,9 +86,9 @@ async def list_users(
             "tokens_used_month": u.tokens_used_month,
             "tokens_used_total": u.tokens_used_total,
             "agents_count": agents_count,
-            "feishu_open_id": getattr(u, 'feishu_open_id', None),
+            "feishu_open_id": getattr(u, "feishu_open_id", None),
             "created_at": u.created_at.isoformat() if u.created_at else None,
-            "source": 'feishu' if getattr(u, 'feishu_open_id', None) else 'registered',
+            "source": "feishu" if getattr(u, "feishu_open_id", None) else "registered",
         }
         out.append(UserOut(**user_dict))
     return out
@@ -135,7 +133,9 @@ async def update_user_quota(
     await db.refresh(user)
 
     count_result = await db.execute(
-        select(func.count()).select_from(Agent).where(
+        select(func.count())
+        .select_from(Agent)
+        .where(
             Agent.creator_id == user.id,
             Agent.tenant_id == user.tenant_id,
         )
@@ -143,8 +143,12 @@ async def update_user_quota(
     agents_count = count_result.scalar() or 0
 
     return UserOut(
-        id=user.id, username=user.username, email=user.email,
-        display_name=user.display_name, role=user.role, is_active=user.is_active,
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        display_name=user.display_name,
+        role=user.role,
+        is_active=user.is_active,
         quota_tokens_per_day=user.quota_tokens_per_day,
         quota_tokens_per_month=user.quota_tokens_per_month,
         tokens_used_today=user.tokens_used_today,

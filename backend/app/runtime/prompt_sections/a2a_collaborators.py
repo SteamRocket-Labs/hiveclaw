@@ -51,7 +51,9 @@ def build_a2a_collaborators_section(read_model: dict[str, Any] | None, *, max_ch
         header = f"### A2A Collaboration Group: {group_name}"
         if purpose:
             header += f"\nPurpose: {purpose}"
-        member_lines = [_agent_line(member, relation_label=f"group member/{member.get('role') or 'member'}") for member in members]
+        member_lines = [
+            _agent_line(member, relation_label=f"group member/{member.get('role') or 'member'}") for member in members
+        ]
         group_blocks.append("\n".join([header, *member_lines]))
     parts.extend(group_blocks)
 

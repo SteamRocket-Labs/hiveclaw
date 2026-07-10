@@ -189,9 +189,7 @@ def record_skill_handoff_execution(
         return
     executed = [dict(item) for item in metadata.get("executed_skill_handoffs", []) if isinstance(item, dict)]
     executed = [
-        item
-        for item in executed
-        if str(item.get("skill_slug") or item.get("skill") or "").strip() != skill_slug
+        item for item in executed if str(item.get("skill_slug") or item.get("skill") or "").strip() != skill_slug
     ]
     executed.append(
         {
@@ -207,8 +205,7 @@ def record_skill_handoff_execution(
     pending = [
         dict(item)
         for item in metadata.get("pending_skill_handoffs", [])
-        if isinstance(item, dict)
-        and str(item.get("skill_slug") or item.get("skill") or "").strip() != skill_slug
+        if isinstance(item, dict) and str(item.get("skill_slug") or item.get("skill") or "").strip() != skill_slug
     ]
     if pending:
         metadata["pending_skill_handoffs"] = pending

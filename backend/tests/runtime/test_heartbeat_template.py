@@ -11,12 +11,7 @@ from pathlib import Path
 
 import pytest
 
-_TEMPLATE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "app"
-    / "templates"
-    / "HEARTBEAT.md"
-)
+_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "app" / "templates" / "HEARTBEAT.md"
 
 
 @pytest.fixture(scope="module")

@@ -56,7 +56,9 @@ class CompactionTraceAttempt:
     request_id: str
     started_at_ms: int
 
-    async def record_completed(self, *, output_items: list[dict[str, Any]], status: str = "completed", error: str | None = None) -> None:
+    async def record_completed(
+        self, *, output_items: list[dict[str, Any]], status: str = "completed", error: str | None = None
+    ) -> None:
         await self.context._record(
             {
                 "fact_type": "compaction_attempt_completed",

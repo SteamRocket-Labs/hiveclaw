@@ -152,9 +152,4 @@ def render_tool_fallback(
         actionable_hint=actionable_hint,
         extra=payload_extra,
     )
-    return (
-        f"⚠️ {message}\n\n"
-        f"Fallback tool used: `{fallback_tool}`\n\n"
-        f"{fallback_result}\n\n"
-        f"{error_block}"
-    )
+    return f"⚠️ {message}\n\nFallback tool used: `{fallback_tool}`\n\n{fallback_result}\n\n{error_block}"

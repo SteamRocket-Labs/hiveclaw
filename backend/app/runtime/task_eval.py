@@ -148,7 +148,12 @@ _SCENARIO_SPECS: dict[str, _ScenarioSpec] = {
             ("memory_recall", "recall_prefers_session_evidence"),
         ),
         expected_task_profile="memory_recall",
-        benchmark_expectations=("## Task Playbook", "search_memory first", "session transcript evidence", "smallest accurate recap"),
+        benchmark_expectations=(
+            "## Task Playbook",
+            "search_memory first",
+            "session transcript evidence",
+            "smallest accurate recap",
+        ),
         benchmark_cases=(
             _BenchmarkCase(
                 query="what did we decide earlier after compaction about the md-first memory system",
@@ -257,7 +262,9 @@ def _default_scenario_prompt(name: str, query: str) -> str:
     if name in {"session_recall", "self_evolution"}:
         memory_snapshot = "T3 snapshot:\n- prior decision or stable workflow"
     if name == "long_context_after_compaction":
-        memory_snapshot = "T3 snapshot:\n- earlier decision survived compaction\n- use transcript evidence and continuity artifacts"
+        memory_snapshot = (
+            "T3 snapshot:\n- earlier decision survived compaction\n- use transcript evidence and continuity artifacts"
+        )
     prompt = build_dynamic_prompt_suffix(
         active_tool_groups=[],
         retrieval_context=retrieval_context if name == "research" else "",
@@ -276,10 +283,7 @@ def _default_scenario_prompt(name: str, query: str) -> str:
 
 
 def _runtime_scenario_prompts(inputs: TaskEvalInputs | None) -> dict[str, str]:
-    prompts = {
-        name: _default_scenario_prompt(name, spec.query)
-        for name, spec in _SCENARIO_SPECS.items()
-    }
+    prompts = {name: _default_scenario_prompt(name, spec.query) for name, spec in _SCENARIO_SPECS.items()}
     if inputs and inputs.scenario_prompts is not None:
         prompts.update(inputs.scenario_prompts)
         if (
@@ -307,7 +311,9 @@ def _top_level_check_failed(report: dict[str, Any], check_name: str) -> bool:
 
 
 def _scenario_check_failed(report: dict[str, Any], scenario_name: str, check_name: str) -> bool:
-    return not bool(report["scenarios"].get(scenario_name, {}).get("checks", {}).get(check_name, {}).get("passed", False))
+    return not bool(
+        report["scenarios"].get(scenario_name, {}).get("checks", {}).get(check_name, {}).get("passed", False)
+    )
 
 
 def _top_level_check_entry(report: dict[str, Any], check_name: str) -> dict[str, Any] | None:
@@ -326,18 +332,22 @@ def _evaluate_profile_matrix_failures(
     forbidden_tools: tuple[str, ...],
 ) -> list[dict[str, str]]:
     if profile is None:
-        return [{
-            "name": f"missing_profile:{profile_name}",
-            "severity": "high",
-            "detail": f"Delegation profile {profile_name} is missing from the runtime policy matrix.",
-            "remediation": "Restore the missing delegation profile and expose it through delegate_to_agent.",
-        }]
+        return [
+            {
+                "name": f"missing_profile:{profile_name}",
+                "severity": "high",
+                "detail": f"Delegation profile {profile_name} is missing from the runtime policy matrix.",
+                "remediation": "Restore the missing delegation profile and expose it through delegate_to_agent.",
+            }
+        ]
 
     failures: list[dict[str, str]] = []
     allowed_tools = tuple(profile.get("allowed_tools") or ())
     core_tools_only = bool(profile.get("core_tools_only", True))
-    if core_tools_only or any(tool not in allowed_tools for tool in required_tools) or any(
-        tool in allowed_tools for tool in forbidden_tools
+    if (
+        core_tools_only
+        or any(tool not in allowed_tools for tool in required_tools)
+        or any(tool in allowed_tools for tool in forbidden_tools)
     ):
         failures.append(
             {
@@ -406,9 +416,7 @@ def _evaluate_benchmark_cases(
             )
 
         missing_expectations = [
-            expectation
-            for expectation in case.prompt_expectations
-            if expectation not in scenario_prompt
+            expectation for expectation in case.prompt_expectations if expectation not in scenario_prompt
         ]
         if missing_expectations:
             failures.append(
@@ -465,7 +473,9 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
             tool_name for tool_name in spec.required_skill_tools if tool_name not in reachable_skill_tools
         ]
         missing_tools = [*initial_missing_tools, *skill_missing_tools]
-        failed_prompt_checks = [check_name for check_name in spec.prompt_checks if _top_level_check_failed(prompt_report, check_name)]
+        failed_prompt_checks = [
+            check_name for check_name in spec.prompt_checks if _top_level_check_failed(prompt_report, check_name)
+        ]
         failed_scenario_checks = [
             f"{scenario_name}.{check_name}"
             for scenario_name, check_name in spec.scenario_checks
@@ -701,7 +711,9 @@ def render_task_readiness_report(
             lines.append("  task_profile_mismatch: inferred task profile does not match the expected scenario route")
 
     gated = gated_scenarios or tuple(report["scenarios"].keys())
-    failing_gated = [scenario_name for scenario_name in gated if not report["scenarios"].get(scenario_name, {}).get("ready", False)]
+    failing_gated = [
+        scenario_name for scenario_name in gated if not report["scenarios"].get(scenario_name, {}).get("ready", False)
+    ]
     if failing_gated:
         lines.append(f"Gated scenarios failed: {', '.join(failing_gated)}")
     else:
@@ -741,8 +753,7 @@ def main(argv: list[str] | None = None, *, inputs: TaskEvalInputs | None = None)
 
     blocked = any(not report["scenarios"].get(name, {}).get("ready", False) for name in gated_scenarios)
     benchmark_blocked = any(
-        not report["scenarios"].get(name, {}).get("benchmark_ready", False)
-        for name in benchmark_gated_scenarios
+        not report["scenarios"].get(name, {}).get("benchmark_ready", False) for name in benchmark_gated_scenarios
     )
     return 1 if blocked or benchmark_blocked else 0
 

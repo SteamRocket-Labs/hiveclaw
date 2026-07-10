@@ -454,8 +454,10 @@ def build_production_parent_wake_invoker() -> ParentWakeInvoker:
                 return None
             owner_id = getattr(parent_session, "user_id", None) or getattr(agent, "creator_id", None)
             owner = (
-                await session.execute(select(User).where(User.id == uuid.UUID(str(owner_id))))
-            ).scalar_one_or_none() if owner_id else None
+                (await session.execute(select(User).where(User.id == uuid.UUID(str(owner_id))))).scalar_one_or_none()
+                if owner_id
+                else None
+            )
             if owner is None:
                 logger.warning(
                     "[SubagentWake] parent session %s for agent %s has no user — skipping wake",

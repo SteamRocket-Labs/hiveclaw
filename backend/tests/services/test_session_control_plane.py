@@ -270,19 +270,19 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
                     "model_window": 128000,
                     "tool_result_inline_limit": 50000,
                 },
-                    "runtime_assembly_state": {
-                        "schema": "hive.ccplus.runtime_assembly_state.v1",
-                        "prompt_assembly_manifest": {
-                            "schema": "hive.ccplus.prompt_assembly_manifest.v1",
-                            "source_of_truth": "runtime_prompt_assembly",
-                            "turn_id": "turn-1",
-                            "session_id": str(session_id),
-                            "context_budget": {"model_window": 128000},
-                            "dynamic_sections": ["runtime_metadata_context"],
-                            "actual_system_prompt_chars": 123,
-                            "actual_dynamic_notice_chars": 45,
-                        },
+                "runtime_assembly_state": {
+                    "schema": "hive.ccplus.runtime_assembly_state.v1",
+                    "prompt_assembly_manifest": {
+                        "schema": "hive.ccplus.prompt_assembly_manifest.v1",
+                        "source_of_truth": "runtime_prompt_assembly",
+                        "turn_id": "turn-1",
+                        "session_id": str(session_id),
+                        "context_budget": {"model_window": 128000},
+                        "dynamic_sections": ["runtime_metadata_context"],
+                        "actual_system_prompt_chars": 123,
+                        "actual_dynamic_notice_chars": 45,
                     },
+                },
             },
         }
 
@@ -558,7 +558,9 @@ async def test_session_workbench_projects_background_completion_wake_state(monke
     assert result["completion_wakes"][1]["label"] == "critic"
     assert result["completion_wakes"][1]["return_contract"] == "background_completion_wake"
     assert result["completion_wakes"][1]["subagent_return_contract"]["normal_wait_path"] == "completion_wake"
-    assert result["completion_wakes"][1]["subagent_decision_entry"]["schema"] == "hive.ccplus.subagent_decision_entry.v1"
+    assert (
+        result["completion_wakes"][1]["subagent_decision_entry"]["schema"] == "hive.ccplus.subagent_decision_entry.v1"
+    )
     assert result["completion_wakes"][1]["required_user_action"] == "observe_result"
     assert result["completion_wakes"][2]["state"] == "running"
     reminder_candidates = result["runtime_reminder_candidates"]
@@ -572,7 +574,9 @@ async def test_session_workbench_projects_background_completion_wake_state(monke
     assert reminder_candidates[0]["priority"] == 90
     assert reminder_candidates[0]["consumed_at"] is None
     assert reminder_candidates[0]["candidate_ref"]["candidate_id"].startswith("runtime_reminder:completion_wake:")
-    assert result["runtime_sections"]["notifications"]["items"][0]["runtime_reminder_candidate"] == reminder_candidates[0]
+    assert (
+        result["runtime_sections"]["notifications"]["items"][0]["runtime_reminder_candidate"] == reminder_candidates[0]
+    )
 
 
 @pytest.mark.asyncio
@@ -992,7 +996,9 @@ def _patch_slim_workbench_deps(monkeypatch, service, *, events, seen_limits):
 def _mixed_slim_events():
     events = [_slim_event(i) for i in range(1, 58)]
     events.append(_slim_event(58, event_type="tool_call", role="tool_call", metadata={"tool_name": "web_search"}))
-    events.append(_slim_event(59, event_type="hook_pre_tool_use", role="system", metadata={"hook_event": "PRE_TOOL_USE"}))
+    events.append(
+        _slim_event(59, event_type="hook_pre_tool_use", role="system", metadata={"hook_event": "PRE_TOOL_USE"})
+    )
     events.append(_slim_event(60, event_type="session_compact", role="system", metadata={"kind": "compaction"}))
     return events
 

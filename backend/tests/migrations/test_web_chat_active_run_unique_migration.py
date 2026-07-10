@@ -5,12 +5,7 @@ from pathlib import Path
 
 
 def _load_migration():
-    migration_path = (
-        Path(__file__).resolve().parents[2]
-        / "alembic"
-        / "versions"
-        / "web_chat_active_run_unique_0612.py"
-    )
+    migration_path = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "web_chat_active_run_unique_0612.py"
     spec = importlib.util.spec_from_file_location("web_chat_active_run_unique_0612", migration_path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)

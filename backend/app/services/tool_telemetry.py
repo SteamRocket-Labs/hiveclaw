@@ -59,11 +59,7 @@ def summarize_tool_failure_logs(logs: list) -> dict:
                 "error_class": error_class,
                 "http_status": http_status,
                 "retryable": detail.get("retryable"),
-                "created_at": (
-                    log.created_at.isoformat()
-                    if getattr(log, "created_at", None)
-                    else None
-                ),
+                "created_at": (log.created_at.isoformat() if getattr(log, "created_at", None) else None),
             }
         )
 

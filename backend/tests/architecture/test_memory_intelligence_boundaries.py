@@ -59,7 +59,7 @@ def test_no_second_semantic_truth_sources_are_writable() -> None:
     from pathlib import Path as _P
 
     assert not (_P("app/memory/understanding_store.py").exists())
-    understanding_store = 'record() is disabled contradict() writes are disabled'  # retired module contract
+    understanding_store = "record() is disabled contradict() writes are disabled"  # retired module contract
     heartbeat = _read("app/services/heartbeat.py")
     retriever = _read("app/memory/retriever.py")
 
@@ -74,7 +74,7 @@ def test_no_second_semantic_truth_sources_are_writable() -> None:
     assert not _P("app/memory/t2_store.py").exists()
     assert "load_t2_entries" not in heartbeat
     assert "include_derived_sources" not in retriever  # derived wiki opt-in retired at C7
-    assert "source_type\": \"understanding_store\"" not in retriever
+    assert 'source_type": "understanding_store"' not in retriever
 
 
 def test_skill_creation_has_single_candidate_package_path() -> None:

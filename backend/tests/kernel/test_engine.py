@@ -1849,9 +1849,7 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_hook_bl
     assert policy["requires_user"] is True
     assert policy["safe_to_continue"] is False
     assert (
-        session.metadata["runtime_assembly_state"]["tool_result_ledger"][-1]["side_effects"][
-            "runtime_failure_policy"
-        ]
+        session.metadata["runtime_assembly_state"]["tool_result_ledger"][-1]["side_effects"]["runtime_failure_policy"]
         == policy
     )
 
@@ -3411,7 +3409,9 @@ async def test_turn_token_budget_does_not_preempt_tool_followup():
                 reasoning_content=None,
                 usage={"total_tokens": 50},
             ),
-            SimpleNamespace(content="done after tool", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+            SimpleNamespace(
+                content="done after tool", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}
+            ),
         ]
     )
     executed: list[str] = []

@@ -6,10 +6,7 @@ from pathlib import Path
 
 def _load_migration():
     migration_path = (
-        Path(__file__).resolve().parents[2]
-        / "alembic"
-        / "versions"
-        / "rls_remaining_global_and_derived_tables_0703.py"
+        Path(__file__).resolve().parents[2] / "alembic" / "versions" / "rls_remaining_global_and_derived_tables_0703.py"
     )
     spec = importlib.util.spec_from_file_location("rls_remaining_global_and_derived_tables_0703", migration_path)
     assert spec is not None

@@ -40,8 +40,14 @@ def _looks_like_delegation(command_name: str, arguments: dict[str, Any]) -> bool
     if kind in _DELEGATION_KINDS:
         return True
     if command_name.replace("_", "").lower() == "taskcreate":
-        has_agent = bool(str(arguments.get("agent_name") or arguments.get("target_agent") or arguments.get("target_agent_id") or "").strip())
-        has_message = bool(str(arguments.get("message") or arguments.get("prompt") or arguments.get("task") or "").strip())
+        has_agent = bool(
+            str(
+                arguments.get("agent_name") or arguments.get("target_agent") or arguments.get("target_agent_id") or ""
+            ).strip()
+        )
+        has_message = bool(
+            str(arguments.get("message") or arguments.get("prompt") or arguments.get("task") or "").strip()
+        )
         return has_agent and has_message
     return False
 
@@ -49,7 +55,9 @@ def _looks_like_delegation(command_name: str, arguments: dict[str, Any]) -> bool
 def _delegate_create_payload(arguments: dict[str, Any]) -> dict[str, Any]:
     agent_name = str(arguments.get("agent_name") or arguments.get("target_agent") or "").strip()
     target_agent_id = str(arguments.get("target_agent_id") or arguments.get("agent_id") or "").strip()
-    message = str(arguments.get("message") or arguments.get("prompt") or arguments.get("task") or arguments.get("subject") or "").strip()
+    message = str(
+        arguments.get("message") or arguments.get("prompt") or arguments.get("task") or arguments.get("subject") or ""
+    ).strip()
     payload: dict[str, Any] = {}
     if agent_name:
         payload["agent_name"] = agent_name
@@ -64,7 +72,9 @@ def _delegate_create_payload(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _delegate_handle_payload(arguments: dict[str, Any]) -> dict[str, Any]:
-    task_id = str(arguments.get("task_id") or arguments.get("runtime_task_id") or arguments.get("async_task_id") or "").strip()
+    task_id = str(
+        arguments.get("task_id") or arguments.get("runtime_task_id") or arguments.get("async_task_id") or ""
+    ).strip()
     return {"task_id": task_id} if task_id else {}
 
 

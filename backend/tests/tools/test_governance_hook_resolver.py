@@ -163,9 +163,7 @@ async def test_loader_filters_to_managed_when_forced(monkeypatch):
         async def execute(self, _stmt):
             return _Result()
 
-    monkeypatch.setattr(
-        "app.tools.governance_resolver.tenant_scoped_session", lambda _tenant: _Session()
-    )
+    monkeypatch.setattr("app.tools.governance_resolver.tenant_scoped_session", lambda _tenant: _Session())
     deps = resolver.build_dependencies()
     specs = await deps.load_governance_hooks(str(uuid.uuid4()), uuid.uuid4(), "write_file")
     assert [spec.key for spec in specs] == ["managed/rule"]

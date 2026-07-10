@@ -112,20 +112,22 @@ def _non_admin_client(db_results: list | None = None):
 
 
 def test_timeseries_returns_daily_cumulative_all_metrics():
-    client = _build_client([
-        # q1: new tenants by day
-        [SimpleNamespace(d=dt_date(2026, 3, 31), cnt=1), SimpleNamespace(d=dt_date(2026, 4, 1), cnt=1)],
-        # q2: new users by day
-        [SimpleNamespace(d=dt_date(2026, 4, 1), cnt=1)],
-        # q3: new tokens by usage event day
-        [SimpleNamespace(d=dt_date(2026, 4, 1), tokens=5000000)],
-        # q4: cumulative tenants before start
-        [0],
-        # q5: cumulative users before start
-        [0],
-        # q6: cumulative tokens before start
-        [1000000],
-    ])
+    client = _build_client(
+        [
+            # q1: new tenants by day
+            [SimpleNamespace(d=dt_date(2026, 3, 31), cnt=1), SimpleNamespace(d=dt_date(2026, 4, 1), cnt=1)],
+            # q2: new users by day
+            [SimpleNamespace(d=dt_date(2026, 4, 1), cnt=1)],
+            # q3: new tokens by usage event day
+            [SimpleNamespace(d=dt_date(2026, 4, 1), tokens=5000000)],
+            # q4: cumulative tenants before start
+            [0],
+            # q5: cumulative users before start
+            [0],
+            # q6: cumulative tokens before start
+            [1000000],
+        ]
+    )
 
     resp = client.get(
         "/admin/metrics/timeseries",
@@ -183,14 +185,16 @@ def test_timeseries_single_day_with_no_data():
 
 
 def test_timeseries_includes_cumulative_base_from_before_range():
-    client = _build_client([
-        [],        # no new tenants in range
-        [],        # no new users in range
-        [],        # no new token events in range
-        [5],       # 5 tenants existed before start
-        [10],      # 10 users existed before start
-        [2000000], # 2M tokens before start
-    ])
+    client = _build_client(
+        [
+            [],  # no new tenants in range
+            [],  # no new users in range
+            [],  # no new token events in range
+            [5],  # 5 tenants existed before start
+            [10],  # 10 users existed before start
+            [2000000],  # 2M tokens before start
+        ]
+    )
 
     resp = client.get(
         "/admin/metrics/timeseries",
@@ -255,10 +259,12 @@ def test_timeseries_requires_platform_admin():
 
 
 def test_leaderboards_returns_top_companies_and_agents():
-    client = _build_client([
-        [SimpleNamespace(name="Acme Corp", tokens=50000), SimpleNamespace(name="Beta Inc", tokens=12000)],
-        [SimpleNamespace(name="Agent-1", company="Acme Corp", tokens=30000)],
-    ])
+    client = _build_client(
+        [
+            [SimpleNamespace(name="Acme Corp", tokens=50000), SimpleNamespace(name="Beta Inc", tokens=12000)],
+            [SimpleNamespace(name="Agent-1", company="Acme Corp", tokens=30000)],
+        ]
+    )
 
     resp = client.get("/admin/metrics/leaderboards")
 

@@ -167,4 +167,3 @@ def test_native_t3_active_file_set_is_canonical() -> None:
     )
     assert is_accepted_t3_target("memory/knowledge/some-page.md")
     assert not is_accepted_t3_target("memory/t3/episodes.md")
-

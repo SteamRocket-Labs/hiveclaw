@@ -606,7 +606,9 @@ def _render_file_text(filename: str, token: str, text: str, max_chars: int, sour
     return f"📎 **Feishu file content** (`{token}`)\n文件名：{filename}\n来源：{source}\n\n{text}{truncated}"
 
 
-def _feishu_drive_source_items(agent_id: uuid.UUID | str, token: str, *, protected_text: str | None = None) -> list[dict]:
+def _feishu_drive_source_items(
+    agent_id: uuid.UUID | str, token: str, *, protected_text: str | None = None
+) -> list[dict]:
     if not token:
         return []
     return [

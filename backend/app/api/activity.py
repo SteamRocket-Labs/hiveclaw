@@ -256,7 +256,9 @@ async def list_conversations(
         partner_type = "user" if source == "web" else source
         partner_id = str(getattr(session, "user_id", "") or getattr(session, "external_conv_id", "") or session.id)
         if source != "web":
-            partner_id = str(getattr(session, "external_conv_id", None) or getattr(session, "user_id", "") or session.id)
+            partner_id = str(
+                getattr(session, "external_conv_id", None) or getattr(session, "user_id", "") or session.id
+            )
         conversations.append(
             {
                 "conv_id": conv_id,
@@ -347,12 +349,7 @@ async def _list_messages_by_conversation(
     filters = [ChatMessage.conversation_id == conversation_id]
     if agent_id is not None:
         filters.append(ChatMessage.agent_id == agent_id)
-    result = await db.execute(
-        select(ChatMessage)
-        .where(*filters)
-        .order_by(ChatMessage.created_at.asc())
-        .limit(limit)
-    )
+    result = await db.execute(select(ChatMessage).where(*filters).order_by(ChatMessage.created_at.asc()).limit(limit))
     return result.scalars().all()
 
 
@@ -377,10 +374,7 @@ async def get_conversation_messages(
             agent_id=session.agent_id,
             limit=limit_value,
         )
-        return [
-            await _format_session_message(message, include_sender=include_sender, db=db)
-            for message in messages
-        ]
+        return [await _format_session_message(message, include_sender=include_sender, db=db) for message in messages]
 
     legacy_prefixes = ("web_", "feishu_", "slack_", "discord_")
     if conv_id.startswith(legacy_prefixes):
@@ -390,9 +384,6 @@ async def get_conversation_messages(
             agent_id=agent_id,
             limit=limit_value,
         )
-        return [
-            await _format_session_message(message, include_sender=False, db=db)
-            for message in messages
-        ]
+        return [await _format_session_message(message, include_sender=False, db=db) for message in messages]
 
     return []

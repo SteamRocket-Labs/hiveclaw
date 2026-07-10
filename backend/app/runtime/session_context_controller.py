@@ -287,7 +287,9 @@ def apply_tool_result_budget(
                 _trimmed_context_effect(
                     tool_call_id=tool_call_id,
                     tool_name=tool_name,
-                    tool_args=tool_metadata.get("tool_args") if isinstance(tool_metadata.get("tool_args"), dict) else {},
+                    tool_args=tool_metadata.get("tool_args")
+                    if isinstance(tool_metadata.get("tool_args"), dict)
+                    else {},
                     original_content=content,
                     compacted_content=compacted,
                     reason="inline_char_limit",
@@ -321,7 +323,9 @@ def apply_tool_result_budget(
                 _trimmed_context_effect(
                     tool_call_id=tool_call_id,
                     tool_name=tool_name,
-                    tool_args=tool_metadata.get("tool_args") if isinstance(tool_metadata.get("tool_args"), dict) else {},
+                    tool_args=tool_metadata.get("tool_args")
+                    if isinstance(tool_metadata.get("tool_args"), dict)
+                    else {},
                     original_content=content,
                     compacted_content=compacted,
                     reason="round_tool_result_budget",

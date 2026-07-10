@@ -67,49 +67,67 @@ def audit_agent_autonomy_snapshot(
     for trigger in enabled:
         trigger_config = getattr(trigger, "config", None) or {}
         trigger_class = str(trigger_config.get("trigger_class") or "").strip()
-        if trigger_class == "event_wait" and not getattr(trigger, "max_fires", None) and not getattr(trigger, "expires_at", None):
-            findings.append(_finding(
-                severity="warning",
-                category="event_wait_missing_lifecycle",
-                agent_id=agent_id,
-                trigger_id=getattr(trigger, "id", None),
-                message=f"event_wait trigger '{getattr(trigger, 'name', '')}' has no max_fires or expires_at.",
-                evidence={"trigger_name": getattr(trigger, "name", None), "trigger_type": getattr(trigger, "type", None)},
-                recommendation="Set max_fires or expires_at so event waits cannot run forever.",
-            ))
+        if (
+            trigger_class == "event_wait"
+            and not getattr(trigger, "max_fires", None)
+            and not getattr(trigger, "expires_at", None)
+        ):
+            findings.append(
+                _finding(
+                    severity="warning",
+                    category="event_wait_missing_lifecycle",
+                    agent_id=agent_id,
+                    trigger_id=getattr(trigger, "id", None),
+                    message=f"event_wait trigger '{getattr(trigger, 'name', '')}' has no max_fires or expires_at.",
+                    evidence={
+                        "trigger_name": getattr(trigger, "name", None),
+                        "trigger_type": getattr(trigger, "type", None),
+                    },
+                    recommendation="Set max_fires or expires_at so event waits cannot run forever.",
+                )
+            )
 
     has_autonomous_wake = bool(enabled) or MANAGED_HEARTBEAT_ENABLED
     if has_autonomous_wake and not getattr(agent, "primary_model_id", None):
-        findings.append(_finding(
-            severity="error",
-            category="agent_no_model_blocking_autonomy",
-            agent_id=agent_id,
-            message=f"Agent '{agent_name or agent_id}' has autonomous wake paths but no primary model configured.",
-            evidence={
-                "heartbeat_enabled": MANAGED_HEARTBEAT_ENABLED,
-                "enabled_triggers": len(enabled),
-            },
-            recommendation="Assign a primary model. Disable user-configured triggers only if they should not run yet.",
-        ))
+        findings.append(
+            _finding(
+                severity="error",
+                category="agent_no_model_blocking_autonomy",
+                agent_id=agent_id,
+                message=f"Agent '{agent_name or agent_id}' has autonomous wake paths but no primary model configured.",
+                evidence={
+                    "heartbeat_enabled": MANAGED_HEARTBEAT_ENABLED,
+                    "enabled_triggers": len(enabled),
+                },
+                recommendation="Assign a primary model. Disable user-configured triggers only if they should not run yet.",
+            )
+        )
 
     if trigger_session_count > 0 and trigger_runtime_count == 0:
-        findings.append(_finding(
-            severity="error",
-            category="trigger_runtime_gap",
-            agent_id=agent_id,
-            message="Trigger reflection sessions exist in the lookback window, but no trigger RuntimeTask records exist.",
-            evidence={"trigger_sessions": trigger_session_count, "trigger_runtime_tasks": trigger_runtime_count},
-            recommendation="P1 should create RuntimeTask(task_type='trigger') for every trigger attempt, including skips/failures.",
-        ))
+        findings.append(
+            _finding(
+                severity="error",
+                category="trigger_runtime_gap",
+                agent_id=agent_id,
+                message="Trigger reflection sessions exist in the lookback window, but no trigger RuntimeTask records exist.",
+                evidence={"trigger_sessions": trigger_session_count, "trigger_runtime_tasks": trigger_runtime_count},
+                recommendation="P1 should create RuntimeTask(task_type='trigger') for every trigger attempt, including skips/failures.",
+            )
+        )
     if heartbeat_session_count > 0 and heartbeat_runtime_count == 0:
-        findings.append(_finding(
-            severity="error",
-            category="heartbeat_runtime_gap",
-            agent_id=agent_id,
-            message="Heartbeat sessions exist in the lookback window, but no heartbeat RuntimeTask records exist.",
-            evidence={"heartbeat_sessions": heartbeat_session_count, "heartbeat_runtime_tasks": heartbeat_runtime_count},
-            recommendation="P1 should create RuntimeTask(task_type='heartbeat') for every heartbeat attempt, including skips/failures.",
-        ))
+        findings.append(
+            _finding(
+                severity="error",
+                category="heartbeat_runtime_gap",
+                agent_id=agent_id,
+                message="Heartbeat sessions exist in the lookback window, but no heartbeat RuntimeTask records exist.",
+                evidence={
+                    "heartbeat_sessions": heartbeat_session_count,
+                    "heartbeat_runtime_tasks": heartbeat_runtime_count,
+                },
+                recommendation="P1 should create RuntimeTask(task_type='heartbeat') for every heartbeat attempt, including skips/failures.",
+            )
+        )
 
     return {
         "agent_id": str(agent_id),
@@ -238,14 +256,16 @@ async def build_autonomous_audit_report(
     for agent in agents:
         per_agent_sessions = session_counts.get(agent.id, {})
         per_agent_runtime = runtime_counts.get(agent.id, {})
-        agent_reports.append(audit_agent_autonomy_snapshot(
-            agent=agent,
-            triggers=triggers_by_agent.get(agent.id, []),
-            trigger_session_count=per_agent_sessions.get("trigger", 0),
-            heartbeat_session_count=per_agent_sessions.get("heartbeat", 0),
-            trigger_runtime_count=per_agent_runtime.get("trigger", 0),
-            heartbeat_runtime_count=per_agent_runtime.get("heartbeat", 0),
-        ))
+        agent_reports.append(
+            audit_agent_autonomy_snapshot(
+                agent=agent,
+                triggers=triggers_by_agent.get(agent.id, []),
+                trigger_session_count=per_agent_sessions.get("trigger", 0),
+                heartbeat_session_count=per_agent_sessions.get("heartbeat", 0),
+                trigger_runtime_count=per_agent_runtime.get("trigger", 0),
+                heartbeat_runtime_count=per_agent_runtime.get("heartbeat", 0),
+            )
+        )
 
     return build_autonomous_audit_payload(
         generated_at=now,

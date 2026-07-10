@@ -7,7 +7,9 @@ from pathlib import Path
 
 from app.services.code_execution.contracts import CodeExecutionResult, render_command_result
 from app.services.code_execution.service import execute_agent_command
-from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review_for_agent_workspace
+from app.services.external_capabilities.skill_source_adapter import (
+    stage_external_skill_package_review_for_agent_workspace,
+)
 from app.services.subprocess_env import build_agent_subprocess_env
 from app.tools.result_envelope import ToolContentEnvelope
 

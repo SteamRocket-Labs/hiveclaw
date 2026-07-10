@@ -137,7 +137,9 @@ def _schedule_out(trigger: AgentTrigger, *, creator_username: str | None = None)
         cron_expr=cron_expr,
         is_enabled=bool(trigger.is_enabled),
         last_run_at=trigger.last_fired_at,
-        next_run_at=compute_next_run(cron_expr, trigger.last_fired_at or trigger.created_at) if trigger.is_enabled else None,
+        next_run_at=compute_next_run(cron_expr, trigger.last_fired_at or trigger.created_at)
+        if trigger.is_enabled
+        else None,
         run_count=int(trigger.fire_count or 0),
         created_by=_created_by_from_config(config),
         creator_username=creator_username,
@@ -146,7 +148,9 @@ def _schedule_out(trigger: AgentTrigger, *, creator_username: str | None = None)
     )
 
 
-def _schedule_config(cron_expr: str, *, created_by: uuid.UUID | None = None, delivery_target_json: dict | None = None) -> dict:
+def _schedule_config(
+    cron_expr: str, *, created_by: uuid.UUID | None = None, delivery_target_json: dict | None = None
+) -> dict:
     config = {
         "expr": cron_expr,
         "trigger_class": "scheduled_job",
@@ -467,13 +471,15 @@ async def get_schedule_history(
     for log in logs:
         detail = log.detail_json or {}
         if detail.get("schedule_id") == str(schedule_id) or detail.get("source_schedule_id") == str(schedule_id):
-            history.append({
-                "id": str(log.id),
-                "created_at": log.created_at.isoformat() if log.created_at else None,
-                "summary": log.summary,
-                "instruction": detail.get("instruction", ""),
-                "reply": detail.get("reply", ""),
-            })
+            history.append(
+                {
+                    "id": str(log.id),
+                    "created_at": log.created_at.isoformat() if log.created_at else None,
+                    "summary": log.summary,
+                    "instruction": detail.get("instruction", ""),
+                    "reply": detail.get("reply", ""),
+                }
+            )
         if len(history) >= 20:
             break
     return history

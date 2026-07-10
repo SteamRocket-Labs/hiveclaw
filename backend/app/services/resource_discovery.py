@@ -74,6 +74,7 @@ async def _get_smithery_api_key(agent_id: uuid.UUID | None = None) -> str:
     global rows stay visible under the policy); without one we audit-bypass for
     the global config read so it does not fail-close under enforced RLS.
     """
+
     async def _load() -> str:
         try:
             if agent_id:
@@ -145,6 +146,7 @@ async def _get_modelscope_api_token() -> str:
     ``tools`` table — audit-bypass so the read does not fail-close under enforced
     RLS with no tenant in scope.
     """
+
     async def _load() -> str:
         try:
             async with async_session() as db, enter_rls_bypass(db, reason="global ModelScope API token config read"):

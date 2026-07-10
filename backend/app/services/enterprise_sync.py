@@ -27,8 +27,13 @@ class EnterpriseSyncService:
     """Synchronize enterprise information to all online Agent containers."""
 
     async def update_enterprise_info(
-        self, db: AsyncSession, tenant_id: uuid.UUID, info_type: str, content: dict,
-        visible_roles: list[str], updated_by: uuid.UUID
+        self,
+        db: AsyncSession,
+        tenant_id: uuid.UUID,
+        info_type: str,
+        content: dict,
+        visible_roles: list[str],
+        updated_by: uuid.UUID,
     ) -> EnterpriseInfo:
         """Update enterprise info in database and notify all agents."""
         result = await db.execute(
@@ -57,12 +62,15 @@ class EnterpriseSyncService:
         await db.flush()
 
         # Publish update event
-        await publish_event(ENTERPRISE_INFO_CHANNEL, {
-            "tenant_id": str(tenant_id),
-            "info_type": info_type,
-            "version": info.version,
-            "visible_roles": visible_roles,
-        })
+        await publish_event(
+            ENTERPRISE_INFO_CHANNEL,
+            {
+                "tenant_id": str(tenant_id),
+                "info_type": info_type,
+                "version": info.version,
+                "visible_roles": visible_roles,
+            },
+        )
 
         logger.info(f"Published enterprise_info update: {info_type} v{info.version}")
         return info
@@ -77,9 +85,7 @@ class EnterpriseSyncService:
         agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent_id) / "enterprise_info"
         agent_dir.mkdir(parents=True, exist_ok=True)
 
-        result = await db.execute(
-            select(EnterpriseInfo).where(EnterpriseInfo.tenant_id == agent_tenant_id)
-        )
+        result = await db.execute(select(EnterpriseInfo).where(EnterpriseInfo.tenant_id == agent_tenant_id))
         all_info = result.scalars().all()
 
         for info in all_info:
@@ -88,11 +94,17 @@ class EnterpriseSyncService:
                 continue
 
             file_path = agent_dir / f"{info.info_type}.json"
-            file_path.write_text(json.dumps({
-                "type": info.info_type,
-                "version": info.version,
-                "content": info.content,
-            }, ensure_ascii=False, indent=2))
+            file_path.write_text(
+                json.dumps(
+                    {
+                        "type": info.info_type,
+                        "version": info.version,
+                        "content": info.content,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
 
         logger.info(f"Synced enterprise info to agent {agent_id}")
 

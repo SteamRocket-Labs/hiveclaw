@@ -57,7 +57,9 @@ def _quality_evidence_for_runs(runs: list[RuntimeTask]) -> dict:
         "steps_failed": sum(int(evidence.get("steps_failed") or 0) for evidence in dynamic_evidence),
         "leaf_failed": sum(int(evidence.get("leaf_failed") or 0) for evidence in dynamic_evidence),
         "leaf_total": sum(int(evidence.get("leaf_total") or 0) for evidence in dynamic_evidence),
-        "success_criteria_count": max(int(evidence.get("success_criteria_count") or 0) for evidence in dynamic_evidence),
+        "success_criteria_count": max(
+            int(evidence.get("success_criteria_count") or 0) for evidence in dynamic_evidence
+        ),
     }
 
 

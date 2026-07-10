@@ -40,6 +40,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 # ─── Schemas ────────────────────────────────────────────
 
+
 class CompanyStats(BaseModel):
     id: uuid.UUID
     name: str
@@ -131,6 +132,7 @@ async def _load_platform_admin_agent_and_pin(
 
 # ─── Company Management ────────────────────────────────
 
+
 @router.get("/companies", response_model=list[CompanyStats])
 async def list_companies(
     current_user: User = Depends(require_role("platform_admin")),
@@ -158,7 +160,9 @@ async def list_companies(
 
             # Running agents
             rc = await bypass_db.execute(
-                select(sqla_func.count()).select_from(Agent).where(
+                select(sqla_func.count())
+                .select_from(Agent)
+                .where(
                     Agent.tenant_id == tid,
                     Agent.status == "running",
                 )
@@ -277,6 +281,7 @@ async def get_memory_backend_metrics(
     """Return in-memory memory-backend counters (recall latency, errors, sync lag)."""
     del current_user
     from app.memory.metrics import snapshot
+
     return snapshot()
 
 
@@ -559,9 +564,7 @@ async def toggle_company(
 
     # When disabling: pause all running agents
     if not new_state:
-        agents = await db.execute(
-            select(Agent).where(Agent.tenant_id == company_id, Agent.status == "running")
-        )
+        agents = await db.execute(select(Agent).where(Agent.tenant_id == company_id, Agent.status == "running"))
         for agent in agents.scalars().all():
             agent.status = "paused"
 
@@ -570,6 +573,7 @@ async def toggle_company(
 
 
 # ─── Platform Settings ─────────────────────────────────
+
 
 @router.get("/platform-settings", response_model=PlatformSettingsOut)
 async def get_platform_settings(
@@ -707,8 +711,9 @@ async def get_metrics_timeseries(
         cum_users = pre_usr.scalar() or 0
 
         pre_tok = await bypass_db.execute(
-            select(sqla_func.coalesce(sqla_func.sum(TokenUsageEvent.tokens), 0))
-            .where(sqla_func.date(TokenUsageEvent.created_at) < start)
+            select(sqla_func.coalesce(sqla_func.sum(TokenUsageEvent.tokens), 0)).where(
+                sqla_func.date(TokenUsageEvent.created_at) < start
+            )
         )
         cum_tokens = int(pre_tok.scalar() or 0)
 
@@ -723,15 +728,17 @@ async def get_metrics_timeseries(
         cum_companies += nc
         cum_users += nu
         cum_tokens += nt
-        result.append(TimeseriesPoint(
-            date=date_str,
-            total_companies=cum_companies,
-            new_companies=nc,
-            total_users=cum_users,
-            new_users=nu,
-            total_tokens=cum_tokens,
-            new_tokens=nt,
-        ))
+        result.append(
+            TimeseriesPoint(
+                date=date_str,
+                total_companies=cum_companies,
+                new_companies=nc,
+                total_users=cum_users,
+                new_users=nu,
+                total_tokens=cum_tokens,
+                new_tokens=nt,
+            )
+        )
         current += timedelta(days=1)
 
     return result
@@ -793,7 +800,6 @@ async def backfill_agent_prose(
     Defaults to ``dry_run=true`` — it touches the production data volume, so the
     owner previews the diff first (safety gate, not an MVP stage).
     """
-
 
     await _load_platform_admin_agent_and_pin(
         db,

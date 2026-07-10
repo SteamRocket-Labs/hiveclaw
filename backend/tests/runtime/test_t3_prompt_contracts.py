@@ -106,9 +106,7 @@ def test_live_tool_guidance_does_not_route_t3_candidates_through_save_memory() -
 
     meta = save_memory.tool_meta
     container_description = meta.parameters["properties"]["container_candidate"]["description"]
-    workspace_tool_source = (_APP_DIR / "services" / "agent_tool_domains" / "workspace.py").read_text(
-        encoding="utf-8"
-    )
+    workspace_tool_source = (_APP_DIR / "services" / "agent_tool_domains" / "workspace.py").read_text(encoding="utf-8")
 
     assert "Explicit Memory Overlay" in meta.description
     assert "accepted T3 files are updated later" in meta.description

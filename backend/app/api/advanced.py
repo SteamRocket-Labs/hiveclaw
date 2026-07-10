@@ -19,6 +19,7 @@ router = APIRouter(tags=["advanced"])
 
 # ─── Collaboration ──────────────────────────────────────
 
+
 class DelegateRequest(BaseModel):
     to_agent_id: uuid.UUID
     task_title: str
@@ -98,6 +99,7 @@ async def send_inter_agent_message(
 
 # ─── Agent Handover ─────────────────────────────────────
 
+
 class HandoverRequest(BaseModel):
     new_creator_id: uuid.UUID
 
@@ -116,11 +118,13 @@ async def list_handover_candidates(
         raise HTTPException(status_code=403, detail="Only creator can view handover candidates")
 
     result = await db.execute(
-        select(User).where(
+        select(User)
+        .where(
             User.tenant_id == agent.tenant_id,
             User.is_active,
             User.id != agent.creator_id,
-        ).order_by(User.display_name.asc(), User.username.asc())
+        )
+        .order_by(User.display_name.asc(), User.username.asc())
     )
     users = result.scalars().all()
     return [
@@ -162,16 +166,18 @@ async def handover_agent(
     old_creator_id = agent.creator_id
     agent.creator_id = data.new_creator_id
 
-    db.add(AuditLog(
-        user_id=current_user.id,
-        agent_id=agent_id,
-        tenant_id=agent.tenant_id,
-        action="agent:handover",
-        details={
-            "from_creator": str(old_creator_id),
-            "to_creator": str(data.new_creator_id),
-        },
-    ))
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            agent_id=agent_id,
+            tenant_id=agent.tenant_id,
+            action="agent:handover",
+            details={
+                "from_creator": str(old_creator_id),
+                "to_creator": str(data.new_creator_id),
+            },
+        )
+    )
     await db.flush()
 
     return {
@@ -182,6 +188,7 @@ async def handover_agent(
 
 
 # ─── Observability ──────────────────────────────────────
+
 
 @router.get("/agents/{agent_id}/metrics")
 async def get_agent_metrics(
@@ -199,9 +206,7 @@ async def get_agent_metrics(
 
     # Task stats
     total_tasks = await db.execute(select(func.count(Task.id)).where(Task.agent_id == agent_id))
-    done_tasks = await db.execute(
-        select(func.count(Task.id)).where(Task.agent_id == agent_id, Task.status == "done")
-    )
+    done_tasks = await db.execute(select(func.count(Task.id)).where(Task.agent_id == agent_id, Task.status == "done"))
     pending_tasks = await db.execute(
         select(func.count(Task.id)).where(Task.agent_id == agent_id, Task.status == "pending")
     )
@@ -223,15 +228,15 @@ async def get_agent_metrics(
 
     # Recent activity count (last 24h)
     from datetime import datetime, timedelta, timezone
+
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     recent_actions = await db.execute(
-        select(func.count(AuditLog.id)).where(
-            AuditLog.agent_id == agent_id, AuditLog.created_at >= cutoff
-        )
+        select(func.count(AuditLog.id)).where(AuditLog.agent_id == agent_id, AuditLog.created_at >= cutoff)
     )
 
     # Container status
     from app.services.agent_manager import agent_manager
+
     container_status = agent_manager.get_container_status(agent)
 
     # Extract scalar values (each result can only be consumed once)
@@ -256,9 +261,7 @@ async def get_agent_metrics(
             "total": _total_tasks,
             "done": _done_tasks,
             "pending": _pending_tasks,
-            "completion_rate": round(
-                _done_tasks / max(_total_tasks, 1) * 100, 1
-            ),
+            "completion_rate": round(_done_tasks / max(_total_tasks, 1) * 100, 1),
         },
         "approvals": {
             "total": _total_approvals,

@@ -56,17 +56,21 @@ async def test_list_handover_candidates_returns_active_same_tenant_users(monkeyp
     monkeypatch.setattr(advanced_api, "check_agent_access", fake_check_agent_access)
     monkeypatch.setattr("app.core.permissions.is_agent_creator", lambda current_user, resolved_agent: True)
 
-    db = _FakeDB([
-        _ListResult([
-            SimpleNamespace(
-                id=candidate_id,
-                display_name="Alice",
-                email="alice@example.com",
-                role="member",
-                is_active=True,
+    db = _FakeDB(
+        [
+            _ListResult(
+                [
+                    SimpleNamespace(
+                        id=candidate_id,
+                        display_name="Alice",
+                        email="alice@example.com",
+                        role="member",
+                        is_active=True,
+                    ),
+                ]
             ),
-        ]),
-    ])
+        ]
+    )
 
     result = await advanced_api.list_handover_candidates(
         agent_id=agent_id,

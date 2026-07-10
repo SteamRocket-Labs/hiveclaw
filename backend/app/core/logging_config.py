@@ -83,6 +83,7 @@ def sanitize_standard_log_message(message: str) -> str:
 
 def intercept_standard_logging():
     """Redirect standard library logging to loguru."""
+
     class InterceptHandler(logging.Handler):
         def emit(self, record):
             # Get corresponding loguru level
@@ -97,7 +98,9 @@ def intercept_standard_logging():
                 frame = frame.f_back
                 depth += 1
 
-            _logger.opt(depth=depth, exception=record.exc_info).log(level, sanitize_standard_log_message(record.getMessage()))
+            _logger.opt(depth=depth, exception=record.exc_info).log(
+                level, sanitize_standard_log_message(record.getMessage())
+            )
 
     # Replace root standard logger handler. Child loggers should still
     # propagate so pytest caplog and other logging observers can attach at root.

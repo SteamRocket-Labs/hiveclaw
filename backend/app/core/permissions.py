@@ -32,7 +32,9 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
             reason=f"platform-admin agent access lookup for {agent_id}",
             actor_id=str(user.id),
         ) as bypass_db:
-            result = await bypass_db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
+            result = await bypass_db.execute(
+                select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id)
+            )
     else:
         result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()

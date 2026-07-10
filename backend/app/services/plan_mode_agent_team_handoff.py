@@ -31,7 +31,9 @@ async def _load_agent(db: Any, agent_id: Any) -> Any | None:
 
     from app.models.agent import Agent
 
-    return (await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))).scalar_one_or_none()
+    return (
+        await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
+    ).scalar_one_or_none()
 
 
 async def _load_user(db: Any, user_id: Any) -> Any | None:

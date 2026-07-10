@@ -204,7 +204,9 @@ async def test_feishu_base_field_list_handler_uses_cli_only_access(monkeypatch: 
 
 
 @pytest.mark.asyncio
-async def test_feishu_base_record_upload_attachment_handler_uses_cli_only_access(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_feishu_base_record_upload_attachment_handler_uses_cli_only_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.tools.handlers import feishu as feishu_handler
 
     async def fake_check_feishu_office_access(_agent_id) -> bool:

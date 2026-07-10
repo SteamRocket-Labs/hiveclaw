@@ -61,9 +61,7 @@ def test_short_pack_renders_inline_summary_and_tools() -> None:
 
 def test_long_summary_is_trimmed_to_cap_with_ellipsis() -> None:
     long_summary = "A" * 200
-    section = build_active_tool_groups_section(
-        [{"name": "p", "summary": long_summary, "tools": []}]
-    )
+    section = build_active_tool_groups_section([{"name": "p", "summary": long_summary, "tools": []}])
     head_line = next(line for line in section.splitlines() if line.startswith("- p"))
     # `- p: ` (5 chars) + summary body (≤100, ending with ellipsis)
     assert len(head_line) <= 5 + _SUMMARY_MAX_CHARS
@@ -72,9 +70,7 @@ def test_long_summary_is_trimmed_to_cap_with_ellipsis() -> None:
 
 def test_summary_collapses_whitespace() -> None:
     """Multi-line summary must not split the bullet across lines."""
-    section = build_active_tool_groups_section(
-        [{"name": "p", "summary": "line1\nline2\n  line3", "tools": []}]
-    )
+    section = build_active_tool_groups_section([{"name": "p", "summary": "line1\nline2\n  line3", "tools": []}])
     assert "- p: line1 line2 line3" in section
 
 
@@ -95,10 +91,7 @@ def test_pack_without_summary_omits_colon() -> None:
 
 
 def test_section_respects_explicit_budget_with_truncation_marker() -> None:
-    packs = [
-        {"name": f"pack_{i}", "summary": "x" * 80, "tools": [f"t_{j}" for j in range(10)]}
-        for i in range(20)
-    ]
+    packs = [{"name": f"pack_{i}", "summary": "x" * 80, "tools": [f"t_{j}" for j in range(10)]} for i in range(20)]
     section = build_active_tool_groups_section(packs, budget_chars=300)
     assert len(section) <= 300
     assert section.rstrip().endswith("...(trimmed)")
@@ -109,7 +102,11 @@ def test_total_size_for_typical_three_packs_stays_under_500_chars() -> None:
     well under 500 chars — the cap-and-preview logic is what makes that
     possible. Catches regressions where someone re-enumerates tools."""
     packs = [
-        {"name": "web", "summary": "Web search and crawl tools", "tools": ["web_search", "firecrawl_fetch", "xcrawl_scrape"]},
+        {
+            "name": "web",
+            "summary": "Web search and crawl tools",
+            "tools": ["web_search", "firecrawl_fetch", "xcrawl_scrape"],
+        },
         {"name": "feishu", "summary": "Feishu office suite", "tools": [f"feishu_op_{i}" for i in range(35)]},
         {"name": "email", "summary": "SMTP/IMAP email", "tools": ["smtp_send", "imap_fetch", "imap_search"]},
     ]

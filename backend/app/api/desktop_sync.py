@@ -115,9 +115,7 @@ async def _get_guard_policy(db: AsyncSession, tenant_id: uuid.UUID | None) -> di
     """Load the Guard policy for the tenant, or return empty defaults."""
     if not tenant_id:
         return {"version": 0, "zone_guard": {}, "egress_guard": {}}
-    result = await db.execute(
-        select(GuardPolicy).where(GuardPolicy.tenant_id == tenant_id)
-    )
+    result = await db.execute(select(GuardPolicy).where(GuardPolicy.tenant_id == tenant_id))
     policy = result.scalar_one_or_none()
     if not policy:
         return {"version": 0, "zone_guard": {}, "egress_guard": {}}
@@ -129,6 +127,7 @@ async def _get_tenant_sync_version(db: AsyncSession, tenant_id: uuid.UUID | None
     if not tenant_id:
         return 0
     from app.models.tenant import Tenant
+
     tenant = await db.get(Tenant, tenant_id)
     return tenant.sync_version if tenant else 0
 

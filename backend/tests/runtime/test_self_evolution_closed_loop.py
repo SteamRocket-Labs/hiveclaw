@@ -47,9 +47,7 @@ def test_memory_loop_capture_makes_lesson_visible_next_turn(tmp_path) -> None:
 
     # visible: the lesson renders for the *next* turn of the SAME session
     # (this is exactly what invoker.py injects into the dynamic suffix)
-    projection = render_active_session_learning_projection(
-        data_root=tmp_path, agent_id=agent_id, session_id=session_id
-    )
+    projection = render_active_session_learning_projection(data_root=tmp_path, agent_id=agent_id, session_id=session_id)
     assert "审计格式" in projection
     assert "Session Learning" in projection
 
@@ -77,9 +75,7 @@ def test_skill_loop_repeated_workflow_creates_verified_skill_candidate(tmp_path)
 
     workspace = tmp_path / str(agent_id)
     entries = load_evolution_ledger(workspace)
-    assert any(
-        e.get("event") == "candidate" and e.get("target_type") == "skill_candidate" for e in entries
-    )
+    assert any(e.get("event") == "candidate" and e.get("target_type") == "skill_candidate" for e in entries)
     # mechanical flywheel evidence is staged under candidates, never as an activated skill draft
     candidate_dir = workspace / "evolution" / "skill_candidates" / skill["candidate_id"]
     assert (candidate_dir / "candidate_signal.md").exists()
@@ -92,15 +88,10 @@ def test_skill_loop_repeated_workflow_creates_verified_skill_candidate(tmp_path)
 def test_response_complete_handler_is_registered_for_fast_reflection() -> None:
     from app.runtime import hooks_setup
 
-    entry = next(
-        c for c in hooks_setup._MEMORY_HOOK_CONFIGURATION if c.get("handler") == "fast_reflection_on_response"
-    )
+    entry = next(c for c in hooks_setup._MEMORY_HOOK_CONFIGURATION if c.get("handler") == "fast_reflection_on_response")
     assert entry["event"] == hooks_setup.HookEvent.RESPONSE_COMPLETE.value
     assert entry["key"] == "memory.response_complete.fast_reflection"
-    assert (
-        hooks_setup._MEMORY_HOOK_HANDLERS["fast_reflection_on_response"]
-        is hooks_setup._fast_reflection_on_response
-    )
+    assert hooks_setup._MEMORY_HOOK_HANDLERS["fast_reflection_on_response"] is hooks_setup._fast_reflection_on_response
 
 
 async def test_scheduled_fast_reflection_lands_candidate(tmp_path) -> None:

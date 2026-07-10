@@ -39,8 +39,8 @@ class AgentTrigger(Base):
     cooldown_seconds: Mapped[int] = mapped_column(Integer, default=60)  # 1 min default
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    reply_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # {"channel": "feishu", "user_name": "...", "open_id": "...", "chat_type": "p2p"}
+    reply_context: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True
+    )  # {"channel": "feishu", "user_name": "...", "open_id": "...", "chat_type": "p2p"}
 
-    __table_args__ = (
-        UniqueConstraint("agent_id", "name", name="uq_agent_trigger_name"),
-    )
+    __table_args__ = (UniqueConstraint("agent_id", "name", name="uq_agent_trigger_name"),)

@@ -477,9 +477,7 @@ async def test_backfill_recent_chat_logs_creates_t0_files(
     ]
     fake_db = _BackfillSession([session], messages)
 
-    monkeypatch.setattr(
-        "app.services.t0_logger.tenant_scoped_session", lambda *a, **k: fake_db
-    )
+    monkeypatch.setattr("app.services.t0_logger.tenant_scoped_session", lambda *a, **k: fake_db)
     with patch("app.services.t0_logger.get_settings") as mock_settings:
         mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
         report = await backfill_recent_chat_logs(agent_id, recent_days=30, limit_sessions=10)
@@ -492,7 +490,9 @@ async def test_backfill_recent_chat_logs_creates_t0_files(
     assert len(files) == 1
     assert not list(logs_root.rglob("chat-*.md"))
     transcript_events = [item for item in fake_db.added if isinstance(item, ChatTranscriptEvent)]
-    assert [(event.event_type, event.role if hasattr(event, "role") else event.actor_type) for event in transcript_events] == [
+    assert [
+        (event.event_type, event.role if hasattr(event, "role") else event.actor_type) for event in transcript_events
+    ] == [
         ("user_message", "user"),
         ("assistant_message", "assistant"),
     ]

@@ -41,9 +41,7 @@ def _make_deps(*, execute_tool=None, **overrides):
     from app.kernel.engine import KernelDependencies, RuntimeConfig
 
     defaults = {
-        "resolve_runtime_config": lambda _id: RuntimeConfig(
-            tenant_id=uuid4(), max_tool_rounds=5, quota_message=None
-        ),
+        "resolve_runtime_config": lambda _id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=5, quota_message=None),
         "resolve_current_user_name": lambda *_a, **_kw: "Rocky",
         "build_system_prompt": lambda *_a, **_kw: "PROMPT",
         "resolve_memory_context": lambda *_a, **_kw: "",
@@ -112,34 +110,38 @@ async def test_parallel_batch_executes_read_only_tools():
         execution_log.append(f"exec:{tool_name}:{args.get('path', '')}")
         return f"content_of_{args.get('path', '')}"
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[
-                {
-                    "id": "call_1",
-                    "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'},
-                },
-                {
-                    "id": "call_2",
-                    "function": {"name": "read_file", "arguments": '{"path":"b.txt"}'},
-                },
-            ],
-            reasoning_content=None,
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'},
+                    },
+                    {
+                        "id": "call_2",
+                        "function": {"name": "read_file", "arguments": '{"path":"b.txt"}'},
+                    },
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
-    kernel = AgentKernel(_make_deps(
-        execute_tool=execute_tool,
-        create_client=lambda _m: fake_client,
-    ))
+    kernel = AgentKernel(
+        _make_deps(
+            execute_tool=execute_tool,
+            create_client=lambda _m: fake_client,
+        )
+    )
 
     result = await kernel.handle(
         InvocationRequest(
@@ -176,34 +178,38 @@ async def test_parallel_batch_preserves_result_order():
             await asyncio.sleep(0.05)
         return f"result_{path}"
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[
-                {
-                    "id": "call_slow",
-                    "function": {"name": "read_file", "arguments": '{"path":"slow.txt"}'},
-                },
-                {
-                    "id": "call_fast",
-                    "function": {"name": "read_file", "arguments": '{"path":"fast.txt"}'},
-                },
-            ],
-            reasoning_content=None,
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="ordered",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_slow",
+                        "function": {"name": "read_file", "arguments": '{"path":"slow.txt"}'},
+                    },
+                    {
+                        "id": "call_fast",
+                        "function": {"name": "read_file", "arguments": '{"path":"fast.txt"}'},
+                    },
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="ordered",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
-    kernel = AgentKernel(_make_deps(
-        execute_tool=execute_tool,
-        create_client=lambda _m: fake_client,
-    ))
+    kernel = AgentKernel(
+        _make_deps(
+            execute_tool=execute_tool,
+            create_client=lambda _m: fake_client,
+        )
+    )
 
     result = await kernel.handle(
         InvocationRequest(
@@ -246,38 +252,42 @@ async def test_mixed_batch_parallelizes_read_only_segment_before_write():
             await asyncio.wait_for(both_reads_started.wait(), timeout=0.1)
         return f"ok:{tool_name}:{args.get('path', '')}"
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[
-                {
-                    "id": "call_1",
-                    "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'},
-                },
-                {
-                    "id": "call_2",
-                    "function": {"name": "list_files", "arguments": '{"path":"."}'},
-                },
-                {
-                    "id": "call_3",
-                    "function": {"name": "write_file", "arguments": '{"path":"b.txt","content":"x"}'},
-                },
-            ],
-            reasoning_content=None,
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'},
+                    },
+                    {
+                        "id": "call_2",
+                        "function": {"name": "list_files", "arguments": '{"path":"."}'},
+                    },
+                    {
+                        "id": "call_3",
+                        "function": {"name": "write_file", "arguments": '{"path":"b.txt","content":"x"}'},
+                    },
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
-    kernel = AgentKernel(_make_deps(
-        execute_tool=execute_tool,
-        create_client=lambda _m: fake_client,
-    ))
+    kernel = AgentKernel(
+        _make_deps(
+            execute_tool=execute_tool,
+            create_client=lambda _m: fake_client,
+        )
+    )
 
     result = await kernel.handle(
         InvocationRequest(
@@ -316,34 +326,38 @@ async def test_mixed_batch_aborts_later_siblings_after_unsafe_tool_error():
             raise RuntimeError("write failed")
         return f"ok:{tool_name}"
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[
-                {
-                    "id": "call_1",
-                    "function": {"name": "write_file", "arguments": '{"path":"a.txt","content":"x"}'},
-                },
-                {
-                    "id": "call_2",
-                    "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'},
-                },
-            ],
-            reasoning_content=None,
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "write_file", "arguments": '{"path":"a.txt","content":"x"}'},
+                    },
+                    {
+                        "id": "call_2",
+                        "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'},
+                    },
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
-    kernel = AgentKernel(_make_deps(
-        execute_tool=execute_tool,
-        create_client=lambda _m: fake_client,
-    ))
+    kernel = AgentKernel(
+        _make_deps(
+            execute_tool=execute_tool,
+            create_client=lambda _m: fake_client,
+        )
+    )
 
     result = await kernel.handle(
         InvocationRequest(
@@ -375,30 +389,34 @@ async def test_single_tool_call_stays_sequential():
         execution_log.append(tool_name)
         return "single_result"
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[
-                {
-                    "id": "call_1",
-                    "function": {"name": "read_file", "arguments": '{"path":"only.txt"}'},
-                },
-            ],
-            reasoning_content=None,
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "read_file", "arguments": '{"path":"only.txt"}'},
+                    },
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
-    kernel = AgentKernel(_make_deps(
-        execute_tool=execute_tool,
-        create_client=lambda _m: fake_client,
-    ))
+    kernel = AgentKernel(
+        _make_deps(
+            execute_tool=execute_tool,
+            create_client=lambda _m: fake_client,
+        )
+    )
 
     result = await kernel.handle(
         InvocationRequest(
@@ -432,38 +450,42 @@ async def test_parallel_batch_emits_events_in_order():
     async def execute_tool(tool_name, args, request, emit_event):
         return f"r_{args.get('path', '')}"
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[
-                {
-                    "id": "call_1",
-                    "function": {"name": "read_file", "arguments": '{"path":"x.txt"}'},
-                },
-                {
-                    "id": "call_2",
-                    "function": {"name": "glob_search", "arguments": '{"path":"*.py"}'},
-                },
-                {
-                    "id": "call_3",
-                    "function": {"name": "list_files", "arguments": '{"path":"."}'},
-                },
-            ],
-            reasoning_content=None,
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "read_file", "arguments": '{"path":"x.txt"}'},
+                    },
+                    {
+                        "id": "call_2",
+                        "function": {"name": "glob_search", "arguments": '{"path":"*.py"}'},
+                    },
+                    {
+                        "id": "call_3",
+                        "function": {"name": "list_files", "arguments": '{"path":"."}'},
+                    },
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
-    kernel = AgentKernel(_make_deps(
-        execute_tool=execute_tool,
-        create_client=lambda _m: fake_client,
-    ))
+    kernel = AgentKernel(
+        _make_deps(
+            execute_tool=execute_tool,
+            create_client=lambda _m: fake_client,
+        )
+    )
 
     await kernel.handle(
         InvocationRequest(
@@ -520,25 +542,29 @@ async def test_parallel_batch_respects_semaphore_limit():
         for i in range(6)
     ]
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=tool_calls,
-            reasoning_content=None,
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=tool_calls,
+                reasoning_content=None,
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
-    kernel = AgentKernel(_make_deps(
-        execute_tool=execute_tool,
-        create_client=lambda _m: fake_client,
-    ))
+    kernel = AgentKernel(
+        _make_deps(
+            execute_tool=execute_tool,
+            create_client=lambda _m: fake_client,
+        )
+    )
 
     result = await kernel.handle(
         InvocationRequest(
@@ -575,35 +601,39 @@ async def test_parallel_batch_applies_pre_tool_hook_modifications():
     hook_registry.clear()
     hook_registry.register(HookEvent.PRE_TOOL_USE, rewrite_args)
 
-    fake_client = _FakeClient([
-        SimpleNamespace(
-            content="",
-            tool_calls=[
-                {
-                    "id": "call_1",
-                    "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'},
-                },
-                {
-                    "id": "call_2",
-                    "function": {"name": "read_file", "arguments": '{"path":"b.txt"}'},
-                },
-            ],
-            reasoning_content=None,
-            usage={"total_tokens": 10},
-        ),
-        SimpleNamespace(
-            content="done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        ),
-    ])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'},
+                    },
+                    {
+                        "id": "call_2",
+                        "function": {"name": "read_file", "arguments": '{"path":"b.txt"}'},
+                    },
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
 
     try:
-        kernel = AgentKernel(_make_deps(
-            execute_tool=execute_tool,
-            create_client=lambda _m: fake_client,
-        ))
+        kernel = AgentKernel(
+            _make_deps(
+                execute_tool=execute_tool,
+                create_client=lambda _m: fake_client,
+            )
+        )
 
         result = await kernel.handle(
             InvocationRequest(

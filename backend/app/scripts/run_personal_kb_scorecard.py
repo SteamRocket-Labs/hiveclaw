@@ -14,8 +14,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Score Personal KB retrieval results against SAG trace fixtures.")
     parser.add_argument("--input", required=True, help="Path to scorecard input JSON.")
     parser.add_argument("--output", required=True, help="Path to write scorecard report JSON.")
-    parser.add_argument("--fail-on-acl-leakage", action="store_true", help="Return exit code 2 if any forbidden ref leaks.")
-    parser.add_argument("--fail-under-recall", type=float, default=None, help="Return exit code 2 if Hive recall@k is lower.")
+    parser.add_argument(
+        "--fail-on-acl-leakage", action="store_true", help="Return exit code 2 if any forbidden ref leaks."
+    )
+    parser.add_argument(
+        "--fail-under-recall", type=float, default=None, help="Return exit code 2 if Hive recall@k is lower."
+    )
     parser.add_argument(
         "--fail-under-citation",
         type=float,
@@ -38,7 +42,9 @@ def _write_report(path: Path, report: dict) -> None:
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _failed_thresholds(report: dict, *, fail_under_recall: float | None, fail_under_citation: float | None) -> list[str]:
+def _failed_thresholds(
+    report: dict, *, fail_under_recall: float | None, fail_under_citation: float | None
+) -> list[str]:
     failures: list[str] = []
     hive = (report.get("providers") or {}).get("hive") or {}
     if fail_under_recall is not None and float(hive.get("recall_at_k") or 0.0) < fail_under_recall:

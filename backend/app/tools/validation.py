@@ -15,10 +15,7 @@ def _tool_parameter_schemas() -> dict[str, dict[str, Any]]:
     if not metas:
         collect_tools()
         metas = get_all_registered_tools()
-    return {
-        name: dict(meta.parameters or {"type": "object", "properties": {}})
-        for name, (meta, _fn) in metas.items()
-    }
+    return {name: dict(meta.parameters or {"type": "object", "properties": {}}) for name, (meta, _fn) in metas.items()}
 
 
 def validate_tool_arguments(tool_name: str, arguments: Any) -> list[str]:
@@ -52,7 +49,11 @@ def _validate_schema(value: Any, schema: dict[str, Any], *, path: str) -> list[s
         errors.append(f"{path} must be {expected_type}")
         return errors
 
-    if schema.get("type") == "object" or isinstance(schema.get("properties"), dict) or isinstance(schema.get("required"), list):
+    if (
+        schema.get("type") == "object"
+        or isinstance(schema.get("properties"), dict)
+        or isinstance(schema.get("required"), list)
+    ):
         if not isinstance(value, dict):
             errors.append(f"{path} must be object")
             return errors

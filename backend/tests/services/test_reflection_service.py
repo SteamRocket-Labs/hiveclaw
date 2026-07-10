@@ -13,7 +13,10 @@ def test_reportable_reflection_writes_artifact_without_legacy_t2_projection(tmp_
         agent_id=agent_id,
         session_id="s-1",
         reason="loop_guard_triggered",
-        messages=[{"role": "user", "content": "Retry failed search"}, {"role": "assistant", "content": "Search failed twice"}],
+        messages=[
+            {"role": "user", "content": "Retry failed search"},
+            {"role": "assistant", "content": "Search failed twice"},
+        ],
         metadata={"trace_ref": "logs/2026-05-02/traces/s-1.jsonl"},
     )
 

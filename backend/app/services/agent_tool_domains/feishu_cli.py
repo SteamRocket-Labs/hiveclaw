@@ -60,9 +60,7 @@ async def _feishu_cli_available() -> bool:
     if shutil.which(settings.FEISHU_CLI_BIN) is None:
         return False
 
-    return_code, _stdout, _stderr = await _run_feishu_cli_command(
-        [settings.FEISHU_CLI_BIN, "auth", "status"]
-    )
+    return_code, _stdout, _stderr = await _run_feishu_cli_command([settings.FEISHU_CLI_BIN, "auth", "status"])
     return return_code == 0
 
 

@@ -366,7 +366,15 @@ class TestDynamicSuffixIntegration:
 
     def test_contains_task_playbook_when_profile_detected(self) -> None:
         ds = build_dynamic_prompt_suffix(
-            budget_profile=type("Budget", (), {"task_profile": TaskProfile(name="research", complexity="high"), "active_tool_groups_budget_chars": 2000, "retrieval_budget_chars": 3000})(),
+            budget_profile=type(
+                "Budget",
+                (),
+                {
+                    "task_profile": TaskProfile(name="research", complexity="high"),
+                    "active_tool_groups_budget_chars": 2000,
+                    "retrieval_budget_chars": 3000,
+                },
+            )(),
             latest_user_query="latest market research on agent frameworks",
         )
         assert "## Task Playbook" in ds
@@ -374,7 +382,15 @@ class TestDynamicSuffixIntegration:
 
     def test_dynamic_suffix_uses_memory_recall_playbook(self) -> None:
         ds = build_dynamic_prompt_suffix(
-            budget_profile=type("Budget", (), {"task_profile": TaskProfile(name="memory_recall", complexity="medium"), "active_tool_groups_budget_chars": 2000, "retrieval_budget_chars": 3000})(),
+            budget_profile=type(
+                "Budget",
+                (),
+                {
+                    "task_profile": TaskProfile(name="memory_recall", complexity="medium"),
+                    "active_tool_groups_budget_chars": 2000,
+                    "retrieval_budget_chars": 3000,
+                },
+            )(),
             latest_user_query="回忆上次关于 md-first memory 的决定",
         )
         assert "## Task Playbook" in ds

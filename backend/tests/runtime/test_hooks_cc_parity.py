@@ -65,8 +65,19 @@ def test_ccplus_broader_hook_catalog_declares_contracts_and_noop_capability() ->
         assert entry["input_schema"]["type"] == "object"
         assert entry["output_schema"]["type"] == "object"
         assert entry["runtime_consumer"]
-        assert entry["trust_level"] in {"platform_trusted", "tenant_approved", "agent_scoped", "planned", "disabled_noop"}
-        assert entry["failure_policy"] in {"fail_closed_if_blocking", "observe_continue", "planned_observe", "disabled_noop"}
+        assert entry["trust_level"] in {
+            "platform_trusted",
+            "tenant_approved",
+            "agent_scoped",
+            "planned",
+            "disabled_noop",
+        }
+        assert entry["failure_policy"] in {
+            "fail_closed_if_blocking",
+            "observe_continue",
+            "planned_observe",
+            "disabled_noop",
+        }
 
     assert catalog["worktree_create"]["lifecycle_state"] == "disabled_noop"
     assert catalog["worktree_create"]["runtime_consumer"] == "disabled_noop_audit"

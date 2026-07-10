@@ -105,8 +105,7 @@ def _internal_scenario_report(ablation: str) -> dict[str, Any]:
     memory_ready = bool(task_report["scenarios"]["session_recall"]["ready"])
     evolution_ready = bool(task_report["scenarios"]["self_evolution"]["ready"])
     long_context_ready = bool(
-        task_report["scenarios"]["long_context_after_compaction"]["ready"]
-        and ablation != "no_compaction"
+        task_report["scenarios"]["long_context_after_compaction"]["ready"] and ablation != "no_compaction"
     )
 
     scenarios = {
@@ -164,7 +163,9 @@ def _internal_scenario_report(ablation: str) -> dict[str, Any]:
         },
         "long_context_after_compaction": {
             "ready": long_context_ready,
-            "score": task_report["scenarios"]["long_context_after_compaction"]["score"] if ablation != "no_compaction" else 0,
+            "score": task_report["scenarios"]["long_context_after_compaction"]["score"]
+            if ablation != "no_compaction"
+            else 0,
             "transcript": "task_eval:long_context_after_compaction",
             "rubric": "continuity preserved after compaction",
             "score_breakdown": {
@@ -263,9 +264,9 @@ def _continuity_scenario_report(output_dir: Path) -> dict[str, Any]:
         agent_id=agent_id,
         data_root=data_root,
     )
-    restore_ready = (
-        "Restore the session and continue execution." in manifest.pending_items
-        and any("Round 3 captured current state and key files." in item.get("summary", "") for item in manifest.recent_tool_outcomes)
+    restore_ready = "Restore the session and continue execution." in manifest.pending_items and any(
+        "Round 3 captured current state and key files." in item.get("summary", "")
+        for item in manifest.recent_tool_outcomes
     )
     scenarios["session_restore"] = {
         "ready": restore_ready,
@@ -434,7 +435,9 @@ def _build_analysis(scenarios: dict[str, dict[str, Any]]) -> dict[str, Any]:
         if details["ready"] and int(details["score"]) >= 90
     ][:4]
     if not strengths:
-        strengths = [_analysis_entry(scenario_name, details) for scenario_name, details in ranked[: min(3, len(ranked))]]
+        strengths = [
+            _analysis_entry(scenario_name, details) for scenario_name, details in ranked[: min(3, len(ranked))]
+        ]
 
     gaps = [
         _analysis_entry(scenario_name, details)
@@ -517,9 +520,7 @@ def _write_report(report: dict[str, Any], output_dir: Path) -> None:
                 markdown_lines.append(rendered)
                 continue
             if fallback_reason and from_model and to_model:
-                markdown_lines.append(
-                    f"- {scenario}: fallback {fallback_reason} {from_model} -> {to_model}"
-                )
+                markdown_lines.append(f"- {scenario}: fallback {fallback_reason} {from_model} -> {to_model}")
     markdown_lines.extend(
         [
             "",

@@ -130,7 +130,9 @@ def test_dynamic_metadata_preserves_candidate_failure_policy():
 
 
 def test_dynamic_outcome_summary_and_repair_plan_are_leaf_level():
-    task = SimpleNamespace(status="failed", metadata_json={"dynamic_workflow": {"failure_policy": {"repair_rounds": 1}}})
+    task = SimpleNamespace(
+        status="failed", metadata_json={"dynamic_workflow": {"failure_policy": {"repair_rounds": 1}}}
+    )
     steps = [SimpleNamespace(step_id="scan", status="failed", error="item-1: failed")]
     leaves = [
         SimpleNamespace(step_id="scan", leaf_id="item-0", status="done", error=None),

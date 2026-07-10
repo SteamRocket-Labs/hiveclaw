@@ -63,9 +63,7 @@ def build_a2a_agent_card(agent: object, *, base_url: str | None = None) -> dict[
         "endpoints": {
             "card": card_url,
             "messages_inbox": f"{base}/api/v1/messages/inbox" if base else "",
-            "a2a_collaborators": f"{base}/api/v1/agents/{agent_id}/a2a/collaborators"
-            if base and agent_id
-            else "",
+            "a2a_collaborators": f"{base}/api/v1/agents/{agent_id}/a2a/collaborators" if base and agent_id else "",
             "local_agent_channel": f"{base}/api/v1/local-agents/sessions" if base else "",
         },
         "skills": [

@@ -52,7 +52,9 @@ def _latest_eval(evals: list[dict[str, Any]]) -> dict[str, Any] | None:
     return evals[-1] if evals else None
 
 
-def _candidate_maps(entries: list[dict[str, Any]]) -> tuple[
+def _candidate_maps(
+    entries: list[dict[str, Any]],
+) -> tuple[
     dict[str, dict[str, Any]],
     dict[str, list[dict[str, Any]]],
     dict[str, list[dict[str, Any]]],

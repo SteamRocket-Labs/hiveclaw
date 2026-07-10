@@ -86,7 +86,9 @@ def migrate_workspace(workspace: Path, *, apply: bool = False) -> dict[str, Any]
     if apply:
         report_path = legacy_root / "migration_report.json"
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     return report
 
 

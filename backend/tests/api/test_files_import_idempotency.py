@@ -22,12 +22,16 @@ async def test_agent_import_from_url_short_circuits_when_skill_already_exists(tm
         return None
 
     monkeypatch.setattr(files_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(skills_api, "_parse_github_url", lambda _url: {
-        "owner": "demo",
-        "repo": "skills",
-        "branch": "main",
-        "path": "demo-skill",
-    })
+    monkeypatch.setattr(
+        skills_api,
+        "_parse_github_url",
+        lambda _url: {
+            "owner": "demo",
+            "repo": "skills",
+            "branch": "main",
+            "path": "demo-skill",
+        },
+    )
 
     async def fail_fetch(*_args, **_kwargs):
         raise AssertionError("_fetch_github_directory should not be called for already installed skills")
@@ -64,7 +68,9 @@ async def test_agent_import_from_url_stages_review_without_active_install(tmp_pa
     async def fake_token(_tenant_id):
         return "token"
 
-    async def fake_stage_remote(db, *, tenant_id, created_by_user_id, source_uri, folder_name, source_format, token, **kwargs):
+    async def fake_stage_remote(
+        db, *, tenant_id, created_by_user_id, source_uri, folder_name, source_format, token, **kwargs
+    ):
         assert tenant_id == expected_tenant_id
         assert folder_name == "demo-skill"
         assert source_format == "external_skill_url"
@@ -80,12 +86,16 @@ async def test_agent_import_from_url_stages_review_without_active_install(tmp_pa
         }
 
     monkeypatch.setattr(files_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(skills_api, "_parse_github_url", lambda _url: {
-        "owner": "demo",
-        "repo": "skills",
-        "branch": "main",
-        "path": "demo-skill",
-    })
+    monkeypatch.setattr(
+        skills_api,
+        "_parse_github_url",
+        lambda _url: {
+            "owner": "demo",
+            "repo": "skills",
+            "branch": "main",
+            "path": "demo-skill",
+        },
+    )
     monkeypatch.setattr(skills_api, "_fetch_github_directory", fail_fetch)
     monkeypatch.setattr(skills_api, "_get_github_token", fake_token)
     monkeypatch.setattr(files_api, "stage_remote_external_skill_source_review", fake_stage_remote)

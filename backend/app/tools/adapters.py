@@ -30,7 +30,8 @@ async def adapt_and_call(
             positional_params = [
                 param
                 for param in signature.parameters.values()
-                if param.kind in (
+                if param.kind
+                in (
                     inspect.Parameter.POSITIONAL_ONLY,
                     inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 )
@@ -71,6 +72,7 @@ async def adapt_and_call(
         # Serialize dicts/lists as JSON instead of Python repr
         if isinstance(result, (dict, list)):
             import json
+
             return json.dumps(result, ensure_ascii=False, default=str)
         return str(result)
     return result

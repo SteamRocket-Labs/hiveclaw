@@ -403,9 +403,7 @@ _CONTEXT_MATERIAL_BLOCK_RE = re.compile(
     r"(?m)^(## Context Material\b.*?)(?=^##\s|\Z)",
     re.DOTALL,
 )
-_CONTEXT_MATERIAL_OMITTED_NOTICE = (
-    "\n## Context Material\n[context material omitted to fit context budget]"
-)
+_CONTEXT_MATERIAL_OMITTED_NOTICE = "\n## Context Material\n[context material omitted to fit context budget]"
 
 
 def _strip_context_material(agent_context: str) -> str:
@@ -781,7 +779,9 @@ def build_dynamic_prompt_suffix(
         )
 
     runtime_budget = getattr(budget_profile, "runtime_triggers_budget_chars", 3000)
-    runtime_block = _trim_block(runtime_metadata_context, budget_chars=runtime_budget) if runtime_metadata_context else ""
+    runtime_block = (
+        _trim_block(runtime_metadata_context, budget_chars=runtime_budget) if runtime_metadata_context else ""
+    )
     add_candidate(
         candidate_id="dynamic:runtime:runtime_metadata",
         kind="runtime_metadata",
@@ -871,9 +871,7 @@ def build_dynamic_prompt_suffix(
     )
 
     suggested_deferred_tool_groups = (
-        getattr(budget_profile.task_profile, "suggested_deferred_tool_group_names", ())
-        if budget_profile
-        else ()
+        getattr(budget_profile.task_profile, "suggested_deferred_tool_group_names", ()) if budget_profile else ()
     )
     if budget_profile and not active_tool_groups and suggested_deferred_tool_groups:
         hint_lines = [

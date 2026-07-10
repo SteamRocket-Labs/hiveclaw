@@ -14,7 +14,12 @@ from typing import Any
 
 from app.runtime.decision_ledger import build_agent_cycle_decision_entry
 
-from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow, normalize_workflow_args
+from app.runtime.workflow_admission import (
+    AdmissionLimits,
+    WorkflowAdmissionError,
+    admit_workflow,
+    normalize_workflow_args,
+)
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 
@@ -68,7 +73,9 @@ def admit_dynamic_candidate(
         raise WorkflowCompileError(code_error)
     lowered_definition = candidate.get("lowered_definition")
     if not isinstance(lowered_definition, dict):
-        raise WorkflowCompileError(f"candidate {_proposal_candidate_id(candidate, index)!r} lowered_definition must be an object")
+        raise WorkflowCompileError(
+            f"candidate {_proposal_candidate_id(candidate, index)!r} lowered_definition must be an object"
+        )
 
     compiled = compile_workflow(lowered_definition)
     preview_args = normalize_workflow_args(compiled, mapping(candidate.get("args")) or proposal_args)
@@ -121,7 +128,9 @@ def validate_dynamic_workflow_proposal(arguments: dict[str, Any]) -> dict[str, A
     ]
     requested_recommended = str(arguments.get("recommended_candidate_id") or "").strip()
     candidate_ids = {candidate["candidate_id"] for candidate in accepted}
-    recommended_candidate_id = requested_recommended if requested_recommended in candidate_ids else accepted[0]["candidate_id"]
+    recommended_candidate_id = (
+        requested_recommended if requested_recommended in candidate_ids else accepted[0]["candidate_id"]
+    )
     proposal_id = str(arguments.get("proposal_id") or "").strip() or f"dwf-{uuid.uuid4()}"
     return {
         "ok": True,
@@ -160,9 +169,7 @@ def build_dynamic_workflow_run_metadata(
         "budget": mapping(candidate.get("budget")),
     }
     dynamic["workflow_decision_entry"] = build_workflow_decision_entry(dynamic_workflow=dynamic)
-    return {
-        "dynamic_workflow": dynamic
-    }
+    return {"dynamic_workflow": dynamic}
 
 
 def build_workflow_decision_entry(
@@ -199,7 +206,9 @@ def build_workflow_decision_entry(
             judge="dynamic_workflow.build_workflow_decision_entry",
             decision="repair" if repairable else ("promote" if promotion_eligible else "run_or_preview"),
             outcome=status,
-            next_action="apply_repair_plan" if repairable else ("promote_candidate" if promotion_eligible else "continue"),
+            next_action="apply_repair_plan"
+            if repairable
+            else ("promote_candidate" if promotion_eligible else "continue"),
             model_interaction="completion_wake" if run_id else "preview_manifest",
             user_visible=True,
             permission_result="governed_runtime",
@@ -252,7 +261,9 @@ def summarize_dynamic_workflow_outcome(*, task: Any, steps: list[Any], leaf_call
         "leaf_total": leaf_total,
         "leaf_done": _status_count(leaf_calls, "done"),
         "leaf_failed": _status_count(leaf_calls, "failed"),
-        "promotion_eligible": bool(status == "completed" and _status_count(steps, "failed") == 0 and _status_count(leaf_calls, "failed") == 0),
+        "promotion_eligible": bool(
+            status == "completed" and _status_count(steps, "failed") == 0 and _status_count(leaf_calls, "failed") == 0
+        ),
     }
     metadata = getattr(task, "metadata_json", None) or {}
     dynamic = mapping(metadata.get("dynamic_workflow"))
@@ -287,7 +298,11 @@ def build_dynamic_workflow_repair_plan(*, task: Any, steps: list[Any], leaf_call
     ]
     repair_rounds = int(mapping(dynamic.get("failure_policy")).get("repair_rounds") or 1)
     repair_attempts = int(dynamic.get("repair_attempts") or 0)
-    repairable = bool(getattr(task, "status", None) in {"failed", "suspended", "killed"} and repair_attempts < repair_rounds and (failed_leaves or failed_steps))
+    repairable = bool(
+        getattr(task, "status", None) in {"failed", "suspended", "killed"}
+        and repair_attempts < repair_rounds
+        and (failed_leaves or failed_steps)
+    )
     return {
         "repairable": repairable,
         "strategy": "resume_failed_leaves" if failed_leaves else "resume_from_failed_step",

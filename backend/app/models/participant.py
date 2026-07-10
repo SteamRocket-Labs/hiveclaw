@@ -19,9 +19,7 @@ class Participant(Base):
     """
 
     __tablename__ = "participants"
-    __table_args__ = (
-        UniqueConstraint("type", "ref_id", name="uq_participants_type_ref"),
-    )
+    __table_args__ = (UniqueConstraint("type", "ref_id", name="uq_participants_type_ref"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     type: Mapped[str] = mapped_column(String(10), nullable=False)  # 'user' | 'agent'

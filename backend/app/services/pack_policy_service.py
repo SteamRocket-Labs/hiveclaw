@@ -18,6 +18,8 @@ from app.packs.catalog_reader import PackCatalogReader, find_pack_dirs
 
 
 _MANIFEST_DEFAULT_ENABLEMENT: dict[str, bool] | None = None
+
+
 def tenant_pack_policy_key(tenant_id: uuid.UUID) -> str:
     return f"tenant:{tenant_id}:pack_policies"
 

@@ -133,9 +133,9 @@ async def test_tool_new_messages_are_injected_into_next_round_conversation() -> 
     # injected message rode into that round's conversation.
     assert len(fake_client.calls) == 2
     second_round_messages = fake_client.calls[1]["messages"]
-    assert any(
-        message.role == "user" and message.content == injected_marker for message in second_round_messages
-    ), "tool-injected new_messages must reach the next round's live conversation"
+    assert any(message.role == "user" and message.content == injected_marker for message in second_round_messages), (
+        "tool-injected new_messages must reach the next round's live conversation"
+    )
 
 
 @pytest.mark.asyncio
@@ -184,9 +184,9 @@ async def test_tool_new_messages_injected_on_parallel_path() -> None:
     assert result.content == "parallel done"
     assert len(fake_client.calls) == 2
     second_round_messages = fake_client.calls[1]["messages"]
-    assert any(
-        message.role == "user" and message.content == injected_marker for message in second_round_messages
-    ), "parallel-path tool-injected new_messages must reach the next round"
+    assert any(message.role == "user" and message.content == injected_marker for message in second_round_messages), (
+        "parallel-path tool-injected new_messages must reach the next round"
+    )
 
 
 @pytest.mark.asyncio

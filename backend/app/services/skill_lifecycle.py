@@ -242,7 +242,9 @@ def _load_candidate_packages(workspace: Path) -> dict[str, SkillCandidateRecord]
             last_status=str(metadata.get("last_status") or manifest.get("status") or ""),
             last_note=str(metadata.get("last_note") or manifest.get("status_reason") or ""),
             blocker=str(metadata.get("blocker") or ""),
-            last_updated_at=str(metadata.get("last_updated_at") or manifest.get("updated_at") or manifest.get("created_at") or ""),
+            last_updated_at=str(
+                metadata.get("last_updated_at") or manifest.get("updated_at") or manifest.get("created_at") or ""
+            ),
         )
     return records
 
@@ -516,8 +518,10 @@ def record_skill_runtime_usage(
             "last_status": normalized_status or "unknown",
         }
 
-    if used_skill and normalized_status in {"failed", "workaround"} and not can_self_evolve_skill(
-        workspace, primary_skill
+    if (
+        used_skill
+        and normalized_status in {"failed", "workaround"}
+        and not can_self_evolve_skill(workspace, primary_skill)
     ):
         return {
             "decision": "ignored_non_evolvable",

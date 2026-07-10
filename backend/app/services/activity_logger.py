@@ -41,14 +41,16 @@ async def _insert_activity(
         # agent's tenant and stamp the row so isolation holds on read.
         resolved_tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(resolved_tenant_id) as db:
-            db.add(AgentActivityLog(
-                agent_id=agent_id,
-                tenant_id=resolved_tenant_id,
-                action_type=action_type,
-                summary=summary[:500] if summary else "",
-                detail_json=detail,
-                related_id=related_id,
-            ))
+            db.add(
+                AgentActivityLog(
+                    agent_id=agent_id,
+                    tenant_id=resolved_tenant_id,
+                    action_type=action_type,
+                    summary=summary[:500] if summary else "",
+                    detail_json=detail,
+                    related_id=related_id,
+                )
+            )
             await db.commit()
     except Exception:
         if db is not None:

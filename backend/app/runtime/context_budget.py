@@ -52,11 +52,7 @@ class TaskProfile:
         suggested_pack_names: tuple[str, ...] | None = None,
     ) -> None:
         raw_groups = suggested_deferred_tool_group_names or tuple(suggested_pack_names or ())
-        groups = tuple(
-            group
-            for group in (_normalize_deferred_tool_group_name(item) for item in raw_groups)
-            if group
-        )
+        groups = tuple(group for group in (_normalize_deferred_tool_group_name(item) for item in raw_groups) if group)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "complexity", complexity)
         object.__setattr__(self, "execution_shape", normalize_execution_shape(execution_shape))
@@ -106,10 +102,34 @@ class ContextBudget:
 
 
 _CODING_HINTS = (
-    "bug", "fix", "code", "refactor", "test", "stack trace", "traceback",
-    "compile", "api", "endpoint", "migration", "function", "class", ".py",
-    ".ts", ".tsx", ".js", "read_file", "write_file", "repo",
-    "修复", "代码", "测试", "接口", "函数", "文件", "编译", "回归",
+    "bug",
+    "fix",
+    "code",
+    "refactor",
+    "test",
+    "stack trace",
+    "traceback",
+    "compile",
+    "api",
+    "endpoint",
+    "migration",
+    "function",
+    "class",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    "read_file",
+    "write_file",
+    "repo",
+    "修复",
+    "代码",
+    "测试",
+    "接口",
+    "函数",
+    "文件",
+    "编译",
+    "回归",
 )
 _CODING_REVIEW_HINTS = (
     "review",
@@ -128,15 +148,52 @@ _CODING_REVIEW_HINTS = (
     "实现",
 )
 _RESEARCH_HINTS = (
-    "research", "analyze", "analysis", "compare", "market", "competitor",
-    "latest", "news", "source", "sources", "report", "web", "browse",
-    "investigate", "trend", "公开资料", "来源", "研究", "竞品", "行业",
-    "新闻", "链接", "分析", "调研",
+    "research",
+    "analyze",
+    "analysis",
+    "compare",
+    "market",
+    "competitor",
+    "latest",
+    "news",
+    "source",
+    "sources",
+    "report",
+    "web",
+    "browse",
+    "investigate",
+    "trend",
+    "公开资料",
+    "来源",
+    "研究",
+    "竞品",
+    "行业",
+    "新闻",
+    "链接",
+    "分析",
+    "调研",
 )
 _OPERATIONS_HINTS = (
-    "deploy", "monitor", "incident", "alert", "cron", "trigger", "heartbeat",
-    "automation", "ops", "runbook", "queue", "worker", "dashboard",
-    "告警", "触发器", "心跳", "自动化", "运维", "部署", "监控",
+    "deploy",
+    "monitor",
+    "incident",
+    "alert",
+    "cron",
+    "trigger",
+    "heartbeat",
+    "automation",
+    "ops",
+    "runbook",
+    "queue",
+    "worker",
+    "dashboard",
+    "告警",
+    "触发器",
+    "心跳",
+    "自动化",
+    "运维",
+    "部署",
+    "监控",
 )
 _MEMORY_RECALL_HINTS = (
     "recall",
@@ -477,7 +534,8 @@ def _routing_enabled(routing_config: dict[str, object] | None) -> bool | None:
 def infer_task_profile(query: str, messages: list[dict] | None = None) -> TaskProfile:
     """Infer the dominant task shape from the latest request."""
     haystack = " ".join(
-        part for part in [
+        part
+        for part in [
             query.strip(),
             " ".join(
                 str(msg.get("content", ""))
@@ -655,29 +713,29 @@ def compute_context_budget(
         retrieval_ratio = 0.12
         knowledge_ratio = 0.04
         memory_ratio = 0.24
-        focus_ratio = 0.07       # higher — current task state matters
-        restore_ratio = 0.65     # higher — recent files/writes/pending critical
+        focus_ratio = 0.07  # higher — current task state matters
+        restore_ratio = 0.65  # higher — recent files/writes/pending critical
         triggers_ratio = 0.03
         semantic_base = 16
         episodic_base = 4
         external_base = 4
     elif profile.name == "research":
         retrieval_ratio = 0.15
-        knowledge_ratio = 0.10   # higher — external evidence is king
-        memory_ratio = 0.28      # higher — accumulated findings
+        knowledge_ratio = 0.10  # higher — external evidence is king
+        memory_ratio = 0.28  # higher — accumulated findings
         focus_ratio = 0.05
         restore_ratio = 0.50
         triggers_ratio = 0.03
         semantic_base = 20
         episodic_base = 5
-        external_base = 8        # higher — more external sources
+        external_base = 8  # higher — more external sources
     elif profile.name == "operations":
         retrieval_ratio = 0.10
         knowledge_ratio = 0.05
         memory_ratio = 0.22
-        focus_ratio = 0.08       # higher — operational state
+        focus_ratio = 0.08  # higher — operational state
         restore_ratio = 0.55
-        triggers_ratio = 0.07    # higher — trigger/cron state matters
+        triggers_ratio = 0.07  # higher — trigger/cron state matters
         semantic_base = 14
         episodic_base = 4
         external_base = 4

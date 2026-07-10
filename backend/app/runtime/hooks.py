@@ -685,7 +685,9 @@ def parse_hook_json_output(
     wire field names and normalizes them into Hive's internal ``HookResult``.
     """
     if exit_code == 2 and not raw:
-        reason = "\n".join(part for part in (stderr.strip(), stdout.strip()) if part) or "hook returned blocking exit code 2"
+        reason = (
+            "\n".join(part for part in (stderr.strip(), stdout.strip()) if part) or "hook returned blocking exit code 2"
+        )
         return HookOutputParseResult(status="blocked", hook_result=HookResult(block=True, reason=reason))
     if exit_code not in (None, 0, 2):
         return HookOutputParseResult(status="non_blocking_error")

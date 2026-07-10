@@ -54,11 +54,7 @@ class PrincipalStack:
 
     @property
     def current_user_is_direct_owner(self) -> bool:
-        return bool(
-            self.current_user
-            and self.direct_owner
-            and self.current_user.id == self.direct_owner.id
-        )
+        return bool(self.current_user and self.direct_owner and self.current_user.id == self.direct_owner.id)
 
     @property
     def current_user_is_company_admin(self) -> bool:
@@ -75,4 +71,3 @@ class PrincipalStack:
         if normalized in {"pl4", "pl4_credential", "credential"}:
             return False
         return False
-

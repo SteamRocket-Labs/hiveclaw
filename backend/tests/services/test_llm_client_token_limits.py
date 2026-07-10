@@ -68,10 +68,12 @@ async def test_non_streaming_length_finish_retries_once_at_64k_and_records_metri
     from app.services.llm_client import _CapAwareLLMClient
 
     metrics.reset_all()
-    inner = _FakeClient([
-        LLMResponse(content="partial", finish_reason="length"),
-        LLMResponse(content="complete", finish_reason="stop"),
-    ])
+    inner = _FakeClient(
+        [
+            LLMResponse(content="partial", finish_reason="length"),
+            LLMResponse(content="complete", finish_reason="stop"),
+        ]
+    )
     client = _CapAwareLLMClient(inner, provider="custom", model="qwen3.6-plus")
 
     response = await client.complete(
@@ -92,10 +94,12 @@ async def test_non_streaming_cap_retry_still_capped_marks_response():
     from app.services.llm_client import _CapAwareLLMClient
 
     metrics.reset_all()
-    inner = _FakeClient([
-        LLMResponse(content="partial", finish_reason="max_tokens"),
-        LLMResponse(content="still partial", finish_reason="length"),
-    ])
+    inner = _FakeClient(
+        [
+            LLMResponse(content="partial", finish_reason="max_tokens"),
+            LLMResponse(content="still partial", finish_reason="length"),
+        ]
+    )
     client = _CapAwareLLMClient(inner, provider="custom", model="qwen3.6-plus")
 
     response = await client.complete(
@@ -161,10 +165,12 @@ async def test_cap_retry_escalates_to_per_provider_ceiling():
     from app.services.llm_client import _CapAwareLLMClient
 
     metrics.reset_all()
-    inner = _FakeClient([
-        LLMResponse(content="partial", finish_reason="length"),
-        LLMResponse(content="complete", finish_reason="stop"),
-    ])
+    inner = _FakeClient(
+        [
+            LLMResponse(content="partial", finish_reason="length"),
+            LLMResponse(content="complete", finish_reason="stop"),
+        ]
+    )
     client = _CapAwareLLMClient(inner, provider="deepseek", model="deepseek-v4-pro")
 
     response = await client.complete(

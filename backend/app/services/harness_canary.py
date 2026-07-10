@@ -51,9 +51,8 @@ def _agent_workspace(agent_id: uuid.UUID, *, data_root: str | Path | None = None
 
 
 def _has_existing_harness_evidence(agent_report: dict[str, Any]) -> bool:
-    return (
-        int(agent_report.get("h4", {}).get("totals", {}).get("long_tasks", 0) or 0) > 0
-        or bool(agent_report.get("h5", {}).get("ledger_present"))
+    return int(agent_report.get("h4", {}).get("totals", {}).get("long_tasks", 0) or 0) > 0 or bool(
+        agent_report.get("h5", {}).get("ledger_present")
     )
 
 
@@ -283,40 +282,46 @@ async def run_harness_canary(
 
         if include_h4:
             h4 = _write_h4_canary(agent=agent, runtime_task_id=runtime_task_id, data_root=data_root)
-            metadata.update({
-                "long_task_plan": h4.get("plan"),
-                "long_task_progress": h4.get("progress"),
-                "long_task_validation": h4.get("validation"),
-                "long_task_validation_passed": h4.get("validation_passed"),
-                "long_task_validation_summary": h4.get("validation_summary"),
-            })
+            metadata.update(
+                {
+                    "long_task_plan": h4.get("plan"),
+                    "long_task_progress": h4.get("progress"),
+                    "long_task_validation": h4.get("validation"),
+                    "long_task_validation_passed": h4.get("validation_passed"),
+                    "long_task_validation_summary": h4.get("validation_summary"),
+                }
+            )
         if include_h5:
             h5 = _write_h5_canary(agent=agent, runtime_task_id=runtime_task_id, data_root=data_root)
-            metadata.update({
-                "evolution_candidate_id": h5.get("candidate_id"),
-                "evolution_validation": h5.get("validation"),
-                "evolution_validation_passed": h5.get("validation_passed"),
-                "evolution_validation_summary": h5.get("validation_summary"),
-            })
+            metadata.update(
+                {
+                    "evolution_candidate_id": h5.get("candidate_id"),
+                    "evolution_validation": h5.get("validation"),
+                    "evolution_validation_passed": h5.get("validation_passed"),
+                    "evolution_validation_summary": h5.get("validation_summary"),
+                }
+            )
 
-        db.add(RuntimeTask(
-            id=runtime_task_id,
-            task_type="harness_canary",
-            tenant_id=agent.tenant_id,
-            parent_agent_id=agent.id,
-            child_agent_id=None,
-            child_agent_name=None,
-            status="completed",
-            prompt="Harness canary verifies H4/H5 evidence paths without changing behavior.",
-            result_summary="Harness canary completed; no behavior change was promoted.",
-            trace_id=f"harness-canary:{runtime_task_id.hex}",
-            parent_session_id=None,
-            child_session_id=None,
-            depth=0,
-            started_at=generated_at,
-            completed_at=_now(),
-            metadata_json=metadata,
-        ))
+        db.add(
+            RuntimeTask(
+                id=runtime_task_id,
+                task_type="harness_canary",
+                tenant_id=agent.tenant_id,
+                parent_agent_id=agent.id,
+                child_agent_id=None,
+                child_agent_name=None,
+                status="completed",
+                prompt="Harness canary verifies H4/H5 evidence paths without changing behavior.",
+                result_summary="Harness canary completed; no behavior change was promoted.",
+                trace_id=f"harness-canary:{runtime_task_id.hex}",
+                parent_session_id=None,
+                child_session_id=None,
+                depth=0,
+                started_at=generated_at,
+                completed_at=_now(),
+                metadata_json=metadata,
+            )
+        )
         await db.commit()
         results.append(
             _result(

@@ -87,8 +87,7 @@ async def test_stamps_exemption_on_plain_enabled_trigger(patch_session):
     assert trigger.config["metadata"]["plan_exempt_reason"] == plan_mode_core.PLAN_EXEMPT_PREEXISTING
     # The exemption is enough for the gate to allow this trigger now.
     assert (
-        plan_mode_core.extract_plan_exempt_reason({"config": trigger.config})
-        == plan_mode_core.PLAN_EXEMPT_PREEXISTING
+        plan_mode_core.extract_plan_exempt_reason({"config": trigger.config}) == plan_mode_core.PLAN_EXEMPT_PREEXISTING
     )
     assert session.commits == 1
 
@@ -112,9 +111,7 @@ async def test_skips_trigger_with_confirmed_plan_id(patch_session):
 async def test_idempotent_when_already_exempt(patch_session):
     from app.services.plan_mode_cutover import mark_existing_triggers_plan_exempt
 
-    trigger = _trigger(
-        config={"metadata": {"plan_exempt_reason": plan_mode_core.PLAN_EXEMPT_PREEXISTING}}
-    )
+    trigger = _trigger(config={"metadata": {"plan_exempt_reason": plan_mode_core.PLAN_EXEMPT_PREEXISTING}})
     session = patch_session([trigger])
 
     report = await mark_existing_triggers_plan_exempt()

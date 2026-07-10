@@ -58,7 +58,9 @@ def _append_session_execution_plan(session_context: SessionContext, parsed: Pars
     if not isinstance(existing, list):
         existing = []
     plan = skill_execution_plan_payload(parsed)
-    by_key = {str(item.get("skill_slug") or item.get("skill")): dict(item) for item in existing if isinstance(item, dict)}
+    by_key = {
+        str(item.get("skill_slug") or item.get("skill")): dict(item) for item in existing if isinstance(item, dict)
+    }
     by_key[str(plan["skill_slug"])] = plan
     session_context.metadata["skill_execution_plans"] = list(by_key.values())
     apply_skill_execution_plans_to_metadata(session_context.metadata)

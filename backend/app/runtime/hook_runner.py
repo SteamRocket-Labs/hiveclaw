@@ -250,7 +250,9 @@ class GovernedHookRunner:
         await _maybe_await(self.span_recorder(fact))
 
     async def _disabled(self, spec: HookSpec, reason: str) -> HookRunRecord:
-        record = HookRunRecord(key=spec.key, event=spec.event.value, hook_type=spec.type, status="disabled", error=reason)
+        record = HookRunRecord(
+            key=spec.key, event=spec.event.value, hook_type=spec.type, status="disabled", error=reason
+        )
         await self._record_span(
             {
                 "fact_type": "hook_run",

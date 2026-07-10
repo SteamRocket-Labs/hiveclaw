@@ -17,7 +17,9 @@ def _extract_tool_error_payload(result: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_handle_email_tool_returns_structured_not_configured_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_handle_email_tool_returns_structured_not_configured_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.services.agent_tool_domains import email as email_domain
 
     async def fake_get_email_config(_agent_id):
@@ -40,7 +42,9 @@ async def test_handle_email_tool_returns_structured_not_configured_error(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_handle_email_tool_rejects_missing_attachment_before_smtp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_handle_email_tool_rejects_missing_attachment_before_smtp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.services.agent_tool_domains import email as email_domain
     from app.services import email_service
 

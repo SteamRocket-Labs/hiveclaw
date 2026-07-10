@@ -187,4 +187,3 @@ class TestSummarizePrompt:
 # code (B-6): it had no live caller — compaction summarization runs through the
 # LLM ``_SUMMARIZE_SYSTEM_PROMPT`` path covered above. No replacement tests are
 # needed; the deleted helper is no longer importable.
-

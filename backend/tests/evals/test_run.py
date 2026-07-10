@@ -252,7 +252,9 @@ def test_run_eval_suite_writes_route_observations_to_markdown(monkeypatch, tmp_p
 
     report_md = (Path(report["output_dir"]) / "report.md").read_text(encoding="utf-8")
     assert "Runtime Routing" in report_md
-    assert "coding: selected=gpt-4.1-mini fallback=gpt-4.1 reason=simple_turn_cheap_model source=agent_config" in report_md
+    assert (
+        "coding: selected=gpt-4.1-mini fallback=gpt-4.1 reason=simple_turn_cheap_model source=agent_config" in report_md
+    )
     assert "research: fallback prompt_too_long gpt-4.1 -> claude-sonnet" in report_md
 
 

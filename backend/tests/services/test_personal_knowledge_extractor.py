@@ -44,7 +44,12 @@ def test_parse_extraction_payload_cleans_schema_and_drops_invalid_items() -> Non
                 "bad",
             ],
             "assertions": [
-                {"subject_text": "Open Notebook", "predicate": "supports", "object_text": "source refs", "confidence": -1},
+                {
+                    "subject_text": "Open Notebook",
+                    "predicate": "supports",
+                    "object_text": "source refs",
+                    "confidence": -1,
+                },
                 {"subject": "", "predicate": "missing", "object": "drop"},
             ],
             "links": [

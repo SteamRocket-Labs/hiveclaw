@@ -108,10 +108,12 @@ async def test_get_conversation_messages_uses_channel_session_uuid_and_strips_se
         content="[发送者: 张三 (ID: u_123)] 你好",
         created_at=datetime(2026, 4, 14, 12, 30, tzinfo=UTC),
     )
-    db = _SequenceDB([
-        _ScalarResult(session),
-        _RowsResult([message]),
-    ])
+    db = _SequenceDB(
+        [
+            _ScalarResult(session),
+            _RowsResult([message]),
+        ]
+    )
 
     async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
         assert db_arg is db
@@ -154,11 +156,13 @@ async def test_get_conversation_messages_keeps_agent_sender_names_for_agent_sess
         participant_id=participant_id,
         created_at=datetime(2026, 4, 14, 13, 0, tzinfo=UTC),
     )
-    db = _SequenceDB([
-        _ScalarResult(session),
-        _RowsResult([message]),
-        _ScalarResult("执行助手"),
-    ])
+    db = _SequenceDB(
+        [
+            _ScalarResult(session),
+            _RowsResult([message]),
+            _ScalarResult("执行助手"),
+        ]
+    )
 
     async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
         return None

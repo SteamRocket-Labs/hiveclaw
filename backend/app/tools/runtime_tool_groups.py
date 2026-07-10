@@ -35,9 +35,7 @@ def _project_runtime_tool_group(spec) -> RuntimeToolGroupSpec:
 
 
 RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = tuple(
-    group
-    for group in (_project_runtime_tool_group(spec) for spec in iter_runtime_l2_capability_specs())
-    if group.tools
+    group for group in (_project_runtime_tool_group(spec) for spec in iter_runtime_l2_capability_specs()) if group.tools
 )
 
 

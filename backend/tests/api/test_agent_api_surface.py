@@ -7,7 +7,9 @@ from pydantic import ValidationError
 def test_agent_and_template_api_surface_no_longer_exposes_legacy_autonomy_fields():
     project_root = Path(__file__).resolve().parents[3]
     schemas_source = (project_root / "backend/app/schemas/schemas.py").read_text()
-    agent_create_source = schemas_source.split("class AgentCreate(BaseModel):", 1)[1].split("class AgentOut(BaseModel):", 1)[0]
+    agent_create_source = schemas_source.split("class AgentCreate(BaseModel):", 1)[1].split(
+        "class AgentOut(BaseModel):", 1
+    )[0]
     agents_api_source = (project_root / "backend/app/api/agents.py").read_text()
     advanced_api_source = (project_root / "backend/app/api/advanced.py").read_text()
     model_source = (project_root / "backend/app/models/agent.py").read_text()
@@ -115,8 +117,8 @@ def test_openclaw_gateway_surface_is_retired_from_backend_contract():
     assert "openclaw_last_seen" not in agent_model_source
     assert "api_key_hash" not in agent_model_source
     assert "openclaw" not in agent_model_source.lower()
-    assert "@router.post(\"/{agent_id}/api-key\")" not in agents_api_source
-    assert "@router.get(\"/{agent_id}/gateway-messages\")" not in agents_api_source
+    assert '@router.post("/{agent_id}/api-key")' not in agents_api_source
+    assert '@router.get("/{agent_id}/gateway-messages")' not in agents_api_source
     assert "GatewayMessage" not in local_bridge_source
     assert "local-bridge/work-requests" not in local_bridge_source
     assert "create_local_bridge_work_request" not in local_bridge_service_source

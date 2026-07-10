@@ -46,12 +46,14 @@ def capture_audit_writes(monkeypatch):
     captured: list[dict] = []
 
     async def _fake_write(action, details=None, agent_id=None, user_id=None):
-        captured.append({
-            "action": action,
-            "details": details,
-            "agent_id": agent_id,
-            "user_id": user_id,
-        })
+        captured.append(
+            {
+                "action": action,
+                "details": details,
+                "agent_id": agent_id,
+                "user_id": user_id,
+            }
+        )
 
     monkeypatch.setattr("app.services.audit_logger.write_audit_log", _fake_write)
     return captured
@@ -85,9 +87,7 @@ async def test_successful_call_records_success_metric_and_audit(
         lambda **_kw: _StubClient(),
     )
 
-    decision = await auto_dream._dream_llm_consolidate(
-        agent_id, tenant_id, {"feedback.md": "x"}, "Agent"
-    )
+    decision = await auto_dream._dream_llm_consolidate(agent_id, tenant_id, {"feedback.md": "x"}, "Agent")
     assert decision is not None
 
     snap = metrics.snapshot()
@@ -128,9 +128,7 @@ async def test_llm_exception_records_failure_metric_and_audit(
         lambda **_kw: _BoomClient(),
     )
 
-    decision = await auto_dream._dream_llm_consolidate(
-        agent_id, tenant_id, {"feedback.md": "x"}, "Agent"
-    )
+    decision = await auto_dream._dream_llm_consolidate(agent_id, tenant_id, {"feedback.md": "x"}, "Agent")
     assert decision is None
 
     snap = metrics.snapshot()
@@ -164,9 +162,7 @@ async def test_unparseable_decision_records_failure_with_reason(
         lambda **_kw: _GarbageClient(),
     )
 
-    decision = await auto_dream._dream_llm_consolidate(
-        agent_id, tenant_id, {"feedback.md": "x"}, "Agent"
-    )
+    decision = await auto_dream._dream_llm_consolidate(agent_id, tenant_id, {"feedback.md": "x"}, "Agent")
     assert decision is None
 
     snap = metrics.snapshot()
@@ -182,9 +178,7 @@ async def test_unparseable_decision_records_failure_with_reason(
 @pytest.mark.asyncio
 async def test_no_tenant_id_does_not_emit_metric(monkeypatch, capture_audit_writes):
     """Early return on missing tenant must not pollute the counter."""
-    decision = await auto_dream._dream_llm_consolidate(
-        uuid.uuid4(), None, {"f.md": "x"}, "Agent"
-    )
+    decision = await auto_dream._dream_llm_consolidate(uuid.uuid4(), None, {"f.md": "x"}, "Agent")
     assert decision is None
     snap = metrics.snapshot()
     assert snap["autonomous_llm_calls_total"] == {}

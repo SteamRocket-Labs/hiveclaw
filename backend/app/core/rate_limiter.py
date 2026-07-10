@@ -27,9 +27,9 @@ async def check_rate_limit(key: str, limit: int, window_seconds: int = 60) -> bo
 
     pipe = r.pipeline()
     pipe.zremrangebyscore(key, 0, window_start)  # Remove expired entries
-    pipe.zadd(key, {str(now): now})              # Add current request
-    pipe.zcard(key)                               # Count requests in window
-    pipe.expire(key, window_seconds + 1)          # Auto-cleanup key
+    pipe.zadd(key, {str(now): now})  # Add current request
+    pipe.zcard(key)  # Count requests in window
+    pipe.expire(key, window_seconds + 1)  # Auto-cleanup key
     results = await pipe.execute()
 
     count = results[2]
@@ -53,12 +53,14 @@ async def rate_limit_or_429(key: str, limit: int, window_seconds: int = 60) -> N
 
 # ── Pre-built FastAPI dependencies ─────────────────────────
 
+
 def rate_limit_dependency(scope: str, limit: int, window_seconds: int = 60):
     """Factory for FastAPI route-level rate limiting.
 
     Usage:
         @router.post("/login", dependencies=[Depends(rate_limit_dependency("auth", 5, 60))])
     """
+
     async def _check(request: Request):
         # Key by IP for unauthenticated, by user_id for authenticated
         identifier = request.client.host if request.client else "unknown"
@@ -66,4 +68,5 @@ def rate_limit_dependency(scope: str, limit: int, window_seconds: int = 60):
             identifier = request.state.tenant_id
         key = f"ratelimit:{scope}:{identifier}"
         await rate_limit_or_429(key, limit, window_seconds)
+
     return _check

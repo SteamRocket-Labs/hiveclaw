@@ -67,7 +67,9 @@ def _digest_payload(query: str, source_refs: tuple[str, ...], results: list[dict
             for item in results
         ],
     }
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def _provider_failure_pack(

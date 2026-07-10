@@ -4,7 +4,9 @@ from __future__ import annotations
 def test_runtime_task_subagent_identifiers_accept_nested_session_keys():
     from app.models.runtime_task import RuntimeTask
 
-    parent_session_id = "subagent-subagent:daffd7b8-4279-4786-82df-4c2186a92053:704d194ced984b599b3e965294cab66d-iec-ael-research-d2"
+    parent_session_id = (
+        "subagent-subagent:daffd7b8-4279-4786-82df-4c2186a92053:704d194ced984b599b3e965294cab66d-iec-ael-research-d2"
+    )
     trace_id = f"subagent:{parent_session_id}:64a5d1e8e2f94f5cb5f27e4c9e6f1a90"
 
     assert RuntimeTask.__table__.c.parent_session_id.type.length >= len(parent_session_id)

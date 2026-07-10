@@ -63,13 +63,15 @@ async def ingest_audit_events(
 ):
     """Receive a batch of tool/operation audit events from Desktop."""
     for event in body.events:
-        db.add(AuditLog(
-            user_id=current_user.id,
-            agent_id=event.agent_id,
-            tenant_id=current_user.tenant_id,
-            action=f"desktop:{event.action}",
-            details={**event.details, "source": "desktop"},
-        ))
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                agent_id=event.agent_id,
+                tenant_id=current_user.tenant_id,
+                action=f"desktop:{event.action}",
+                details={**event.details, "source": "desktop"},
+            )
+        )
     await db.flush()
     return AuditBatchResponse(accepted=len(body.events))
 
@@ -82,17 +84,19 @@ async def ingest_guard_events(
 ):
     """Receive Guard interception events from Desktop."""
     for event in body.events:
-        db.add(AuditLog(
-            user_id=current_user.id,
-            agent_id=event.agent_id,
-            tenant_id=current_user.tenant_id,
-            action=f"desktop:guard:{event.action}",
-            details={
-                "rule": event.rule,
-                "blocked": event.blocked,
-                **event.details,
-                "source": "desktop",
-            },
-        ))
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                agent_id=event.agent_id,
+                tenant_id=current_user.tenant_id,
+                action=f"desktop:guard:{event.action}",
+                details={
+                    "rule": event.rule,
+                    "blocked": event.blocked,
+                    **event.details,
+                    "source": "desktop",
+                },
+            )
+        )
     await db.flush()
     return AuditBatchResponse(accepted=len(body.events))

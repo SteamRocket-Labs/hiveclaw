@@ -497,7 +497,7 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
             "profile_name": None,
             "has_matcher": False,
             "matcher_spec": None,
-        }
+        },
     ]
     assert turn_abort == [
         {

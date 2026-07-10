@@ -302,9 +302,7 @@ async def test_replay_refuses_to_sweep_unreconciled_external_steps(owner_session
             },
         ],
     }
-    handle = await service.start_run(
-        tenant_id=tenant_id, definition_data=external_def, args={}, leaf_executor=leaf
-    )
+    handle = await service.start_run(tenant_id=tenant_id, definition_data=external_def, args={}, leaf_executor=leaf)
     assert handle.outcome.status == "suspended"
     assert service.gate_decider.approve(str(handle.run_id), "approve") is True
 

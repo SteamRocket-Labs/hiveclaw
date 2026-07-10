@@ -241,7 +241,9 @@ async def save_upload_for_agent(
     else:
         tenant_segment = str(tenant_id) if tenant_id else "no_tenant"
         user_segment = str(user_id) if user_id else "anonymous"
-        uploads_dir = WORKSPACE_ROOT / "local_agents" / tenant_segment / "users" / user_segment / "workspace" / "uploads"
+        uploads_dir = (
+            WORKSPACE_ROOT / "local_agents" / tenant_segment / "users" / user_segment / "workspace" / "uploads"
+        )
         uploads_dir.mkdir(parents=True, exist_ok=True)
         save_path = uploads_dir / safe_filename
         if save_path.exists():
@@ -274,7 +276,9 @@ async def save_upload_for_agent(
                 render_conversion_preview,
             )
 
-            workspace_root = (WORKSPACE_ROOT / str(agent_id)).resolve() if agent_id else uploads_dir.parent.parent.resolve()
+            workspace_root = (
+                (WORKSPACE_ROOT / str(agent_id)).resolve() if agent_id else uploads_dir.parent.parent.resolve()
+            )
             converted = DocumentConversionService().convert(
                 DocumentConversionRequest(
                     source_path=save_path,
@@ -314,10 +318,14 @@ async def save_upload_for_agent(
     if len(extracted) > 6000:
         extracted = extracted[:6000] + "\n\n...[内容已截断，共 " + str(len(extracted)) + " 字]"
 
-    personal_kb_candidate: dict[str, object] = {"skipped": True, "reason": "user_skip"} if skip_personal_kb else {
-        "skipped": True,
-        "reason": "not_requested",
-    }
+    personal_kb_candidate: dict[str, object] = (
+        {"skipped": True, "reason": "user_skip"}
+        if skip_personal_kb
+        else {
+            "skipped": True,
+            "reason": "not_requested",
+        }
+    )
     if personal_kb_enabled and db is not None and tenant_id is not None and owner_user_id is not None:
         origin = f"agent:{agent_id}" if agent_id else f"user:{user_id}"
         try:

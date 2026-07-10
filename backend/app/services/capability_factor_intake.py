@@ -124,7 +124,9 @@ async def create_promotion_proposal(
         tenant_id=tenant_id,
         factor_id=factor_id,
         review_id=review.id,
-        proposed_snapshot_kind=_required_string(data.get("proposed_snapshot_kind"), field_name="proposed_snapshot_kind"),
+        proposed_snapshot_kind=_required_string(
+            data.get("proposed_snapshot_kind"), field_name="proposed_snapshot_kind"
+        ),
         proposed_catalog_scope=_optional_string(data.get("proposed_catalog_scope")) or "workspace",
         proposed_activation_policy=_optional_string(data.get("proposed_activation_policy")) or "requestable",
         proposed_selector_json=_dict_or_empty(data.get("proposed_selector")),

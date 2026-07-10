@@ -256,9 +256,7 @@ async def test_log_activity_sets_tenant_id_and_isolates(owner_sessionmaker, app_
         await log_activity(aid, "chat_reply", "did a thing", detail={"k": "v"})
 
     async with owner_sessionmaker() as db:
-        rows = (
-            await db.execute(select(AgentActivityLog).where(AgentActivityLog.agent_id == aid))
-        ).scalars().all()
+        rows = (await db.execute(select(AgentActivityLog).where(AgentActivityLog.agent_id == aid))).scalars().all()
         assert len(rows) == 1
         assert rows[0].tenant_id == tid
         log_id = rows[0].id

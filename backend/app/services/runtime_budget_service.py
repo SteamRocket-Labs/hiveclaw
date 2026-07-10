@@ -699,7 +699,11 @@ class RuntimeBudgetService:
         async with self._budget_session("reap_expired_runs") as db:
             result = await db.execute(
                 select(RuntimeBudgetRun)
-                .where(RuntimeBudgetRun.status == "active", RuntimeBudgetRun.expires_at.is_not(None), RuntimeBudgetRun.expires_at <= current)
+                .where(
+                    RuntimeBudgetRun.status == "active",
+                    RuntimeBudgetRun.expires_at.is_not(None),
+                    RuntimeBudgetRun.expires_at <= current,
+                )
                 .order_by(RuntimeBudgetRun.expires_at)
                 .limit(limit)
                 .with_for_update(skip_locked=True)
@@ -1273,7 +1277,9 @@ class RuntimeBudgetService:
             return run
 
     async def _lock_run(self, db: AsyncSession, budget_run_id: uuid.UUID) -> RuntimeBudgetRun:
-        result = await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run_id).with_for_update())
+        result = await db.execute(
+            select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run_id).with_for_update()
+        )
         run = result.scalar_one_or_none()
         if run is None:
             raise RuntimeBudgetNotFound("runtime budget run not found", budget_run_id=budget_run_id)

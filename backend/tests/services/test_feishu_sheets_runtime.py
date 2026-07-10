@@ -30,10 +30,16 @@ async def test_feishu_sheet_info_prefers_cli_when_available(monkeypatch: pytest.
             "--format",
             "json",
         ]
-        return 0, json.dumps({
-            "spreadsheet_token": "sht-token",
-            "sheets": [{"sheet_id": "sheet-1", "title": "日报", "row_count": 100, "column_count": 8}],
-        }), ""
+        return (
+            0,
+            json.dumps(
+                {
+                    "spreadsheet_token": "sht-token",
+                    "sheets": [{"sheet_id": "sheet-1", "title": "日报", "row_count": 100, "column_count": 8}],
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(feishu_sheets, "_feishu_cli_available", fake_cli_available)
     monkeypatch.setattr(feishu_sheets, "_run_feishu_cli_command", fake_run_feishu_cli_command)
@@ -65,10 +71,16 @@ async def test_feishu_sheet_read_prefers_cli_when_available(monkeypatch: pytest.
             "--format",
             "json",
         ]
-        return 0, json.dumps({
-            "range": "sheet-1!A1:B2",
-            "values": [["日期", "状态"], ["2026-04-02", "已完成"]],
-        }), ""
+        return (
+            0,
+            json.dumps(
+                {
+                    "range": "sheet-1!A1:B2",
+                    "values": [["日期", "状态"], ["2026-04-02", "已完成"]],
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(feishu_sheets, "_feishu_cli_available", fake_cli_available)
     monkeypatch.setattr(feishu_sheets, "_run_feishu_cli_command", fake_run_feishu_cli_command)

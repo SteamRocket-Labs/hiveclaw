@@ -5,12 +5,7 @@ from pathlib import Path
 
 
 def _load_migration():
-    migration_path = (
-        Path(__file__).resolve().parents[2]
-        / "alembic"
-        / "versions"
-        / "rls_post_0615_gap_closure_0703.py"
-    )
+    migration_path = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "rls_post_0615_gap_closure_0703.py"
     spec = importlib.util.spec_from_file_location("rls_post_0615_gap_closure_0703", migration_path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)

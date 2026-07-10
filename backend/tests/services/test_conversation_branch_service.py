@@ -90,7 +90,9 @@ async def test_edit_branch_creates_new_session_without_mutating_source(monkeypat
 
     async def fake_append_session_event(**kwargs):
         copied.append(kwargs)
-        return SimpleNamespace(event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id"))
+        return SimpleNamespace(
+            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+        )
 
     monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
 
@@ -125,7 +127,9 @@ async def test_fork_branch_copies_prefix_through_anchor(monkeypatch):
     tenant_id = uuid4()
     user_id = uuid4()
     source_session_id = uuid4()
-    user_event = _event(session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="question")
+    user_event = _event(
+        session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="question"
+    )
     assistant_event = _event(
         session_id=source_session_id,
         sequence=20,
@@ -138,7 +142,9 @@ async def test_fork_branch_copies_prefix_through_anchor(monkeypatch):
 
     async def fake_append_session_event(**kwargs):
         copied.append(kwargs)
-        return SimpleNamespace(event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id"))
+        return SimpleNamespace(
+            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+        )
 
     monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
 
@@ -166,7 +172,10 @@ async def test_fork_branch_copies_prefix_through_anchor(monkeypatch):
     )
 
     assert [item["content"] for item in copied] == ["question", "answer"]
-    assert [item["metadata"]["copied_from_event_id"] for item in copied] == [str(user_event.id), str(assistant_event.id)]
+    assert [item["metadata"]["copied_from_event_id"] for item in copied] == [
+        str(user_event.id),
+        str(assistant_event.id),
+    ]
     assert [item["bridge_to_t0"] for item in copied] == [False, False]
     assert [item["metadata"]["projection_only"] for item in copied] == [True, True]
     assert [item["metadata"]["semantic_memory_eligible"] for item in copied] == [False, False]
@@ -185,7 +194,9 @@ async def test_rewind_branch_copies_prefix_before_user_checkpoint(monkeypatch):
     tenant_id = uuid4()
     user_id = uuid4()
     source_session_id = uuid4()
-    first_user = _event(session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="first")
+    first_user = _event(
+        session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="first"
+    )
     assistant_event = _event(
         session_id=source_session_id,
         sequence=20,
@@ -205,7 +216,9 @@ async def test_rewind_branch_copies_prefix_before_user_checkpoint(monkeypatch):
 
     async def fake_append_session_event(**kwargs):
         copied.append(kwargs)
-        return SimpleNamespace(event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id"))
+        return SimpleNamespace(
+            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+        )
 
     monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
 
@@ -247,7 +260,9 @@ async def test_branch_from_user_checkpoint_copies_prefix_before_checkpoint_and_r
     tenant_id = uuid4()
     user_id = uuid4()
     source_session_id = uuid4()
-    first_user = _event(session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="first")
+    first_user = _event(
+        session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="first"
+    )
     assistant_event = _event(
         session_id=source_session_id,
         sequence=20,
@@ -279,7 +294,9 @@ async def test_branch_from_user_checkpoint_copies_prefix_before_checkpoint_and_r
 
     async def fake_append_session_event(**kwargs):
         copied.append(kwargs)
-        return SimpleNamespace(event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id"))
+        return SimpleNamespace(
+            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+        )
 
     monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
 
@@ -324,7 +341,9 @@ async def test_regenerate_branch_runs_from_previous_user_without_appending_dupli
     tenant_id = uuid4()
     user_id = uuid4()
     source_session_id = uuid4()
-    user_event = _event(session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="question")
+    user_event = _event(
+        session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="question"
+    )
     assistant_event = _event(
         session_id=source_session_id,
         sequence=20,
@@ -337,7 +356,9 @@ async def test_regenerate_branch_runs_from_previous_user_without_appending_dupli
 
     async def fake_append_session_event(**kwargs):
         copied.append(kwargs)
-        return SimpleNamespace(event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id"))
+        return SimpleNamespace(
+            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+        )
 
     monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
 
@@ -390,7 +411,9 @@ async def test_side_question_branch_is_durable_unlisted_one_turn_session(monkeyp
     tenant_id = uuid4()
     user_id = uuid4()
     source_session_id = uuid4()
-    user_event = _event(session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="question")
+    user_event = _event(
+        session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="question"
+    )
     assistant_event = _event(
         session_id=source_session_id,
         sequence=20,
@@ -403,7 +426,9 @@ async def test_side_question_branch_is_durable_unlisted_one_turn_session(monkeyp
 
     async def fake_append_session_event(**kwargs):
         copied.append(kwargs)
-        return SimpleNamespace(event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id"))
+        return SimpleNamespace(
+            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+        )
 
     monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
 

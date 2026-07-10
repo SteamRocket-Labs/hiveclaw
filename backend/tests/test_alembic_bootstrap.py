@@ -79,7 +79,9 @@ def test_bootstrap_schema_creates_tables_and_stamps_heads() -> None:
         bootstrap_database_to_head(conn, metadata, ["rev_a", "rev_b"])
 
         tables = set(inspect(conn).get_table_names())
-        versions = [row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version ORDER BY version_num"))]
+        versions = [
+            row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version ORDER BY version_num"))
+        ]
 
     assert "users" in tables
     assert "agents" in tables
@@ -197,9 +199,11 @@ def test_normal_migration_path_prepares_wide_alembic_version_table() -> None:
     class _AssertWideVersionContext(_DummyAlembicContext):
         def run_migrations(self) -> None:
             super().run_migrations()
-            row = self.configured_with["connection"].execute(
-                text("SELECT sql FROM sqlite_master WHERE name = 'alembic_version'")
-            ).one()
+            row = (
+                self.configured_with["connection"]
+                .execute(text("SELECT sql FROM sqlite_master WHERE name = 'alembic_version'"))
+                .one()
+            )
             assert "VARCHAR(255)" in row[0]
 
     context = _AssertWideVersionContext()

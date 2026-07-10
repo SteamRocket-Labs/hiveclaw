@@ -80,11 +80,7 @@ async def apply_all_persisted_hook_runtime_configs() -> int:
     async with async_session() as db:
         async with enter_rls_bypass(db, reason="hook runtime config startup load"):
             rows = (
-                (
-                    await db.execute(
-                        select(SystemSetting).where(SystemSetting.key.like("agent:%:hook_runtime"))
-                    )
-                )
+                (await db.execute(select(SystemSetting).where(SystemSetting.key.like("agent:%:hook_runtime"))))
                 .scalars()
                 .all()
             )

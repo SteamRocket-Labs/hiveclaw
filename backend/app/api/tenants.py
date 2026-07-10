@@ -26,8 +26,10 @@ router = APIRouter(prefix="/tenants", tags=["tenants"])
 
 # ─── Schemas ────────────────────────────────────────────
 
+
 class TenantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+
 
 class TenantOut(BaseModel):
     id: uuid.UUID
@@ -54,6 +56,7 @@ class TenantDeleteOut(BaseModel):
 
 
 # ─── Helpers ────────────────────────────────────────────
+
 
 def _slugify(name: str) -> str:
     """Generate a URL-friendly slug from a company name."""
@@ -96,6 +99,7 @@ async def _platform_admin_bypass_scope(
 
 # ─── Self-Service: Create Company ───────────────────────
 
+
 @router.post("/self-create", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 async def self_create_company(
     data: TenantCreate,
@@ -109,9 +113,8 @@ async def self_create_company(
 
     # Check if self-creation is allowed
     from app.models.system_settings import SystemSetting
-    setting = await db.execute(
-        select(SystemSetting).where(SystemSetting.key == "allow_self_create_company")
-    )
+
+    setting = await db.execute(select(SystemSetting).where(SystemSetting.key == "allow_self_create_company"))
     s = setting.scalar_one_or_none()
     allowed = s.value.get("enabled", True) if s else True
     if not allowed and current_user.role != "platform_admin":
@@ -140,6 +143,7 @@ async def self_create_company(
 
 
 # ─── Self-Service: Join Company via Invite Code ─────────
+
 
 class JoinRequest(BaseModel):
     invitation_code: str = Field(min_length=1, max_length=32)
@@ -173,11 +177,13 @@ async def join_company(
         actor_id=str(current_user.id),
     ) as bypass_db:
         ic_result = await bypass_db.execute(
-            select(InvitationCode).where(
+            select(InvitationCode)
+            .where(
                 InvitationCode.code == normalized_code,
                 InvitationCode.is_active,
                 InvitationCode.tenant_id.is_not(None),
-            ).with_for_update()
+            )
+            .with_for_update()
         )
         code_obj = ic_result.scalar_one_or_none()
         if not code_obj:
@@ -195,7 +201,9 @@ async def join_company(
 
     # Check if this company has an org_admin already
     admin_check = await db.execute(
-        select(sqla_func.count()).select_from(User).where(
+        select(sqla_func.count())
+        .select_from(User)
+        .where(
             User.tenant_id == tenant.id,
             User.role.in_(["org_admin", "platform_admin"]),
         )
@@ -231,19 +239,20 @@ async def join_company(
 
 # ─── Registration Config ───────────────────────────────
 
+
 @router.get("/registration-config")
 async def get_registration_config(db: AsyncSession = Depends(get_db)):
     """Public — returns whether self-creation of companies is allowed."""
     from app.models.system_settings import SystemSetting
-    result = await db.execute(
-        select(SystemSetting).where(SystemSetting.key == "allow_self_create_company")
-    )
+
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == "allow_self_create_company"))
     s = result.scalar_one_or_none()
     allowed = s.value.get("enabled", True) if s else True
     return {"allow_self_create_company": allowed}
 
 
 # ─── Authenticated: List / Get ──────────────────────────
+
 
 @router.get("/", response_model=list[TenantOut])
 async def list_tenants(
@@ -360,10 +369,12 @@ async def delete_tenant(
         fallback_tenant_id: uuid.UUID | None = None
         if current_user.role == "platform_admin":
             fallback_result = await scoped_db.execute(
-                select(Tenant).where(
+                select(Tenant)
+                .where(
                     Tenant.id != tenant_id,
                     Tenant.is_active,
-                ).order_by(Tenant.created_at.asc())
+                )
+                .order_by(Tenant.created_at.asc())
             )
             fallback_tenant = fallback_result.scalar_one_or_none()
             fallback_tenant_id = fallback_tenant.id if fallback_tenant else None

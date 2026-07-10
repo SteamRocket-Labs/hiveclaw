@@ -6,10 +6,7 @@ from pathlib import Path
 
 def _load_migration():
     migration_path = (
-        Path(__file__).resolve().parents[2]
-        / "alembic"
-        / "versions"
-        / "add_unique_system_hr_agent_per_tenant_0501.py"
+        Path(__file__).resolve().parents[2] / "alembic" / "versions" / "add_unique_system_hr_agent_per_tenant_0501.py"
     )
     spec = importlib.util.spec_from_file_location("add_unique_system_hr_agent_per_tenant_0501", migration_path)
     assert spec is not None

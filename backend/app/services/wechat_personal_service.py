@@ -40,6 +40,7 @@ SYNC_BUF_TTL = 604800  # 7 days
 
 # ── Encryption helpers ───────────────────────────────────
 
+
 def _encrypt(value: str | None) -> str | None:
     if not value:
         return None
@@ -62,8 +63,10 @@ def _decrypt(value: str | None) -> str | None:
 
 # ── QR Login Session ─────────────────────────────────────
 
+
 async def _get_redis():
     from app.core.events import get_redis
+
     return await get_redis()
 
 
@@ -101,6 +104,7 @@ async def _delete_qr_session(session_key: str) -> None:
 
 # ── Context Token Cache ──────────────────────────────────
 
+
 async def store_context_token(agent_id: uuid.UUID, user_id: str, token: str) -> None:
     """Cache the latest context_token for an agent+user pair (needed for replies)."""
     key = f"{_CONTEXT_TOKEN_PREFIX}{agent_id}:{user_id}"
@@ -123,6 +127,7 @@ async def get_context_token(agent_id: uuid.UUID, user_id: str) -> str | None:
 
 
 # ── Sync Buffer Persistence ──────────────────────────────
+
 
 async def store_sync_buf(agent_id: uuid.UUID, buf: str) -> None:
     """Persist the getupdates sync buffer for message continuity across restarts."""
@@ -147,6 +152,7 @@ async def get_sync_buf(agent_id: uuid.UUID) -> str:
 
 # ── Typing Ticket Cache ──────────────────────────────────
 
+
 async def store_typing_ticket(agent_id: uuid.UUID, user_id: str, ticket: str) -> None:
     key = f"{_TYPING_TICKET_PREFIX}{agent_id}:{user_id}"
     try:
@@ -168,6 +174,7 @@ async def get_typing_ticket(agent_id: uuid.UUID, user_id: str) -> str | None:
 
 # ── Public API ───────────────────────────────────────────
 
+
 async def start_qr_login(agent_id: uuid.UUID) -> dict:
     """Initiate a new QR login session for personal WeChat.
 
@@ -186,13 +193,16 @@ async def start_qr_login(agent_id: uuid.UUID) -> dict:
             "message": f"获取微信二维码失败: {e}",
         }
 
-    await _store_qr_session(session_key, {
-        "qrcode": qr.qrcode,
-        "qr_image_url": qr.qrcode_img_url,
-        "agent_id": str(agent_id),
-        "started_at": time.time(),
-        "refresh_count": 1,
-    })
+    await _store_qr_session(
+        session_key,
+        {
+            "qrcode": qr.qrcode,
+            "qr_image_url": qr.qrcode_img_url,
+            "agent_id": str(agent_id),
+            "started_at": time.time(),
+            "refresh_count": 1,
+        },
+    )
 
     logger.info(f"[WeChatPersonal] QR login started for agent {agent_id}, session={session_key[:8]}...")
     return {
@@ -251,18 +261,18 @@ async def wait_qr_login(agent_id: uuid.UUID, session_key: str) -> dict:
             return {"connected": False, "message": "登录失败：服务器未返回 bot ID"}
 
         # Store credentials server-side — bot_token NEVER sent to frontend
-        await _store_qr_session(session_key, {
-            **session,
-            "confirmed": True,
-            "bot_token": result.bot_token,
-            "account_id": result.ilink_bot_id,
-            "ilink_base_url": result.base_url,
-            "ilink_user_id": result.ilink_user_id,
-        })
-        logger.info(
-            f"[WeChatPersonal] QR confirmed for agent {agent_id}, "
-            f"bot_id={result.ilink_bot_id}"
+        await _store_qr_session(
+            session_key,
+            {
+                **session,
+                "confirmed": True,
+                "bot_token": result.bot_token,
+                "account_id": result.ilink_bot_id,
+                "ilink_base_url": result.base_url,
+                "ilink_user_id": result.ilink_user_id,
+            },
         )
+        logger.info(f"[WeChatPersonal] QR confirmed for agent {agent_id}, bot_id={result.ilink_bot_id}")
         return {
             "connected": True,
             "session_key": session_key,

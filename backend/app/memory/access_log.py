@@ -39,6 +39,4 @@ def bump_access(
     """
 
     del file_relpath  # join key is entry_id; prose path no longer touched
-    return bump_access_telemetry(
-        data_root, agent_id, entry_id=entry_id, now=now, create_if_missing=create_if_missing
-    )
+    return bump_access_telemetry(data_root, agent_id, entry_id=entry_id, now=now, create_if_missing=create_if_missing)

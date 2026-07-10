@@ -81,4 +81,3 @@ async def test_delegation_handoff_starts_async_delegation_with_confirmed_plan(mo
     assert captured["policy"].tool_profile == "research_readonly"
     assert captured["max_tool_rounds"] == 16
     assert captured["conversation_messages"][0]["content"].startswith("[Plan Mode confirmed delegation]")
-

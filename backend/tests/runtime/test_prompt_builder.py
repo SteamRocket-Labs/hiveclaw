@@ -181,9 +181,10 @@ def test_dynamic_suffix_records_context_candidate_selection_ledger():
     assert decisions["dynamic:knowledge:retrieval_context"]["decision"].startswith("selected")
     assert decisions["dynamic:skill:skill_catalog"]["budget_key"] == "skill_catalog_budget_chars"
     assert decisions["dynamic:skill:skill_catalog"]["candidate_ref"]["candidate_id"].startswith("skill:skill_catalog:")
-    assert decisions["dynamic:memory:memory_snapshot"]["render_order"] < decisions["dynamic:skill:skill_catalog"][
-        "render_order"
-    ]
+    assert (
+        decisions["dynamic:memory:memory_snapshot"]["render_order"]
+        < decisions["dynamic:skill:skill_catalog"]["render_order"]
+    )
 
 
 def test_dynamic_suffix_has_no_activation_hints_surface() -> None:
@@ -221,9 +222,7 @@ def test_dynamic_suffix_renders_effective_permissions_context():
 
     suffix = build_dynamic_prompt_suffix(
         permissions_context=(
-            "# Effective Runtime Permissions\n"
-            "approval_policy: on_request\n"
-            "network_access: restricted\n"
+            "# Effective Runtime Permissions\napproval_policy: on_request\nnetwork_access: restricted\n"
         )
     )
 
@@ -774,7 +773,7 @@ class TestFrozenBudgetInversionFix:
         agent_context = f"## Identity & Mission\n\n{identity_text}\n\n{context_material}"
 
         # System / Tasks / Tools are reasonably sized (should survive after Context Material stripped)
-        system_body = "## System\n\n" + ("system rule " * 400)   # ~4800 chars
+        system_body = "## System\n\n" + ("system rule " * 400)  # ~4800 chars
         tasks_body = "## Doing Tasks\n\n" + ("task instruction " * 400)  # ~6800 chars
         tools_body = "## Using Your Tools\n\n" + ("tool guidance " * 400)  # ~6400 chars
 
@@ -881,11 +880,11 @@ class TestFrozenBudgetInversionFix:
         # The new code must emit _IDENTITY_OVERRUN_MARKER (or equivalent) when Tier4 fires.
         _GENERIC_TRIM_NOTICE = "frozen prefix trimmed to stay under cache budget"
         assert _GENERIC_TRIM_NOTICE not in result or (
-            "soul" in result.lower() or "identity overrun" in result.lower()
-            or "[identity" in result.lower() or "tier4" in result.lower()
-        ), (
-            "Tier4 must produce a distinct marker beyond the generic tail-trim notice"
-        )
+            "soul" in result.lower()
+            or "identity overrun" in result.lower()
+            or "[identity" in result.lower()
+            or "tier4" in result.lower()
+        ), "Tier4 must produce a distinct marker beyond the generic tail-trim notice"
         # The key requirement: a soul/identity-specific loud marker exists in the output
         has_loud_identity_marker = (
             "identity overrun" in result.lower()

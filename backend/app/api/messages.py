@@ -103,14 +103,16 @@ async def get_inbox(
                 p_r = await db.execute(select(Participant.display_name).where(Participant.id == msg.participant_id))
                 sender_name = p_r.scalar_one_or_none() or "未知"
 
-            result_list.append({
-                "id": str(msg.id),
-                "sender_type": "agent",
-                "sender_name": sender_name,
-                "content": msg.content,
-                "session_title": sess.title,
-                "created_at": msg.created_at.isoformat() if msg.created_at else None,
-            })
+            result_list.append(
+                {
+                    "id": str(msg.id),
+                    "sender_type": "agent",
+                    "sender_name": sender_name,
+                    "content": msg.content,
+                    "session_title": sess.title,
+                    "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                }
+            )
 
     # Sort by created_at desc and limit
     result_list.sort(key=lambda x: x["created_at"] or "", reverse=True)

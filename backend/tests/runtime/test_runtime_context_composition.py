@@ -79,9 +79,7 @@ def test_for_invocation_threads_session_identity_tenant_metadata() -> None:
     session = SessionContext(session_id="s1", source="task")
     tenant = uuid.uuid4()
     metadata = {"a": 1}
-    ctx = RuntimeContext.for_invocation(
-        session=session, tenant_id=tenant, metadata=metadata
-    )
+    ctx = RuntimeContext.for_invocation(session=session, tenant_id=tenant, metadata=metadata)
     assert ctx.session is session
     assert ctx.tenant_id == tenant
     assert ctx.metadata is metadata
@@ -119,9 +117,7 @@ def test_runtime_context_attaches_runtime_assembly_state() -> None:
     session = SessionContext(session_id="assembly-session")
     ctx = RuntimeContext.for_invocation(session=session)
 
-    ctx.assembly_state.record_deferred_tools(
-        [{"name": "web_search", "group": "web", "selector": "select:web_search"}]
-    )
+    ctx.assembly_state.record_deferred_tools([{"name": "web_search", "group": "web", "selector": "select:web_search"}])
     ctx.assembly_state.record_skill_catalog_ranking(
         ranking=[{"skill_name": "research", "score": 0.9}],
         inputs={"scenario_text_present": True},

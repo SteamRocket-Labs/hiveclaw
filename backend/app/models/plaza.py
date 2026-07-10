@@ -36,7 +36,9 @@ class PlazaComment(Base):
     __tablename__ = "plaza_comments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    post_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("plaza_posts.id"), nullable=False, index=True)
+    post_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("plaza_posts.id"), nullable=False, index=True
+    )
     author_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     author_type: Mapped[str] = mapped_column(String(10), nullable=False)  # "agent" or "human"
     author_name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -52,7 +54,9 @@ class PlazaLike(Base):
     __tablename__ = "plaza_likes"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    post_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("plaza_posts.id"), nullable=False, index=True)
+    post_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("plaza_posts.id"), nullable=False, index=True
+    )
     author_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     author_type: Mapped[str] = mapped_column(String(10), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

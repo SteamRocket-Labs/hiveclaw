@@ -75,7 +75,9 @@ def test_channel_runtime_chat_message_writes_must_carry_tenant_id() -> None:
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            called_name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+            called_name = (
+                func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+            )
             if called_name != "ChatMessage":
                 continue
             if not any(kw.arg == "tenant_id" for kw in node.keywords):

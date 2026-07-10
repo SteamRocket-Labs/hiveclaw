@@ -21,12 +21,8 @@ def _patch_tenant_scoped_session(monkeypatch, session_supplier, *, tenant_id=Non
     async def _fake_resolve_tenant_for_agent(*_a, **_k):
         return resolved_tenant
 
-    monkeypatch.setattr(
-        "app.services.activity_logger.tenant_scoped_session", _fake_tenant_scoped_session
-    )
-    monkeypatch.setattr(
-        "app.services.activity_logger.resolve_tenant_for_agent", _fake_resolve_tenant_for_agent
-    )
+    monkeypatch.setattr("app.services.activity_logger.tenant_scoped_session", _fake_tenant_scoped_session)
+    monkeypatch.setattr("app.services.activity_logger.resolve_tenant_for_agent", _fake_resolve_tenant_for_agent)
     return resolved_tenant
 
 

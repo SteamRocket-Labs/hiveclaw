@@ -142,9 +142,7 @@ def test_rebuild_drops_legacy_activation_keys_table(tmp_path: Path) -> None:
 
     assert not hasattr(report, "activation_key_rows")
     with sqlite3.connect(legacy_db) as conn:
-        tables = {
-            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert "activation_keys" not in tables
 
 
@@ -282,9 +280,7 @@ def test_failure_and_rework_axes_with_created_at(tmp_path: Path) -> None:
     assert (ref, "failure_mode_avoided", "fm-stall") in rows
     assert (ref, "rework", "true") in rows
     with sqlite3.connect(index_db_path(tmp_path, agent_id)) as conn:
-        created = conn.execute(
-            "SELECT DISTINCT created_at FROM t2_label_axes WHERE package_ref = ?", (ref,)
-        ).fetchall()
+        created = conn.execute("SELECT DISTINCT created_at FROM t2_label_axes WHERE package_ref = ?", (ref,)).fetchall()
     assert created and created[0][0]
 
 

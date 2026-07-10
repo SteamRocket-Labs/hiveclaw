@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.services.llm_client import LLMMessage, OpenAICompatibleClient, OpenAIResponsesClient, create_llm_client, get_provider_manifest
+from app.services.llm_client import (
+    LLMMessage,
+    OpenAICompatibleClient,
+    OpenAIResponsesClient,
+    create_llm_client,
+    get_provider_manifest,
+)
 from app.services.llm_reasoning import build_reasoning_kwargs
 
 

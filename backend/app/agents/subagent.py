@@ -78,6 +78,7 @@ def canonical_subagent_type(type_: object, *, default: str = "") -> str:
         return default
     return _LEGACY_SUBAGENT_TYPE_ALIASES.get(value, value)
 
+
 # Explorer preset: read-only reconnaissance, parallel-friendly. Union of the
 # Worker web tools and review_readonly file/memory tools.
 _EXPLORER_ALLOWED_TOOLS: tuple[str, ...] = (
@@ -436,8 +437,12 @@ def subagent_spec_from_snapshot(value: Any) -> SubagentSpec | None:
         excluded_tools=_snapshot_string_tuple(value.get("excluded_tools")),
         model=str(value["model"]).strip() if value.get("model") is not None else None,
         max_tool_rounds=value.get("max_tool_rounds") if isinstance(value.get("max_tool_rounds"), int) else None,
-        isolation=str(value.get("isolation") or "none") if str(value.get("isolation") or "") in {"none", "all", "worktree"} else "none",  # type: ignore[arg-type]
-        memory_scope=str(value.get("memory_scope")) if value.get("memory_scope") in {"user", "project", "local"} else None,  # type: ignore[arg-type]
+        isolation=str(value.get("isolation") or "none")
+        if str(value.get("isolation") or "") in {"none", "all", "worktree"}
+        else "none",  # type: ignore[arg-type]
+        memory_scope=str(value.get("memory_scope"))
+        if value.get("memory_scope") in {"user", "project", "local"}
+        else None,  # type: ignore[arg-type]
         has_own_memory=bool(value.get("has_own_memory", True)),
         parent_knowledge="none" if value.get("parent_knowledge") == "none" else "readonly",
         soul=bool(value.get("soul", False)),
@@ -744,7 +749,9 @@ def _subagent_worktree_path(ctx: SubagentSpawnContext, spec: SubagentSpec, child
 
 def _copy_worktree_entry(source: Path, target: Path) -> None:
     if source.is_dir():
-        shutil.copytree(source, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+        shutil.copytree(
+            source, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache")
+        )
     elif source.is_file():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)

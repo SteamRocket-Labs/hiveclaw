@@ -48,7 +48,9 @@ class SkillGuardReport:
         }
 
 
-_REMOTE_SHELL_PIPE_RE = re.compile(r"\b(?:curl|wget)\b[^\n|;&]*\|\s*(?:sudo\s+)?(?:bash|sh|zsh|python3?|ruby|perl)\b", re.I)
+_REMOTE_SHELL_PIPE_RE = re.compile(
+    r"\b(?:curl|wget)\b[^\n|;&]*\|\s*(?:sudo\s+)?(?:bash|sh|zsh|python3?|ruby|perl)\b", re.I
+)
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"\b(?:AWS_SECRET_ACCESS_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN|SLACK_BOT_TOKEN|"

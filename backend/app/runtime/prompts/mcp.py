@@ -33,8 +33,7 @@ MCP_LIST_RESOURCES_DESCRIPTION = (
 )
 
 MCP_READ_RESOURCE_DESCRIPTION = (
-    "Read one MCP server resource by URI via resources/read. Large binary blobs spill "
-    "to workspace artifacts."
+    "Read one MCP server resource by URI via resources/read. Large binary blobs spill to workspace artifacts."
 )
 
 MCP_LIST_PROMPTS_DESCRIPTION = (

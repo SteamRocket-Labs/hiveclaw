@@ -294,9 +294,7 @@ def _goal_terms_from_objective(objective: str) -> list[str]:
     import re as _re
 
     terms = {
-        term
-        for term in _re.split(r"\W+", objective.lower())
-        if len(term) >= 3 and term not in _GOAL_TERM_STOPWORDS
+        term for term in _re.split(r"\W+", objective.lower()) if len(term) >= 3 and term not in _GOAL_TERM_STOPWORDS
     }
     return sorted(terms)
 
@@ -597,12 +595,12 @@ async def maybe_compress_messages(
         else None
     )
     if summary_model and tenant_id is not None and _summary_breaker_is_open(tenant_id):
-            logger.warning(
-                "[Memory] LLM summary breaker open for tenant %s — skipping semantic compaction summary",
-                tenant_id,
-                extra={"metric": "compaction_llm_breaker_open", "tenant_id": str(tenant_id)},
-            )
-            summary_model = None
+        logger.warning(
+            "[Memory] LLM summary breaker open for tenant %s — skipping semantic compaction summary",
+            tenant_id,
+            extra={"metric": "compaction_llm_breaker_open", "tenant_id": str(tenant_id)},
+        )
+        summary_model = None
     if summary_model:
         try:
             import app.services.conversation_summarizer as _summarizer

@@ -76,14 +76,10 @@ class Department(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
-    parent: Mapped["Department | None"] = relationship(
-        "Department", remote_side=[id], back_populates="children"
-    )
+    parent: Mapped["Department | None"] = relationship("Department", remote_side=[id], back_populates="children")
     children: Mapped[list["Department"]] = relationship("Department", back_populates="parent")
     manager: Mapped["User | None"] = relationship("User", foreign_keys=[manager_id])
-    members: Mapped[list["User"]] = relationship(
-        "User", back_populates="department", foreign_keys="User.department_id"
-    )
+    members: Mapped[list["User"]] = relationship("User", back_populates="department", foreign_keys="User.department_id")
 
 
 # Forward reference for Agent used in User relationship

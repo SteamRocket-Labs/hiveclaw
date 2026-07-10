@@ -137,9 +137,7 @@ class TestUpdateIndexMd:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             _update_index_md(agent_id)
 
-        index = (tmp_agent_dir / str(agent_id) / "memory" / "indexes" / "wiki_map.md").read_text(
-            encoding="utf-8"
-        )
+        index = (tmp_agent_dir / str(agent_id) / "memory" / "indexes" / "wiki_map.md").read_text(encoding="utf-8")
         assert "Memory Wiki Map" in index
 
 

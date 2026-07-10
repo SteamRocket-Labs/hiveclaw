@@ -314,13 +314,16 @@ def test_team_memory_store_exposes_sync_token_and_rotates_it_on_update_and_delet
         updated_by="user-2",
         sync_token=created.sync_token,
     )
-    assert store.delete_entry(
-        "tenant-1",
-        "workspace-alpha",
-        "deploy-playbook",
-        updated_by="user-3",
-        sync_token=updated.sync_token,
-    ) is True
+    assert (
+        store.delete_entry(
+            "tenant-1",
+            "workspace-alpha",
+            "deploy-playbook",
+            updated_by="user-3",
+            sync_token=updated.sync_token,
+        )
+        is True
+    )
 
     deleted = store.get_entry("tenant-1", "workspace-alpha", "deploy-playbook", include_deleted=True)
 

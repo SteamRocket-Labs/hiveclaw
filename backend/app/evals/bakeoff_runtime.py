@@ -201,7 +201,9 @@ def _scenario_workspace(base_dir: Path, scenario_name: str) -> ScenarioWorkspace
                 "calculator.py": "def add(a, b):\n    return a - b\n",
             },
         )
-        return ScenarioWorkspace(scenario_name, workspace_dir, common_prompt, "coding task readiness and required tool surface")
+        return ScenarioWorkspace(
+            scenario_name, workspace_dir, common_prompt, "coding task readiness and required tool surface"
+        )
     if scenario_name == "review":
         _write_files(
             workspace_dir,
@@ -291,7 +293,9 @@ def _safe_read(path: Path) -> str:
         return ""
 
 
-def _score_runtime_scenario(scenario: ScenarioWorkspace, payload: dict[str, Any], run_result: ProcessRunResult) -> dict[str, Any]:
+def _score_runtime_scenario(
+    scenario: ScenarioWorkspace, payload: dict[str, Any], run_result: ProcessRunResult
+) -> dict[str, Any]:
     workspace_dir = scenario.workspace_dir
     score = 0
     breakdown: dict[str, Any] = {
@@ -335,7 +339,9 @@ def _score_runtime_scenario(scenario: ScenarioWorkspace, payload: dict[str, Any]
         content = _safe_read(workspace_dir / "self_evolution.md").lower()
         score += 40 if content else 0
         score += 30 if "skill" in content else 0
-        score += 30 if "repeat" in content or "repeated" in content or "promote" in content or "update" in content else 0
+        score += (
+            30 if "repeat" in content or "repeated" in content or "promote" in content or "update" in content else 0
+        )
     elif scenario.name == "long_context_after_compaction":
         answer = (_safe_read(workspace_dir / "long_context_answer.md") or str(payload.get("answer", ""))).lower()
         score += 100 if "delta-saffron-42" in answer else 0
@@ -349,7 +355,9 @@ def _score_runtime_scenario(scenario: ScenarioWorkspace, payload: dict[str, Any]
     }
 
 
-def _score_timeout_runtime_scenario(target: str, scenario: ScenarioWorkspace, result: ProcessRunResult) -> dict[str, Any]:
+def _score_timeout_runtime_scenario(
+    target: str, scenario: ScenarioWorkspace, result: ProcessRunResult
+) -> dict[str, Any]:
     try:
         payload = extract_runtime_payload(target, _ensure_text(result.stdout))
     except ValueError:
@@ -386,7 +394,9 @@ def _failed_runtime_scenario(scenario: ScenarioWorkspace, result: ProcessRunResu
     }
 
 
-def _write_runtime_artifacts(output_dir: Path, scenario: ScenarioWorkspace, prompt: str, result: ProcessRunResult) -> None:
+def _write_runtime_artifacts(
+    output_dir: Path, scenario: ScenarioWorkspace, prompt: str, result: ProcessRunResult
+) -> None:
     runtime_dir = output_dir / "runtime" / scenario.name
     runtime_dir.mkdir(parents=True, exist_ok=True)
     (runtime_dir / "prompt.txt").write_text(prompt, encoding="utf-8")

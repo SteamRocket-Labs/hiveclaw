@@ -125,11 +125,14 @@ async def test_completed_run_replay_does_not_emit_completion_side_effects_twice(
     )
     assert handle.outcome.status == "completed"
     assert len(delivered) == 1
-    assert len(
-        coordination_runtime.consume_signals(
-            str(agent_id), thread_id=str(handle.run_id), signal_type="workflow_completed"
+    assert (
+        len(
+            coordination_runtime.consume_signals(
+                str(agent_id), thread_id=str(handle.run_id), signal_type="workflow_completed"
+            )
         )
-    ) == 1
+        == 1
+    )
 
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
         task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()

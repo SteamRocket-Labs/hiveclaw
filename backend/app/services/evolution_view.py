@@ -37,9 +37,7 @@ from app.services.skill_curator import (
 _STATE_RANK = {STATE_ACTIVE: 0, STATE_STALE: 1, STATE_ARCHIVED: 2}
 
 # ``- 2026-05-20T09:05:00+00:00 [promote] weekly-report: note text``
-_REVIEW_LINE = re.compile(
-    r"^-\s+(?P<at>\S+)\s+\[(?P<status>[^\]]+)\]\s+(?P<skill>[^:]+?)\s*:\s*(?P<note>.*)$"
-)
+_REVIEW_LINE = re.compile(r"^-\s+(?P<at>\S+)\s+\[(?P<status>[^\]]+)\]\s+(?P<skill>[^:]+?)\s*:\s*(?P<note>.*)$")
 
 # Ledger ``event`` value → public timeline ``kind``.
 _LEDGER_EVENT_KINDS = {
@@ -232,8 +230,7 @@ def render_skill_evolution_digest(workspace: Path, *, max_skills: int = 8) -> st
     if stale:
         names = ", ".join(s["slug"] for s in stale)
         lines.append(
-            f"Idle and nearing auto-archival: {names}. "
-            "Reuse them if still useful, or call `pin_skill` to keep them."
+            f"Idle and nearing auto-archival: {names}. Reuse them if still useful, or call `pin_skill` to keep them."
         )
 
     return "\n".join(lines)

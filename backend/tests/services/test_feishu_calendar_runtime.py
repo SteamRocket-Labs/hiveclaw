@@ -12,7 +12,14 @@ class _FakeResponse:
 
 
 class _FakeAsyncClient:
-    def __init__(self, *, get_payloads: list[dict] | None = None, post_payloads: list[dict] | None = None, patch_payloads: list[dict] | None = None, delete_payloads: list[dict] | None = None):
+    def __init__(
+        self,
+        *,
+        get_payloads: list[dict] | None = None,
+        post_payloads: list[dict] | None = None,
+        patch_payloads: list[dict] | None = None,
+        delete_payloads: list[dict] | None = None,
+    ):
         self.get_payloads = list(get_payloads or [])
         self.post_payloads = list(post_payloads or [])
         self.patch_payloads = list(patch_payloads or [])
@@ -46,7 +53,9 @@ class _FakeAsyncClient:
 
 
 @pytest.mark.asyncio
-async def test_feishu_calendar_list_respects_max_results_and_labels_agent_events(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_feishu_calendar_list_respects_max_results_and_labels_agent_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.services.agent_tool_domains import feishu_calendar
 
     async def fake_get_feishu_token(_agent_id):

@@ -1959,9 +1959,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
             "diff": str(memory_dream.workspace_result.diff_path)
             if memory_dream.workspace_result.diff_path.exists()
             else "",
-            "selected_t2_packages": [
-                str(path) for path in memory_dream.workspace_result.selected_package_dirs
-            ],
+            "selected_t2_packages": [str(path) for path in memory_dream.workspace_result.selected_package_dirs],
             "t3_batch_job_id": memory_dream.t3_batch_result.job_id if memory_dream.t3_batch_result else "",
             "issues": list(memory_dream.issues),
         }

@@ -13,7 +13,9 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from app.services.external_capabilities.skill_source_adapter import stage_external_skill_package_review_for_agent_workspace
+from app.services.external_capabilities.skill_source_adapter import (
+    stage_external_skill_package_review_for_agent_workspace,
+)
 
 
 @dataclass(frozen=True, slots=True)

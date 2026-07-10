@@ -136,9 +136,7 @@ async def test_request_plan_mode_rejected_when_already_in_plan_mode(tmp_path: Pa
 
     token = set_interactive_plan_mode({"active": True, "original_request": "x"})
     try:
-        result = json.loads(
-            await request_plan_mode(_request(tmp_path, {"reason": "plan this work"}))
-        )
+        result = json.loads(await request_plan_mode(_request(tmp_path, {"reason": "plan this work"})))
     finally:
         reset_interactive_plan_mode(token)
 

@@ -246,7 +246,7 @@ def _read_legacy_flat_t3_files(data_root: Path | str, agent_id: uuid.UUID | str)
 
 def _legacy_migration_required_document(*, source: str, content: str) -> str:
     return (
-        "<migration_required source=\"legacy_flat_t3\">\n"
+        '<migration_required source="legacy_flat_t3">\n'
         f"The legacy flat-T3 corpus at {source} has not been migrated to the two-plane layout. "
         "Use this content only as compatibility evidence and schedule "
         "`python -m app.scripts.migrate_memory_two_planes --apply --confirm` before treating it as normal T3.\n"

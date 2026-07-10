@@ -34,49 +34,63 @@ class TestNormalizeIdentity:
 
 class TestExtractRecipientInfo:
     def test_feishu_with_user_id(self) -> None:
-        result = extract_recipient_info("send_feishu_message", {
-            "member_name": "王天怡",
-            "user_id": "u_abc",
-            "open_id": "ou_xyz",
-            "message": "hello",
-        })
+        result = extract_recipient_info(
+            "send_feishu_message",
+            {
+                "member_name": "王天怡",
+                "user_id": "u_abc",
+                "open_id": "ou_xyz",
+                "message": "hello",
+            },
+        )
         assert result is not None
         assert result["channel"] == "feishu"
         assert result["name"] == "王天怡"
         assert result["identity"] == "feishu:u_abc"
 
     def test_feishu_fallback_to_open_id(self) -> None:
-        result = extract_recipient_info("send_feishu_message", {
-            "member_name": "天怡",
-            "open_id": "ou_xyz",
-            "message": "hi",
-        })
+        result = extract_recipient_info(
+            "send_feishu_message",
+            {
+                "member_name": "天怡",
+                "open_id": "ou_xyz",
+                "message": "hi",
+            },
+        )
         assert result is not None
         assert result["identity"] == "feishu:ou_xyz"
 
     def test_feishu_fallback_to_name(self) -> None:
-        result = extract_recipient_info("send_feishu_message", {
-            "member_name": "王天怡",
-            "message": "hi",
-        })
+        result = extract_recipient_info(
+            "send_feishu_message",
+            {
+                "member_name": "王天怡",
+                "message": "hi",
+            },
+        )
         assert result is not None
         assert result["identity"] == "feishu:王天怡"
 
     def test_web(self) -> None:
-        result = extract_recipient_info("send_web_message", {
-            "username": "simon",
-            "message": "hello",
-        })
+        result = extract_recipient_info(
+            "send_web_message",
+            {
+                "username": "simon",
+                "message": "hello",
+            },
+        )
         assert result is not None
         assert result["channel"] == "web"
         assert result["identity"] == "web:simon"
 
     def test_send_channel_message_uses_current_delivery_target(self) -> None:
-        token = channel_delivery_target.set({
-            "channel": "telegram",
-            "chat_id": 123456,
-            "sender_id": 789,
-        })
+        token = channel_delivery_target.set(
+            {
+                "channel": "telegram",
+                "chat_id": 123456,
+                "sender_id": 789,
+            }
+        )
         try:
             result = extract_recipient_info("send_channel_message", {"message": "hello"})
         finally:
@@ -87,11 +101,13 @@ class TestExtractRecipientInfo:
         assert result["identity"] == "telegram:123456:789"
 
     def test_send_channel_message_supports_wecom_delivery_target(self) -> None:
-        token = channel_delivery_target.set({
-            "channel": "wecom",
-            "user_id": "zhangsan",
-            "user_label": "张三",
-        })
+        token = channel_delivery_target.set(
+            {
+                "channel": "wecom",
+                "user_id": "zhangsan",
+                "user_label": "张三",
+            }
+        )
         try:
             result = extract_recipient_info("send_channel_message", {"message": "hello"})
         finally:
@@ -265,10 +281,12 @@ class TestFormatPendingReplyContext:
         assert "不要重复询问" in result
 
     def test_multiple_pending(self) -> None:
-        result = format_pending_reply_context([
-            self._make_pending(originator_name="Alice"),
-            self._make_pending(originator_name="Bob"),
-        ])
+        result = format_pending_reply_context(
+            [
+                self._make_pending(originator_name="Alice"),
+                self._make_pending(originator_name="Bob"),
+            ]
+        )
         assert "任务 1" in result
         assert "任务 2" in result
         assert "Alice" in result

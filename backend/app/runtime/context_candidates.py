@@ -103,10 +103,14 @@ def build_metadata_activation_keys(
 ) -> dict[str, Any]:
     safe_key_features = _json_safe_payload(dict(key_features or {}))
     safe_value_pointer = _json_safe_payload(dict(value_pointer or {}))
-    ref_payload = payload if payload is not None else {
-        "key_features": safe_key_features,
-        "value_pointer": safe_value_pointer,
-    }
+    ref_payload = (
+        payload
+        if payload is not None
+        else {
+            "key_features": safe_key_features,
+            "value_pointer": safe_value_pointer,
+        }
+    )
     candidate_ref = build_context_candidate_ref(
         kind=ref_kind or candidate_kind,
         item_id=item_id,

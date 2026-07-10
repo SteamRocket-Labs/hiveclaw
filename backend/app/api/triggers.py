@@ -155,16 +155,11 @@ async def list_agent_triggers(
     include_diagnostics = diagnostics is True
     await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
-        select(AgentTrigger)
-        .where(AgentTrigger.agent_id == agent_id)
-        .order_by(AgentTrigger.created_at.desc())
+        select(AgentTrigger).where(AgentTrigger.agent_id == agent_id).order_by(AgentTrigger.created_at.desc())
     )
     triggers = result.scalars().all()
 
-    return [
-        _trigger_response(t, diagnostics=include_diagnostics)
-        for t in triggers
-    ]
+    return [_trigger_response(t, diagnostics=include_diagnostics) for t in triggers]
 
 
 @router.post("/{agent_id}/triggers", response_model=TriggerResponse, status_code=status.HTTP_201_CREATED)

@@ -40,9 +40,7 @@ def test_runtime_phase_enum_matches_design_contract():
 
 
 def test_terminal_phases_are_exactly_done_failed_cancelled():
-    assert TERMINAL_PHASES == frozenset(
-        {RuntimePhase.DONE, RuntimePhase.FAILED, RuntimePhase.CANCELLED}
-    )
+    assert TERMINAL_PHASES == frozenset({RuntimePhase.DONE, RuntimePhase.FAILED, RuntimePhase.CANCELLED})
 
 
 def test_build_phase_event_shape():
@@ -104,14 +102,8 @@ async def test_emitter_same_phase_with_new_detail_rebroadcasts():
     emitter = RunPhaseEmitter(collector, run_id="run-1")
 
     await emitter.transition(RuntimePhase.TOOL_RUNNING, detail={"tool_name": "write_file"})
-    assert (
-        await emitter.transition(RuntimePhase.TOOL_RUNNING, detail={"tool_name": "write_file"})
-        is False
-    )
-    assert (
-        await emitter.transition(RuntimePhase.TOOL_RUNNING, detail={"tool_name": "read_file"})
-        is True
-    )
+    assert await emitter.transition(RuntimePhase.TOOL_RUNNING, detail={"tool_name": "write_file"}) is False
+    assert await emitter.transition(RuntimePhase.TOOL_RUNNING, detail={"tool_name": "read_file"}) is True
     assert [event["detail"]["tool_name"] for event in collector.events] == [
         "write_file",
         "read_file",

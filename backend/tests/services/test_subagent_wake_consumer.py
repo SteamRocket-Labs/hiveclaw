@@ -338,7 +338,9 @@ async def test_subagent_completion_wake_trips_child_reconciliation_breaker(owner
     )
 
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
-        stored_run = (await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))).scalar_one()
+        stored_run = (
+            await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))
+        ).scalar_one()
 
     assert len(result) == 1
     assert result[0].signal_id == signal_id

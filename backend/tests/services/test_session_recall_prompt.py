@@ -13,12 +13,7 @@ from pathlib import Path
 
 import pytest
 
-_SOURCE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "app"
-    / "services"
-    / "session_recall.py"
-)
+_SOURCE_PATH = Path(__file__).resolve().parents[2] / "app" / "services" / "session_recall.py"
 
 
 def _extract_prompt_literal() -> str:
@@ -38,7 +33,7 @@ def _extract_prompt_literal() -> str:
         elif text[i] == ")":
             depth -= 1
         i += 1
-    return text[start:i - 1]
+    return text[start : i - 1]
 
 
 @pytest.fixture(scope="module")
@@ -122,8 +117,8 @@ class TestFormatBindings:
         # survive the rewrite (or the prompt breaks at runtime).
         source = _SOURCE_PATH.read_text(encoding="utf-8")
         assert 'f"Query: {query}\\n"' in source
-        assert 'f"Headline: {hit.get(\'headline\', _FALLBACK_HEADLINE)}\\n"' in source
-        assert 'f"Heuristic recap: {hit.get(\'focused_recap\', \'\')}\\n"' in source
+        assert "f\"Headline: {hit.get('headline', _FALLBACK_HEADLINE)}\\n\"" in source
+        assert "f\"Heuristic recap: {hit.get('focused_recap', '')}\\n\"" in source
         assert 'f"Evidence:\\n{evidence_block}\\n"' in source
 
     def test_prompt_still_wired_to_llm_call(self) -> None:
@@ -131,5 +126,5 @@ class TestFormatBindings:
         # user-role LLMMessage.
         source = _SOURCE_PATH.read_text(encoding="utf-8")
         # Minimal sanity: the message construction still wraps the prompt.
-        assert "LLMMessage(role=\"user\", content=prompt)" in source
+        assert 'LLMMessage(role="user", content=prompt)' in source
         assert "max_tokens=180" in source  # length budget preserved

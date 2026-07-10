@@ -397,7 +397,9 @@ class TestApplyDreamDecisions:
         assert audit["outcome"] == "committed"
         assert audit["reason"] == "candidate passed Platform Soul Gate"
         assert audit["detail"]["candidate_id"] == manifest["candidate_id"]
-        assert audit["detail"]["candidate_package_path"] == f"memory/.staging/soul_candidates/{manifest['candidate_id']}"
+        assert (
+            audit["detail"]["candidate_package_path"] == f"memory/.staging/soul_candidates/{manifest['candidate_id']}"
+        )
         assert audit["detail"]["target_path"] == "soul.md"
         assert audit["detail"]["rollback_ref"].startswith("memory/.rollback/soul/")
         assert audit["detail"]["semantic_writer"] == "Dream / Soul Writer Agent"

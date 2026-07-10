@@ -19,9 +19,7 @@ class ChatSession(Base):
     """
 
     __tablename__ = "chat_sessions"
-    __table_args__ = (
-        UniqueConstraint("agent_id", "external_conv_id", name="uq_chat_sessions_agent_ext_conv"),
-    )
+    __table_args__ = (UniqueConstraint("agent_id", "external_conv_id", name="uq_chat_sessions_agent_ext_conv"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
@@ -31,7 +29,9 @@ class ChatSession(Base):
     source_channel: Mapped[str] = mapped_column(String(20), nullable=False, default="web")
     external_conv_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # Participant identity (unified User/Agent identity)
-    participant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("participants.id"), nullable=True)
+    participant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("participants.id"), nullable=True
+    )
     # For agent-to-agent sessions: the other agent in the conversation
     peer_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
     delivery_target_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -40,9 +40,15 @@ class ChatSession(Base):
     runtime_source: Mapped[str] = mapped_column(String(64), nullable=False, default="web_chat")
     visibility_scope: Mapped[str] = mapped_column(String(64), nullable=False, default="direct_user")
     listed_surface: Mapped[str] = mapped_column(String(64), nullable=False, default="chat", index=True)
-    parent_session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True)
-    root_session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True)
-    runtime_task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("runtime_tasks.id"), nullable=True, index=True)
+    parent_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True
+    )
+    root_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True
+    )
+    runtime_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("runtime_tasks.id"), nullable=True, index=True
+    )
     transcript_metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

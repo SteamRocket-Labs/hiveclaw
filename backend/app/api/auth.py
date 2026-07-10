@@ -71,6 +71,7 @@ async def _scope_public_login_session_to_user_tenant(db: AsyncSession, tenant_id
 async def get_registration_config(db: AsyncSession = Depends(get_db)):
     """Public endpoint — returns registration requirements (no auth needed)."""
     from app.models.system_settings import SystemSetting
+
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == "invitation_code_enabled"))
     setting = result.scalar_one_or_none()
     enabled = setting.value.get("enabled", False) if setting else False
@@ -119,6 +120,7 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
 
         if is_first_user:
             from app.models.tenant import Tenant
+
             default = await db.execute(select(Tenant).where(Tenant.slug == "default"))
             tenant = default.scalar_one_or_none()
             if not tenant:
@@ -158,10 +160,15 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
 
     # Auto-create Participant identity for the new user
     from app.models.participant import Participant
-    db.add(Participant(
-        type="user", ref_id=user.id,
-        display_name=user.display_name, avatar_url=user.avatar_url,
-    ))
+
+    db.add(
+        Participant(
+            type="user",
+            ref_id=user.id,
+            display_name=user.display_name,
+            avatar_url=user.avatar_url,
+        )
+    )
     await db.flush()
 
     # Seed default agents after first user (platform admin) registration
@@ -169,6 +176,7 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
         await db.commit()  # commit user first so seeder can find the admin
         try:
             from app.services.agent_seeder import seed_default_agents
+
             await seed_default_agents()
         except Exception as e:
             logger.warning(f"Failed to seed default agents: {e}")
@@ -218,12 +226,17 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
         # Audit: login failed
         try:
             from app.core.policy import write_audit_event
+
             if user:
                 await write_audit_event(
-                    db, event_type="auth.login_failed", severity="warn",
-                    actor_type="user", actor_id=user.id,
+                    db,
+                    event_type="auth.login_failed",
+                    severity="warn",
+                    actor_type="user",
+                    actor_id=user.id,
                     tenant_id=user.tenant_id or uuid.UUID(int=0),
-                    action="login_failed", details={"username": identifier},
+                    action="login_failed",
+                    details={"username": identifier},
                 )
                 await db.commit()
         except Exception:
@@ -252,11 +265,16 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     # Audit: login success
     try:
         from app.core.policy import write_audit_event
+
         await write_audit_event(
-            db, event_type="auth.login", severity="info",
-            actor_type="user", actor_id=user_id,
+            db,
+            event_type="auth.login",
+            severity="info",
+            actor_type="user",
+            actor_id=user_id,
             tenant_id=user_tenant_id or uuid.UUID(int=0),
-            action="login", details={"username": identifier},
+            action="login",
+            details={"username": identifier},
         )
     except Exception:
         logger.warning("Audit write failed for auth.login", exc_info=True)

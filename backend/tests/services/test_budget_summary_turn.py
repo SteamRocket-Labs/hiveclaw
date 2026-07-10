@@ -47,9 +47,7 @@ class _FakeBudgetService:
         return SimpleNamespace(id=budget_run_id, status=self.run_status, tenant_id=tenant_id)
 
     async def mark_summary_turn_state(self, *, tenant_id, budget_run_id, expected_states, new_state, extra=None):
-        self.cas_calls.append(
-            {"expected": expected_states, "new_state": new_state, "extra": dict(extra or {})}
-        )
+        self.cas_calls.append({"expected": expected_states, "new_state": new_state, "extra": dict(extra or {})})
         if self.cas_results:
             return self.cas_results.pop(0)
         return False
@@ -92,9 +90,7 @@ async def test_summary_only_run_issues_exactly_one_finalization_turn(monkeypatch
     agent, session, user = _actors()
     budget_run_id = uuid.uuid4()
     fake_service = _FakeBudgetService(run_status="summary_only", cas_results=[True])
-    monkeypatch.setattr(
-        "app.services.runtime_budget_service.RuntimeBudgetService", lambda: fake_service
-    )
+    monkeypatch.setattr("app.services.runtime_budget_service.RuntimeBudgetService", lambda: fake_service)
 
     started_runs: list[dict] = []
     broadcasts: list[tuple] = []
@@ -150,9 +146,7 @@ async def test_summary_wake_never_double_issues_and_never_continues_normally(mon
     goal = _goal()
     agent, session, user = _actors()
     fake_service = _FakeBudgetService(run_status="summary_only", cas_results=[False])
-    monkeypatch.setattr(
-        "app.services.runtime_budget_service.RuntimeBudgetService", lambda: fake_service
-    )
+    monkeypatch.setattr("app.services.runtime_budget_service.RuntimeBudgetService", lambda: fake_service)
 
     async def fail_start(**_kwargs):
         raise AssertionError("must not start any run when the lane is already spoken for")
@@ -189,9 +183,7 @@ async def test_completed_summary_turn_seals_lane_and_parks_goal(monkeypatch):
     budget_run_id = uuid.uuid4()
     tenant_id = uuid.uuid4()
     fake_service = _FakeBudgetService(cas_results=[True])
-    monkeypatch.setattr(
-        "app.services.runtime_budget_service.RuntimeBudgetService", lambda: fake_service
-    )
+    monkeypatch.setattr("app.services.runtime_budget_service.RuntimeBudgetService", lambda: fake_service)
 
     db = _SeqDB([goal])
     result = await svc.maybe_continue_session_goal_after_turn(
@@ -225,9 +217,7 @@ async def test_completed_summary_turn_respects_model_recorded_goal_state(monkeyp
 
     goal = _goal(status=GoalStatus.COMPLETE.value)
     fake_service = _FakeBudgetService(cas_results=[True])
-    monkeypatch.setattr(
-        "app.services.runtime_budget_service.RuntimeBudgetService", lambda: fake_service
-    )
+    monkeypatch.setattr("app.services.runtime_budget_service.RuntimeBudgetService", lambda: fake_service)
 
     db = _SeqDB([goal])
     await svc.maybe_continue_session_goal_after_turn(
@@ -257,9 +247,7 @@ async def test_failed_summary_turn_retries_once_then_seals_with_summary_failed(m
 
     # First failure: issued -> retried CAS wins, a retry turn is started.
     retry_service = _FakeBudgetService(cas_results=[True])
-    monkeypatch.setattr(
-        "app.services.runtime_budget_service.RuntimeBudgetService", lambda: retry_service
-    )
+    monkeypatch.setattr("app.services.runtime_budget_service.RuntimeBudgetService", lambda: retry_service)
     retry_runs: list[dict] = []
 
     async def fake_start(**kwargs):
@@ -289,9 +277,7 @@ async def test_failed_summary_turn_retries_once_then_seals_with_summary_failed(m
 
     # Second failure: issued->retried CAS loses, retried->failed CAS wins, lane seals.
     fail_service = _FakeBudgetService(cas_results=[False, True])
-    monkeypatch.setattr(
-        "app.services.runtime_budget_service.RuntimeBudgetService", lambda: fail_service
-    )
+    monkeypatch.setattr("app.services.runtime_budget_service.RuntimeBudgetService", lambda: fail_service)
     broadcasts: list[dict] = []
 
     async def fake_broadcast(_agent_id, _session_id, event):
@@ -318,8 +304,7 @@ async def test_failed_summary_turn_retries_once_then_seals_with_summary_failed(m
     assert goal.metadata_json["budget_summary_outcome"] == "summary_failed"
     # The failure is surfaced to the session stream for the UI.
     assert any(
-        event.get("type") == "runtime_action_failed" and event.get("status") == "summary_failed"
-        for event in broadcasts
+        event.get("type") == "runtime_action_failed" and event.get("status") == "summary_failed" for event in broadcasts
     )
 
 
@@ -330,9 +315,7 @@ async def test_healthy_budget_run_takes_the_normal_continuation_path(monkeypatch
     goal = _goal()
     agent, session, user = _actors()
     fake_service = _FakeBudgetService(run_status="active")
-    monkeypatch.setattr(
-        "app.services.runtime_budget_service.RuntimeBudgetService", lambda: fake_service
-    )
+    monkeypatch.setattr("app.services.runtime_budget_service.RuntimeBudgetService", lambda: fake_service)
 
     continued: list[dict] = []
 

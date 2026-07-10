@@ -150,10 +150,10 @@ describe('Dashboard workspace homepage', () => {
     );
 
     expect(markup).toContain('workspace-home');
-    expect(markup).toContain('Create via HR');
-    expect(markup).toContain('Assign task');
+    expect(markup).toContain('Assign work');
     expect(markup).toContain('Automation');
-    expect(markup).toContain('Assets');
+    expect(markup).toContain('Knowledge');
+    expect(markup).toContain('Local Agents');
     expect(markup).toContain('Needs you');
     expect(markup).toContain('In progress');
     expect(markup).toContain('This month');
@@ -161,6 +161,10 @@ describe('Dashboard workspace homepage', () => {
     expect(markup).toContain('Approve August ledger plan');
     expect(markup).toContain('Q2 competitor report');
     expect(markup).toContain('708.9K');
+    expect(markup).toContain('data-navigation-target="/agents?assign=true"');
+    expect(markup).toContain('data-navigation-target="/automations"');
+    expect(markup).toContain('data-navigation-target="/knowledge"');
+    expect(markup).toContain('data-navigation-target="/local-agents"');
     expect(markup).not.toContain('Latest Activity</span>');
   });
 });

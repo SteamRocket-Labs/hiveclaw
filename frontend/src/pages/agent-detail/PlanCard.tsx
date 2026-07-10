@@ -143,7 +143,7 @@ export async function confirmAndHandoffPlan(
 
 export default function PlanCard({ agentId, plan, onChanged, dense = false }: PlanCardProps) {
   const { t } = useTranslation();
-  const [busy, setBusy] = React.useState<null | 'confirm' | 'revise' | 'clarify' | 'regenerate' | 'reject'>(null);
+  const [busy, setBusy] = React.useState<null | 'confirm' | 'revise' | 'clarify' | 'regenerate' | 'reject' | 'handoff'>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [revisionRequest, setRevisionRequest] = React.useState('');
   const [clarificationAnswers, setClarificationAnswers] = React.useState('');
@@ -170,7 +170,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
     (plan.status === 'needs_clarification' || isAwaiting) && openQuestions.length > 0;
 
   const runAction = async (
-    kind: 'confirm' | 'revise' | 'clarify' | 'regenerate' | 'reject',
+    kind: 'confirm' | 'revise' | 'clarify' | 'regenerate' | 'reject' | 'handoff',
     fn: () => Promise<unknown>,
   ) => {
     if (busy) return;
@@ -240,6 +240,8 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
       planApi.reject(agentId, plan.id, { reason: reason || undefined }),
     );
   };
+
+  const onRetryHandoff = () => runAction('handoff', () => planApi.handoff(agentId, plan.id));
 
   // Structured governance detail — the canonical execution contract. Primary
   // surface only when there is no agent-authored article; otherwise folded.
@@ -411,7 +413,14 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
 
       {/* Confirmed plans show their real handoff/execution state — never a stale
           confirm button (CC-align §4.5/§4.6). */}
-      {isConfirmed && <HandoffBanner plan={plan} dense={dense} />}
+      {isConfirmed && (
+        <HandoffBanner
+          plan={plan}
+          dense={dense}
+          retrying={busy === 'handoff'}
+          onRetry={onRetryHandoff}
+        />
+      )}
 
       {requiresClarification && (
         <div
@@ -625,11 +634,20 @@ function PlanDecisionComposer({
 }
 
 /** Real execution state for a confirmed plan (CC-align §4.5/§4.6). */
-function HandoffBanner({ plan, dense }: { plan: PlanRequest; dense: boolean }) {
+function HandoffBanner({
+  plan,
+  dense,
+  retrying,
+  onRetry,
+}: {
+  plan: PlanRequest;
+  dense: boolean;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
   const { t } = useTranslation();
   const status = plan.handoff_status;
   const payload = (plan.handoff_payload || {}) as Record<string, unknown>;
-  const runtimeTaskId = typeof payload.runtime_task_id === 'string' ? payload.runtime_task_id : null;
   const reason = typeof payload.error === 'string' ? payload.error : typeof payload.reason === 'string' ? payload.reason : null;
 
   const isError = status === 'skipped' || status === 'failed';
@@ -653,12 +671,19 @@ function HandoffBanner({ plan, dense }: { plan: PlanRequest; dense: boolean }) {
       style={{ color: tone.color, background: tone.bg }}
     >
       <div className="plan-card-notice-strong">{headline}</div>
-      {runtimeTaskId && (
-        <div className="plan-card-runtime-task">
-          {t('agent.plan.handoff.runtimeTask', 'Run: {{id}}', { id: runtimeTaskId })}
-        </div>
-      )}
       {isError && reason && <div className="plan-card-notice-reason">{reason}</div>}
+      {isError && (
+        <button
+          type="button"
+          className="btn btn-secondary plan-card-handoff-retry"
+          disabled={retrying}
+          onClick={onRetry}
+        >
+          {retrying
+            ? t('common.loading', 'Loading...')
+            : t('agent.plan.handoff.retry', 'Retry execution')}
+        </button>
+      )}
     </div>
   );
 }

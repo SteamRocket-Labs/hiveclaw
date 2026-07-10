@@ -3121,7 +3121,7 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Child Session');
     expect(markup).toContain('Research worker completed.');
-    expect(markup).toContain('session:child-session-1');
+    expect(markup).not.toContain('session:child-session-1');
     expect(markup).toContain('run-1');
   });
 
@@ -3834,7 +3834,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-runtime-segment-workflow"');
     expect(markup).toContain('data-testid="session-runtime-segment-activity"');
     expect(markup).toContain('data-testid="session-runtime-segment-body-workflow"');
-    expect(markup).toContain('workflow-run-1');
+    expect(markup).not.toContain('workflow-run-1');
     expect(markup).toContain('ccplus-closure-audit');
     expect(markup).toContain('Review plan');
     expect(markup).not.toContain('data-testid="session-runtime-main-row"');
@@ -5739,6 +5739,8 @@ describe('AgentDetail extracted sections', () => {
     const skippedMarkup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={skipped} />);
     expect(skippedMarkup).toContain('Confirmed, but execution did not start');
     expect(skippedMarkup).toContain('no_handler_registered');
+    expect(skippedMarkup).toContain('Retry execution');
+    expect(skippedMarkup).not.toContain('Run:');
   });
 });
 

@@ -521,15 +521,9 @@ export function DashboardHomeShell({
     const latestActivities = allActivities.slice(0, 5);
     const actionCards: WorkspaceHomeAction[] = [
         {
-            title: t('dashboard.home.createViaHr', 'Create via HR'),
-            description: t('dashboard.home.createViaHrDesc', 'Start the governed HR Agent creation flow.'),
-            to: '/agents/new',
-            icon: Icons.plus,
-        },
-        {
-            title: t('dashboard.home.assignTask', 'Assign task'),
-            description: t('dashboard.home.assignTaskDesc', 'Open a task or session entry point for an employee.'),
-            to: '/automations',
+            title: t('dashboard.home.assignWork', 'Assign work'),
+            description: t('dashboard.home.assignWorkDesc', 'Choose a digital employee and start a new session.'),
+            to: '/agents?assign=true',
             icon: Icons.tasks,
         },
         {
@@ -539,10 +533,16 @@ export function DashboardHomeShell({
             icon: Icons.zap,
         },
         {
-            title: t('dashboard.home.assets', 'Assets'),
-            description: t('dashboard.home.assetsDesc', 'Browse documents, research outputs, and reusable assets.'),
-            to: '/documents',
+            title: t('dashboard.home.knowledge', 'Knowledge'),
+            description: t('dashboard.home.knowledgeDesc', 'Search and manage your personal knowledge base.'),
+            to: '/knowledge',
             icon: Icons.activity,
+        },
+        {
+            title: t('dashboard.home.localAgents', 'Local Agents'),
+            description: t('dashboard.home.localAgentsDesc', 'Connect and continue work on local runtimes.'),
+            to: '/local-agents',
+            icon: Icons.bot,
         },
     ];
 
@@ -582,7 +582,13 @@ export function DashboardHomeShell({
 
             <section className="workspace-action-grid" aria-label={t('dashboard.home.quickActions', 'Quick actions')}>
                 {actionCards.map(action => (
-                    <button key={action.title} type="button" className="workspace-action-card" onClick={() => onNavigate(action.to)}>
+                    <button
+                        key={action.title}
+                        type="button"
+                        className="workspace-action-card"
+                        data-navigation-target={action.to}
+                        onClick={() => onNavigate(action.to)}
+                    >
                         <span className="workspace-action-icon">{action.icon}</span>
                         <strong>{action.title}</strong>
                         <small>{action.description}</small>

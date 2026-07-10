@@ -1118,7 +1118,6 @@ function buildRuntimeConsoleModel(
     ...runtimeSections.background,
     ...runtimeSections.notifications,
     ...runtimeSections.runs,
-    ...runtimeSections.raw,
   ];
   const activityBase = runtimeConsoleGroup(activityItems);
   const activity: RuntimeConsoleActivityModel = {
@@ -1292,7 +1291,7 @@ export function buildWorkflowRunWindowModel(workflow: RuntimeSectionItemModel): 
     label: workflow.label || workflow.id,
     status: workflow.status || 'unknown',
     breadcrumb: 'Main > Dynamic Workflow',
-    meta: [workflow.id, workflow.runtimeKind, workflow.summary, workflow.childSessionId ? `session:${workflow.childSessionId}` : '']
+    meta: [workflow.summary, workflow.metrics.elapsedLabel]
       .filter(Boolean)
       .join(' · '),
     childSessionId: workflow.childSessionId,

@@ -961,3 +961,46 @@ alembic heads -> runtime_notification_outbox_0710 (head)
 - Trigger completion：`局部闭环 -> 闭环`；terminal task 与 semantic task-update projection 可恢复，且不会污染普通用户 chat。
 - 第 7 节 `GOV-05` 的跨 run 通知部分：`局部闭环 -> 闭环`。
 - 第 12.2 节 Workflow confirmation RLS：补齐 fresh-bootstrap FORCE RLS；迁移库与新库现在同构。
+
+### 12.5 Session information policy 与全局 IA — 已闭环
+
+本节只收口 9.5 中的信息分层、全局导航、Plan recovery 与重复前端实现；Goal、Team、Rewind 分别由后续证据节独立验收。
+
+**原子链**
+
+| 原子 | 当前事实源与消费路径 |
+| --- | --- |
+| 输入 | 用户从真实 `/home` 进入个人工作面；左栏输入只保留 Home、Digital Employee、session family / branch 与新建员工。Automation、Knowledge、Local Agent 等能力由 Home quick actions 进入，不再抢占一级导航。 |
+| 权威 | `/enterprise/*` 只从底部 Company Admin 角色入口出现；`/admin/*` 只从 Platform Settings 出现。普通 session Header 不再重复 Composer 的 permission 表达。 |
+| 执行 | `/home` 直接挂载 `Dashboard`，不再 redirect 到 `/agents`；Plan `failed/skipped` 直接调用既有 canonical `planApi.handoff()` 重试同一 confirmed plan。 |
+| 证据 | runtime/session UUID、provider、resume、projection、checkpoint、branch depth、compaction、context 与 run 状态仍保留在 workbench/index/read model，并由显式 Technical Inspector 消费；普通 Header 和右栏语义 projection 不复制这些值。 |
+| 恢复 | Plan handoff 失败保留 confirmed plan 与 canonical plan id，重试不重新确认或重写 plan；Home 与 session 深链保持稳定。 |
+| 消费 | Header 只展示标题、Working / Waiting / Done / Failed 与模型；Waiting / Failed 给出下一步提示。Runtime row 只展示名称、角色、语义状态、短摘要、耗时、token/tool 指标。Local Agent 保留 transport adapter，但复用统一 `SessionComposer`。 |
+| 验收 | 组件测试覆盖技术字段不可见、semantic meta、真实 Home route、左栏 IA、Plan retry；全量 frontend tests 与 production build 均通过。 |
+
+**代码极简收口**
+
+- 删除无生产 consumer 的 `SessionNativeControls.tsx/.css/.test.tsx`；
+- 删除无生产 consumer、与 Trigger 表象重复的 `api/domains/schedules.ts` 与 export；
+- `LocalAgentChatSection` 删除第二套 plus menu / textarea / permission badge / send controls，复用 `SessionComposer`；
+- 真实 Home 激活后，原先的 dead `DashboardHomeShell` 成为生产 route consumer；
+- `SessionWorkbenchHeader` 删除整套 debug chip render 分支；机械字段仍在 Inspector projection，不丢审计能力。
+
+**机械验收**
+
+```text
+Red evidence -> header leaked session/provider/resume/governance/projection/checkpoint/compaction/context/run; right rail leaked run/session UUID; /home redirected; sidebar exposed five unrelated first-level modules; confirmed Plan failure had no retry; dead controls and duplicate composer/client remained
+targeted semantic/IA/recovery/hygiene suites -> 126 passed, 0 failed
+npm test -- --reporter=dot -> 94 files, 564 passed, 0 failed
+npm run build -- --emptyOutDir=false -> TypeScript + Vite exit 0
+AgentDetail bundle -> 446.64 kB to 441.43 kB after Local Agent composer/CSS convergence
+```
+
+**状态变化**
+
+- `UX-01 Session Header`：`断点 -> 闭环`。
+- `UX-02 默认右栏内部 id`：`断点 -> 闭环`；显式 Inspector 保留完整机械事实。
+- `UX-03 User Home / 左栏 IA`：`断点 -> 闭环`。
+- `UX-04` 的死控制面与重复 client：`断点 -> 闭环`；Team 真实动作由后续 Team 闭环节验收。
+- `MODE-01` 的 failed/skipped handoff recovery 与 raw RuntimeTask id：`局部闭环 -> 闭环`。
+- `LocalAgentChatSection` 重复 Composer：`局部闭环 -> 闭环`。

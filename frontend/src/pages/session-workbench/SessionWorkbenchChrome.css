@@ -1,4 +1,4 @@
-/* Session workbench chrome — header + inspector（Codex 收敛：两行 header）*/
+/* Session workbench chrome — semantic user header; mechanics live in Inspector. */
 
 .swb-header {
   border-bottom: 1px solid var(--border-subtle);
@@ -26,13 +26,6 @@
   letter-spacing: -0.01em;
 }
 
-.swb-header-id {
-  font-size: var(--text-tiny);
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
-}
-
 .swb-header-status {
   display: inline-flex;
   align-items: center;
@@ -50,40 +43,10 @@
   border-radius: var(--radius-full);
 }
 
-.swb-header-chips {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.swb-header-chips::-webkit-scrollbar {
-  display: none;
-}
-
-.swb-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
+.swb-header-guidance {
   font-size: var(--text-meta);
-  line-height: 1;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.swb-chip-label {
   color: var(--text-tertiary);
-}
-
-.swb-chip-value {
-  color: var(--text-primary);
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
 }
 
 /* Session shell: preserve all three information planes without horizontal overflow. */

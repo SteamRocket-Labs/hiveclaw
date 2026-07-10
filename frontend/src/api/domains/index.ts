@@ -13,7 +13,6 @@ export { activityApi } from './activity';
 export { messageApi } from './messages';
 export { skillApi } from './skills';
 export { channelApi } from './channels';
-export { scheduleApi } from './schedules';
 export { triggerApi } from './triggers';
 export { autonomyApi } from './autonomy';
 export { planApi } from './plans';

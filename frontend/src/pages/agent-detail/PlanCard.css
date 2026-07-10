@@ -214,3 +214,7 @@
   font-size: var(--text-meta);
   color: var(--text-tertiary);
 }
+.plan-card-handoff-retry {
+  align-self: flex-start;
+  margin-top: 8px;
+}

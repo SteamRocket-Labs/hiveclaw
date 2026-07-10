@@ -24,7 +24,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('react-router-dom', () => ({
-  NavLink: ({ to, className, children, title, ...rest }: any) => {
+  NavLink: ({ to, className, children, title, end: _end, ...rest }: any) => {
     const href = String(to);
     const targetPath = href.split(/[?#]/)[0] || href;
     const isActive = routeState.location.pathname === targetPath;
@@ -173,12 +173,12 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('sidebar-workspace-select');
     expect(markup).not.toContain('tenant-switcher');
     expect(markup).not.toContain('My Workspace');
-    expect(markup).toContain('href="/enterprise/dashboard"');
+    expect(markup).toContain('href="/home"');
     expect(markup).toContain('title="Home"');
     expect(markup).toContain('Digital Employees');
-    expect(markup).toContain('Tasks / Automation');
-    expect(markup).toContain('Agent Circle');
-    expect(markup).toContain('Knowledge');
+    expect(markup).not.toContain('Tasks / Automation');
+    expect(markup).not.toContain('Agent Circle');
+    expect(markup).not.toContain('title="Knowledge"');
     expect(markup).not.toContain('Conversations &amp; Tasks');
     expect(markup).not.toContain('Plan Review');
     expect(markup).not.toContain('Memory &amp; Knowledge');
@@ -186,12 +186,12 @@ describe('Layout extracted sections', () => {
     expect(markup).not.toContain('A2A / Team');
     expect(markup).not.toContain('Workspace search');
     expect(markup).not.toContain('Control Plane');
-    expect(markup).toContain('Bridge');
-    expect(markup).toContain('href="/knowledge"');
-    expect(markup).toContain('href="/local-agents"');
+    expect(markup).not.toContain('title="Bridge"');
+    expect(markup).not.toContain('href="/knowledge"');
+    expect(markup).not.toContain('href="/local-agents"');
     expect(markup).not.toContain('href="/team"');
     expect(markup).toContain('href="/agents"');
-    expect(markup).toContain('href="/automations"');
+    expect(markup).not.toContain('href="/automations"');
     expect(markup).not.toContain('href="/enterprise/tools"');
     expect(markup).toContain('Agent One');
     expect(markup).toContain('Codex on Mac');
@@ -249,8 +249,8 @@ describe('Layout extracted sections', () => {
     expect(markup).not.toContain('aria-label="Toggle Create Agent sessions"');
     expect(markup).not.toContain('sidebar-create-agent-sessions');
     expect(markup).toContain('class="sidebar-item sidebar-create-agent-link');
-    expect(markup).toContain('href="/enterprise/dashboard"');
-    expect(markup).toContain('href="/local-agents"');
+    expect(markup).toContain('href="/home"');
+    expect(markup).not.toContain('href="/local-agents"');
   });
 
   it('routes the simple employee-creation action to the real HR Agent when available', () => {
@@ -583,7 +583,7 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('Codex local debug');
     expect(markup).toContain('href="/agents/local-agent-1?session_id=chat-session-1#chat"');
     expect(markup).toContain('class="sidebar-session-item active"');
-    expect(markup).toContain('href="/local-agents"');
+    expect(markup).not.toContain('href="/local-agents"');
   });
 
   it('renders NotificationCenter as a standalone notification module', () => {

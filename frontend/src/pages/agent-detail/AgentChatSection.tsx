@@ -1718,6 +1718,44 @@ function scrollToRuntimeLinkMarker(runtimeId: string | null | undefined): void {
   marker?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
+function runtimeMetricSummary(item: RuntimeSectionItemModel): string {
+  return [
+    item.metrics.elapsedLabel,
+    item.metrics.tokenLabel ? `${item.metrics.tokenLabel} tokens` : null,
+    item.metrics.toolUseLabel ? `${item.metrics.toolUseLabel} tools` : null,
+  ].filter(Boolean).join(' · ');
+}
+
+export function runtimeItemDisplayMeta(item: RuntimeSectionItemModel): string {
+  const metadata = isRuntimeRecord(item.raw.metadata) ? item.raw.metadata : {};
+  const role = stringValue(
+    item.raw.member_role
+      || item.raw.memberRole
+      || item.raw.role
+      || metadata.member_role
+      || metadata.memberRole,
+  ).trim();
+  return [role, item.summary, runtimeMetricSummary(item)].filter(Boolean).join(' · ');
+}
+
+export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel): string {
+  const metadata = isRuntimeRecord(item.raw.metadata) ? item.raw.metadata : {};
+  const status = stringValue(item.status || item.state || 'unknown').trim() || 'unknown';
+  const outcome = stringValue(
+    item.raw.last_turn_status
+      || item.raw.lastTurnStatus
+      || metadata.last_turn_status
+      || metadata.lastTurnStatus,
+  ).trim();
+  return outcome && outcome !== status ? `${status} · ${outcome}` : status;
+}
+
+function runtimeItemDisplayLabel(item: RuntimeSectionItemModel, fallback: string): string {
+  const label = stringValue(item.label).trim();
+  if (!label || label === item.id || isUuidLike(label)) return fallback;
+  return label;
+}
+
 function SessionRuntimePanel({
   messages,
   sessionWorkbench,
@@ -1799,12 +1837,6 @@ function SessionRuntimePanel({
   const runStatusCount = runtimeConsole.summary.runningCount > 0
     ? t('sessionWorkbench.rightPanel.runningCount', '{{count}} running', { count: runtimeConsole.summary.runningCount })
     : t('sessionWorkbench.rightPanel.totalCount', '{{count}} total', { count: runtimeConsole.summary.totalCount });
-  const metricSummary = (item: RuntimeSectionItemModel): string => [
-    item.metrics.elapsedLabel,
-    item.metrics.tokenLabel ? `${item.metrics.tokenLabel} tokens` : null,
-    item.metrics.toolUseLabel ? `${item.metrics.toolUseLabel} tools` : null,
-  ].filter(Boolean).join(' · ');
-
   const runtimeWaiterTestId = (waiter: RuntimeConsoleWaiterModel): string => (
     `session-runtime-waiter-${waiter.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
   );
@@ -1812,14 +1844,14 @@ function SessionRuntimePanel({
   const renderRuntimeItem = (item: RuntimeSectionItemModel, fallback: string) => {
     const sessionId = item.childSessionId;
     const clickable = Boolean(item.enterable && sessionId && onSelectSession);
-    const meta = [item.id, item.runtimeKind, item.summary, sessionId ? `session:${sessionId}` : '', metricSummary(item)].filter(Boolean).join(' · ');
+    const meta = runtimeItemDisplayMeta(item);
     const content = (
       <>
         <span className="session-runtime-row-main">
-          <span className="session-runtime-row-title">{item.label || fallback}</span>
-          <span className="session-runtime-row-meta">{meta || item.id}</span>
+          <span className="session-runtime-row-title">{runtimeItemDisplayLabel(item, fallback)}</span>
+          <span className="session-runtime-row-meta">{meta || t('sessionWorkbench.rightPanel.noAdditionalDetails', 'No additional details')}</span>
         </span>
-        <span className="session-runtime-status">{item.status || 'unknown'}</span>
+        <span className="session-runtime-status">{runtimeItemDisplayStatus(item)}</span>
       </>
     );
     const linkId = item.childSessionId || item.id;
@@ -1857,7 +1889,7 @@ function SessionRuntimePanel({
     const blocker = waiter.userBlocker;
     const meta = blocker
       ? [blocker.reason, blocker.nextAction].filter(Boolean).join(' ')
-      : [segmentLabel, waiter.runtimeKind, waiter.summary].filter(Boolean).join(' · ');
+      : [waiter.summary, segmentLabel].filter(Boolean).join(' · ');
     const content = (
       <>
         <span className="session-runtime-row-main">
@@ -1892,14 +1924,14 @@ function SessionRuntimePanel({
   };
 
   const renderWorkflowRoot = (workflow: RuntimeSectionItemModel, fallback: string) => {
-    const meta = [workflow.id, workflow.runtimeKind, workflow.summary, metricSummary(workflow)].filter(Boolean).join(' · ');
+    const meta = runtimeItemDisplayMeta(workflow);
     const content = (
       <>
         <span className="session-runtime-row-main">
-          <span className="session-runtime-row-title">{workflow.label || fallback}</span>
-          <span className="session-runtime-row-meta">{meta || workflow.id}</span>
+          <span className="session-runtime-row-title">{runtimeItemDisplayLabel(workflow, fallback)}</span>
+          <span className="session-runtime-row-meta">{meta}</span>
         </span>
-        <span className="session-runtime-status">{workflow.status || 'unknown'}</span>
+        <span className="session-runtime-status">{runtimeItemDisplayStatus(workflow)}</span>
       </>
     );
     return onSelectWorkflowRun ? (
@@ -1942,14 +1974,14 @@ function SessionRuntimePanel({
         {label}
       </button>
     );
-    const meta = [member.id, member.runtimeKind, member.summary, sessionId ? `session:${sessionId}` : '', metricSummary(member)].filter(Boolean).join(' · ');
+    const meta = runtimeItemDisplayMeta(member);
     return (
       <div key={member.id || fallback} className="session-runtime-row" data-testid="session-agent-team-member-row">
         <span className="session-runtime-row-main">
           <span className="session-runtime-row-title">{member.label || fallback}</span>
-          <span className="session-runtime-row-meta">{meta || member.id}</span>
+          <span className="session-runtime-row-meta">{meta}</span>
         </span>
-        <span className="session-runtime-status">{member.status || 'unknown'}</span>
+        <span className="session-runtime-status">{runtimeItemDisplayStatus(member)}</span>
         <span
           data-testid="session-agent-team-member-actions"
           className="session-runtime-actions"
@@ -1989,7 +2021,7 @@ function SessionRuntimePanel({
   const renderSubagentWorkerItem = (worker: RuntimeSectionItemModel, fallback: string) => {
     const sessionId = worker.childSessionId;
     const canInspect = Boolean(sessionId && onSelectSession);
-    const meta = [worker.id, worker.runtimeKind, worker.summary, sessionId ? `session:${sessionId}` : '', metricSummary(worker)].filter(Boolean).join(' · ');
+    const meta = runtimeItemDisplayMeta(worker);
     const workerAction = (
       action: 'inspect' | 'continue',
       label: string,
@@ -2013,9 +2045,9 @@ function SessionRuntimePanel({
       <div key={worker.id || fallback} className="session-runtime-row" data-testid="session-subagent-worker-row">
         <span className="session-runtime-row-main">
           <span className="session-runtime-row-title">{worker.label || fallback}</span>
-          <span className="session-runtime-row-meta">{meta || worker.id}</span>
+          <span className="session-runtime-row-meta">{meta}</span>
         </span>
-        <span className="session-runtime-status">{worker.status || 'unknown'}</span>
+        <span className="session-runtime-status">{runtimeItemDisplayStatus(worker)}</span>
         <span className="session-runtime-actions" data-testid="session-subagent-worker-actions">
           {workerAction(
             'inspect',
@@ -2055,8 +2087,8 @@ function SessionRuntimePanel({
         runtimeConsole.team.items.map((team) => (
           <div key={team.id} className="session-runtime-team">
             <div className="session-runtime-team-header">
-              <span>{team.label || team.id}</span>
-              <small>{team.status || 'unknown'}</small>
+              <span>{runtimeItemDisplayLabel(team, t('sessionWorkbench.rightPanel.agentTeam', 'Agent Team'))}</span>
+              <small>{runtimeItemDisplayStatus(team)}</small>
             </div>
             {team.members.length === 0 ? (
               <div className="session-runtime-empty">
@@ -2086,23 +2118,7 @@ function SessionRuntimePanel({
     title: string,
     items: RuntimeSectionItemModel[],
     empty: string,
-    rawDisclosure = false,
   ) => {
-    if (rawDisclosure) {
-      return (
-        <details data-testid={testId} className="session-runtime-activity-bucket">
-          <summary>
-            <span>{title}</span>
-            <strong>{items.length}</strong>
-          </summary>
-          {items.length === 0 ? (
-            <div className="session-runtime-empty">{empty}</div>
-          ) : (
-            items.map((item, index) => renderRuntimeItem(item, `${title}-${index + 1}`))
-          )}
-        </details>
-      );
-    }
     return (
       <div data-testid={testId} className="session-runtime-activity-bucket">
         <div className="session-runtime-card-title">{title}</div>
@@ -2135,13 +2151,6 @@ function SessionRuntimePanel({
         runtimeConsole.activity.runs,
         t('sessionWorkbench.rightPanel.noRuns', 'No runtime runs recorded.'),
       )}
-      {renderActivityBucket(
-        'session-runtime-activity-raw',
-        t('sessionWorkbench.rightPanel.rawEvents', 'Raw'),
-        runtimeConsole.activity.raw,
-        t('sessionWorkbench.rightPanel.noRawEvents', 'No raw runtime events.'),
-        true,
-      )}
     </div>
   );
 
@@ -2164,7 +2173,7 @@ function SessionRuntimePanel({
         <IconFileText size={15} />
         <span>
           <strong>{doc.name}</strong>
-          <small>{[doc.previewKind, doc.status, formatArtifactSize(doc.size), doc.path].filter(Boolean).join(' · ')}</small>
+          <small>{[doc.previewKind, doc.status, formatArtifactSize(doc.size)].filter(Boolean).join(' · ')}</small>
           {contributorLabel ? (
             <em className="session-runtime-doc-author">
               {t('sessionWorkbench.rightPanel.documentAuthor', 'By {{name}}', { name: contributorLabel })}
@@ -2316,7 +2325,7 @@ function SessionRuntimePanel({
                 </strong>
                 <small>
                   {sessionWindow
-                    ? [sessionWindow.label, sessionWindow.kind, sessionWindow.status].filter(Boolean).join(' · ')
+                    ? [sessionWindow.label, sessionWindow.status].filter(Boolean).join(' · ')
                     : t('sessionWorkbench.rightPanel.noMainSession', 'No selected session')}
                 </small>
               </span>

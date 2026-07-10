@@ -711,12 +711,12 @@ describe('session workbench timeline model', () => {
       ['team', 1],
       ['workers', 1],
       ['workflow', 1],
-      ['activity', 4],
+      ['activity', 3],
     ]);
     expect(rightPanel.runtimeConsole.defaultSegment).toBe('workflow');
     expect(rightPanel.runtimeConsole.summary).toMatchObject({
       state: 'waiting',
-      totalCount: 7,
+      totalCount: 6,
       runningCount: 2,
       waitingCount: 1,
       blockedCount: 0,

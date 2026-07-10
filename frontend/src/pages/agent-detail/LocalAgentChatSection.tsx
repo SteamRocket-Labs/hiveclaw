@@ -2,19 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import {
-  IconCalendarTime,
-  IconChecklist,
-  IconCircleDashedCheck,
-  IconFileText,
-  IconLoader2,
-  IconPaperclip,
-  IconPlus,
-  IconSend2,
-  IconShieldCheck,
-  IconTargetArrow,
-  IconX,
-} from '@tabler/icons-react';
+import { IconFileText } from '@tabler/icons-react';
 
 import './LocalAgentChatSection.css';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
@@ -27,6 +15,8 @@ import {
   type LocalBridgeConnection,
 } from '../../api/domains/localBridge';
 import { browserChannelWsUrl, connectionPresenceStatus, isOnlineConnection, mergeChannelEvents } from '../LocalAgents';
+import { SessionComposer } from '../session-workbench/SessionComposer';
+import type { ComposerActionKey } from '../session-workbench/SessionComposer';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import type { AgentChatMessage, ChatArtifactPart } from './chatRuntime';
 import type { SessionWorkbenchHeaderModel } from '../session-workbench/timelineModel';
@@ -41,8 +31,6 @@ type LocalAgentChatSectionProps = {
   agent: any;
   agentPermissions?: AgentPermissions | null;
 };
-
-type LocalComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
 
 function routeSessionIdFromSearch(search: string): string | null {
   const params = new URLSearchParams(search);
@@ -345,7 +333,6 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
   const [sending, setSending] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [composerMenuOpen, setComposerMenuOpen] = useState(false);
   const [localPlanModeRequested, setLocalPlanModeRequested] = useState(false);
   const routeSessionId = routeSessionIdFromSearch(location.search);
 
@@ -544,8 +531,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
         : t('chat.placeholder', 'Type a message...')
       : t('common.loading', 'Loading');
 
-  const setComposerAction = (action: LocalComposerActionKey) => {
-    setComposerMenuOpen(false);
+  const setComposerAction = (action: ComposerActionKey) => {
     if (action === 'upload') {
       fileInputRef.current?.click();
       return;
@@ -604,180 +590,37 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
         data-testid="local-agent-session-composer"
         className="local-chat-composer"
       >
-        {attachments.length > 0 && (
-          <div
-            data-testid="session-composer-attachments"
-            className="local-chat-attachments"
-          >
-            {attachments.map((file, index) => (
-              <div
-                key={`${file.workspace_path}:${index}`}
-                className="local-chat-attachment"
-              >
-                <IconFileText size={14} color="var(--text-tertiary)" />
-                <span className="local-chat-attachment-name">{file.filename}</span>
-                <button
-                  type="button"
-                  aria-label={t('agent.chat.removeAttachment', 'Remove attachment')}
-                  title={t('agent.chat.removeAttachment', 'Remove attachment')}
-                  onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-                  className="local-chat-attachment-remove"
-                >
-                  <IconX size={13} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        <div
-          data-testid="session-composer-shell"
-          className="local-chat-shell"
-        >
-          <div
-            data-testid="session-composer-plus-menu"
-            hidden={!composerMenuOpen}
-            className="local-chat-plus-menu"
-          >
-            {([
-              {
-                key: 'upload' as const,
-                label: t('agent.chat.composer.uploadFile', 'Upload file'),
-                description: t('agent.chat.composer.uploadFileDesc', 'Attach files or screenshots to this turn'),
-                icon: uploading ? <IconLoader2 size={16} /> : <IconPaperclip size={16} />,
-                disabled: disabled || attachments.length >= 10,
-              },
-              {
-                key: 'plan' as const,
-                label: t('agent.chat.composer.planMode', 'Plan Mode'),
-                description: localPlanModeRequested
-                  ? t('agent.chat.composer.planModeOnDesc', 'Next message will request a plan first')
-                  : t('agent.chat.composer.planModeDesc', 'Ask the agent to plan before execution'),
-                icon: <IconChecklist size={16} />,
-                checked: localPlanModeRequested,
-                disabled: !channelSessionId || sending,
-              },
-              {
-                key: 'goal' as const,
-                label: t('agent.chat.composer.goalMode', 'Goal mode'),
-                description: t('agent.chat.composer.goalModeDesc', 'Start a session goal through the command surface'),
-                icon: <IconTargetArrow size={16} />,
-                disabled: !channelSessionId || sending,
-              },
-              {
-                key: 'schedule' as const,
-                label: t('agent.chat.composer.scheduledTask', 'Scheduled task'),
-                description: t('agent.chat.composer.scheduledTaskDesc', 'Draft a scheduled task request for this agent'),
-                icon: <IconCalendarTime size={16} />,
-                disabled: !channelSessionId || sending,
-              },
-            ] satisfies Array<{
-              key: LocalComposerActionKey;
-              label: string;
-              description: string;
-              icon: React.ReactNode;
-              checked?: boolean;
-              disabled: boolean;
-            }>).map((action) => (
-              <button
-                key={action.key}
-                type="button"
-                onClick={() => setComposerAction(action.key)}
-                disabled={action.disabled}
-                className={`local-chat-menu-item${action.checked === undefined ? '' : ' has-switch'}`}
-              >
-                <span className="local-chat-menu-item-icon">
-                  {action.icon}
-                </span>
-                <span className="local-chat-menu-item-text">
-                  <strong className="local-chat-menu-item-title">{action.label}</strong>
-                  <span className="local-chat-menu-item-desc">{action.description}</span>
-                </span>
-                {action.checked !== undefined && (
-                  <span
-                    data-testid={`session-composer-action-${action.key}-switch`}
-                    role="switch"
-                    aria-checked={action.checked}
-                    aria-label={action.label}
-                    className="local-chat-switch"
-                  >
-                    <span className="local-chat-switch-knob" />
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-          <input ref={fileInputRef} type="file" multiple onChange={handleFileChange} className="local-chat-file-input" />
-          <textarea
-            ref={textAreaRef}
-            className="local-chat-textarea"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                void sendMessage();
-              }
-            }}
-            placeholder={composerPlaceholder}
-            disabled={disabled}
-            rows={1}
-          />
-          <div className="local-chat-composer-bar">
-            <button
-              type="button"
-              onClick={() => setComposerMenuOpen((open) => !open)}
-              aria-label={t('agent.chat.composer.openMenu', 'Open composer actions')}
-              aria-expanded={composerMenuOpen}
-              title={t('agent.chat.composer.openMenu', 'Open composer actions')}
-              disabled={!channelSessionId || sending}
-              className="local-chat-plus-btn"
-            >
-              <IconPlus size={20} stroke={1.7} />
-            </button>
-            <span
-              data-testid="session-composer-permission-badge"
-              title={t('agent.chat.composer.permissionTitle', 'Backend access permission')}
-              className="local-chat-perm-badge"
-            >
-              <IconShieldCheck size={15} stroke={1.8} />
-              {permissionBadgeLabel}
-            </span>
-            {composerIntentLabel && (
-              <span
-                data-testid="session-composer-intent-badge"
-                className="local-chat-intent-badge"
-              >
-                {composerIntentLabel}
-              </span>
-            )}
-            {uploading && (
-              <span className="local-chat-uploading">
-                <IconLoader2 size={14} />
-                {t('localAgents.attaching', 'Attaching...')}
-              </span>
-            )}
-            <span className="local-chat-spacer" />
-            <span
-              data-testid="session-composer-model-badge"
-              title={t('agent.chat.composer.modelTitle', 'Model information')}
-              className="local-chat-model-badge"
-            >
-              <IconCircleDashedCheck size={17} stroke={1.9} color="var(--text-tertiary)" />
-              <span className="local-chat-model-name">{runtimeBadgeLabel}</span>
-            </span>
-            <button
-              className="btn btn-primary local-chat-send"
-              type="button"
-              data-testid="local-agent-send-button"
-              disabled={disabled || (!input.trim() && attachments.length === 0)}
-              onClick={() => void sendMessage()}
-              aria-label={t('chat.send', 'Send')}
-              title={t('chat.send', 'Send')}
-            >
-              {sending ? <IconLoader2 size={18} /> : <IconSend2 size={18} />}
-            </button>
-          </div>
-        </div>
+        <SessionComposer
+          value={input}
+          inputRef={textAreaRef}
+          fileInputRef={fileInputRef}
+          placeholder={composerPlaceholder}
+          disabled={disabled}
+          attachments={attachments.map((file) => ({ name: file.filename || file.saved_filename }))}
+          permissionMode="default"
+          permissionModeLabel={permissionBadgeLabel}
+          permissionOptions={[{
+            value: 'default',
+            label: permissionBadgeLabel,
+            description: t('agent.chat.composer.localPermissionDesc', 'Access is governed by the connected Local Agent policy.'),
+          }]}
+          modelLabel={runtimeBadgeLabel}
+          modelTitle={t('agent.chat.composer.localModelTitle', 'Local Agent runtime')}
+          intentLabel={composerIntentLabel}
+          planModeRequested={localPlanModeRequested}
+          uploading={uploading}
+          uploadProgress={uploading ? 101 : -1}
+          running={false}
+          onChange={setInput}
+          onPaste={() => undefined}
+          onSubmit={() => void sendMessage()}
+          onStop={() => undefined}
+          onAction={setComposerAction}
+          onPermissionModeChange={() => undefined}
+          onFilesSelected={handleFileChange}
+          onRemoveAttachment={(index) => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+          onCancelUpload={() => undefined}
+        />
       </div>
     </div>
   );

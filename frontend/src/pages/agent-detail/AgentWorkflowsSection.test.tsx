@@ -122,7 +122,8 @@ describe('AgentWorkflowsSection (asset view)', () => {
     const html = renderToStaticMarkup(<AgentWorkflowsSection agentId="agent-1" canManage={true} />);
     expect(html).toContain('repo-audit');
     expect(html).toContain('dynamicWorkflow');
-    expect(html).toContain('proposal-1');
+    expect(html).toContain('fanout');
+    expect(html).not.toContain('proposal-1');
     expect(html).toContain('workflow-repair-run-dynamic-failed');
     expect(html).toContain('leafEvidence:1,2');
   });
@@ -131,6 +132,7 @@ describe('AgentWorkflowsSection (asset view)', () => {
     const html = renderToStaticMarkup(<AgentWorkflowsSection agentId="agent-1" canManage={false} />);
     expect(html).not.toContain('workflow-promote-run-unpromoted');
     expect(html).not.toContain('approvePromotion');
+    expect(html).not.toContain('workflow-suggestions-banner');
   });
 
   it('surfaces the repeated-run suggestion banner', () => {

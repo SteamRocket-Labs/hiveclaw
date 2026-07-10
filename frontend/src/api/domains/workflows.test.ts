@@ -9,10 +9,12 @@ import {
   activateWorkflowDefinition,
   cancelWorkflowRun,
   classifyTriggerPin,
+  decideWorkflowGate,
   getWorkflowPreview,
   getWorkflowRun,
   listWorkflowDefinitions,
   previewWorkflow,
+  previewWorkflowCandidate,
   repairWorkflowRun,
   startWorkflow,
   type WorkflowDefinitionRecord,
@@ -83,6 +85,23 @@ describe('previewWorkflow', () => {
     expect(preview.args_hash).toBe('args-1');
     expect(preview.confirmation_required).toBe(false);
     expect(preview.planned_leaf_calls).toBe(3);
+  });
+});
+
+describe('previewWorkflowCandidate', () => {
+  it('selects the exact durable proposal candidate without a model restatement', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      preview_id: 'preview-1',
+      proposal_id: 'proposal-1',
+      candidate_id: 'fanout-critic',
+      preview_status: 'ready',
+    }));
+
+    const preview = await previewWorkflowCandidate('agent-1', 'proposal-1', 'fanout-critic');
+
+    expect(requestOf().url).toBe('/api/agents/agent-1/workflows/proposals/proposal-1/candidates/fanout-critic/preview');
+    expect(requestOf().init.method).toBe('POST');
+    expect(preview.candidate_id).toBe('fanout-critic');
   });
 });
 
@@ -178,11 +197,31 @@ describe('cancelWorkflowRun', () => {
 });
 
 describe('repairWorkflowRun', () => {
-  it('POSTs the repair endpoint and returns the resumed status', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ run_id: 'r-1', status: 'completed', reason: 'repaired' }));
+  it('POSTs the repair endpoint and returns the durable queued status', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ run_id: 'r-1', status: 'pending', reason: 'repair_queued' }));
     const result = await repairWorkflowRun('agent-1', 'r-1');
     expect(requestOf().url).toBe('/api/agents/agent-1/workflows/runs/r-1/repair');
-    expect(result.status).toBe('completed');
+    expect(result.status).toBe('pending');
+  });
+});
+
+describe('decideWorkflowGate', () => {
+  it('POSTs an exact step decision and queues the same run', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      run_id: 'r-1',
+      status: 'pending',
+      step_id: 'approve-send',
+      decision: 'approve',
+    }));
+
+    const result = await decideWorkflowGate('agent-1', 'r-1', 'approve-send', 'approve');
+
+    expect(requestOf().url).toBe('/api/agents/agent-1/workflows/runs/r-1/gate-decision');
+    expect(JSON.parse(String(requestOf().init.body))).toEqual({
+      step_id: 'approve-send',
+      decision: 'approve',
+    });
+    expect(result.status).toBe('pending');
   });
 });
 

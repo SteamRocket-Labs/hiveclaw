@@ -27,6 +27,7 @@ import AgentChatSection, {
   pickFocusedCheckpointIdForScroll,
   permissionOnceOnlyMessageKey,
   sessionCheckpointPreview,
+  subagentWorkerRecoveryModel,
 } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, {
@@ -4088,7 +4089,34 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-runtime-segment-body-workers"');
     expect(markup).toContain('One-shot critic');
     expect(markup).toContain('data-runtime-action="subagent-worker-inspect"');
-    expect(markup).not.toContain('data-runtime-action="subagent-worker-continue"');
+    expect(markup).not.toContain('data-runtime-action="subagent-worker-retry"');
+  });
+
+  it('offers a new-worker request for ordinary Sub-agent failure but not reconciliation replay', () => {
+    expect(subagentWorkerRecoveryModel({
+      status: 'failed',
+      raw: {
+        subagent_decision_entry: {
+          required_user_action: 'inspect_failure_and_decide_retry',
+          retry_available: false,
+        },
+      },
+    } as any)).toEqual({
+      canRequestNewWorker: true,
+      requiresPlatformAdmin: false,
+    });
+    expect(subagentWorkerRecoveryModel({
+      status: 'needs_reconciliation',
+      raw: {
+        subagent_decision_entry: {
+          required_user_action: 'approve_reconciliation_retry',
+          retry_available: true,
+        },
+      },
+    } as any)).toEqual({
+      canRequestNewWorker: false,
+      requiresPlatformAdmin: true,
+    });
   });
 
   it('renders Agent Team member sessions as enterable child-session windows with composer target', () => {
@@ -4206,14 +4234,13 @@ describe('AgentDetail extracted sections', () => {
       workflow_controls: {
         run_id: 'workflow-run-1',
         gate_status: 'waiting',
-        wait_status: 'waiting_for_signal',
-        repairable: true,
+        wait_status: 'waiting_for_gate',
+        repairable: false,
         promotion_eligible: false,
         actions: [
-          { action: 'resume', enabled: true, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'waiting for gate signal' },
-          { action: 'repair', enabled: true, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'resume failed leaves' },
+          { action: 'approve_gate', enabled: true, run_id: 'workflow-run-1', step_id: 'approve-send', preview_id: 'preview-1', reason: 'approval required' },
+          { action: 'reject_gate', enabled: true, run_id: 'workflow-run-1', step_id: 'approve-send', preview_id: 'preview-1', reason: 'approval required' },
           { action: 'cancel', enabled: true, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'run is active' },
-          { action: 'promote', enabled: false, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'needs another clean run' },
         ],
       },
       members: [],
@@ -4284,15 +4311,16 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-workflow-gate-status"');
     expect(markup).toContain('waiting');
     expect(markup).toContain('data-testid="session-workflow-wait-status"');
-    expect(markup).toContain('waiting_for_signal');
-    expect(markup).toContain('data-testid="session-workflow-action-resume"');
-    expect(markup).toContain('data-testid="session-workflow-action-repair"');
+    expect(markup).toContain('waiting_for_gate');
+    expect(markup).toContain('data-testid="session-workflow-action-approve_gate"');
+    expect(markup).toContain('data-testid="session-workflow-action-reject_gate"');
     expect(markup).toContain('data-testid="session-workflow-action-cancel"');
-    expect(markup).toContain('data-testid="session-workflow-action-promote"');
-    expect(markup).toContain('data-workflow-run-id="workflow-run-1"');
-    expect(markup).toContain('data-preview-id="preview-1"');
+    expect(markup).not.toContain('data-workflow-run-id');
+    expect(markup).not.toContain('data-preview-id');
     expect(markup).toContain('data-testid="session-workflow-leaf-detail"');
     expect(markup).toContain('CLO source review');
+    expect(markup).not.toContain('leaf-1');
+    expect(markup).not.toContain('workflow_leaf');
     expect(markup).not.toContain('data-testid="session-workflow-leaf-enter"');
   });
 
@@ -4318,10 +4346,10 @@ describe('AgentDetail extracted sections', () => {
       workflow_controls: {
         run_id: 'workflow-run-1',
         gate_status: 'waiting',
-        wait_status: 'waiting_for_signal',
+        wait_status: 'waiting_for_gate',
         actions: [
-          { action: 'resume', enabled: true, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'waiting for gate signal' },
-          { action: 'promote', enabled: false, run_id: 'workflow-run-1', preview_id: 'preview-1', reason: 'needs another clean run' },
+          { action: 'approve_gate', enabled: true, run_id: 'workflow-run-1', step_id: 'approve-send', preview_id: 'preview-1', reason: 'approval required' },
+          { action: 'reject_gate', enabled: true, run_id: 'workflow-run-1', step_id: 'approve-send', preview_id: 'preview-1', reason: 'approval required' },
         ],
       },
       members: [],
@@ -4367,16 +4395,16 @@ describe('AgentDetail extracted sections', () => {
       },
     });
 
-    const resumeButton = findElementByTestId(tree, 'session-workflow-action-resume');
-    const promoteButton = findElementByTestId(tree, 'session-workflow-action-promote');
+    const approveButton = findElementByTestId(tree, 'session-workflow-action-approve_gate');
+    const rejectButton = findElementByTestId(tree, 'session-workflow-action-reject_gate');
     const leafEnter = findElementByTestId(tree, 'session-workflow-leaf-enter');
 
-    expect(resumeButton.props.disabled).toBe(false);
-    expect(promoteButton.props.disabled).toBe(true);
-    resumeButton.props.onClick();
+    expect(approveButton.props.disabled).toBe(false);
+    expect(rejectButton.props.disabled).toBe(false);
+    approveButton.props.onClick();
     leafEnter.props.onClick();
 
-    expect(workflowActions).toEqual(['resume:workflow-run-1:preview-1:workflow-run-1']);
+    expect(workflowActions).toEqual(['approve_gate:workflow-run-1:preview-1:workflow-run-1']);
     expect(selectedSessions).toEqual(['leaf-session-1']);
   });
 

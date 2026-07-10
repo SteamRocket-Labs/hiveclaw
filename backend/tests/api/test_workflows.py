@@ -85,6 +85,11 @@ def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_le
             return None
 
     db = FakeDB()
+    authorizations: list[dict] = []
+    visible_summary_calls: list[dict] = []
+    queued_resume_calls: list[dict] = []
+    candidate_preview_calls: list[dict] = []
+    gate_decision_calls: list[dict] = []
 
     async def override_user():
         return user
@@ -101,6 +106,52 @@ def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_le
         return SimpleNamespace(id=agent_id, tenant_id=user.tenant_id, name="agent"), access_level
 
     monkeypatch.setattr(workflows_api, "check_agent_access", fake_access)
+
+    async def fake_authorize_run(_db, **kwargs):
+        authorizations.append(kwargs)
+        return SimpleNamespace(authority_source="session_owner")
+
+    async def fake_visible_summaries(_db, **kwargs):
+        visible_summary_calls.append(kwargs)
+        return kwargs["summaries"]
+
+    async def fake_queue_resume(_db, **kwargs):
+        queued_resume_calls.append(kwargs)
+        return {
+            "run_id": str(kwargs["loaded"].task.id),
+            "status": "pending",
+            "reason": f"{kwargs['request_kind']}_queued",
+        }
+
+    async def fake_candidate_preview(_db, **kwargs):
+        candidate_preview_calls.append(kwargs)
+        return {
+            "preview_id": str(uuid.uuid5(kwargs["proposal_id"], kwargs["candidate_id"])),
+            "session_id": str(session_id),
+            "preview_status": "ready",
+            "proposal_id": str(kwargs["proposal_id"]),
+            "candidate_id": kwargs["candidate_id"],
+            "confirmation_required": True,
+            "confirmation_reasons": ["external effect"],
+            "planned_leaf_calls": 2,
+            "budget_tokens": 4000,
+        }
+
+    async def fake_gate_decision(_db, **kwargs):
+        gate_decision_calls.append(kwargs)
+        return {
+            "run_id": str(kwargs["loaded"].task.id),
+            "status": "pending",
+            "decision": kwargs["decision"],
+            "step_id": kwargs["step_id"],
+            "replayed": False,
+        }
+
+    monkeypatch.setattr(workflows_api, "_authorize_workflow_run_action", fake_authorize_run, raising=False)
+    monkeypatch.setattr(workflows_api, "_visible_workflow_summaries", fake_visible_summaries, raising=False)
+    monkeypatch.setattr(workflows_api, "_queue_workflow_resume", fake_queue_resume, raising=False)
+    monkeypatch.setattr(workflows_api, "_preview_dynamic_workflow_candidate", fake_candidate_preview, raising=False)
+    monkeypatch.setattr(workflows_api, "_apply_workflow_gate_decision", fake_gate_decision, raising=False)
 
     async def fake_resolve_session(_db, **_kwargs):
         return SimpleNamespace(id=session_id)
@@ -182,6 +233,11 @@ def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_le
     client.fake_launch = fake_launch
     client.fake_gate_check = fake_gate_check
     client.previews = previews
+    client.authorizations = authorizations
+    client.visible_summary_calls = visible_summary_calls
+    client.queued_resume_calls = queued_resume_calls
+    client.candidate_preview_calls = candidate_preview_calls
+    client.gate_decision_calls = gate_decision_calls
     return client
 
 
@@ -346,6 +402,7 @@ def _run_task(*, run_id, agent_id, tenant_id, status="completed", name="contract
         status=status,
         task_type="workflow",
         parent_agent_id=agent_id,
+        parent_session_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"workflow-parent:{run_id}")),
         created_at=datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc),
         completed_at=datetime(2026, 6, 5, 12, 5, tzinfo=timezone.utc) if status == "completed" else None,
         metadata_json={
@@ -428,6 +485,7 @@ def test_get_run_returns_steps(monkeypatch):
     body = resp.json()
     assert body["status"] == "completed"
     assert body["steps"][0]["step_id"] == "scan"
+    assert client.authorizations[-1]["action"] == "workflow:read"
 
 
 def test_get_run_returns_dynamic_metadata_evidence_and_leaf_calls(monkeypatch):
@@ -514,6 +572,7 @@ def test_cancel_run_kills(monkeypatch):
     resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/cancel")
     assert resp.status_code == 200
     assert killed == [run_id]
+    assert client.authorizations[-1]["action"] == "workflow:cancel"
 
 
 def test_cancel_404_for_foreign_run_and_never_kills(monkeypatch):
@@ -538,7 +597,7 @@ def test_cancel_404_for_foreign_run_and_never_kills(monkeypatch):
     assert killed == []  # the kill must NOT happen
 
 
-def test_repair_run_resumes_owned_failed_dynamic_run(monkeypatch):
+def test_repair_run_queues_owned_failed_dynamic_run(monkeypatch):
     user = _user()
     client = _client(user, monkeypatch)
     run_id = uuid.uuid4()
@@ -551,28 +610,13 @@ def test_repair_run_resumes_owned_failed_dynamic_run(monkeypatch):
             leaf_calls=[],
         ),
     )
-    calls: list[dict] = []
-    attempts: list[dict] = []
-
-    async def fake_resume(self, rid, *, tenant_id=None, leaf_executor=None):
-        calls.append({"run_id": rid, "tenant_id": tenant_id, "leaf_executor": leaf_executor})
-        return WorkflowRunOutcome(status="completed", reason="repaired")
-
-    async def fake_record_attempt(self, rid, *, tenant_id=None):
-        attempts.append({"run_id": rid, "tenant_id": tenant_id})
-
-    monkeypatch.setattr(workflows_api.WorkflowRuntimeService, "resume_run", fake_resume)
-    monkeypatch.setattr(workflows_api.WorkflowRuntimeService, "record_dynamic_repair_attempt", fake_record_attempt)
-    monkeypatch.setattr(workflows_api, "build_resumable_workflow_leaf_executor", lambda: "executor", raising=False)
-
     resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/repair")
 
     assert resp.status_code == 200
-    assert resp.json()["status"] == "completed"
-    assert calls[0]["run_id"] == run_id
-    assert str(calls[0]["tenant_id"]) == str(user.tenant_id)
-    assert calls[0]["leaf_executor"] == "executor"
-    assert attempts == [{"run_id": run_id, "tenant_id": user.tenant_id}]
+    assert resp.json()["status"] == "pending"
+    assert resp.json()["reason"] == "repair_queued"
+    assert client.authorizations[-1]["action"] == "workflow:repair"
+    assert client.queued_resume_calls[-1]["request_kind"] == "repair"
 
 
 def test_repair_run_rejects_completed_run(monkeypatch):
@@ -665,6 +709,59 @@ def test_list_runs_returns_archived_summaries(monkeypatch):
     # the service is called with the ACCESS-CHECKED agent/tenant, not raw input
     assert calls[0]["agent_id"] == agent_id
     assert str(calls[0]["tenant_id"]) == str(user.tenant_id)
+    assert len(client.visible_summary_calls) == 1
+
+
+def test_select_dynamic_candidate_creates_exact_durable_preview(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch)
+    agent_id = uuid.uuid4()
+    proposal_id = uuid.uuid4()
+
+    response = client.post(f"/agents/{agent_id}/workflows/proposals/{proposal_id}/candidates/fanout-critic/preview")
+
+    assert response.status_code == 200
+    assert response.json()["proposal_id"] == str(proposal_id)
+    assert response.json()["candidate_id"] == "fanout-critic"
+    assert client.candidate_preview_calls == [
+        {
+            "agent": client.candidate_preview_calls[0]["agent"],
+            "current_user": user,
+            "proposal_id": proposal_id,
+            "candidate_id": "fanout-critic",
+        }
+    ]
+
+
+def test_workflow_gate_decision_is_session_authorized_and_queued(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch)
+    agent_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda _rid: SimpleNamespace(
+            task=_run_task(
+                run_id=run_id,
+                agent_id=agent_id,
+                tenant_id=user.tenant_id,
+                status="suspended",
+            ),
+            steps=[],
+            leaf_calls=[],
+        ),
+    )
+
+    response = client.post(
+        f"/agents/{agent_id}/workflows/runs/{run_id}/gate-decision",
+        json={"step_id": "approve-send", "decision": "approve"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert client.authorizations[-1]["action"] == "workflow:gate_decision"
+    assert client.gate_decision_calls[-1]["step_id"] == "approve-send"
+    assert client.gate_decision_calls[-1]["decision"] == "approve"
 
 
 # ── promote from run (固化) ────────────────────────────────────────
@@ -796,3 +893,12 @@ def test_promote_suggestions_returns_agent_scoped_payload(monkeypatch):
     ]
     assert calls[0]["agent_id"] == agent_id
     assert str(calls[0]["tenant_id"]) == str(user.tenant_id)
+
+
+def test_promote_suggestions_require_manage_access(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch, access_level="use")
+
+    response = client.get(f"/agents/{uuid.uuid4()}/workflows/promote-suggestions")
+
+    assert response.status_code == 403

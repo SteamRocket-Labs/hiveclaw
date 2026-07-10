@@ -1206,3 +1206,68 @@ git diff --check -> clean
 
 - `MODE-05 Patrol`：`断点 -> 闭环`。
 - Plan recommendation 的 Authority / Evidence：`断点 -> 闭环`。
+
+### 12.10 Sub-agent 失败恢复与 Dynamic Workflow 用户控制 — 已闭环
+
+本节收口第 6.2、6.4 节在真实使用面留下的最后一组断点：一次性 Sub-agent 普通失败没有安全的新 Worker 恢复入口；Workflow Gate 只能看到“等待”，却不能批准或拒绝；所谓 Resume 实际调用 Repair；候选选择仍要求模型重新复述 definition/args；run history 只有 Agent 权限而没有 Session owner 权限。
+
+**原子链**
+
+| 原子 | 当前事实源与消费路径 |
+| --- | --- |
+| 输入 | Dynamic Workflow 候选按钮直接提交 `proposal_id + candidate_id`；Gate 按钮提交 `run_id + step_id + approve/reject`；Repair 是独立动作。Sub-agent 普通失败只提供“由主 Agent 检查后创建新 Worker”，不伪造对旧 Worker 的 Continue。 |
+| 权威 | 候选只允许 proposal 的 `requested_by_user_id`，并再次绑定 proposal Session owner；run read/cancel/repair/gate/promote 全部绑定 parent Session owner。Promotion suggestion 属于 Agent 资产治理，只对 manage 权限开放。 |
+| 执行 | 候选预览从服务端不可变 proposal 读取 canonical candidate，重新 compile/admit/hash-check 后生成 preview；Gate 决策原子更新 `CoordinationCheckpoint` 并把同一 Workflow `RuntimeTask` 重新置为 pending；Repair 走相同 Worker 队列，但只有 Repair 增加 repair attempt。请求线程不再同步执行长 Workflow。 |
+| 证据 | `WorkflowProposalArtifact`、确定性 `WorkflowPreviewArtifact.id`、checkpoint decision metadata、`workflow_resume_request` 与 Workflow step/leaf journal 组成机械事实链。Sub-agent 的 return/decision contract、result summary 与 reconciliation blocker 保留为恢复判断证据。 |
+| 恢复 | 同一 candidate 使用 `UUIDv5(proposal_id,candidate_id)` 幂等复用 preview；proposal row lock 串行化并发选择。Gate 重放识别相同 decision，冲突 decision 返回 409；queued task 清理旧 claim/lease 后由共享 RuntimeTask Worker 重取。`needs_reconciliation` 永不作为普通重试，必须由平台管理员核对。 |
+| 消费 | Session Runtime Console 只呈现 Approve / Reject / Repair / Cancel / Promote 中当前真正可用的动作；步骤与 Leaf 不展示 runtime kind、session UUID、run UUID 或 preview UUID。Workflow 资产页用 pattern 与 outcome evidence 替代 proposal/candidate 内部 id。普通失败的 Sub-agent 请求回到主 Agent，由模型判断是否安全并 spawn 新 Worker。 |
+| 验收 | 覆盖确定性 preview identity、exact candidate API、Session authority、Gate action、repair queue、reconciliation blocker、前端 adapter/action normalization、内部 id 不可见、Sub-agent 恢复判定；Workflow/Session 相关后端选择集、全量前端与 production build 均通过。 |
+
+**状态机收口**
+
+```text
+Candidate click
+  -> load locked proposal candidate
+  -> compile + admission + canonical hash verification
+  -> deterministic immutable preview
+  -> explicit Confirm and run
+
+Gate suspended
+  -> Approve / Reject exact step
+  -> checkpoint decision + same RuntimeTask pending (one DB commit)
+  -> shared RuntimeTask Worker resumes journal
+
+Sub-agent failed
+  -> inspect evidence
+  -> ask Lead Agent to judge retry safety
+  -> safe: spawn a new one-shot Worker
+  -> needs_reconciliation: platform-admin path only
+```
+
+**代码极简收口**
+
+- 新增纯函数 `queue_workflow_resume_record()` 作为 Gate/Repair 唯一 RuntimeTask 重开契约；删除 API request 内同步 `resume_run()` 和把 Resume 映射成 Repair 的前端分支；
+- 候选预览复用现有 Workflow compiler、admission、confirmation 与 preview artifact，不引入第二套 definition 或 UI 状态机；
+- Workbench 直接消费既有 `CoordinationCheckpoint`，只投影 pending Gate 所需的 step/action；
+- Sub-agent 不新增“恢复旧 Worker”后端，复用主 Agent 的模型判断与既有 `spawn_subagent`，避免绕过权限、预算和副作用核对；
+- 同步两条已漂移验收契约：Alembic 唯一 head 更新为 `runtime_notification_outbox_0710`，`start_workflow` timeout 测试改用 canonical `preview_id` 输入。
+
+**故障注入与机械验收**
+
+```text
+Red evidence -> candidate button发送自然语言让模型复述；Gate 无 approve/reject API；Resume 实际增加 repair attempt；repair 在 HTTP 请求内长时间执行；run list/action 未绑定 Session owner；needs_reconciliation 无语义 blocker；UI 暴露 run/preview/leaf/session 内部 id
+backend targeted Workflow/Session suites -> 55 passed, 0 failed
+backend expanded Workflow/Session selection -> 341 passed, 0 failed, 5784 deselected
+frontend full regression -> 97 files, 580 passed, 0 failed
+npm run build -> TypeScript + Vite exit 0
+ruff check affected backend paths -> All checks passed
+git diff --check -> clean
+```
+
+**状态变化**
+
+- 第 6.2 节 Sub-agent 普通失败恢复：`断点 -> 闭环`；reconciliation 继续保持治理阻断而不是自动重放。
+- 第 6.4 节 Dynamic Workflow candidate / Gate / Repair：`断点 -> 闭环`。
+- Workflow run 的 Session Authority：`局部闭环 -> 闭环`。
+- Workflow 普通 UI 内部事实泄露：`断点 -> 闭环`；完整机械字段仍留在持久证据与显式技术面。
+- 七原子总矩阵的 Sub-agent 与 Workflow 用户控制：`局部闭环 -> 闭环`。

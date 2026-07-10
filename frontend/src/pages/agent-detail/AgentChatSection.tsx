@@ -63,7 +63,9 @@ import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
 import {
   cancelWorkflowRun,
+  decideWorkflowGate,
   getWorkflowPreview,
+  previewWorkflowCandidate,
   promoteWorkflowRun,
   repairWorkflowRun,
   startWorkflow,
@@ -1800,6 +1802,24 @@ export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel): string 
   return outcome && outcome !== status ? `${status} · ${outcome}` : status;
 }
 
+export function subagentWorkerRecoveryModel(worker: RuntimeSectionItemModel): {
+  canRequestNewWorker: boolean;
+  requiresPlatformAdmin: boolean;
+} {
+  const status = String(worker.status || worker.state || '').trim().toLowerCase();
+  const decision = isRuntimeRecord(worker.raw.subagent_decision_entry)
+    ? worker.raw.subagent_decision_entry
+    : {};
+  const requiredUserAction = stringValue(decision.required_user_action).trim().toLowerCase();
+  const requiresPlatformAdmin = status === 'needs_reconciliation'
+    || worker.userBlocker?.kind === 'runtime_reconciliation'
+    || requiredUserAction === 'approve_reconciliation_retry';
+  return {
+    canRequestNewWorker: !requiresPlatformAdmin && status === 'failed',
+    requiresPlatformAdmin,
+  };
+}
+
 function runtimeItemDisplayLabel(item: RuntimeSectionItemModel, fallback: string): string {
   const label = stringValue(item.label).trim();
   if (!label || label === item.id || isUuidLike(label)) return fallback;
@@ -1823,6 +1843,7 @@ function SessionRuntimePanel({
   sessionId,
   onGoalChanged,
   onTeamChanged,
+  onRetrySubagent,
 }: {
   messages: AgentChatMessage[];
   sessionWorkbench: SessionWorkbench | null;
@@ -1840,6 +1861,7 @@ function SessionRuntimePanel({
   sessionId?: string;
   onGoalChanged?: () => void | Promise<unknown>;
   onTeamChanged?: () => void | Promise<unknown>;
+  onRetrySubagent?: (worker: RuntimeSectionItemModel) => void | Promise<unknown>;
 }) {
   const RUNTIME_PANEL_WIDTH_KEY = 'hive.sessionRuntimePanel.width';
   const [panelWidth, setPanelWidth] = React.useState<number | null>(() => {
@@ -2042,8 +2064,9 @@ function SessionRuntimePanel({
     const sessionId = worker.childSessionId;
     const canInspect = Boolean(sessionId && onSelectSession);
     const meta = runtimeItemDisplayMeta(worker);
+    const recovery = subagentWorkerRecoveryModel(worker);
     const workerAction = (
-      action: 'inspect' | 'continue',
+      action: 'inspect' | 'retry',
       label: string,
       disabled: boolean,
       title: string,
@@ -2078,6 +2101,18 @@ function SessionRuntimePanel({
               : t('sessionWorkbench.rightPanel.workerInspectDisabled', 'No worker session is available'),
             canInspect && sessionId ? () => onSelectSession?.(sessionId) : undefined,
           )}
+          {recovery.canRequestNewWorker
+            ? workerAction(
+                'retry',
+                t('sessionWorkbench.rightPanel.workerRetry', 'Retry with new worker'),
+                !onRetrySubagent,
+                t(
+                  'sessionWorkbench.rightPanel.workerRetryTitle',
+                  'Ask the main Agent to inspect the failure and create a new one-shot worker if safe',
+                ),
+                onRetrySubagent ? () => void onRetrySubagent(worker) : undefined,
+              )
+            : null}
         </span>
       </div>
     );
@@ -2438,7 +2473,8 @@ export function WorkflowRunFocusPanel({
   ].filter(Boolean).join(' · ');
   const controls = windowModel.controls;
   const actionLabel = (action: WorkflowRunActionModel['action']) => {
-    if (action === 'resume') return t('sessionWorkbench.workflowRunWindow.resume', 'Resume');
+    if (action === 'approve_gate') return t('sessionWorkbench.workflowRunWindow.approveGate', 'Approve');
+    if (action === 'reject_gate') return t('sessionWorkbench.workflowRunWindow.rejectGate', 'Reject');
     if (action === 'repair') return t('sessionWorkbench.workflowRunWindow.repair', 'Repair');
     if (action === 'cancel') return t('sessionWorkbench.workflowRunWindow.cancel', 'Cancel');
     return t('sessionWorkbench.workflowRunWindow.promote', 'Promote');
@@ -2449,10 +2485,6 @@ export function WorkflowRunFocusPanel({
       type="button"
       data-testid={`session-workflow-action-${action.action}`}
       data-workflow-action={action.action}
-      data-workflow-run-id={action.runId || undefined}
-      data-preview-id={action.previewId || undefined}
-      data-proposal-id={action.proposalId || undefined}
-      data-candidate-id={action.candidateId || undefined}
       disabled={!action.enabled || !onWorkflowAction}
       title={action.reason || actionLabel(action.action)}
       onClick={() => void onWorkflowAction?.(action, workflow)}
@@ -2472,7 +2504,7 @@ export function WorkflowRunFocusPanel({
           {step.label || t('sessionWorkbench.workflowRunWindow.stepFallback', 'Step {{index}}', { index: index + 1 })}
         </span>
         <span className="session-runtime-row-meta">
-          {[step.id, step.runtimeKind, step.summary].filter(Boolean).join(' · ') || step.id}
+          {step.summary || t('sessionWorkbench.workflowRunWindow.noStepDetails', 'No additional details')}
         </span>
       </span>
       <span className="session-runtime-status">{step.status || 'unknown'}</span>
@@ -2487,9 +2519,7 @@ export function WorkflowRunFocusPanel({
             {leaf.label || t('sessionWorkbench.workflowRunWindow.leafFallback', 'Leaf {{index}}', { index: index + 1 })}
           </span>
           <span className="session-runtime-row-meta">
-            {[leaf.id, leaf.runtimeKind, leaf.summary, leaf.childSessionId ? `session:${leaf.childSessionId}` : '']
-              .filter(Boolean)
-              .join(' · ') || leaf.id}
+            {leaf.summary || t('sessionWorkbench.workflowRunWindow.noLeafDetails', 'No additional details')}
           </span>
         </span>
         <span className="session-runtime-status">{leaf.status || 'unknown'}</span>
@@ -2855,6 +2885,124 @@ function WorkflowPreviewConfirmationCard({ meta, agentId }: { meta: WorkflowPrev
   return <InteractiveWorkflowPreviewCard meta={meta} agentId={agentId} />;
 }
 
+function DynamicWorkflowProposalCard({
+  meta,
+  agentId,
+}: {
+  meta: Extract<ToolCallMeta, { kind: 'dynamic_workflow_proposal' }>;
+  agentId?: string;
+}) {
+  const { t } = useTranslation();
+  const previewMutation = useMutation({
+    mutationFn: (candidateId: string) => (
+      agentId
+        ? previewWorkflowCandidate(agentId, meta.proposalId, candidateId)
+        : Promise.reject(new Error('Agent context is unavailable'))
+    ),
+  });
+  const selectedPreview = previewMutation.data;
+  const selectedPreviewMeta: WorkflowPreviewToolMeta | null = selectedPreview
+    ? {
+        kind: 'workflow_preview',
+        previewId: selectedPreview.preview_id,
+        sessionId: selectedPreview.session_id || null,
+        previewStatus: selectedPreview.preview_status,
+        proposalId: selectedPreview.proposal_id || meta.proposalId,
+        candidateId: selectedPreview.candidate_id || null,
+        confirmationRequired: Boolean(selectedPreview.confirmation_required),
+        confirmationReasons: selectedPreview.confirmation_reasons || [],
+        plannedLeafCalls: selectedPreview.planned_leaf_calls ?? null,
+        budgetTokens: selectedPreview.budget_tokens ?? null,
+      }
+    : null;
+
+  return (
+    <div style={{ display: 'grid', gap: '8px' }}>
+      <div style={{ display: 'grid', gap: '4px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-text)' }}>
+          {t('agent.chat.toolResults.dynamicWorkflowProposalTitle', 'Dynamic Workflow Proposal')}
+        </div>
+        {meta.goal && <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{meta.goal}</div>}
+        {meta.whyWorkflow && <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{meta.whyWorkflow}</div>}
+      </div>
+      <StructuredToolSection
+        label={t('agent.chat.toolResults.successCriteria', 'Success Criteria')}
+        items={meta.successCriteria}
+      />
+      <div style={{ display: 'grid', gap: '6px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-tertiary)' }}>
+          {t('agent.chat.toolResults.candidates', 'Candidates')}
+        </div>
+        {meta.candidates.map((candidate, index) => {
+          const recommended = candidate.candidateId === meta.recommendedCandidateId;
+          const facts = [
+            candidate.patternMix.length ? candidate.patternMix.join(', ') : '',
+            candidate.riskLevel ? `${t('agent.chat.toolResults.risk', 'Risk')}: ${candidate.riskLevel}` : '',
+            candidate.plannedLeafCalls != null
+              ? `${t('agent.chat.toolResults.leafCalls', 'Leaf calls')}: ${candidate.plannedLeafCalls}`
+              : '',
+            candidate.budgetTokens != null
+              ? `${t('agent.chat.toolResults.budgetTokens', 'Budget tokens')}: ${candidate.budgetTokens}`
+              : '',
+            candidate.confirmationRequired
+              ? t('agent.chat.toolResults.confirmationRequired', 'Confirmation required')
+              : '',
+          ].filter(Boolean);
+          return (
+            <div
+              key={candidate.candidateId}
+              style={{
+                display: 'grid',
+                gap: '3px',
+                padding: '8px',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: '6px',
+              }}
+            >
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  {candidate.name || t('agent.chat.toolResults.candidateFallback', 'Candidate {{index}}', { index: index + 1 })}
+                </span>
+                {recommended && (
+                  <span style={{ fontSize: '11px', color: 'var(--accent-text)' }}>
+                    {t('agent.chat.toolResults.recommended', 'Recommended')}
+                  </span>
+                )}
+              </div>
+              {facts.length > 0 && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{facts.join(' · ')}</div>}
+              {agentId && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => previewMutation.mutate(candidate.candidateId)}
+                  disabled={previewMutation.isPending}
+                >
+                  {previewMutation.isPending
+                    ? t('agent.chat.workflowPreview.starting', 'Creating preview')
+                    : t('agent.chat.toolResults.selectAndPreview', 'Select and preview')}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {previewMutation.isError && (
+        <div className="agent-workflows-error" role="alert">
+          {previewMutation.error instanceof Error
+            ? previewMutation.error.message
+            : t('agent.chat.workflowPreview.previewFailed', 'Workflow preview could not be created. You can retry safely.')}
+        </div>
+      )}
+      {selectedPreviewMeta ? <WorkflowPreviewConfirmationCard meta={selectedPreviewMeta} agentId={agentId} /> : null}
+      {!selectedPreviewMeta && (
+        <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+          {t('agent.chat.toolResults.dynamicWorkflowNotStarted', 'Select a candidate to create a reviewable preview. Nothing has run yet.')}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function StructuredToolResultBody({
   toolName,
   toolMeta,
@@ -2952,88 +3100,7 @@ export function StructuredToolResultBody({
   }
 
   if (toolMeta.kind === 'dynamic_workflow_proposal') {
-    return (
-      <div style={{ display: 'grid', gap: '8px' }}>
-        <div style={{ display: 'grid', gap: '4px' }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-text)' }}>
-            {t('agent.chat.toolResults.dynamicWorkflowProposalTitle', 'Dynamic Workflow Proposal')}
-          </div>
-          {toolMeta.goal && (
-            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{toolMeta.goal}</div>
-          )}
-          {toolMeta.whyWorkflow && (
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{toolMeta.whyWorkflow}</div>
-          )}
-        </div>
-        <StructuredToolSection
-          label={t('agent.chat.toolResults.successCriteria', 'Success Criteria')}
-          items={toolMeta.successCriteria}
-        />
-        <div style={{ display: 'grid', gap: '6px' }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-tertiary)' }}>
-            {t('agent.chat.toolResults.candidates', 'Candidates')}
-          </div>
-          {toolMeta.candidates.map((candidate) => {
-            const recommended = candidate.candidateId === toolMeta.recommendedCandidateId;
-            const facts = [
-              candidate.patternMix.length ? candidate.patternMix.join(', ') : '',
-              candidate.riskLevel ? `${t('agent.chat.toolResults.risk', 'Risk')}: ${candidate.riskLevel}` : '',
-              candidate.plannedLeafCalls != null
-                ? `${t('agent.chat.toolResults.leafCalls', 'Leaf calls')}: ${candidate.plannedLeafCalls}`
-                : '',
-              candidate.budgetTokens != null
-                ? `${t('agent.chat.toolResults.budgetTokens', 'Budget tokens')}: ${candidate.budgetTokens}`
-                : '',
-              candidate.confirmationRequired
-                ? t('agent.chat.toolResults.confirmationRequired', 'Confirmation required')
-                : '',
-            ].filter(Boolean);
-            return (
-              <div
-                key={candidate.candidateId}
-                style={{
-                  display: 'grid',
-                  gap: '3px',
-                  padding: '8px',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: '6px',
-                }}
-              >
-                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                    {candidate.name || candidate.candidateId}
-                  </span>
-                  {recommended && (
-                    <span style={{ fontSize: '11px', color: 'var(--accent-text)' }}>
-                      {t('agent.chat.toolResults.recommended', 'Recommended')}
-                    </span>
-                  )}
-                </div>
-                {facts.length > 0 && (
-                  <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{facts.join(' · ')}</div>
-                )}
-                {onSendMessage && (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() =>
-                      onSendMessage(
-                        `选择 Dynamic Workflow 方案“${candidate.name || candidate.candidateId}”。请基于服务端已保存的当前提案生成精确预览；不要改写定义或参数，预览前不要执行。`,
-                      )
-                    }
-                  >
-                    {t('agent.chat.toolResults.selectAndPreview', 'Select and preview')}
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-          {t('agent.chat.toolResults.dynamicWorkflowNotStarted', 'Select a candidate to create a reviewable preview. Nothing has run yet.')}
-        </div>
-      </div>
-    );
+    return <DynamicWorkflowProposalCard meta={toolMeta} agentId={agentId} />;
   }
 
   if (toolMeta.kind === 'hr_preview') {
@@ -3493,28 +3560,16 @@ function AgentChatSection({
     setArtifactPreview({ artifact, url: href });
   }, [effectiveAgentId, t]);
 
-  const handleWorkflowAction = React.useCallback(
-    async (action: WorkflowRunActionModel) => {
-      if (!effectiveAgentId || !action.runId) return;
-      try {
-        if (action.action === 'cancel') {
-          await cancelWorkflowRun(effectiveAgentId, action.runId);
-        } else if (action.action === 'promote') {
-          await promoteWorkflowRun(effectiveAgentId, action.runId);
-        } else {
-          await repairWorkflowRun(effectiveAgentId, action.runId);
-        }
-        showAppToast(t('sessionWorkbench.workflowRunWindow.actionQueued', 'Workflow action queued.'), 'success');
-      } catch (error: any) {
-        showAppToast(
-          t('sessionWorkbench.workflowRunWindow.actionFailed', 'Workflow action failed: {{message}}', {
-            message: error?.message || String(error),
-          }),
-          'error',
-        );
-      }
+  const requestSubagentRetry = React.useCallback(
+    async (worker: RuntimeSectionItemModel) => {
+      if (!onSendMessage || !subagentWorkerRecoveryModel(worker).canRequestNewWorker) return;
+      const workerLabel = runtimeItemDisplayLabel(worker, 'Sub-agent worker');
+      const evidence = worker.summary ? ` 已有失败证据：${worker.summary}` : '';
+      await onSendMessage(
+        `请检查一次性 Sub-agent“${workerLabel}”失败的原因。若确认不会重复外部副作用，请保留已有证据，并以同一任务要求创建一个新的 Worker 重试；不要复用或继续原 Worker。${evidence}`,
+      );
     },
-    [effectiveAgentId, t],
+    [onSendMessage],
   );
 
   React.useEffect(() => {
@@ -3763,6 +3818,38 @@ function AgentChatSection({
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
+  const handleWorkflowAction = React.useCallback(
+    async (action: WorkflowRunActionModel) => {
+      if (!effectiveAgentId || !action.runId) return;
+      try {
+        if (action.action === 'cancel') {
+          await cancelWorkflowRun(effectiveAgentId, action.runId);
+        } else if (action.action === 'promote') {
+          await promoteWorkflowRun(effectiveAgentId, action.runId);
+        } else if (action.action === 'approve_gate' || action.action === 'reject_gate') {
+          if (!action.stepId) throw new Error('Workflow gate step is missing');
+          await decideWorkflowGate(
+            effectiveAgentId,
+            action.runId,
+            action.stepId,
+            action.action === 'approve_gate' ? 'approve' : 'reject',
+          );
+        } else {
+          await repairWorkflowRun(effectiveAgentId, action.runId);
+        }
+        await refetchSessionWorkbench();
+        showAppToast(t('sessionWorkbench.workflowRunWindow.actionQueued', 'Workflow action queued.'), 'success');
+      } catch (error: any) {
+        showAppToast(
+          t('sessionWorkbench.workflowRunWindow.actionFailed', 'Workflow action failed: {{message}}', {
+            message: error?.message || String(error),
+          }),
+          'error',
+        );
+      }
+    },
+    [effectiveAgentId, refetchSessionWorkbench, t],
+  );
   const { data: sessionContextUsageData } = useQuery({
     queryKey: ['chat-session-context-usage', effectiveAgentId, activeSessionId],
     queryFn: () => ccParityApi.getSessionContextUsage(effectiveAgentId!, activeSessionId!),
@@ -4470,6 +4557,7 @@ function AgentChatSection({
           sessionId={activeSessionId || undefined}
           onGoalChanged={() => void refetchSessionWorkbench()}
           onTeamChanged={() => void refetchSessionWorkbench()}
+          onRetrySubagent={requestSubagentRetry}
         />
       ) : null}
     </div>

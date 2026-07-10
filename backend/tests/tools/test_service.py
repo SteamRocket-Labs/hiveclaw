@@ -1363,21 +1363,7 @@ async def test_tool_runtime_service_long_running_tools_have_explicit_timeout(
     seen = {}
     arguments = {"task": "long running"}
     if tool_name == "start_workflow":
-        arguments = {
-            "definition": {
-                "name": "read-probe",
-                "args_schema": {},
-                "steps": [
-                    {
-                        "id": "scan",
-                        "type": "agent_step",
-                        "leaf": {"name": "scanner", "type": "explorer"},
-                        "task": "Scan the workspace",
-                    }
-                ],
-            },
-            "args": {},
-        }
+        arguments = {"preview_id": str(uuid4())}
 
     async def fake_execute_with_context(self, *_args, **_kwargs):
         return "ok"

@@ -54,6 +54,8 @@ export interface WorkflowPreview {
   run_id?: string | null;
   attempt_count?: number;
   failure?: { code: string | null; message: string | null } | null;
+  proposal_id?: string | null;
+  candidate_id?: string | null;
   definition_hash: string;
   args_hash: string;
   confirmation_required: boolean;
@@ -209,6 +211,16 @@ export function getWorkflowPreview(agentId: string, previewId: string): Promise<
   return get<WorkflowPreview>(`/agents/${agentId}/workflows/previews/${previewId}`);
 }
 
+export function previewWorkflowCandidate(
+  agentId: string,
+  proposalId: string,
+  candidateId: string,
+): Promise<WorkflowPreview> {
+  return post<WorkflowPreview>(
+    `/agents/${agentId}/workflows/proposals/${encodeURIComponent(proposalId)}/candidates/${encodeURIComponent(candidateId)}/preview`,
+  );
+}
+
 export interface StartWorkflowOptions {
   previewId: string;
   confirmedPlanId?: string;
@@ -245,6 +257,26 @@ export function repairWorkflowRun(
   return post<{ run_id: string; status: WorkflowRunStatus; reason: string | null }>(
     `/agents/${agentId}/workflows/runs/${runId}/repair`,
   );
+}
+
+export interface WorkflowGateDecisionResult {
+  run_id: string;
+  status: WorkflowRunStatus;
+  step_id: string;
+  decision: 'approve' | 'reject';
+  replayed?: boolean;
+}
+
+export function decideWorkflowGate(
+  agentId: string,
+  runId: string,
+  stepId: string,
+  decision: 'approve' | 'reject',
+): Promise<WorkflowGateDecisionResult> {
+  return post<WorkflowGateDecisionResult>(`/agents/${agentId}/workflows/runs/${runId}/gate-decision`, {
+    step_id: stepId,
+    decision,
+  });
 }
 
 export function listWorkflowRuns(agentId: string, limit = 50): Promise<WorkflowRunSummary[]> {

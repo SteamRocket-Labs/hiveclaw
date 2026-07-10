@@ -16,6 +16,7 @@ from app.models.agent_session_goal import AgentSessionGoal
 from app.models.agent_team import AgentTeam, AgentTeamMember
 from app.models.audit import ApprovalRequest
 from app.models.chat_session import ChatSession
+from app.models.coordination import CoordinationCheckpoint
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowLeafCall, WorkflowStep
 from app.runtime.ccplus_contracts import (
@@ -260,6 +261,20 @@ def _compact_workbench_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _runtime_task_user_blocker(task: RuntimeTask) -> dict[str, Any] | None:
+    task_status = str(getattr(task, "status", None) or "").strip().lower()
+    metadata = _mapping(getattr(task, "metadata_json", None))
+    if task_status == "needs_reconciliation" or bool(metadata.get("needs_reconciliation")):
+        return {
+            "kind": "runtime_reconciliation",
+            "status": "blocked",
+            "title": "需要平台管理员核对后继续",
+            "reason": "任务在可能产生外部副作用时中断，系统不会自动重放。",
+            "next_action": "你可以继续其他工作；平台管理员核对证据后可重试、标记完成或归档。",
+            "owner": "platform_admin",
+            "can_continue_other_work": True,
+            "auto_resume": False,
+            "retry_available": bool(metadata.get("reconciliation_retry_allowed")),
+        }
     admission_status = str(getattr(task, "budget_admission_status", None) or "").strip()
     if admission_status == "waiting_budget_approval":
         return {
@@ -820,8 +835,13 @@ def _workflow_status_value(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
-def _workflow_gate_status(*, steps: list[dict[str, Any]], waiting_for_signal: dict[str, Any]) -> str:
-    if waiting_for_signal:
+def _workflow_gate_status(
+    *,
+    steps: list[dict[str, Any]],
+    waiting_for_signal: dict[str, Any],
+    checkpoints: list[dict[str, Any]],
+) -> str:
+    if waiting_for_signal or any(_workflow_status_value(item.get("status")) == "pending" for item in checkpoints):
         return "waiting"
     for step in steps:
         step_type = _workflow_status_value(step.get("step_type"))
@@ -837,6 +857,7 @@ def _workflow_controls_payload(
     metadata: dict[str, Any],
     dynamic_workflow: dict[str, Any],
     steps: list[dict[str, Any]],
+    checkpoints: list[dict[str, Any]],
 ) -> dict[str, Any]:
     status = _workflow_status_value(getattr(task, "status", None))
     state = _completion_state(status)
@@ -856,17 +877,28 @@ def _workflow_controls_payload(
     preview_id = dynamic_workflow.get("preview_id") or metadata.get("preview_id")
     proposal_id = dynamic_workflow.get("proposal_id") or metadata.get("proposal_id")
     candidate_id = dynamic_workflow.get("candidate_id") or metadata.get("candidate_id")
-    gate_status = _workflow_gate_status(steps=steps, waiting_for_signal=waiting_for_signal)
-    wait_status = (
-        "waiting_for_signal"
-        if waiting_for_signal
-        else ("waiting" if status in {"waiting", "suspended", "blocked"} else "not_waiting")
+    pending_gate = next(
+        (item for item in checkpoints if _workflow_status_value(item.get("status")) == "pending"),
+        None,
     )
-    can_resume = bool(waiting_for_signal or status in {"waiting", "suspended", "blocked"} or repairable)
+    gate_status = _workflow_gate_status(
+        steps=steps,
+        waiting_for_signal=waiting_for_signal,
+        checkpoints=checkpoints,
+    )
+    wait_status = (
+        "waiting_for_gate"
+        if pending_gate
+        else (
+            "waiting_for_signal"
+            if waiting_for_signal
+            else ("suspended" if status in {"waiting", "suspended", "blocked"} else "not_waiting")
+        )
+    )
     can_repair = repairable
     can_cancel = state in {"pending", "running"} or status in {"waiting", "suspended", "blocked"}
 
-    def action_payload(action: str, *, enabled: bool, reason: Any) -> dict[str, Any]:
+    def action_payload(action: str, *, enabled: bool, reason: Any, step_id: str | None = None) -> dict[str, Any]:
         return {
             "action": action,
             "enabled": bool(enabled),
@@ -874,8 +906,34 @@ def _workflow_controls_payload(
             "preview_id": preview_id,
             "proposal_id": proposal_id,
             "candidate_id": candidate_id,
+            "step_id": step_id,
             "reason": str(reason or ""),
         }
+
+    actions: list[dict[str, Any]] = []
+    if pending_gate:
+        gate_reason = str(pending_gate.get("action") or "").partition(":")[2] or "approval required"
+        gate_step_id = str(pending_gate.get("step_id") or "").strip()
+        actions.extend(
+            [
+                action_payload("approve_gate", enabled=bool(gate_step_id), reason=gate_reason, step_id=gate_step_id),
+                action_payload("reject_gate", enabled=bool(gate_step_id), reason=gate_reason, step_id=gate_step_id),
+            ]
+        )
+    elif can_repair:
+        actions.append(
+            action_payload("repair", enabled=True, reason=repair_plan.get("strategy") or repair_plan.get("reason"))
+        )
+    if can_cancel:
+        actions.append(action_payload("cancel", enabled=True, reason="run is active"))
+    if not pending_gate and promotion_eligible:
+        actions.append(
+            action_payload(
+                "promote",
+                enabled=True,
+                reason=promotion_eligibility.get("reason") or "eligible",
+            )
+        )
 
     return {
         "schema": "hive.ccplus.workflow_controls.v1",
@@ -888,20 +946,18 @@ def _workflow_controls_payload(
         "repair_plan": _compact_runtime_task_metadata(repair_plan),
         "promotion_eligible": promotion_eligible,
         "promotion_eligibility": _compact_runtime_task_metadata(promotion_eligibility),
-        "actions": [
-            action_payload(
-                "resume", enabled=can_resume, reason=waiting_for_signal.get("reason") or repair_plan.get("strategy")
-            ),
-            action_payload(
-                "repair", enabled=can_repair, reason=repair_plan.get("strategy") or repair_plan.get("reason")
-            ),
-            action_payload("cancel", enabled=can_cancel, reason="run is active" if can_cancel else "run is terminal"),
-            action_payload(
-                "promote",
-                enabled=promotion_eligible,
-                reason=promotion_eligibility.get("reason") or ("eligible" if promotion_eligible else "not eligible"),
-            ),
-        ],
+        "actions": actions,
+    }
+
+
+def _workflow_checkpoint_payload(row: Any) -> dict[str, Any]:
+    metadata = _mapping(getattr(row, "extra_metadata", None))
+    return {
+        "checkpoint_id": str(getattr(row, "id", "")),
+        "step_id": metadata.get("workflow_step_id"),
+        "status": getattr(row, "status", None),
+        "action": getattr(row, "action", None),
+        "deadline_at": _iso(getattr(row, "deadline_at", None)),
     }
 
 
@@ -916,20 +972,33 @@ async def _list_workflow_journals(
         return {}
     steps_result = await db.execute(select(WorkflowStep).where(WorkflowStep.run_id.in_(run_ids)))
     leaf_result = await db.execute(select(WorkflowLeafCall).where(WorkflowLeafCall.run_id.in_(run_ids)))
+    checkpoint_result = await db.execute(
+        select(CoordinationCheckpoint).where(
+            CoordinationCheckpoint.extra_metadata["workflow_run_id"]
+            .as_string()
+            .in_([str(run_id) for run_id in run_ids])
+        )
+    )
     journals: dict[str, dict[str, list[dict[str, Any]]]] = {
-        str(run_id): {"steps": [], "leaf_calls": []} for run_id in run_ids
+        str(run_id): {"steps": [], "leaf_calls": [], "checkpoints": []} for run_id in run_ids
     }
     for row in steps_result.scalars().all():
-        journals.setdefault(str(row.run_id), {"steps": [], "leaf_calls": []})["steps"].append(
+        journals.setdefault(str(row.run_id), {"steps": [], "leaf_calls": [], "checkpoints": []})["steps"].append(
             _workflow_step_payload(row)
         )
     for row in leaf_result.scalars().all():
-        journals.setdefault(str(row.run_id), {"steps": [], "leaf_calls": []})["leaf_calls"].append(
+        journals.setdefault(str(row.run_id), {"steps": [], "leaf_calls": [], "checkpoints": []})["leaf_calls"].append(
             _workflow_leaf_call_payload(row)
         )
+    for row in checkpoint_result.scalars().all():
+        metadata = _mapping(getattr(row, "extra_metadata", None))
+        run_id = str(metadata.get("workflow_run_id") or "")
+        if run_id in journals:
+            journals[run_id]["checkpoints"].append(_workflow_checkpoint_payload(row))
     for journal in journals.values():
         journal["steps"].sort(key=lambda item: str(item.get("step_id") or ""))
         journal["leaf_calls"].sort(key=lambda item: (str(item.get("step_id") or ""), str(item.get("leaf_id") or "")))
+        journal["checkpoints"].sort(key=lambda item: str(item.get("step_id") or ""))
     return journals
 
 
@@ -956,6 +1025,7 @@ def _workflow_section_item(task: RuntimeTask, journal: dict[str, Any] | None) ->
         metadata=metadata,
         dynamic_workflow=dynamic_workflow,
         steps=item["steps"],
+        checkpoints=list(journal.get("checkpoints") or []),
     )
     return item
 

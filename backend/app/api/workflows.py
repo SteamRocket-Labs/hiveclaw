@@ -25,10 +25,12 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.workflow_definitions import get_workflow_definition_service, record_payload
@@ -36,7 +38,10 @@ from app.core.permissions import authorize_session_action, check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.chat_session import ChatSession
+from app.models.coordination import CoordinationCheckpoint
+from app.models.runtime_task import RuntimeTask
 from app.models.user import User
+from app.models.workflow_confirmation import WorkflowPreviewArtifact
 from app.runtime.dynamic_workflow import build_dynamic_workflow_run_metadata, mapping
 from app.runtime.workflow_admission import (
     AdmissionLimits,
@@ -51,19 +56,18 @@ from app.services.workflow_confirmation_service import (
     WorkflowStartClaim,
     claim_workflow_preview_start,
     create_workflow_preview,
+    load_workflow_candidate,
     load_workflow_preview,
     mark_workflow_preview_failed_record,
     mark_workflow_preview_started_record,
+    workflow_candidate_preview_id,
     workflow_preview_artifact_payload,
 )
 from app.services.workflow_definitions import WorkflowDefinitionError, WorkflowDefinitionService
-from app.services.workflow_launch import (
-    build_resumable_workflow_leaf_executor,
-    inspect_workflow_confirmation_needs,
-    start_ephemeral_workflow_for_agent,
-)
+from app.services.workflow_launch import inspect_workflow_confirmation_needs, start_ephemeral_workflow_for_agent
 from app.services.workflow_promote_suggestions import collect_promote_suggestions
 from app.services.workflow_runtime_service import LoadedWorkflowRun, WorkflowRuntimeService
+from app.services.workflow_user_control import queue_workflow_resume_record
 
 router = APIRouter(prefix="/agents", tags=["workflows"])
 logger = logging.getLogger(__name__)
@@ -85,6 +89,13 @@ class WorkflowStartRequest(BaseModel):
     plan_version: int | None = None
     plan_hash: str | None = None
     ledger_todo_id: str | None = None
+
+
+class WorkflowGateDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step_id: str = Field(min_length=1, max_length=200)
+    decision: Literal["approve", "reject"]
 
 
 async def _plan_gate_check(db: AsyncSession, **kwargs: Any):
@@ -147,6 +158,102 @@ async def _create_workflow_preview_artifact(db: AsyncSession, **kwargs):
 
 async def _claim_workflow_preview_artifact(db: AsyncSession, **kwargs) -> WorkflowStartClaim:
     return await claim_workflow_preview_start(db, **kwargs)
+
+
+async def _preview_dynamic_workflow_candidate(
+    db: AsyncSession,
+    *,
+    agent,
+    current_user: User,
+    proposal_id: uuid.UUID,
+    candidate_id: str,
+) -> dict[str, Any]:
+    """Create/replay the immutable preview for the exact stored candidate."""
+
+    normalized_candidate_id = str(candidate_id or "").strip()
+    if not normalized_candidate_id or len(normalized_candidate_id) > 160:
+        raise WorkflowConfirmationConflict("candidate_not_found", "Dynamic Workflow candidate_id is invalid.")
+    proposal, candidate = await load_workflow_candidate(
+        db,
+        proposal_id=proposal_id,
+        candidate_id=normalized_candidate_id,
+        tenant_id=agent.tenant_id,
+        agent_id=agent.id,
+        session_id=None,
+        user_id=current_user.id,
+        for_update=True,
+    )
+    await authorize_session_action(
+        db,
+        current_user,
+        agent_id=agent.id,
+        session_id=proposal.session_id,
+        action="workflow:candidate_preview",
+    )
+    preview_id = workflow_candidate_preview_id(
+        proposal_id=proposal.id,
+        candidate_id=normalized_candidate_id,
+    )
+    existing = (
+        await db.execute(
+            select(WorkflowPreviewArtifact).where(
+                WorkflowPreviewArtifact.id == preview_id,
+                WorkflowPreviewArtifact.tenant_id == agent.tenant_id,
+                WorkflowPreviewArtifact.agent_id == agent.id,
+                WorkflowPreviewArtifact.session_id == proposal.session_id,
+                WorkflowPreviewArtifact.requested_by_user_id == current_user.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return workflow_preview_artifact_payload(existing)
+
+    try:
+        compiled = compile_workflow(dict(candidate.get("lowered_definition") or {}))
+        args = normalize_workflow_args(compiled, dict(candidate.get("preview_args") or {}))
+        from app.config import get_settings
+
+        admission = admit_workflow(compiled, args=args, limits=AdmissionLimits.from_settings(get_settings()))
+        confirmation = inspect_workflow_confirmation_needs(compiled, args=args)
+    except (WorkflowCompileError, WorkflowAdmissionError) as exc:
+        raise WorkflowConfirmationConflict("candidate_invalid", str(exc)) from exc
+    args_hash = compute_definition_hash(args)
+    if compiled.definition_hash != candidate.get("definition_hash") or args_hash != candidate.get("args_hash"):
+        raise WorkflowConfirmationConflict(
+            "candidate_hash_mismatch",
+            "Stored Dynamic Workflow candidate no longer matches its canonical hashes.",
+        )
+    preview_payload = {
+        "ok": True,
+        "proposal_id": str(proposal.id),
+        "candidate_id": normalized_candidate_id,
+        "definition_hash": compiled.definition_hash,
+        "args_hash": args_hash,
+        "confirmation_required": confirmation.requires_confirmation,
+        "confirmation_reasons": confirmation.reasons,
+        "planned_leaf_calls": admission.planned_leaf_calls,
+        "budget_tokens": admission.budget_tokens,
+        "dynamic_candidate": candidate,
+        "selection_source": "direct_user_candidate_action",
+        "selected_by_user_id": str(current_user.id),
+    }
+    preview = await create_workflow_preview(
+        db,
+        preview_id=preview_id,
+        tenant_id=agent.tenant_id,
+        agent_id=agent.id,
+        session_id=proposal.session_id,
+        user_id=current_user.id,
+        definition=compiled.definition.canonical_dict(),
+        args=args,
+        definition_hash=compiled.definition_hash,
+        args_hash=args_hash,
+        preview_payload=preview_payload,
+        proposal=proposal,
+        candidate_id=normalized_candidate_id,
+    )
+    await db.commit()
+    return workflow_preview_artifact_payload(preview)
 
 
 async def _finish_workflow_preview_artifact(
@@ -242,6 +349,30 @@ async def preview_workflow_endpoint(
     return {**workflow_preview_artifact_payload(preview), "session_id": str(session.id)}
 
 
+@router.post("/{agent_id}/workflows/proposals/{proposal_id}/candidates/{candidate_id}/preview")
+async def preview_dynamic_workflow_candidate_endpoint(
+    agent_id: uuid.UUID,
+    proposal_id: uuid.UUID,
+    candidate_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    try:
+        return await _preview_dynamic_workflow_candidate(
+            db,
+            agent=agent,
+            current_user=current_user,
+            proposal_id=proposal_id,
+            candidate_id=candidate_id,
+        )
+    except WorkflowConfirmationConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+
+
 @router.get("/{agent_id}/workflows/previews/{preview_id}")
 async def get_workflow_preview_endpoint(
     agent_id: uuid.UUID,
@@ -287,7 +418,9 @@ async def start_workflow_endpoint(
         )
         await db.commit()
     except WorkflowConfirmationConflict as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": exc.code, "message": exc.message}) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail={"code": exc.code, "message": exc.message}
+        ) from exc
 
     preview = claim.preview
     if claim.outcome == "replay":
@@ -303,19 +436,24 @@ async def start_workflow_endpoint(
     claim_token = preview.claim_token
     run_id = preview.run_id
     if claim_token is None or run_id is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Workflow start claim is incomplete")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Workflow start claim is incomplete"
+        )
 
     definition = dict(preview.definition_json or {})
     args = dict(preview.args_json or {})
     dynamic_candidate = mapping((preview.preview_json or {}).get("dynamic_candidate"))
-    run_metadata = build_dynamic_workflow_run_metadata(
-        proposal_id=str(preview.proposal_id) if preview.proposal_id else None,
-        candidate_id=preview.candidate_id,
-        preview_id=str(preview.id),
-        definition_hash=preview.definition_hash,
-        args_hash=preview.args_hash,
-        candidate=dynamic_candidate,
-    ) or {}
+    run_metadata = (
+        build_dynamic_workflow_run_metadata(
+            proposal_id=str(preview.proposal_id) if preview.proposal_id else None,
+            candidate_id=preview.candidate_id,
+            preview_id=str(preview.id),
+            definition_hash=preview.definition_hash,
+            args_hash=preview.args_hash,
+            candidate=dynamic_candidate,
+        )
+        or {}
+    )
     run_metadata["workflow_confirmation"] = {
         "preview_id": str(preview.id),
         "artifact_version": preview.artifact_version,
@@ -407,6 +545,171 @@ async def _load_owned_run(run_id: uuid.UUID, *, agent) -> LoadedWorkflowRun:
     return loaded
 
 
+async def _authorize_workflow_run_action(
+    db: AsyncSession,
+    *,
+    agent,
+    current_user: User,
+    loaded: LoadedWorkflowRun,
+    action: str,
+):
+    """Bind a Workflow action to the initiating user's parent session."""
+
+    parent_session_id = getattr(loaded.task, "parent_session_id", None)
+    try:
+        session_id = uuid.UUID(str(parent_session_id or ""))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="workflow run has no valid parent session authority",
+        ) from exc
+    return await authorize_session_action(
+        db,
+        current_user,
+        agent_id=agent.id,
+        session_id=session_id,
+        action=action,
+    )
+
+
+async def _visible_workflow_summaries(
+    db: AsyncSession,
+    *,
+    agent,
+    current_user: User,
+    summaries: list[Any],
+) -> list[Any]:
+    """Keep the run history on the same per-user session authority boundary."""
+
+    result = await db.execute(
+        select(ChatSession.id).where(
+            ChatSession.agent_id == agent.id,
+            ChatSession.user_id == current_user.id,
+        )
+    )
+    owned_session_ids = {str(session_id) for session_id in result.scalars().all()}
+    visible: list[Any] = []
+    for summary in summaries:
+        task = summary.task
+        parent_session_id = str(getattr(task, "parent_session_id", None) or "")
+        if parent_session_id and parent_session_id in owned_session_ids:
+            visible.append(summary)
+            continue
+        if not parent_session_id:
+            metadata_user_id = str((getattr(task, "metadata_json", None) or {}).get("user_id") or "")
+            if metadata_user_id and metadata_user_id == str(current_user.id):
+                visible.append(summary)
+    return visible
+
+
+async def _queue_workflow_resume(
+    db: AsyncSession,
+    *,
+    loaded: LoadedWorkflowRun,
+    agent,
+    current_user: User,
+    request_kind: Literal["repair", "gate_approved", "gate_rejected"],
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    task = (
+        await db.execute(
+            select(RuntimeTask)
+            .where(
+                RuntimeTask.id == loaded.task.id,
+                RuntimeTask.task_type == "workflow",
+                RuntimeTask.tenant_id == agent.tenant_id,
+                RuntimeTask.parent_agent_id == agent.id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="workflow run not found")
+    try:
+        queue_workflow_resume_record(
+            task,
+            request_kind=request_kind,
+            actor_user_id=current_user.id,
+            details=details,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    await db.commit()
+    from app.services.runtime_task_worker import notify_runtime_task_worker
+
+    await notify_runtime_task_worker(reason=f"workflow_{request_kind}_queued", runtime_task_id=task.id)
+    return {
+        "run_id": str(task.id),
+        "status": "pending",
+        "reason": f"{request_kind}_queued",
+    }
+
+
+async def _apply_workflow_gate_decision(
+    db: AsyncSession,
+    *,
+    loaded: LoadedWorkflowRun,
+    agent,
+    current_user: User,
+    step_id: str,
+    decision: Literal["approve", "reject"],
+) -> dict[str, Any]:
+    checkpoint = (
+        await db.execute(
+            select(CoordinationCheckpoint)
+            .where(
+                CoordinationCheckpoint.tenant_id == agent.tenant_id,
+                CoordinationCheckpoint.extra_metadata["workflow_run_id"].as_string() == str(loaded.task.id),
+                CoordinationCheckpoint.extra_metadata["workflow_step_id"].as_string() == step_id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if checkpoint is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="workflow gate checkpoint not found")
+
+    target_status = "approved" if decision == "approve" else "rejected"
+    replayed = checkpoint.status == target_status
+    if checkpoint.status not in {"pending", target_status}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"workflow gate was already {checkpoint.status}",
+        )
+    if not replayed:
+        checkpoint.status = target_status
+        metadata = dict(checkpoint.extra_metadata or {})
+        metadata.update(
+            {
+                "decided_by_user_id": str(current_user.id),
+                "decision": decision,
+                "decided_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        checkpoint.extra_metadata = metadata
+    if loaded.task.status == "suspended":
+        queued = await _queue_workflow_resume(
+            db,
+            loaded=loaded,
+            agent=agent,
+            current_user=current_user,
+            request_kind="gate_approved" if decision == "approve" else "gate_rejected",
+            details={
+                "step_id": step_id,
+                "decision": decision,
+                "checkpoint_id": str(checkpoint.id),
+            },
+        )
+        return {**queued, "step_id": step_id, "decision": decision, "replayed": replayed}
+    await db.commit()
+    return {
+        "run_id": str(loaded.task.id),
+        "status": loaded.task.status,
+        "step_id": step_id,
+        "decision": decision,
+        "replayed": True,
+    }
+
+
 def _run_summary_payload(summary) -> dict:
     task = summary.task
     metadata = task.metadata_json or {}
@@ -442,6 +745,12 @@ async def list_workflow_runs(
     agent, _access = await check_agent_access(db, current_user, agent_id)
     service = WorkflowRuntimeService()
     summaries = await service.list_runs_for_agent(agent.id, tenant_id=agent.tenant_id, limit=min(limit, 200))
+    summaries = await _visible_workflow_summaries(
+        db,
+        agent=agent,
+        current_user=current_user,
+        summaries=summaries,
+    )
     return [_run_summary_payload(summary) for summary in summaries]
 
 
@@ -454,6 +763,13 @@ async def get_workflow_run(
 ) -> dict:
     agent, _access = await check_agent_access(db, current_user, agent_id)
     loaded = await _load_owned_run(run_id, agent=agent)
+    await _authorize_workflow_run_action(
+        db,
+        agent=agent,
+        current_user=current_user,
+        loaded=loaded,
+        action="workflow:read",
+    )
     metadata = loaded.task.metadata_json or {}
     dynamic = metadata.get("dynamic_workflow") or None
     return {
@@ -494,7 +810,14 @@ async def cancel_workflow_run(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     agent, _access = await check_agent_access(db, current_user, agent_id)
-    await _load_owned_run(run_id, agent=agent)  # 404 unless this agent's run
+    loaded = await _load_owned_run(run_id, agent=agent)  # 404 unless this agent's run
+    await _authorize_workflow_run_action(
+        db,
+        agent=agent,
+        current_user=current_user,
+        loaded=loaded,
+        action="workflow:cancel",
+    )
     service = WorkflowRuntimeService()
     try:
         await service.kill_run(run_id, tenant_id=agent.tenant_id)
@@ -517,6 +840,13 @@ async def repair_workflow_run(
     """
     agent, _access = await check_agent_access(db, current_user, agent_id)
     loaded = await _load_owned_run(run_id, agent=agent)
+    await _authorize_workflow_run_action(
+        db,
+        agent=agent,
+        current_user=current_user,
+        loaded=loaded,
+        action="workflow:repair",
+    )
     if loaded.task.status not in {"failed", "suspended", "killed"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -531,17 +861,40 @@ async def repair_workflow_run(
             detail="dynamic workflow repair plan is not repairable",
         )
 
-    service = WorkflowRuntimeService()
-    await service.record_dynamic_repair_attempt(run_id, tenant_id=agent.tenant_id)
-    try:
-        outcome = await service.resume_run(
-            run_id,
-            tenant_id=agent.tenant_id,
-            leaf_executor=build_resumable_workflow_leaf_executor(),
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return {"run_id": str(run_id), "status": outcome.status, "reason": outcome.reason}
+    return await _queue_workflow_resume(
+        db,
+        loaded=loaded,
+        agent=agent,
+        current_user=current_user,
+        request_kind="repair",
+    )
+
+
+@router.post("/{agent_id}/workflows/runs/{run_id}/gate-decision")
+async def decide_workflow_gate(
+    agent_id: uuid.UUID,
+    run_id: uuid.UUID,
+    payload: WorkflowGateDecisionRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    loaded = await _load_owned_run(run_id, agent=agent)
+    await _authorize_workflow_run_action(
+        db,
+        agent=agent,
+        current_user=current_user,
+        loaded=loaded,
+        action="workflow:gate_decision",
+    )
+    return await _apply_workflow_gate_decision(
+        db,
+        loaded=loaded,
+        agent=agent,
+        current_user=current_user,
+        step_id=payload.step_id,
+        decision=payload.decision,
+    )
 
 
 @router.post("/{agent_id}/workflows/runs/{run_id}/promote")
@@ -562,6 +915,13 @@ async def promote_workflow_run(
             detail="Promoting a workflow to a template requires agent manage access",
         )
     loaded = await _load_owned_run(run_id, agent=agent)
+    await _authorize_workflow_run_action(
+        db,
+        agent=agent,
+        current_user=current_user,
+        loaded=loaded,
+        action="workflow:promote",
+    )
     if loaded.task.status != "completed":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -597,7 +957,12 @@ async def list_promote_suggestions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    agent, _access = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Workflow promotion evidence requires agent manage access",
+        )
     suggestions = await collect_promote_suggestions(tenant_id=agent.tenant_id, agent_id=agent.id)
     return [
         {

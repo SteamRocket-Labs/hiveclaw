@@ -948,6 +948,26 @@ describe('session workbench timeline model', () => {
             total_tokens: 8000,
             tool_use_count: 5,
             child_session_id: 'workflow-session',
+            workflow_controls: {
+              gate_status: 'waiting',
+              wait_status: 'waiting_for_gate',
+              actions: [
+                {
+                  action: 'approve_gate',
+                  enabled: true,
+                  run_id: 'workflow-1',
+                  step_id: 'approve-send',
+                  reason: 'approval required',
+                },
+                {
+                  action: 'reject_gate',
+                  enabled: true,
+                  run_id: 'workflow-1',
+                  step_id: 'approve-send',
+                  reason: 'approval required',
+                },
+              ],
+            },
             steps: [{ id: 'step-1', label: 'Gate review', status: 'waiting' }],
             leaf_calls: [{ id: 'leaf-1', label: 'Research leaf', status: 'completed' }],
           },
@@ -1042,6 +1062,14 @@ describe('session workbench timeline model', () => {
     });
     expect(workflowWindow.steps).toHaveLength(1);
     expect(workflowWindow.leafCalls).toHaveLength(1);
+    expect(workflowWindow.controls).toMatchObject({
+      gateStatus: 'waiting',
+      waitStatus: 'waiting_for_gate',
+      actions: [
+        expect.objectContaining({ action: 'approve_gate', stepId: 'approve-send' }),
+        expect.objectContaining({ action: 'reject_gate', stepId: 'approve-send' }),
+      ],
+    });
   });
 });
 

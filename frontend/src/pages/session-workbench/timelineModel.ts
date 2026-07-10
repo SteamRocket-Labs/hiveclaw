@@ -385,9 +385,10 @@ export interface WorkflowRunWindowModel {
 }
 
 export interface WorkflowRunActionModel {
-  action: 'resume' | 'repair' | 'cancel' | 'promote';
+  action: 'approve_gate' | 'reject_gate' | 'repair' | 'cancel' | 'promote';
   enabled: boolean;
   runId: string;
+  stepId: string | null;
   previewId: string | null;
   proposalId: string | null;
   candidateId: string | null;
@@ -549,11 +550,12 @@ function normalizeWorkflowControls(item: Record<string, unknown>): WorkflowRunCo
       const record = asRecord(action);
       if (!record) return null;
       const actionName = readString(record, ['action'], '') as WorkflowRunActionModel['action'];
-      if (!['resume', 'repair', 'cancel', 'promote'].includes(actionName)) return null;
+      if (!['approve_gate', 'reject_gate', 'repair', 'cancel', 'promote'].includes(actionName)) return null;
       return {
         action: actionName,
         enabled: Boolean(record.enabled),
         runId: readString(record, ['run_id', 'runId'], ''),
+        stepId: readString(record, ['step_id', 'stepId'], '') || null,
         previewId: readString(record, ['preview_id', 'previewId'], '') || null,
         proposalId: readString(record, ['proposal_id', 'proposalId'], '') || null,
         candidateId: readString(record, ['candidate_id', 'candidateId'], '') || null,

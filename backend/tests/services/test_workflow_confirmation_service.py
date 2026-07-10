@@ -11,6 +11,7 @@ from app.services.workflow_confirmation_service import (
     claim_workflow_preview_record,
     mark_workflow_preview_failed_record,
     mark_workflow_preview_started_record,
+    workflow_candidate_preview_id,
 )
 
 
@@ -142,3 +143,14 @@ def test_expired_preview_cannot_start() -> None:
         )
     assert exc.value.code == "preview_expired"
     assert preview.status == "expired"
+
+
+def test_candidate_preview_identity_is_deterministic_per_proposal_and_candidate() -> None:
+    proposal_id = uuid.uuid4()
+
+    first = workflow_candidate_preview_id(proposal_id=proposal_id, candidate_id="fanout-critic")
+    replay = workflow_candidate_preview_id(proposal_id=proposal_id, candidate_id="fanout-critic")
+    other = workflow_candidate_preview_id(proposal_id=proposal_id, candidate_id="sequential-review")
+
+    assert first == replay
+    assert first != other

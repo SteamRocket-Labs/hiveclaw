@@ -669,8 +669,7 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
             "workflow_name": "ABS deep research",
             "definition_source": "dynamic_workflow",
             "dynamic_workflow": {"proposal_id": "proposal-1", "candidate_id": "candidate-1", "preview_id": "preview-1"},
-            "waiting_for_signal": {"kind": "gate", "reason": "awaiting approval"},
-            "repair_plan": {"repairable": True, "strategy": "resume_failed_leaves", "failed_leaf_count": 1},
+            "repair_plan": {"repairable": False},
             "promotion_eligibility": {"eligible": False, "reason": "needs another clean run"},
         },
     )
@@ -720,13 +719,21 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
     async def fake_workflow_journals(*_args, **_kwargs):
         return {
             str(workflow_run_id): {
-                "steps": [{"step_id": "scan", "step_type": "fanout_step", "status": "running"}],
+                "steps": [{"step_id": "approve", "step_type": "gate_step", "status": "suspended"}],
                 "leaf_calls": [
                     {
                         "step_id": "scan",
                         "leaf_id": "case-1",
                         "status": "running",
                         "child_session_id": None,
+                    }
+                ],
+                "checkpoints": [
+                    {
+                        "checkpoint_id": str(uuid4()),
+                        "step_id": "approve",
+                        "status": "pending",
+                        "action": "workflow_gate:external send",
                     }
                 ],
             }
@@ -768,18 +775,18 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
     assert workflow["label"] == "ABS deep research"
     assert workflow["definition_source"] == "dynamic_workflow"
     assert workflow["workflow_controls"]["gate_status"] == "waiting"
-    assert workflow["workflow_controls"]["wait_status"] == "waiting_for_signal"
-    assert workflow["workflow_controls"]["repairable"] is True
+    assert workflow["workflow_controls"]["wait_status"] == "waiting_for_gate"
+    assert workflow["workflow_controls"]["repairable"] is False
     assert workflow["workflow_controls"]["promotion_eligible"] is False
     assert {action["action"]: action["enabled"] for action in workflow["workflow_controls"]["actions"]} == {
-        "resume": True,
-        "repair": True,
+        "approve_gate": True,
+        "reject_gate": True,
         "cancel": True,
-        "promote": False,
     }
+    assert workflow["workflow_controls"]["actions"][0]["step_id"] == "approve"
     assert workflow["workflow_controls"]["actions"][0]["run_id"] == str(workflow_run_id)
     assert workflow["workflow_controls"]["actions"][0]["preview_id"] == "preview-1"
-    assert workflow["steps"][0]["step_id"] == "scan"
+    assert workflow["steps"][0]["step_id"] == "approve"
     assert workflow["leaf_calls"][0]["leaf_id"] == "case-1"
     assert workflow["leaf_calls"][0]["enterable"] is False
     assert sections["notifications"]["items"]
@@ -787,6 +794,33 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
         str(subagent_task.id),
         str(background_task.id),
         str(workflow_run_id),
+    }
+
+
+def test_needs_reconciliation_is_a_semantic_platform_blocker():
+    import app.services.session_control_plane as service
+
+    blocker = service._runtime_task_user_blocker(
+        SimpleNamespace(
+            status="needs_reconciliation",
+            budget_admission_status=None,
+            metadata_json={
+                "reconciliation_reason": "non_idempotent_restart_orphan",
+                "reconciliation_retry_allowed": True,
+            },
+        )
+    )
+
+    assert blocker == {
+        "kind": "runtime_reconciliation",
+        "status": "blocked",
+        "title": "需要平台管理员核对后继续",
+        "reason": "任务在可能产生外部副作用时中断，系统不会自动重放。",
+        "next_action": "你可以继续其他工作；平台管理员核对证据后可重试、标记完成或归档。",
+        "owner": "platform_admin",
+        "can_continue_other_work": True,
+        "auto_resume": False,
+        "retry_available": True,
     }
 
 

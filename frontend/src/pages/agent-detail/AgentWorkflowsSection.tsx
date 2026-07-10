@@ -136,7 +136,7 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
   const { data: suggestions = [] } = useQuery({
     queryKey: ['workflow-promote-suggestions', agentId],
     queryFn: () => listPromoteSuggestions(agentId),
-    enabled: !!agentId,
+    enabled: !!agentId && canManage,
   });
 
   const { data: expandedRun } = useQuery({
@@ -403,14 +403,9 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                     {run.description && <p className="agent-workflows-card-desc">{run.description}</p>}
                     {dynamicWorkflow && (
                       <div className="agent-workflows-dynamic-meta">
-                        {dynamicWorkflow.proposal_id && (
+                        {dynamicWorkflow.pattern_mix && dynamicWorkflow.pattern_mix.length > 0 && (
                           <span>
-                            {t('workflows.proposal')} {dynamicWorkflow.proposal_id}
-                          </span>
-                        )}
-                        {dynamicWorkflow.candidate_id && (
-                          <span>
-                            {t('workflows.candidate')} {dynamicWorkflow.candidate_id}
+                            {dynamicWorkflow.pattern_mix.join(' → ')}
                           </span>
                         )}
                         {outcomeEvidence?.leaf_total !== undefined && (

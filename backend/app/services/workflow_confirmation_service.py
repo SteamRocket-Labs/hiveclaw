@@ -32,6 +32,15 @@ class WorkflowStartClaim:
     run_exists: bool = False
 
 
+def workflow_candidate_preview_id(*, proposal_id: uuid.UUID, candidate_id: str) -> uuid.UUID:
+    """Stable identity for an exact proposal candidate selection/replay."""
+
+    normalized_candidate_id = str(candidate_id or "").strip()
+    if not normalized_candidate_id:
+        raise WorkflowConfirmationConflict("candidate_not_found", "Dynamic Workflow candidate_id is required.")
+    return uuid.uuid5(proposal_id, normalized_candidate_id)
+
+
 def workflow_preview_artifact_payload(preview: WorkflowPreviewArtifact) -> dict[str, Any]:
     return {
         "preview_id": str(preview.id),
@@ -213,19 +222,22 @@ async def load_workflow_candidate(
     candidate_id: str,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
-    session_id: uuid.UUID,
+    session_id: uuid.UUID | None,
     user_id: uuid.UUID,
     now: datetime | None = None,
+    for_update: bool = False,
 ) -> tuple[WorkflowProposalArtifact, dict[str, Any]]:
-    result = await db.execute(
-        select(WorkflowProposalArtifact).where(
-            WorkflowProposalArtifact.id == proposal_id,
-            WorkflowProposalArtifact.tenant_id == tenant_id,
-            WorkflowProposalArtifact.agent_id == agent_id,
-            WorkflowProposalArtifact.session_id == session_id,
-            WorkflowProposalArtifact.requested_by_user_id == user_id,
-        )
+    statement = select(WorkflowProposalArtifact).where(
+        WorkflowProposalArtifact.id == proposal_id,
+        WorkflowProposalArtifact.tenant_id == tenant_id,
+        WorkflowProposalArtifact.agent_id == agent_id,
+        WorkflowProposalArtifact.requested_by_user_id == user_id,
     )
+    if session_id is not None:
+        statement = statement.where(WorkflowProposalArtifact.session_id == session_id)
+    if for_update:
+        statement = statement.with_for_update()
+    result = await db.execute(statement)
     proposal = result.scalar_one_or_none()
     if proposal is None:
         raise WorkflowConfirmationConflict("proposal_not_found", "Dynamic Workflow proposal was not found.")
@@ -252,6 +264,7 @@ async def create_workflow_preview(
     preview_payload: dict[str, Any],
     proposal: WorkflowProposalArtifact | None = None,
     candidate_id: str | None = None,
+    preview_id: uuid.UUID | None = None,
     now: datetime | None = None,
 ) -> WorkflowPreviewArtifact:
     current = now or _now()
@@ -265,6 +278,7 @@ async def create_workflow_preview(
         "preview": preview_payload,
     }
     preview = WorkflowPreviewArtifact(
+        id=preview_id or uuid.uuid4(),
         tenant_id=tenant_id,
         agent_id=agent_id,
         session_id=session_id,
@@ -351,7 +365,9 @@ async def claim_workflow_preview_start(
         result = await db.execute(select(RuntimeTask.id).where(RuntimeTask.id == preview.run_id))
         run_exists = result.scalar_one_or_none() is not None
         if run_exists and outcome == "claimed":
-            mark_workflow_preview_started_record(preview, run_id=preview.run_id, claim_token=preview.claim_token, now=now)
+            mark_workflow_preview_started_record(
+                preview, run_id=preview.run_id, claim_token=preview.claim_token, now=now
+            )
             outcome = "replay"
     await db.flush()
     return WorkflowStartClaim(outcome=outcome, preview=preview, run_exists=run_exists)

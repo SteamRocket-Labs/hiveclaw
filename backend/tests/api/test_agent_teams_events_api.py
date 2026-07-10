@@ -311,7 +311,7 @@ async def test_message_team_member_uses_mailbox_continuation_consumer(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_close_team_writes_consolidation_back_to_parent_session(monkeypatch):
+async def test_close_team_enqueues_lead_synthesis_without_platform_authored_assistant(monkeypatch):
     import app.api.agent_teams as teams_api
 
     agent_id = uuid4()
@@ -337,12 +337,15 @@ async def test_close_team_writes_consolidation_back_to_parent_session(monkeypatc
         )
     ]
     db = _DB()
-    appended: dict = {}
+    appended: list[dict] = []
+    enqueued = []
+    load_requests = []
 
     async def fake_access(*_args, **_kwargs):
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
 
     async def fake_load_team_or_404(*_args, **_kwargs):
+        load_requests.append(_kwargs)
         return team
 
     async def fake_load_team_members(*_args, **_kwargs):
@@ -352,14 +355,19 @@ async def test_close_team_writes_consolidation_back_to_parent_session(monkeypatc
         return None
 
     async def fake_append_session_event(**kwargs):
-        appended.update(kwargs)
+        appended.append(kwargs)
         return SimpleNamespace(event_id=uuid4(), sequence=1)
+
+    async def fake_enqueue(actual_db, notification):
+        enqueued.append((actual_db, notification))
+        return uuid4()
 
     monkeypatch.setattr(teams_api, "check_agent_access", fake_access)
     monkeypatch.setattr(teams_api, "_load_team_or_404", fake_load_team_or_404)
     monkeypatch.setattr(teams_api, "_load_team_members", fake_load_team_members)
     monkeypatch.setattr(teams_api, "emit_hook", fake_emit_hook)
     monkeypatch.setattr(teams_api, "append_session_event", fake_append_session_event, raising=False)
+    monkeypatch.setattr(teams_api, "enqueue_completion_notification", fake_enqueue, raising=False)
 
     result = await teams_api.close_agent_team(
         agent_id=agent_id,
@@ -368,11 +376,66 @@ async def test_close_team_writes_consolidation_back_to_parent_session(monkeypatc
         db=db,
     )
 
-    assert result["status"] == "closed"
+    assert result["status"] == "closing"
     assert "consolidation_plan" in result
-    assert appended["session_id"] == parent_session_id
-    assert appended["agent_id"] == agent_id
-    assert appended["event_type"] == "assistant_message"
-    assert appended["metadata"]["source"] == "agent_team_close"
-    assert appended["metadata"]["team_id"] == str(team_id)
-    assert appended["metadata"]["member_outputs"][0]["t0_refs"] == ["session-a#event-1"]
+    assert result["close_delivery"]["status"] == "pending_lead_synthesis"
+    assert team.status == "closing"
+    assert load_requests[0]["for_update"] is True
+    assert members[0].status == "idle"
+    assert appended == []
+    assert len(enqueued) == 1
+    actual_db, notification = enqueued[0]
+    assert actual_db is db
+    assert notification.source_kind == "agent_team_close"
+    assert notification.task_type == "agent_team_close"
+    assert notification.parent_session_id == parent_session_id
+    assert notification.parent_agent_id == agent_id
+    assert notification.parent_user_id == user.id
+    assert notification.metadata["agent_team_close_id"] == str(team_id)
+    assert "审查了 A2A gate" in notification.metadata["model_context"]
+    assert "session-a#event-1" in notification.metadata["model_context"]
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "team_close_requested" for item in db.added)
+
+
+def test_team_workbench_counts_only_actively_running_members():
+    import app.api.agent_teams as teams_api
+
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="T",
+        metadata_json={"close_synthesis_status": "failed", "close_failure": "Provider timeout"},
+    )
+    members = [
+        AgentTeamMember(
+            id=uuid4(),
+            team_id=team.id,
+            member_name="done",
+            chat_session_id=uuid4(),
+            status="idle",
+            metadata_json={"last_turn_status": "completed"},
+        ),
+        AgentTeamMember(
+            id=uuid4(),
+            team_id=team.id,
+            member_name="running",
+            chat_session_id=uuid4(),
+            status="running",
+        ),
+        AgentTeamMember(
+            id=uuid4(),
+            team_id=team.id,
+            member_name="pending",
+            chat_session_id=uuid4(),
+            status="pending",
+        ),
+    ]
+
+    result = teams_api._team_workbench_payload(agent_id=team.lead_agent_id, team=team, members=members, events=[])
+
+    assert result["summary"]["active_member_count"] == 2
+    assert result["team"]["close_status"] == "failed"
+    assert result["team"]["close_failure"] == "Provider timeout"
+    assert result["members"][0]["last_turn_status"] == "completed"

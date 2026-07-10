@@ -1,0 +1,63 @@
+.session-agent-team-control-stack {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+}
+
+.session-agent-team-message-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 5px;
+  width: min(100%, 320px);
+}
+
+.session-agent-team-message-form label {
+  min-width: 0;
+}
+
+.session-agent-team-message-form textarea {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  resize: vertical;
+  padding: 6px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--session-tui-font-meta);
+  line-height: 1.35;
+}
+
+.session-agent-team-message-form button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--session-tui-font-meta);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.session-agent-team-message-form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.session-agent-team-control-error {
+  margin: 0;
+  color: var(--error);
+  font-size: var(--session-tui-font-meta);
+  line-height: 1.35;
+}
+
+.session-agent-team-close-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

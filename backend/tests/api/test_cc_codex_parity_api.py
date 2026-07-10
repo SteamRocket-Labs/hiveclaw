@@ -1589,7 +1589,7 @@ def test_agent_teams_api_rejects_inline_members_at_schema_boundary():
 
 
 @pytest.mark.asyncio
-async def test_agent_teams_api_lists_enters_and_closes_team(monkeypatch):
+async def test_agent_teams_api_lists_enters_and_requests_lead_synthesis(monkeypatch):
     import app.api.agent_teams as teams_api
     from app.models.agent_team import AgentTeam, AgentTeamMember
 
@@ -1649,13 +1649,13 @@ async def test_agent_teams_api_lists_enters_and_closes_team(monkeypatch):
         current_user=current_user,
         db=db,
     )
-    assert closed["status"] == "closed"
-    assert team.status == "closed"
-    assert member.status == "closed"
+    assert closed["status"] == "closing"
+    assert closed["close_delivery"]["status"] == "pending_lead_synthesis"
+    assert team.status == "closing"
+    assert member.status == "idle"
     assert closed["consolidation_plan"]["merge_mode"] == "summary_with_t0_refs"
     assert closed["consolidation_plan"]["member_summaries"][0]["t0_refs"] == ["t0://critic/1"]
-    assert closed["agent_team_decision_entry"]["team_outcome"] == "closed"
-    assert closed["agent_team_decision_entry"]["close_summary_ref"] == f"agent_team_close:{team_id}"
+    assert team.metadata_json["close_summary_ref"] == f"agent_team_close:{team_id}:1"
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -30,6 +31,10 @@ from app.services.execution_admission import ExecutionAdmission
 from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 from app.services.tenant_resolver import resolve_tenant_for_agent
+
+ACTIVE_AGENT_TEAM_MEMBER_STATUSES = frozenset(
+    {"created", "pending", "queued", "running", "started", "in_progress", "resuming"}
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,7 @@ def _uuid_or_none(value: Any) -> uuid.UUID | None:
 
 
 def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:
+    metadata = member.metadata_json or {}
     return {
         "id": str(member.id),
         "member_name": member.member_name,
@@ -75,6 +81,9 @@ def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:
         "runtime_task_id": str(member.runtime_task_id) if member.runtime_task_id else None,
         "runtime_task_type": member.runtime_task_type,
         "status": member.status,
+        "last_turn_status": metadata.get("last_turn_status"),
+        "last_runtime_status": metadata.get("last_runtime_status"),
+        "summary": metadata.get("summary") or "",
     }
 
 
@@ -127,6 +136,14 @@ def _metadata_dict(value: Any) -> dict[str, Any]:
 
 def _list_value(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def team_close_projection(team: Any) -> dict[str, str | None]:
+    metadata = _metadata_dict(team)
+    return {
+        "close_status": str(metadata.get("close_synthesis_status") or "").strip() or None,
+        "close_failure": str(metadata.get("close_failure") or "").strip() or None,
+    }
 
 
 def _effective_member_turn_status(member: Any) -> str:
@@ -239,6 +256,7 @@ def team_payload(
         "agent_team_decision_entry": decision_entry,
         "team_outcome": decision_entry["team_outcome"],
         "lead_required_actions": decision_entry["lead_required_actions"],
+        **team_close_projection(team),
         "team_task_list": _team_task_list_payload(team.name),
         "teammate_lifecycle": _teammate_lifecycle_payload(),
         **teammate_creation_discovery(team.name),
@@ -796,6 +814,150 @@ async def project_agent_team_member_completion(
         metadata=metadata,
     )
     return payload
+
+
+async def project_agent_team_close_completion(
+    *,
+    db: Any,
+    task: Any,
+    status: str,
+    result_summary: str | None,
+) -> dict[str, str] | None:
+    """Finalize Team close only after the lead model's synthesis turn terminates."""
+
+    task_metadata = dict(getattr(task, "metadata_json", None) or {})
+    team_id = _uuid_or_none(task_metadata.get("agent_team_close_id"))
+    if team_id is None:
+        return None
+    team = (
+        await db.execute(select(AgentTeam).where(AgentTeam.id == team_id).limit(1).with_for_update())
+    ).scalar_one_or_none()
+    if team is None:
+        return None
+    if team.status == "closed":
+        return {"team_id": str(team.id), "status": "closed"}
+    if team.status != "closing":
+        return None
+
+    members = list(
+        (
+            await db.execute(
+                select(AgentTeamMember)
+                .where(AgentTeamMember.team_id == team.id)
+                .order_by(AgentTeamMember.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    terminal_status = str(status or "failed").lower()
+    succeeded = terminal_status == "completed"
+    now = datetime.now(timezone.utc)
+    metadata = dict(team.metadata_json or {})
+    metadata["close_synthesis_run_id"] = str(getattr(task, "id", "") or "")
+    metadata["close_synthesis_status"] = terminal_status
+    metadata["close_synthesis_summary"] = str(result_summary or "")
+    if succeeded:
+        team.status = "closed"
+        team.closed_at = now
+        metadata.pop("close_failure", None)
+        metadata["closed_at"] = now.isoformat()
+        for member in members:
+            member.status = "closed"
+            member.closed_at = now
+        event_type = "team_closed"
+        event_content = "Agent Team lead synthesis completed; the Team is closed."
+    else:
+        team.status = "active"
+        team.closed_at = None
+        metadata["close_failure"] = str(result_summary or terminal_status)
+        metadata["close_failed_at"] = now.isoformat()
+        event_type = "team_close_failed"
+        event_content = "Agent Team lead synthesis failed; the Team is available for retry."
+    team.metadata_json = metadata
+    event_payload = {
+        "status": team.status,
+        "terminal_status": terminal_status,
+        "synthesis_run_id": str(getattr(task, "id", "") or ""),
+        "result_summary": str(result_summary or ""),
+    }
+    db.add(AgentTeamEvent(team_id=team.id, event_type=event_type, payload_json=event_payload))
+    await append_session_event(
+        db=db,
+        agent_id=team.lead_agent_id,
+        tenant_id=team.tenant_id,
+        session_id=team.parent_session_id,
+        run_id=getattr(task, "id", None),
+        actor_type="system",
+        event_type=event_type,
+        role="system",
+        user_id=_uuid_or_none(task_metadata.get("user_id")),
+        content=event_content,
+        source="agent_team_close",
+        materialize_chat_message=False,
+        metadata={
+            "source": "agent_team_close",
+            "team_id": str(team.id),
+            **event_payload,
+        },
+    )
+    if succeeded:
+        await emit_hook(
+            HookEvent.TEAM_CLOSED,
+            agent_id=team.lead_agent_id,
+            session_id=str(team.parent_session_id),
+            source="agent_team",
+            metadata={
+                "tenant_id": str(team.tenant_id) if team.tenant_id else None,
+                "team_id": str(team.id),
+                "synthesis_run_id": str(getattr(task, "id", "") or ""),
+            },
+        )
+    await db.flush()
+    return {"team_id": str(team.id), "status": team.status}
+
+
+async def reopen_agent_team_close_after_delivery_failure(
+    *,
+    db: Any,
+    team_id: uuid.UUID,
+    notification_id: uuid.UUID,
+    error: str,
+) -> bool:
+    """Release a Team stuck in closing when its lead-synthesis wake dead-letters."""
+
+    team = (
+        await db.execute(select(AgentTeam).where(AgentTeam.id == team_id).limit(1).with_for_update())
+    ).scalar_one_or_none()
+    if team is None or team.status != "closing":
+        return False
+    metadata = dict(team.metadata_json or {})
+    if str(metadata.get("close_notification_id") or "") != str(notification_id):
+        return False
+    now = datetime.now(timezone.utc)
+    team.status = "active"
+    team.closed_at = None
+    metadata.update(
+        {
+            "close_synthesis_status": "delivery_failed",
+            "close_failure": str(error or "Lead synthesis delivery failed."),
+            "close_failed_at": now.isoformat(),
+        }
+    )
+    team.metadata_json = metadata
+    db.add(
+        AgentTeamEvent(
+            team_id=team.id,
+            event_type="team_close_delivery_failed",
+            payload_json={
+                "notification_id": str(notification_id),
+                "error": metadata["close_failure"],
+                "retryable": True,
+            },
+        )
+    )
+    await db.flush()
+    return True
 
 
 async def message_agent_team_members_runtime(

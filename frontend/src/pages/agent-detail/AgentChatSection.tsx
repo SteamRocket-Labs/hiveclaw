@@ -35,6 +35,10 @@ import { normalizeThreadItemPayload } from '../session-workbench/threadItemReduc
 import { SessionComposer } from '../session-workbench/SessionComposer';
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
 import {
+  SessionAgentTeamCloseControl,
+  SessionAgentTeamMemberControls,
+} from '../session-workbench/SessionAgentTeamControls';
+import {
   useResponsiveRuntimePanel,
   useThreadItemRuntimeController,
 } from '../session-workbench/threadItemRuntimeController';
@@ -1746,7 +1750,10 @@ export function runtimeItemDisplayMeta(item: RuntimeSectionItemModel): string {
 export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel): string {
   const metadata = isRuntimeRecord(item.raw.metadata) ? item.raw.metadata : {};
   const status = stringValue(item.status || item.state || 'unknown').trim() || 'unknown';
-  const outcome = stringValue(
+  const closeStatus = item.runtimeKind === 'agent_team'
+    ? stringValue(item.raw.close_status || item.raw.closeStatus).trim().toLowerCase()
+    : '';
+  const outcome = closeStatus === 'failed' ? 'close failed' : stringValue(
     item.raw.last_turn_status
       || item.raw.lastTurnStatus
       || metadata.last_turn_status
@@ -1777,6 +1784,7 @@ function SessionRuntimePanel({
   agentId,
   sessionId,
   onGoalChanged,
+  onTeamChanged,
 }: {
   messages: AgentChatMessage[];
   sessionWorkbench: SessionWorkbench | null;
@@ -1793,6 +1801,7 @@ function SessionRuntimePanel({
   agentId?: string;
   sessionId?: string;
   onGoalChanged?: () => void | Promise<unknown>;
+  onTeamChanged?: () => void | Promise<unknown>;
 }) {
   const RUNTIME_PANEL_WIDTH_KEY = 'hive.sessionRuntimePanel.width';
   const [panelWidth, setPanelWidth] = React.useState<number | null>(() => {
@@ -1963,28 +1972,12 @@ function SessionRuntimePanel({
     );
   };
 
-  const renderTeamMemberItem = (member: RuntimeSectionItemModel, fallback: string) => {
+  const renderTeamMemberItem = (
+    team: RuntimeSectionItemModel,
+    member: RuntimeSectionItemModel,
+    fallback: string,
+  ) => {
     const sessionId = member.childSessionId;
-    const canEnter = Boolean(member.enterable && sessionId && onSelectSession);
-    const actionButton = (
-      action: 'enter' | 'send' | 'resume' | 'close',
-      label: string,
-      disabled: boolean,
-      title: string,
-      onClick?: () => void,
-    ) => (
-      <button
-        key={action}
-        type="button"
-        data-runtime-action={`agent-team-member-${action}`}
-        className="session-runtime-action-button"
-        disabled={disabled}
-        title={title}
-        onClick={onClick}
-      >
-        {label}
-      </button>
-    );
     const meta = runtimeItemDisplayMeta(member);
     return (
       <div key={member.id || fallback} className="session-runtime-row" data-testid="session-agent-team-member-row">
@@ -1993,38 +1986,16 @@ function SessionRuntimePanel({
           <span className="session-runtime-row-meta">{meta}</span>
         </span>
         <span className="session-runtime-status">{runtimeItemDisplayStatus(member)}</span>
-        <span
-          data-testid="session-agent-team-member-actions"
-          className="session-runtime-actions"
-        >
-          {actionButton(
-            'enter',
-            t('sessionWorkbench.rightPanel.memberEnter', 'Enter'),
-            !canEnter,
-            canEnter
-              ? t('sessionWorkbench.rightPanel.memberEnterTitle', 'Open member session')
-              : t('sessionWorkbench.rightPanel.memberEnterDisabled', 'No member session is available'),
-            canEnter && sessionId ? () => onSelectSession?.(sessionId) : undefined,
-          )}
-          {actionButton(
-            'send',
-            t('sessionWorkbench.rightPanel.memberSend', 'Send'),
-            true,
-            t('sessionWorkbench.rightPanel.memberSendDisabled', 'Enter the member session to send a follow-up from its composer'),
-          )}
-          {actionButton(
-            'resume',
-            t('sessionWorkbench.rightPanel.memberResume', 'Resume'),
-            true,
-            t('sessionWorkbench.rightPanel.memberResumeDisabled', 'Resume is available from the member session active-run controls'),
-          )}
-          {actionButton(
-            'close',
-            t('sessionWorkbench.rightPanel.memberClose', 'Close'),
-            true,
-            t('sessionWorkbench.rightPanel.memberCloseDisabled', 'Team close is available from the Agent Team control surface'),
-          )}
-        </span>
+        {agentId ? (
+          <SessionAgentTeamMemberControls
+            agentId={agentId}
+            teamId={team.id}
+            teamStatus={team.status}
+            member={member}
+            onEnter={sessionId && onSelectSession ? () => onSelectSession(sessionId) : undefined}
+            onChanged={onTeamChanged}
+          />
+        ) : null}
       </div>
     );
   };
@@ -2099,14 +2070,19 @@ function SessionRuntimePanel({
           <div key={team.id} className="session-runtime-team">
             <div className="session-runtime-team-header">
               <span>{runtimeItemDisplayLabel(team, t('sessionWorkbench.rightPanel.agentTeam', 'Agent Team'))}</span>
-              <small>{runtimeItemDisplayStatus(team)}</small>
+              <span className="session-agent-team-close-control">
+                <small>{runtimeItemDisplayStatus(team)}</small>
+                {agentId ? (
+                  <SessionAgentTeamCloseControl agentId={agentId} team={team} onChanged={onTeamChanged} />
+                ) : null}
+              </span>
             </div>
             {team.members.length === 0 ? (
               <div className="session-runtime-empty">
                 {t('sessionWorkbench.rightPanel.noTeamMembers', 'No team members have started yet.')}
               </div>
             ) : (
-              team.members.map((member, index) => renderTeamMemberItem(member, `team-member-${index + 1}`))
+              team.members.map((member, index) => renderTeamMemberItem(team, member, `team-member-${index + 1}`))
             )}
           </div>
         ))
@@ -4448,6 +4424,7 @@ function AgentChatSection({
           agentId={effectiveAgentId || undefined}
           sessionId={activeSessionId || undefined}
           onGoalChanged={() => void refetchSessionWorkbench()}
+          onTeamChanged={() => void refetchSessionWorkbench()}
         />
       ) : null}
     </div>

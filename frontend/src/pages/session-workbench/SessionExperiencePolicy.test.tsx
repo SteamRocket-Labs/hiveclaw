@@ -82,4 +82,32 @@ describe('session experience information policy', () => {
     expect(runtimeItemDisplayMeta(item)).not.toContain(item.childSessionId!);
     expect(runtimeItemDisplayMeta(item)).not.toContain('team_member');
   });
+
+  it('shows a failed Team close as recoverable semantic state', () => {
+    const item = {
+      id: 'team-1',
+      label: 'Research Team',
+      status: 'active',
+      state: 'active',
+      runtimeKind: 'agent_team',
+      summary: '',
+      childSessionId: null,
+      enterable: false,
+      metrics: {
+        elapsedSeconds: null,
+        elapsedLabel: null,
+        tokenCount: null,
+        tokenLabel: null,
+        toolUseCount: null,
+        toolUseLabel: null,
+        lastActivityLabel: null,
+      },
+      members: [],
+      steps: [],
+      leafCalls: [],
+      raw: { close_status: 'failed', close_failure: 'Provider timeout' },
+    } satisfies RuntimeSectionItemModel;
+
+    expect(runtimeItemDisplayStatus(item)).toBe('active · close failed');
+  });
 });

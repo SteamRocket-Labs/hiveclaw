@@ -116,6 +116,8 @@ export interface AgentTeamMember {
   runtime_task_type: string;
   status: string;
   summary?: string;
+  last_turn_status?: string | null;
+  last_runtime_status?: string | null;
   t0_refs?: unknown[];
   artifacts?: unknown[];
 }
@@ -128,6 +130,9 @@ export interface AgentTeam {
   lead_agent_id: string;
   parent_session_id: string;
   member_count?: number;
+  running_member_count?: number;
+  close_status?: string | null;
+  close_failure?: string | null;
   members: AgentTeamMember[];
   team_create_semantics?: string;
   teammate_creation_tool?: string;
@@ -149,6 +154,21 @@ export interface AgentTeamEnterResult {
 
 export interface AgentTeamCloseResult extends AgentTeam {
   consolidation_plan: Record<string, unknown>;
+  close_delivery?: {
+    status: string;
+    notification_id?: string | null;
+  };
+}
+
+export interface StartAgentTeamMemberRunInput {
+  content: string;
+  display_content?: string;
+}
+
+export interface MessageAgentTeamMemberInput {
+  message: string;
+  display_content?: string;
+  interrupt?: boolean;
 }
 
 export interface SessionWorkbench {
@@ -381,6 +401,31 @@ export const ccParityApi = {
 
   enterTeamMember(agentId: string, teamId: string, memberId: string): Promise<AgentTeamEnterResult> {
     return get<AgentTeamEnterResult>(`/agents/${agentId}/agent-teams/${teamId}/members/${memberId}/enter`);
+  },
+
+  startTeamMemberRun(
+    agentId: string,
+    teamId: string,
+    memberId: string,
+    input: StartAgentTeamMemberRunInput,
+  ): Promise<AgentTeamMember> {
+    return post<AgentTeamMember>(`/agents/${agentId}/agent-teams/${teamId}/members/${memberId}/runs`, {
+      content: input.content,
+      display_content: input.display_content ?? '',
+    });
+  },
+
+  messageTeamMember(
+    agentId: string,
+    teamId: string,
+    memberId: string,
+    input: MessageAgentTeamMemberInput,
+  ): Promise<AgentTeamMember> {
+    return post<AgentTeamMember>(`/agents/${agentId}/agent-teams/${teamId}/members/${memberId}/messages`, {
+      message: input.message,
+      display_content: input.display_content ?? '',
+      interrupt: input.interrupt ?? false,
+    });
   },
 
   closeTeam(agentId: string, teamId: string): Promise<AgentTeamCloseResult> {

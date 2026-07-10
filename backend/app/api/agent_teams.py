@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated
@@ -20,11 +21,13 @@ from app.models.user import User
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_team_contract import teammate_creation_discovery
 from app.services.agent_team_runtime_service import (
+    ACTIVE_AGENT_TEAM_MEMBER_STATUSES,
     build_agent_team_decision_entry,
     create_agent_team_runtime,
     message_agent_team_members_runtime,
+    team_close_projection,
 )
-from app.services.chat_transcript import append_session_event
+from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_close_consolidation
 from app.services.web_chat_runtime import ActiveWebChatRunExists, start_web_chat_run
 
@@ -72,6 +75,7 @@ def _uuid_or_none(value: object) -> uuid.UUID | None:
 
 
 def _member_payload(member: AgentTeamMember) -> dict:
+    metadata = member.metadata_json or {}
     return {
         "id": str(member.id),
         "member_name": member.member_name,
@@ -82,7 +86,10 @@ def _member_payload(member: AgentTeamMember) -> dict:
         "status": member.status,
         "tool_policy": member.tool_policy_json or {},
         "budget": member.budget_json or {},
-        "metadata": member.metadata_json or {},
+        "summary": metadata.get("summary") or "",
+        "last_turn_status": metadata.get("last_turn_status"),
+        "last_runtime_status": metadata.get("last_runtime_status"),
+        "metadata": metadata,
     }
 
 
@@ -99,6 +106,7 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict:
         "agent_team_decision_entry": decision_entry,
         "team_outcome": decision_entry["team_outcome"],
         "lead_required_actions": decision_entry["lead_required_actions"],
+        **team_close_projection(team),
         **teammate_creation_discovery(team.name),
     }
 
@@ -115,29 +123,20 @@ def _team_event_payload(event: AgentTeamEvent) -> dict:
     }
 
 
-def _render_team_close_summary(team: AgentTeam, *, member_outputs: list[dict], consolidation_plan: dict) -> str:
-    lines = [f"Agent Team '{team.name}' 已关闭。", "", "成员输出摘要："]
-    if member_outputs:
-        for output in member_outputs:
-            summary = str(output.get("summary") or "").strip() or "无摘要"
-            lines.append(f"- {output.get('member_id')}: {summary}")
-    else:
-        lines.append("- 无成员输出")
-    next_steps = consolidation_plan.get("next_steps") if isinstance(consolidation_plan, dict) else None
-    if next_steps:
-        lines.extend(["", "建议整合动作："])
-        for step in next_steps:
-            lines.append(f"- {step}")
-    return "\n".join(lines)
-
-
-async def _load_team_or_404(db: AsyncSession, *, agent_id: uuid.UUID, team_id: uuid.UUID) -> AgentTeam:
-    result = await db.execute(
-        select(AgentTeam).where(
-            AgentTeam.id == team_id,
-            AgentTeam.lead_agent_id == agent_id,
-        )
+async def _load_team_or_404(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    team_id: uuid.UUID,
+    for_update: bool = False,
+) -> AgentTeam:
+    statement = select(AgentTeam).where(
+        AgentTeam.id == team_id,
+        AgentTeam.lead_agent_id == agent_id,
     )
+    if for_update:
+        statement = statement.with_for_update()
+    result = await db.execute(statement)
     team = result.scalar_one_or_none()
     if team is None:
         raise HTTPException(status_code=404, detail="Agent team not found")
@@ -229,6 +228,54 @@ def _runtime_event(team: AgentTeam, member: AgentTeamMember, *, event_type: str,
     )
 
 
+def _team_close_member_outputs(members: list[AgentTeamMember]) -> list[dict]:
+    outputs: list[dict] = []
+    for member in members:
+        metadata = dict(member.metadata_json or {})
+        artifacts = []
+        for artifact in metadata.get("artifacts") or []:
+            if isinstance(artifact, dict):
+                artifacts.append(dict(artifact))
+            elif str(artifact or "").strip():
+                artifacts.append({"path": str(artifact).strip()})
+        outputs.append(
+            {
+                "member_id": str(member.id),
+                "member_name": member.member_name,
+                "member_role": member.member_role or "",
+                "last_turn_status": metadata.get("last_turn_status") or member.status,
+                "summary": metadata.get("summary") or "",
+                "artifacts": artifacts,
+                "work_ledger_deltas": metadata.get("work_ledger_deltas") or [],
+                "t0_refs": metadata.get("t0_refs") or [],
+            }
+        )
+    return outputs
+
+
+def _team_close_model_context(
+    team: AgentTeam,
+    *,
+    member_outputs: list[dict],
+    consolidation_plan: dict,
+) -> str:
+    return json.dumps(
+        {
+            "schema": "hive.agent_team_close_context.v1",
+            "instruction": (
+                "Act as the lead agent. Inspect every member output and referenced artifact, resolve conflicts, "
+                "then give the user your own concise synthesis and delivery status."
+            ),
+            "team": {"name": team.name},
+            "member_outputs": member_outputs,
+            "consolidation_plan": consolidation_plan,
+        },
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
+
+
 def _team_workbench_payload(
     *,
     agent_id: uuid.UUID,
@@ -257,7 +304,7 @@ def _team_workbench_payload(
         "events": [_team_event_payload(event) for event in events],
         "summary": {
             "member_count": len(members),
-            "active_member_count": sum(1 for member in members if member.status not in {"closed", "failed"}),
+            "active_member_count": sum(1 for member in members if member.status in ACTIVE_AGENT_TEAM_MEMBER_STATUSES),
             "event_count": len(events),
             "transcript_truth": team.transcript_truth,
         },
@@ -541,8 +588,8 @@ async def start_agent_team_member_run(
         action="team:member:run",
         manager_override_reason=admin_override_reason,
     )
-    if team.status == "closed":
-        raise HTTPException(status_code=409, detail="Agent team is closed")
+    if team.status != "active":
+        raise HTTPException(status_code=409, detail=f"Agent team is {team.status}")
     member = await _load_team_member_or_404(db, team_id=team.id, member_id=member_id)
     if member.status == "closed":
         raise HTTPException(status_code=409, detail="Agent team member is closed")
@@ -612,7 +659,11 @@ async def message_agent_team_member(
         action="team:member:message",
         manager_override_reason=admin_override_reason,
     )
+    if team.status != "active":
+        raise HTTPException(status_code=409, detail=f"Agent team is {team.status}")
     member = await _load_team_member_or_404(db, team_id=team.id, member_id=member_id)
+    if member.status == "closed":
+        raise HTTPException(status_code=409, detail="Agent team member is closed")
     session = await _load_member_session_or_404(db, agent_id=agent_id, member=member)
 
     payload = await message_agent_team_members_runtime(
@@ -640,7 +691,7 @@ async def close_agent_team(
     admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
     await check_agent_access(db, current_user, agent_id)
-    team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
+    team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id, for_update=True)
     await _authorize_team_action(
         db,
         current_user=current_user,
@@ -650,43 +701,37 @@ async def close_agent_team(
         manager_override_reason=admin_override_reason,
     )
     members = await _load_team_members(db, team_id=team.id)
-    now = datetime.now(timezone.utc)
-    team.status = "closed"
-    team.closed_at = now
-    for member in members:
-        member.status = "closed"
-        member.closed_at = now
-    close_summary_ref = f"agent_team_close:{team.id}"
     team_metadata = dict(team.metadata_json or {})
-    team_metadata["close_summary_ref"] = close_summary_ref
-    decision_entry = build_agent_team_decision_entry(team, members, close_summary_ref=close_summary_ref)
-    team_metadata["agent_team_decision_entry"] = decision_entry
-    team.metadata_json = team_metadata
-    db.add(
-        AgentTeamEvent(
-            team_id=team.id,
-            event_type="team_closed",
-            payload_json={
-                "closed_at": now.isoformat(),
-                "agent_team_decision_entry": decision_entry,
+    existing_plan = team_metadata.get("close_consolidation_plan")
+    if team.status == "closed":
+        return {
+            **_team_payload(team, members),
+            "consolidation_plan": existing_plan or {},
+            "close_delivery": {"status": "closed"},
+        }
+    if team.status == "closing":
+        return {
+            **_team_payload(team, members),
+            "consolidation_plan": existing_plan or {},
+            "close_delivery": {
+                "status": "pending_lead_synthesis",
+                "notification_id": team_metadata.get("close_notification_id"),
             },
-        )
-    )
-    await emit_hook(
-        HookEvent.TEAM_CLOSED,
-        agent_id=agent_id,
-        session_id=str(team.parent_session_id),
-        source="agent_team",
-        metadata={"tenant_id": str(team.tenant_id) if team.tenant_id else None, "team_id": str(team.id)},
-    )
+        }
+    running_members = [member for member in members if member.status in ACTIVE_AGENT_TEAM_MEMBER_STATUSES]
+    if running_members:
+        raise HTTPException(status_code=409, detail="Wait for running Team members before closing the Team")
 
+    close_attempt = max(0, int(team_metadata.get("close_attempt") or 0)) + 1
+    close_summary_ref = f"agent_team_close:{team.id}:{close_attempt}"
+    decision_entry = build_agent_team_decision_entry(team, members, close_summary_ref=close_summary_ref)
     team_index = TeamIndex(
         id=team.id,
         tenant_id=team.tenant_id,
         lead_agent_id=team.lead_agent_id,
         parent_session_id=team.parent_session_id,
         name=team.name,
-        status="closed",
+        status="active",
         transcript_truth=team.transcript_truth,
         members=[
             TeamMemberIndex(
@@ -697,49 +742,83 @@ async def close_agent_team(
                 chat_session_id=member.chat_session_id,
                 runtime_task_id=member.runtime_task_id,
                 runtime_task_type=member.runtime_task_type,
-                status="closed",
+                status=member.status,
                 tool_policy=member.tool_policy_json or {},
                 budget=member.budget_json or {},
             )
             for member in members
         ],
     )
-    member_outputs = [
-        {
-            "member_id": str(member.id),
-            "summary": (member.metadata_json or {}).get("summary") or "",
-            "artifacts": (member.metadata_json or {}).get("artifacts") or [],
-            "work_ledger_deltas": (member.metadata_json or {}).get("work_ledger_deltas") or [],
-            "t0_refs": (member.metadata_json or {}).get("t0_refs") or [],
-        }
-        for member in members
-    ]
+    member_outputs = _team_close_member_outputs(members)
     consolidation_plan = plan_team_close_consolidation(team_index, member_outputs=member_outputs)
-
-    await append_session_event(
-        db=db,
-        agent_id=agent_id,
-        tenant_id=team.tenant_id,
-        session_id=team.parent_session_id,
-        actor_type="assistant",
-        event_type="assistant_message",
-        role="assistant",
-        user_id=current_user.id,
-        content=_render_team_close_summary(team, member_outputs=member_outputs, consolidation_plan=consolidation_plan),
-        source="agent_team_close",
-        visibility_scope="direct_user",
-        listed_surface="chat",
-        metadata={
-            "source": "agent_team_close",
-            "team_id": str(team.id),
-            "team_name": team.name,
-            "member_outputs": member_outputs,
-            "consolidation_plan": consolidation_plan,
+    model_context = _team_close_model_context(
+        team,
+        member_outputs=member_outputs,
+        consolidation_plan=consolidation_plan,
+    )
+    artifacts = [artifact for output in member_outputs for artifact in output.get("artifacts") or []]
+    notification_id = await enqueue_completion_notification(
+        db,
+        CompletionNotification(
+            tenant_id=team.tenant_id,
+            source_kind="agent_team_close",
+            source_run_id=close_summary_ref,
+            parent_session_id=team.parent_session_id,
+            parent_agent_id=team.lead_agent_id,
+            parent_user_id=current_user.id,
+            terminal_status="completed",
+            task_type="agent_team_close",
+            summary=f"Agent Team '{team.name}' collected {len(member_outputs)} member outputs for lead synthesis.",
+            delivery_mode="parent_continuation",
+            artifacts=artifacts,
+            metadata={
+                "agent_team_close_id": str(team.id),
+                "team_id": str(team.id),
+                "team_name": team.name,
+                "close_attempt": close_attempt,
+                "model_context": model_context,
+                "consolidation_plan": consolidation_plan,
+                "agent_team_decision_entry": decision_entry,
+                **(
+                    {"budget_run_id": str(team_metadata["budget_run_id"])} if team_metadata.get("budget_run_id") else {}
+                ),
+            },
+        ),
+    )
+    now = datetime.now(timezone.utc)
+    team.status = "closing"
+    team_metadata.update(
+        {
+            "close_attempt": close_attempt,
+            "close_requested_at": now.isoformat(),
+            "close_requested_by_user_id": str(current_user.id),
+            "close_summary_ref": close_summary_ref,
+            "close_notification_id": str(notification_id),
+            "close_consolidation_plan": consolidation_plan,
             "agent_team_decision_entry": decision_entry,
-        },
+            "close_synthesis_status": "pending",
+        }
+    )
+    team_metadata.pop("close_failure", None)
+    team.metadata_json = team_metadata
+    db.add(
+        AgentTeamEvent(
+            team_id=team.id,
+            event_type="team_close_requested",
+            payload_json={
+                "requested_at": now.isoformat(),
+                "notification_id": str(notification_id),
+                "close_attempt": close_attempt,
+                "agent_team_decision_entry": decision_entry,
+            },
+        )
     )
     await db.flush()
     return {
         **_team_payload(team, members),
         "consolidation_plan": consolidation_plan,
+        "close_delivery": {
+            "status": "pending_lead_synthesis",
+            "notification_id": str(notification_id),
+        },
     }

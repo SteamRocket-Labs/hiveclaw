@@ -388,6 +388,23 @@ class RuntimeNotificationOutboxService:
             if int(row.attempt_count or 0) >= self._max_attempts:
                 row.status = "dead_letter"
                 outcome = "dead_letter"
+                if row.source_kind == "agent_team" and row.task_type == "agent_team_close":
+                    from app.services.agent_team_runtime_service import (
+                        reopen_agent_team_close_after_delivery_failure,
+                    )
+
+                    raw_team_id = (row.metadata_json or {}).get("agent_team_close_id")
+                    try:
+                        team_id = _uuid(raw_team_id, field="agent_team_close_id")
+                    except ValueError:
+                        team_id = None
+                    if team_id is not None:
+                        await reopen_agent_team_close_after_delivery_failure(
+                            db=db,
+                            team_id=team_id,
+                            notification_id=row.id,
+                            error=row.last_error,
+                        )
             else:
                 delay = min(300, self._retry_base_seconds * (2 ** max(0, int(row.attempt_count or 1) - 1)))
                 row.status = "pending"
@@ -414,6 +431,7 @@ class RuntimeNotificationOutboxService:
             row.status = "pending"
             row.available_at = datetime.now(UTC) + timedelta(seconds=self._deferred_retry_seconds)
             row.last_error = reason
+            row.attempt_count = max(0, int(row.attempt_count or 0) - 1)
             row.locked_by = None
             row.locked_at = None
             await db.commit()
@@ -421,6 +439,23 @@ class RuntimeNotificationOutboxService:
 
     async def _deliver(self, item: ClaimedCompletionNotification) -> dict[str, Any]:
         from app.services.agent_session_continuation import continue_parent_session_with_task_notification
+
+        if item.task_type == "agent_team_close" and item.delivery_mode == "parent_continuation":
+            from app.services.web_chat_runtime import get_active_web_chat_run
+
+            async with tenant_scoped_session(
+                item.tenant_id,
+                session_factory=self._session_factory,
+                require_tenant=True,
+                source="runtime_notification_outbox_team_close_preflight",
+            ) as preflight_db:
+                active_run = await get_active_web_chat_run(
+                    db=preflight_db,
+                    agent_id=item.parent_agent_id,
+                    session_id=item.parent_session_id,
+                )
+            if active_run is not None:
+                raise CompletionDeliveryDeferred("parent_session_active")
 
         admission: ExecutionAdmission | None = None
         admission_decision: ExecutionAdmissionDecision | None = None

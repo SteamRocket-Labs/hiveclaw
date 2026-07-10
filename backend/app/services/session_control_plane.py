@@ -35,7 +35,11 @@ from app.runtime.subagent_decision_entry import subagent_decision_entry_from_met
 from app.runtime.subagent_return_contract import subagent_return_contract_from_metadata
 from app.runtime.turn_envelope import build_prompt_assembly_manifest, build_turn_envelope
 from app.services.agent_team_contract import teammate_creation_discovery
-from app.services.agent_team_runtime_service import build_agent_team_decision_entry
+from app.services.agent_team_runtime_service import (
+    ACTIVE_AGENT_TEAM_MEMBER_STATUSES,
+    build_agent_team_decision_entry,
+    team_close_projection,
+)
 from app.services.enterprise_approval_visibility import is_visible_enterprise_approval
 from app.services.session_goal_projection import build_session_goal_projection
 from app.services.session_command_runtime import _checkpoint_payloads, _event_payload, _load_events
@@ -404,6 +408,8 @@ def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:
         "runtime_task_id": str(member.runtime_task_id) if member.runtime_task_id else None,
         "runtime_task_type": member.runtime_task_type,
         "status": member.status,
+        "last_turn_status": metadata.get("last_turn_status"),
+        "last_runtime_status": metadata.get("last_runtime_status"),
         "summary": metadata.get("summary") or "",
         "t0_refs": metadata.get("t0_refs") or [],
         "artifacts": metadata.get("artifacts") or [],
@@ -420,10 +426,12 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict[str, 
         "lead_agent_id": str(team.lead_agent_id),
         "parent_session_id": str(team.parent_session_id),
         "member_count": len(members),
+        "running_member_count": sum(1 for member in members if member.status in ACTIVE_AGENT_TEAM_MEMBER_STATUSES),
         "members": [_team_member_payload(member) for member in members],
         "agent_team_decision_entry": decision_entry,
         "team_outcome": decision_entry["team_outcome"],
         "lead_required_actions": decision_entry["lead_required_actions"],
+        **team_close_projection(team),
         "created_at": _iso(team.created_at),
         "closed_at": _iso(team.closed_at),
         **teammate_creation_discovery(team.name),
@@ -448,9 +456,26 @@ def _agent_team_section_item(team: dict[str, Any]) -> dict[str, Any]:
     item["agent_team_decision_entry"] = decision_entry
     item["team_outcome"] = decision_entry["team_outcome"]
     item["lead_required_actions"] = decision_entry["lead_required_actions"]
-    item["running_count"] = sum(1 for member in item["members"] if _completion_state(member.get("status")) == "running")
+    running_statuses = ACTIVE_AGENT_TEAM_MEMBER_STATUSES
+    terminal_statuses = {
+        "completed",
+        "succeeded",
+        "success",
+        "done",
+        "failed",
+        "error",
+        "killed",
+        "cancelled",
+        "canceled",
+        "closed",
+    }
+    item["running_count"] = sum(
+        1 for member in item["members"] if str(member.get("status") or "").lower() in running_statuses
+    )
     item["terminal_count"] = sum(
-        1 for member in item["members"] if _completion_state(member.get("status")) in {"completed", "failed"}
+        1
+        for member in item["members"]
+        if str(member.get("last_turn_status") or member.get("status") or "").lower() in terminal_statuses
     )
     return item
 

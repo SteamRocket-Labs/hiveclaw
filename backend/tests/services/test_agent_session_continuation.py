@@ -6,6 +6,23 @@ from uuid import uuid4
 import pytest
 
 
+def test_task_notification_runtime_context_includes_full_canonical_model_context():
+    from app.services.agent_session_continuation import build_task_notification_runtime_context
+
+    model_context = '{"team":"Research","member_outputs":[{"summary":"full evidence"}]}'
+    result = build_task_notification_runtime_context(
+        task_id="close:team-1:1",
+        task_type="agent_team_close",
+        status="completed",
+        summary="Team outputs are ready for synthesis.",
+        source="agent_team_close",
+        model_context=model_context,
+    )
+
+    assert model_context in result
+    assert "Synthesize the canonical context" in result
+
+
 class _DB:
     def __init__(self) -> None:
         self.commits = 0

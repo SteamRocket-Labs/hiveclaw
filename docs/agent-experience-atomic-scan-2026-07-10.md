@@ -1047,3 +1047,61 @@ Dashboard CSS bundle -> 5.80 kB to 2.49 kB after orphan surface retirement
 - `MODE-03 Task / Work Ledger / RuntimeTask / Automation`：`局部闭环 -> 闭环`。
 - `MODE-04 Scheduled / Trigger` 的执行证据已由 12.3 闭环；本节补齐用户侧 Automation 命名与入口，`断点 -> 闭环`。
 - Goal 默认用户消费面：`断点 -> 闭环`；Technical Inspector 仍可读取机械 run / event evidence。
+
+### 12.7 Agent Team 用户控制、状态与 AI-native close — 已闭环
+
+本节收口第 6.3 节全部五个断点。Team 继续承担“可进入、可多轮协作的持久成员 session”，没有退化成 Sub-agent 或 Workflow；平台只负责状态、证据、权限和恢复，最终综合判断重新交给 Lead Agent。
+
+**原子链**
+
+| 原子 | 当前事实源与消费路径 |
+| --- | --- |
+| 输入 | Runtime Console 的 Team member 行提供 Enter / Send / Resume；Team header 提供 Close team。Send 接受本轮 follow-up，Resume 使用既有 member-session context；按钮不把 Team/member/session UUID 写入普通 DOM。 |
+| 权威 | create / read / event / enter / message / resume / close 全部消费第 12.1 节统一 `authorize_session_action` 结果；tenant、Agent、parent Session 与当前用户关系由服务端重新绑定。 |
+| 执行 | Send 进入 canonical member mailbox；Resume 通过 `start_web_chat_run(runtime_task_type="team_member")` 继续同一 member session。Close 只在没有 running/queued/started member 时进入 `active -> closing`，随后由唯一 Runtime Notification Outbox 启动独立 Lead synthesis turn；平台不再伪造 assistant 总结。 |
+| 证据 | member 的机械运行状态保存在 `status / last_runtime_status`，最近一次结果保存在 `last_turn_status / summary / artifacts / t0_refs`；Team close 使用 `team_close_requested / team_closed / team_close_failed / team_close_delivery_failed` 事件、outbox receipt 与 Lead RuntimeTask 作为证据。 |
+| 恢复 | close 重放在 `closing/closed` 上幂等；running member 返回 409。Lead Session 正在运行时 outbox durable defer 且不消耗失败重试次数，避免把 close 投进一个无法关联 finalizer 的旧 run。Lead synthesis 失败/取消会把 Team 恢复为 active；outbox 达到 dead letter 也按 notification CAS 恢复 active，旧 attempt 不能覆盖新 attempt。 |
+| 消费 | Runtime Console 正确显示 `idle · completed/failed`，running count 只计算真实活跃 member；失败 close 显示 `active · close failed`、机械原因与可重试 Close。Lead Agent 接收完整 member outputs、artifact refs、ledger deltas、T0 refs 和 consolidation plan，由模型生成最终用户回复。 |
+| 验收 | API、状态投影、member terminal、Lead synthesis success/failure、outbox active-parent defer/dead-letter、web runtime finalizer、前端 API/controls/status、全量 frontend 与 production build 均已覆盖。 |
+
+**AI-native close 契约**
+
+```text
+Team active
+  -> user Close
+  -> closing + durable outbox
+       -> parent busy: defer, do not merge into the old run
+       -> Lead model turn starts with full canonical model_context
+            -> completed: Team/member closed + TEAM_CLOSED hook
+            -> failed/cancelled: Team active + visible retry reason
+       -> delivery dead-letter: Team active + visible retry reason
+```
+
+平台不再调用 `_render_team_close_summary()`，也不再用 `assistant_message` 身份把 member UUID 和平台拼接文本写进主会话。`build_task_notification_runtime_context()` 接收完整 canonical `model_context`；平台标签只是 evidence，不是模型最终答案。
+
+**代码极简收口**
+
+- 新增一个小型 `SessionAgentTeamControls`，直接消费既有 Team API；删除 `AgentChatSection` 中四个占位按钮工厂和永久 disabled 的 Send / Resume / Close；
+- `team_close_projection()` 是 API、runtime tool payload 与 Session Control Plane 共用的 close recovery read model；
+- member payload 统一保留 `last_turn_status / last_runtime_status / summary`；running count 不再借用把未知/idle 回退成 running 的通用 completion mapper；
+- close synthesis 复用第 12.4 节唯一 outbox 和标准 web-chat RuntimeTask，没有新增第二套队列、第二套模型调用或前端状态机。
+
+**故障注入与机械验收**
+
+```text
+Red evidence -> close 立即 closed；平台伪造 assistant summary；完整 member evidence 未进入模型；完成 member 被计为 active；UI Send/Resume/Close 永久 disabled；Lead failure 后无用户恢复状态；outbox dead-letter 永久卡 closing；active parent 会吞掉 close finalizer metadata
+backend Team/Outbox/Session/Web Runtime related suites -> 186 passed, 0 failed
+frontend full regression -> 97 files, 574 passed, 0 failed
+npm run build -> TypeScript + Vite exit 0
+ruff check affected backend paths -> All checks passed
+git diff --check -> clean
+```
+
+**状态变化**
+
+- 第 6.3 节断点 A（权威）：已由 12.1 `断点 -> 闭环`。
+- 第 6.3 节断点 B（预算旁路）：已由 12.3 `断点 -> 闭环`。
+- 第 6.3 节断点 C（idle / last outcome / running count）：`断点 -> 闭环`。
+- 第 6.3 节断点 D（Enter / Send / Resume / Close 消费）：`断点 -> 闭环`。
+- 第 6.3 节断点 E（平台代替模型综合）：`断点 -> 闭环`。
+- 七原子总矩阵的 Agent Team：`断点 -> 闭环`。

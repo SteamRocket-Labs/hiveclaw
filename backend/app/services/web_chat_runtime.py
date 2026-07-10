@@ -2301,6 +2301,34 @@ async def _append_file_changes_event(
     )
 
 
+async def _project_agent_team_terminal_state(
+    *,
+    db: AsyncSession,
+    task: RuntimeTask,
+    status: str,
+    result_summary: str | None,
+    metadata_json: dict[str, Any] | None,
+) -> None:
+    from app.services.agent_team_runtime_service import (
+        project_agent_team_close_completion,
+        project_agent_team_member_completion,
+    )
+
+    await project_agent_team_member_completion(
+        db=db,
+        task=task,
+        status=status,
+        result_summary=result_summary,
+        metadata_json=metadata_json,
+    )
+    await project_agent_team_close_completion(
+        db=db,
+        task=task,
+        status=status,
+        result_summary=result_summary,
+    )
+
+
 async def _finalize_web_chat_run_with_assistant(
     *,
     run_uuid: uuid.UUID,
@@ -2362,6 +2390,13 @@ async def _finalize_web_chat_run_with_assistant(
                 status=status,
                 result_summary=result_summary,
                 metadata_json=metadata_json,
+            )
+            await _project_agent_team_terminal_state(
+                db=db,
+                task=task,
+                status=status,
+                result_summary=result_summary,
+                metadata_json=dict(getattr(task, "metadata_json", None) or {}),
             )
             await db.commit()
             return False
@@ -2433,9 +2468,7 @@ async def _finalize_web_chat_run_with_assistant(
                 result_summary=result_summary,
                 metadata_json=metadata_json,
             )
-            from app.services.agent_team_runtime_service import project_agent_team_member_completion
-
-            await project_agent_team_member_completion(
+            await _project_agent_team_terminal_state(
                 db=db,
                 task=task,
                 status=status,
@@ -2536,9 +2569,7 @@ async def _finalize_web_chat_run_with_assistant(
             result_summary=result_summary,
             metadata_json=metadata_json,
         )
-        from app.services.agent_team_runtime_service import project_agent_team_member_completion
-
-        await project_agent_team_member_completion(
+        await _project_agent_team_terminal_state(
             db=db,
             task=task,
             status=status,
@@ -2640,9 +2671,7 @@ async def _finalize_web_chat_run_without_assistant(
             metadata_json=metadata_json,
         )
         merged_metadata = dict(getattr(task, "metadata_json", None) or {})
-        from app.services.agent_team_runtime_service import project_agent_team_member_completion
-
-        await project_agent_team_member_completion(
+        await _project_agent_team_terminal_state(
             db=db,
             task=task,
             status=status,

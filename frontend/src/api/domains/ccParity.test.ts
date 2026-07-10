@@ -185,6 +185,34 @@ describe('ccParityApi', () => {
     expect(requestOf(2).init.method).toBe('POST');
   });
 
+  it('sends follow-up work and resumes a Team member through real runtime APIs', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ status: 'queued', member_name: 'critic' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'running', member_name: 'critic' }));
+
+    await ccParityApi.messageTeamMember('agent-1', 'team-1', 'member-1', {
+      message: 'Review the revised evidence.',
+      display_content: 'Review the revised evidence.',
+      interrupt: false,
+    });
+    await ccParityApi.startTeamMemberRun('agent-1', 'team-1', 'member-1', {
+      content: 'Continue your assigned role using the existing member-session context.',
+      display_content: 'Resume member',
+    });
+
+    expect(requestOf(0).url).toBe('/api/agents/agent-1/agent-teams/team-1/members/member-1/messages');
+    expect(JSON.parse(String(requestOf(0).init.body))).toEqual({
+      message: 'Review the revised evidence.',
+      display_content: 'Review the revised evidence.',
+      interrupt: false,
+    });
+    expect(requestOf(1).url).toBe('/api/agents/agent-1/agent-teams/team-1/members/member-1/runs');
+    expect(JSON.parse(String(requestOf(1).init.body))).toEqual({
+      content: 'Continue your assigned role using the existing member-session context.',
+      display_content: 'Resume member',
+    });
+  });
+
   it('loads CCPlus session workbench, context usage, hook management, JSON export, and team workbench surfaces', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ schema: 'hive.ccplus.session_workbench.v1' }))

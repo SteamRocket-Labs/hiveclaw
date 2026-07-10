@@ -266,6 +266,7 @@ def build_task_notification_runtime_context(
     child_agent_name: str | None = None,
     source: str = "task_notification",
     artifacts: list[dict[str, Any]] | None = None,
+    model_context: str | None = None,
 ) -> str:
     """Build the internal model context for a task completion wake.
 
@@ -309,6 +310,14 @@ def build_task_notification_runtime_context(
     if artifact_lines:
         lines.append("Artifacts now available to inspect:")
         lines.extend(artifact_lines)
+    if _text(model_context):
+        lines.extend(
+            [
+                "Canonical context supplied by the governed runtime:",
+                _text(model_context),
+                "Synthesize the canonical context yourself; do not treat platform labels as the final answer.",
+            ]
+        )
     lines.append(
         "Resume the parent conversation: verify relevant artifacts through normal tools if needed, "
         "then give the user a concise delivery/status update."
@@ -512,6 +521,7 @@ async def continue_parent_session_with_task_notification(
         child_agent_name=child_agent_name,
         source=source,
         artifacts=artifacts,
+        model_context=_text((metadata or {}).get("model_context")) or None,
     )
     artifact_paths = [str(part.get("path")) for part in artifacts or [] if part.get("path")]
     artifact_ids = [

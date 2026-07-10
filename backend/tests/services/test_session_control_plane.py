@@ -1279,3 +1279,28 @@ def test_runtime_task_projection_explains_budget_wait_without_raw_budget_identit
             "auto_resume": True,
         }
         assert "budget_run_id" not in projected
+
+
+def test_agent_team_section_uses_last_turn_outcome_for_idle_member_counts():
+    import app.services.session_control_plane as service
+
+    item = service._agent_team_section_item(
+        {
+            "id": "team-1",
+            "name": "Research Team",
+            "status": "active",
+            "members": [
+                {
+                    "id": "member-1",
+                    "member_name": "Critic",
+                    "chat_session_id": str(uuid4()),
+                    "status": "idle",
+                    "last_turn_status": "completed",
+                }
+            ],
+        }
+    )
+
+    assert item["running_count"] == 0
+    assert item["terminal_count"] == 1
+    assert item["members"][0]["last_turn_status"] == "completed"

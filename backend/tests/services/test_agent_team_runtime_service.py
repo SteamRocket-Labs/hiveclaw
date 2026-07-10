@@ -698,3 +698,134 @@ async def test_team_member_completion_wakes_parent_session_with_task_notificatio
     assert notification.child_agent_name == "researcher"
     assert "report ready" in notification.summary
     assert "parent_task_notification_side_effect" not in member.metadata_json
+
+
+@pytest.mark.asyncio
+async def test_lead_synthesis_completion_closes_team_after_model_turn(monkeypatch):
+    from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
+    from app.services.agent_team_runtime_service import project_agent_team_close_completion
+
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Research Team",
+        status="closing",
+        metadata_json={"close_attempt": 1},
+    )
+    members = [
+        AgentTeamMember(
+            id=uuid4(),
+            team_id=team.id,
+            member_name="researcher",
+            chat_session_id=uuid4(),
+            status="idle",
+        )
+    ]
+
+    class DB(_DB):
+        def __init__(self):
+            super().__init__()
+            self.executes = 0
+
+        async def execute(self, _stmt):
+            self.executes += 1
+            return _ScalarOne(team) if self.executes == 1 else _ScalarMany(members)
+
+    db = DB()
+    session_events = []
+    hooks = []
+
+    async def fake_append(**kwargs):
+        session_events.append(kwargs)
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_hook(event, **kwargs):
+        hooks.append((event, kwargs))
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_hook)
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type="web_chat_turn",
+        metadata_json={
+            "agent_team_close_id": str(team.id),
+            "user_id": str(uuid4()),
+        },
+    )
+    result = await project_agent_team_close_completion(
+        db=db,
+        task=task,
+        status="completed",
+        result_summary="Synthesized the team findings",
+    )
+
+    assert result == {"team_id": str(team.id), "status": "closed"}
+    assert team.status == "closed"
+    assert team.closed_at is not None
+    assert members[0].status == "closed"
+    assert members[0].closed_at is not None
+    assert team.metadata_json["close_synthesis_run_id"] == str(task.id)
+    assert team.metadata_json["close_synthesis_summary"] == "Synthesized the team findings"
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "team_closed" for item in db.added)
+    assert session_events[0]["event_type"] == "team_closed"
+    assert session_events[0]["materialize_chat_message"] is False
+    assert hooks
+
+
+@pytest.mark.asyncio
+async def test_failed_lead_synthesis_reopens_team_for_retry(monkeypatch):
+    from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
+    from app.services.agent_team_runtime_service import project_agent_team_close_completion
+
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        lead_agent_id=uuid4(),
+        parent_session_id=uuid4(),
+        name="Research Team",
+        status="closing",
+    )
+    member = AgentTeamMember(
+        id=uuid4(),
+        team_id=team.id,
+        member_name="researcher",
+        chat_session_id=uuid4(),
+        status="idle",
+    )
+
+    class DB(_DB):
+        def __init__(self):
+            super().__init__()
+            self.executes = 0
+
+        async def execute(self, _stmt):
+            self.executes += 1
+            return _ScalarOne(team) if self.executes == 1 else _ScalarMany([member])
+
+    db = DB()
+
+    async def fake_append(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append)
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type="web_chat_turn",
+        metadata_json={"agent_team_close_id": str(team.id), "user_id": str(uuid4())},
+    )
+
+    result = await project_agent_team_close_completion(
+        db=db,
+        task=task,
+        status="failed",
+        result_summary="Provider timeout",
+    )
+
+    assert result == {"team_id": str(team.id), "status": "active"}
+    assert team.status == "active"
+    assert member.status == "idle"
+    assert team.metadata_json["close_failure"] == "Provider timeout"
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "team_close_failed" for item in db.added)

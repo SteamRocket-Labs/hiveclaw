@@ -8,6 +8,7 @@ from sqlalchemy import delete, func, select, text
 
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
+from app.models.agent_team import AgentTeam, AgentTeamEvent
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
@@ -222,6 +223,118 @@ async def test_claim_retry_and_terminal_ack_are_durable(owner_sessionmaker):
     assert stored.status == "delivered"
     assert stored.attempt_count == 2
     assert stored.delivery_receipt_json["runtime_task_id"] == "parent-run"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_dead_lettered_team_close_reopens_team_for_retry(owner_sessionmaker):
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    team_id = uuid.uuid4()
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        team = AgentTeam(
+            id=team_id,
+            tenant_id=tenant_id,
+            lead_agent_id=agent_id,
+            parent_session_id=session_id,
+            name="Research Team",
+            status="closing",
+            metadata_json={"close_attempt": 1},
+        )
+        db.add(team)
+        await db.flush()
+        outbox_id = await enqueue_completion_notification(
+            db,
+            CompletionNotification(
+                tenant_id=tenant_id,
+                source_kind="agent_team",
+                source_run_id=f"agent_team_close:{team_id}:1",
+                parent_session_id=session_id,
+                parent_agent_id=agent_id,
+                parent_user_id=user_id,
+                terminal_status="completed",
+                task_type="agent_team_close",
+                summary="Synthesize Team results.",
+                delivery_mode="parent_continuation",
+                metadata={"agent_team_close_id": str(team_id)},
+            ),
+        )
+        team.metadata_json = {**team.metadata_json, "close_notification_id": str(outbox_id)}
+        await db.commit()
+
+    async def fail_delivery(_item):
+        raise RuntimeError("parent continuation unavailable")
+
+    service = RuntimeNotificationOutboxService(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=0,
+        max_attempts=1,
+    )
+    result = await service.drain_once(worker_id="worker-a", deliver=fail_delivery)
+
+    async with owner_sessionmaker() as db:
+        team = (await db.execute(select(AgentTeam).where(AgentTeam.id == team_id))).scalar_one()
+        events = list(
+            (await db.execute(select(AgentTeamEvent).where(AgentTeamEvent.team_id == team_id))).scalars().all()
+        )
+
+    assert result["dead_lettered"] == 1
+    assert team.status == "active"
+    assert team.metadata_json["close_synthesis_status"] == "delivery_failed"
+    assert "parent continuation unavailable" in team.metadata_json["close_failure"]
+    assert any(event.event_type == "team_close_delivery_failed" for event in events)
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_team_close_waits_for_idle_parent_before_lead_synthesis(owner_sessionmaker, monkeypatch):
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    notification = CompletionNotification(
+        tenant_id=tenant_id,
+        source_kind="agent_team",
+        source_run_id="agent_team_close:team-1:1",
+        parent_session_id=session_id,
+        parent_agent_id=agent_id,
+        parent_user_id=user_id,
+        terminal_status="completed",
+        task_type="agent_team_close",
+        summary="Synthesize Team results.",
+        delivery_mode="parent_continuation",
+        metadata={"agent_team_close_id": str(uuid.uuid4())},
+    )
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        outbox_id = await enqueue_completion_notification(db, notification)
+        await db.commit()
+
+    continuation_calls = []
+
+    async def active_run(**_kwargs):
+        return {"run_id": str(uuid.uuid4()), "status": "running"}
+
+    async def unexpected_continuation(**kwargs):
+        continuation_calls.append(kwargs)
+        return {"status": "started"}
+
+    monkeypatch.setattr("app.services.web_chat_runtime.get_active_web_chat_run", active_run)
+    monkeypatch.setattr(
+        "app.services.agent_session_continuation.continue_parent_session_with_task_notification",
+        unexpected_continuation,
+    )
+    service = RuntimeNotificationOutboxService(
+        session_factory=owner_sessionmaker,
+        deferred_retry_seconds=0,
+    )
+
+    result = await service.drain_once(worker_id="worker-a")
+
+    async with owner_sessionmaker() as db:
+        row = (
+            await db.execute(select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.id == outbox_id))
+        ).scalar_one()
+    assert result["deferred"] == 1
+    assert row.status == "pending"
+    assert row.last_error == "parent_session_active"
+    assert row.attempt_count == 0
+    assert continuation_calls == []
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

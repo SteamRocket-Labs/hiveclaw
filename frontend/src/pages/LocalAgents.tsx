@@ -38,14 +38,14 @@ export const isOnlineConnection = (connection: LocalBridgeConnection) => {
 };
 
 export const canSendLocalAgentMessage = ({
-  localAgentOnline,
+  localAgentBound,
   messageBusy,
   content,
 }: {
-  localAgentOnline: boolean;
+  localAgentBound: boolean;
   messageBusy: boolean;
   content: string;
-}) => localAgentOnline && !messageBusy && Boolean(content.trim());
+}) => localAgentBound && !messageBusy && Boolean(content.trim());
 
 const channelEventText = (event: LocalAgentChannelEvent) => {
   const payload = event.payload || {};
@@ -63,7 +63,7 @@ export const mergeChannelEvents = (
   for (const event of incoming) {
     byId.set(event.id, event);
   }
-  return Array.from(byId.values());
+  return Array.from(byId.values()).sort((left, right) => left.sequence - right.sequence);
 };
 
 export const browserChannelWsUrl = (
@@ -176,6 +176,8 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
   const [activationBusy, setActivationBusy] = useState(false);
   const [activationStatus, setActivationStatus] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const activationStartedRef = useRef(false);
+  const channelCursorRef = useRef(0);
+  const sendIdempotencyKeyRef = useRef<string | null>(null);
   const [channelSessionId, setChannelSessionId] = useState<string | null>(null);
   const [messageContent, setMessageContent] = useState(() =>
     t(
@@ -255,11 +257,12 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
   const onlineConnections = activeConnections.filter(isOnlineConnection);
   const primaryConnection = onlineConnections[0] ?? activeConnections[0] ?? null;
   const localAgentOnline = onlineConnections.length > 0;
+  const localAgentBound = activeConnections.length > 0;
   const primaryPresence = primaryConnection ? connectionPresenceStatus(primaryConnection) : 'unknown';
   const channelEvents = channelTimelineData?.events ?? [];
   const displayTitle = agentName || t('localAgents.title', 'Local Agent Channel');
   const canSendMessage = canSendLocalAgentMessage({
-    localAgentOnline,
+    localAgentBound,
     messageBusy,
     content: messageContent,
   });
@@ -315,6 +318,20 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
   }, [channelSessionId, defaultChannelSession?.id]);
 
   useEffect(() => {
+    channelCursorRef.current = 0;
+    sendIdempotencyKeyRef.current = null;
+  }, [activeChannelSessionId]);
+
+  useEffect(() => {
+    const eventCursor = Math.max(0, ...(channelTimelineData?.events ?? []).map((event) => event.sequence));
+    channelCursorRef.current = Math.max(
+      channelCursorRef.current,
+      channelTimelineData?.next_cursor ?? 0,
+      eventCursor,
+    );
+  }, [channelTimelineData]);
+
+  useEffect(() => {
     if (!activeChannelSessionId || typeof window === 'undefined') return;
     let disposed = false;
     let socket: WebSocket | null = null;
@@ -326,6 +343,20 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
         const ticket = await localBridgeApi.createBrowserChannelWsTicket(activeChannelSessionId);
         if (disposed) return;
         socket = new WebSocket(browserChannelWsUrl(activeChannelSessionId, ticket.ticket));
+        socket.onopen = () => {
+          void localBridgeApi.getChannelTimeline(activeChannelSessionId, channelCursorRef.current).then((delta) => {
+            if (disposed) return;
+            channelCursorRef.current = Math.max(channelCursorRef.current, delta.next_cursor ?? 0);
+            queryClient.setQueryData<LocalAgentChannelTimeline | undefined>(queryKey, (current) => {
+              if (!current) return delta;
+              return {
+                ...current,
+                events: mergeChannelEvents(current.events, delta.events),
+                next_cursor: Math.max(current.next_cursor ?? 0, delta.next_cursor ?? 0),
+              };
+            });
+          }).catch(() => undefined);
+        };
         socket.onclose = () => {
           if (!disposed) {
             reconnectTimer = window.setTimeout(() => void connect(), 2000);
@@ -338,11 +369,14 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
           try {
             const payload = JSON.parse(event.data);
             if (payload?.type !== 'event' || !payload.event) return;
+            const incomingEvent = payload.event as LocalAgentChannelEvent;
+            channelCursorRef.current = Math.max(channelCursorRef.current, incomingEvent.sequence ?? 0);
             queryClient.setQueryData<LocalAgentChannelTimeline | undefined>(queryKey, (current) => {
               if (!current) return current;
               return {
                 ...current,
-                events: mergeChannelEvents(current.events, [payload.event as LocalAgentChannelEvent]),
+                events: mergeChannelEvents(current.events, [incomingEvent]),
+                next_cursor: Math.max(current.next_cursor ?? 0, incomingEvent.sequence ?? 0),
               };
             });
           } catch (_error) {
@@ -365,16 +399,6 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
   const sendMessage = async () => {
     const content = messageContent.trim();
     if (!content) return;
-    if (!localAgentOnline) {
-      setMessageStatus({
-        kind: 'error',
-        message: t(
-          'localAgents.offlineSendBlocked',
-          'The local agent is offline. Hive Connect will reconnect automatically when the background service is running.',
-        ),
-      });
-      return;
-    }
     setMessageBusy(true);
     setMessageStatus(null);
     try {
@@ -399,11 +423,14 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
           purpose: 'direct_local_chat',
           attachment_count: pendingAttachments.length,
         },
+        idempotencyKey: sendIdempotencyKeyRef.current ?? `browser:${crypto.randomUUID()}`,
       };
+      sendIdempotencyKeyRef.current = messageInput.idempotencyKey;
       const result = agentId
         ? await localBridgeApi.sendAgentChannelMessage(agentId, sessionId, messageInput)
         : await localBridgeApi.sendChannelMessage(sessionId, messageInput);
       setPendingAttachments([]);
+      sendIdempotencyKeyRef.current = null;
       setMessageStatus({
         kind: 'success',
         message: t('localAgents.messageQueued', 'Message queued: {{messageId}}', { messageId: result.id }),

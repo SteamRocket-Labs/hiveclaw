@@ -111,6 +111,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "plaza_create_post",
         "plaza_get_new_posts",
         "preview_agent_blueprint",
+        "propose_personal_kb_item",
         "propose_dynamic_workflow",
         "read_document",
         "read_emails",

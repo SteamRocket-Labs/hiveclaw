@@ -110,6 +110,20 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
 
 RUNTIME_L2_CAPABILITY_SPECS: tuple[RuntimeL2CapabilitySpec, ...] = (
     RuntimeL2CapabilitySpec(
+        name="personal_knowledge_pack",
+        summary=(
+            "Tool-first Personal Knowledge access for governed owner-scoped search/read and Agent-authored "
+            "proposals that require owner review before commit. Personal KB results are never injected into "
+            "the raw context automatically."
+        ),
+        source="system",
+        activation_mode=(
+            "Discover through tool_search when durable owner knowledge is relevant. Search before bounded read; "
+            "use propose_personal_kb_item only for evidence-backed durable owner knowledge."
+        ),
+        tools=("search_personal_kb", "read_personal_kb", "propose_personal_kb_item"),
+    ),
+    RuntimeL2CapabilitySpec(
         name="web_pack",
         summary=(
             "Advanced web search and read/extract tooling: advanced_web_search and advanced_web_fetch route "
@@ -303,6 +317,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "load_memory": "agent.memory.read",
     "search_personal_kb": "agent.knowledge.read",
     "read_personal_kb": "agent.knowledge.read",
+    "propose_personal_kb_item": "agent.knowledge.propose",
     "save_memory": "agent.memory.write",
     "update_memory": "agent.memory.write",
     "retire_memory": "agent.memory.write",

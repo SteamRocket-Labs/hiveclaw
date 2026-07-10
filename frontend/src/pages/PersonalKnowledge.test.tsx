@@ -162,6 +162,61 @@ vi.mock('@tanstack/react-query', () => ({
         isLoading: false,
       };
     }
+    if (key === 'personal-knowledge-proposals') {
+      return {
+        data: {
+          proposals: [
+            {
+              proposal_id: 'proposal-1',
+              owner_user_id: 'user-1',
+              proposed_by_agent_id: 'agent-1',
+              delegated_by_agent_id: null,
+              delegation_id: null,
+              title: 'Incident response',
+              content: 'Escalate SEV-1 incidents immediately.',
+              content_hash: 'c'.repeat(64),
+              baseline_document_id: null,
+              baseline_revision_id: null,
+              baseline_content_hash: null,
+              diff_unified: '--- current\n+++ proposed\n+Escalate SEV-1 incidents immediately.',
+              target_collection: 'operations',
+              source_refs: ['artifact://incident-42'],
+              sensitivity: 'PL1_public',
+              purpose: 'Preserve a verified operating rule.',
+              dedupe_key: 'incident-response',
+              idempotency_key: 'proposal-key',
+              policy_outcome: 'ask',
+              policy_reason_codes: [],
+              status: 'pending',
+              review_reason: null,
+              document_id: null,
+              revision_id: null,
+              rollback_ref: null,
+              created_at: '2026-07-01T00:00:00Z',
+              updated_at: null,
+            },
+          ],
+        },
+        isLoading: false,
+      };
+    }
+    if (key === 'personal-knowledge-revisions') {
+      return {
+        data: {
+          revisions: [
+            {
+              id: 'revision-1',
+              version: 1,
+              change_source: 'agent_proposal',
+              change_message: 'Owner approved proposal',
+              created_at: '2026-07-01T00:00:00Z',
+              content: { title: 'Incident response' },
+            },
+          ],
+        },
+        isLoading: false,
+      };
+    }
     return { data: undefined, isLoading: false };
   },
 }));
@@ -182,10 +237,14 @@ vi.mock('../api/domains/knowledge', () => ({
     myPersonalGrants: vi.fn(),
     myPersonalCreateGrant: vi.fn(),
     myPersonalDeleteGrant: vi.fn(),
+    myPersonalProposals: vi.fn(),
+    myPersonalDecideProposal: vi.fn(),
+    myPersonalDocumentRevisions: vi.fn(),
+    myPersonalRollbackDocument: vi.fn(),
   },
 }));
 
-import PersonalKnowledge from './PersonalKnowledge';
+import PersonalKnowledge, { ProposalReviewPanel, RevisionHistory } from './PersonalKnowledge';
 
 describe('PersonalKnowledge', () => {
   it('renders the owner-level Personal KB workbench with horizontal sections instead of a nested rail', () => {
@@ -197,6 +256,7 @@ describe('PersonalKnowledge', () => {
     expect(html).toContain('知识网');
     expect(html).toContain('画像');
     expect(html).toContain('授权');
+    expect(html).toContain('Agent 提案');
     expect(html).not.toContain('企业库（只读）');
     expect(html).not.toContain('/enterprise/memory');
     expect(html).toContain('+ 投喂');
@@ -221,5 +281,77 @@ describe('PersonalKnowledge', () => {
     expect(html).toContain('源图片预览');
     expect(html).toContain('112233.png');
     expect(html).not.toContain('/agents/agent-1/knowledge/personal');
+  });
+
+  it('renders proposal evidence and reversible document history as owner-consumable control surfaces', () => {
+    const proposalHtml = renderToStaticMarkup(
+      <ProposalReviewPanel
+        proposals={[
+          {
+            proposal_id: 'proposal-1',
+            owner_user_id: 'user-1',
+            proposed_by_agent_id: 'agent-1',
+            delegated_by_agent_id: null,
+            delegation_id: null,
+            title: 'Incident response',
+            content: 'Escalate SEV-1 incidents immediately.',
+            content_hash: 'c'.repeat(64),
+            baseline_document_id: null,
+            baseline_revision_id: null,
+            baseline_content_hash: null,
+            diff_unified: '--- current\n+++ proposed\n+Escalate SEV-1 incidents immediately.',
+            target_collection: 'operations',
+            source_refs: ['artifact://incident-42'],
+            sensitivity: 'PL1_public',
+            purpose: 'Preserve a verified operating rule.',
+            dedupe_key: 'incident-response',
+            idempotency_key: 'proposal-key',
+            policy_outcome: 'ask',
+            policy_reason_codes: [],
+            status: 'pending',
+            review_reason: null,
+            document_id: null,
+            revision_id: null,
+            rollback_ref: null,
+            created_at: '2026-07-01T00:00:00Z',
+            updated_at: null,
+          },
+        ]}
+        busyProposalId={null}
+        onDecision={vi.fn()}
+      />,
+    );
+    const revisionHtml = renderToStaticMarkup(
+      <RevisionHistory
+        revisions={[
+          {
+            id: 'revision-2',
+            version: 2,
+            change_source: 'agent_proposal',
+            change_message: 'Current version',
+            created_at: '2026-07-02T00:00:00Z',
+            content: { title: 'Incident response' },
+          },
+          {
+            id: 'revision-1',
+            version: 1,
+            change_source: 'agent_proposal',
+            change_message: 'Owner approved proposal',
+            created_at: '2026-07-01T00:00:00Z',
+            content: { title: 'Incident response' },
+          },
+        ]}
+        busyVersion={null}
+        onRollback={vi.fn()}
+      />,
+    );
+
+    expect(proposalHtml).toContain('Escalate SEV-1 incidents immediately.');
+    expect(proposalHtml).toContain('artifact://incident-42');
+    expect(proposalHtml).toContain('批准并写入');
+    expect(proposalHtml).toContain('拒绝');
+    expect(revisionHtml).toContain('版本 1');
+    expect(revisionHtml).toContain('Owner approved proposal');
+    expect(revisionHtml).toContain('回滚到此版本');
   });
 });

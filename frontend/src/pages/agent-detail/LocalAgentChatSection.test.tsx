@@ -22,6 +22,7 @@ describe('LocalAgentChatSection local-channel projection', () => {
     const events: LocalAgentChannelEvent[] = [
       {
         id: 'event-user-1',
+        sequence: 1,
         session_id: 'channel-session-1',
         message_id: 'message-1',
         direction: 'hive_to_local',
@@ -31,6 +32,7 @@ describe('LocalAgentChatSection local-channel projection', () => {
       },
       {
         id: 'event-local-1',
+        sequence: 2,
         session_id: 'channel-session-1',
         message_id: 'message-1',
         direction: 'local_to_hive',
@@ -50,6 +52,7 @@ describe('LocalAgentChatSection local-channel projection', () => {
       },
       {
         id: 'event-local-file',
+        sequence: 3,
         session_id: 'channel-session-1',
         message_id: null,
         direction: 'local_to_hive',
@@ -122,6 +125,7 @@ describe('LocalAgentChatSection local-channel projection', () => {
     const events: LocalAgentChannelEvent[] = [
       {
         id: 'event-user-2',
+        sequence: 1,
         session_id: 'channel-session-1',
         message_id: 'message-2',
         direction: 'hive_to_local',
@@ -131,6 +135,7 @@ describe('LocalAgentChatSection local-channel projection', () => {
       },
       {
         id: 'event-delta-1',
+        sequence: 2,
         session_id: 'channel-session-1',
         message_id: 'message-2',
         direction: 'local_to_hive',
@@ -140,6 +145,7 @@ describe('LocalAgentChatSection local-channel projection', () => {
       },
       {
         id: 'event-delta-2',
+        sequence: 3,
         session_id: 'channel-session-1',
         message_id: 'message-2',
         direction: 'local_to_hive',
@@ -149,6 +155,7 @@ describe('LocalAgentChatSection local-channel projection', () => {
       },
       {
         id: 'event-result-2',
+        sequence: 4,
         session_id: 'channel-session-1',
         message_id: 'message-2',
         direction: 'local_to_hive',

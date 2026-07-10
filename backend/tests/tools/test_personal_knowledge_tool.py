@@ -59,6 +59,39 @@ class _FakeReadService:
         return self.detail
 
 
+class _FakeProposalService:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def propose(self, session, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            proposal_id=uuid.uuid4(),
+            owner_user_id=kwargs["owner_user_id"],
+            proposed_by_agent_id=kwargs["proposed_by_agent_id"],
+            delegated_by_agent_id=None,
+            delegation_id=None,
+            title=kwargs["title"],
+            content=kwargs["content"],
+            content_hash="a" * 64,
+            target_collection=kwargs["target_collection"],
+            source_refs=kwargs["source_refs"],
+            sensitivity="PL1_public",
+            purpose=kwargs["purpose"],
+            dedupe_key=kwargs["dedupe_key"],
+            idempotency_key=kwargs["idempotency_key"],
+            policy_outcome="ask",
+            policy_reason_codes=[],
+            status="pending",
+            review_reason=None,
+            document_id=None,
+            revision_id=None,
+            rollback_ref=None,
+            created_at=None,
+            updated_at=None,
+        )
+
+
 def test_search_personal_kb_is_collected_as_readonly_parallel_tool() -> None:
     from app.tools.collector import collect_tools
 
@@ -71,6 +104,62 @@ def test_search_personal_kb_is_collected_as_readonly_parallel_tool() -> None:
     assert "read_personal_kb" in collected.read_only_names
     assert "search_personal_kb" in collected.parallel_safe_names
     assert "read_personal_kb" in collected.parallel_safe_names
+    assert "propose_personal_kb_item" in names
+    assert "propose_personal_kb_item" not in collected.read_only_names
+    assert "propose_personal_kb_item" not in collected.parallel_safe_names
+
+
+@pytest.mark.asyncio
+async def test_propose_personal_kb_item_uses_runtime_identity_and_pointer_evidence(monkeypatch) -> None:
+    from app.tools.handlers import knowledge as knowledge_handler
+
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    runtime_task_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    agent = SimpleNamespace(id=agent_id, owner_user_id=owner_id, sponsor_user_id=None, creator_id=owner_id)
+    session_context = _SessionContext(agent)
+    service = _FakeProposalService()
+    delegation_token = SimpleNamespace(delegation_id="delegation-1")
+
+    monkeypatch.setattr(knowledge_handler, "tenant_scoped_session", lambda _tenant_id: session_context)
+    monkeypatch.setattr(knowledge_handler, "PersonalKnowledgeProposalService", lambda: service)
+
+    result = await knowledge_handler.propose_personal_kb_item(
+        ToolExecutionRequest(
+            tool_name="propose_personal_kb_item",
+            arguments={
+                "title": "Incident response",
+                "content": "Escalate SEV-1 incidents immediately.",
+                "target_collection": "operations",
+                "sensitivity": "internal",
+                "source_refs": ["artifact://incident-42"],
+                "purpose": "Preserve a verified operating rule.",
+                "dedupe_key": "incident-response",
+            },
+            context=ToolExecutionContext(
+                agent_id=agent_id,
+                user_id=owner_id,
+                tenant_id=str(tenant_id),
+                workspace=Path("/tmp/workspace"),
+                session_id=str(session_id),
+                runtime_task_id=str(runtime_task_id),
+                delegation_token=delegation_token,
+            ),
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "pending"
+    assert payload["policy_outcome"] == "ask"
+    assert payload["next_action"] == "owner_review_required"
+    assert service.calls[0]["owner_user_id"] == owner_id
+    assert service.calls[0]["proposed_by_agent_id"] == agent_id
+    assert service.calls[0]["delegation_token"] is delegation_token
+    assert service.calls[0]["session_id"] == str(session_id)
+    assert service.calls[0]["runtime_task_id"] == str(runtime_task_id)
+    assert service.calls[0]["idempotency_key"].startswith(f"personal-kb:{runtime_task_id}:")
 
 
 @pytest.mark.asyncio
@@ -199,9 +288,7 @@ async def test_read_personal_kb_tool_uses_same_owner_acl_and_bounds_segments(mon
             "position": 1,
             "heading_path": ["Two"],
             "content": "SECOND-SECRE",
-            "source_ref": (
-                f"kb://person/{owner_id}/documents/{document_id}#segment={second_segment_id}"
-            ),
+            "source_ref": (f"kb://person/{owner_id}/documents/{document_id}#segment={second_segment_id}"),
             "truncated": True,
         }
     ]

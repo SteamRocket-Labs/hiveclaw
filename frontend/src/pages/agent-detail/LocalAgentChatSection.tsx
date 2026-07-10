@@ -336,6 +336,8 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const channelCursorRef = useRef(0);
+  const sendIdempotencyKeyRef = useRef<string | null>(null);
   const [liveEvents, setLiveEvents] = useState<LocalAgentChannelEvent[]>([]);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<AttachedLocalFile[]>([]);
@@ -398,7 +400,13 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
         if (cancelled) return;
         socket = new WebSocket(browserChannelWsUrl(channelSessionId, ticket.ticket, window.location));
         socket.onopen = () => {
-          if (!cancelled) setWsConnected(true);
+          if (cancelled) return;
+          setWsConnected(true);
+          void localBridgeApi.getChannelTimeline(channelSessionId, channelCursorRef.current).then((delta) => {
+            if (cancelled) return;
+            channelCursorRef.current = Math.max(channelCursorRef.current, delta.next_cursor ?? 0);
+            setLiveEvents((current) => mergeChannelEvents(current, delta.events));
+          }).catch(() => undefined);
         };
         socket.onclose = () => {
           if (!cancelled) setWsConnected(false);
@@ -413,6 +421,7 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
           try {
             const data = JSON.parse(event.data);
             if (data?.type === 'event' && data.event?.id) {
+              channelCursorRef.current = Math.max(channelCursorRef.current, Number(data.event.sequence || 0));
               setLiveEvents((current) => mergeChannelEvents(current, [data.event]));
             }
           } catch {
@@ -432,7 +441,18 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
 
   useEffect(() => {
     setLiveEvents([]);
+    channelCursorRef.current = 0;
+    sendIdempotencyKeyRef.current = null;
   }, [channelSessionId]);
+
+  useEffect(() => {
+    const eventCursor = Math.max(0, ...(timelineQuery.data?.events ?? []).map((event) => event.sequence));
+    channelCursorRef.current = Math.max(
+      channelCursorRef.current,
+      timelineQuery.data?.next_cursor ?? 0,
+      eventCursor,
+    );
+  }, [timelineQuery.data]);
 
   const channelEvents = useMemo(
     () => mergeChannelEvents(timelineQuery.data?.events || [], liveEvents),
@@ -489,6 +509,8 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
     setSending(true);
     setError(null);
     try {
+      const idempotencyKey = sendIdempotencyKeyRef.current ?? `agent-detail:${crypto.randomUUID()}`;
+      sendIdempotencyKeyRef.current = idempotencyKey;
       await localBridgeApi.sendAgentChannelMessage(agentId, channelSessionId, {
         content: content || t('localAgents.fileOnlyMessage', 'Uploaded file.'),
         attachments: attachments.map(attachmentPayload),
@@ -496,7 +518,9 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
           source: 'local_agent_detail_chat',
           chat_session_id: activeSession?.chat_session_id || null,
         },
+        idempotencyKey,
       });
+      sendIdempotencyKeyRef.current = null;
       setInput('');
       setAttachments([]);
       setLocalPlanModeRequested(false);

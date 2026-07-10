@@ -22,14 +22,17 @@ import {
   type PersonalKnowledgeGrantSummary,
   type PersonalKnowledgeGraphSummary,
   type PersonalKnowledgeJobSummary,
+  type PersonalKnowledgeProposalSummary,
+  type PersonalKnowledgeRevision,
   type PersonalKnowledgeSearchResult,
 } from '../api/domains/knowledge';
 import './PersonalKnowledge.css';
 
-type PersonalKnowledgeLane = 'inbox' | 'library' | 'graph' | 'profile' | 'grants';
+type PersonalKnowledgeLane = 'inbox' | 'proposals' | 'library' | 'graph' | 'profile' | 'grants';
 
 const laneIcons: Record<PersonalKnowledgeLane, ReactNode> = {
   inbox: <IconArchive size={15} stroke={1.7} />,
+  proposals: <IconShieldCheck size={15} stroke={1.7} />,
   library: <IconFileText size={15} stroke={1.7} />,
   graph: <IconSitemap size={15} stroke={1.7} />,
   profile: <IconUser size={15} stroke={1.7} />,
@@ -434,6 +437,116 @@ function GrantsPanel({
   );
 }
 
+export function ProposalReviewPanel({
+  proposals,
+  busyProposalId,
+  onDecision,
+}: {
+  proposals: PersonalKnowledgeProposalSummary[];
+  busyProposalId: string | null;
+  onDecision: (proposalId: string, decision: 'approve' | 'reject') => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <section className="personal-kb-panel">
+      <div className="personal-kb-panel-heading">
+        <div>
+          <h2>{t('personalKnowledge.proposals', 'Agent 提案')}</h2>
+          <p>{t('personalKnowledge.proposalsDesc', 'Agent 只能提交候选；Owner 在这里核对 diff、来源和敏感级别后决定是否写入。')}</p>
+        </div>
+        <IconShieldCheck size={18} stroke={1.7} />
+      </div>
+      <div className="personal-kb-proposal-list">
+        {proposals.map((proposal) => (
+          <article key={proposal.proposal_id} className="personal-kb-proposal">
+            <div className="personal-kb-proposal-head">
+              <div>
+                <strong>{proposal.title}</strong>
+                <span>{proposal.target_collection} · {proposal.sensitivity} · {proposal.status}</span>
+              </div>
+              <span className="ui-chip">{proposal.policy_outcome}</span>
+            </div>
+            <p>{proposal.purpose}</p>
+            <div className="personal-kb-preview-title">{t('personalKnowledge.proposalDiff', '候选 diff')}</div>
+            <pre className="personal-kb-diff" aria-label={t('personalKnowledge.proposalDiff', '候选 diff')}>
+              {proposal.diff_unified || proposal.content}
+            </pre>
+            <div className="personal-kb-proposal-evidence">
+              <small>Agent · {proposal.proposed_by_agent_id}</small>
+              <small>SHA-256 · {proposal.content_hash}</small>
+              {proposal.baseline_revision_id && <small>baseline · {proposal.baseline_revision_id}</small>}
+              {proposal.source_refs.map((ref) => <code key={ref}>{ref}</code>)}
+            </div>
+            {proposal.policy_reason_codes.length > 0 && (
+              <small>{proposal.policy_reason_codes.join(' · ')}</small>
+            )}
+            {proposal.status === 'pending' && (
+              <div className="personal-kb-detail-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={busyProposalId === proposal.proposal_id}
+                  onClick={() => onDecision(proposal.proposal_id, 'approve')}
+                >
+                  {t('personalKnowledge.approveProposal', '批准并写入')}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={busyProposalId === proposal.proposal_id}
+                  onClick={() => onDecision(proposal.proposal_id, 'reject')}
+                >
+                  {t('personalKnowledge.rejectProposal', '拒绝')}
+                </button>
+              </div>
+            )}
+          </article>
+        ))}
+        {proposals.length === 0 && (
+          <EmptyBlock>{t('personalKnowledge.noProposals', '当前没有 Agent 提案。')}</EmptyBlock>
+        )}
+      </div>
+    </section>
+  );
+}
+
+export function RevisionHistory({
+  revisions,
+  busyVersion,
+  onRollback,
+}: {
+  revisions: PersonalKnowledgeRevision[];
+  busyVersion: number | null;
+  onRollback: (version: number) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="personal-kb-revisions">
+      <div className="personal-kb-preview-title">{t('personalKnowledge.revisionHistory', '版本历史')}</div>
+      {revisions.map((revision, index) => (
+        <div key={revision.id} className="personal-kb-revision-row">
+          <div>
+            <strong>{t('personalKnowledge.version', '版本')} {revision.version}</strong>
+            <span>{revision.change_source}</span>
+            {revision.change_message && <small>{revision.change_message}</small>}
+          </div>
+          {index > 0 && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={busyVersion === revision.version}
+              onClick={() => onRollback(revision.version)}
+            >
+              {t('personalKnowledge.rollbackVersion', '回滚到此版本')}
+            </button>
+          )}
+        </div>
+      ))}
+      {revisions.length === 0 && <small>{t('personalKnowledge.noRevisions', '尚无可回滚版本。')}</small>}
+    </div>
+  );
+}
+
 function DocumentDetail({
   document,
   onRebuild,
@@ -441,6 +554,9 @@ function DocumentDetail({
   onArchive,
   rebuildPending,
   patchPending,
+  revisions,
+  rollbackPendingVersion,
+  onRollback,
 }: {
   document?: PersonalKnowledgeDocumentDetail;
   onRebuild: (documentId: string) => void;
@@ -448,6 +564,9 @@ function DocumentDetail({
   onArchive: (documentId: string) => void;
   rebuildPending: boolean;
   patchPending: boolean;
+  revisions: PersonalKnowledgeRevision[];
+  rollbackPendingVersion: number | null;
+  onRollback: (version: number) => void;
 }) {
   const { t } = useTranslation();
   const imagePreview = sourceImagePreview(document);
@@ -518,6 +637,11 @@ function DocumentDetail({
         <code>{document.source_ref}</code>
         <small>{document.canonical_md_path}</small>
       </div>
+      <RevisionHistory
+        revisions={revisions}
+        busyVersion={rollbackPendingVersion}
+        onRollback={onRollback}
+      />
       <div className="personal-kb-detail-actions">
         <button
           type="button"
@@ -567,6 +691,8 @@ export default function PersonalKnowledge() {
   const [granteeId, setGranteeId] = useState('');
   const [grantPermission, setGrantPermission] = useState<'read' | 'search' | 'manage'>('search');
   const [deletingGrantId, setDeletingGrantId] = useState<string | null>(null);
+  const [busyProposalId, setBusyProposalId] = useState<string | null>(null);
+  const [rollbackPendingVersion, setRollbackPendingVersion] = useState<number | null>(null);
 
   const documentsQuery = useQuery({
     queryKey: ['personal-knowledge-documents'],
@@ -584,6 +710,10 @@ export default function PersonalKnowledge() {
     queryKey: ['personal-knowledge-grants'],
     queryFn: () => knowledgeApi.myPersonalGrants(),
   });
+  const proposalsQuery = useQuery({
+    queryKey: ['personal-knowledge-proposals'],
+    queryFn: () => knowledgeApi.myPersonalProposals(),
+  });
   const documents = documentsQuery.data?.documents ?? [];
   const activeDocumentId = selectedDocumentId || documents[0]?.document_id || null;
   const detailQuery = useQuery({
@@ -596,12 +726,19 @@ export default function PersonalKnowledge() {
     queryFn: () => knowledgeApi.myPersonalSearch(activeSearch, 8),
     enabled: activeSearch.trim().length > 0,
   });
+  const revisionsQuery = useQuery({
+    queryKey: ['personal-knowledge-revisions', activeDocumentId],
+    queryFn: () => knowledgeApi.myPersonalDocumentRevisions(activeDocumentId as string),
+    enabled: !!activeDocumentId,
+  });
 
   const invalidatePersonalKb = () => {
     void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-documents'] });
     void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-import-jobs'] });
     void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-graph'] });
+    void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-proposals'] });
     if (activeDocumentId) void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-document', activeDocumentId] });
+    if (activeDocumentId) void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-revisions', activeDocumentId] });
   };
 
   const ingestMutation = useMutation({
@@ -682,6 +819,29 @@ export default function PersonalKnowledge() {
     },
     onError: () => setDeletingGrantId(null),
   });
+  const decideProposalMutation = useMutation({
+    mutationFn: ({ proposalId, decision }: { proposalId: string; decision: 'approve' | 'reject' }) =>
+      knowledgeApi.myPersonalDecideProposal(proposalId, {
+        decision,
+        reason: decision === 'approve' ? 'Owner approved in Personal KB workbench.' : 'Owner rejected in Personal KB workbench.',
+      }),
+    onSuccess: (proposal) => {
+      setBusyProposalId(null);
+      if (proposal.document_id) setSelectedDocumentId(proposal.document_id);
+      invalidatePersonalKb();
+    },
+    onError: () => setBusyProposalId(null),
+  });
+  const rollbackMutation = useMutation({
+    mutationFn: ({ documentId, version }: { documentId: string; version: number }) =>
+      knowledgeApi.myPersonalRollbackDocument(documentId, version),
+    onSuccess: (result) => {
+      setRollbackPendingVersion(null);
+      setSelectedDocumentId(result.document_id);
+      invalidatePersonalKb();
+    },
+    onError: () => setRollbackPendingVersion(null),
+  });
 
   const stats = useMemo(() => ({
     documents: documents.length,
@@ -696,6 +856,7 @@ export default function PersonalKnowledge() {
 
   const lanes: Array<{ key: PersonalKnowledgeLane; label: string; helper: string }> = [
     { key: 'inbox', label: t('personalKnowledge.inbox', '收集箱'), helper: t('personalKnowledge.inboxHelper', '投喂与管线') },
+    { key: 'proposals', label: t('personalKnowledge.proposals', 'Agent 提案'), helper: t('personalKnowledge.proposalsHelper', '审批与 diff') },
     { key: 'library', label: t('personalKnowledge.library', '文库'), helper: t('personalKnowledge.libraryHelper', 'canonical MD') },
     { key: 'graph', label: t('personalKnowledge.graph', '知识网'), helper: t('personalKnowledge.graphHelper', '实体与关系') },
     { key: 'profile', label: t('personalKnowledge.profile', '画像'), helper: t('personalKnowledge.profileHelper', 'taste / profile') },
@@ -796,6 +957,17 @@ export default function PersonalKnowledge() {
             />
           )}
 
+          {activeLane === 'proposals' && (
+            <ProposalReviewPanel
+              proposals={proposalsQuery.data?.proposals ?? []}
+              busyProposalId={busyProposalId}
+              onDecision={(proposalId, decision) => {
+                setBusyProposalId(proposalId);
+                decideProposalMutation.mutate({ proposalId, decision });
+              }}
+            />
+          )}
+
           {activeLane === 'graph' && <GraphPanel graph={graphQuery.data} />}
 
           {activeLane === 'profile' && (
@@ -848,6 +1020,13 @@ export default function PersonalKnowledge() {
           onArchive={(documentId) => patchMutation.mutate({ documentId, body: { status: 'archived' } })}
           rebuildPending={rebuildMutation.isPending}
           patchPending={patchMutation.isPending}
+          revisions={revisionsQuery.data?.revisions ?? []}
+          rollbackPendingVersion={rollbackPendingVersion}
+          onRollback={(version) => {
+            if (!activeDocumentId) return;
+            setRollbackPendingVersion(version);
+            rollbackMutation.mutate({ documentId: activeDocumentId, version });
+          }}
         />
       </div>
     </div>

@@ -304,6 +304,60 @@ export interface PersonalKnowledgeGrantRequest {
   metadata?: Record<string, unknown>;
 }
 
+export interface PersonalKnowledgeProposalSummary {
+  proposal_id: string;
+  owner_user_id: string;
+  proposed_by_agent_id: string;
+  delegated_by_agent_id: string | null;
+  delegation_id: string | null;
+  title: string;
+  content: string;
+  content_hash: string;
+  baseline_document_id: string | null;
+  baseline_revision_id: string | null;
+  baseline_content_hash: string | null;
+  diff_unified: string;
+  target_collection: string;
+  source_refs: string[];
+  sensitivity: string;
+  purpose: string;
+  dedupe_key: string;
+  idempotency_key: string;
+  policy_outcome: 'approve' | 'ask' | 'reject' | string;
+  policy_reason_codes: string[];
+  status: 'pending' | 'approved' | 'committed' | 'rejected' | string;
+  review_reason: string | null;
+  document_id: string | null;
+  revision_id: string | null;
+  rollback_ref: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PersonalKnowledgeProposalDecisionRequest {
+  decision: 'approve' | 'reject';
+  reason?: string;
+}
+
+export interface PersonalKnowledgeRevision {
+  id: string;
+  version: number;
+  change_source: string;
+  change_message?: string | null;
+  changed_at?: string | null;
+  created_at?: string | null;
+  rollback_of_revision_id?: string | null;
+  content?: Record<string, unknown>;
+}
+
+export interface PersonalKnowledgeRollbackResult {
+  document_id: string;
+  version: number;
+  rollback_of_version: number;
+  revision_id: string;
+  rollback_ref: string;
+}
+
 export const knowledgeApi = {
   overview: (agentId: string) => get<KnowledgeOverview>(`/agents/${agentId}/knowledge/overview`),
   pages: (agentId: string) => get<{ pages: KnowledgePageSummary[] }>(`/agents/${agentId}/knowledge/pages`),
@@ -364,4 +418,16 @@ export const knowledgeApi = {
     post<PersonalKnowledgeGrantSummary>('/knowledge/personal/grants', body),
   myPersonalDeleteGrant: (grantId: string) =>
     del<{ deleted: boolean }>(`/knowledge/personal/grants/${grantId}`),
+  myPersonalProposals: (status?: string) => {
+    const suffix = status ? `?${new URLSearchParams({ status }).toString()}` : '';
+    return get<{ proposals: PersonalKnowledgeProposalSummary[] }>(`/knowledge/personal/proposals${suffix}`);
+  },
+  myPersonalDecideProposal: (proposalId: string, body: PersonalKnowledgeProposalDecisionRequest) =>
+    post<PersonalKnowledgeProposalSummary>(`/knowledge/personal/proposals/${proposalId}/decision`, body),
+  myPersonalDocumentRevisions: (documentId: string) =>
+    get<{ revisions: PersonalKnowledgeRevision[] }>(`/knowledge/personal/documents/${documentId}/revisions`),
+  myPersonalRollbackDocument: (documentId: string, targetVersion: number) =>
+    post<PersonalKnowledgeRollbackResult>(`/knowledge/personal/documents/${documentId}/rollback`, {
+      target_version: targetVersion,
+    }),
 };

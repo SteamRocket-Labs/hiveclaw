@@ -21,7 +21,9 @@ from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_tools import CORE_TOOL_NAMES
+from app.services.execution_receipts import build_execution_receipt, canonical_payload_hash
 from app.services.governance_capability_taxonomy import CAPABILITY_MAP
+from app.services.invocation_trace import persist_invocation_span
 from app.services.runtime_task_service import (
     build_restart_reconciliation_metadata,
     build_restart_replay_contract,
@@ -302,6 +304,7 @@ class AsyncDelegationState:
     child_session_id: str
     trace_id: str
     started_at: datetime
+    receipt: dict[str, Any]
 
 
 # ── Async delegation registry (in-process, per-worker) ──────────────
@@ -508,6 +511,7 @@ def _remember_async_task_parent(
     child_agent_name: str | None = None,
     child_session_id: str | None = None,
     trace_id: str | None = None,
+    receipt: dict[str, Any] | None = None,
 ) -> None:
     _async_task_parent_ids[task_id] = _maybe_uuid(parent_agent_id)
     _async_task_fallback_records[task_id] = {
@@ -518,9 +522,10 @@ def _remember_async_task_parent(
         "session_id": child_session_id,
         "child_session_id": child_session_id,
         "trace_id": trace_id,
+        "receipt": receipt,
     }
     if len(_async_task_parent_ids) > _MAX_TRACKED_TASKS * 2:
-        for stale_task_id in list(_async_task_parent_ids)[: _MAX_TRACKED_TASKS]:
+        for stale_task_id in list(_async_task_parent_ids)[:_MAX_TRACKED_TASKS]:
             if stale_task_id not in _async_tasks:
                 _async_task_parent_ids.pop(stale_task_id, None)
                 _async_task_fallback_records.pop(stale_task_id, None)
@@ -550,6 +555,7 @@ class AsyncDelegationHandle:
     coordination_lease_id: str | None = None
     blocked_by_lease_id: str | None = None
     signal_thread_id: str | None = None
+    receipt: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -589,6 +595,131 @@ class AgentDelegationRequest:
     target_artifacts: list[dict[str, Any]] = field(default_factory=list)
     edit_mode: str | None = None
     budget_run_id: str | None = None
+    execution_receipt: dict[str, Any] | None = None
+
+
+def _delegation_request_hash(request: AgentDelegationRequest) -> str:
+    return canonical_payload_hash(
+        {
+            "schema": "hive.a2a_delegation_request.v1",
+            "source_agent_id": str(request.parent_agent_id or ""),
+            "target_agent_id": str(getattr(request.target, "id", "")),
+            "session_id": request.session_id,
+            "messages": request.conversation_messages,
+            "interaction_type": request.interaction_type,
+            "depth": request.depth,
+            "target_artifact_path": request.target_artifact_path,
+            "target_artifacts": request.target_artifacts,
+            "edit_mode": request.edit_mode,
+        }
+    )
+
+
+def _delegation_authority_snapshot_hash(request: AgentDelegationRequest) -> str:
+    return canonical_payload_hash(
+        {
+            "schema": "hive.a2a_authority_snapshot.v1",
+            "tenant_id": str(request.tenant_id or ""),
+            "owner_id": str(request.owner_id),
+            "source_agent_id": str(request.parent_agent_id or ""),
+            "target_agent_id": str(getattr(request.target, "id", "")),
+            "tool_profile": request.policy.tool_profile,
+            "permission_profile": _permission_profile_metadata(request.permission_profile),
+            "execution_identity": _execution_identity_to_metadata(request.execution_identity),
+            "plan_id": str(request.confirmed_plan_id or ""),
+            "plan_version": request.confirmed_plan_version,
+            "plan_hash": request.confirmed_plan_hash,
+            "plan_exempt_reason": request.plan_exempt_reason,
+        }
+    )
+
+
+def _delegation_result_refs(request: AgentDelegationRequest, *, task_id: str) -> list[str]:
+    refs = [f"runtime-task://{task_id}", f"session://{request.session_id}"]
+    target_agent_id = str(getattr(request.target, "id", ""))
+    artifact_paths = [request.target_artifact_path]
+    artifact_paths.extend(str(item.get("path") or "") for item in request.target_artifacts if isinstance(item, dict))
+    refs.extend(f"workspace://{target_agent_id}/{path}" for path in artifact_paths if path)
+    return list(dict.fromkeys(refs))
+
+
+def _build_delegation_execution_receipt(
+    request: AgentDelegationRequest,
+    *,
+    task_id: str,
+    trace_id: str,
+    status: str,
+) -> dict[str, Any]:
+    previous = request.execution_receipt if isinstance(request.execution_receipt, dict) else {}
+    return build_execution_receipt(
+        request_hash=str(previous.get("request_hash") or _delegation_request_hash(request)),
+        capability_snapshot_hash=str(
+            previous.get("capability_snapshot_hash") or _delegation_authority_snapshot_hash(request)
+        ),
+        result_refs=_delegation_result_refs(request, task_id=task_id),
+        status=status,
+        replay_key=f"delegation:{task_id}",
+        trace_id=trace_id,
+        span_id=f"remote-action:{task_id}",
+    )
+
+
+async def _persist_delegation_terminal_evidence(
+    *,
+    request: AgentDelegationRequest,
+    task_id: str,
+    trace_id: str,
+    status: str,
+    started_at: datetime,
+    error: str | None = None,
+) -> dict[str, Any]:
+    receipt = _build_delegation_execution_receipt(
+        request,
+        task_id=task_id,
+        trace_id=trace_id,
+        status=status,
+    )
+    request.execution_receipt = receipt
+    state = _async_tasks.get(task_id)
+    if state is not None:
+        state.receipt = receipt
+    fallback = _async_task_fallback_records.get(task_id)
+    if fallback is not None:
+        fallback["receipt"] = receipt
+        fallback["status"] = status
+    identity = _execution_identity_to_metadata(request.execution_identity) or {}
+    duration_ms = max(0.0, (datetime.now(timezone.utc) - started_at).total_seconds() * 1000.0)
+    await persist_invocation_span(
+        tenant_id=request.tenant_id,
+        trace_id=trace_id,
+        span_id=receipt["span_id"],
+        parent_span_id=None,
+        parent_trace_id=None,
+        span_type="remote_action",
+        name="a2a.delegate",
+        status="ok" if status == "completed" else "error",
+        duration_ms=duration_ms,
+        agent_id=_maybe_uuid(request.parent_agent_id),
+        user_id=request.owner_id,
+        runtime_task_id=task_id,
+        session_id=request.session_id,
+        request_id=None,
+        execution_identity_type=identity.get("identity_type"),
+        execution_identity_id=identity.get("identity_id"),
+        execution_identity_label=identity.get("label"),
+        metadata={
+            "decision_id": f"a2a:{task_id}",
+            "input_hash": receipt["request_hash"],
+            "idempotency_key": receipt["replay_key"],
+            "side_effect_refs": receipt["result_refs"],
+            "truth_evidence": [receipt],
+            "execution_receipt": receipt,
+            "source": "a2a_delegation",
+        },
+        usage=None,
+        error=error,
+    )
+    return receipt
 
 
 def _delegation_coordination_key(request: AgentDelegationRequest) -> str:
@@ -905,6 +1036,8 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
                 session_id=request.session_id,
             ),
         )
+    if request.execution_receipt:
+        metadata["execution_receipt"] = request.execution_receipt
     return metadata
 
 
@@ -2016,6 +2149,15 @@ def _spawn_async_delegation_task(
     request: AgentDelegationRequest,
     trace_id: str,
 ) -> None:
+    started_at = datetime.now(timezone.utc)
+    pending_receipt = _build_delegation_execution_receipt(
+        request,
+        task_id=task_id,
+        trace_id=trace_id,
+        status="pending",
+    )
+    request.execution_receipt = pending_receipt
+
     async def _run() -> AgentDelegationResult:
         # §9 P0: pin the initiating tenant inside THIS task's context copy.
         # The spawn-time ContextVar snapshot covers request-spawned tasks, but
@@ -2033,6 +2175,14 @@ def _spawn_async_delegation_task(
                     "Plan Mode blocked async delegation: "
                     f"{plan_reason or 'plan_required'}. Confirm a plan before delegating autonomous work."
                 )
+                receipt = await _persist_delegation_terminal_evidence(
+                    request=request,
+                    task_id=task_id,
+                    trace_id=trace_id,
+                    status="failed",
+                    started_at=started_at,
+                    error=content,
+                )
                 try:
                     await update_runtime_task_record(
                         task_id,
@@ -2040,7 +2190,7 @@ def _spawn_async_delegation_task(
                         result_summary=content,
                         trace_id=trace_id,
                         child_session_id=request.session_id,
-                        metadata_json={"plan_gate_reason": plan_reason},
+                        metadata_json={"plan_gate_reason": plan_reason, "execution_receipt": receipt},
                     )
                 except Exception as exc:
                     logger.warning("[Orchestrator] Failed to persist plan gate block %s: %s", task_id, exc)
@@ -2054,6 +2204,14 @@ def _spawn_async_delegation_task(
                 )
             delegation_result = await _delegate(request)
             terminal_status = "failed" if delegation_result.failed else "completed"
+            receipt = await _persist_delegation_terminal_evidence(
+                request=request,
+                task_id=task_id,
+                trace_id=delegation_result.trace_id or trace_id,
+                status=terminal_status,
+                started_at=started_at,
+                error=delegation_result.content if delegation_result.failed else None,
+            )
             try:
                 await update_runtime_task_record(
                     task_id,
@@ -2064,6 +2222,7 @@ def _spawn_async_delegation_task(
                     metadata_json={
                         "timed_out": delegation_result.timed_out,
                         "depth_limited": delegation_result.depth_limited,
+                        "execution_receipt": receipt,
                     },
                 )
             except Exception as exc:
@@ -2077,6 +2236,14 @@ def _spawn_async_delegation_task(
             )
             return delegation_result
         except asyncio.CancelledError:
+            receipt = await _persist_delegation_terminal_evidence(
+                request=request,
+                task_id=task_id,
+                trace_id=trace_id,
+                status="killed",
+                started_at=started_at,
+                error="Task cancelled by parent agent",
+            )
             try:
                 await update_runtime_task_record(
                     task_id,
@@ -2084,7 +2251,12 @@ def _spawn_async_delegation_task(
                     result_summary="Task cancelled by parent agent",
                     trace_id=trace_id,
                     child_session_id=request.session_id,
-                    metadata_json={"timed_out": False, "depth_limited": False, "cancelled": True},
+                    metadata_json={
+                        "timed_out": False,
+                        "depth_limited": False,
+                        "cancelled": True,
+                        "execution_receipt": receipt,
+                    },
                 )
             except Exception as update_exc:
                 logger.warning("[Orchestrator] Failed to persist runtime task cancellation %s: %s", task_id, update_exc)
@@ -2092,6 +2264,14 @@ def _spawn_async_delegation_task(
             raise
         except Exception as exc:
             logger.error("[Orchestrator] Async delegation %s failed: %s", task_id, exc)
+            receipt = await _persist_delegation_terminal_evidence(
+                request=request,
+                task_id=task_id,
+                trace_id=trace_id,
+                status="failed",
+                started_at=started_at,
+                error=str(exc),
+            )
             try:
                 await update_runtime_task_record(
                     task_id,
@@ -2099,7 +2279,11 @@ def _spawn_async_delegation_task(
                     result_summary=f"Async task {task_id} failed: {exc}",
                     trace_id=trace_id,
                     child_session_id=request.session_id,
-                    metadata_json={"timed_out": False, "depth_limited": False},
+                    metadata_json={
+                        "timed_out": False,
+                        "depth_limited": False,
+                        "execution_receipt": receipt,
+                    },
                 )
             except Exception as update_exc:
                 logger.warning("[Orchestrator] Failed to persist runtime task failure %s: %s", task_id, update_exc)
@@ -2122,7 +2306,8 @@ def _spawn_async_delegation_task(
         child_agent_name=getattr(request.target, "name", None),
         child_session_id=request.session_id,
         trace_id=trace_id,
-        started_at=datetime.now(timezone.utc),
+        started_at=started_at,
+        receipt=pending_receipt,
     )
     _remember_async_task_parent(
         task_id,
@@ -2131,6 +2316,7 @@ def _spawn_async_delegation_task(
         child_agent_name=getattr(request.target, "name", None),
         child_session_id=request.session_id,
         trace_id=trace_id,
+        receipt=pending_receipt,
     )
 
 
@@ -2188,6 +2374,9 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
         target_artifact_path=metadata.get("target_artifact_path"),
         target_artifacts=metadata.get("target_artifacts") if isinstance(metadata.get("target_artifacts"), list) else [],
         edit_mode=metadata.get("edit_mode"),
+        execution_receipt=metadata.get("execution_receipt")
+        if isinstance(metadata.get("execution_receipt"), dict)
+        else None,
     )
 
 
@@ -2301,6 +2490,12 @@ async def delegate_async(
         edit_mode=_normalize_delegation_edit_mode(edit_mode),
         budget_run_id=str(budget_uuid) if budget_uuid is not None else None,
     )
+    request.execution_receipt = _build_delegation_execution_receipt(
+        request,
+        task_id=task_id,
+        trace_id=real_trace_id,
+        status="pending",
+    )
     plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
     if not plan_allowed:
         return AsyncDelegationHandle(
@@ -2374,6 +2569,7 @@ async def delegate_async(
         child_agent_name=getattr(target, "name", None),
         child_session_id=session_id,
         trace_id=real_trace_id,
+        receipt=request.execution_receipt,
     )
 
     try:
@@ -2406,7 +2602,9 @@ async def delegate_async(
                     )
                 )
             except Exception:
-                logger.debug("[Orchestrator] Failed to release delegation budget reservation %s", task_id, exc_info=True)
+                logger.debug(
+                    "[Orchestrator] Failed to release delegation budget reservation %s", task_id, exc_info=True
+                )
         logger.warning("[Orchestrator] Failed to create runtime task record %s: %s", task_id, exc)
     try:
         from app.services.runtime_task_worker import notify_runtime_task_worker
@@ -2431,6 +2629,7 @@ async def delegate_async(
         status="queued",
         coordination_lease_id=lease_result.lease.id if lease_result.lease else None,
         signal_thread_id=signal.thread_id,
+        receipt=request.execution_receipt,
     )
 
 
@@ -2471,6 +2670,7 @@ async def check_async_delegation(
             "status": persisted.get("status", "not_found"),
             "result": persisted.get("result"),
             "timed_out": bool((persisted.get("metadata") or {}).get("timed_out", False)),
+            "receipt": (persisted.get("metadata") or {}).get("execution_receipt"),
             **_session_payload(persisted.get("child_session_id"), persisted.get("parent_session_id")),
         }
     if (
@@ -2484,6 +2684,7 @@ async def check_async_delegation(
             "task_id": task_id,
             "status": "running",
             "result": None,
+            "receipt": state.receipt,
             **_session_payload(state.child_session_id),
         }
     # Remove completed task from registry after reading
@@ -2507,6 +2708,7 @@ async def check_async_delegation(
             "status": "failed" if delegation_result.failed else "completed",
             "result": delegation_result.content,
             "timed_out": delegation_result.timed_out,
+            "receipt": state.receipt,
             **_session_payload(delegation_result.child_session_id),
         }
     except asyncio.CancelledError:
@@ -2523,6 +2725,7 @@ async def check_async_delegation(
             "status": "killed",
             "result": "Task cancelled by parent agent",
             "timed_out": False,
+            "receipt": state.receipt,
             **_session_payload(state.child_session_id),
         }
     except Exception as exc:
@@ -2538,6 +2741,7 @@ async def check_async_delegation(
             "task_id": task_id,
             "status": "error",
             "result": str(exc),
+            "receipt": state.receipt,
             **_session_payload(state.child_session_id),
         }
 
@@ -2591,6 +2795,7 @@ async def cancel_async_delegation(
                 "task_id": task_id,
                 "status": status,
                 "result": persisted.get("result"),
+                "receipt": (persisted.get("metadata") or {}).get("execution_receipt"),
                 **_session_payload(persisted.get("child_session_id"), persisted.get("parent_session_id")),
             }
         if status == "running" and not force and min_runtime_seconds > 0:
@@ -2629,6 +2834,7 @@ async def cancel_async_delegation(
                 "task_id": task_id,
                 "status": "killed",
                 "result": "Task cancelled by parent agent",
+                "receipt": (persisted.get("metadata") or {}).get("execution_receipt"),
                 **_session_payload(persisted.get("child_session_id"), persisted.get("parent_session_id")),
             }
         return {
@@ -2690,6 +2896,7 @@ async def cancel_async_delegation(
         "task_id": task_id,
         "status": "killed",
         "result": "Task cancelled by parent agent",
+        "receipt": state.receipt,
         **_session_payload(state.child_session_id),
     }
 
@@ -2716,6 +2923,7 @@ def list_async_delegations(
                 "session_id": state.child_session_id,
                 "child_session_id": state.child_session_id,
                 "trace_id": state.trace_id,
+                "receipt": state.receipt,
             }
         )
     for task_id, record in _async_task_fallback_records.items():
@@ -2827,6 +3035,11 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
             if isinstance(metadata.get("target_artifacts"), list)
             else [],
             edit_mode=metadata.get("edit_mode"),
+            tenant_id=metadata.get("tenant_id") or record.get("tenant_id"),
+            ledger_todo_id=metadata.get("ledger_todo_id"),
+            execution_receipt=metadata.get("execution_receipt")
+            if isinstance(metadata.get("execution_receipt"), dict)
+            else None,
         )
 
         _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)

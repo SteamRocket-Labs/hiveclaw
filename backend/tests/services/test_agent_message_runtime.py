@@ -313,6 +313,14 @@ async def test_delegate_async_reserves_budget_before_creating_runtime_task(monke
     assert captured["create"]["budget_run_id"] == budget_run_id
     assert captured["create"]["budget_reservation_key"] == reservation.reservation_key
     assert captured["create"]["budget_admission_status"] == "reserved"
+    receipt = handle.receipt
+    assert receipt["schema"] == "hive.execution_receipt.v1"
+    assert receipt["status"] == "pending"
+    assert receipt["request_hash"]
+    assert receipt["capability_snapshot_hash"]
+    assert receipt["replay_key"] == f"delegation:{handle.task_id}"
+    assert receipt["span_id"] == f"remote-action:{handle.task_id}"
+    assert captured["create"]["metadata_json"]["execution_receipt"] == receipt
 
 
 @pytest.mark.asyncio
@@ -322,7 +330,12 @@ async def test_local_agent_delegation_releases_budget_reservation_when_enqueue_f
     from app.services.agent_tool_domains.messaging import _delegate_to_local_agent_channel
 
     source_agent = SimpleNamespace(id=uuid4(), name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
-    target_agent = SimpleNamespace(id=uuid4(), name="Target Agent", tenant_id=source_agent.tenant_id)
+    target_agent = SimpleNamespace(
+        id=uuid4(),
+        name="Target Agent",
+        creator_id=source_agent.creator_id,
+        tenant_id=source_agent.tenant_id,
+    )
     budget_run_id = uuid4()
     captured: dict[str, list] = {"reserve": [], "settle": []}
 
@@ -361,6 +374,92 @@ async def test_local_agent_delegation_releases_budget_reservation_when_enqueue_f
     assert captured["settle"][0].budget_run_id == budget_run_id
     assert captured["settle"][0].reservation_key == captured["reserve"][0].reservation_key
     assert captured["settle"][0].reason == "local_agent_delegation_enqueue_failed"
+
+
+@pytest.mark.asyncio
+async def test_local_agent_delegation_targets_target_owner_and_returns_stable_receipt(monkeypatch):
+    from app.services import local_agent_channel_service
+    from app.services.agent_tool_domains import messaging
+    from app.services.agent_tool_domains.messaging import _delegate_to_local_agent_channel
+
+    source_owner_id = uuid4()
+    target_owner_id = uuid4()
+    tenant_id = uuid4()
+    source_agent = SimpleNamespace(
+        id=uuid4(),
+        name="Source Agent",
+        creator_id=source_owner_id,
+        owner_user_id=source_owner_id,
+        tenant_id=tenant_id,
+    )
+    target_agent = SimpleNamespace(
+        id=uuid4(),
+        name="Target Mac",
+        creator_id=target_owner_id,
+        owner_user_id=target_owner_id,
+        tenant_id=tenant_id,
+    )
+    session_id = uuid4()
+    message_id = uuid4()
+    runtime_task_id = uuid4()
+    captured = {}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return SimpleNamespace()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def fake_create_channel_session(_db, **kwargs):
+        captured["session"] = kwargs
+        return {"id": session_id, "chat_session_id": None}
+
+    async def fake_enqueue_channel_message(_db, **kwargs):
+        captured["message"] = kwargs
+        return {
+            "id": str(message_id),
+            "receipt": {
+                "schema": "hive.execution_receipt.v1",
+                "request_hash": "b" * 64,
+                "capability_snapshot_hash": "a" * 64,
+                "result_refs": [],
+                "status": "pending",
+                "replay_key": "local:task-1",
+                "trace_id": f"local-agent:{message_id}",
+                "span_id": f"remote-action:{message_id}",
+            },
+        }
+
+    class FakeWsManager:
+        async def send_to_user(self, owner_user_id, payload):
+            captured["fanout"] = (owner_user_id, payload)
+
+    monkeypatch.setattr(messaging, "tenant_scoped_session", lambda *_args, **_kwargs: FakeSession())
+    monkeypatch.setattr(local_agent_channel_service, "create_channel_session", fake_create_channel_session)
+    monkeypatch.setattr(local_agent_channel_service, "enqueue_channel_message", fake_enqueue_channel_message)
+    monkeypatch.setattr("app.api.local_agent_channel.channel_ws_manager", FakeWsManager())
+
+    result = await _delegate_to_local_agent_channel(
+        source_agent=source_agent,
+        target_agent=target_agent,
+        message_text="Inspect the target machine.",
+        args={
+            "_runtime_task_id": str(runtime_task_id),
+            "parent_session_id": "parent-session-1",
+        },
+    )
+
+    assert captured["session"]["owner_user_id"] == target_owner_id
+    assert captured["session"]["actor_user_id"] == source_owner_id
+    assert captured["session"]["source_agent_id"] == target_agent.id
+    assert captured["message"]["owner_user_id"] == target_owner_id
+    assert captured["message"]["sender_user_id"] == source_owner_id
+    assert captured["message"]["sender_agent_id"] == source_agent.id
+    assert captured["message"]["idempotency_key"].startswith(f"a2a-local:{runtime_task_id}:")
+    assert captured["fanout"][0] == target_owner_id
+    assert result["receipt"]["schema"] == "hive.execution_receipt.v1"
+    assert result["chat_session_id"] is None
 
 
 @pytest.mark.asyncio

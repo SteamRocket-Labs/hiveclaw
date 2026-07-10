@@ -179,4 +179,32 @@ describe('knowledgeApi personal KB endpoints', () => {
     expect(requestOf(9).url).toBe('/api/knowledge/personal/grants/grant-1');
     expect(requestOf(9).init.method).toBe('DELETE');
   });
+
+  it('routes Agent proposals through owner review, revision history, and rollback endpoints', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ proposals: [{ proposal_id: 'proposal-1', status: 'pending' }] }))
+      .mockResolvedValueOnce(jsonResponse({ proposal_id: 'proposal-1', status: 'committed' }))
+      .mockResolvedValueOnce(jsonResponse({ revisions: [{ id: 'revision-1', version: 1 }] }))
+      .mockResolvedValueOnce(jsonResponse({ document_id: 'doc-1', version: 2, rollback_of_version: 1 }));
+
+    await knowledgeApi.myPersonalProposals('pending');
+    await knowledgeApi.myPersonalDecideProposal('proposal-1', {
+      decision: 'approve',
+      reason: 'Owner verified the evidence.',
+    });
+    await knowledgeApi.myPersonalDocumentRevisions('doc-1');
+    await knowledgeApi.myPersonalRollbackDocument('doc-1', 1);
+
+    expect(requestOf(0).url).toBe('/api/knowledge/personal/proposals?status=pending');
+    expect(requestOf(0).init.method).toBe('GET');
+    expect(requestOf(1).url).toBe('/api/knowledge/personal/proposals/proposal-1/decision');
+    expect(requestOf(1).init.method).toBe('POST');
+    expect(JSON.parse(String(requestOf(1).init.body))).toEqual({
+      decision: 'approve',
+      reason: 'Owner verified the evidence.',
+    });
+    expect(requestOf(2).url).toBe('/api/knowledge/personal/documents/doc-1/revisions');
+    expect(requestOf(3).url).toBe('/api/knowledge/personal/documents/doc-1/rollback');
+    expect(JSON.parse(String(requestOf(3).init.body))).toEqual({ target_version: 1 });
+  });
 });

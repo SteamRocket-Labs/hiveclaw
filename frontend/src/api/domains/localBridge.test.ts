@@ -37,10 +37,11 @@ describe('localBridge API adapter', () => {
     await localBridgeApi.sendChannelMessage('session-1', {
       content: 'hello local codex',
       metadata: { purpose: 'smoke' },
+      idempotencyKey: 'browser:message-1',
     });
-    await localBridgeApi.getChannelTimeline('session-1');
+    await localBridgeApi.getChannelTimeline('session-1', 7);
     await localBridgeApi.createBrowserChannelWsTicket('session-1');
-    await localBridgeApi.listChannelEvents('session-1');
+    await localBridgeApi.listChannelEvents('session-1', 7);
     await localBridgeApi.listWorkspaceFiles('workspace/uploads');
     await localBridgeApi.readWorkspaceFile('workspace/uploads/report.md');
     await localBridgeApi.downloadWorkspaceFile('workspace/uploads/report.md');
@@ -52,6 +53,7 @@ describe('localBridge API adapter', () => {
     await localBridgeApi.sendAgentChannelMessage('agent-local-1', 'session-2', {
       content: 'hello bound local agent',
       metadata: { purpose: 'detail_chat' },
+      idempotencyKey: 'detail:message-1',
     });
     await localBridgeApi.deleteAgentChannelSession('agent-local-1', 'session-2');
 
@@ -66,10 +68,11 @@ describe('localBridge API adapter', () => {
       content: 'hello local codex',
       attachments: [],
       metadata: { purpose: 'smoke' },
+      idempotency_key: 'browser:message-1',
     });
-    expect(get).toHaveBeenNthCalledWith(2, '/local-agents/sessions/session-1/timeline');
+    expect(get).toHaveBeenNthCalledWith(2, '/local-agents/sessions/session-1/timeline?after_sequence=7');
     expect(post).toHaveBeenNthCalledWith(5, '/local-agents/sessions/session-1/ws-ticket');
-    expect(get).toHaveBeenNthCalledWith(3, '/local-agents/sessions/session-1/events');
+    expect(get).toHaveBeenNthCalledWith(3, '/local-agents/sessions/session-1/events?after_sequence=7');
     expect(get).toHaveBeenNthCalledWith(4, '/local-agents/workspace/files?path=workspace%2Fuploads');
     expect(get).toHaveBeenNthCalledWith(5, '/local-agents/workspace/content?path=workspace%2Fuploads%2Freport.md');
     expect(getBlob).toHaveBeenCalledWith('/local-agents/workspace/download?path=workspace%2Fuploads%2Freport.md');
@@ -85,6 +88,7 @@ describe('localBridge API adapter', () => {
       content: 'hello bound local agent',
       attachments: [],
       metadata: { purpose: 'detail_chat' },
+      idempotency_key: 'detail:message-1',
     });
     expect(del).toHaveBeenCalledWith('/agents/agent-local-1/local-agent/sessions/session-2');
   });

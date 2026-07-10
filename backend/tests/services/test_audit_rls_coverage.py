@@ -79,6 +79,7 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
     personal_knowledge_module = _load_migration_module("personal_knowledge_core_0707.py")
     external_capability_module = _load_migration_module("external_capability_rls_0709.py")
     ai_asset_module = _load_migration_module("ai_asset_control_plane_0710.py")
+    personal_kb_local_module = _load_migration_module("personal_kb_local_receipts_0710.py")
     migration_tables = (
         set(force_all_module._FORCE_TABLES)
         | set(remaining_module._ALL_TABLES)
@@ -86,6 +87,7 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
         | set(personal_knowledge_module._KNOWLEDGE_TABLES)
         | set(external_capability_module._EXTERNAL_CAPABILITY_TABLES)
         | set(ai_asset_module._AI_ASSET_TABLES)
+        | set(personal_kb_local_module._PERSONAL_KB_LOCAL_RLS_TABLES)
     )
 
     missing = sorted(set(RLS_FORCED_TENANT_TABLES) - migration_tables)

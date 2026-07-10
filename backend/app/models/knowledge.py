@@ -11,7 +11,19 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -91,7 +103,9 @@ class KnowledgeEntity(Base):
 
     __tablename__ = "knowledge_entities"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "scope_type", "scope_id", "entity_type", "canonical_name", name="uq_knowledge_entity_name"),
+        UniqueConstraint(
+            "tenant_id", "scope_type", "scope_id", "entity_type", "canonical_name", name="uq_knowledge_entity_name"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -259,3 +273,74 @@ class KnowledgeGrant(Base):
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PersonalKnowledgeProposal(Base):
+    """Governed Agent-authored candidate for an owner's Personal KB."""
+
+    __tablename__ = "personal_knowledge_proposals"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_personal_kb_proposal_idempotency"),
+        Index("ix_personal_kb_proposals_owner_status", "owner_user_id", "status"),
+        Index("ix_personal_kb_proposals_agent_created", "proposed_by_agent_id", "created_at"),
+        CheckConstraint(
+            "status IN ('pending','approved','rejected','committed','failed')",
+            name="ck_personal_kb_proposal_status",
+        ),
+        CheckConstraint(
+            "policy_outcome IN ('approve','ask','reject')",
+            name="ck_personal_kb_proposal_policy_outcome",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    proposed_by_agent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    delegated_by_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    delegation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    proposed_content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    baseline_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_documents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    baseline_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("config_revisions.id", ondelete="SET NULL"), nullable=True
+    )
+    baseline_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    diff_unified: Mapped[str] = mapped_column(Text, nullable=False)
+    target_collection: Mapped[str] = mapped_column(String(120), nullable=False, default="inbox")
+    source_refs_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    sensitivity: Mapped[str] = mapped_column(String(30), nullable=False)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    policy_outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    policy_reason_codes_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    reviewed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_documents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("config_revisions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    rollback_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )

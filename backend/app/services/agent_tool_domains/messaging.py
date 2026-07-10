@@ -1,6 +1,7 @@
 """Messaging domain — Feishu messaging, web messaging, agent-to-agent communication."""
 
 import json
+import hashlib
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -1336,6 +1337,7 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
                 "target_artifacts": target_artifacts_arg,
                 "edit_mode": str(args.get("edit_mode") or "").strip() or None,
                 "trace_id": handle.trace_id,
+                "receipt": getattr(handle, "receipt", None),
                 "continuation_tool": "send_agent_session_message",
                 "next_action": (
                     "Use send_agent_session_message with child_session_id to continue this delegated "
@@ -1364,10 +1366,46 @@ async def _delegate_to_local_agent_channel(
     tenant_id = getattr(source_agent, "tenant_id", None) or getattr(target_agent, "tenant_id", None)
     if tenant_id is None:
         raise ValueError("source/target agent has no tenant for local-agent delegation")
-    owner_id = getattr(source_agent, "creator_id", None)
-    if owner_id is None:
-        raise ValueError("source agent has no creator_id for local-agent delegation")
+    if getattr(source_agent, "tenant_id", tenant_id) != getattr(target_agent, "tenant_id", tenant_id):
+        raise ValueError("cross-tenant local-agent delegation is forbidden")
+    source_owner_id = (
+        getattr(source_agent, "owner_user_id", None)
+        or getattr(source_agent, "sponsor_user_id", None)
+        or getattr(source_agent, "creator_id", None)
+    )
+    target_owner_id = (
+        getattr(target_agent, "owner_user_id", None)
+        or getattr(target_agent, "sponsor_user_id", None)
+        or getattr(target_agent, "creator_id", None)
+    )
+    if source_owner_id is None or target_owner_id is None:
+        raise ValueError("source/target agent owner is required for local-agent delegation")
     target_artifacts_arg = args.get("target_artifacts") if isinstance(args.get("target_artifacts"), list) else []
+    idempotency_anchor = str(
+        args.get("_runtime_task_id")
+        or args.get("_turn_id")
+        or args.get("_budget_run_id")
+        or args.get("parent_session_id")
+        or f"{source_agent.id}:{target_agent.id}"
+    )[:80]
+    request_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "source_agent_id": str(source_agent.id),
+                "target_agent_id": str(target_agent.id),
+                "message": message_text,
+                "attachments": list(args.get("attachments") or []),
+                "expected_output": args.get("expected_output"),
+                "target_artifacts": target_artifacts_arg,
+                "edit_mode": args.get("edit_mode"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    idempotency_key = f"a2a-local:{idempotency_anchor}:{request_digest[:40]}"[:200]
     budget_reservation_key = None
     budget_service = None
     if budget_run_id is not None:
@@ -1378,7 +1416,7 @@ async def _delegate_to_local_agent_channel(
         )
 
         budget_service = RuntimeBudgetService()
-        budget_reservation_key = f"delegation:local:{uuid.uuid4().hex}:start"
+        budget_reservation_key = f"delegation:local:{request_digest[:40]}:start"
         estimated_tokens = estimate_reservation_tokens(
             default_tokens=50_000,
             prompt_tokens=max(1, (len(message_text) + 3) // 4) if message_text else 0,
@@ -1405,16 +1443,17 @@ async def _delegate_to_local_agent_channel(
             session = await local_agent_channel_service.create_channel_session(
                 db,
                 tenant_id=tenant_id,
-                owner_user_id=owner_id,
-                source_agent_id=source_agent.id,
+                owner_user_id=target_owner_id,
+                actor_user_id=source_owner_id,
+                source_agent_id=target_agent.id,
                 source="a2a",
                 title=f"A2A from {getattr(source_agent, 'name', 'agent')}",
             )
             message = await local_agent_channel_service.enqueue_channel_message(
                 db,
                 session_id=session["id"],
-                owner_user_id=owner_id,
-                sender_user_id=owner_id,
+                owner_user_id=target_owner_id,
+                sender_user_id=source_owner_id,
                 sender_agent_id=source_agent.id,
                 content=message_text,
                 attachments=list(args.get("attachments") or []),
@@ -1423,6 +1462,8 @@ async def _delegate_to_local_agent_channel(
                     "execution_target": "local_agent",
                     "sender_agent_id": str(source_agent.id),
                     "sender_agent_name": getattr(source_agent, "name", None),
+                    "target_agent_id": str(target_agent.id),
+                    "target_owner_user_id": str(target_owner_id),
                     "expected_output": str(args.get("expected_output") or "").strip() or None,
                     "parent_session_id": args.get("parent_session_id"),
                     "ledger_todo_id": str(args.get("ledger_todo_id") or "").strip() or None,
@@ -1432,11 +1473,12 @@ async def _delegate_to_local_agent_channel(
                     "budget_run_id": str(budget_run_id) if budget_run_id else None,
                     "budget_reservation_key": budget_reservation_key,
                 },
+                idempotency_key=idempotency_key,
             )
             try:
                 from app.api.local_agent_channel import channel_ws_manager
 
-                await channel_ws_manager.send_to_user(owner_id, {"type": "message", "message": message})
+                await channel_ws_manager.send_to_user(target_owner_id, {"type": "message", "message": message})
             except Exception as exc:
                 logger.debug("Suppressed local-agent channel WS fanout failure: %s", exc)
             return {
@@ -1444,8 +1486,9 @@ async def _delegate_to_local_agent_channel(
                 "execution_target": "local_agent",
                 "target_agent": getattr(target_agent, "name", str(target_agent.id)),
                 "channel_session_id": str(session["id"]),
-                "chat_session_id": str(session["chat_session_id"]),
+                "chat_session_id": str(session["chat_session_id"]) if session.get("chat_session_id") else None,
                 "message_id": str(message["id"]),
+                "receipt": message.get("receipt"),
                 "next_action": (
                     "The bound Hive Connect background service receives this when it is online; "
                     "if the computer is offline, the message remains queued until the service reconnects."

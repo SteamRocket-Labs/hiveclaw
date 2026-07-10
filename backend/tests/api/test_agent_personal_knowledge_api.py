@@ -544,6 +544,131 @@ def test_current_user_personal_knowledge_graph_route_uses_owner_scope(monkeypatc
     ]
 
 
+def test_current_user_personal_knowledge_proposal_review_revision_and_rollback_use_owner_scope(monkeypatch):
+    owner_id = uuid4()
+    proposal_id = uuid4()
+    document_id = uuid4()
+    revision_id = uuid4()
+    rollback_revision_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+    captured = []
+
+    class _FakeProposalService:
+        async def list_proposals(self, session, **kwargs):
+            captured.append(("list", kwargs))
+            return [
+                SimpleNamespace(
+                    proposal_id=proposal_id,
+                    owner_user_id=owner_id,
+                    proposed_by_agent_id=uuid4(),
+                    delegated_by_agent_id=None,
+                    delegation_id=None,
+                    title="Incident response",
+                    content="Escalate SEV-1 incidents immediately.",
+                    content_hash="a" * 64,
+                    target_collection="operations",
+                    source_refs=["artifact://incident-42"],
+                    sensitivity="PL1_public",
+                    purpose="Preserve a verified operating rule.",
+                    dedupe_key="incident-response",
+                    idempotency_key="proposal-key",
+                    policy_outcome="ask",
+                    policy_reason_codes=[],
+                    status="pending",
+                    review_reason=None,
+                    document_id=None,
+                    revision_id=None,
+                    rollback_ref=None,
+                    created_at=None,
+                    updated_at=None,
+                )
+            ]
+
+        async def review(self, session, **kwargs):
+            captured.append(("review", kwargs))
+            return SimpleNamespace(
+                proposal_id=proposal_id,
+                owner_user_id=owner_id,
+                proposed_by_agent_id=uuid4(),
+                delegated_by_agent_id=None,
+                delegation_id=None,
+                title="Incident response",
+                content="Escalate SEV-1 incidents immediately.",
+                content_hash="a" * 64,
+                target_collection="operations",
+                source_refs=["artifact://incident-42"],
+                sensitivity="PL1_public",
+                purpose="Preserve a verified operating rule.",
+                dedupe_key="incident-response",
+                idempotency_key="proposal-key",
+                policy_outcome="approve",
+                policy_reason_codes=[],
+                status="committed",
+                review_reason=kwargs["reason"],
+                document_id=document_id,
+                revision_id=revision_id,
+                rollback_ref=f"personal-kb://documents/{document_id}/revisions/1",
+                created_at=None,
+                updated_at=None,
+            )
+
+        async def revision_history(self, session, **kwargs):
+            captured.append(("history", kwargs))
+            return [
+                {
+                    "id": revision_id,
+                    "version": 1,
+                    "change_source": "agent_proposal",
+                    "content": {"title": "Incident response"},
+                }
+            ]
+
+        async def rollback_document(self, session, **kwargs):
+            captured.append(("rollback", kwargs))
+            return SimpleNamespace(
+                document_id=document_id,
+                version=2,
+                rollback_of_version=1,
+                revision_id=rollback_revision_id,
+                rollback_ref=f"personal-kb://documents/{document_id}/revisions/2",
+            )
+
+    monkeypatch.setattr(
+        agent_knowledge_api,
+        "PersonalKnowledgeProposalService",
+        lambda: _FakeProposalService(),
+        raising=False,
+    )
+    client, fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    listed = client.get("/knowledge/personal/proposals", params={"status": "pending"})
+    reviewed = client.post(
+        f"/knowledge/personal/proposals/{proposal_id}/decision",
+        json={"decision": "approve", "reason": "Verified by owner"},
+    )
+    history = client.get(f"/knowledge/personal/documents/{document_id}/revisions")
+    rolled_back = client.post(
+        f"/knowledge/personal/documents/{document_id}/rollback",
+        json={"target_version": 1},
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()["proposals"][0]["content"] == "Escalate SEV-1 incidents immediately."
+    assert reviewed.status_code == 200
+    assert reviewed.json()["status"] == "committed"
+    assert history.status_code == 200
+    assert history.json()["revisions"][0]["id"] == str(revision_id)
+    assert rolled_back.status_code == 200
+    assert rolled_back.json()["rollback_of_version"] == 1
+    assert fake_db.commit_count == 2
+    assert [name for name, _kwargs in captured] == ["list", "review", "history", "rollback"]
+    for _name, kwargs in captured:
+        assert kwargs["tenant_id"] == user.tenant_id
+        assert kwargs["owner_user_id"] == owner_id
+    assert captured[1][1]["reviewer_user_id"] == owner_id
+    assert captured[3][1]["reviewer_user_id"] == owner_id
+
+
 def test_personal_knowledge_ingest_uses_agent_owner_and_commits(monkeypatch):
     owner_id = uuid4()
     agent_id = uuid4()

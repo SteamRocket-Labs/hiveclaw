@@ -374,6 +374,20 @@ def test_segment_markdown_preserves_heading_path_and_stable_hashes() -> None:
     assert all(segment.content.strip() for segment in first)
 
 
+def test_personal_knowledge_facade_exports_are_owned_by_four_components() -> None:
+    from app.services.personal_knowledge_service import (
+        build_personal_knowledge_document_list_statement,
+        build_personal_knowledge_job_claim_statement,
+        build_personal_knowledge_search_statement,
+        segment_markdown,
+    )
+
+    assert build_personal_knowledge_document_list_statement.__module__.endswith("personal_knowledge_access")
+    assert segment_markdown.__module__.endswith("personal_knowledge_ingest")
+    assert build_personal_knowledge_search_statement.__module__.endswith("personal_knowledge_index_search")
+    assert build_personal_knowledge_job_claim_statement.__module__.endswith("personal_knowledge_jobs")
+
+
 @pytest.mark.asyncio
 async def test_ingest_markdown_writes_artifact_document_segments_and_index_job(tmp_path: Path) -> None:
     from app.services.personal_knowledge_service import PersonalKnowledgeService
@@ -697,7 +711,7 @@ async def test_ingest_markdown_records_usage_unavailable_when_provider_omits_usa
 
 @pytest.mark.asyncio
 async def test_extract_segment_guard_limits_same_tenant_concurrency(monkeypatch, tmp_path: Path) -> None:
-    import app.services.personal_knowledge_service as service_module
+    import app.services.personal_knowledge_ingest as ingest_module
     from app.services.personal_knowledge_service import PersonalKnowledgeService
 
     tenant_id = uuid.uuid4()
@@ -708,8 +722,8 @@ async def test_extract_segment_guard_limits_same_tenant_concurrency(monkeypatch,
     segment_a = SimpleNamespace(id=uuid.uuid4(), heading_path_json=[], content="A")
     segment_b = SimpleNamespace(id=uuid.uuid4(), heading_path_json=[], content="B")
 
-    monkeypatch.setattr(service_module, "_DEFAULT_EXTRACT_MAX_CONCURRENCY_PER_TENANT", 1)
-    service_module._EXTRACT_SEMAPHORES.clear()
+    monkeypatch.setattr(ingest_module, "DEFAULT_EXTRACT_MAX_CONCURRENCY_PER_TENANT", 1)
+    ingest_module._EXTRACT_SEMAPHORES.clear()
 
     first = asyncio.create_task(
         service._extract_segment_with_tenant_guard(
@@ -1177,7 +1191,9 @@ async def test_search_personal_graph_channel_uses_multihop_ppr_scores(tmp_path: 
         relation="compares_with",
         source_refs_json=[{"segment_id": str(two_hop_segment.id), "document_id": str(document.id)}],
     )
-    session = _QueuedSession(results=[[], [entity_a], [link_ab, link_bc], [(seed_segment, document), (two_hop_segment, document)]])
+    session = _QueuedSession(
+        results=[[], [entity_a], [link_ab, link_bc], [(seed_segment, document), (two_hop_segment, document)]]
+    )
     service = PersonalKnowledgeService(data_root=tmp_path)
 
     hits = await service.search_personal(
@@ -1564,11 +1580,13 @@ async def test_list_personal_graph_returns_entities_links_and_assertions(tmp_pat
         status="active",
         source_refs_json=[{"segment_id": str(uuid.uuid4())}],
     )
-    session = _QueuedSession([
-        [(entity_a,), (entity_b,)],
-        [(link,)],
-        [(assertion,)],
-    ])
+    session = _QueuedSession(
+        [
+            [(entity_a,), (entity_b,)],
+            [(link,)],
+            [(assertion,)],
+        ]
+    )
     service = PersonalKnowledgeService(data_root=tmp_path)
 
     graph = await service.list_personal_graph(

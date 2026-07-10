@@ -1,0 +1,22 @@
+name: personal_knowledge_pack
+version: "0.1.0"
+description: Tool-first owner-scoped Personal Knowledge search, read, and governed proposal review.
+source:
+  kind: builtin
+
+tools:
+  - name: search_personal_kb
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: read_personal_kb
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: propose_personal_kb_item
+    role: owns
+    governance:
+      security_zone: restricted
+
+activation:
+  default_state: active

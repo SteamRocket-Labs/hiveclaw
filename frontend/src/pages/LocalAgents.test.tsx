@@ -107,11 +107,11 @@ describe('LocalAgents page', () => {
     ).toBe(true);
   });
 
-  it('only allows direct local chat while a background websocket presence is online', () => {
-    expect(canSendLocalAgentMessage({ localAgentOnline: false, messageBusy: false, content: 'hello' })).toBe(false);
-    expect(canSendLocalAgentMessage({ localAgentOnline: true, messageBusy: true, content: 'hello' })).toBe(false);
-    expect(canSendLocalAgentMessage({ localAgentOnline: true, messageBusy: false, content: '   ' })).toBe(false);
-    expect(canSendLocalAgentMessage({ localAgentOnline: true, messageBusy: false, content: 'hello' })).toBe(true);
+  it('allows durable queueing while a bound local runner is offline, but not before pairing', () => {
+    expect(canSendLocalAgentMessage({ localAgentBound: false, messageBusy: false, content: 'hello' })).toBe(false);
+    expect(canSendLocalAgentMessage({ localAgentBound: true, messageBusy: true, content: 'hello' })).toBe(false);
+    expect(canSendLocalAgentMessage({ localAgentBound: true, messageBusy: false, content: '   ' })).toBe(false);
+    expect(canSendLocalAgentMessage({ localAgentBound: true, messageBusy: false, content: 'hello' })).toBe(true);
   });
 
   it('normalizes activation codes from Hive Connect login links', () => {
@@ -159,6 +159,7 @@ describe('LocalAgents page', () => {
   it('merges replayed timeline events and websocket events without duplicates', () => {
     const first = {
       id: 'event-1',
+      sequence: 1,
       session_id: 'session-1',
       message_id: 'message-1',
       direction: 'hive_to_local',
@@ -167,6 +168,7 @@ describe('LocalAgents page', () => {
     };
     const second = {
       id: 'event-2',
+      sequence: 2,
       session_id: 'session-1',
       message_id: 'message-1',
       direction: 'local_to_hive',
@@ -174,7 +176,7 @@ describe('LocalAgents page', () => {
       payload: { text: 'working' },
     };
 
-    expect(mergeChannelEvents([first], [first, second]).map((event) => event.id)).toEqual(['event-1', 'event-2']);
+    expect(mergeChannelEvents([], [second, first, second]).map((event) => event.id)).toEqual(['event-1', 'event-2']);
   });
 
   it('renders automatic authentication instead of manual pairing controls', () => {

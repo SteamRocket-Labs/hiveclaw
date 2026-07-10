@@ -26,6 +26,7 @@ class ToolExecutionContext:
     execution_identity: ExecutionIdentity | None = None
     session_id: str | None = None
     permission_profile: "PermissionProfileV1 | None" = None
+    delegation_token: Any | None = None
     turn_id: str | None = None
     runtime_task_id: str | None = None
     budget_run_id: str | None = None

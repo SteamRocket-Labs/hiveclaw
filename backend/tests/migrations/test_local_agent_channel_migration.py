@@ -25,9 +25,13 @@ EXPECTED_LOCAL_AGENT_CHANNEL_INDEXES = {
         "ix_local_agent_channel_messages_user_status",
         "ix_local_agent_channel_messages_source_agent",
         "ix_local_agent_channel_messages_tenant_id",
+        "ix_local_agent_channel_messages_request_hash",
+        "ix_local_agent_channel_messages_capability_snapshot_hash",
+        "ix_local_agent_channel_messages_replay_key",
     },
     LocalAgentChannelEvent: {
         "ix_local_agent_channel_events_session_created",
+        "ix_local_agent_channel_events_session_sequence",
         "ix_local_agent_channel_events_message",
         "ix_local_agent_channel_events_tenant_id",
     },

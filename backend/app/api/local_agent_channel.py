@@ -61,12 +61,14 @@ class LocalAgentChannelSessionOut(BaseModel):
 class LocalAgentChannelTimelineOut(BaseModel):
     session: LocalAgentChannelSessionOut
     events: list[dict[str, Any]]
+    next_cursor: int = 0
 
 
 class LocalAgentChannelMessageIn(BaseModel):
     content: str = Field(min_length=1)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class LocalAgentChannelMessageOut(BaseModel):
@@ -76,6 +78,11 @@ class LocalAgentChannelMessageOut(BaseModel):
     content: str
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str = ""
+    request_hash: str | None = None
+    capability_snapshot_hash: str | None = None
+    replay_key: str = ""
+    receipt: dict[str, Any] | None = None
     created_at: Any | None = None
 
 
@@ -472,8 +479,11 @@ async def create_current_user_local_agent_channel_message(
         content=body.content,
         attachments=body.attachments,
         metadata={**body.metadata, "source": "local_agents_page"},
+        idempotency_key=body.idempotency_key,
     )
-    await channel_ws_manager.send_to_user(current_user.id, {"type": "message", "message": _runner_message_payload(payload)})
+    await channel_ws_manager.send_to_user(
+        current_user.id, {"type": "message", "message": _runner_message_payload(payload)}
+    )
     await _broadcast_browser_channel_event(
         owner_user_id=current_user.id,
         session_id=session_id,
@@ -485,7 +495,7 @@ async def create_current_user_local_agent_channel_message(
 @router.get("/local-agents/sessions/{session_id}/timeline", response_model=LocalAgentChannelTimelineOut)
 async def get_current_user_local_agent_channel_timeline(
     session_id: uuid.UUID,
-    after_event_id: uuid.UUID | None = Query(default=None),
+    after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -497,10 +507,14 @@ async def get_current_user_local_agent_channel_timeline(
         db,
         session_id=session_id,
         owner_user_id=owner_user_id,
-        after_event_id=after_event_id,
+        after_sequence=after_sequence,
         limit=limit,
     )
-    return {"session": _serialize_session(session), "events": events}
+    return {
+        "session": _serialize_session(session),
+        "events": events,
+        "next_cursor": events[-1]["sequence"] if events else after_sequence,
+    }
 
 
 @router.post("/local-agents/sessions/{session_id}/ws-ticket", response_model=WsTicketOut, status_code=201)
@@ -521,7 +535,7 @@ async def create_current_user_local_agent_channel_browser_ws_ticket(
 @router.get("/local-agents/sessions/{session_id}/events")
 async def list_current_user_local_agent_channel_events(
     session_id: uuid.UUID,
-    after_event_id: uuid.UUID | None = Query(default=None),
+    after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -529,14 +543,16 @@ async def list_current_user_local_agent_channel_events(
     _session, owner_user_id = await channel_service.get_channel_session_for_actor(
         db, session_id=session_id, actor_user_id=current_user.id
     )
+    events = await channel_service.list_channel_events(
+        db,
+        session_id=session_id,
+        owner_user_id=owner_user_id,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
     return {
-        "events": await channel_service.list_channel_events(
-            db,
-            session_id=session_id,
-            owner_user_id=owner_user_id,
-            after_event_id=after_event_id,
-            limit=limit,
-        )
+        "events": events,
+        "next_cursor": events[-1]["sequence"] if events else after_sequence,
     }
 
 
@@ -799,6 +815,7 @@ async def create_local_agent_channel_message(
         content=body.content,
         attachments=attachments,
         metadata={**body.metadata, "source_agent_id": str(agent.id)},
+        idempotency_key=body.idempotency_key,
     )
     await channel_ws_manager.send_to_user(
         host_owner_user_id, {"type": "message", "message": _runner_message_payload(payload)}
@@ -815,7 +832,7 @@ async def create_local_agent_channel_message(
 async def list_local_agent_channel_events(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
-    after_event_id: uuid.UUID | None = Query(default=None),
+    after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -831,14 +848,16 @@ async def list_local_agent_channel_events(
         source_agent_id=agent.id,
         session_id=session_id,
     )
+    events = await channel_service.list_channel_events(
+        db,
+        session_id=session_id,
+        owner_user_id=host_owner_user_id,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
     return {
-        "events": await channel_service.list_channel_events(
-            db,
-            session_id=session_id,
-            owner_user_id=host_owner_user_id,
-            after_event_id=after_event_id,
-            limit=limit,
-        )
+        "events": events,
+        "next_cursor": events[-1]["sequence"] if events else after_sequence,
     }
 
 
@@ -1019,7 +1038,17 @@ async def local_agent_channel_ws(
                     runtime_kind=str(data.get("runtime_kind") or context.client_kind),
                     capabilities=dict(data.get("capabilities") or {}),
                 )
-                await websocket.send_json(jsonable_encoder({"type": "ready_ack", "status": ready["status"]}))
+                await websocket.send_json(
+                    jsonable_encoder(
+                        {
+                            "type": "ready_ack",
+                            "status": ready["status"],
+                            "snapshot_hash": ready["snapshot_hash"],
+                            "effective_capabilities": ready["effective_capabilities"],
+                            "expires_at": ready["expires_at"],
+                        }
+                    )
+                )
                 for message in await channel_service.poll_pending_channel_messages(db, context=context):
                     await websocket.send_json(jsonable_encoder({"type": "message", "message": message}))
                 continue
@@ -1062,7 +1091,14 @@ async def local_agent_channel_ws(
                     event=result.get("event") if isinstance(result, dict) else None,
                 )
                 await websocket.send_json(
-                    jsonable_encoder({"type": "result_ack", "message_id": str(message_id), "status": result["status"]})
+                    jsonable_encoder(
+                        {
+                            "type": "result_ack",
+                            "message_id": str(message_id),
+                            "status": result["status"],
+                            "receipt": result.get("receipt"),
+                        }
+                    )
                 )
                 continue
             await websocket.send_json(

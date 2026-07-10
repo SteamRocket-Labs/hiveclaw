@@ -70,6 +70,7 @@ _MEMORY = {
     "load_memory",
     "search_personal_kb",
     "read_personal_kb",
+    "propose_personal_kb_item",
     "save_memory",
     "update_memory",
     "retire_memory",

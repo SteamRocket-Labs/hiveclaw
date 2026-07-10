@@ -173,6 +173,7 @@ def test_web_user_creates_local_agent_channel_session_and_message(monkeypatch) -
         content,
         attachments,
         metadata,
+        idempotency_key=None,
     ):
         captured["message"] = {
             "db": db_arg,
@@ -183,6 +184,7 @@ def test_web_user_creates_local_agent_channel_session_and_message(monkeypatch) -
             "content": content,
             "attachments": attachments,
             "metadata": metadata,
+            "idempotency_key": idempotency_key,
         }
         return {
             "id": message_id,
@@ -206,7 +208,11 @@ def test_web_user_creates_local_agent_channel_session_and_message(monkeypatch) -
     )
     message_response = client.post(
         f"/local-agents/sessions/{session_id}/messages",
-        json={"content": "hello local codex", "metadata": {"purpose": "smoke"}},
+        json={
+            "content": "hello local codex",
+            "metadata": {"purpose": "smoke"},
+            "idempotency_key": "browser:message-1",
+        },
     )
 
     assert session_response.status_code == 201
@@ -221,6 +227,7 @@ def test_web_user_creates_local_agent_channel_session_and_message(monkeypatch) -
     assert captured["message"]["sender_user_id"] == user_id
     assert captured["message"]["sender_agent_id"] is None
     assert captured["message"]["content"] == "hello local codex"
+    assert captured["message"]["idempotency_key"] == "browser:message-1"
 
 
 def test_web_user_restores_default_local_agent_channel_session_and_timeline(monkeypatch) -> None:
@@ -259,17 +266,18 @@ def test_web_user_restores_default_local_agent_channel_session_and_timeline(monk
             "created_at": None,
         }
 
-    async def fake_list_channel_events(db_arg, *, session_id, owner_user_id=None, after_event_id=None, limit=100):
+    async def fake_list_channel_events(db_arg, *, session_id, owner_user_id=None, after_sequence=0, limit=100):
         captured["timeline"] = {
             "db": db_arg,
             "session_id": session_id,
             "owner_user_id": owner_user_id,
-            "after_event_id": after_event_id,
+            "after_sequence": after_sequence,
             "limit": limit,
         }
         return [
             {
                 "id": str(event_id),
+                "sequence": 7,
                 "session_id": str(session_id),
                 "message_id": str(message_id),
                 "direction": "hive_to_local",
@@ -310,18 +318,20 @@ def test_web_user_restores_default_local_agent_channel_session_and_timeline(monk
     client = _client(monkeypatch, db=db, current_user=current_user, context=context)
 
     session_response = client.post("/local-agents/sessions/default")
-    timeline_response = client.get(f"/local-agents/sessions/{session_id}/timeline")
+    timeline_response = client.get(f"/local-agents/sessions/{session_id}/timeline?after_sequence=6")
 
     assert session_response.status_code == 200
     assert session_response.json()["id"] == str(session_id)
     assert timeline_response.status_code == 200
     assert timeline_response.json()["session"]["id"] == str(session_id)
     assert timeline_response.json()["events"][0]["payload"]["content"] == "persist this chat"
+    assert timeline_response.json()["next_cursor"] == 7
     assert captured["default_session"]["tenant_id"] == tenant_id
     assert captured["default_session"]["owner_user_id"] == user_id
     assert captured["default_session"]["actor_user_id"] is None
     assert captured["default_session"]["source_agent_id"] is None
     assert captured["timeline"]["owner_user_id"] == user_id
+    assert captured["timeline"]["after_sequence"] == 6
 
 
 def test_web_user_restores_agent_scoped_default_local_agent_channel_session(monkeypatch) -> None:
@@ -627,6 +637,7 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
         content,
         attachments,
         metadata,
+        idempotency_key=None,
     ):
         captured["message"] = {
             "db": db_arg,
@@ -637,6 +648,7 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
             "content": content,
             "attachments": attachments,
             "metadata": metadata,
+            "idempotency_key": idempotency_key,
         }
         return {
             "id": message_id,
@@ -700,6 +712,7 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
         json={
             "content": "shared user task",
             "attachments": [{"path": "workspace/uploads/proof.md", "filename": "proof.md"}],
+            "idempotency_key": "shared:message-1",
         },
     )
 
@@ -713,6 +726,7 @@ def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_
     assert captured["message"]["owner_user_id"] == host_owner_id
     assert captured["message"]["sender_user_id"] == caller_user_id
     assert captured["message"]["sender_agent_id"] == agent_id
+    assert captured["message"]["idempotency_key"] == "shared:message-1"
     materialized_attachment = captured["message"]["attachments"][0]
     assert materialized_attachment["path"] == f"workspace/shared_uploads/{caller_user_id}/proof.md"
     assert materialized_attachment["workspace_path"] == f"workspace/shared_uploads/{caller_user_id}/proof.md"
@@ -880,7 +894,9 @@ def test_user_scoped_local_agent_workspace_upload_saves_to_uploads(monkeypatch, 
         files={"file": ("agent-proof.md", "# Proof\n\n我是agent\n".encode("utf-8"), "text/markdown")},
     )
 
-    saved_file = tmp_path / "local_agents" / str(tenant_id) / "users" / str(user_id) / "workspace" / "uploads" / "agent-proof.md"
+    saved_file = (
+        tmp_path / "local_agents" / str(tenant_id) / "users" / str(user_id) / "workspace" / "uploads" / "agent-proof.md"
+    )
     assert response.status_code == 200
     assert response.json()["workspace_path"] == "workspace/uploads/agent-proof.md"
     assert response.json()["filename"] == "agent-proof.md"
@@ -928,7 +944,12 @@ def test_local_agent_channel_websocket_sends_pending_messages_and_accepts_result
 
     async def fake_mark_channel_ready(db, *, context, runtime_kind, capabilities):
         captured["ready"] = {"runtime_kind": runtime_kind, "capabilities": capabilities}
-        return {"status": "online"}
+        return {
+            "status": "online",
+            "snapshot_hash": "a" * 64,
+            "effective_capabilities": ["event_stream", "execute", "result_report"],
+            "expires_at": "2026-07-10T14:00:00+00:00",
+        }
 
     async def fake_poll_pending_channel_messages(db, *, context, limit=10):
         return [
@@ -967,7 +988,19 @@ def test_local_agent_channel_websocket_sends_pending_messages_and_accepts_result
                 "metadata": metadata,
             }
         )
-        return {"status": "completed"}
+        return {
+            "status": "completed",
+            "receipt": {
+                "schema": "hive.execution_receipt.v1",
+                "request_hash": "b" * 64,
+                "capability_snapshot_hash": "a" * 64,
+                "result_refs": ["workspace/local/done.md"],
+                "status": "completed",
+                "replay_key": "local:message-1",
+                "trace_id": "local-agent:message-1",
+                "span_id": "remote-action:message-1",
+            },
+        }
 
     monkeypatch.setattr(local_agent_channel_api.channel_service, "resolve_ws_ticket", fake_resolve_ws_ticket)
     monkeypatch.setattr(local_agent_channel_api.channel_service, "mark_channel_ready", fake_mark_channel_ready)
@@ -995,7 +1028,13 @@ def test_local_agent_channel_websocket_sends_pending_messages_and_accepts_result
             "owner_user_id": str(context.user_id),
         }
         ws.send_json({"type": "ready", "runtime_kind": "codex", "capabilities": {"file_upload": True}})
-        assert ws.receive_json() == {"type": "ready_ack", "status": "online"}
+        assert ws.receive_json() == {
+            "type": "ready_ack",
+            "status": "online",
+            "snapshot_hash": "a" * 64,
+            "effective_capabilities": ["event_stream", "execute", "result_report"],
+            "expires_at": "2026-07-10T14:00:00+00:00",
+        }
         message = ws.receive_json()
         assert message["type"] == "message"
         assert message["message"]["id"] == str(pending_message_id)
@@ -1012,7 +1051,11 @@ def test_local_agent_channel_websocket_sends_pending_messages_and_accepts_result
                 "metadata": {"runtime": "codex"},
             }
         )
-        assert ws.receive_json() == {"type": "result_ack", "message_id": str(pending_message_id), "status": "completed"}
+        result_ack = ws.receive_json()
+        assert result_ack["type"] == "result_ack"
+        assert result_ack["message_id"] == str(pending_message_id)
+        assert result_ack["status"] == "completed"
+        assert result_ack["receipt"]["schema"] == "hive.execution_receipt.v1"
 
     assert captured["ready"] == {"runtime_kind": "codex", "capabilities": {"file_upload": True}}
     assert captured["acks"] == [pending_message_id]

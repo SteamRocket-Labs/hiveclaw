@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 from typing import Any
 
@@ -11,6 +12,10 @@ from sqlalchemy import select
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.services.personal_knowledge_service import PersonalKnowledgeService
+from app.services.personal_knowledge_proposals import (
+    PersonalKnowledgeProposalRejected,
+    PersonalKnowledgeProposalService,
+)
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
 
@@ -32,6 +37,168 @@ async def _resolve_agent_owner(db: Any, agent_id: uuid.UUID) -> uuid.UUID | None
     if agent is None:
         return None
     return agent.owner_user_id or agent.sponsor_user_id or agent.creator_id
+
+
+def _proposal_idempotency_key(request: ToolExecutionRequest) -> str:
+    anchor = (
+        str(request.context.runtime_task_id or "").strip()
+        or str(request.context.turn_id or "").strip()
+        or str(request.context.session_id or "").strip()
+        or "unbound"
+    )
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "title": request.arguments.get("title"),
+                "content": request.arguments.get("content"),
+                "target_collection": request.arguments.get("target_collection"),
+                "dedupe_key": request.arguments.get("dedupe_key"),
+                "source_refs": request.arguments.get("source_refs"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"personal-kb:{anchor}:{digest[:32]}"[:200]
+
+
+@tool(
+    ToolMeta(
+        name="propose_personal_kb_item",
+        description=(
+            "Propose a durable item for the direct owner's Personal Knowledge Base. This never writes into "
+            "the raw prompt context and never bypasses owner review: the platform validates Agent ownership, "
+            "delegation, source refs, privacy, size, and duplicates, then returns approve/ask/reject. Use this "
+            "only for durable owner knowledge with explicit evidence; do not use it for transient task state."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Concise title for the proposed item."},
+                "content": {"type": "string", "description": "Complete proposed Markdown content."},
+                "target_collection": {
+                    "type": "string",
+                    "description": "Owner collection slug, for example operations or research.",
+                },
+                "sensitivity": {
+                    "type": "string",
+                    "enum": ["public", "internal", "pii", "confidential", "sensitive"],
+                    "description": "Declared sensitivity; the platform may only raise it, never lower it.",
+                },
+                "source_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Evidence pointers such as session://, artifact://, kb://, or URL refs.",
+                },
+                "purpose": {
+                    "type": "string",
+                    "description": "Why this belongs in durable owner knowledge and how it will be reused.",
+                },
+                "dedupe_key": {
+                    "type": "string",
+                    "description": "Stable semantic key used to update the same document across revisions.",
+                },
+            },
+            "required": [
+                "title",
+                "content",
+                "target_collection",
+                "sensitivity",
+                "source_refs",
+                "purpose",
+                "dedupe_key",
+            ],
+        },
+        category="knowledge",
+        pack="personal_knowledge_pack",
+        display_name="Propose Personal KB Item",
+        icon="\U0001f4dd",
+        read_only=False,
+        parallel_safe=False,
+        timeout_seconds=30.0,
+        risk_class="controlled_write",
+        retry_policy="idempotent",
+        idempotency_scope="runtime_task",
+        governance="sensitive",
+        adapter="request",
+    )
+)
+async def propose_personal_kb_item(request: ToolExecutionRequest) -> str:
+    tenant_id = _coerce_uuid(request.context.tenant_id)
+    if tenant_id is None:
+        return json.dumps(
+            {"status": "rejected", "policy_outcome": "reject", "reason_codes": ["tenant_id_required"]},
+            ensure_ascii=False,
+        )
+    refs = request.arguments.get("source_refs")
+    if not isinstance(refs, list):
+        return json.dumps(
+            {"status": "rejected", "policy_outcome": "reject", "reason_codes": ["source_refs_must_be_array"]},
+            ensure_ascii=False,
+        )
+
+    async with tenant_scoped_session(tenant_id) as db:
+        owner_user_id = await _resolve_agent_owner(db, request.context.agent_id)
+        if owner_user_id is None:
+            return json.dumps(
+                {"status": "rejected", "policy_outcome": "reject", "reason_codes": ["agent_not_found"]},
+                ensure_ascii=False,
+            )
+        try:
+            proposal = await PersonalKnowledgeProposalService().propose(
+                db,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                proposed_by_agent_id=request.context.agent_id,
+                title=str(request.arguments.get("title") or ""),
+                content=str(request.arguments.get("content") or ""),
+                target_collection=str(request.arguments.get("target_collection") or "inbox"),
+                sensitivity=str(request.arguments.get("sensitivity") or "internal"),
+                source_refs=[str(ref) for ref in refs],
+                purpose=str(request.arguments.get("purpose") or ""),
+                dedupe_key=str(request.arguments.get("dedupe_key") or ""),
+                idempotency_key=_proposal_idempotency_key(request),
+                delegation_token=request.context.delegation_token,
+                session_id=request.context.session_id,
+                runtime_task_id=request.context.runtime_task_id,
+            )
+        except PersonalKnowledgeProposalRejected as exc:
+            return json.dumps(
+                {
+                    "status": "rejected",
+                    "policy_outcome": "reject",
+                    "reason_codes": [str(exc)],
+                    "next_action": "none",
+                },
+                ensure_ascii=False,
+            )
+        except ValueError as exc:
+            return json.dumps(
+                {
+                    "status": "rejected",
+                    "policy_outcome": "reject",
+                    "reason_codes": [str(exc)],
+                    "next_action": "none",
+                },
+                ensure_ascii=False,
+            )
+
+    return json.dumps(
+        {
+            "proposal_id": str(proposal.proposal_id),
+            "status": proposal.status,
+            "policy_outcome": proposal.policy_outcome,
+            "reason_codes": list(proposal.policy_reason_codes),
+            "document_id": str(proposal.document_id) if proposal.document_id else None,
+            "revision_id": str(proposal.revision_id) if proposal.revision_id else None,
+            "rollback_ref": proposal.rollback_ref,
+            "source_refs": list(proposal.source_refs),
+            "next_action": "owner_review_required" if proposal.status == "pending" else "none",
+        },
+        ensure_ascii=False,
+    )
 
 
 @tool(
@@ -60,6 +227,7 @@ async def _resolve_agent_owner(db: Any, agent_id: uuid.UUID) -> uuid.UUID | None
             "required": ["query"],
         },
         category="knowledge",
+        pack="personal_knowledge_pack",
         display_name="Search Personal KB",
         icon="\U0001f4da",
         read_only=True,
@@ -144,6 +312,7 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
             "required": ["document_id"],
         },
         category="knowledge",
+        pack="personal_knowledge_pack",
         display_name="Read Personal KB",
         icon="\U0001f4d6",
         read_only=True,
@@ -198,9 +367,7 @@ async def read_personal_kb(request: ToolExecutionRequest) -> str:
             ensure_ascii=False,
         )
 
-    eligible_segments = [
-        segment for segment in detail.segments if not segment_ids or segment.segment_id in segment_ids
-    ]
+    eligible_segments = [segment for segment in detail.segments if not segment_ids or segment.segment_id in segment_ids]
     rendered_segments: list[dict[str, Any]] = []
     remaining_chars = max_chars
     truncated = False

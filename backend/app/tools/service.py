@@ -232,6 +232,10 @@ def _inject_runtime_context_arguments(
         enriched["parent_session_id"] = runtime_context.session_id
     if runtime_context.budget_run_id and not enriched.get("_budget_run_id"):
         enriched["_budget_run_id"] = runtime_context.budget_run_id
+    if runtime_context.turn_id and not enriched.get("_turn_id"):
+        enriched["_turn_id"] = runtime_context.turn_id
+    if runtime_context.runtime_task_id and not enriched.get("_runtime_task_id"):
+        enriched["_runtime_task_id"] = runtime_context.runtime_task_id
 
     profile_payload = _permission_profile_payload(runtime_context.permission_profile)
     if profile_payload and "_permission_profile" not in enriched:
@@ -786,6 +790,7 @@ class ToolRuntimeService:
             round_state=round_state,
             t0_refs=t0_refs,
         )
+        runtime_context.delegation_token = delegation_token
         if workspace_override is not None:
             runtime_context.workspace = Path(workspace_override)
         original_arguments = dict(arguments or {})

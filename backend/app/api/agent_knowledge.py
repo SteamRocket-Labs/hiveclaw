@@ -25,6 +25,7 @@ from app.database import get_db, tenant_scoped_session
 from app.models.agent import Agent
 from app.models.user import User
 from app.services.personal_knowledge_service import PersonalKnowledgeService
+from app.services.personal_knowledge_proposals import PersonalKnowledgeProposalService
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,15 @@ class PersonalKnowledgeGrantRequest(BaseModel):
     permission: str = Field("search", pattern="^(read|search|manage)$")
     expires_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PersonalKnowledgeProposalDecisionRequest(BaseModel):
+    decision: str = Field(..., pattern="^(approve|reject)$")
+    reason: str | None = Field(None, max_length=2000)
+
+
+class PersonalKnowledgeRollbackRequest(BaseModel):
+    target_version: int = Field(..., ge=1)
 
 
 def _data_root() -> Path:
@@ -434,6 +444,94 @@ async def get_current_user_personal_graph(
         limit=limit,
     )
     return _dataclass_payload(graph)
+
+
+@personal_router.get("/proposals")
+async def list_current_user_personal_knowledge_proposals(
+    status: str | None = Query(None, pattern="^(pending|approved|committed|rejected)$"),
+    limit: int = Query(100, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    owner_user_id = uuid.UUID(str(current_user.id))
+    proposals = await PersonalKnowledgeProposalService().list_proposals(
+        db,
+        tenant_id=_tenant_id_for_user(current_user),
+        owner_user_id=owner_user_id,
+        statuses=(status,) if status else None,
+        limit=limit,
+    )
+    return {"proposals": [_dataclass_payload(proposal) for proposal in proposals]}
+
+
+@personal_router.post("/proposals/{proposal_id}/decision")
+async def decide_current_user_personal_knowledge_proposal(
+    proposal_id: uuid.UUID,
+    body: PersonalKnowledgeProposalDecisionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    owner_user_id = uuid.UUID(str(current_user.id))
+    try:
+        proposal = await PersonalKnowledgeProposalService().review(
+            db,
+            tenant_id=_tenant_id_for_user(current_user),
+            owner_user_id=owner_user_id,
+            proposal_id=proposal_id,
+            reviewer_user_id=owner_user_id,
+            decision=body.decision,
+            reason=body.reason,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "not found" in str(exc) else 400, detail=str(exc)) from exc
+    await db.commit()
+    return _dataclass_payload(proposal)
+
+
+@personal_router.get("/documents/{document_id}/revisions")
+async def list_current_user_personal_knowledge_revisions(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    owner_user_id = uuid.UUID(str(current_user.id))
+    try:
+        revisions = await PersonalKnowledgeProposalService().revision_history(
+            db,
+            tenant_id=_tenant_id_for_user(current_user),
+            owner_user_id=owner_user_id,
+            document_id=document_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"revisions": _as_jsonable(revisions)}
+
+
+@personal_router.post("/documents/{document_id}/rollback")
+async def rollback_current_user_personal_knowledge_document(
+    document_id: uuid.UUID,
+    body: PersonalKnowledgeRollbackRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    owner_user_id = uuid.UUID(str(current_user.id))
+    try:
+        result = await PersonalKnowledgeProposalService().rollback_document(
+            db,
+            tenant_id=_tenant_id_for_user(current_user),
+            owner_user_id=owner_user_id,
+            document_id=document_id,
+            target_version=body.target_version,
+            reviewer_user_id=owner_user_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await db.commit()
+    return _dataclass_payload(result)
 
 
 @personal_router.get("/documents/{document_id}")

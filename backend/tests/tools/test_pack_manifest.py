@@ -18,6 +18,7 @@ _SHIPPED = {
     "mcp_admin_pack",
     "office_pack",
     "command_pack",
+    "personal_knowledge_pack",
 }
 
 

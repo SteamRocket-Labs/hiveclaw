@@ -1517,6 +1517,7 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
     updates: list[tuple[str, dict]] = []
+    spans: list[dict] = []
 
     async def fake_get_runtime_task_record(task_id_arg):
         assert task_id_arg == task_id
@@ -1548,16 +1549,56 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
         updates.append((task_id_arg, kwargs))
         return True
 
+    async def fake_persist_span(**kwargs):
+        spans.append(kwargs)
+
     monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
     monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_task)
+    monkeypatch.setattr("app.agents.orchestrator.persist_invocation_span", fake_persist_span)
 
     assert await dispatch_persisted_async_delegation(task_id) is True
     await asyncio.sleep(0.05)
 
     assert any(task_id_arg == task_id and payload.get("status") == "running" for task_id_arg, payload in updates)
     assert any(task_id_arg == task_id and payload.get("status") == "completed" for task_id_arg, payload in updates)
+    terminal_update = next(payload for _, payload in updates if payload.get("status") == "completed")
+    receipt = terminal_update["metadata_json"]["execution_receipt"]
+    assert receipt["status"] == "completed"
+    assert receipt["result_refs"] == [f"runtime-task://{task_id}", "session://sess-runtime"]
+    assert spans == [
+        {
+            "tenant_id": None,
+            "trace_id": "trace-runtime",
+            "span_id": f"remote-action:{task_id}",
+            "parent_span_id": None,
+            "parent_trace_id": None,
+            "span_type": "remote_action",
+            "name": "a2a.delegate",
+            "status": "ok",
+            "duration_ms": pytest.approx(0.0, abs=1000.0),
+            "agent_id": parent_agent_id,
+            "user_id": owner_id,
+            "runtime_task_id": task_id,
+            "session_id": "sess-runtime",
+            "request_id": None,
+            "execution_identity_type": None,
+            "execution_identity_id": None,
+            "execution_identity_label": None,
+            "metadata": {
+                "decision_id": f"a2a:{task_id}",
+                "input_hash": receipt["request_hash"],
+                "idempotency_key": f"delegation:{task_id}",
+                "side_effect_refs": receipt["result_refs"],
+                "truth_evidence": [receipt],
+                "execution_receipt": receipt,
+                "source": "a2a_delegation",
+            },
+            "usage": None,
+            "error": None,
+        }
+    ]
     _async_tasks.clear()
 
 

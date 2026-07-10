@@ -136,6 +136,8 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "knowledge_links",
     "knowledge_index_jobs",
     "knowledge_grants",
+    "personal_knowledge_proposals",
+    "local_agent_capability_snapshots",
     "ai_asset_records",
 )
 
@@ -162,6 +164,8 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "knowledge_links",
     "knowledge_index_jobs",
     "knowledge_grants",
+    "personal_knowledge_proposals",
+    "local_agent_capability_snapshots",
     "ai_asset_records",
 )
 

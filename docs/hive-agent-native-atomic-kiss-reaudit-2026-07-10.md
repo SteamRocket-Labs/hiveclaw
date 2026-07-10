@@ -16,18 +16,18 @@ Hive 已经不是一个“缺核心 Agent 能力”的系统。当前真实状�
 
 1. **Single Agent 的 CC 主循环和大部分生命周期已经成立**：统一 Kernel 入口、工具循环、Hooks、Compaction、Plan Mode、Work Ledger、Skill、Subagent、Workflow、持久化 RuntimeTask、断线继续运行、代码沙箱均有真实消费路径。
 2. **Hive-native 优势已经形成**：T0/T2/T3/`soul.md`、Memory Gate + Platform Gate、动态激活、Dream、Skill evolution、反馈回流、Personal KB Tool-first 读取均不是空壳。
-3. **Run/Event、ToolDecision/Approval 与兼容层三组断点已经落地关闭**：当前主要剩余风险转为 ConfigRevision/AI Asset、Personal KB 写入与 Local/A2A receipt、前端 typed workbench。
-4. **企业 AI 资产管理还没有统一闭环**：Agent、Skill、Subagent、Workflow、外部能力各自有部分生命周期，但版本、所有权、信任、依赖、发布、回滚和消费证据没有统一控制索引。
-5. **Personal KB 的原始上下文污染问题已修正**：现在应维持 Tool-first；它不参与原始上下文组装。剩余缺口是 Agent 向 Personal KB 的受治理提案/写入闭环，以及内部服务的复杂度治理。
+3. **A-E 五组事实源与治理断点已经落地关闭**：Run/Event、ToolDecision/Approval、兼容层、AI Asset、Personal KB 写入与 Local/A2A receipt 均已进入真实消费路径；第一部分当前主要剩余项是前端 typed workbench。
+4. **企业 AI 资产控制面已经闭环**：Agent、Skill、Subagent、Workflow、外部能力共享薄控制索引、不可变版本、信任、依赖、rollback 与消费证据，但保留各自 native content/runtime，未制造第二执行系统。
+5. **Personal KB 已固定为 Tool-first 资产并完成受治理写入**：它不参与原始上下文组装；Agent 只能创建 owner-scoped proposal，经权威判断、owner review、commit、revision、audit 与 rollback 后成为知识，内部机械核心也已按四职责拆分。
 6. **Company KB 是明确的第二部分已知缺失**：当前 `/enterprise/knowledge-base` 文件树不是新的企业知识权威平面。第一部分不得偷建 Company KB，也不得把它自动塞入原始上下文。
 7. **UI/UX 的主要问题不是视觉皮肤，而是协议不够类型化**：后端事件、运行状态、工具调用、审批、Plan、Subagent/Workflow 尚未形成 Codex Desktop 风格的稳定 `ThreadItem` 判别联合，导致前端巨型组件和大量可选字段。
 
 ### 最终判断
 
 - **当前系统整体：局部闭环。**
-- **Single Agent CCPlus：局部闭环，已接近目标，但治理结果、事件事实源、云端幂等仍有关键断点。**
-- **Hive-native：局部闭环，Memory 强，Personal KB 和 Local/A2A 仍未全闭。**
-- **企业治理与 AI 资产：局部闭环，RLS 与审批存在可导致 Agent 无法运行或绕过判定的结构性冲突。**
+- **Single Agent CCPlus：局部闭环；运行、治理、事件与云端幂等断点已关闭，剩余主要债务是 F 包 typed workbench。**
+- **Hive-native：第一部分核心闭环；Personal KB、Local/A2A 已闭，Skill evolution 的长期 benchmark 验收仍单列为持续基线。**
+- **企业治理与 AI 资产：第一部分核心闭环；Company KB 权威平面仍按第二部分已知缺失处理。**
 - **Company KB：已知缺失，明确进入第二部分。**
 - **目标方案置信度：95%。** 这里的 95% 指对“应如何收敛”的架构判断，不代表当前实现已经达到 95% 完成度。
 
@@ -233,10 +233,10 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 | Personal KB Tool-first read | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Personal KB 跨轮消费 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Personal KB owner 管理 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Agent -> Personal KB 提案/写入 | △ | × | × | △ | × | × | × | **缺失** |
-| Personal KB 服务内聚性 | ● | ● | ● | ● | ● | ● | △ | **局部闭环** |
-| Local Agent channel | ● | △ | ● | △ | △ | ● | △ | **局部闭环** |
-| A2A / peer delegation | ● | ● | ● | ● | △ | ● | ● | **局部闭环** |
+| Agent -> Personal KB 提案/写入 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| Personal KB 服务内聚性 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| Local Agent channel | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| A2A / peer delegation | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Interoperability descriptor | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Company KB | × | × | × | × | × | × | × | **已知缺失，第二部分** |
 
@@ -269,7 +269,7 @@ Personal KB 是 native tool，不是 always-on memory。Agent Memory 与 Persona
 | 写入 | Memory Gate + Platform Gate | owner explicit write 或 Agent proposal + owner/policy gate |
 | 跨轮 | working set / T2 / T3 | 只保留引用，按需再读 |
 
-### 5.3 Personal KB 剩余落地
+### 5.3 Personal KB 写入闭环
 
 必须新增一条清晰的写入闭环，但不得让 Agent 直接写 owner 知识库：
 
@@ -280,6 +280,8 @@ Personal KB 是 native tool，不是 always-on memory。Agent Memory 与 Persona
 5. UI 在 Personal Knowledge 页面展示 pending proposal、diff、来源和审批。
 6. 写入结果不会自动注入下一轮上下文，仍只能通过工具读。
 
+**落地状态（2026-07-10）：已闭环。** `propose_personal_kb_item` 只生成 proposal，不直接写 owner 知识；owner/Agent/delegation/source refs/DLP/dedupe/size 由同一 authority service 裁决，owner UI 审批后才提交 Personal KB，并生成真实 unified diff、immutable `ConfigRevision`、audit 与 rollback ref。Personal Knowledge 页面真实消费 proposal、revision history、diff、approve/reject/rollback；跨轮仍只保留引用。
+
 ### 5.4 Memory 代码的 KISS 断点
 
 1. `run_scene_wiki_curation_tick()` 已是明确 compatibility no-op，但 evolution maintenance 仍调用并上报状态；应删除活调用、模块和状态字段。
@@ -289,9 +291,9 @@ Personal KB 是 native tool，不是 always-on memory。Agent Memory 与 Persona
 5. `skill_distiller.run_skill_distillation_cycle()` 约 846 行，应拆成纯阶段函数，但保留一个公共 cycle 入口，不能拆成互相调用的微服务链。
 6. `PersonalKnowledgeService` 约 3,285 行，同时承担 ACL、ingest、index、graph、job、search。应在同一 facade 后分成 `access`、`ingest`、`index_search`、`jobs` 四个内部组件；API 和工具入口不变化。
 
-**落地状态（2026-07-10）：C 包已关闭本节的 runtime compatibility 债务。** `memory_curation.py`、`extract_queue.py`、runtime `ExtractAgent` 与 `t2_store.py` 已删除，Dream 与 heartbeat maintenance 不再读取或维护旧 `memory/learnings`。历史 learnings 统一进入 `memory_hygiene_report.v2` 的可逆 quarantine：每个文件记录源/目标、bytes、SHA-256，汇总做 count/bytes/digest 对账；真实数据目录 dry-run 已完成且未移动数据。`PersonalKnowledgeService` 的职责拆分保留到 E 包，与 proposal/write 同一真实消费切片完成，避免先制造无消费者的内部层。
+**落地状态（2026-07-10）：C/E 包已关闭本节债务。** `memory_curation.py`、`extract_queue.py`、runtime `ExtractAgent` 与 `t2_store.py` 已删除，Dream 与 heartbeat maintenance 不再读取或维护旧 `memory/learnings`。历史 learnings 统一进入 `memory_hygiene_report.v2` 的可逆 quarantine。`PersonalKnowledgeService` 对外 facade 不变，授权 SQL、导入/分段、索引/排序、任务抢占四组机械核心已分别进入 `personal_knowledge_access.py`、`personal_knowledge_ingest.py`、`personal_knowledge_index_search.py`、`personal_knowledge_jobs.py`，生产 service 直接消费，不是空 wrapper。
 
-### 5.5 Local Agent / A2A 剩余断点
+### 5.5 Local Agent / A2A receipt 合同
 
 Local Agent 当前 `capabilities_json` 未形成签名、过期、版本化能力快照；channel event 也没有严格单调 cursor。目标合同：
 
@@ -302,6 +304,8 @@ Local Agent 当前 `capabilities_json` 未形成签名、过期、版本化能�
 - reconnect 从 acknowledged cursor 恢复，重复 request 由 idempotency key 去重。
 
 A2A 不需要变成 Workflow。Lease/Signal/Checkpoint 继续用于协作；Workflow 继续负责确定性控制流。两者只共享 RuntimeTask、事件、权限与 receipt，不共享执行语义。
+
+**落地状态（2026-07-10）：已闭环。** Local runner 的有效能力由 server scope、Agent policy 与 runner report 三方求交，服务端签发带版本、过期时间、hash 与签名的 immutable snapshot；每 session event 使用单调 sequence，重连按 cursor 增量恢复，message/result 通过 idempotency/replay key 与 durable runner receipt cache 去重。Local 与 cloud A2A 统一消费 `hive.execution_receipt.v1`；cloud delegation 保留 RuntimeTask/Lease/Signal 语义，并额外写 `remote_action / a2a.delegate` canonical span，不与 Workflow 合并。
 
 ---
 
@@ -800,6 +804,8 @@ flowchart LR
 4. Local capability snapshot 签名/过期/求交集；event cursor 和 receipt 幂等。
 5. A2A 共享 decision/event/span/receipt，但不合并为 Workflow。
 
+**落地状态（2026-07-10）：已闭环。** 详细七原子与测试证据见 15.6。
+
 ### F. Codex Desktop 级 typed workbench
 
 主要触点：
@@ -878,13 +884,13 @@ Company Charter、Owner Agency Charter、不可违反的安全政策可以作为
 
 1. ~~ConfigRevision 无生产保存消费者，rollback 不应用实体。~~ **D 包已关闭。**
 2. ~~AI 资产统一版本/所有权/信任/依赖/消费证据缺失。~~ **D 包已关闭。**
-3. Personal KB Agent proposal/write 缺失。
-4. Local capability snapshot、cursor、receipt 不完整。
+3. ~~Personal KB Agent proposal/write 缺失。~~ **E 包已关闭。**
+4. ~~Local capability snapshot、cursor、receipt 不完整。~~ **E 包已关闭。**
 5. 前端 optional field bag 与后端 string event 协议。
 
 ### P2：复杂度与长期鲁棒性
 
-1. Kernel/WebChat/PersonalKB/SkillDistiller/AgentChat 巨型实现。
+1. Kernel/WebChat/AgentChat 巨型实现；Personal KB 与 SkillDistiller 已完成内部纯阶段拆分。
 2. ~~no-op / zero-consumer / legacy memory 活路径。~~ **C 包已关闭。**
 3. ToolMeta 与静态能力/风险/timeout 多事实源。
 4. ~~RuntimeAssembly compatibility mirrors。~~ **C 包已关闭。**
@@ -1236,3 +1242,69 @@ git diff --check
 ```
 
 本包没有建设 Company KB，也没有把 Personal KB 或企业知识检索结果放进原始上下文。本包独立提交标题：`Close enterprise AI asset control plane`。
+
+### 15.6 E 包：Personal KB、Local Agent 与 A2A receipts（2026-07-10）
+
+完成内容：
+
+1. 新增 `propose_personal_kb_item` typed Tool：请求绑定 tenant、owner Agent、delegation token、session/turn/runtime task 与稳定 idempotency key；工具只创建 proposal，不直接写 Personal KB，也不进入原始上下文。
+2. `PersonalKnowledgeProposalService` 统一验证 owner/Agent/delegation、source refs、sensitivity/DLP、size、dedupe 与基线 revision，产出 `approve / ask / reject`。owner approve 后才通过既有 Knowledge ingest 写入，并生成真实 unified diff、immutable `ConfigRevision`、`AuditLog` 与 rollback ref；reject、重复请求、commit failure 都有显式状态。
+3. Personal Knowledge API/UI 消费 pending proposal、source refs、baseline、diff、approve/reject、revision history 与 rollback；Personal KB read/search 继续保持 Tool-first、当前轮完整消费、跨轮 pointer-only。
+4. `PersonalKnowledgeService` facade 与 API 签名不变；授权 SQL、导入/分段、索引/排序、任务抢占四组机械核心物理拆分并被生产 service 直接消费，原 3,286 行单文件减少 535 行交叉职责。
+5. Local Agent 有效能力改为 server scope ∩ Agent policy ∩ runner report；服务端签发 subject/tenant/scope/version/issued/expires/hash/signature 完整 snapshot，旧 snapshot revoke，过期或不匹配 fail-closed。
+6. Local channel event 使用 per-session 单调 sequence 与 cursor；enqueue/result 分别按 idempotency/replay key 去重。断线重连只重放 pending/delivered work，同一 snapshot 不重复投递；runner 使用原子落盘的 durable result cache，连接中断后不重复执行本地副作用。
+7. Local message/result 与 cloud A2A 共享 `hive.execution_receipt.v1`：request hash、capability/authority snapshot hash、result refs、status、replay key、trace/span。Local 使用 `InvocationSpan` 更新 remote action，cloud delegation 在 RuntimeTask terminal 写回同一 receipt 并生成 `remote_action / a2a.delegate` span。
+8. cloud A2A 继续使用 RuntimeTask、Lease、Signal、Plan gate、budget 与 child session；receipt 只统一证据合同，不把 peer delegation 改造成 Workflow。Local A2A 修正 target owner/delivery authority、cross-tenant deny、稳定 idempotency 与 actor/source identity。
+9. migration 新增 proposal 与 capability snapshot 表、message receipt 字段、event sequence/index、历史 message backfill 和严格 RLS；legacy unsigned channel 标记 stale，必须重连签发新 snapshot 后才能接活，不把旧自报能力升级成授权。
+10. Personal Knowledge tool pack 同时接入 taxonomy、ToolMeta 与双份发布 manifest；proposal 被正确标为 governed sensitive write，不再错误进入 safe read-only 集合。
+
+七原子结果：
+
+| 输入 | 权威 | 执行 | 证据 | 恢复 | 消费 | 验收 | 判定 |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| ● | ● | ● | ● | ● | ● | ● | **闭环** |
+
+原子证据：
+
+- **输入**：proposal schema、Local ready/message/result schema、A2A delegation request 均为 typed input，并绑定 session/runtime/idempotency。
+- **权威**：owner/Agent/delegation + tenant RLS；Local 三方 capability intersection + signed expiry snapshot；cloud A2A 保留 Plan/permission/budget gate。
+- **执行**：proposal commit 只有一个 service 入口；Local message/result 只有 channel service 入口；cloud A2A 仍由 RuntimeTask worker 与 orchestrator 执行。
+- **证据**：proposal/revision/audit、monotonic channel event、`InvocationSpan` 与统一 execution receipt；legacy 缺 snapshot 时显式 `receipt_unavailable`，不伪造证据。
+- **恢复**：proposal idempotency/rollback、Local cursor/replay/result cache、A2A RuntimeTask resume/fence；重复请求与 terminal result 均幂等。
+- **消费**：owner UI、Personal KB tools、Local runner/聊天 UI、A2A status/check API 均读取新产物；Personal KB 不进入 raw context。
+- **验收**：真实 PostgreSQL proposal/revision/rollback、Local snapshot/reconnect/cursor/span/RLS、迁移 upgrade、runner replay、前端 UI/API、全仓回归均覆盖。
+
+验证证据：
+
+```text
+cd backend && source .venv/bin/activate
+pytest <E 包 proposal/PersonalKB/Local/A2A/orchestrator/migration 聚焦集合> -q
+-> 158 passed, 4 warnings
+
+cd local_bridge
+../backend/.venv/bin/pytest tests/test_channel_runner.py -q
+-> 8 passed
+
+ruff check <E 包全部变更 Python 与测试文件>
+-> All checks passed!
+
+ruff format --check <E 包全部变更 Python 与测试文件>
+-> 43 files already formatted
+
+pytest tests -q
+-> 6007 passed, 1 skipped, 5 warnings in 125.00s
+
+cd frontend && npm test
+-> 86 test files passed, 532 tests passed
+
+npm run build
+-> 7049 modules transformed, build succeeded
+
+cd backend && alembic heads
+-> personal_kb_local_receipts_0710 (head)
+
+git diff --check
+-> passed
+```
+
+本包没有建设 Company KB，也没有把 Personal KB 或 Company KB 放回原始上下文；没有部署或执行不可逆生产数据操作。本包独立提交标题：`Close Personal Knowledge and Local A2A receipts`。

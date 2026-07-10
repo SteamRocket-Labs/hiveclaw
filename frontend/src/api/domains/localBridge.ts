@@ -53,11 +53,28 @@ export interface LocalAgentChannelMessage {
   content: string;
   attachments: Array<Record<string, unknown>>;
   metadata: Record<string, unknown>;
+  idempotency_key: string;
+  request_hash?: string | null;
+  capability_snapshot_hash?: string | null;
+  replay_key: string;
+  receipt?: LocalAgentExecutionReceipt | null;
   created_at?: string | null;
+}
+
+export interface LocalAgentExecutionReceipt {
+  schema: 'hive.execution_receipt.v1' | string;
+  request_hash: string;
+  capability_snapshot_hash: string;
+  result_refs: string[];
+  status: string;
+  replay_key: string;
+  trace_id: string;
+  span_id: string;
 }
 
 export interface LocalAgentChannelEvent {
   id: string;
+  sequence: number;
   session_id: string;
   message_id?: string | null;
   direction: string;
@@ -69,6 +86,7 @@ export interface LocalAgentChannelEvent {
 export interface LocalAgentChannelTimeline {
   session: LocalAgentChannelSession;
   events: LocalAgentChannelEvent[];
+  next_cursor: number;
 }
 
 export interface LocalAgentBrowserWsTicket {
@@ -139,12 +157,14 @@ export const localBridgeApi = {
       content: string;
       attachments?: Array<Record<string, unknown>>;
       metadata?: Record<string, unknown>;
+      idempotencyKey?: string;
     },
   ) =>
     post<LocalAgentChannelMessage>(`/local-agents/sessions/${sessionId}/messages`, {
       content: input.content,
       attachments: input.attachments ?? [],
       metadata: input.metadata ?? {},
+      idempotency_key: input.idempotencyKey,
     }),
   sendAgentChannelMessage: (
     agentId: string,
@@ -153,19 +173,27 @@ export const localBridgeApi = {
       content: string;
       attachments?: Array<Record<string, unknown>>;
       metadata?: Record<string, unknown>;
+      idempotencyKey?: string;
     },
   ) =>
     post<LocalAgentChannelMessage>(`/agents/${agentId}/local-agent/sessions/${sessionId}/messages`, {
       content: input.content,
       attachments: input.attachments ?? [],
       metadata: input.metadata ?? {},
+      idempotency_key: input.idempotencyKey,
     }),
-  getChannelTimeline: (sessionId: string) =>
-    get<LocalAgentChannelTimeline>(`/local-agents/sessions/${sessionId}/timeline`),
+  getChannelTimeline: (sessionId: string, afterSequence = 0) => {
+    const suffix = afterSequence > 0 ? `?after_sequence=${encodeURIComponent(String(afterSequence))}` : '';
+    return get<LocalAgentChannelTimeline>(`/local-agents/sessions/${sessionId}/timeline${suffix}`);
+  },
   createBrowserChannelWsTicket: (sessionId: string) =>
     post<LocalAgentBrowserWsTicket>(`/local-agents/sessions/${sessionId}/ws-ticket`),
-  listChannelEvents: (sessionId: string) =>
-    get<{ events: LocalAgentChannelEvent[] }>(`/local-agents/sessions/${sessionId}/events`),
+  listChannelEvents: (sessionId: string, afterSequence = 0) => {
+    const suffix = afterSequence > 0 ? `?after_sequence=${encodeURIComponent(String(afterSequence))}` : '';
+    return get<{ events: LocalAgentChannelEvent[]; next_cursor: number }>(
+      `/local-agents/sessions/${sessionId}/events${suffix}`,
+    );
+  },
   listWorkspaceFiles: (path = 'workspace') =>
     get<LocalAgentWorkspaceFile[]>(`/local-agents/workspace/files?path=${encodeURIComponent(path)}`),
   readWorkspaceFile: (path: string) =>

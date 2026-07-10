@@ -406,9 +406,81 @@
 
 .personal-kb-jobs,
 .personal-kb-grant-list,
-.personal-kb-graph-list {
+.personal-kb-graph-list,
+.personal-kb-proposal-list,
+.personal-kb-revisions {
   display: grid;
   gap: var(--space-2);
+}
+
+.personal-kb-proposal {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+}
+
+.personal-kb-proposal-head,
+.personal-kb-revision-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.personal-kb-proposal-head > div,
+.personal-kb-proposal-evidence,
+.personal-kb-revision-row > div {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.personal-kb-proposal p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: var(--leading-body);
+}
+
+.personal-kb-proposal span,
+.personal-kb-proposal small,
+.personal-kb-revision-row span,
+.personal-kb-revision-row small {
+  color: var(--text-secondary);
+  font-size: var(--text-meta);
+}
+
+.personal-kb-proposal-evidence code {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+}
+
+.personal-kb-diff {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.personal-kb-revisions {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.personal-kb-revision-row {
+  padding: var(--space-2) 0;
 }
 
 .personal-kb-job-row,

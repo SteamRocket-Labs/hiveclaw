@@ -13,7 +13,7 @@ from sqlalchemy import func, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.core.permissions import check_agent_access, is_agent_creator
+from app.core.permissions import check_agent_access, effective_agent_owner_id, require_agent_manage_access
 from app.core.security import get_current_user
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
@@ -112,7 +112,24 @@ def _agent_list_summary_stmt():
     )
 
 
-def _agent_list_out_from_mapping(row: Mapping[str, object]) -> AgentOut:
+def _agent_action_capabilities(access_level: str, *, is_owner: bool) -> dict[str, bool]:
+    can_manage = access_level == "manage"
+    return {
+        "can_use": access_level in {"use", "manage"},
+        "can_manage": can_manage,
+        "can_manage_schedule": can_manage,
+        "can_manage_channel": can_manage,
+        "can_manage_permissions": can_manage,
+        "can_transfer_ownership": can_manage and is_owner,
+    }
+
+
+def _agent_list_out_from_mapping(
+    row: Mapping[str, object],
+    *,
+    access_level: str,
+    current_user_id: uuid.UUID,
+) -> AgentOut:
     role_description = str(row.get("role_description") or "")
     if len(role_description) > AGENT_LIST_ROLE_DESCRIPTION_CHARS:
         role_description = role_description[: AGENT_LIST_ROLE_DESCRIPTION_CHARS - 3].rstrip() + "..."
@@ -123,6 +140,11 @@ def _agent_list_out_from_mapping(row: Mapping[str, object]) -> AgentOut:
     data["welcome_message"] = None
     data["creator_username"] = None
     data["smart_model_routing"] = None
+    effective_owner = data.get("owner_user_id") or data.get("creator_id")
+    is_owner = str(effective_owner) == str(current_user_id)
+    data["access_level"] = access_level
+    data["is_owner"] = is_owner
+    data["action_capabilities"] = _agent_action_capabilities(access_level, is_owner=is_owner)
     return AgentOut.model_validate(normalize_agent_heartbeat_output(data))
 
 
@@ -142,15 +164,19 @@ async def list_agents(
             agent_lifecycle_active_clause(),
         )
         result = await db.execute(stmt.order_by(Agent.created_at.desc()))
-        return [_agent_list_out_from_mapping(row) for row in result.mappings().all()]
+        return [
+            _agent_list_out_from_mapping(row, access_level="manage", current_user_id=current_user.id)
+            for row in result.mappings().all()
+        ]
 
-    # All users see their own created agents + permitted
+    # All users see their currently owned agents + permitted agents. Creator is
+    # only the fallback for legacy rows that have not yet been backfilled.
     # All scoped to user's tenant
     user_tenant = current_user.tenant_id
 
-    # Get agents user created (within their tenant), excluding system agents
-    created_ids = select(Agent.id).where(
-        Agent.creator_id == current_user.id,
+    owned_ids = select(Agent.id).where(
+        (Agent.owner_user_id == current_user.id)
+        | ((Agent.owner_user_id.is_(None)) & (Agent.creator_id == current_user.id)),
         Agent.tenant_id == user_tenant,
         Agent.agent_class != "internal_system",
         agent_lifecycle_active_clause(),
@@ -163,7 +189,7 @@ async def list_agents(
         | ((AgentPermission.scope_type == "department") & (AgentPermission.scope_id == current_user.department_id))
     )
     # Union
-    combined = union_all(created_ids, permitted_ids).subquery()
+    combined = union_all(owned_ids, permitted_ids).subquery()
     result = await db.execute(
         _agent_list_summary_stmt()
         .where(
@@ -174,7 +200,40 @@ async def list_agents(
         )
         .order_by(Agent.created_at.desc())
     )
-    return [_agent_list_out_from_mapping(row) for row in result.mappings().all()]
+    rows = result.mappings().all()
+    agent_ids = [row["id"] for row in rows]
+    permission_map: dict[uuid.UUID, str] = {}
+    if agent_ids:
+        permission_result = await db.execute(
+            select(AgentPermission).where(AgentPermission.agent_id.in_(agent_ids))
+        )
+        for permission in permission_result.scalars().all():
+            applies = (
+                permission.scope_type == "company"
+                or (permission.scope_type == "user" and permission.scope_id == current_user.id)
+                or (
+                    permission.scope_type == "department"
+                    and current_user.department_id
+                    and permission.scope_id == current_user.department_id
+                )
+            )
+            if applies and (
+                permission_map.get(permission.agent_id) != "manage" or permission.access_level == "manage"
+            ):
+                permission_map[permission.agent_id] = permission.access_level or "use"
+
+    output = []
+    for row in rows:
+        effective_owner = row["owner_user_id"] or row["creator_id"]
+        access_level = "manage" if effective_owner == current_user.id else permission_map.get(row["id"], "use")
+        output.append(
+            _agent_list_out_from_mapping(
+                row,
+                access_level=access_level,
+                current_user_id=current_user.id,
+            )
+        )
+    return output
 
 
 HR_AGENT_NAME = "__system_hr__"
@@ -350,6 +409,7 @@ async def get_or_create_hr_agent(
         role_description="Digital Employee Onboarding Specialist — guides users through creating new digital employees via conversation",
         creator_id=current_user.id,
         sponsor_user_id=current_user.id,
+        owner_user_id=current_user.id,
         tenant_id=tenant_id,
         agent_type="native",
         agent_class="internal_system",
@@ -489,6 +549,7 @@ async def create_agent(
         avatar_url=data.avatar_url,
         creator_id=current_user.id,
         sponsor_user_id=current_user.id,
+        owner_user_id=current_user.id,
         tenant_id=target_tenant_id,
         agent_type="native",
         primary_model_id=data.primary_model_id,
@@ -680,6 +741,9 @@ async def get_agent(
         await db.commit()
     out = _agent_out_dict(agent)
     out["access_level"] = access_level
+    is_owner = str(getattr(agent, "owner_user_id", None) or agent.creator_id) == str(current_user.id)
+    out["is_owner"] = is_owner
+    out["action_capabilities"] = _agent_action_capabilities(access_level, is_owner=is_owner)
 
     # Resolve creator + owner usernames (one extra query each, only on detail page)
     if agent.creator_id:
@@ -866,7 +930,7 @@ async def get_agent_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     """Get agent permission scope."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(select(AgentPermission).where(AgentPermission.agent_id == agent_id))
     perms = result.scalars().all()
 
@@ -874,8 +938,8 @@ async def get_agent_permissions(
         return {
             "scope_type": "user",
             "scope_ids": [],
-            "access_level": "manage" if is_agent_creator(current_user, agent) else "use",
-            "is_owner": is_agent_creator(current_user, agent),
+            "access_level": access_level,
+            "is_owner": effective_agent_owner_id(agent) == current_user.id,
         }
 
     scope_type = perms[0].scope_type
@@ -896,7 +960,7 @@ async def get_agent_permissions(
         "scope_ids": scope_ids,
         "scope_names": scope_names,
         "access_level": perm_access_level,
-        "is_owner": is_agent_creator(current_user, agent),
+        "is_owner": effective_agent_owner_id(agent) == current_user.id,
     }
 
 
@@ -908,10 +972,7 @@ async def update_agent_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     """Update agent permission scope (owner or admin only)."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    is_admin = current_user.role in ("platform_admin", "org_admin")
-    if not is_agent_creator(current_user, agent) and not is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only owner or admin can change permissions")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     scope_type = data.get("scope_type", "company")
     scope_ids = data.get("scope_ids", [])
@@ -969,11 +1030,9 @@ async def update_agent(
     """Update agent settings (creator or admin)."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
 
-    is_admin = current_user.role in ("platform_admin", "org_admin")
-
-    if not is_agent_creator(current_user, agent) and not is_admin:
+    if _access != "manage":
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Only creator or admin can update agent settings"
+            status_code=status.HTTP_403_FORBIDDEN, detail="Manage access is required to update agent settings"
         )
 
     update_data = data.model_dump(exclude_unset=True)
@@ -1141,9 +1200,7 @@ async def start_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Start an agent's container."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator can start agent")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     from app.services.agent_manager import agent_manager
 
@@ -1178,9 +1235,7 @@ async def stop_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Stop an agent's container."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator can stop agent")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     from app.services.agent_manager import agent_manager
 
@@ -1219,11 +1274,7 @@ async def list_agent_approvals(
     db: AsyncSession = Depends(get_db),
 ):
     """List approval requests for a specific agent. Only creator or admin can view."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent) and current_user.role not in ("platform_admin", "org_admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Only agent creator or admin can view approvals"
-        )
+    await require_agent_manage_access(db, current_user, agent_id)
 
     from app.models.audit import ApprovalRequest
 

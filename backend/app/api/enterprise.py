@@ -10,6 +10,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
+from app.core.permissions import agent_owned_by_clause
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
 from app.models.agent import Agent
@@ -507,7 +508,9 @@ async def list_approvals(
     query = query.where(enterprise_visible_approval_filter(ApprovalRequest))
     # Non-admins further restricted to their own agents
     if current_user.role != "platform_admin":
-        query = query.where(ApprovalRequest.agent_id.in_(select(Agent.id).where(Agent.creator_id == current_user.id)))
+        query = query.where(
+            ApprovalRequest.agent_id.in_(select(Agent.id).where(agent_owned_by_clause(current_user.id)))
+        )
     if status_filter:
         query = query.where(ApprovalRequest.status == status_filter)
     query = query.order_by(ApprovalRequest.created_at.desc())

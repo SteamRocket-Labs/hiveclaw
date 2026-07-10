@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.channel_rls import load_public_agent_channel_config
 from app.config import get_settings
 from app.api.channel_secrets import resolve_secret_field
-from app.core.permissions import check_agent_access, is_agent_creator
+from app.core.permissions import check_agent_access, require_agent_manage_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent as AgentModel
@@ -251,9 +251,7 @@ async def configure_teams_channel(
     db: AsyncSession = Depends(get_db),
 ):
     """Configure Microsoft Teams bot for an agent. Fields: app_id, app_secret."""
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can configure channel")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     result = await db.execute(
         select(ChannelConfig).where(
@@ -376,9 +374,7 @@ async def delete_teams_channel(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete Microsoft Teams channel configuration for an agent."""
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can remove channel")
+    await require_agent_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,

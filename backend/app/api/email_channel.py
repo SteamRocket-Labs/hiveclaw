@@ -6,11 +6,11 @@ but persists to AgentTool.config (send_email tool) instead of ChannelConfig.
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access, is_agent_creator
+from app.core.permissions import check_agent_access, require_agent_manage_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.tool import Tool, AgentTool
@@ -36,9 +36,7 @@ async def configure_email_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can configure email")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     email_config = {
         "email_provider": data.get("email_provider", "gmail"),
@@ -113,9 +111,7 @@ async def delete_email_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can remove email config")
+    await require_agent_manage_access(db, current_user, agent_id)
     for tool_name in ("send_email", "read_emails", "reply_email"):
         r = await db.execute(select(Tool).where(Tool.name == tool_name))
         tool = r.scalar_one_or_none()

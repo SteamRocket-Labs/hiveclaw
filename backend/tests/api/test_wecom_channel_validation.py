@@ -30,11 +30,10 @@ class _FakeDB:
 async def test_wecom_webhook_mode_requires_wecom_agent_id(monkeypatch):
     import app.api.wecom as wecom_api
 
-    async def fake_check_agent_access(db, current_user, agent_id):
-        return SimpleNamespace(id=agent_id), "manage"
+    async def fake_require_manage(db, current_user, agent_id):
+        return SimpleNamespace(id=agent_id, tenant_id=current_user.tenant_id)
 
-    monkeypatch.setattr(wecom_api, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr(wecom_api, "is_agent_creator", lambda current_user, agent: True)
+    monkeypatch.setattr(wecom_api, "require_agent_manage_access", fake_require_manage)
 
     with pytest.raises(HTTPException) as exc:
         await wecom_api.configure_wecom_channel(

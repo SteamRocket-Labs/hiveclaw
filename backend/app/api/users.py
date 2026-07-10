@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.core.security import get_current_user
+from app.core.permissions import agent_owned_by_clause
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.user import User
@@ -67,7 +68,7 @@ async def list_users(
             select(func.count())
             .select_from(Agent)
             .where(
-                Agent.creator_id == u.id,
+                agent_owned_by_clause(u.id),
                 Agent.tenant_id == tid,
             )
         )
@@ -136,7 +137,7 @@ async def update_user_quota(
         select(func.count())
         .select_from(Agent)
         .where(
-            Agent.creator_id == user.id,
+            agent_owned_by_clause(user.id),
             Agent.tenant_id == user.tenant_id,
         )
     )

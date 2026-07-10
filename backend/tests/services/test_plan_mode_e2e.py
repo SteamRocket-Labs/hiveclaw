@@ -294,6 +294,7 @@ async def test_full_loop_confirmed_plan_yields_passing_trigger(e2e):
         plan_version=plan.plan_version,
         plan_hash=plan.plan_hash,
         reason="Looks good",
+        authorization_source="delegated_approver",
     )
     assert confirmed.status == "confirmed"
     assert confirmed.confirmed_by_user_id == confirmer
@@ -392,12 +393,13 @@ async def test_confirming_stale_version_conflicts(e2e):
     from app.services.plan_mode_service import PlanConflictError
 
     service, session, agent = e2e
-    plan = await _drive_to_awaiting(service, agent=agent, requester=uuid4())
+    requester = uuid4()
+    plan = await _drive_to_awaiting(service, agent=agent, requester=requester)
 
     with pytest.raises(PlanConflictError) as exc_info:
         await service.confirm_plan(
             plan_id=plan.id,
-            confirming_user_id=uuid4(),
+            confirming_user_id=requester,
             plan_version=plan.plan_version + 1,  # stale / wrong version
             plan_hash=plan.plan_hash,
         )
@@ -414,12 +416,13 @@ async def test_confirming_stale_hash_conflicts(e2e):
     from app.services.plan_mode_service import PlanConflictError
 
     service, _session, agent = e2e
-    plan = await _drive_to_awaiting(service, agent=agent, requester=uuid4())
+    requester = uuid4()
+    plan = await _drive_to_awaiting(service, agent=agent, requester=requester)
 
     with pytest.raises(PlanConflictError) as exc_info:
         await service.confirm_plan(
             plan_id=plan.id,
-            confirming_user_id=uuid4(),
+            confirming_user_id=requester,
             plan_version=plan.plan_version,
             plan_hash="sha256:stale",
         )

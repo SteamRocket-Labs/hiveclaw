@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
-from app.core.permissions import check_agent_access, is_agent_creator
+from app.core.permissions import check_agent_access, require_agent_manage_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.activity_log import AgentActivityLog
@@ -214,9 +214,7 @@ async def create_schedule(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a scheduled wake policy as an AgentTrigger."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can manage schedules")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     if not compute_next_run(data.cron_expr):
         raise HTTPException(status_code=400, detail=f"Invalid cron expression: {data.cron_expr}")
@@ -290,9 +288,7 @@ async def update_schedule(
     db: AsyncSession = Depends(get_db),
 ):
     """Update a scheduled wake policy."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can manage schedules")
+    await require_agent_manage_access(db, current_user, agent_id)
 
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
     updates = data.model_dump(exclude_unset=True)
@@ -365,9 +361,7 @@ async def delete_schedule(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a scheduled wake policy."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can manage schedules")
+    await require_agent_manage_access(db, current_user, agent_id)
 
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
     await db.delete(trigger)

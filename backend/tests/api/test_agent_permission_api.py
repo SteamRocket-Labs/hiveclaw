@@ -34,11 +34,10 @@ async def test_org_admin_can_update_same_tenant_agent_permissions(monkeypatch):
     current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     db = _PermissionUpdateDB()
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
-        return agent, "manage"
+    async def fake_require_manage(_db, _user, _agent_id):
+        return agent
 
-    monkeypatch.setattr(agents_api, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr(agents_api, "is_agent_creator", lambda _user, _agent: False)
+    monkeypatch.setattr(agents_api, "require_agent_manage_access", fake_require_manage)
 
     result = await agents_api.update_agent_permissions(
         agent_id,
@@ -63,11 +62,10 @@ async def test_member_non_owner_cannot_update_agent_permissions(monkeypatch):
     current_user = SimpleNamespace(id=uuid4(), role="member", tenant_id=agent.tenant_id)
     db = _PermissionUpdateDB()
 
-    async def fake_check_agent_access(_db, _user, _agent_id):
-        return agent, "manage"
+    async def fake_require_manage(_db, _user, _agent_id):
+        raise HTTPException(status_code=403, detail="Manage access required")
 
-    monkeypatch.setattr(agents_api, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr(agents_api, "is_agent_creator", lambda _user, _agent: False)
+    monkeypatch.setattr(agents_api, "require_agent_manage_access", fake_require_manage)
 
     with pytest.raises(HTTPException) as exc:
         await agents_api.update_agent_permissions(

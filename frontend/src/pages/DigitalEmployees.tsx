@@ -14,7 +14,6 @@ import {
   IconUserCircle,
 } from '@tabler/icons-react';
 import { agentApi } from '../api/domains/agents';
-import { useAuthStore } from '../stores';
 import type { Agent } from '../types';
 
 function formatAgentStatus(status: Agent['status'] | string | undefined) {
@@ -26,9 +25,12 @@ function isLocalAgentRuntime(agent: Agent): boolean {
   return agent.agent_type === 'local_agent';
 }
 
+function isOwnedAgent(agent: Agent): boolean {
+  return agent.is_owner === true;
+}
+
 export default function DigitalEmployees() {
   const { t } = useTranslation();
-  const user = useAuthStore((state) => state.user);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'mine' | 'shared' | 'recommended' | 'running' | 'needs_attention' | 'local'>('all');
   const { data: agents = [], isLoading } = useQuery({
@@ -45,20 +47,20 @@ export default function DigitalEmployees() {
         (agent.role_description || '').toLowerCase().includes(normalizedQuery);
       const matchesFilter =
         filter === 'all' ||
-        (filter === 'mine' && agent.creator_id === user?.id) ||
-        (filter === 'shared' && agent.creator_id !== user?.id) ||
+        (filter === 'mine' && isOwnedAgent(agent)) ||
+        (filter === 'shared' && !isOwnedAgent(agent)) ||
         (filter === 'recommended' && agent.status === 'running' && Boolean(agent.last_active_at)) ||
         (filter === 'running' && agent.status === 'running') ||
         (filter === 'needs_attention' && ['creating', 'error', 'stopped'].includes(agent.status)) ||
         (filter === 'local' && isLocalAgentRuntime(agent));
       return matchesQuery && matchesFilter;
     });
-  }, [agents, filter, query, user?.id]);
+  }, [agents, filter, query]);
 
   const runningCount = agents.filter((agent: Agent) => agent.status === 'running').length;
   const attentionCount = agents.filter((agent: Agent) => ['creating', 'error', 'stopped'].includes(agent.status)).length;
-  const mineCount = agents.filter((agent: Agent) => agent.creator_id === user?.id).length;
-  const sharedCount = agents.filter((agent: Agent) => agent.creator_id !== user?.id).length;
+  const mineCount = agents.filter((agent: Agent) => isOwnedAgent(agent)).length;
+  const sharedCount = agents.filter((agent: Agent) => !isOwnedAgent(agent)).length;
   const localCount = agents.filter((agent: Agent) => isLocalAgentRuntime(agent)).length;
 
   return (
@@ -146,7 +148,7 @@ export default function DigitalEmployees() {
                     </div>
                     <p>{agent.role_description || t('employees.noRole', 'No role description yet')}</p>
                     <div className="employee-chip-row">
-                      <span>{agent.creator_id === user?.id ? t('employees.chips.mine', 'Owned by me') : t('employees.chips.shared', 'Company shared')}</span>
+                      <span>{isOwnedAgent(agent) ? t('employees.chips.mine', 'Owned by me') : t('employees.chips.shared', 'Company shared')}</span>
                       {agent.status === 'running' && agent.last_active_at && <span>{t('employees.chips.recommended', 'Recommended')}</span>}
                       {isLocalAgentRuntime(agent) && <span>{t('employees.chips.local', 'Local runtime')}</span>}
                     </div>

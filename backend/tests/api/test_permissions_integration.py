@@ -95,6 +95,59 @@ async def test_check_agent_access_falls_back_to_resource_permission_execute(monk
 
 
 @pytest.mark.asyncio
+async def test_check_agent_access_prefers_current_owner_over_immutable_creator():
+    import app.core.permissions as permissions_module
+
+    tenant_id = uuid4()
+    owner_id = uuid4()
+    agent_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        creator_id=uuid4(),
+        owner_user_id=owner_id,
+        tenant_id=tenant_id,
+    )
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=tenant_id, department_id=None)
+    db = _PermissionsDB(agent=agent)
+
+    resolved_agent, access_level = await permissions_module.check_agent_access(db, user, agent_id)
+
+    assert resolved_agent is agent
+    assert access_level == "manage"
+
+
+@pytest.mark.asyncio
+async def test_require_agent_manage_access_accepts_explicit_manage_grant(monkeypatch):
+    import app.core.permissions as permissions_module
+
+    agent = SimpleNamespace(id=uuid4())
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "manage"
+
+    monkeypatch.setattr(permissions_module, "check_agent_access", fake_check_agent_access)
+
+    assert await permissions_module.require_agent_manage_access(object(), object(), agent.id) is agent
+
+
+@pytest.mark.asyncio
+async def test_require_agent_manage_access_rejects_use_only_grant(monkeypatch):
+    import app.core.permissions as permissions_module
+
+    agent = SimpleNamespace(id=uuid4())
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(permissions_module, "check_agent_access", fake_check_agent_access)
+
+    with pytest.raises(HTTPException) as exc:
+        await permissions_module.require_agent_manage_access(object(), object(), agent.id)
+
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_check_agent_access_allows_org_admin_to_audit_same_tenant_private_agent():
     import app.core.permissions as permissions_module
 

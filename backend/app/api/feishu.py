@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.channel_rls import load_public_agent_channel_config
-from app.core.permissions import check_agent_access, is_agent_creator
+from app.core.permissions import check_agent_access, require_agent_manage_access
 from app.core.security import get_current_user
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.api.channel_secrets import resolve_secret_value
@@ -539,9 +539,7 @@ async def configure_channel(
     db: AsyncSession = Depends(get_db),
 ):
     """Configure Feishu bot credentials for a digital employee (wizard step 5)."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can configure channel")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     # Check existing
     result = await db.execute(
@@ -677,9 +675,7 @@ async def delete_channel_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Remove Feishu bot configuration for an agent."""
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can remove channel")
+    await require_agent_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,

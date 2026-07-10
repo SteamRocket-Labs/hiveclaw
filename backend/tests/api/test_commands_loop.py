@@ -101,9 +101,6 @@ async def test_loop_command_creates_interval_trigger_and_fires_once(monkeypatch)
         assert requested_agent_id == agent_id
         return agent, "manage"
 
-    def fake_is_creator(user, requested_agent):
-        return True
-
     async def fail_enforce_plan_gate(*_args, **_kwargs):
         # Not in Plan Mode → gate passes silently (no confirmation required).
         return None
@@ -121,7 +118,7 @@ async def test_loop_command_creates_interval_trigger_and_fires_once(monkeypatch)
         return {"fired": True, "runtime_task_id": "immediate-rt-1"}
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(commands_api, "is_agent_creator", fake_is_creator)
+    monkeypatch.setattr(commands_api, "authorize_session_action", _authorized_session)
     monkeypatch.setattr(commands_api, "enforce_plan_gate", fail_enforce_plan_gate)
     monkeypatch.setattr(commands_api, "append_session_event", fake_append_session_event)
     monkeypatch.setattr(commands_api, "_fire_loop_trigger_now", fake_fire_now)
@@ -178,7 +175,7 @@ async def test_loop_command_structured_interval_and_prompt(monkeypatch):
         return agent, "manage"
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(commands_api, "is_agent_creator", lambda *_a, **_k: True)
+    monkeypatch.setattr(commands_api, "authorize_session_action", _authorized_session)
     monkeypatch.setattr(commands_api, "enforce_plan_gate", lambda *a, **k: _async_none())
     monkeypatch.setattr(commands_api, "append_session_event", lambda **_k: _async_event())
     monkeypatch.setattr(commands_api, "_fire_loop_trigger_now", lambda *_a, **_k: _async_fire())
@@ -214,6 +211,10 @@ async def _async_fire():
     return {"fired": True, "runtime_task_id": "rt"}
 
 
+async def _authorized_session(*_args, **_kwargs):
+    return SimpleNamespace(access_level="manage", manager_override=False)
+
+
 # ── omitted interval → self-paced loop (B2 dynamic mode) ─────────────────
 
 
@@ -247,7 +248,7 @@ async def test_loop_command_without_interval_starts_self_paced_loop(monkeypatch)
         return {"run_id": "run-self-pace"}
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(commands_api, "is_agent_creator", lambda *_a, **_k: True)
+    monkeypatch.setattr(commands_api, "authorize_session_action", _authorized_session)
     monkeypatch.setattr(commands_api, "_fire_loop_trigger_now", fail_fire)
     monkeypatch.setattr(commands_api, "_load_chat_session", fake_load_session)
     import app.services.web_chat_runtime as web_chat_runtime

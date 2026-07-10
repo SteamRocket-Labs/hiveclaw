@@ -425,7 +425,10 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
   });
   const idsKey = agentIdsKey(agents);
   const ownedAutomationAgents = currentUser?.id
-    ? agents.filter((agent: Agent) => String(agent.creator_id || '') === String(currentUser.id))
+    ? agents.filter(
+        (agent: Agent) =>
+          agent.action_capabilities?.can_manage_schedule === true || agent.access_level === 'manage',
+      )
     : [];
   const automationIdsKey = agentIdsKey(ownedAutomationAgents);
   const selectedAutomationAgent = selectedAutomationAgentId && ownedAutomationAgents.some((agent) => agent.id === selectedAutomationAgentId)

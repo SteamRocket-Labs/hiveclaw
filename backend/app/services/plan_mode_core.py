@@ -1018,6 +1018,7 @@ def validate_confirmation(
     submitted_version: int,
     submitted_hash: str,
     confirming_user_id: UUID | str | None,
+    authorization_source: str | None = None,
 ) -> ConfirmationCheck:
     """Decide whether a confirmation attempt is valid.
 
@@ -1040,6 +1041,17 @@ def validate_confirmation(
             ok=False,
             error_code="missing_confirming_user",
             message="confirmation requires an authenticated user action",
+        )
+
+    if (
+        requested_by_user_id is not None
+        and str(requested_by_user_id) != str(confirming_user_id)
+        and authorization_source not in {"session_owner", "delegated_approver", "manager_override"}
+    ):
+        return ConfirmationCheck(
+            ok=False,
+            error_code="unauthorized_confirmer",
+            message="confirmation actor is not authorized for this plan",
         )
 
     if submitted_version != stored_version:

@@ -63,9 +63,9 @@ const getAgentBadgeStatus = (agent: any): string | null => {
   return null;
 };
 
-const getAgentSourceBadge = (agent: any, user: any, t: any): string | null => {
+const getAgentSourceBadge = (agent: any, t: any): string | null => {
   if (isLocalAgentRuntimeType(agent)) return t('nav.localBadge', 'Local');
-  if (agent.creator_id && user?.id && agent.creator_id !== user.id) return t('nav.publicBadge', 'Public');
+  if (agent.is_owner === false) return t('nav.publicBadge', 'Public');
   if (agent.visibility_scope === 'public' || agent.is_public) return t('nav.publicBadge', 'Public');
   return null;
 };
@@ -635,7 +635,7 @@ export default function AppSidebar({
           </NavLink>
           {sortedAgents.map((agent) => {
             const badge = getAgentBadgeStatus(agent);
-            const sourceBadge = getAgentSourceBadge(agent, user, t);
+            const sourceBadge = getAgentSourceBadge(agent, t);
             const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
             const isExpanded = expandedAgentIds.has(String(agent.id));
             const agentSessions = effectiveSessionsByAgentId[String(agent.id)] || [];

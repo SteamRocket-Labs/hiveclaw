@@ -12,6 +12,7 @@ from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
+from app.core.permissions import agent_owned_by_clause
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission
 from app.models.audit import ChatMessage
@@ -34,7 +35,7 @@ async def _list_accessible_agent_ids(db: AsyncSession, current_user: User) -> li
         result = await db.execute(select(Agent.id).where(Agent.tenant_id == current_user.tenant_id))
         return [row[0] for row in result.fetchall()]
 
-    created_result = await db.execute(select(Agent.id).where(Agent.creator_id == current_user.id))
+    created_result = await db.execute(select(Agent.id).where(agent_owned_by_clause(current_user.id)))
     created_ids = [row[0] for row in created_result.fetchall()]
 
     permission_filters = [

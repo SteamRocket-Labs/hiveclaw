@@ -39,7 +39,11 @@ def test_agent_list_summary_omits_detail_heavy_fields_and_truncates_description(
         "deactivation_reason": None,
     }
 
-    payload = _agent_list_out_from_mapping(row)
+    payload = _agent_list_out_from_mapping(
+        row,
+        access_level="use",
+        current_user_id=uuid.uuid4(),
+    )
 
     assert len(payload.role_description) < len(row["role_description"])
     assert payload.bio is None

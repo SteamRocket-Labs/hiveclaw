@@ -423,7 +423,7 @@ def test_terminal_statuses_have_no_outgoing_edges():
 # ---------------------------------------------------------------------------
 
 
-def test_validate_confirmation_ok_when_version_and_hash_match_and_distinct_user():
+def test_validate_confirmation_rejects_distinct_user_without_authority_source():
     from app.services.plan_mode_core import validate_confirmation
 
     requester = uuid4()
@@ -436,6 +436,23 @@ def test_validate_confirmation_ok_when_version_and_hash_match_and_distinct_user(
         submitted_version=1,
         submitted_hash="sha256:abc",
         confirming_user_id=confirmer,
+    )
+    assert check.ok is False
+    assert check.error_code == "unauthorized_confirmer"
+
+
+def test_validate_confirmation_allows_distinct_manager_after_session_authority_gate():
+    from app.services.plan_mode_core import validate_confirmation
+
+    check = validate_confirmation(
+        status="awaiting_confirmation",
+        stored_version=1,
+        stored_hash="sha256:abc",
+        requested_by_user_id=uuid4(),
+        submitted_version=1,
+        submitted_hash="sha256:abc",
+        confirming_user_id=uuid4(),
+        authorization_source="manager_override",
     )
     assert check.ok is True
     assert check.error_code is None
@@ -461,14 +478,15 @@ def test_validate_confirmation_allows_same_real_user_to_confirm():
 def test_validate_confirmation_version_mismatch_is_conflict():
     from app.services.plan_mode_core import validate_confirmation
 
+    user_id = uuid4()
     check = validate_confirmation(
         status="awaiting_confirmation",
         stored_version=2,
         stored_hash="sha256:abc",
-        requested_by_user_id=uuid4(),
+        requested_by_user_id=user_id,
         submitted_version=1,
         submitted_hash="sha256:abc",
-        confirming_user_id=uuid4(),
+        confirming_user_id=user_id,
     )
     assert check.ok is False
     assert check.error_code == "version_mismatch"
@@ -477,14 +495,15 @@ def test_validate_confirmation_version_mismatch_is_conflict():
 def test_validate_confirmation_hash_mismatch_is_conflict():
     from app.services.plan_mode_core import validate_confirmation
 
+    user_id = uuid4()
     check = validate_confirmation(
         status="awaiting_confirmation",
         stored_version=1,
         stored_hash="sha256:abc",
-        requested_by_user_id=uuid4(),
+        requested_by_user_id=user_id,
         submitted_version=1,
         submitted_hash="sha256:DIFFERENT",
-        confirming_user_id=uuid4(),
+        confirming_user_id=user_id,
     )
     assert check.ok is False
     assert check.error_code == "hash_mismatch"

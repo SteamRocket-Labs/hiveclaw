@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.channel_rls import load_public_agent_channel_config
-from app.core.permissions import check_agent_access, is_agent_creator
+from app.core.permissions import check_agent_access, require_agent_manage_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.api.channel_secrets import resolve_secret_field
@@ -133,9 +133,7 @@ async def configure_wecom_channel(
     - WebSocket (AI Bot): bot_id + bot_secret (no callback URL needed)
     - Webhook (legacy): corp_id, secret, token, encoding_aes_key
     """
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can configure channel")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     result = await db.execute(
         select(ChannelConfig).where(
@@ -262,9 +260,7 @@ async def delete_wecom_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can remove channel")
+    await require_agent_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,

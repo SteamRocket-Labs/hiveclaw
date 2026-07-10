@@ -3,12 +3,12 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, effective_agent_owner_id, require_agent_manage_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
@@ -101,7 +101,7 @@ async def send_inter_agent_message(
 
 
 class HandoverRequest(BaseModel):
-    new_creator_id: uuid.UUID
+    new_owner_id: uuid.UUID = Field(validation_alias=AliasChoices("new_owner_id", "new_creator_id"))
 
 
 @router.get("/agents/{agent_id}/handover-candidates")
@@ -111,18 +111,14 @@ async def list_handover_candidates(
     db: AsyncSession = Depends(get_db),
 ):
     """List eligible users who can receive ownership of this digital employee."""
-    from app.core.permissions import is_agent_creator
-
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can view handover candidates")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     result = await db.execute(
         select(User)
         .where(
             User.tenant_id == agent.tenant_id,
             User.is_active,
-            User.id != agent.creator_id,
+            User.id != effective_agent_owner_id(agent),
         )
         .order_by(User.display_name.asc(), User.username.asc())
     )
@@ -146,25 +142,22 @@ async def handover_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Transfer ownership of a digital employee to another user."""
-    from app.core.permissions import is_agent_creator
     from app.models.audit import AuditLog
 
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can handover agent")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
-    # Verify new creator exists
-    new_creator_result = await db.execute(select(User).where(User.id == data.new_creator_id))
-    new_creator = new_creator_result.scalar_one_or_none()
-    if not new_creator:
+    # Creator is immutable provenance. Handover changes only current ownership.
+    new_owner_result = await db.execute(select(User).where(User.id == data.new_owner_id))
+    new_owner = new_owner_result.scalar_one_or_none()
+    if not new_owner:
         raise HTTPException(status_code=404, detail="Target user not found")
-    if not new_creator.is_active:
+    if not new_owner.is_active:
         raise HTTPException(status_code=400, detail="Target user is inactive")
-    if str(new_creator.tenant_id) != str(agent.tenant_id):
+    if str(new_owner.tenant_id) != str(agent.tenant_id):
         raise HTTPException(status_code=400, detail="Target user must belong to the same company")
 
-    old_creator_id = agent.creator_id
-    agent.creator_id = data.new_creator_id
+    old_owner_id = effective_agent_owner_id(agent)
+    agent.owner_user_id = data.new_owner_id
 
     db.add(
         AuditLog(
@@ -173,8 +166,9 @@ async def handover_agent(
             tenant_id=agent.tenant_id,
             action="agent:handover",
             details={
-                "from_creator": str(old_creator_id),
-                "to_creator": str(data.new_creator_id),
+                "creator_id": str(agent.creator_id),
+                "from_owner": str(old_owner_id),
+                "to_owner": str(data.new_owner_id),
             },
         )
     )
@@ -183,7 +177,7 @@ async def handover_agent(
     return {
         "status": "transferred",
         "agent_name": agent.name,
-        "new_creator": new_creator.display_name,
+        "new_owner": new_owner.display_name,
     }
 
 

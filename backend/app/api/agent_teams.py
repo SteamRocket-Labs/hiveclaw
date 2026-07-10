@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access
+from app.core.permissions import authorize_session_action, check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
@@ -28,6 +29,7 @@ from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_clos
 from app.services.web_chat_runtime import ActiveWebChatRunExists, start_web_chat_run
 
 router = APIRouter(prefix="/agents/{agent_id}/agent-teams", tags=["agent-teams"])
+AdminOverrideReason = Annotated[str | None, Header(alias="X-Session-Admin-Reason")]
 
 
 class CreateAgentTeamIn(BaseModel):
@@ -175,16 +177,6 @@ async def _load_member_session_or_404(db: AsyncSession, *, agent_id: uuid.UUID, 
     return session
 
 
-async def _load_member_parent_session_or_404(
-    db: AsyncSession, *, agent_id: uuid.UUID, session_id: uuid.UUID
-) -> ChatSession:
-    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
-    session = result.scalar_one_or_none()
-    if session is None:
-        raise HTTPException(status_code=404, detail="Parent session not found")
-    return session
-
-
 async def _load_team_events(db: AsyncSession, *, team_id: uuid.UUID, limit: int = 200) -> list[AgentTeamEvent]:
     result = await db.execute(
         select(AgentTeamEvent)
@@ -193,6 +185,26 @@ async def _load_team_events(db: AsyncSession, *, team_id: uuid.UUID, limit: int 
         .limit(limit)
     )
     return list(result.scalars().all())
+
+
+async def _authorize_team_action(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    agent_id: uuid.UUID,
+    team: AgentTeam,
+    action: str,
+    manager_override_reason: str | None = None,
+):
+    return await authorize_session_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        session_id=team.parent_session_id,
+        action=action,
+        allow_manager_override=True,
+        manager_override_reason=manager_override_reason,
+    )
 
 
 def _stamp_member_run(member: AgentTeamMember, *, run_id: object | None, status: str, payload: dict) -> None:
@@ -271,8 +283,15 @@ async def create_agent_team(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    parent_session = await _load_member_parent_session_or_404(db, agent_id=agent_id, session_id=body.parent_session_id)
+    authority = await authorize_session_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        session_id=body.parent_session_id,
+        action="team:create",
+    )
+    agent = authority.agent
+    parent_session = authority.session
     try:
         payload = await create_agent_team_runtime(
             db=db,
@@ -296,9 +315,18 @@ async def list_agent_team_events(
     team_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ) -> list[dict]:
     await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
+    await _authorize_team_action(
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        team=team,
+        action="team:events:read",
+        manager_override_reason=admin_override_reason,
+    )
     result = await db.execute(
         select(AgentTeamEvent).where(AgentTeamEvent.team_id == team.id).order_by(AgentTeamEvent.created_at.asc())
     )
@@ -312,9 +340,18 @@ async def create_agent_team_event(
     body: CreateAgentTeamEventIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
+    await _authorize_team_action(
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        team=team,
+        action="team:event:create",
+        manager_override_reason=admin_override_reason,
+    )
     members = await _load_team_members(db, team_id=team.id)
     _ensure_member_belongs(team.id, body.sender_member_id, members)
     _ensure_member_belongs(team.id, body.receiver_member_id, members)
@@ -364,11 +401,34 @@ async def list_agent_teams(
     parent_session_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ) -> list[dict]:
-    await check_agent_access(db, current_user, agent_id)
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
     stmt = select(AgentTeam).where(AgentTeam.lead_agent_id == agent_id).order_by(AgentTeam.created_at.desc())
     if parent_session_id is not None:
+        await authorize_session_action(
+            db,
+            current_user,
+            agent_id=agent_id,
+            session_id=parent_session_id,
+            action="team:list",
+            allow_manager_override=True,
+            manager_override_reason=admin_override_reason,
+        )
         stmt = stmt.where(AgentTeam.parent_session_id == parent_session_id)
+    elif access_level == "manage" and str(admin_override_reason or "").strip():
+        from app.services.audit_logger import write_audit_log
+
+        await write_audit_log(
+            "team_list_authority_override",
+            details={"reason": str(admin_override_reason).strip(), "action": "team:list"},
+            agent_id=agent_id,
+            user_id=current_user.id,
+        )
+    else:
+        stmt = stmt.join(ChatSession, ChatSession.id == AgentTeam.parent_session_id).where(
+            ChatSession.user_id == current_user.id
+        )
     result = await db.execute(stmt)
     teams = list(result.scalars().all())
     payloads: list[dict] = []
@@ -384,9 +444,18 @@ async def get_agent_team(
     team_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
     await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
+    await _authorize_team_action(
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        team=team,
+        action="team:read",
+        manager_override_reason=admin_override_reason,
+    )
     members = await _load_team_members(db, team_id=team.id)
     return _team_payload(team, members)
 
@@ -397,9 +466,18 @@ async def get_agent_team_workbench(
     team_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
     await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
+    await _authorize_team_action(
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        team=team,
+        action="team:workbench:read",
+        manager_override_reason=admin_override_reason,
+    )
     members = await _load_team_members(db, team_id=team.id)
     events = await _load_team_events(db, team_id=team.id)
     return _team_workbench_payload(agent_id=agent_id, team=team, members=members, events=events)
@@ -412,9 +490,18 @@ async def enter_agent_team_member(
     member_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
     await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
+    await _authorize_team_action(
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        team=team,
+        action="team:member:enter",
+        manager_override_reason=admin_override_reason,
+    )
     result = await db.execute(
         select(AgentTeamMember).where(
             AgentTeamMember.id == member_id,
@@ -442,9 +529,18 @@ async def start_agent_team_member_run(
     body: StartAgentTeamMemberRunIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
+    await _authorize_team_action(
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        team=team,
+        action="team:member:run",
+        manager_override_reason=admin_override_reason,
+    )
     if team.status == "closed":
         raise HTTPException(status_code=409, detail="Agent team is closed")
     member = await _load_team_member_or_404(db, team_id=team.id, member_id=member_id)
@@ -504,9 +600,18 @@ async def message_agent_team_member(
     body: MessageAgentTeamMemberIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
+    await _authorize_team_action(
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        team=team,
+        action="team:member:message",
+        manager_override_reason=admin_override_reason,
+    )
     member = await _load_team_member_or_404(db, team_id=team.id, member_id=member_id)
     session = await _load_member_session_or_404(db, agent_id=agent_id, member=member)
 
@@ -532,9 +637,18 @@ async def close_agent_team(
     team_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ) -> dict:
     await check_agent_access(db, current_user, agent_id)
     team = await _load_team_or_404(db, agent_id=agent_id, team_id=team_id)
+    await _authorize_team_action(
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        team=team,
+        action="team:close",
+        manager_override_reason=admin_override_reason,
+    )
     members = await _load_team_members(db, team_id=team.id)
     now = datetime.now(timezone.utc)
     team.status = "closed"

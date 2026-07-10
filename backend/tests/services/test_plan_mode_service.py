@@ -451,7 +451,7 @@ async def _make_awaiting(service, *, agent_id=None, requester=None, session_id=N
 async def test_confirm_plan_success_sets_confirmed(patched_service):
     service, session, data_dir, _planner = patched_service
     plan, requester = await _make_awaiting(service)
-    confirmer = uuid4()
+    confirmer = requester
 
     result = await service.confirm_plan(
         plan_id=plan.id,
@@ -491,14 +491,14 @@ async def test_confirm_plan_allows_requesting_user_to_confirm(patched_service):
 @pytest.mark.asyncio
 async def test_confirm_plan_version_mismatch_conflicts(patched_service):
     service, session, _, _planner = patched_service
-    plan, _ = await _make_awaiting(service)
+    plan, requester = await _make_awaiting(service)
 
     from app.services.plan_mode_service import PlanConflictError
 
     with pytest.raises(PlanConflictError) as exc:
         await service.confirm_plan(
             plan_id=plan.id,
-            confirming_user_id=uuid4(),
+            confirming_user_id=requester,
             plan_version=plan.plan_version + 1,
             plan_hash=plan.plan_hash,
         )
@@ -509,14 +509,14 @@ async def test_confirm_plan_version_mismatch_conflicts(patched_service):
 @pytest.mark.asyncio
 async def test_confirm_plan_hash_mismatch_conflicts(patched_service):
     service, session, _, _planner = patched_service
-    plan, _ = await _make_awaiting(service)
+    plan, requester = await _make_awaiting(service)
 
     from app.services.plan_mode_service import PlanConflictError
 
     with pytest.raises(PlanConflictError) as exc:
         await service.confirm_plan(
             plan_id=plan.id,
-            confirming_user_id=uuid4(),
+            confirming_user_id=requester,
             plan_version=plan.plan_version,
             plan_hash="sha256:tampered",
         )
@@ -527,10 +527,10 @@ async def test_confirm_plan_hash_mismatch_conflicts(patched_service):
 @pytest.mark.asyncio
 async def test_confirmed_plan_cannot_be_reconfirmed(patched_service):
     service, session, _, _planner = patched_service
-    plan, _ = await _make_awaiting(service)
+    plan, requester = await _make_awaiting(service)
     await service.confirm_plan(
         plan_id=plan.id,
-        confirming_user_id=uuid4(),
+        confirming_user_id=requester,
         plan_version=plan.plan_version,
         plan_hash=plan.plan_hash,
     )
@@ -540,7 +540,7 @@ async def test_confirmed_plan_cannot_be_reconfirmed(patched_service):
     with pytest.raises(PlanConflictError) as exc:
         await service.confirm_plan(
             plan_id=plan.id,
-            confirming_user_id=uuid4(),
+            confirming_user_id=requester,
             plan_version=plan.plan_version,
             plan_hash=plan.plan_hash,
         )
@@ -555,7 +555,7 @@ async def test_confirmed_plan_cannot_be_reconfirmed(patched_service):
 @pytest.mark.asyncio
 async def test_reject_plan_sets_rejected(patched_service):
     service, session, _, _planner = patched_service
-    plan, _ = await _make_awaiting(service)
+    plan, requester = await _make_awaiting(service)
     rejecter = uuid4()
     refresh_calls_before_reject = session.refresh_calls
 
@@ -574,10 +574,10 @@ async def test_reject_plan_sets_rejected(patched_service):
 @pytest.mark.asyncio
 async def test_reject_after_confirm_is_blocked(patched_service):
     service, session, _, _planner = patched_service
-    plan, _ = await _make_awaiting(service)
+    plan, requester = await _make_awaiting(service)
     await service.confirm_plan(
         plan_id=plan.id,
-        confirming_user_id=uuid4(),
+        confirming_user_id=requester,
         plan_version=plan.plan_version,
         plan_hash=plan.plan_hash,
     )
@@ -820,10 +820,10 @@ async def test_handoff_marks_skipped_when_no_handler_registered(patched_service)
     status stays ``confirmed`` and ``handoff_status`` records the outcome
     (§13) instead of raising or silently succeeding."""
     service, session, _, _planner = patched_service
-    plan, _ = await _make_awaiting(service)
+    plan, requester = await _make_awaiting(service)
     confirmed = await service.confirm_plan(
         plan_id=plan.id,
-        confirming_user_id=uuid4(),
+        confirming_user_id=requester,
         plan_version=plan.plan_version,
         plan_hash=plan.plan_hash,
     )
@@ -841,10 +841,10 @@ async def test_handoff_marks_skipped_when_no_handler_registered(patched_service)
 async def test_handoff_is_idempotent_after_completion(patched_service):
     """A completed handoff is not re-run (idempotency, §13)."""
     service, session, _, _planner = patched_service
-    plan, _ = await _make_awaiting(service)
+    plan, requester = await _make_awaiting(service)
     confirmed = await service.confirm_plan(
         plan_id=plan.id,
-        confirming_user_id=uuid4(),
+        confirming_user_id=requester,
         plan_version=plan.plan_version,
         plan_hash=plan.plan_hash,
     )
@@ -871,10 +871,10 @@ async def test_handoff_is_idempotent_after_completion(patched_service):
 @pytest.mark.asyncio
 async def test_handoff_records_failure_without_corrupting_confirmed(patched_service):
     service, session, _, _planner = patched_service
-    plan, _ = await _make_awaiting(service)
+    plan, requester = await _make_awaiting(service)
     confirmed = await service.confirm_plan(
         plan_id=plan.id,
-        confirming_user_id=uuid4(),
+        confirming_user_id=requester,
         plan_version=plan.plan_version,
         plan_hash=plan.plan_hash,
     )
@@ -899,7 +899,7 @@ async def test_confirm_and_handoff_plan_confirms_then_runs_handoff(patched_servi
     confirm-and-start operation; the legacy confirm/handoff methods remain for
     non-web callers that intentionally need the split."""
     service, session, _, _planner = patched_service
-    plan, _requester = await _make_awaiting(service)
+    plan, requester = await _make_awaiting(service)
     confirmer = uuid4()
     calls = {"handoff": 0}
 
@@ -917,6 +917,7 @@ async def test_confirm_and_handoff_plan_confirms_then_runs_handoff(patched_servi
         plan_version=plan.plan_version,
         plan_hash=plan.plan_hash,
         reason="Looks good",
+        authorization_source="delegated_approver",
     )
 
     assert result.status == "confirmed"

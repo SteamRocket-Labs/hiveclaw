@@ -79,6 +79,30 @@ class _FilteringExecuteDB(_FakeDB):
         return _ScalarResult(None)
 
 
+@pytest.fixture(autouse=True)
+def _allow_api_session_authority(monkeypatch):
+    import app.api.agent_teams as teams_api
+    import app.api.commands as commands_api
+
+    async def allow_session(_db, user, **kwargs):
+        return SimpleNamespace(
+            agent=SimpleNamespace(id=kwargs["agent_id"], tenant_id=getattr(user, "tenant_id", None)),
+            session=SimpleNamespace(
+                id=kwargs["session_id"],
+                user_id=user.id,
+                root_session_id=kwargs["session_id"],
+            ),
+            authority_source="session_owner",
+        )
+
+    async def allow_team(*_args, **_kwargs):
+        return SimpleNamespace(authority_source="session_owner")
+
+    monkeypatch.setattr(commands_api, "authorize_session_action", allow_session)
+    monkeypatch.setattr(teams_api, "authorize_session_action", allow_session)
+    monkeypatch.setattr(teams_api, "_authorize_team_action", allow_team)
+
+
 @pytest.mark.asyncio
 async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
     import app.api.commands as commands_api
@@ -621,7 +645,7 @@ async def test_commands_api_executes_diagnostic_command_without_tool_runtime(mon
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="version",
-        body=commands_api.ExecuteCommandIn(arguments={}, session_id="session-1", origin="agent"),
+        body=commands_api.ExecuteCommandIn(arguments={}, session_id="00000000-0000-4000-8000-000000000001", origin="agent"),
         current_user=current_user,
         db=db,
     )
@@ -635,7 +659,7 @@ async def test_commands_api_executes_diagnostic_command_without_tool_runtime(mon
     assert captured["agent"] is agent
     assert captured["user"] is current_user
     assert captured["command_name"] == "version"
-    assert captured["session_id"] == "session-1"
+    assert captured["session_id"] == "00000000-0000-4000-8000-000000000001"
     assert db.commits == 0
 
 
@@ -753,11 +777,6 @@ async def test_commands_api_schedule_create_persists_disabled_draft_without_tool
         assert requested_agent_id == agent_id
         return agent, "manage"
 
-    def fake_is_creator(user, requested_agent):
-        assert user is current_user
-        assert requested_agent is agent
-        return True
-
     async def fail_execute_tool(*_args, **_kwargs):
         raise AssertionError("schedule_create must persist through the command runtime")
 
@@ -771,7 +790,6 @@ async def test_commands_api_schedule_create_persists_disabled_draft_without_tool
         return SimpleNamespace(event_id=uuid4())
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(commands_api, "is_agent_creator", fake_is_creator)
     monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
     monkeypatch.setattr(commands_api, "enforce_plan_gate", fail_enforce_plan_gate)
     monkeypatch.setattr(commands_api, "append_session_event", fake_append_session_event)
@@ -824,11 +842,6 @@ async def test_commands_api_schedule_once_persists_disabled_draft_without_tool_r
         assert requested_agent_id == agent_id
         return agent, "manage"
 
-    def fake_is_creator(user, requested_agent):
-        assert user is current_user
-        assert requested_agent is agent
-        return True
-
     async def fail_execute_tool(*_args, **_kwargs):
         raise AssertionError("schedule_once must persist through the command runtime")
 
@@ -842,7 +855,6 @@ async def test_commands_api_schedule_once_persists_disabled_draft_without_tool_r
         return SimpleNamespace(event_id=uuid4())
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(commands_api, "is_agent_creator", fake_is_creator)
     monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
     monkeypatch.setattr(commands_api, "enforce_plan_gate", fail_enforce_plan_gate)
     monkeypatch.setattr(commands_api, "append_session_event", fake_append_session_event)
@@ -992,7 +1004,7 @@ async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(mo
         result = await commands_api.execute_agent_command(
             agent_id=agent_id,
             command_name=command_name,
-            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="session-1", origin="agent"),
+            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="00000000-0000-4000-8000-000000000001", origin="agent"),
             current_user=current_user,
             db=db,
         )
@@ -1002,7 +1014,7 @@ async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(mo
     config = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="config",
-        body=commands_api.ExecuteCommandIn(arguments={}, session_id="session-1", origin="agent"),
+        body=commands_api.ExecuteCommandIn(arguments={}, session_id="00000000-0000-4000-8000-000000000001", origin="agent"),
         current_user=current_user,
         db=db,
     )
@@ -1012,14 +1024,14 @@ async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(mo
     permissions = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="permissions",
-        body=commands_api.ExecuteCommandIn(arguments={}, session_id="session-1"),
+        body=commands_api.ExecuteCommandIn(arguments={}, session_id="00000000-0000-4000-8000-000000000001"),
         current_user=current_user,
         db=db,
     )
     assert permissions["result"]["command"] == "permissions"
     assert permissions["result"]["access_level"] == "use"
-    assert ("load_skill", {"name": "research"}, "session-1") in captured_tools
-    assert ("list_mcp_tools", {}, "session-1") in captured_tools
+    assert ("load_skill", {"name": "research"}, "00000000-0000-4000-8000-000000000001") in captured_tools
+    assert ("list_mcp_tools", {}, "00000000-0000-4000-8000-000000000001") in captured_tools
 
 
 @pytest.mark.asyncio
@@ -1055,18 +1067,18 @@ async def test_commands_api_web_product_commands_return_prompt_or_navigation_act
     skill = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="research",
-        body=commands_api.ExecuteCommandIn(arguments={"input": "summarize this"}, session_id="session-1"),
+        body=commands_api.ExecuteCommandIn(arguments={"input": "summarize this"}, session_id="00000000-0000-4000-8000-000000000001"),
         current_user=current_user,
         db=db,
     )
     assert skill["result"]["action"] == "chat_prompt"
     assert "Loaded research skill body." in skill["result"]["content"]
-    assert ("load_skill", {"name": "research"}, "session-1") in captured_tools
+    assert ("load_skill", {"name": "research"}, "00000000-0000-4000-8000-000000000001") in captured_tools
 
     workflow = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="workflow",
-        body=commands_api.ExecuteCommandIn(arguments={"input": "triage incoming leads"}, session_id="session-1"),
+        body=commands_api.ExecuteCommandIn(arguments={"input": "triage incoming leads"}, session_id="00000000-0000-4000-8000-000000000001"),
         current_user=current_user,
         db=db,
     )
@@ -1084,7 +1096,7 @@ async def test_commands_api_web_product_commands_return_prompt_or_navigation_act
         command_name="agent",
         body=commands_api.ExecuteCommandIn(
             arguments={"agent_name": "Researcher", "message": "Collect evidence"},
-            session_id="session-1",
+            session_id="00000000-0000-4000-8000-000000000001",
         ),
         current_user=current_user,
         db=db,
@@ -1093,7 +1105,7 @@ async def test_commands_api_web_product_commands_return_prompt_or_navigation_act
     assert (
         "delegate_to_agent",
         {"agent_name": "Researcher", "message": "Collect evidence"},
-        "session-1",
+        "00000000-0000-4000-8000-000000000001",
     ) in captured_tools
 
 
@@ -1137,14 +1149,14 @@ async def test_commands_api_keeps_task_surface_unified_while_routing_internal_fl
         result = await commands_api.execute_agent_command(
             agent_id=agent_id,
             command_name=command_name,
-            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="session-1", origin="agent"),
+            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="00000000-0000-4000-8000-000000000001", origin="agent"),
             current_user=current_user,
             db=db,
         )
         assert result["ok"] is True
         assert result["command"] == command_name
         assert result["result"]["tool_name"] == expected_tool
-        assert (expected_tool, expected_arguments, "session-1") in captured_tools
+        assert (expected_tool, expected_arguments, "00000000-0000-4000-8000-000000000001") in captured_tools
 
 
 @pytest.mark.asyncio
@@ -1197,11 +1209,15 @@ async def test_goals_api_creates_session_goal(monkeypatch):
     current_user = SimpleNamespace(id=uuid4(), role="member")
     db = _FakeDB()
 
-    async def fake_access(_db, _user, requested_agent_id):
-        assert requested_agent_id == agent_id
-        return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "use"
+    async def fake_authorize(_db, _user, **kwargs):
+        assert kwargs["agent_id"] == agent_id
+        assert kwargs["session_id"] == session_id
+        return SimpleNamespace(
+            agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+            session=SimpleNamespace(id=session_id),
+        )
 
-    monkeypatch.setattr(goals_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
 
     result = await goals_api.start_session_goal(
         agent_id=agent_id,
@@ -1243,15 +1259,16 @@ async def test_goals_api_continues_session_goal(monkeypatch):
     db = _ExecuteDB(goal, session)
     captured = {}
 
-    async def fake_access(_db, _user, requested_agent_id):
-        assert requested_agent_id == agent_id
-        return agent, "use"
+    async def fake_authorize(_db, _user, **kwargs):
+        assert kwargs["agent_id"] == agent_id
+        assert kwargs["session_id"] == session_id
+        return SimpleNamespace(agent=agent, session=session)
 
     async def fake_continue_session_goal(**kwargs):
         captured.update(kwargs)
         return {"ok": True, "goal_id": str(goal_id), "run": {"run_id": "run-1"}}
 
-    monkeypatch.setattr(goals_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
     monkeypatch.setattr(goals_api, "continue_session_goal", fake_continue_session_goal)
 
     result = await goals_api.continue_goal(
@@ -1268,7 +1285,7 @@ async def test_goals_api_continues_session_goal(monkeypatch):
     assert captured["user"] is current_user
     assert captured["session"] is session
     assert captured["goal"] is goal
-    assert db.executes == 2
+    assert db.executes == 1
 
 
 @pytest.mark.asyncio
@@ -1296,7 +1313,6 @@ async def test_agent_teams_api_creates_container_only(monkeypatch):
     async def fake_append_session_event(**_kwargs):
         return SimpleNamespace(event_id=uuid4())
 
-    monkeypatch.setattr(teams_api, "_load_member_parent_session_or_404", fake_load_parent_session)
     monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_emit_hook)
     monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append_session_event)
 
@@ -1491,7 +1507,6 @@ async def test_schedule_command_with_only_instruction_hands_drafting_to_agent(mo
 
     agent = SimpleNamespace(id=uuid4(), tenant_id=None, creator_id=uuid4())
     user = SimpleNamespace(id=agent.creator_id, role="user")
-    monkeypatch.setattr(commands_api, "is_agent_creator", lambda *_a, **_k: True)
 
     result = await commands_api._execute_schedule_command(
         db=None,
@@ -1500,6 +1515,7 @@ async def test_schedule_command_with_only_instruction_hands_drafting_to_agent(mo
         command_name="schedule_create",
         session_id=None,
         arguments={"instruction": "每天早上九点给我发昨日日报"},
+        access_level="manage",
     )
 
     assert result["action"] == "chat_prompt"

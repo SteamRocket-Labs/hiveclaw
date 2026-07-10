@@ -24,6 +24,17 @@ vi.mock('@tanstack/react-query', () => ({
             role_description: 'Market research',
             status: 'running',
             creator_id: 'user-1',
+            owner_user_id: 'user-3',
+            is_owner: true,
+            access_level: 'manage',
+            action_capabilities: {
+              can_use: true,
+              can_manage: true,
+              can_manage_permissions: true,
+              can_manage_schedule: true,
+              can_manage_channel: true,
+              can_transfer_ownership: true,
+            },
             created_at: '2026-06-20T00:00:00Z',
           },
           {
@@ -32,6 +43,17 @@ vi.mock('@tanstack/react-query', () => ({
             role_description: 'Company shared research',
             status: 'running',
             creator_id: 'user-2',
+            owner_user_id: 'user-2',
+            is_owner: false,
+            access_level: 'use',
+            action_capabilities: {
+              can_use: true,
+              can_manage: false,
+              can_manage_permissions: false,
+              can_manage_schedule: false,
+              can_manage_channel: false,
+              can_transfer_ownership: false,
+            },
             created_at: '2026-06-21T00:00:00Z',
           },
         ],
@@ -181,7 +203,7 @@ describe('WorkspaceFeatureHub', () => {
     expect(markup).not.toContain('Skill registry');
   });
 
-  it('scopes automation aggregation to agents owned by the current user', () => {
+  it('scopes automation aggregation to server-authorized agents after ownership transfer', () => {
     renderToStaticMarkup(<WorkspaceFeatureHub kind="automations" />);
 
     expect(automationAgentIdsKey).toBe('agent-1');

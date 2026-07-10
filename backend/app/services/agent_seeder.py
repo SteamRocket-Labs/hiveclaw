@@ -137,6 +137,7 @@ async def seed_default_agents():
             avatar_url="",
             creator_id=admin.id,
             sponsor_user_id=admin.id,
+            owner_user_id=admin.id,
             tenant_id=admin.tenant_id,
             status="idle",
         )
@@ -147,6 +148,7 @@ async def seed_default_agents():
             avatar_url="",
             creator_id=admin.id,
             sponsor_user_id=admin.id,
+            owner_user_id=admin.id,
             tenant_id=admin.tenant_id,
             status="idle",
         )

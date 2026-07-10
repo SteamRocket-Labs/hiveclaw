@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access, is_agent_creator
+from app.core.permissions import check_agent_access, require_agent_manage_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.channel_config import ChannelConfig
@@ -77,9 +77,7 @@ async def qr_start(
     db: AsyncSession = Depends(get_db),
 ):
     """Start WeChat QR login — fetches a fresh QR code from iLink."""
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can configure channel")
+    await require_agent_manage_access(db, current_user, agent_id)
 
     # P1-6: Reject if already connected — must disconnect first
     existing = await db.execute(
@@ -128,9 +126,7 @@ async def connect(
     db: AsyncSession = Depends(get_db),
 ):
     """Finalize WeChat connection — retrieve credentials from server-side session."""
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can configure channel")
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     # Retrieve credentials server-side — bot_token never touches the frontend
     creds = await retrieve_confirmed_credentials(body.session_key)
@@ -208,9 +204,7 @@ async def disconnect(
     db: AsyncSession = Depends(get_db),
 ):
     """Disconnect personal WeChat channel and stop message stream."""
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can configure channel")
+    await require_agent_manage_access(db, current_user, agent_id)
 
     # Stop the streaming client first
     try:

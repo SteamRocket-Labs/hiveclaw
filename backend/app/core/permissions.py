@@ -1,16 +1,18 @@
 """RBAC permission checking utilities."""
 
 import uuid
+from dataclasses import dataclass
 from typing import Tuple
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.policy import check_permission
 from app.database import enter_rls_bypass, pin_rls_tenant_context
 from app.models.agent import Agent, AgentPermission
+from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 
@@ -23,7 +25,7 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     Access is granted if:
     1. User is platform admin → manage
     2. User is org admin for the agent's tenant → manage
-    3. User is the agent creator → manage
+    3. User is the current agent owner → manage
     4. User has explicit permission (company/user scope) → from permission record
     """
     if user.role == "platform_admin":
@@ -64,8 +66,10 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     if user.role == "org_admin" and user.tenant_id and agent.tenant_id == user.tenant_id:
         return agent, "manage"
 
-    # Creator always has manage access
-    if agent.creator_id == user.id:
+    # ``creator_id`` is immutable provenance.  The current owner is the
+    # authority source; creator is used only as a legacy fallback for rows that
+    # predate ``owner_user_id``.
+    if effective_agent_owner_id(agent) == user.id:
         return agent, "manage"
 
     # Check permission scopes
@@ -105,9 +109,103 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
 
 
-def is_agent_creator(user: User, agent: Agent) -> bool:
-    """Check if the user is the creator (admin) of the agent."""
-    return agent.creator_id == user.id or user.role == "platform_admin"
+def effective_agent_owner_id(agent: Agent) -> uuid.UUID | None:
+    """Return the current owner, falling back to creator for legacy rows."""
+
+    return getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
+
+
+def agent_owned_by_clause(user_id: uuid.UUID):
+    """SQL expression matching the canonical owner with legacy fallback."""
+
+    return or_(
+        Agent.owner_user_id == user_id,
+        and_(Agent.owner_user_id.is_(None), Agent.creator_id == user_id),
+    )
+
+
+async def require_agent_manage_access(db: AsyncSession, user: User, agent_id: uuid.UUID) -> Agent:
+    """Resolve an agent and require the canonical ``manage`` capability."""
+
+    agent, access_level = await check_agent_access(db, user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manage access to this agent is required")
+    return agent
+
+
+@dataclass(frozen=True)
+class SessionActionDecision:
+    """Authenticated authority decision for one user-facing session action."""
+
+    agent: Agent
+    session: ChatSession
+    access_level: str
+    authority_source: str
+    action: str
+
+
+async def authorize_session_action(
+    db: AsyncSession,
+    user: User,
+    *,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    action: str,
+    allow_manager_override: bool = False,
+    manager_override_reason: str | None = None,
+) -> SessionActionDecision:
+    """Bind an action to both Agent authority and the session's user.
+
+    Ordinary Agent ``use``/``manage`` access never grants access to another
+    user's session.  A manager may cross that boundary only through a caller
+    that explicitly enables the override and supplies an auditable reason.
+    """
+
+    agent, access_level = await check_agent_access(db, user, agent_id)
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            ChatSession.agent_id == agent_id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat session not found")
+
+    if str(session.user_id) == str(user.id):
+        return SessionActionDecision(
+            agent=agent,
+            session=session,
+            access_level=access_level,
+            authority_source="session_owner",
+            action=action,
+        )
+
+    reason = str(manager_override_reason or "").strip()
+    if access_level == "manage" and allow_manager_override and reason:
+        from app.services.audit_logger import write_audit_log
+
+        await write_audit_log(
+            "session_authority_override",
+            details={
+                "session_id": str(session.id),
+                "session_user_id": str(session.user_id),
+                "action": action,
+                "reason": reason,
+                "authority_source": "manager_override",
+            },
+            agent_id=agent_id,
+            user_id=user.id,
+        )
+        return SessionActionDecision(
+            agent=agent,
+            session=session,
+            access_level=access_level,
+            authority_source="manager_override",
+            action=action,
+        )
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This session belongs to a different user")
 
 
 def is_agent_expired(agent: Agent) -> bool:

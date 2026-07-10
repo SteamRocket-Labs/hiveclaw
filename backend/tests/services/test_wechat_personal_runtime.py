@@ -158,9 +158,9 @@ async def test_connect_wechat_replaces_stale_account_streams(monkeypatch):
         async def start_client(self, **kwargs):
             calls.append(("start", kwargs["agent_id"], kwargs["bot_token"], kwargs["base_url"]))
 
-    async def fake_check_agent_access(_db, current_user, checked_agent_id):
+    async def fake_require_manage(_db, current_user, checked_agent_id):
         assert checked_agent_id == agent_id
-        return SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id), None
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id, owner_user_id=current_user.id)
 
     async def fake_retrieve_confirmed_credentials(session_key):
         assert session_key == "session-1"
@@ -179,8 +179,7 @@ async def test_connect_wechat_replaces_stale_account_streams(monkeypatch):
         captured["connect_kwargs"] = kwargs
         return SimpleNamespace(extra_config={"ilink_bot_token": "encrypted"})
 
-    monkeypatch.setattr(wechat_api, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr(wechat_api, "is_agent_creator", lambda _user, _agent: True)
+    monkeypatch.setattr(wechat_api, "require_agent_manage_access", fake_require_manage)
     monkeypatch.setattr(wechat_api, "retrieve_confirmed_credentials", fake_retrieve_confirmed_credentials)
     monkeypatch.setattr(
         wechat_api,

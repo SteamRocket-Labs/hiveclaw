@@ -6,16 +6,16 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
 from croniter import croniter
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
-from app.core.permissions import check_agent_access, is_agent_creator
+from app.core.permissions import authorize_session_action, check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent_session_goal import AgentSessionGoal
@@ -470,11 +470,12 @@ async def _execute_schedule_command(
     command_name: str,
     session_id: str | None,
     arguments: dict[str, Any],
+    access_level: str = "use",
 ) -> dict[str, Any]:
     if command_name not in _SCHEDULE_COMMANDS:
         raise HTTPException(status_code=501, detail=f"Unsupported schedule command {command_name!r}")
-    if not is_agent_creator(user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can manage schedules")
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Manage access is required for schedules")
 
     name = str(arguments.get("name") or "").strip()
     instruction = str(arguments.get("instruction") or arguments.get("reason") or "").strip()
@@ -762,9 +763,10 @@ async def _execute_loop_command(
     user: User,
     session_id: str | None,
     arguments: dict[str, Any],
+    access_level: str = "use",
 ) -> dict[str, Any]:
-    if not is_agent_creator(user, agent):
-        raise HTTPException(status_code=403, detail="Only the agent creator can start a loop")
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Manage access is required to start a loop")
 
     interval_token, prompt, explicit = _parse_loop_args(arguments)
     if interval_token is None:
@@ -1324,6 +1326,10 @@ async def execute_agent_command(
     body: ExecuteCommandIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: Annotated[
+        str | None,
+        Header(alias="X-Session-Admin-Reason"),
+    ] = None,
 ) -> dict:
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     registry = await _build_agent_command_registry(
@@ -1346,6 +1352,21 @@ async def execute_agent_command(
             raise HTTPException(status_code=404, detail="Command not found") from exc
     _enforce_command_origin_safety(command, body.origin)
     _enforce_web_user_command_surface(command, command_name, body.origin)
+
+    if body.session_id:
+        try:
+            command_session_id = uuid.UUID(str(body.session_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="session_id must be a UUID") from exc
+        await authorize_session_action(
+            db,
+            current_user,
+            agent_id=agent_id,
+            session_id=command_session_id,
+            action=f"command:{command.name}",
+            allow_manager_override=True,
+            manager_override_reason=admin_override_reason,
+        )
 
     if command.handler_ref.startswith("skill:"):
         result = await _execute_dynamic_skill_command(
@@ -1424,6 +1445,7 @@ async def execute_agent_command(
             command_name=command.name,
             session_id=body.session_id,
             arguments=body.arguments,
+            access_level=access_level,
         )
         await db.commit()
         return {"ok": True, "command": command.name, "result": result}
@@ -1434,6 +1456,7 @@ async def execute_agent_command(
             user=current_user,
             session_id=body.session_id,
             arguments=body.arguments,
+            access_level=access_level,
         )
         if result.pop("fire_immediately", False) and result.get("id"):
             # Persist the trigger before firing so the daemon path can load it.

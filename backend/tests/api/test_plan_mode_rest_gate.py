@@ -170,6 +170,13 @@ def _make_client(router_module, *, db, is_creator: bool = True, user=None):
     return app, user, allow_access
 
 
+async def _require_agent(allow_access, db, user, agent_id):
+    agent, access_level = await allow_access(db, user, agent_id)
+    if access_level != "manage":
+        raise AssertionError("test fixture expected manage access")
+    return agent
+
+
 def _declined_recommendation(
     *,
     agent_id,
@@ -505,7 +512,7 @@ def test_create_schedule_without_plan_returns_409(monkeypatch):
     db = _QueuedDB()
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
-    monkeypatch.setattr(mod, "is_agent_creator", lambda _u, _a: True)
+    monkeypatch.setattr(mod, "require_agent_manage_access", lambda db, user, agent_id: _require_agent(allow_access, db, user, agent_id))
     gate = _StubGate(_requires_confirmation_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
@@ -530,7 +537,7 @@ def test_create_schedule_disabled_draft_is_not_gated(monkeypatch):
     db = _QueuedDB()
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
-    monkeypatch.setattr(mod, "is_agent_creator", lambda _u, _a: True)
+    monkeypatch.setattr(mod, "require_agent_manage_access", lambda db, user, agent_id: _require_agent(allow_access, db, user, agent_id))
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
 
     client = TestClient(app)
@@ -551,7 +558,7 @@ def test_create_schedule_with_confirmed_plan_passes(monkeypatch):
     db = _QueuedDB()
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
-    monkeypatch.setattr(mod, "is_agent_creator", lambda _u, _a: True)
+    monkeypatch.setattr(mod, "require_agent_manage_access", lambda db, user, agent_id: _require_agent(allow_access, db, user, agent_id))
     gate = _StubGate(_allow_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
@@ -585,7 +592,7 @@ def test_create_schedule_after_user_declines_plan_recommendation_passes(monkeypa
     db = _QueuedDB([_ScalarResult(recommendation)])
     app, _user, allow_access = _make_client(mod, db=db, user=user)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
-    monkeypatch.setattr(mod, "is_agent_creator", lambda _u, _a: True)
+    monkeypatch.setattr(mod, "require_agent_manage_access", lambda db, user, agent_id: _require_agent(allow_access, db, user, agent_id))
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
 
     client = TestClient(app)
@@ -632,7 +639,7 @@ def test_update_schedule_enable_after_user_declines_plan_recommendation_passes(m
     db = _QueuedDB([_ScalarResult(schedule), _ScalarResult(recommendation)])
     app, _user, allow_access = _make_client(mod, db=db, user=user)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
-    monkeypatch.setattr(mod, "is_agent_creator", lambda _u, _a: True)
+    monkeypatch.setattr(mod, "require_agent_manage_access", lambda db, user, agent_id: _require_agent(allow_access, db, user, agent_id))
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
 
     client = TestClient(app)

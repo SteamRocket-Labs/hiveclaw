@@ -66,7 +66,7 @@ def _plan_namespace(*, agent_id, status="awaiting_confirmation", version=1, requ
         id=uuid4(),
         tenant_id=None,
         agent_id=agent_id,
-        session_id="sess-1",
+        session_id=str(uuid4()),
         runtime_task_id=None,
         requested_by_user_id=requester or uuid4(),
         source="web_chat",
@@ -111,6 +111,18 @@ def _client(monkeypatch, *, service, user=None, db=None):
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr(plans_api, "check_agent_access", allow_access)
+    async def allow_plan_action(*_args, **_kwargs):
+        return "session_owner"
+
+    async def allow_session_action(*_args, **kwargs):
+        return SimpleNamespace(
+            agent=SimpleNamespace(id=kwargs["agent_id"], tenant_id=user.tenant_id),
+            session=SimpleNamespace(id=kwargs["session_id"], user_id=user.id),
+            authority_source="session_owner",
+        )
+
+    monkeypatch.setattr(plans_api, "_authorize_plan_action", allow_plan_action)
+    monkeypatch.setattr(plans_api, "authorize_session_action", allow_session_action)
     monkeypatch.setattr(plans_api, "_service", service)
     return TestClient(app), user, access
 
@@ -166,7 +178,7 @@ def test_create_plan_launches_system_run_and_returns_201(monkeypatch):
         json={
             "original_request": "每天 9 点帮我整理新闻",
             "intent_type": "autonomous_wake",
-            "session_id": "sess-1",
+            "session_id": str(uuid4()),
             "fill": {"objective": "Daily brief"},
         },
     )
@@ -346,13 +358,17 @@ def test_decline_plan_recommendation_requires_owner_user(monkeypatch):
 
 def test_list_plans_returns_rows(monkeypatch):
     agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
 
     class _Service:
         async def list_plans_for_agent(self, _agent_id, *, limit=50):
             assert _agent_id == agent_id
-            return [_plan_namespace(agent_id=agent_id), _plan_namespace(agent_id=agent_id)]
+            return [
+                _plan_namespace(agent_id=agent_id, requester=user.id),
+                _plan_namespace(agent_id=agent_id, requester=user.id),
+            ]
 
-    client, *_ = _client(monkeypatch, service=_Service())
+    client, *_ = _client(monkeypatch, service=_Service(), user=user)
     resp = client.get(f"/agents/{agent_id}/plans")
     assert resp.status_code == 200
     assert len(resp.json()) == 2

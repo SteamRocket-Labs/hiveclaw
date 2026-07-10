@@ -717,11 +717,10 @@ class TestConfigureTelegramChannel:
 
         import app.api.telegram as tg_mod
 
-        async def fake_check(db, user, agent_id):
-            return SimpleNamespace(id=agent_id), "manage"
+        async def fake_require_manage(db, user, agent_id):
+            return SimpleNamespace(id=agent_id, tenant_id=user.tenant_id)
 
-        monkeypatch.setattr(tg_mod, "check_agent_access", fake_check)
-        monkeypatch.setattr(tg_mod, "is_agent_creator", lambda u, a: True)
+        monkeypatch.setattr(tg_mod, "require_agent_manage_access", fake_require_manage)
 
         with pytest.raises(HTTPException) as exc:
             await configure_telegram_channel(
@@ -739,11 +738,10 @@ class TestConfigureTelegramChannel:
 
         import app.api.telegram as tg_mod
 
-        async def fake_check(db, user, agent_id):
-            return SimpleNamespace(id=agent_id), "manage"
+        async def fake_require_manage(db, user, agent_id):
+            return SimpleNamespace(id=agent_id, tenant_id=user.tenant_id)
 
-        monkeypatch.setattr(tg_mod, "check_agent_access", fake_check)
-        monkeypatch.setattr(tg_mod, "is_agent_creator", lambda u, a: True)
+        monkeypatch.setattr(tg_mod, "require_agent_manage_access", fake_require_manage)
 
         with pytest.raises(HTTPException) as exc:
             await configure_telegram_channel(
@@ -761,11 +759,10 @@ class TestConfigureTelegramChannel:
 
         import app.api.telegram as tg_mod
 
-        async def fake_check(db, user, agent_id):
-            return SimpleNamespace(id=agent_id), "view"
+        async def fake_require_manage(db, user, agent_id):
+            raise HTTPException(status_code=403, detail="Manage access required")
 
-        monkeypatch.setattr(tg_mod, "check_agent_access", fake_check)
-        monkeypatch.setattr(tg_mod, "is_agent_creator", lambda u, a: False)
+        monkeypatch.setattr(tg_mod, "require_agent_manage_access", fake_require_manage)
 
         with pytest.raises(HTTPException) as exc:
             await configure_telegram_channel(

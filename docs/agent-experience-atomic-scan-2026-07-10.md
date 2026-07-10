@@ -773,3 +773,46 @@ Outbox 必须在 parent notification 成功后 ack；失败可重试；消费者
 - 但 owner 权威、budget approval、dynamic preview、trigger evidence、session UI 与 Team 控制仍有硬断点。
 
 最重要的下一步不是继续加更多页面或更多 API，而是用一个 authority、一个 execution admission、一个 completion outbox、一个 session experience projection，把现有能力真正闭成同一条用户可理解、可恢复、可审计的链。
+
+## 12. 落地证据账本
+
+本节只记录当前 checkout 已经存在真实消费路径并完成机械验收的改动；后续部分在各自 commit 完成后继续追加，未记录的差距仍保持第 6 节的原判定。
+
+### 12.1 Agent / Session Authority convergence — 已闭环
+
+**原子链**
+
+| 原子 | 当前事实源与消费路径 |
+| --- | --- |
+| 输入 | Agent action 使用 `agent_id + actor`；Session action 使用 `agent_id + session_id + actor + action`；manager override 必须携带非空原因。 |
+| 权威 | `owner_user_id` 是当前 owner；`creator_id` 仅保留不可变 provenance；`sponsor_user_id` 保留委派来源。`check_agent_access` 与 `authorize_session_action` 是后端统一判定。 |
+| 执行 | Schedule、Channel、Plan、Goal、Team、Command、Permission、Start/Stop 与 Handover 均通过统一 manage/session gate；前端不再用 `creator_id` 自行推断。 |
+| 证据 | manager 跨用户 session 操作写入 `session_authority_override` audit；handover audit 同时记录 creator provenance、原 owner 与新 owner。 |
+| 恢复 | migration 对既有空 owner 记录按 sponsor/creator 回填；handover 只改变 owner，不破坏 creator provenance。 |
+| 消费 | Agent API 下发 `access_level`、`is_owner`、`action_capabilities`，员工目录、侧栏与自动化聚合直接消费该投影。 |
+| 验收 | 权威单测、API 集成、Plan/Team/Command 回归、前端投影测试、migration head 与 lint 均已通过。 |
+
+**关键实现证据**
+
+- migration：`backend/alembic/versions/agent_authority_0710.py`，当前唯一 head 为 `agent_authority_0710`；
+- 权威核心：`backend/app/core/permissions.py`；
+- Session action 消费者：`backend/app/api/session_goals.py`、`plans.py`、`agent_teams.py`、`commands.py`；
+- Agent manage 消费者：Agent、Schedule、Channel、Permission 与 Handover API；
+- 前端消费：`frontend/src/types/index.ts`、`DigitalEmployees.tsx`、`AppSidebar.tsx`、`WorkspaceFeatureHub.tsx`。
+
+**机械验收**
+
+```text
+pytest authority/plan/team/api 定向集合 -> 179 passed
+pytest permission/rest-gate/command-loop/wechat 定向集合 -> 36 passed
+vitest DigitalEmployees/WorkspaceFeatureHub/LayoutSections -> 22 passed
+ruff check affected backend paths -> All checks passed
+alembic heads -> agent_authority_0710 (head)
+git diff --check -> clean
+```
+
+**状态变化**
+
+- 第 6.1 节 `AX-AUTH-01`、`AX-AUTH-02`：`断点 -> 闭环`。
+- 第 6.1 节 `AX-AUTH-03`：`局部闭环 -> 闭环`。
+- 后续治理与 UI 只允许消费该 canonical authority projection，不得重新引入 creator 推断或第二套 session owner 判定。

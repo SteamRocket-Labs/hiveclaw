@@ -9,11 +9,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access
+from app.core.permissions import authorize_session_action
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent_session_goal import AgentSessionGoal
-from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.goal_continuation_service import continue_session_goal
 
@@ -35,7 +34,14 @@ async def start_session_goal(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    decision = await authorize_session_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        session_id=session_id,
+        action="goal:start",
+    )
+    agent = decision.agent
     goal = AgentSessionGoal(
         tenant_id=getattr(agent, "tenant_id", None),
         agent_id=agent_id,
@@ -69,7 +75,14 @@ async def continue_goal(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    decision = await authorize_session_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        session_id=session_id,
+        action="goal:continue",
+    )
+    agent = decision.agent
     goal_result = await db.execute(
         select(AgentSessionGoal).where(
             AgentSessionGoal.id == goal_id,
@@ -81,20 +94,10 @@ async def continue_goal(
     if goal is None:
         raise HTTPException(status_code=404, detail="Session goal not found")
 
-    session_result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == session_id,
-            ChatSession.agent_id == agent_id,
-        )
-    )
-    session = session_result.scalar_one_or_none()
-    if session is None:
-        raise HTTPException(status_code=404, detail="Chat session not found")
-
     return await continue_session_goal(
         db=db,
         agent=agent,
         user=current_user,
-        session=session,
+        session=decision.session,
         goal=goal,
     )

@@ -570,6 +570,7 @@ class PlanModeService:
         plan_version: int,
         plan_hash: str,
         reason: str | None = None,
+        authorization_source: str | None = None,
     ) -> AgentPlanRequest:
         """Confirm a plan (§8.1 + §8.2 + §8.5).
 
@@ -600,6 +601,7 @@ class PlanModeService:
                     submitted_version=plan_version,
                     submitted_hash=plan_hash,
                     confirming_user_id=confirming_user_id,
+                    authorization_source=authorization_source,
                 )
                 if not check.ok:
                     self._raise_confirmation_error(check)
@@ -631,6 +633,7 @@ class PlanModeService:
         plan_version: int,
         plan_hash: str,
         reason: str | None = None,
+        authorization_source: str | None = None,
     ) -> AgentPlanRequest:
         """Confirm a plan and immediately hand it to execution from the backend.
 
@@ -645,6 +648,7 @@ class PlanModeService:
             plan_version=plan_version,
             plan_hash=plan_hash,
             reason=reason,
+            authorization_source=authorization_source,
         )
         return await self.handoff_confirmed_plan(plan_id=confirmed.id)
 
@@ -652,7 +656,7 @@ class PlanModeService:
     def _raise_confirmation_error(check: core.ConfirmationCheck) -> None:
         code = check.error_code or "not_confirmable"
         message = check.message or "plan cannot be confirmed"
-        if code == "missing_confirming_user":
+        if code in {"missing_confirming_user", "unauthorized_confirmer"}:
             raise PermissionError(message)
         raise PlanConflictError(code, message)
 

@@ -37,6 +37,16 @@ class _DB:
         return _ScalarResult([])
 
 
+@pytest.fixture(autouse=True)
+def _allow_session_owner_authority(monkeypatch):
+    import app.api.agent_teams as teams_api
+
+    async def allow(*_args, **_kwargs):
+        return SimpleNamespace(authority_source="session_owner")
+
+    monkeypatch.setattr(teams_api, "_authorize_team_action", allow)
+
+
 @pytest.mark.asyncio
 async def test_team_event_permission_request_persists_and_emits_hook(monkeypatch):
     import app.api.agent_teams as teams_api

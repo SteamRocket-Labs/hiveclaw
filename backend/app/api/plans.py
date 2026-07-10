@@ -26,14 +26,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access
+from app.core.permissions import authorize_session_action, check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.plan_recommendation import AgentPlanRecommendation
@@ -45,6 +45,7 @@ from app.services.plan_mode_service import get_plan_mode_service as _get_shared_
 from app.services.plan_verification_service import verify_plan_artifact
 
 router = APIRouter(prefix="/agents", tags=["plans"])
+AdminOverrideReason = Annotated[str | None, Header(alias="X-Session-Admin-Reason")]
 
 #: Bound to the *shared* service-layer singleton so the REST API, the tool gate,
 #: and the chat/Feishu auto-sync paths all operate on one instance — the one
@@ -301,6 +302,64 @@ async def _load_recommendation_for_agent(
     return recommendation
 
 
+def _session_uuid(value: str | None) -> uuid.UUID | None:
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except ValueError:
+        return None
+
+
+async def _authorize_plan_action(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    agent_id: uuid.UUID,
+    plan: AgentPlanRequest,
+    action: str,
+    manager_override_reason: str | None = None,
+) -> str:
+    session_id = _session_uuid(plan.session_id)
+    if session_id is not None:
+        decision = await authorize_session_action(
+            db,
+            current_user,
+            agent_id=agent_id,
+            session_id=session_id,
+            action=action,
+            allow_manager_override=True,
+            manager_override_reason=manager_override_reason,
+        )
+        return decision.authority_source
+
+    if str(plan.requested_by_user_id or "") == str(current_user.id):
+        return "requester"
+    raise HTTPException(status_code=403, detail="This plan belongs to a different user session")
+
+
+async def _load_authorized_plan(
+    service: PlanModeService,
+    db: AsyncSession,
+    *,
+    current_user: User,
+    agent_id: uuid.UUID,
+    plan_id: uuid.UUID,
+    action: str,
+    manager_override_reason: str | None = None,
+) -> tuple[AgentPlanRequest, str]:
+    plan = await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    authority_source = await _authorize_plan_action(
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        plan=plan,
+        action=action,
+        manager_override_reason=manager_override_reason,
+    )
+    return plan, authority_source
+
+
 # ---------------------------------------------------------------------------
 # create / list / get
 # ---------------------------------------------------------------------------
@@ -374,6 +433,17 @@ async def create_plan(
 ):
     """Create a plan request and generate its first version (§7 + §10.2)."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
+    if payload.session_id:
+        session_id = _session_uuid(payload.session_id)
+        if session_id is None:
+            raise HTTPException(status_code=400, detail="session_id must be a UUID")
+        await authorize_session_action(
+            db,
+            current_user,
+            agent_id=agent_id,
+            session_id=session_id,
+            action="plan:create",
+        )
     service = get_plan_mode_service()
     try:
         plan = await service.create_plan_request(
@@ -399,11 +469,24 @@ async def list_plans(
     limit: int = Query(default=50, ge=1, le=200),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ):
     """List an agent's plan requests, newest first."""
-    await check_agent_access(db, current_user, agent_id)
+    _agent, access_level = await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
     plans = await service.list_plans_for_agent(agent_id, limit=limit)
+    reason = str(admin_override_reason or "").strip()
+    if access_level == "manage" and reason:
+        from app.services.audit_logger import write_audit_log
+
+        await write_audit_log(
+            "plan_list_authority_override",
+            details={"reason": reason, "action": "plan:list", "agent_id": str(agent_id)},
+            agent_id=agent_id,
+            user_id=current_user.id,
+        )
+    else:
+        plans = [plan for plan in plans if str(plan.requested_by_user_id or "") == str(current_user.id)]
     return [_plan_out(plan) for plan in plans]
 
 
@@ -413,11 +496,20 @@ async def get_plan(
     plan_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ):
     """Fetch a single plan request."""
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
-    plan = await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    plan, _authority = await _load_authorized_plan(
+        service,
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        plan_id=plan_id,
+        action="plan:read",
+        manager_override_reason=admin_override_reason,
+    )
     return _plan_out(plan)
 
 
@@ -428,11 +520,20 @@ async def verify_plan(
     payload: PlanVerifyIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ):
     """Verify claimed execution against the plan's own success criteria."""
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
-    plan = await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    plan, _authority = await _load_authorized_plan(
+        service,
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        plan_id=plan_id,
+        action="plan:verify",
+        manager_override_reason=admin_override_reason,
+    )
     verification = verify_plan_artifact(
         plan_json=plan.plan_json or {},
         evidence_refs=payload.evidence_refs,
@@ -460,6 +561,7 @@ async def revise_plan(
     payload: PlanReviseIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ):
     """Supersede a plan with a new version and re-author it (§8.3).
 
@@ -469,7 +571,15 @@ async def revise_plan(
     """
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
-    await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    await _load_authorized_plan(
+        service,
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        plan_id=plan_id,
+        action="plan:revise",
+        manager_override_reason=admin_override_reason,
+    )
     draft = await service.supersede_to_draft(plan_id=plan_id)
     new_plan = await _author_draft_plan(service, draft, fill=payload.fill)
     return _plan_out(new_plan)
@@ -482,6 +592,7 @@ async def regenerate_plan(
     payload: PlanReviseIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ):
     """Retry generation for the same draft/planning_failed plan.
 
@@ -490,7 +601,15 @@ async def regenerate_plan(
     """
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
-    existing = await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    existing, _authority = await _load_authorized_plan(
+        service,
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        plan_id=plan_id,
+        action="plan:regenerate",
+        manager_override_reason=admin_override_reason,
+    )
     try:
         plan = await _author_draft_plan(service, existing, fill=payload.fill, plan_id=plan_id)
     except PlanConflictError as exc:
@@ -505,6 +624,7 @@ async def confirm_plan(
     payload: PlanConfirmIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ):
     """Confirm a specific plan version (§8.1 + §8.2 + §8.5).
 
@@ -514,7 +634,15 @@ async def confirm_plan(
     """
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
-    await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    _plan, authority_source = await _load_authorized_plan(
+        service,
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        plan_id=plan_id,
+        action="plan:confirm",
+        manager_override_reason=admin_override_reason,
+    )
     try:
         plan = await service.confirm_plan(
             plan_id=plan_id,
@@ -522,6 +650,7 @@ async def confirm_plan(
             plan_version=payload.plan_version,
             plan_hash=payload.plan_hash,
             reason=payload.reason,
+            authorization_source=authority_source,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -537,6 +666,7 @@ async def confirm_and_handoff_plan(
     payload: PlanConfirmIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ):
     """Confirm a specific plan version and start its handoff in one backend call.
 
@@ -545,7 +675,15 @@ async def confirm_and_handoff_plan(
     """
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
-    await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    _plan, authority_source = await _load_authorized_plan(
+        service,
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        plan_id=plan_id,
+        action="plan:confirm_and_handoff",
+        manager_override_reason=admin_override_reason,
+    )
     try:
         plan = await service.confirm_and_handoff_plan(
             plan_id=plan_id,
@@ -553,6 +691,7 @@ async def confirm_and_handoff_plan(
             plan_version=payload.plan_version,
             plan_hash=payload.plan_hash,
             reason=payload.reason,
+            authorization_source=authority_source,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -574,11 +713,20 @@ async def reject_plan(
     payload: PlanDecisionIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ):
     """Reject an awaiting plan (§7, terminal)."""
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
-    await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    await _load_authorized_plan(
+        service,
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        plan_id=plan_id,
+        action="plan:reject",
+        manager_override_reason=admin_override_reason,
+    )
     try:
         plan = await service.reject_plan(
             plan_id=plan_id,
@@ -596,6 +744,7 @@ async def handoff_plan(
     plan_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    admin_override_reason: AdminOverrideReason = None,
 ):
     """Hand a confirmed plan to its execution target (§13).
 
@@ -603,7 +752,15 @@ async def handoff_plan(
     """
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
-    await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    await _load_authorized_plan(
+        service,
+        db,
+        current_user=current_user,
+        agent_id=agent_id,
+        plan_id=plan_id,
+        action="plan:handoff",
+        manager_override_reason=admin_override_reason,
+    )
     try:
         plan = await service.handoff_confirmed_plan(plan_id=plan_id)
     except PlanConflictError as exc:

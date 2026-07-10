@@ -645,7 +645,9 @@ async def test_commands_api_executes_diagnostic_command_without_tool_runtime(mon
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="version",
-        body=commands_api.ExecuteCommandIn(arguments={}, session_id="00000000-0000-4000-8000-000000000001", origin="agent"),
+        body=commands_api.ExecuteCommandIn(
+            arguments={}, session_id="00000000-0000-4000-8000-000000000001", origin="agent"
+        ),
         current_user=current_user,
         db=db,
     )
@@ -1004,7 +1006,9 @@ async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(mo
         result = await commands_api.execute_agent_command(
             agent_id=agent_id,
             command_name=command_name,
-            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="00000000-0000-4000-8000-000000000001", origin="agent"),
+            body=commands_api.ExecuteCommandIn(
+                arguments=arguments, session_id="00000000-0000-4000-8000-000000000001", origin="agent"
+            ),
             current_user=current_user,
             db=db,
         )
@@ -1014,7 +1018,9 @@ async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(mo
     config = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="config",
-        body=commands_api.ExecuteCommandIn(arguments={}, session_id="00000000-0000-4000-8000-000000000001", origin="agent"),
+        body=commands_api.ExecuteCommandIn(
+            arguments={}, session_id="00000000-0000-4000-8000-000000000001", origin="agent"
+        ),
         current_user=current_user,
         db=db,
     )
@@ -1067,7 +1073,9 @@ async def test_commands_api_web_product_commands_return_prompt_or_navigation_act
     skill = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="research",
-        body=commands_api.ExecuteCommandIn(arguments={"input": "summarize this"}, session_id="00000000-0000-4000-8000-000000000001"),
+        body=commands_api.ExecuteCommandIn(
+            arguments={"input": "summarize this"}, session_id="00000000-0000-4000-8000-000000000001"
+        ),
         current_user=current_user,
         db=db,
     )
@@ -1078,7 +1086,9 @@ async def test_commands_api_web_product_commands_return_prompt_or_navigation_act
     workflow = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="workflow",
-        body=commands_api.ExecuteCommandIn(arguments={"input": "triage incoming leads"}, session_id="00000000-0000-4000-8000-000000000001"),
+        body=commands_api.ExecuteCommandIn(
+            arguments={"input": "triage incoming leads"}, session_id="00000000-0000-4000-8000-000000000001"
+        ),
         current_user=current_user,
         db=db,
     )
@@ -1149,7 +1159,9 @@ async def test_commands_api_keeps_task_surface_unified_while_routing_internal_fl
         result = await commands_api.execute_agent_command(
             agent_id=agent_id,
             command_name=command_name,
-            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="00000000-0000-4000-8000-000000000001", origin="agent"),
+            body=commands_api.ExecuteCommandIn(
+                arguments=arguments, session_id="00000000-0000-4000-8000-000000000001", origin="agent"
+            ),
             current_user=current_user,
             db=db,
         )
@@ -1227,7 +1239,8 @@ async def test_goals_api_creates_session_goal(monkeypatch):
         db=db,
     )
 
-    assert db.flushes == 1
+    # The goal row and its typed transcript evidence are both persisted.
+    assert db.flushes == 2
     stored = db.added[0]
     assert stored.agent_id == agent_id
     assert stored.chat_session_id == session_id
@@ -1235,6 +1248,230 @@ async def test_goals_api_creates_session_goal(monkeypatch):
     assert stored.created_by_user_id == current_user.id
     assert result["status"] == "active"
     assert result["objective"] == "Finish all parity work."
+
+
+@pytest.mark.asyncio
+async def test_goals_api_starts_first_goal_turn_in_the_same_request(monkeypatch):
+    import app.api.session_goals as goals_api
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    session = SimpleNamespace(id=session_id)
+    db = _FakeDB()
+    captured = {}
+
+    async def fake_authorize(_db, _user, **_kwargs):
+        return SimpleNamespace(agent=agent, session=session)
+
+    async def fake_start_web_chat_run(**kwargs):
+        captured.update(kwargs)
+        return {"run_id": "run-1", "status": "pending"}
+
+    monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
+    monkeypatch.setattr(goals_api, "start_web_chat_run", fake_start_web_chat_run)
+
+    result = await goals_api.start_session_goal(
+        agent_id=agent_id,
+        session_id=session_id,
+        body=goals_api.StartGoalIn(
+            objective="Finish all parity work.",
+            content="Full model-visible request",
+            display_content="Finish all parity work.",
+            attachments=[{"path": "workspace/brief.md"}],
+            start_immediately=True,
+        ),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result["run"] == {"run_id": "run-1", "status": "pending"}
+    assert captured["agent"] is agent
+    assert captured["session"] is session
+    assert captured["content"] == "Full model-visible request"
+    assert captured["display_content"] == "Finish all parity work."
+    assert captured["attachments"] == [{"path": "workspace/brief.md"}]
+    assert captured["runtime_task_type"] == "web_chat_turn"
+    assert captured["extra_metadata"]["goal_id"] == result["id"]
+    assert db.added[0].metadata_json["last_goal_run_id"] == "run-1"
+
+
+@pytest.mark.asyncio
+async def test_goals_api_replays_same_request_without_duplicate_event_or_run(monkeypatch):
+    import app.api.session_goals as goals_api
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    request_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    session = SimpleNamespace(id=session_id)
+    goal = AgentSessionGoal(
+        id=request_id,
+        tenant_id=agent.tenant_id,
+        agent_id=agent_id,
+        chat_session_id=session_id,
+        created_by_user_id=current_user.id,
+        objective="Finish all parity work.",
+        status="active",
+        metadata_json={"request_id": str(request_id), "last_goal_run_id": "run-original"},
+    )
+    calls = {"event": 0, "run": 0}
+
+    async def fake_authorize(_db, _user, **_kwargs):
+        return SimpleNamespace(agent=agent, session=session)
+
+    async def fake_create_or_load(**_kwargs):
+        return goal, False
+
+    async def fake_event(**_kwargs):
+        calls["event"] += 1
+
+    async def fake_start(**_kwargs):
+        calls["run"] += 1
+        return {"run_id": "run-duplicate"}
+
+    monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
+    monkeypatch.setattr(goals_api, "_create_or_load_goal", fake_create_or_load)
+    monkeypatch.setattr(goals_api, "_append_goal_transition_event", fake_event)
+    monkeypatch.setattr(goals_api, "start_web_chat_run", fake_start)
+
+    result = await goals_api.start_session_goal(
+        agent_id=agent_id,
+        session_id=session_id,
+        body=goals_api.StartGoalIn(
+            request_id=request_id,
+            objective="Finish all parity work.",
+            start_immediately=True,
+        ),
+        current_user=current_user,
+        db=_FakeDB(),
+    )
+
+    assert result["id"] == str(request_id)
+    assert result["run"] == {"run_id": "run-original", "status": "running", "replayed": True}
+    assert calls == {"event": 0, "run": 0}
+
+
+@pytest.mark.asyncio
+async def test_goal_request_id_insert_and_replay_share_one_canonical_goal():
+    import app.api.session_goals as goals_api
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    request_id = uuid4()
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=uuid4())
+    session_id = uuid4()
+    body = goals_api.StartGoalIn(
+        request_id=request_id,
+        objective="Ship the canonical report",
+        start_immediately=True,
+    )
+    goal = AgentSessionGoal(
+        id=request_id,
+        tenant_id=agent.tenant_id,
+        agent_id=agent.id,
+        chat_session_id=session_id,
+        created_by_user_id=user.id,
+        objective=body.objective,
+        status="active",
+        metadata_json={"request_id": str(request_id)},
+    )
+
+    created_goal, created = await goals_api._create_or_load_goal(
+        db=_ExecuteDB(request_id, goal),
+        agent=agent,
+        user=user,
+        session_id=session_id,
+        body=body,
+    )
+    replayed_goal, replay_created = await goals_api._create_or_load_goal(
+        db=_ExecuteDB(None, goal),
+        agent=agent,
+        user=user,
+        session_id=session_id,
+        body=body,
+    )
+
+    assert created is True
+    assert replay_created is False
+    assert created_goal is replayed_goal is goal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "initial_status", "expected_status", "expects_cancel", "expects_continue"),
+    [
+        ("pause", "active", "paused", True, False),
+        ("resume", "paused", "active", False, True),
+        ("stop", "active", "cancelled", True, False),
+    ],
+)
+async def test_goals_api_transitions_are_semantic_and_recoverable(
+    monkeypatch,
+    action,
+    initial_status,
+    expected_status,
+    expects_cancel,
+    expects_continue,
+):
+    import app.api.session_goals as goals_api
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    goal_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    session = SimpleNamespace(id=session_id)
+    goal = AgentSessionGoal(
+        id=goal_id,
+        tenant_id=agent.tenant_id,
+        agent_id=agent_id,
+        chat_session_id=session_id,
+        objective="Ship the report",
+        status=initial_status,
+        metadata_json={"last_continuation_run_id": str(uuid4())},
+    )
+    db = _ExecuteDB(goal)
+    calls = {"cancel": 0, "continue": 0, "event": 0}
+
+    async def fake_authorize(_db, _user, **_kwargs):
+        return SimpleNamespace(agent=agent, session=session)
+
+    async def fake_cancel(**_kwargs):
+        calls["cancel"] += 1
+        return {"status": "killed"}
+
+    async def fake_continue(**_kwargs):
+        calls["continue"] += 1
+        return {"ok": True, "run": {"run_id": "run-resumed"}}
+
+    async def fake_event(**_kwargs):
+        calls["event"] += 1
+
+    monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
+    monkeypatch.setattr(goals_api, "cancel_web_chat_run", fake_cancel)
+    monkeypatch.setattr(goals_api, "continue_session_goal", fake_continue)
+    monkeypatch.setattr(goals_api, "_append_goal_transition_event", fake_event)
+
+    result = await goals_api.transition_goal(
+        agent_id=agent_id,
+        session_id=session_id,
+        goal_id=goal_id,
+        body=goals_api.GoalTransitionIn(action=action),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result["status"] == expected_status
+    assert calls["cancel"] == int(expects_cancel)
+    assert calls["continue"] == int(expects_continue)
+    assert calls["event"] == 1
+    assert bool(result.get("continuation")) is expects_continue
 
 
 @pytest.mark.asyncio

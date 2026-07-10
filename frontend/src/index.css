@@ -3368,6 +3368,116 @@
   line-height: 1.45;
 }
 
+.workspace-assign-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  background: rgba(15, 23, 42, 0.36);
+  backdrop-filter: blur(4px);
+}
+
+.workspace-assign-dialog {
+  width: min(560px, 100%);
+  display: grid;
+  gap: var(--space-5);
+  padding: var(--space-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+.workspace-assign-header,
+.workspace-assign-actions,
+.workspace-assign-intents {
+  display: flex;
+  align-items: center;
+}
+
+.workspace-assign-header {
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.workspace-assign-header h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 24px;
+}
+
+.workspace-assign-close {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.workspace-assign-field {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.workspace-assign-field > span {
+  color: var(--text-secondary);
+  font-size: var(--text-row);
+  font-weight: 650;
+}
+
+.workspace-assign-field select,
+.workspace-assign-field textarea {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.workspace-assign-field textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.workspace-assign-intents {
+  gap: var(--space-2);
+}
+
+.workspace-assign-intents button {
+  flex: 1;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-row);
+}
+
+.workspace-assign-intents button.is-selected {
+  border-color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-secondary));
+  color: var(--text-primary);
+}
+
+.workspace-assign-actions {
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.workspace-assign-error {
+  margin: 0;
+  color: var(--error);
+  font-size: var(--text-row);
+}
+
 .workspace-home-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(320px, 0.9fr);

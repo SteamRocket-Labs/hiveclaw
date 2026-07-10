@@ -48,10 +48,17 @@ export interface ExecuteCommandResult {
 }
 
 export interface StartGoalInput {
+  request_id?: string | null;
   objective: string;
   token_budget?: number | null;
   max_continuation_turns?: number | null;
   time_budget_seconds?: number | null;
+  content?: string | null;
+  display_content?: string | null;
+  file_name?: string;
+  attachments?: Array<Record<string, unknown>>;
+  parts?: Array<Record<string, unknown>>;
+  start_immediately?: boolean;
 }
 
 export interface SessionGoal {
@@ -62,15 +69,26 @@ export interface SessionGoal {
   status: string;
   token_budget: number | null;
   tokens_used: number;
+  remaining_tokens: number | null;
+  time_budget_seconds: number | null;
+  time_used_seconds: number;
+  remaining_time_seconds: number | null;
   max_continuation_turns: number | null;
   continuation_count: number;
-}
-
-export interface GoalContinuationResult {
-  ok: boolean;
-  goal_id: string;
-  decision?: Record<string, unknown>;
-  run?: Record<string, unknown>;
+  remaining_continuation_turns: number | null;
+  blocked_count: number;
+  blocked_reason: string | null;
+  completion_summary: string | null;
+  controls: {
+    can_pause: boolean;
+    can_resume: boolean;
+    can_stop: boolean;
+  };
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+  run?: Record<string, unknown> | null;
+  continuation?: Record<string, unknown> | null;
 }
 
 export interface StartAdvancedPlanInput {
@@ -182,7 +200,7 @@ export interface SessionWorkbench {
   completion_wake_policy?: Record<string, unknown>;
   completion_wake_summary?: Record<string, unknown>;
   completion_wakes?: Record<string, unknown>[];
-  goals: Record<string, unknown>[];
+  goals: SessionGoal[];
   teams: AgentTeam[];
   session_index?: Record<string, unknown> | null;
   links?: Record<string, string>;
@@ -294,15 +312,27 @@ export const ccParityApi = {
 
   startGoal(agentId: string, sessionId: string, input: StartGoalInput): Promise<SessionGoal> {
     return post<SessionGoal>(`/agents/${agentId}/sessions/${sessionId}/goals`, {
+      request_id: input.request_id ?? null,
       objective: input.objective,
       token_budget: input.token_budget ?? null,
       max_continuation_turns: input.max_continuation_turns ?? null,
       time_budget_seconds: input.time_budget_seconds ?? null,
+      content: input.content ?? null,
+      display_content: input.display_content ?? null,
+      file_name: input.file_name ?? '',
+      attachments: input.attachments ?? [],
+      parts: input.parts ?? [],
+      start_immediately: input.start_immediately ?? false,
     });
   },
 
-  continueGoal(agentId: string, sessionId: string, goalId: string): Promise<GoalContinuationResult> {
-    return post<GoalContinuationResult>(`/agents/${agentId}/sessions/${sessionId}/goals/${goalId}/continue`);
+  transitionGoal(
+    agentId: string,
+    sessionId: string,
+    goalId: string,
+    action: 'pause' | 'resume' | 'stop',
+  ): Promise<SessionGoal> {
+    return post<SessionGoal>(`/agents/${agentId}/sessions/${sessionId}/goals/${goalId}/transition`, { action });
   },
 
   startAdvancedPlan(agentId: string, sessionId: string, input: StartAdvancedPlanInput): Promise<AdvancedPlanRun> {

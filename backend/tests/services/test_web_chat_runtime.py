@@ -3137,6 +3137,48 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_start_web_chat_run_replays_explicit_run_id_without_duplicate_message(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    existing = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        parent_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        status="pending",
+        created_at=None,
+        started_at=None,
+        completed_at=None,
+        result_summary=None,
+        metadata_json={"intent_id": f"goal:{run_id}"},
+    )
+    db = _FakeDB(active_run=None)
+
+    async def fake_load_run(*_args, **_kwargs):
+        return existing
+
+    monkeypatch.setattr(runtime, "_load_web_chat_run_by_id", fake_load_run)
+
+    result = await runtime.start_web_chat_run(
+        db=db,
+        agent=SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4()),
+        user=SimpleNamespace(id=uuid4()),
+        session=SimpleNamespace(id=session_id, title="Session"),
+        content="Do not append this twice",
+        run_id=run_id,
+    )
+
+    assert result["run_id"] == run_id.hex
+    assert result["status"] == "pending"
+    assert result["replayed"] is True
+    assert db.added == []
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
 async def test_start_web_chat_run_accepts_goal_continuation_task_type(monkeypatch, tmp_path):
     import app.services.web_chat_runtime as runtime
     from app.models.audit import ChatMessage

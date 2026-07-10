@@ -107,24 +107,36 @@ describe('ccParityApi', () => {
       objective: 'finish',
       token_budget: 100,
       max_continuation_turns: 3,
+      request_id: '72ea993a-64a7-4f88-8f20-2763f17f848b',
+      content: 'Full model-visible request',
+      display_content: 'Finish the work',
+      attachments: [{ path: 'workspace/brief.md' }],
+      start_immediately: true,
     });
 
     expect(requestOf().url).toBe('/api/agents/agent-1/sessions/session-1/goals');
     expect(JSON.parse(String(requestOf().init.body))).toEqual({
       objective: 'finish',
+      request_id: '72ea993a-64a7-4f88-8f20-2763f17f848b',
       token_budget: 100,
       max_continuation_turns: 3,
       time_budget_seconds: null,
+      content: 'Full model-visible request',
+      display_content: 'Finish the work',
+      file_name: '',
+      attachments: [{ path: 'workspace/brief.md' }],
+      parts: [],
+      start_immediately: true,
     });
   });
 
-  it('continues a session goal', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, run: { run_id: 'run-1' } }));
+  it('transitions a session goal through its semantic control surface', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 'goal-1', status: 'paused' }));
 
-    await ccParityApi.continueGoal('agent-1', 'session-1', 'goal-1');
+    await ccParityApi.transitionGoal('agent-1', 'session-1', 'goal-1', 'pause');
 
-    expect(requestOf().url).toBe('/api/agents/agent-1/sessions/session-1/goals/goal-1/continue');
-    expect(requestOf().init.method).toBe('POST');
+    expect(requestOf().url).toBe('/api/agents/agent-1/sessions/session-1/goals/goal-1/transition');
+    expect(JSON.parse(String(requestOf().init.body))).toEqual({ action: 'pause' });
   });
 
   it('starts an advanced plan runtime', async () => {

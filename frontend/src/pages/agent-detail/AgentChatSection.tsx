@@ -33,6 +33,7 @@ import { ThreadItemInspector } from '../session-workbench/ThreadItemInspector';
 import { ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
 import { SessionComposer } from '../session-workbench/SessionComposer';
+import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
 import {
   useResponsiveRuntimePanel,
   useThreadItemRuntimeController,
@@ -155,8 +156,10 @@ function getSessionPermissionModeLabel(
 
 function getComposerIntentLabel(
   planModeRequested: boolean,
+  goalModeRequested: boolean,
   t: (key: string, fallback: string) => string,
 ): string | null {
+  if (goalModeRequested) return t('agent.chat.composer.goalModeActive', 'Goal mode');
   if (planModeRequested) return t('agent.chat.composer.planModeActive', 'Plan Mode');
   return null;
 }
@@ -387,6 +390,8 @@ interface AgentChatSectionProps {
   onEnterPlanMode?: (reason: string) => void | Promise<unknown>;
   planModeRequested?: boolean;
   onTogglePlanMode?: () => void;
+  goalModeRequested?: boolean;
+  onToggleGoalMode?: () => void;
   sessionPermissionMode?: SessionPermissionMode;
   onSetSessionPermissionMode?: (mode: SessionPermissionMode) => void | Promise<unknown>;
   sessionCommandControl?: SessionCommandControlState | null;
@@ -1769,6 +1774,9 @@ function SessionRuntimePanel({
   onSelectWorkflowRun,
   selectedThreadItem,
   onClearSelectedThreadItem,
+  agentId,
+  sessionId,
+  onGoalChanged,
 }: {
   messages: AgentChatMessage[];
   sessionWorkbench: SessionWorkbench | null;
@@ -1782,6 +1790,9 @@ function SessionRuntimePanel({
   onSelectWorkflowRun?: (workflow: RuntimeSectionItemModel) => void | Promise<unknown>;
   selectedThreadItem?: ThreadItem | null;
   onClearSelectedThreadItem?: () => void;
+  agentId?: string;
+  sessionId?: string;
+  onGoalChanged?: () => void | Promise<unknown>;
 }) {
   const RUNTIME_PANEL_WIDTH_KEY = 'hive.sessionRuntimePanel.width';
   const [panelWidth, setPanelWidth] = React.useState<number | null>(() => {
@@ -2310,6 +2321,15 @@ function SessionRuntimePanel({
           </div>
           <span>{runStatusCount}</span>
         </div>
+
+        {agentId && sessionId && sessionWorkbench?.goals?.length ? (
+          <SessionGoalPanel
+            agentId={agentId}
+            sessionId={sessionId}
+            goals={sessionWorkbench.goals}
+            onChanged={onGoalChanged}
+          />
+        ) : null}
 
         <div data-testid="session-runtime-console" className="session-runtime-console">
           <div
@@ -3267,6 +3287,8 @@ function AgentChatSection({
   onEnterPlanMode,
   planModeRequested = false,
   onTogglePlanMode,
+  goalModeRequested = false,
+  onToggleGoalMode,
   sessionPermissionMode = 'auto',
   onSetSessionPermissionMode,
   sessionCommandControl = null,
@@ -3305,7 +3327,7 @@ function AgentChatSection({
   const runtimeUsageLabel = getRuntimeUsageLabel(runtimeSummary);
   const runtimeUsageTitle = getRuntimeUsageTitle(runtimeSummary, runtimeUsageLabel);
   const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);
-  const composerIntentLabel = getComposerIntentLabel(planModeRequested, t);
+  const composerIntentLabel = getComposerIntentLabel(planModeRequested, goalModeRequested, t);
   const modelBadgeLabel =
     runtimeSummary?.model?.label ||
     runtimeSummary?.model?.name ||
@@ -3332,13 +3354,18 @@ function AgentChatSection({
         focusChatInput();
         return;
       }
-      if (action === 'goal' || action === 'schedule') {
+      if (action === 'goal') {
+        onToggleGoalMode?.();
+        focusChatInput();
+        return;
+      }
+      if (action === 'schedule') {
         onSetChatInput(composerShortcutText(action));
         focusChatInput();
         return;
       }
     },
-    [fileInputRef, focusChatInput, onSetChatInput, onTogglePlanMode],
+    [fileInputRef, focusChatInput, onSetChatInput, onToggleGoalMode, onTogglePlanMode],
   );
 
   const sendFromComposer = React.useCallback(() => {
@@ -3709,7 +3736,7 @@ function AgentChatSection({
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
-  const { data: sessionWorkbenchData } = useQuery({
+  const { data: sessionWorkbenchData, refetch: refetchSessionWorkbench } = useQuery({
     queryKey: ['chat-session-workbench', effectiveAgentId, activeSessionId],
     queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!),
     enabled: Boolean(effectiveAgentId && activeSessionId),
@@ -4386,6 +4413,7 @@ function AgentChatSection({
                 runtimeUsageLabel={runtimeUsageLabel}
                 intentLabel={composerIntentLabel}
                 planModeRequested={planModeRequested}
+                goalModeRequested={goalModeRequested}
                 uploading={uploading}
                 uploadProgress={uploadProgress}
                 running={isStreaming || isWaiting}
@@ -4417,6 +4445,9 @@ function AgentChatSection({
           onSelectWorkflowRun={setFocusedWorkflow}
           selectedThreadItem={selectedThreadItem}
           onClearSelectedThreadItem={clearThreadItemSelection}
+          agentId={effectiveAgentId || undefined}
+          sessionId={activeSessionId || undefined}
+          onGoalChanged={() => void refetchSessionWorkbench()}
         />
       ) : null}
     </div>

@@ -42,6 +42,12 @@ from app.services.web_chat_runtime import broadcast_web_chat_event, start_web_ch
 _BLOCKED_THRESHOLD = 3
 
 
+def goal_continuation_run_id(goal_id: uuid.UUID, continuation_count: int) -> uuid.UUID:
+    """Stable run identity for one logical Goal continuation turn."""
+
+    return uuid.uuid5(goal_id, f"continuation:{max(0, int(continuation_count))}")
+
+
 def _goal_to_runtime_model(goal: AgentSessionGoal) -> SessionGoal:
     return SessionGoal(
         id=goal.id,
@@ -213,6 +219,8 @@ async def continue_session_goal(
         prompt = f"{objective_updated_prompt(_prompt_state(goal))}\n\n{prompt}"
         metadata["objective_updated_pending"] = False
 
+    continuation_index = int(goal.continuation_count or 0)
+    continuation_run_id = goal_continuation_run_id(goal.id, continuation_index)
     run = await start_web_chat_run(
         db=db,
         agent=agent,
@@ -223,11 +231,13 @@ async def continue_session_goal(
         file_name="",
         append_user_message=False,
         runtime_task_type="goal_continuation",
+        run_id=continuation_run_id,
         extra_metadata={
             "source": "goal_continuation",
             "goal_id": str(goal.id),
             "goal_objective": goal.objective,
-            "continuation_count_before": goal.continuation_count or 0,
+            "continuation_count_before": continuation_index,
+            "intent_id": f"goal:{goal.id}:continuation:{continuation_index}",
         },
     )
 

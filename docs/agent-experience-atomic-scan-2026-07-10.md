@@ -1004,3 +1004,46 @@ AgentDetail bundle -> 446.64 kB to 441.43 kB after Local Agent composer/CSS conv
 - `UX-04` 的死控制面与重复 client：`断点 -> 闭环`；Team 真实动作由后续 Team 闭环节验收。
 - `MODE-01` 的 failed/skipped handoff recovery 与 raw RuntimeTask id：`局部闭环 -> 闭环`。
 - `LocalAgentChatSection` 重复 Composer：`局部闭环 -> 闭环`。
+
+### 12.6 Goal、用户交办与 Automation 语义 — 已闭环
+
+本节收口 `MODE-02 / MODE-03`：Goal 成为真实 session mode；用户交办、Work Ledger、RuntimeTask 与 Automation 不再共享一个含混的“Task”产品概念。
+
+**原子链**
+
+| 原子 | 当前事实源与消费路径 |
+| --- | --- |
+| 输入 | Home 的 `Assign work` 选择 Digital Employee、填写请求，并显式选择 Execute / Plan / Goal；交接结构为 `content + intent`。Composer 的 Goal 是真实 intent switch，不再向输入框写入 `/goal `。 |
+| 权威 | Home 先通过标准 Session API 创建当前用户 session；Goal create / pause / resume / stop 继续通过统一 `authorize_session_action`。Goal 的 owner、Agent、Session 与用户绑定不从客户端推断。 |
+| 执行 | `POST /goals` 在一个请求中创建 canonical `AgentSessionGoal` 并启动首轮 `web_chat_turn`；暂停会取消最近 Goal run，恢复继续同一 Goal，停止进入 terminal。Automation 页面只创建 Trigger / Schedule / reusable Workflow 资产。 |
+| 证据 | `AgentSessionGoal` 是目标状态事实；typed `goal` transcript event 是 session evidence；`RuntimeTask` 是首轮与 continuation 的机械执行事实。用户交办历史消费 human-chat Session；session 内步骤继续由 Work Ledger 消费，不再由 Home 读取旧 `Task` 表冒充全局任务。 |
+| 恢复 | Goal start 使用浏览器 request UUID，同时作为 canonical Goal id 与首轮 RuntimeTask id；并发点击、网络重放与“run commit 后 Goal metadata 未回写”都返回同一个 run，不排入第二条消息。Continuation run id 由 `goal_id + continuation_count` 确定生成。Pause / Resume / Stop 均保留 durable status 与阻断原因。 |
+| 消费 | 右栏 Run status 显示目标、状态、剩余 token / 时间 / continuation turn、阻断原因与 Pause / Resume / Stop；不展示 Goal / Agent / Session UUID。Local Agent transport 未实现 durable Goal contract，因此不展示虚假的 Goal affordance。 |
+| 验收 | API、统一 projection、首轮/continuation 幂等、状态迁移、assignment handoff、Composer、Goal panel、Home、Automation 与全量前端回归均已通过；production TypeScript build exit 0。 |
+
+**代码极简收口**
+
+- `commands.py`、`session_control_plane.py` 与 Goal API 只消费一个 `build_session_goal_projection()`，删除三份 Goal read-model 拼装；
+- Dashboard 删除未挂载的 `StatsBar / AgentRow`、旧 `taskApi` 聚合、`allTasks / agentActivities` 状态与 221 行孤儿 CSS；Home 直接消费用户 human-chat sessions；
+- 删除无生产 caller 的 frontend `continueGoal` adapter；UI 只保留 pause / resume / stop 的语义控制；
+- `WorkspaceFeatureHub` 的用户文案从 `Manual create task / automation task` 收敛为 `New automation / automation`；
+- `assignmentHandoff.ts` 是 Home 与 Session 之间唯一的小型结构化交接契约，没有引入万能状态机。
+
+**机械验收**
+
+```text
+Red evidence -> missing Goal projection/module/API transition; Goal 仍是文本快捷键；Home Assign work 无结构化交接；右栏无 Goal 控制；Home 继续消费旧 Task；Goal start 无 request-id replay
+backend Goal/session/runtime related suites -> 165 passed, 0 failed
+frontend full regression -> 96 files, 570 passed, 0 failed
+npm run build -> TypeScript + Vite exit 0
+ruff check affected backend paths -> All checks passed
+git diff --check -> clean
+Dashboard CSS bundle -> 5.80 kB to 2.49 kB after orphan surface retirement
+```
+
+**状态变化**
+
+- `MODE-02 Goal`：`断点 -> 闭环`。
+- `MODE-03 Task / Work Ledger / RuntimeTask / Automation`：`局部闭环 -> 闭环`。
+- `MODE-04 Scheduled / Trigger` 的执行证据已由 12.3 闭环；本节补齐用户侧 Automation 命名与入口，`断点 -> 闭环`。
+- Goal 默认用户消费面：`断点 -> 闭环`；Technical Inspector 仍可读取机械 run / event evidence。

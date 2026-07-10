@@ -37,6 +37,7 @@ from app.runtime.turn_envelope import build_prompt_assembly_manifest, build_turn
 from app.services.agent_team_contract import teammate_creation_discovery
 from app.services.agent_team_runtime_service import build_agent_team_decision_entry
 from app.services.enterprise_approval_visibility import is_visible_enterprise_approval
+from app.services.session_goal_projection import build_session_goal_projection
 from app.services.session_command_runtime import _checkpoint_payloads, _event_payload, _load_events
 from app.services.session_index import read_session_index
 from app.services.web_chat_runtime import get_active_web_chat_run
@@ -390,23 +391,7 @@ def _runtime_task_runtime_row(task: RuntimeTask, *, runtime_kind: str | None = N
 
 
 def _goal_payload(goal: AgentSessionGoal) -> dict[str, Any]:
-    return {
-        "id": str(goal.id),
-        "agent_id": str(goal.agent_id),
-        "session_id": str(goal.chat_session_id),
-        "objective": goal.objective,
-        "status": goal.status,
-        "token_budget": goal.token_budget,
-        "tokens_used": goal.tokens_used,
-        "time_budget_seconds": goal.time_budget_seconds,
-        "continuation_count": goal.continuation_count,
-        "max_continuation_turns": goal.max_continuation_turns,
-        "blocked_count": goal.blocked_count,
-        "completion_summary": goal.completion_summary,
-        "created_at": _iso(goal.created_at),
-        "updated_at": _iso(goal.updated_at),
-        "completed_at": _iso(goal.completed_at),
-    }
+    return build_session_goal_projection(goal)
 
 
 def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:

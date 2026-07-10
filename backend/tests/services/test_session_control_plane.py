@@ -243,6 +243,7 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
         max_continuation_turns=3,
         blocked_count=0,
         completion_summary=None,
+        metadata_json={},
         created_at=now,
         updated_at=now,
         completed_at=None,

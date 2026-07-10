@@ -32,6 +32,7 @@ from app.services.chat_transcript import append_session_event
 from app.services.coding_pack_manifest import CODING_PACK_COMMAND_NAMES, coding_pack_command_manifest
 from app.services.command_registry import build_default_command_registry
 from app.services.command_registry import CommandDefinition
+from app.services.session_goal_projection import build_session_goal_projection
 from app.services.capability_group_policy_service import get_agent_capability_group_policies
 from app.services.diagnostic_command_runtime import DIAGNOSTIC_COMMAND_NAMES, execute_diagnostic_command
 from app.services.mcp_server_service import get_agent_extensions
@@ -188,19 +189,8 @@ async def _load_chat_session(
 
 def _goal_payload(goal: AgentSessionGoal, *, requires_api_persist: bool = False) -> dict[str, Any]:
     return {
+        **build_session_goal_projection(goal),
         "requires_api_persist": requires_api_persist,
-        "id": str(goal.id),
-        "agent_id": str(goal.agent_id),
-        "session_id": str(goal.chat_session_id),
-        "objective": goal.objective,
-        "status": goal.status,
-        "token_budget": goal.token_budget,
-        "tokens_used": goal.tokens_used,
-        "time_budget_seconds": goal.time_budget_seconds,
-        "max_continuation_turns": goal.max_continuation_turns,
-        "continuation_count": goal.continuation_count,
-        "blocked_count": goal.blocked_count,
-        "completion_summary": goal.completion_summary,
     }
 
 

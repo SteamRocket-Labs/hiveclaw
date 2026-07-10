@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ToolFailureSummary } from '../api/domains/activity';
-import type { Agent, Task } from '../types';
+import type { Agent } from '../types';
 import { DashboardHomeShell, ToolFailureOverview, summarizeCrossAgentToolFailures } from './Dashboard';
 
 vi.mock('react-i18next', () => ({
@@ -113,20 +113,6 @@ const makeAgent = (overrides: Partial<Agent> = {}): Agent => ({
   ...overrides,
 });
 
-const makeTask = (overrides: Partial<Task> = {}): Task => ({
-  id: 'task-1',
-  agent_id: 'agent-1',
-  title: 'Q2 competitor report',
-  type: 'todo',
-  status: 'doing',
-  priority: 'high',
-  assignee: 'agent-1',
-  created_by: 'user-1',
-  created_at: '2026-06-23T07:00:00Z',
-  updated_at: '2026-06-23T07:30:00Z',
-  ...overrides,
-});
-
 describe('Dashboard workspace homepage', () => {
   it('renders the CC Design workspace home instead of the old management table', () => {
     const markup = renderToStaticMarkup(
@@ -136,16 +122,21 @@ describe('Dashboard workspace homepage', () => {
           makeAgent({ id: 'agent-2', name: 'Ledger', status: 'idle', tokens_used_today: 2200, tokens_used_month: 18000 }),
         ]}
         isLoading={false}
-        allTasks={[
-          makeTask(),
-          makeTask({ id: 'task-2', agent_id: 'agent-2', title: 'Approve August ledger plan', status: 'pending', priority: 'urgent' }),
+        recentSessions={[
+          {
+            id: 'session-1',
+            agent_id: 'agent-1',
+            title: 'Q2 competitor report',
+            created_at: '2026-06-23T07:00:00Z',
+            updated_at: '2026-06-23T07:30:00Z',
+          },
         ]}
         allActivities={[
           { id: 'act-1', agent_id: 'agent-1', summary: 'Saved Q2 research outline', created_at: '2026-06-23T08:05:00Z' },
         ]}
-        agentActivities={{}}
         toolFailureSnapshots={[]}
         onNavigate={() => {}}
+        initialAssignWorkOpen
       />,
     );
 
@@ -154,17 +145,22 @@ describe('Dashboard workspace homepage', () => {
     expect(markup).toContain('Automation');
     expect(markup).toContain('Knowledge');
     expect(markup).toContain('Local Agents');
-    expect(markup).toContain('Needs you');
+    expect(markup).toContain('Recent work');
     expect(markup).toContain('In progress');
     expect(markup).toContain('This month');
     expect(markup).toContain('Activity');
-    expect(markup).toContain('Approve August ledger plan');
     expect(markup).toContain('Q2 competitor report');
     expect(markup).toContain('708.9K');
-    expect(markup).toContain('data-navigation-target="/agents?assign=true"');
+    expect(markup).toContain('data-navigation-target="assign-work-dialog"');
     expect(markup).toContain('data-navigation-target="/automations"');
     expect(markup).toContain('data-navigation-target="/knowledge"');
     expect(markup).toContain('data-navigation-target="/local-agents"');
+    expect(markup).toContain('Assign to');
+    expect(markup).toContain('Atlas');
+    expect(markup).toContain('Execute now');
+    expect(markup).toContain('Plan first');
+    expect(markup).toContain('Run as goal');
+    expect(markup).not.toContain('>Task<');
     expect(markup).not.toContain('Latest Activity</span>');
   });
 });

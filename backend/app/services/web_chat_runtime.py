@@ -1497,6 +1497,11 @@ async def broadcast_web_chat_event(
             logger.warning("[WebChatRun] stream bus publish failed for run {}: {}", run_id, exc)
 
 
+async def _load_web_chat_run_by_id(db: AsyncSession, run_id: uuid.UUID) -> RuntimeTask | None:
+    result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))
+    return result.scalar_one_or_none()
+
+
 async def _find_active_run(db: AsyncSession, *, agent_id: uuid.UUID, session_id: str | uuid.UUID) -> RuntimeTask | None:
     result = await db.execute(
         select(RuntimeTask)
@@ -1621,6 +1626,7 @@ async def start_web_chat_run(
     parts: list[dict[str, Any]] | None = None,
     append_user_message: bool = True,
     runtime_task_type: str = WEB_CHAT_TURN_TASK_TYPE,
+    run_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
@@ -1628,6 +1634,19 @@ async def start_web_chat_run(
         raise HTTPException(status_code=400, detail="content is required")
     if not is_executable_chat_task_type(runtime_task_type):
         raise HTTPException(status_code=400, detail=f"Unsupported executable chat task type: {runtime_task_type}")
+
+    if run_id is not None:
+        existing_run = await _load_web_chat_run_by_id(db, run_id)
+        if existing_run is not None:
+            if (
+                existing_run.parent_agent_id != agent.id
+                or str(existing_run.parent_session_id or "") != str(session.id)
+                or existing_run.task_type != runtime_task_type
+            ):
+                raise HTTPException(status_code=409, detail="Run request id is already bound to another execution")
+            payload = _runtime_task_to_run(existing_run)
+            payload["replayed"] = True
+            return payload
 
     active = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
     if active:
@@ -1651,7 +1670,7 @@ async def start_web_chat_run(
         await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
         raise ActiveWebChatRunExists(payload)
 
-    run_uuid = uuid.uuid4()
+    run_uuid = run_id or uuid.uuid4()
     now = datetime.now(timezone.utc)
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     message_id = uuid.uuid4()

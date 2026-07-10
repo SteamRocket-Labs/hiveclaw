@@ -1,0 +1,109 @@
+.session-goal-panel {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 18%, var(--border-subtle));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-primary) 4%, var(--bg-secondary));
+}
+
+.session-goal-panel-heading,
+.session-goal-card-title,
+.session-goal-facts,
+.session-goal-actions {
+  display: flex;
+  align-items: center;
+}
+
+.session-goal-panel-heading {
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.session-goal-card {
+  display: grid;
+  gap: 7px;
+}
+
+.session-goal-card + .session-goal-card {
+  padding-top: 9px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.session-goal-card-title {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.session-goal-card-title span {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.session-goal-card-title small {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.session-goal-facts {
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.session-goal-facts span {
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.session-goal-reason,
+.session-goal-summary,
+.session-goal-error {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.session-goal-error {
+  color: var(--error);
+}
+
+.session-goal-actions {
+  gap: 6px;
+}
+
+.session-goal-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.session-goal-actions button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.session-goal-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}

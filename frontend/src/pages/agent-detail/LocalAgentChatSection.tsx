@@ -608,6 +608,8 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
           modelTitle={t('agent.chat.composer.localModelTitle', 'Local Agent runtime')}
           intentLabel={composerIntentLabel}
           planModeRequested={localPlanModeRequested}
+          goalModeRequested={false}
+          goalModeAvailable={false}
           uploading={uploading}
           uploadProgress={uploading ? 101 : -1}
           running={false}

@@ -245,7 +245,7 @@ describe('LocalAgentChatSection local-channel projection', () => {
     expect(markup).toContain('data-testid="session-composer-plus-menu"');
     expect(markup).toContain('Upload file');
     expect(markup).toContain('Plan Mode');
-    expect(markup).toContain('Goal mode');
+    expect(markup).not.toContain('Goal mode');
     expect(markup).toContain('Scheduled task');
     expect(markup).toContain('data-testid="session-composer-action-plan-switch"');
     expect(markup).not.toContain('data-testid="session-composer-action-goal-switch"');

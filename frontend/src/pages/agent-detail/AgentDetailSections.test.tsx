@@ -4739,7 +4739,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Scheduled task');
     expect(markup).toContain('Upload file');
     expect(markup).toContain('data-testid="session-composer-action-plan-switch"');
-    expect(markup).not.toContain('data-testid="session-composer-action-goal-switch"');
+    expect(markup).toContain('data-testid="session-composer-action-goal-switch"');
     expect(markup).not.toContain('data-testid="session-composer-action-schedule-switch"');
     expect(markup).toContain('role="switch"');
     expect(markup).toContain('aria-checked="false"');

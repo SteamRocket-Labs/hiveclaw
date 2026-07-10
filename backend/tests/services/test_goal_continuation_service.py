@@ -75,6 +75,7 @@ async def test_continue_session_goal_starts_goal_continuation_run(monkeypatch):
     assert goal.metadata_json["last_continuation_run_id"] == "run-1"
     assert calls[0]["runtime_task_type"] == "goal_continuation"
     assert calls[0]["append_user_message"] is False
+    assert calls[0]["run_id"] == service.goal_continuation_run_id(goal.id, 0)
     assert calls[0]["extra_metadata"]["goal_id"] == str(goal.id)
     assert "Finish the parity implementation." in calls[0]["content"]
     decision_entry = goal.metadata_json["goal_decision_ledger"][-1]

@@ -197,7 +197,7 @@ describe('WorkspaceFeatureHub', () => {
     expect(markup).toContain('Research Lead');
     expect(markup).toContain('Tuesday at 10:00');
     expect(markup).toContain('paused');
-    expect(markup).toContain('Manual create task');
+    expect(markup).toContain('New automation');
     expect(markup).toContain('href="/agents/agent-1#aware"');
     expect(markup).not.toContain('Weekly market sweep');
     expect(markup).not.toContain('Skill registry');
@@ -214,7 +214,7 @@ describe('WorkspaceFeatureHub', () => {
     const markup = renderToStaticMarkup(<WorkspaceFeatureHub kind="automations" initialAutomationCreateOpen />);
 
     expect(markup).toContain('role="dialog"');
-    expect(markup).toContain('Manual create task');
+    expect(markup).toContain('New automation');
     expect(markup).toContain('Automation title');
     expect(markup).toContain('Select agent');
     expect(markup).toContain('Every hour');

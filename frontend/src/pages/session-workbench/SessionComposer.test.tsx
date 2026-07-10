@@ -30,6 +30,7 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof SessionCo
     modelTitle: 'provider · model',
     runtimeUsageLabel: '12% used',
     planModeRequested: false,
+    goalModeRequested: false,
     uploading: false,
     uploadProgress: -1,
     running: false,
@@ -78,5 +79,20 @@ describe('SessionComposer', () => {
     expect(markup).toContain('42%');
     expect(markup).toContain('data-testid="session-composer-stop"');
     expect(markup).toContain('data-testid="session-composer-send"');
+  });
+
+  it('renders Goal as a first-class mutually visible intent switch', () => {
+    const markup = renderComposer({ goalModeRequested: true });
+
+    expect(markup).toContain('data-testid="session-composer-action-goal-switch"');
+    expect(markup).toContain('aria-label="Goal mode"');
+    expect(markup).toContain('aria-checked="true"');
+    expect(markup).toContain('Create a durable goal and start its first turn');
+  });
+
+  it('does not advertise Goal mode on transports without the durable Goal contract', () => {
+    const markup = renderComposer({ goalModeAvailable: false });
+
+    expect(markup).not.toContain('Goal mode');
   });
 });

@@ -43,6 +43,8 @@ export interface SessionComposerProps {
   runtimeUsageLabel?: string;
   intentLabel?: string | null;
   planModeRequested: boolean;
+  goalModeRequested: boolean;
+  goalModeAvailable?: boolean;
   uploading: boolean;
   uploadProgress: number;
   running: boolean;
@@ -72,6 +74,8 @@ export function SessionComposer({
   runtimeUsageLabel,
   intentLabel,
   planModeRequested,
+  goalModeRequested,
+  goalModeAvailable = true,
   uploading,
   uploadProgress,
   running,
@@ -110,8 +114,11 @@ export function SessionComposer({
     {
       key: 'goal' as const,
       label: t('agent.chat.composer.goalMode', 'Goal mode'),
-      description: t('agent.chat.composer.goalModeDesc', 'Start a session goal through the command surface'),
+      description: goalModeRequested
+        ? t('agent.chat.composer.goalModeOnDesc', 'Create a durable goal and start its first turn')
+        : t('agent.chat.composer.goalModeDesc', 'Run the next request as a durable, resumable goal'),
       icon: <IconTargetArrow size={16} />,
+      selected: goalModeRequested,
       disabled: disabled || running,
     },
     {
@@ -122,6 +129,7 @@ export function SessionComposer({
       disabled: disabled || running,
     },
   ];
+  const visibleActions = actions.filter((action) => goalModeAvailable || action.key !== 'goal');
 
   return (
     <div
@@ -153,7 +161,7 @@ export function SessionComposer({
           role="menu"
           hidden={!composerMenuOpen}
         >
-          {actions.map((action) => (
+          {visibleActions.map((action) => (
             <button
               key={action.key}
               type="button"

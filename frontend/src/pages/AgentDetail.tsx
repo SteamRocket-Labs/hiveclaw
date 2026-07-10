@@ -95,6 +95,7 @@ import {
 } from './agent-detail/sessionCommandResult';
 import LocalAgents from './LocalAgents';
 import LocalAgentChatSection from './agent-detail/LocalAgentChatSection';
+import { readAssignmentHandoff } from './assignmentHandoff';
 import './AgentDetail.css';
 
 // P8 IA (docs/agent-memory-md-first-spec.md §10): Knowledge remains the
@@ -553,6 +554,7 @@ function AgentDetailInner() {
         if (includeActiveRun) void queryClient.invalidateQueries({ queryKey: ['chat-active-run', agentId, sessionId] });
         void queryClient.invalidateQueries({ queryKey: ['chat-runtime-summary', agentId, sessionId] });
         void queryClient.invalidateQueries({ queryKey: ['chat-session-work-ledger', agentId, sessionId] });
+        void queryClient.invalidateQueries({ queryKey: ['chat-session-workbench', agentId, sessionId] });
     };
 
     const setActiveRunState = (key: SessionRuntimeKey, run: SessionRunState | null) => {
@@ -1407,6 +1409,8 @@ function AgentDetailInner() {
     }, [sessionMessageStore]);
     const [chatInput, setChatInput] = useState('');
     const [planModeRequested, setPlanModeRequested] = useState(false);
+    const [goalModeRequested, setGoalModeRequested] = useState(false);
+    const goalStartRequestRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
     const [sessionPermissionMode, setSessionPermissionMode] = useState<SessionPermissionMode>(DEFAULT_SESSION_PERMISSION_MODE);
     const [sessionCommandControl, setSessionCommandControl] = useState<SessionCommandControlState | null>(null);
     const [projectionTailScrollNonce, setProjectionTailScrollNonce] = useState(0);
@@ -1449,7 +1453,23 @@ function AgentDetailInner() {
                 nextScopeKey: planModeScopeKey,
             }),
         );
+        setGoalModeRequested(false);
     }, [planModeScopeKey]);
+    const consumedAssignmentHandoffRef = useRef<string | null>(null);
+    useEffect(() => {
+        const handoff = readAssignmentHandoff(location.state);
+        if (!handoff || !requestedSessionId || String(activeSession?.id || '') !== String(requestedSessionId)) return;
+        const handoffKey = `${requestedSessionId}:${handoff.intent}:${handoff.content}`;
+        if (consumedAssignmentHandoffRef.current === handoffKey) return;
+        consumedAssignmentHandoffRef.current = handoffKey;
+        setChatInput(handoff.content);
+        setPlanModeRequested(handoff.intent === 'plan');
+        setGoalModeRequested(handoff.intent === 'goal');
+        navigate(
+            { pathname: location.pathname, search: location.search, hash: location.hash },
+            { replace: true, state: null },
+        );
+    }, [activeSession?.id, location.hash, location.pathname, location.search, location.state, navigate, requestedSessionId]);
     useEffect(() => {
         setSessionPermissionMode(sessionPermissionModeFromSession(activeSession));
     }, [
@@ -2029,6 +2049,7 @@ function AgentDetailInner() {
         if (!chatInput.trim() && attachedFiles.length === 0) return;
         
         let userMsg = chatInput.trim();
+        const goalObjective = userMsg;
         let contentForLLM = userMsg;
         let displayFiles = '';
         const attachmentPayload = attachedFiles.map((file) => ({
@@ -2039,7 +2060,7 @@ function AgentDetailInner() {
             conversion: file.conversion || null,
         }));
 
-        if (attachedFiles.length === 0) {
+        if (attachedFiles.length === 0 && !goalModeRequested) {
             let parsedSlashCommand: ReturnType<typeof parseSlashCommandInput> = null;
             try {
                 parsedSlashCommand = parseSlashCommandInput(userMsg);
@@ -2167,15 +2188,46 @@ function AgentDetailInner() {
         }
 
         const fileName = attachedFiles.map(f => f.name).join(', ');
+        let completedGoalRequestId: string | null = null;
         try {
-            const started = await startRunForActiveSession({
-                content: contentForLLM,
-                display_content: userMsg,
-                file_name: fileName,
-                attachments: attachmentPayload,
-                plan_mode_requested: planModeRequested,
-                permission_mode: sessionPermissionMode,
-            });
+            let started: { session: ChatSession; run: SessionRun } | null;
+            if (goalModeRequested) {
+                const goalSession = await ensureDurableActiveSession();
+                if (!goalSession?.id) return;
+                const goalFingerprint = JSON.stringify([
+                    String(goalSession.id),
+                    contentForLLM,
+                    userMsg,
+                    attachmentPayload.map((attachment) => [attachment.name, attachment.path]),
+                ]);
+                const previousGoalRequest = goalStartRequestRef.current;
+                const goalRequestId = previousGoalRequest?.fingerprint === goalFingerprint
+                    ? previousGoalRequest.requestId
+                    : globalThis.crypto.randomUUID();
+                goalStartRequestRef.current = { fingerprint: goalFingerprint, requestId: goalRequestId };
+                const goal = await ccParityApi.startGoal(id, String(goalSession.id), {
+                    request_id: goalRequestId,
+                    objective: goalObjective || (fileName ? `Analyze ${fileName}` : contentForLLM.slice(0, 160)),
+                    content: contentForLLM,
+                    display_content: userMsg,
+                    file_name: fileName,
+                    attachments: attachmentPayload,
+                    start_immediately: true,
+                });
+                const run = goal.run as SessionRun | null | undefined;
+                if (!run?.run_id) throw new Error(t('agent.chat.goalStartFailed', 'The goal was created but its first turn did not start.'));
+                completedGoalRequestId = goalRequestId;
+                started = { session: goalSession as ChatSession, run };
+            } else {
+                started = await startRunForActiveSession({
+                    content: contentForLLM,
+                    display_content: userMsg,
+                    file_name: fileName,
+                    attachments: attachmentPayload,
+                    plan_mode_requested: planModeRequested,
+                    permission_mode: sessionPermissionMode,
+                });
+            }
             if (!started?.session?.id) return;
             const runSessionId = String(started.session.id);
             const activeRuntimeKey = buildSessionRuntimeKey(id, runSessionId);
@@ -2193,8 +2245,12 @@ function AgentDetailInner() {
             setChatInput('');
             setAttachedFiles([]);
             setPlanModeRequested(false);
+            setGoalModeRequested(false);
             setActiveRunState(activeRuntimeKey, { runId: started.run.run_id, status: started.run.status || 'running' });
             invalidateSessionRuntimeQueries(id, runSessionId);
+            if (completedGoalRequestId && goalStartRequestRef.current?.requestId === completedGoalRequestId) {
+                goalStartRequestRef.current = null;
+            }
         } catch (err: any) {
             setIsWaiting(false);
             setIsStreaming(false);
@@ -2515,6 +2571,11 @@ function AgentDetailInner() {
     });
     const handleTogglePlanMode = React.useCallback(() => {
         setPlanModeRequested((value) => !value);
+        setGoalModeRequested(false);
+    }, []);
+    const handleToggleGoalMode = React.useCallback(() => {
+        setGoalModeRequested((value) => !value);
+        setPlanModeRequested(false);
     }, []);
     const handleDismissSessionCommandControl = React.useCallback(() => {
         setSessionCommandControl(null);
@@ -2896,6 +2957,8 @@ function AgentDetailInner() {
                             activeRunStatus={currentActiveRunState?.status || null}
                             planModeRequested={planModeRequested}
                             onTogglePlanMode={handleTogglePlanMode}
+                            goalModeRequested={goalModeRequested}
+                            onToggleGoalMode={handleToggleGoalMode}
                             sessionPermissionMode={sessionPermissionMode}
                             onSetSessionPermissionMode={handleSetSessionPermissionMode}
                             sessionCommandControl={sessionCommandControl}

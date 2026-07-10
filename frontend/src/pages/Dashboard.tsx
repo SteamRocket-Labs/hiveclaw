@@ -4,23 +4,20 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { agentApi } from '../api/domains/agents';
-import { taskApi } from '../api/domains/tasks';
 import { activityApi } from '../api/domains/activity';
+import { chatApi, type ChatSession } from '../api/domains/chat';
 import type { ToolFailureSummary } from '../api/domains/activity';
-import type { Agent, Task } from '../types';
+import type { Agent } from '../types';
+import {
+    buildAssignmentHandoff,
+    buildAssignmentSessionTitle,
+    type AssignmentIntent,
+} from './assignmentHandoff';
 import './Dashboard.css';
 
 /* ────── Inline SVG Icons (monochrome) ────── */
 
 const Icons = {
-    users: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="6" cy="5" r="2.5" />
-            <path d="M1.5 14v-1a3.5 3.5 0 017 0v1" />
-            <circle cx="11.5" cy="5.5" r="2" />
-            <path d="M14.5 14v-.5a3 3 0 00-3-3" />
-        </svg>
-    ),
     tasks: (
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <rect x="2" y="2" width="12" height="12" rx="2" />
@@ -30,12 +27,6 @@ const Icons = {
     zap: (
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M8.5 1.5L3 9h4.5l-.5 5.5L13 7H8.5l.5-5.5z" />
-        </svg>
-    ),
-    clock: (
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="8" cy="8" r="6" />
-            <path d="M8 4.5V8l2.5 1.5" />
         </svg>
     ),
     activity: (
@@ -71,15 +62,6 @@ const timeAgo = (dateStr: string | undefined, t: any) => {
     return t('dashboard.daysAgo', { count: Math.floor(hours / 24) });
 };
 
-const priorityColor = (p: string) => {
-    switch (p) {
-        case 'urgent': return 'var(--error)';
-        case 'high': return 'var(--warning)';
-        case 'medium': return 'var(--accent-primary)';
-        default: return 'var(--text-tertiary)';
-    }
-};
-
 const statusLabel = (s: string, t: any) => {
     switch (s) {
         case 'running': return t('dashboard.status.running');
@@ -89,16 +71,6 @@ const statusLabel = (s: string, t: any) => {
         case 'creating': return t('dashboard.status.creating');
         case 'disconnected': return t('dashboard.status.disconnected');
         default: return s;
-    }
-};
-
-const statusColor = (s: string) => {
-    switch (s) {
-        case 'running': return 'var(--status-running)';
-        case 'idle': return 'var(--status-idle)';
-        case 'error': return 'var(--status-error)';
-        case 'stopped': return 'var(--status-stopped)';
-        default: return 'var(--text-tertiary)';
     }
 };
 
@@ -253,148 +225,6 @@ export function ToolFailureOverview({
     );
 }
 
-/* ────── Summary Stats Bar ────── */
-
-function StatsBar({ agents, allTasks }: { agents: Agent[]; allTasks: Task[] }) {
-    const { t } = useTranslation();
-    const totalAgents = agents.length;
-    const activeAgents = agents.filter(a => a.status === 'running' || a.status === 'idle').length;
-    const pendingTasks = allTasks.filter(t => t.status === 'pending' || t.status === 'doing').length;
-    const completedToday = allTasks.filter(t => {
-        if (t.status !== 'done' || !t.completed_at) return false;
-        const today = new Date();
-        const completed = new Date(t.completed_at);
-        return completed.toDateString() === today.toDateString();
-    }).length;
-    const totalTokensToday = agents.reduce((sum, a) => sum + (a.tokens_used_today || 0), 0);
-    const recentlyActive = agents.filter(a => {
-        if (!a.last_active_at) return false;
-        return Date.now() - new Date(a.last_active_at).getTime() < 3600000;
-    }).length;
-
-    const stats = [
-        { icon: Icons.users, label: t('dashboard.stats.agents'), value: totalAgents, sub: t('dashboard.stats.online', { count: activeAgents }) },
-        { icon: Icons.tasks, label: t('dashboard.stats.activeTasks'), value: pendingTasks, sub: t('dashboard.stats.completedToday', { count: completedToday }) },
-        { icon: Icons.zap, label: t('dashboard.stats.todayTokens'), value: formatTokens(totalTokensToday), sub: t('dashboard.stats.allAgentsTotal') },
-        { icon: Icons.clock, label: t('dashboard.stats.recentlyActive'), value: recentlyActive, sub: t('dashboard.stats.lastHour') },
-    ];
-
-    return (
-        <div className="dashboard-stats-bar">
-            {stats.map((s, i) => (
-                <div key={i} className="dashboard-stat-cell">
-                    <div className="dashboard-stat-label">
-                        <span className="dashboard-stat-icon">{s.icon}</span> {s.label}
-                    </div>
-                    <div className="dashboard-stat-value">
-                        {s.value}
-                    </div>
-                    <div className="dashboard-stat-sub">{s.sub}</div>
-                </div>
-            ))}
-        </div>
-    );
-}
-
-/* ────── Agent Row ────── */
-
-function AgentRow({ agent, tasks, recentActivity }: {
-    agent: Agent;
-    tasks: Task[];
-    recentActivity: any[];
-}) {
-    const { t } = useTranslation();
-    const navigate = useNavigate();
-    const pendingTasks = tasks.filter(t => t.status === 'pending' || t.status === 'doing');
-    const latestActivity = recentActivity[0];
-
-    // Token usage bar
-    const maxTokens = agent.max_tokens_per_day || 0;
-    const usedTokens = agent.tokens_used_today || 0;
-    const tokenPct = maxTokens > 0 ? Math.min(100, (usedTokens / maxTokens) * 100) : 0;
-
-    return (
-        <div
-            onClick={() => navigate(`/agents/${agent.id}`)}
-            className="dashboard-agent-row"
-        >
-            {/* Agent Info */}
-            <div className="dashboard-agent-info">
-                <div className="dashboard-agent-avatar">
-                    {Icons.bot}
-                </div>
-                <div className="dashboard-min0">
-                    <div className="dashboard-agent-name">
-                        {agent.name}
-                        <span className="dashboard-agent-status" style={{ color: statusColor(agent.status) }}>
-                            <span className="dashboard-status-dot" style={{ background: statusColor(agent.status) }} />
-                            {statusLabel(agent.status, t)}
-                        </span>
-                    </div>
-                    <div className="dashboard-agent-role">
-                        {agent.role_description || '-'}
-                    </div>
-                </div>
-            </div>
-
-            {/* Latest Activity / Tasks */}
-            <div className="dashboard-min0">
-                {latestActivity ? (
-                    <div className="dashboard-activity-line">
-                        <span className="dashboard-activity-time">
-                            {timeAgo(latestActivity.created_at, t)}
-                        </span>
-                        {latestActivity.summary}
-                    </div>
-                ) : (
-                    <div className="dashboard-muted-row">{t('dashboard.noActivity')}</div>
-                )}
-                {pendingTasks.length > 0 && (
-                    <div className="dashboard-task-chips">
-                        {pendingTasks.slice(0, 3).map(t => (
-                            <span key={t.id} className="dashboard-task-chip">
-                                <span className="dashboard-priority-dot" style={{ background: priorityColor(t.priority) }} />
-                                {t.title}
-                            </span>
-                        ))}
-                        {pendingTasks.length > 3 && (
-                            <span className="dashboard-task-more">
-                                +{pendingTasks.length - 3}
-                            </span>
-                        )}
-                    </div>
-                )}
-            </div>
-
-            {/* Token Usage */}
-            <div>
-                <div className="dashboard-token-line">
-                    {formatTokens(usedTokens)}
-                    {maxTokens > 0 && <span className="dashboard-token-max"> / {formatTokens(maxTokens)}</span>}
-                </div>
-                {maxTokens > 0 ? (
-                    <div className="dashboard-token-track">
-                        <div
-                            className="dashboard-token-fill"
-                            style={{
-                                width: `${tokenPct}%`,
-                                background: tokenPct > 80 ? 'var(--error)' : tokenPct > 50 ? 'var(--warning)' : 'var(--text-tertiary)',
-                            }}
-                        />
-                    </div>
-                ) : (
-                    <div className="dashboard-token-nolimit">{t('dashboard.noLimit')}</div>
-                )}
-            </div>
-
-            {/* Last Active */}
-            <div className="dashboard-agent-lastactive">
-                {timeAgo(agent.last_active_at, t)}
-            </div>
-        </div>
-    );
-}
-
 /* ────── Recent Activity Feed ────── */
 
 function ActivityFeed({ activities, agents }: { activities: any[]; agents: Agent[] }) {
@@ -436,7 +266,14 @@ type WorkspaceHomeAction = {
     description: string;
     to: string;
     icon: ReactNode;
+    kind?: 'assign';
 };
+
+export interface AssignWorkRequest {
+    agentId: string;
+    content: string;
+    intent: AssignmentIntent;
+}
 
 function SectionHeader({ eyebrow, title, action }: { eyebrow: string; title: string; action?: React.ReactNode }) {
     return (
@@ -468,21 +305,49 @@ function EmptyWorkspaceState({ onNavigate }: { onNavigate: (path: string) => voi
 export function DashboardHomeShell({
     agents,
     isLoading,
-    allTasks,
+    recentSessions,
     allActivities,
-    agentActivities,
     toolFailureSnapshots,
     onNavigate,
+    onAssignWork,
+    initialAssignWorkOpen = false,
 }: {
     agents: Agent[];
     isLoading: boolean;
-    allTasks: Task[];
+    recentSessions: ChatSession[];
     allActivities: any[];
-    agentActivities: Record<string, any[]>;
     toolFailureSnapshots: AgentToolFailureSnapshot[];
     onNavigate: (path: string) => void;
+    onAssignWork?: (request: AssignWorkRequest) => Promise<void>;
+    initialAssignWorkOpen?: boolean;
 }) {
     const { t } = useTranslation();
+    const [assignWorkOpen, setAssignWorkOpen] = useState(initialAssignWorkOpen);
+    const [assignAgentId, setAssignAgentId] = useState(agents[0]?.id || '');
+    const [assignContent, setAssignContent] = useState('');
+    const [assignIntent, setAssignIntent] = useState<AssignmentIntent>('execute');
+    const [assignSubmitting, setAssignSubmitting] = useState(false);
+    const [assignError, setAssignError] = useState('');
+    useEffect(() => {
+        if (agents.some((agent) => agent.id === assignAgentId)) return;
+        setAssignAgentId(agents[0]?.id || '');
+    }, [agents, assignAgentId]);
+    const submitAssignment = async () => {
+        const content = assignContent.trim();
+        if (!assignAgentId || !content || !onAssignWork) {
+            setAssignError(t('dashboard.home.assignRequired', 'Choose an employee and describe the work.'));
+            return;
+        }
+        setAssignSubmitting(true);
+        setAssignError('');
+        try {
+            await onAssignWork({ agentId: assignAgentId, content, intent: assignIntent });
+        } catch (error) {
+            setAssignError(error instanceof Error ? error.message : t('dashboard.home.assignFailed', 'Could not start this work.'));
+        } finally {
+            setAssignSubmitting(false);
+        }
+    };
     const hour = new Date().getHours();
     const greeting = hour < 6
         ? t('dashboard.greeting.lateNight')
@@ -492,32 +357,18 @@ export function DashboardHomeShell({
                 ? t('dashboard.greeting.afternoon')
                 : t('dashboard.greeting.evening');
     const activeAgents = agents.filter(a => a.status === 'running' || a.status === 'idle');
-    const pendingTasks = allTasks.filter(task => task.status === 'pending' || task.status === 'doing');
-    const needsYou = pendingTasks
-        .filter(task => task.priority === 'urgent' || task.priority === 'high' || task.status === 'pending')
+    const recentWork = [...recentSessions]
+        .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())
         .slice(0, 4);
-    const inProgress = [
-        ...pendingTasks.filter(task => task.status === 'doing').slice(0, 4).map(task => ({
-            id: task.id,
-            title: task.title,
-            detail: agents.find(agent => agent.id === task.agent_id)?.name || task.agent_id,
-            badge: t('dashboard.labels.task', 'Task'),
-            to: `/agents/${task.agent_id}`,
-        })),
-        ...activeAgents.slice(0, Math.max(0, 4 - pendingTasks.filter(task => task.status === 'doing').length)).map(agent => ({
+    const inProgress = activeAgents.slice(0, 4).map(agent => ({
             id: agent.id,
             title: agent.name,
             detail: agent.role_description || t('employees.noRole', 'No role description yet'),
             badge: statusLabel(agent.status, t),
             to: `/agents/${agent.id}`,
-        })),
-    ].slice(0, 4);
+        }));
     const totalTokensToday = agents.reduce((sum, agent) => sum + (agent.tokens_used_today || 0), 0);
     const totalTokensMonth = agents.reduce((sum, agent) => sum + (agent.tokens_used_month || 0), 0);
-    const completedToday = allTasks.filter(task => {
-        if (task.status !== 'done' || !task.completed_at) return false;
-        return new Date(task.completed_at).toDateString() === new Date().toDateString();
-    }).length;
     const latestActivities = allActivities.slice(0, 5);
     const actionCards: WorkspaceHomeAction[] = [
         {
@@ -525,6 +376,7 @@ export function DashboardHomeShell({
             description: t('dashboard.home.assignWorkDesc', 'Choose a digital employee and start a new session.'),
             to: '/agents?assign=true',
             icon: Icons.tasks,
+            kind: 'assign',
         },
         {
             title: t('dashboard.home.automation', 'Automation'),
@@ -569,8 +421,8 @@ export function DashboardHomeShell({
                     <span className="workspace-home-kicker">{t('dashboard.home.eyebrow', 'My Workspace')}</span>
                     <h1>{greeting}</h1>
                     <p>
-                        {t('dashboard.home.summary', '{{attention}} items need confirmation, {{active}} digital employees are working.', {
-                            attention: needsYou.length,
+                        {t('dashboard.home.summary', '{{recent}} recent sessions, {{active}} digital employees are available.', {
+                            recent: recentWork.length,
                             active: activeAgents.length,
                         })}
                     </p>
@@ -586,8 +438,8 @@ export function DashboardHomeShell({
                         key={action.title}
                         type="button"
                         className="workspace-action-card"
-                        data-navigation-target={action.to}
-                        onClick={() => onNavigate(action.to)}
+                        data-navigation-target={action.kind === 'assign' ? 'assign-work-dialog' : action.to}
+                        onClick={() => action.kind === 'assign' ? setAssignWorkOpen(true) : onNavigate(action.to)}
                     >
                         <span className="workspace-action-icon">{action.icon}</span>
                         <strong>{action.title}</strong>
@@ -596,21 +448,78 @@ export function DashboardHomeShell({
                 ))}
             </section>
 
+            {assignWorkOpen && (
+                <div className="workspace-assign-backdrop" role="presentation">
+                    <section className="workspace-assign-dialog" role="dialog" aria-modal="true" aria-label={t('dashboard.home.assignWork', 'Assign work')}>
+                        <div className="workspace-assign-header">
+                            <div>
+                                <span className="workspace-home-kicker">{t('dashboard.home.newSession', 'New session')}</span>
+                                <h2>{t('dashboard.home.assignWork', 'Assign work')}</h2>
+                            </div>
+                            <button type="button" className="workspace-assign-close" aria-label={t('common.close', 'Close')} onClick={() => setAssignWorkOpen(false)}>×</button>
+                        </div>
+                        <label className="workspace-assign-field">
+                            <span>{t('dashboard.home.assignTo', 'Assign to')}</span>
+                            <select value={assignAgentId} onChange={(event) => setAssignAgentId(event.target.value)}>
+                                {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+                            </select>
+                        </label>
+                        <label className="workspace-assign-field">
+                            <span>{t('dashboard.home.request', 'Request')}</span>
+                            <textarea
+                                rows={6}
+                                value={assignContent}
+                                onChange={(event) => setAssignContent(event.target.value)}
+                                placeholder={t('dashboard.home.requestPlaceholder', 'Describe the outcome you want this employee to deliver.')}
+                            />
+                        </label>
+                        <div className="workspace-assign-field">
+                            <span>{t('dashboard.home.executionMode', 'Execution mode')}</span>
+                            <div className="workspace-assign-intents" role="radiogroup" aria-label={t('dashboard.home.executionMode', 'Execution mode')}>
+                                {([
+                                    ['execute', t('dashboard.home.executeNow', 'Execute now')],
+                                    ['plan', t('dashboard.home.planFirst', 'Plan first')],
+                                    ['goal', t('dashboard.home.runAsGoal', 'Run as goal')],
+                                ] as Array<[AssignmentIntent, string]>).map(([intent, label]) => (
+                                    <button
+                                        key={intent}
+                                        type="button"
+                                        role="radio"
+                                        aria-checked={assignIntent === intent}
+                                        className={assignIntent === intent ? 'is-selected' : ''}
+                                        onClick={() => setAssignIntent(intent)}
+                                    >
+                                        {label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        {assignError && <p className="workspace-assign-error" role="alert">{assignError}</p>}
+                        <div className="workspace-assign-actions">
+                            <button type="button" className="btn btn-ghost" onClick={() => setAssignWorkOpen(false)}>{t('common.cancel', 'Cancel')}</button>
+                            <button type="button" className="btn btn-primary" disabled={assignSubmitting || !assignContent.trim()} onClick={() => void submitAssignment()}>
+                                {assignSubmitting ? t('dashboard.home.starting', 'Starting…') : t('dashboard.home.openSession', 'Open session')}
+                            </button>
+                        </div>
+                    </section>
+                </div>
+            )}
+
             <div className="workspace-home-grid">
                 <section className="workspace-panel workspace-panel-wide">
-                    <SectionHeader eyebrow={t('dashboard.home.needsYouEyebrow', 'Needs you')} title={t('dashboard.home.needsYou', 'Needs you')} />
-                    {needsYou.length === 0 ? (
-                        <p className="workspace-muted">{t('dashboard.home.noNeedsYou', 'No pending confirmations right now.')}</p>
+                    <SectionHeader eyebrow={t('dashboard.home.recentWorkEyebrow', 'Sessions')} title={t('dashboard.home.recentWork', 'Recent work')} />
+                    {recentWork.length === 0 ? (
+                        <p className="workspace-muted">{t('dashboard.home.noRecentWork', 'No sessions yet. Assign work to get started.')}</p>
                     ) : (
                         <div className="workspace-list">
-                            {needsYou.map(task => (
-                                <button key={task.id} type="button" className="workspace-list-row" onClick={() => onNavigate(`/agents/${task.agent_id}`)}>
-                                    <span className={`workspace-priority-dot ${task.priority}`} />
+                            {recentWork.map(session => (
+                                <button key={session.id} type="button" className="workspace-list-row" onClick={() => onNavigate(`/agents/${session.agent_id}/sessions/${session.id}`)}>
+                                    <span className="workspace-status-dot" />
                                     <span>
-                                        <strong>{task.title}</strong>
-                                        <small>{agents.find(agent => agent.id === task.agent_id)?.name || task.agent_id}</small>
+                                        <strong>{session.title || t('agent.chat.session', 'Session')}</strong>
+                                        <small>{agents.find(agent => agent.id === session.agent_id)?.name || t('dashboard.home.digitalEmployee', 'Digital employee')}</small>
                                     </span>
-                                    <span className="workspace-row-badge">{t('dashboard.labels.task', 'Task')}</span>
+                                    <span className="workspace-row-badge">{timeAgo(session.updated_at, t)}</span>
                                 </button>
                             ))}
                         </div>
@@ -629,12 +538,12 @@ export function DashboardHomeShell({
                             <strong>{formatTokens(totalTokensMonth)}</strong>
                         </div>
                         <div>
-                            <span>{t('dashboard.stats.activeTasks')}</span>
-                            <strong>{pendingTasks.length}</strong>
+                            <span>{t('dashboard.home.sessions', 'Sessions')}</span>
+                            <strong>{recentSessions.length}</strong>
                         </div>
                         <div>
-                            <span>{t('dashboard.stats.completedToday', { count: completedToday })}</span>
-                            <strong>{completedToday}</strong>
+                            <span>{t('dashboard.stats.agents', 'Digital employees')}</span>
+                            <strong>{agents.length}</strong>
                         </div>
                     </div>
                 </section>
@@ -642,8 +551,8 @@ export function DashboardHomeShell({
                 <section className="workspace-panel workspace-panel-wide">
                     <SectionHeader
                         eyebrow={t('dashboard.home.inProgressEyebrow', 'In progress')}
-                        title={t('dashboard.home.inProgress', 'In progress')}
-                        action={<button className="workspace-text-action" onClick={() => onNavigate('/automations')}>{t('dashboard.home.viewAllTasks', 'View all')}</button>}
+                        title={t('dashboard.home.inProgress', 'Available employees')}
+                        action={<button className="workspace-text-action" onClick={() => onNavigate('/agents')}>{t('dashboard.home.viewAllEmployees', 'View all')}</button>}
                     />
                     <div className="workspace-list">
                         {inProgress.length === 0 ? (
@@ -694,34 +603,37 @@ export default function Dashboard() {
         refetchInterval: 60000,
     });
 
-    const [allTasks, setAllTasks] = useState<Task[]>([]);
+    const [recentSessions, setRecentSessions] = useState<ChatSession[]>([]);
     const [allActivities, setAllActivities] = useState<any[]>([]);
-    const [agentActivities, setAgentActivities] = useState<Record<string, any[]>>({});
     const [agentToolFailures, setAgentToolFailures] = useState<Record<string, ToolFailureSummary>>({});
 
     useEffect(() => {
         if (agents.length === 0) return;
         const fetchData = async () => {
             try {
-                const taskResults = await Promise.allSettled(agents.map(a => taskApi.list(a.id)));
-                const tasks: Task[] = [];
-                taskResults.forEach(r => { if (r.status === 'fulfilled') tasks.push(...r.value); });
-                setAllTasks(tasks);
-            } catch (e) { console.error('Failed to fetch tasks:', e); }
+                const sessionResults = await Promise.allSettled(agents.map((agent) => chatApi.listSessions(agent.id)));
+                const sessions: ChatSession[] = [];
+                sessionResults.forEach((result) => {
+                    if (result.status !== 'fulfilled') return;
+                    sessions.push(...result.value.filter((session) => (
+                        (!session.session_kind || session.session_kind === 'human_chat')
+                        && (!session.actor_type || session.actor_type === 'user')
+                        && (!session.listed_surface || session.listed_surface === 'chat')
+                    )));
+                });
+                setRecentSessions(sessions);
+            } catch (e) { console.error('Failed to fetch recent sessions:', e); }
 
             try {
                 const actResults = await Promise.allSettled(agents.map(a => activityApi.list(a.id, 5)));
                 const activities: any[] = [];
-                const perAgent: Record<string, any[]> = {};
                 actResults.forEach((r, i) => {
                     if (r.status === 'fulfilled') {
-                        perAgent[agents[i].id] = r.value;
                         activities.push(...r.value.map((v: any) => ({ ...v, agent_id: agents[i].id })));
                     }
                 });
                 activities.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
                 setAllActivities(activities.slice(0, 20));
-                setAgentActivities(perAgent);
             } catch (e) { console.error('Failed to fetch activities:', e); }
 
             try {
@@ -748,15 +660,23 @@ export default function Dashboard() {
             summary: agentToolFailures[agent.id],
         }));
 
+    const assignWork = async ({ agentId, content, intent }: AssignWorkRequest) => {
+        const handoff = buildAssignmentHandoff(content, intent);
+        const session = await chatApi.createSession(agentId, buildAssignmentSessionTitle(handoff.content));
+        navigate(`/agents/${agentId}/sessions/${session.id}`, {
+            state: { assignmentDraft: handoff },
+        });
+    };
+
     return (
         <DashboardHomeShell
             agents={agents}
             isLoading={isLoading}
-            allTasks={allTasks}
+            recentSessions={recentSessions}
             allActivities={allActivities}
-            agentActivities={agentActivities}
             toolFailureSnapshots={toolFailureSnapshots}
             onNavigate={navigate}
+            onAssignWork={assignWork}
         />
     );
 }

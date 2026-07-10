@@ -270,7 +270,7 @@ async function collectAutomationRows(agents: Agent[]): Promise<AutomationHubRow[
         ]);
         return triggers.map((trigger: any) => {
           const status = automationStatus(trigger, attempts);
-          const name = String(trigger.display_title || trigger.name || trigger.reason || 'Automation task');
+          const name = String(trigger.display_title || trigger.name || trigger.reason || 'Automation');
           return {
             id: `${agent.id}:${trigger.id}`,
             agentId: agent.id,
@@ -468,10 +468,10 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
   const currentAutomationRows = automationRows.filter((row) => row.section === 'current');
   const pausedAutomationRows = automationRows.filter((row) => row.section === 'paused');
 
-  const createAutomationTask = async () => {
+  const createAutomation = async () => {
     const targetAgentId = selectedAutomationAgent || ownedAutomationAgents[0]?.id;
     if (!targetAgentId) {
-      setAutomationCreateError(t('featureHub.automationNoAgentSelected', 'Select an agent before creating a task.'));
+      setAutomationCreateError(t('featureHub.automationNoAgentSelected', 'Select an agent before creating an automation.'));
       return;
     }
     const selectedWorkflow = workflowDefinitionFromKey(wakeForm.workflowDefinitionKey, workflowDefinitions);
@@ -496,7 +496,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
       setShowAutomationCreate(false);
       await queryClient.invalidateQueries({ queryKey: ['feature-hub-automation-rows'] });
     } catch (error) {
-      setAutomationCreateError(apiErrorMessage(error, t('featureHub.automationCreateFailed', 'Could not create this automation task.')));
+      setAutomationCreateError(apiErrorMessage(error, t('featureHub.automationCreateFailed', 'Could not create this automation.')));
     }
   };
 
@@ -538,7 +538,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
           className="automation-create-dialog"
           role="dialog"
           aria-modal="true"
-          aria-label={t('featureHub.manualCreateTask', 'Manual create task')}
+          aria-label={t('featureHub.newAutomation', 'New automation')}
         >
           <div className="automation-create-header">
             <input
@@ -670,7 +670,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
               <button type="button" className="btn btn-ghost" onClick={() => setShowAutomationCreate(false)}>
                 {t('common.cancel', 'Cancel')}
               </button>
-              <button type="button" className="btn btn-primary" onClick={createAutomationTask}>
+              <button type="button" className="btn btn-primary" onClick={createAutomation}>
                 {t('common.create', 'Create')}
               </button>
             </div>
@@ -685,11 +685,11 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
       <div className="workbench-page automation-hub-page">
         <div className="automation-hub-header">
           <div>
-            <span className="workbench-eyebrow">{t('featureHub.automations.eyebrow', 'User automation tasks')}</span>
+            <span className="workbench-eyebrow">{t('featureHub.automations.eyebrow', 'Scheduled and event-driven work')}</span>
             <h1 className="page-title">{t('featureHub.automations.title', 'Automations')}</h1>
           </div>
           <button type="button" className="btn btn-primary" onClick={() => setShowAutomationCreate(true)}>
-            {t('featureHub.manualCreateTask', 'Manual create task')}
+            {t('featureHub.newAutomation', 'New automation')}
           </button>
         </div>
         {renderAutomationCreateDialog()}
@@ -698,11 +698,11 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
           <div className="automation-hub-sections">
             <section className="automation-section">
               <h2>{t('featureHub.automationCurrent', 'Current')}</h2>
-              {renderAutomationRows(currentAutomationRows, t('featureHub.automationNoCurrent', 'No current automation tasks.'))}
+              {renderAutomationRows(currentAutomationRows, t('featureHub.automationNoCurrent', 'No active automations.'))}
             </section>
             <section className="automation-section">
               <h2>{t('featureHub.automationPaused', 'Paused')}</h2>
-              {renderAutomationRows(pausedAutomationRows, t('featureHub.automationNoPaused', 'No paused automation tasks.'))}
+              {renderAutomationRows(pausedAutomationRows, t('featureHub.automationNoPaused', 'No paused automations.'))}
             </section>
           </div>
         )}

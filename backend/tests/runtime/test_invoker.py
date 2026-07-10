@@ -1484,7 +1484,8 @@ async def test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt(m
     )
 
     assert result.content == "done"
-    manifest = session_context.metadata["prompt_assembly_manifest"]
+    manifest = session_context.metadata["runtime_assembly_state"]["prompt_assembly_manifest"]
+    assert "prompt_assembly_manifest" not in session_context.metadata
     system_prompt = fake_client.calls[0]["messages"][0].content
     dynamic_notice = fake_client.calls[0]["messages"][-1].content
 
@@ -1508,7 +1509,11 @@ async def test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt(m
     section_decisions = {item["candidate_id"]: item for item in dynamic_section_ledger["sections"]}
     assert section_decisions["dynamic:runtime:runtime_metadata"]["selected"] is True
     assert section_decisions["dynamic:skill:skill_catalog"]["budget_key"] == "skill_catalog_budget_chars"
-    assert session_context.metadata["dynamic_context_section_ledger"] == dynamic_section_ledger
+    assert (
+        session_context.metadata["runtime_assembly_state"]["dynamic_context_section_ledger"]
+        == dynamic_section_ledger
+    )
+    assert "dynamic_context_section_ledger" not in session_context.metadata
     artifacts = session_context.metadata["context_artifacts"]
     artifact_kinds = {item["kind"] for item in artifacts}
     assert {"frozen_prefix", "skill_catalog"} <= artifact_kinds

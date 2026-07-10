@@ -113,10 +113,14 @@ def _context_policy_payload(*, active_run: Any, session: ChatSession) -> dict[st
 
 
 def _prompt_manifest_payload(*, active_run: Any, session: ChatSession, turn_envelope: dict[str, Any]) -> dict[str, Any]:
+    from app.runtime.context import runtime_assembly_metadata
+
     active_metadata = _active_run_metadata(active_run)
     session_metadata = _session_metadata(session)
-    runtime_manifest = _mapping(active_metadata.get("prompt_assembly_manifest")) or _mapping(
-        session_metadata.get("prompt_assembly_manifest")
+    runtime_manifest = _mapping(
+        runtime_assembly_metadata(active_metadata).get("prompt_assembly_manifest")
+    ) or _mapping(
+        runtime_assembly_metadata(session_metadata).get("prompt_assembly_manifest")
     )
     if runtime_manifest:
         return _compact_runtime_task_metadata(runtime_manifest)

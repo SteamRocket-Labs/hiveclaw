@@ -127,8 +127,13 @@ def _session_memory_metadata(ctx: HookContext) -> dict:
 
 
 def _t0_safe_metadata(metadata: dict | None) -> dict:
+    from app.runtime.context import runtime_assembly_metadata
+
     safe = dict(metadata or {})
-    safe.pop("activation_events", None)
+    assembly_state = runtime_assembly_metadata(safe)
+    if assembly_state:
+        assembly_state.pop("activation_events", None)
+        safe["runtime_assembly_state"] = assembly_state
     return safe
 
 
@@ -766,7 +771,9 @@ def _unique_text(values: list[str]) -> list[str]:
 
 async def _summarize_activation_feedback_on_turn_stop(ctx: HookContext) -> None:
     """TURN_STOP → summarize activation feedback before T0 sealing."""
-    raw_events = ctx.metadata.get("activation_events")
+    from app.runtime.context import runtime_assembly_metadata
+
+    raw_events = runtime_assembly_metadata(ctx.metadata).get("activation_events")
     events = [dict(item) for item in raw_events if isinstance(item, dict)] if isinstance(raw_events, list | tuple) else []
     if not events:
         return

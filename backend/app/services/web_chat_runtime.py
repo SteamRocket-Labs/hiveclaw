@@ -511,8 +511,8 @@ def _runtime_prompt_metadata_update(runtime_session_context: Any) -> dict[str, A
         "active_tool_names",
         "context_policy",
         "deferred_tool_names",
-        "prompt_assembly_manifest",
         "prompt_sections",
+        "runtime_assembly_state",
     )
     return {key: metadata[key] for key in keys if key in metadata}
 

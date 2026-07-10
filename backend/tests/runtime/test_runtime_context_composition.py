@@ -139,11 +139,11 @@ def test_runtime_context_attaches_runtime_assembly_state() -> None:
     assert state["available_deferred_tools"] == ["web_search"]
     assert state["skill_catalog_ranking"] == [{"skill_name": "research", "score": 0.9}]
     assert state["prompt_assembly_manifest"]["schema"] == "hive.ccplus.prompt_assembly_manifest.v1"
-    assert session.metadata["prompt_assembly_manifest"] == state["prompt_assembly_manifest"]
-    assert session.metadata["dynamic_context_section_ledger"] == {"schema": "sections", "sections": []}
+    assert "prompt_assembly_manifest" not in session.metadata
+    assert "dynamic_context_section_ledger" not in session.metadata
 
 
-def test_runtime_assembly_state_mirrors_activation_candidates() -> None:
+def test_runtime_assembly_state_owns_activation_candidates_without_mirror() -> None:
     from app.runtime.activation_candidates import ActivationCandidate, ActivationScore
 
     session = SessionContext(session_id="activation-assembly")
@@ -157,11 +157,11 @@ def test_runtime_assembly_state_mirrors_activation_candidates() -> None:
     state.record_activation_candidates([candidate.to_manifest()])
 
     metadata_state = session.metadata["runtime_assembly_state"]
-    assert session.metadata["activation_candidates"] == [candidate.to_manifest()]
+    assert "activation_candidates" not in session.metadata
     assert metadata_state["activation_candidates"] == [candidate.to_manifest()]
 
 
-def test_tool_result_ledger_mirrors_into_runtime_assembly_state() -> None:
+def test_tool_result_ledger_writes_only_runtime_assembly_state() -> None:
     from app.runtime.tool_result_ledger import append_tool_result_ledger_entry
 
     session = SessionContext(session_id="tool-ledger")
@@ -170,12 +170,12 @@ def test_tool_result_ledger_mirrors_into_runtime_assembly_state() -> None:
 
     append_tool_result_ledger_entry(session, entry)
 
-    assert session.metadata["tool_result_ledger"] == [entry]
+    assert "tool_result_ledger" not in session.metadata
     assert state.to_metadata()["tool_result_ledger"] == [entry]
     assert session.metadata["runtime_assembly_state"]["tool_result_ledger"] == [entry]
 
 
-def test_cache_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
+def test_cache_decision_ledger_writes_only_runtime_assembly_state() -> None:
     from app.runtime.decision_ledger import append_cache_decision_entry, build_cache_decision_entry
 
     session = SessionContext(session_id="cache-ledger")
@@ -191,11 +191,11 @@ def test_cache_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
 
     assert entry["cache_key_hash"]
     assert entry["cache_key"] == "[redacted]"
-    assert session.metadata["cache_decision_ledger"] == [entry]
+    assert "cache_decision_ledger" not in session.metadata
     assert session.metadata["runtime_assembly_state"]["cache_decision_ledger"] == [entry]
 
 
-def test_runtime_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
+def test_runtime_decision_ledger_writes_only_runtime_assembly_state() -> None:
     from app.runtime.decision_ledger import append_runtime_decision_entry, build_runtime_decision_entry
 
     session = SessionContext(session_id="runtime-decision-ledger")
@@ -211,11 +211,11 @@ def test_runtime_decision_ledger_mirrors_into_runtime_assembly_state() -> None:
     append_runtime_decision_entry(session, entry)
 
     assert entry["schema"] == "hive.ccplus.runtime_decision.v1"
-    assert session.metadata["runtime_decision_ledger"] == [entry]
+    assert "runtime_decision_ledger" not in session.metadata
     assert session.metadata["runtime_assembly_state"]["runtime_decision_ledger"] == [entry]
 
 
-def test_runtime_reminder_candidate_mirrors_into_runtime_assembly_state() -> None:
+def test_runtime_reminder_candidate_writes_only_runtime_assembly_state() -> None:
     from app.runtime.runtime_reminder_candidate import append_runtime_reminder_candidate
 
     session = SessionContext(session_id="runtime-reminder-ledger")
@@ -236,8 +236,27 @@ def test_runtime_reminder_candidate_mirrors_into_runtime_assembly_state() -> Non
     assert candidate["priority"] == 100
     assert candidate["consumed_at"] == "round:0"
     assert candidate["candidate_ref"]["candidate_id"].startswith("runtime_reminder:plan_mode_full:")
-    assert session.metadata["runtime_reminder_candidates"] == [candidate]
+    assert "runtime_reminder_candidates" not in session.metadata
     assert session.metadata["runtime_assembly_state"]["runtime_reminder_candidates"] == [candidate]
+
+
+def test_legacy_runtime_assembly_mirrors_are_promoted_once_and_removed() -> None:
+    legacy_entry = {"tool_name": "read_file", "status": "ok"}
+    session = SessionContext(
+        session_id="legacy-assembly",
+        metadata={
+            "tool_result_ledger": [legacy_entry],
+            "activation_events": [{"event_id": "activation-1"}],
+            "prompt_assembly_manifest": {"schema": "legacy-prompt"},
+        },
+    )
+
+    state = ensure_runtime_assembly_state(session)
+
+    assert state.tool_result_ledger == [legacy_entry]
+    assert state.activation_events == [{"event_id": "activation-1"}]
+    assert state.prompt_assembly_manifest == {"schema": "legacy-prompt"}
+    assert set(session.metadata) == {"runtime_assembly_state"}
 
 
 def test_codex_optimization_ledger_is_control_plane_only() -> None:

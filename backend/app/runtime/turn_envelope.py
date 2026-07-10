@@ -90,11 +90,14 @@ def build_turn_envelope(
     session: Any,
     active_run: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    from app.runtime.context import runtime_assembly_metadata
+
     meta = _metadata(active_run)
+    assembly_state = runtime_assembly_metadata(meta)
     permission_profile = _dict(meta.get("permission_profile"))
     context_policy = _dict(meta.get("context_policy"))
     prompt_sections = _list(meta.get("prompt_sections"))
-    context_usage_ledger = _dict(meta.get("context_usage_ledger"))
+    context_usage_ledger = _dict(assembly_state.get("context_usage_ledger"))
     return {
         "schema": "hive.ccplus.turn_envelope.v1",
         "turn_id": _str_or_none(meta.get("turn_id") or (active_run or {}).get("turn_id")),

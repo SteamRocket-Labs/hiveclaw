@@ -96,40 +96,6 @@ async def test_platform_admin_toggle_company_pins_target_tenant_before_agent_pau
 
 
 @pytest.mark.asyncio
-async def test_platform_admin_backfill_t2_bypasses_agent_lookup_then_pins_agent_tenant(monkeypatch):
-    from app import database
-    from app.api import admin as admin_api
-
-    agent_id = uuid4()
-    tenant_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, name="Target Agent")
-    db = _FakeDB(results=[_ScalarResult(agent)])
-    captured = {}
-
-    async def fake_backfill_missing_extractions(*args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return {"ok": True}
-
-    monkeypatch.setattr("app.services.extract_agent.backfill_missing_extractions", fake_backfill_missing_extractions)
-
-    result = await admin_api.backfill_agent_t2(
-        agent_id=agent_id,
-        days=3,
-        dry_run=True,
-        _admin=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=uuid4()),
-        db=db,
-    )
-
-    assert result == {"ok": True}
-    assert captured["args"][0] == agent_id
-    assert captured["kwargs"]["tenant_id"] == tenant_id
-    assert captured["kwargs"]["agent_name"] == "Target Agent"
-    assert any("SET LOCAL app.current_tenant_id = 'BYPASS'" in stmt for stmt in db.statements)
-    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in stmt for stmt in db.statements)
-    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
-
-
 async def test_platform_admin_backfill_prose_endpoint_is_retired(monkeypatch):
     """C7 cutover: the flat-T3 prose backfill admin endpoint reports retirement."""
     from app.api import admin as admin_api
@@ -146,5 +112,4 @@ async def test_platform_admin_backfill_prose_endpoint_is_retired(monkeypatch):
     )
 
     assert result["status"] == "retired"
-
 

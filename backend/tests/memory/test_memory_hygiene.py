@@ -16,6 +16,10 @@ def _seed_dirty_workspace(data_root: Path, agent_id: uuid.UUID) -> Path:
     )
     (workspace / "memory.sqlite3").write_text("retired sqlite store", encoding="utf-8")
     (mem / "memory.json").write_text('{"legacy": true}', encoding="utf-8")
+    learnings = mem / "learnings"
+    learnings.mkdir()
+    (learnings / "insights.md").write_text("# Insights\n- legacy atom\n", encoding="utf-8")
+    (learnings / ".backfill_cursor.json").write_text('{"backfilled_sessions": []}\n', encoding="utf-8")
     (workspace / "reflections.md").write_text("# dead reflection stub\n", encoding="utf-8")
     (mem / "reflections.md").write_text("# old reflection stub\n", encoding="utf-8")
     reflections_dir = mem / "reflections"
@@ -36,6 +40,15 @@ def test_agent_memory_hygiene_dry_run_reports_without_mutating(tmp_path: Path) -
     assert report["entries_migrated"] == 0  # flat-T3 prose backfill retired at the C7 cutover
     assert {item["path"] for item in report["retired_artifacts"]} == {"memory.sqlite3", "memory/memory.json"}
     assert {item["path"] for item in report["dead_stubs"]} == {"reflections.md", "memory/reflections.md"}
+    assert {item["path"] for item in report["legacy_learnings"]} == {
+        "memory/learnings/.backfill_cursor.json",
+        "memory/learnings/insights.md",
+    }
+    assert report["reconciliation"]["source_file_count"] == 6
+    assert report["reconciliation"]["source_bytes"] > 0
+    assert len(report["reconciliation"]["source_digest"]) == 64
+    assert report["reconciliation"]["verified"] is True
+    assert all(len(item["sha256_before"]) == 64 for item in report["legacy_learnings"])
     assert "[access_count=7]" in (workspace / "memory" / "t3" / "user.md").read_text(encoding="utf-8")
     assert (workspace / "memory.sqlite3").exists()
     assert (workspace / "memory" / "memory.json").exists()
@@ -58,6 +71,8 @@ def test_agent_memory_hygiene_apply_backfills_and_quarantines(tmp_path: Path) ->
     assert not (workspace / "memory" / "memory.json").exists()
     assert not (workspace / "reflections.md").exists()
     assert not (workspace / "memory" / "reflections.md").exists()
+    assert not (workspace / "memory" / "learnings" / "insights.md").exists()
+    assert not (workspace / "memory" / "learnings" / ".backfill_cursor.json").exists()
     assert (workspace / "memory" / "reflections" / "kept.jsonl").exists()
 
     feedback = (workspace / "memory" / "t3" / "user.md").read_text(encoding="utf-8")
@@ -70,6 +85,13 @@ def test_agent_memory_hygiene_apply_backfills_and_quarantines(tmp_path: Path) ->
     assert "memory.sqlite3" in archive
     assert "memory/memory.json" in archive
     assert "reflections.md" in archive
+    assert "memory/learnings/insights.md" in archive
+
+    reconciliation = report["reconciliation"]
+    assert reconciliation["source_file_count"] == reconciliation["quarantine_file_count"] == 6
+    assert reconciliation["source_bytes"] == reconciliation["quarantine_bytes"]
+    assert reconciliation["source_digest"] == reconciliation["quarantine_digest"]
+    assert reconciliation["verified"] is True
 
     quarantined_targets = {item["target"] for item in report["retired_artifacts"] + report["dead_stubs"]}
     for target in quarantined_targets:
@@ -87,8 +109,12 @@ def test_all_workspace_memory_hygiene_scans_only_uuid_agents(tmp_path: Path) -> 
 
     report = repair_all_memory_hygiene(tmp_path, dry_run=False)
 
-    assert report["schema"] == "memory_hygiene_report.v1"
+    assert report["schema"] == "memory_hygiene_report.v2"
     assert report["agents_scanned"] == 1
     assert report["agents_changed"] == 1
     assert report["entries_migrated"] == 0  # flat-T3 prose backfill retired at the C7 cutover
+    assert report["legacy_learnings"] == 2
+    assert report["source_file_count"] == report["quarantine_file_count"] == 6
+    assert report["source_bytes"] == report["quarantine_bytes"]
+    assert report["verified_agents"] == 1
     assert (ignored / "memory.sqlite3").exists()

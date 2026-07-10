@@ -517,20 +517,22 @@ async def test_turn_stop_summarizes_activation_feedback_before_t0_seal() -> None
         event=HookEvent.TURN_STOP,
         session_id="session-summary",
         metadata={
-            "activation_events": [
-                {
-                    "event_type": "tool_success",
-                    "query_id": "aq:summary",
-                    "candidate_id": "tool_schema:web_search:v1/test",
-                    "feedback": {"signal": "tool_success", "credit": 0.6},
-                },
-                {
-                    "event_type": "tool_failure",
-                    "query_id": "aq:summary",
-                    "candidate_id": "tool_schema:send_email:runtime",
-                    "feedback": {"signal": "tool_failure", "credit": -0.6},
-                },
-            ]
+            "runtime_assembly_state": {
+                "activation_events": [
+                    {
+                        "event_type": "tool_success",
+                        "query_id": "aq:summary",
+                        "candidate_id": "tool_schema:web_search:v1/test",
+                        "feedback": {"signal": "tool_success", "credit": 0.6},
+                    },
+                    {
+                        "event_type": "tool_failure",
+                        "query_id": "aq:summary",
+                        "candidate_id": "tool_schema:send_email:runtime",
+                        "feedback": {"signal": "tool_failure", "credit": -0.6},
+                    },
+                ]
+            }
         },
     )
 
@@ -576,15 +578,17 @@ async def test_turn_stop_seals_activation_feedback_summary_without_raw_events(mo
         metadata={
             "tenant_id": str(tenant_id),
             "reason": "invoke_complete",
-            "activation_events": [
-                {
-                    "event_type": "tool_success",
-                    "query_id": "aq:summary",
-                    "candidate_id": "tool_schema:web_search:v1/test",
-                    "candidate_ref": {"candidate_id": "tool_schema:web_search:v1/test"},
-                    "feedback": {"signal": "tool_success", "credit": 0.6},
-                }
-            ],
+            "runtime_assembly_state": {
+                "activation_events": [
+                    {
+                        "event_type": "tool_success",
+                        "query_id": "aq:summary",
+                        "candidate_id": "tool_schema:web_search:v1/test",
+                        "candidate_ref": {"candidate_id": "tool_schema:web_search:v1/test"},
+                        "feedback": {"signal": "tool_success", "credit": 0.6},
+                    }
+                ]
+            },
         },
     )
 
@@ -609,7 +613,7 @@ async def test_turn_stop_seals_activation_feedback_summary_without_raw_events(mo
 
 
 @pytest.mark.asyncio
-async def test_response_and_pre_compaction_do_not_call_legacy_extractor(monkeypatch, tmp_path) -> None:
+async def test_response_and_pre_compaction_only_update_canonical_projection(monkeypatch, tmp_path) -> None:
     from app.runtime import hooks_setup
 
     _patch_t0_root(monkeypatch, tmp_path)
@@ -619,15 +623,7 @@ async def test_response_and_pre_compaction_do_not_call_legacy_extractor(monkeypa
     def fake_update_session_memory(update_agent_id, payload):
         updates.append((update_agent_id, payload))
 
-    def fail_schedule(*_args, **_kwargs):
-        raise AssertionError("legacy extract_agent.schedule_extract must not be used by T0->T2 runtime hooks")
-
-    def fail_extract(*_args, **_kwargs):
-        raise AssertionError("legacy extract_agent.extract must not be used by T0->T2 runtime hooks")
-
     monkeypatch.setattr("app.runtime.hooks_setup.update_session_memory", fake_update_session_memory)
-    monkeypatch.setattr("app.services.extract_agent.extract_agent.schedule_extract", fail_schedule)
-    monkeypatch.setattr("app.services.extract_agent.extract_agent.extract", fail_extract)
 
     ctx = HookContext(
         event=HookEvent.RESPONSE_COMPLETE,

@@ -1027,7 +1027,8 @@ async def test_execute_tool_with_hooks_tracks_filesystem_facade_events(monkeypat
     assert session.prompt_prefix is None
     assert "prompt_cache_key" not in session.metadata
     assert session.metadata["prompt_cache_invalidated_reason"] == "fs_write:soul.md"
-    cache_decisions = session.metadata["cache_decision_ledger"]
+    cache_decisions = session.metadata["runtime_assembly_state"]["cache_decision_ledger"]
+    assert "cache_decision_ledger" not in session.metadata
     assert cache_decisions[-1]["cache_surface"] == "prompt_prefix"
     assert cache_decisions[-1]["decision"] == "invalidated"
     assert cache_decisions[-1]["invalidation_reason"] == "fs_write:soul.md"
@@ -1678,12 +1679,14 @@ async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
     session = SessionContext(session_id="session-ledger")
     session.metadata["turn_id"] = "turn-tool-success"
     session.metadata["intent_id"] = "intent-tool-success"
-    session.metadata["available_deferred_tool_candidates"] = [
-        {
-            "name": "web_search",
-            "candidate_ref": {"candidate_id": "tool_schema:web_search:v1/test", "kind": "tool_schema"},
-        }
-    ]
+    session.metadata["runtime_assembly_state"] = {
+        "available_deferred_tool_candidates": [
+            {
+                "name": "web_search",
+                "candidate_ref": {"candidate_id": "tool_schema:web_search:v1/test", "kind": "tool_schema"},
+            }
+        ]
+    }
     request = InvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1"),
         messages=[{"role": "user", "content": "search"}],
@@ -1720,7 +1723,7 @@ async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
     assert ledger_entry["result_kind"] == "evidence"
     assert ledger_entry["context_effect"] == "external_reference"
     assert ledger_entry["source_refs"] == ["truth://search/result", "query:memory systems"]
-    assert session.metadata["tool_result_ledger"][-1] == ledger_entry
+    assert session.metadata["runtime_assembly_state"]["tool_result_ledger"][-1] == ledger_entry
     activation_event = ledger_entry["followup_activation_events"][0]
     assert activation_event["event_type"] == "tool_success"
     assert activation_event["turn_id"] == "turn-tool-success"
@@ -1728,8 +1731,8 @@ async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
     assert activation_event["candidate_ref"]["candidate_id"] == "tool_schema:web_search:v1/test"
     assert activation_event["feedback"]["signal"] == "tool_success"
     assert activation_event["feedback"]["credit"] > 0
-    assert session.metadata["activation_events"][-1] == activation_event
     assert session.metadata["runtime_assembly_state"]["activation_events"][-1] == activation_event
+    assert "activation_events" not in session.metadata
 
 
 @pytest.mark.asyncio
@@ -1780,15 +1783,21 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_error(m
     policy = spans[-1]["metadata"]["runtime_failure_policy"]
     assert policy["failure_kind"] == "tool_failure"
     assert policy["safe_to_continue"] is True
-    ledger_policy = session.metadata["tool_result_ledger"][-1]["side_effects"]["runtime_failure_policy"]
+    ledger_policy = session.metadata["runtime_assembly_state"]["tool_result_ledger"][-1]["side_effects"][
+        "runtime_failure_policy"
+    ]
     assert ledger_policy == policy
-    activation_event = session.metadata["tool_result_ledger"][-1]["followup_activation_events"][0]
+    activation_event = session.metadata["runtime_assembly_state"]["tool_result_ledger"][-1][
+        "followup_activation_events"
+    ][0]
     assert activation_event["event_type"] == "tool_failure"
     assert activation_event["turn_id"] == "turn-tool-failure"
     assert activation_event["candidate_ref"]["candidate_id"].startswith("tool_schema:send_email:")
     assert activation_event["feedback"]["signal"] == "tool_failure"
     assert activation_event["feedback"]["credit"] < 0
-    assert session.metadata["activation_events"][-1] == activation_event
+    assert session.metadata["runtime_assembly_state"]["activation_events"][-1] == activation_event
+    assert "tool_result_ledger" not in session.metadata
+    assert "activation_events" not in session.metadata
 
 
 @pytest.mark.asyncio
@@ -1839,7 +1848,12 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_hook_bl
     assert policy["failure_kind"] == "hook_block"
     assert policy["requires_user"] is True
     assert policy["safe_to_continue"] is False
-    assert session.metadata["tool_result_ledger"][-1]["side_effects"]["runtime_failure_policy"] == policy
+    assert (
+        session.metadata["runtime_assembly_state"]["tool_result_ledger"][-1]["side_effects"][
+            "runtime_failure_policy"
+        ]
+        == policy
+    )
 
 
 @pytest.mark.asyncio

@@ -359,19 +359,16 @@ _KNOWLEDGE_TOOL_NAMES = {
 
 
 def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
+    from app.runtime.context import runtime_assembly_metadata
+
     metadata = _metadata_dict(getattr(session, "transcript_metadata_json", None))
-    assembly_state = _metadata_dict(metadata.get("runtime_assembly_state"))
-    prompt_manifest = _metadata_dict(
-        metadata.get("prompt_assembly_manifest") or assembly_state.get("prompt_assembly_manifest")
-    )
+    assembly_state = runtime_assembly_metadata(metadata)
+    prompt_manifest = _metadata_dict(assembly_state.get("prompt_assembly_manifest"))
     context_usage_ledger = _metadata_dict(
-        metadata.get("context_usage_ledger")
-        or prompt_manifest.get("context_usage_ledger")
-        or assembly_state.get("context_usage_ledger")
+        prompt_manifest.get("context_usage_ledger") or assembly_state.get("context_usage_ledger")
     )
     dynamic_context_section_ledger = _metadata_dict(
-        metadata.get("dynamic_context_section_ledger")
-        or prompt_manifest.get("dynamic_context_section_ledger")
+        prompt_manifest.get("dynamic_context_section_ledger")
         or assembly_state.get("dynamic_context_section_ledger")
     )
     categories = _metadata_list(context_usage_ledger.get("categories"))
@@ -379,16 +376,10 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
     selected_contexts = _metadata_list(prompt_manifest.get("selected_contexts"))
     suppressed_contexts = _metadata_list(prompt_manifest.get("suppressed_contexts"))
     dynamic_context_sections = _metadata_list(dynamic_context_section_ledger.get("sections"))
-    cache_decisions = _metadata_list(
-        metadata.get("cache_decision_ledger") or assembly_state.get("cache_decision_ledger")
-    )
-    agent_cycle_decisions = _metadata_list(
-        metadata.get("agent_cycle_decision_ledger") or assembly_state.get("agent_cycle_decision_ledger")
-    )
-    activation_candidates = _metadata_list(
-        metadata.get("activation_candidates") or assembly_state.get("activation_candidates")
-    )
-    tool_result_ledger = _metadata_list(metadata.get("tool_result_ledger") or assembly_state.get("tool_result_ledger"))
+    cache_decisions = _metadata_list(assembly_state.get("cache_decision_ledger"))
+    agent_cycle_decisions = _metadata_list(assembly_state.get("agent_cycle_decision_ledger"))
+    activation_candidates = _metadata_list(assembly_state.get("activation_candidates"))
+    tool_result_ledger = _metadata_list(assembly_state.get("tool_result_ledger"))
     knowledge_tool_results = [
         entry
         for entry in tool_result_ledger

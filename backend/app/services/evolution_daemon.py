@@ -139,7 +139,6 @@ async def run_heartbeat_evolution_maintenance(
     report: dict[str, object] = {
         "skill_distillation": None,
         "skill_curator": None,
-        "scene_wiki_curation": None,
         "dream_triggered": False,
         "t3_normalization": None,
         "enhancement_sync": None,
@@ -171,16 +170,6 @@ async def run_heartbeat_evolution_maintenance(
             report["skill_curator"] = _maybe_run_skill_curator(workspace)
     except Exception as exc:
         logger.warning("[EvolutionDaemon] Skill maintenance setup failed for {}: {}", agent_id, exc)
-
-    try:
-        from app.services.memory_curation import run_scene_wiki_curation_tick
-
-        curation_summary = await run_scene_wiki_curation_tick(agent_id, tenant_id)
-        report["scene_wiki_curation"] = curation_summary
-        if curation_summary.get("status") == "ran":
-            logger.info("[EvolutionDaemon] Scene/wiki curation for {}: {}", agent_id, curation_summary)
-    except Exception as exc:
-        logger.warning("[EvolutionDaemon] Scene/wiki curation failed for {}: {}", agent_id, exc)
 
     try:
         from app.services.auto_dream import record_dream_activity, run_dream, should_dream

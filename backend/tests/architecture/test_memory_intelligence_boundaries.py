@@ -41,12 +41,12 @@ def test_trigger_daemon_uses_trigger_end_hook_not_legacy_evolution_feedback() ->
 
 
 def test_semantic_memory_lanes_hold_when_llm_semantics_are_unavailable() -> None:
-    extract_agent = _read("app/services/extract_agent.py")
+    segment_package = _read("app/memory/t2/segment_package.py")
     learning_brain = _read("app/services/fast_reflection_learning_brain.py")
     fast_reflection = _read("app/services/fast_reflection_service.py")
 
-    assert "LLM primary" in extract_agent
-    assert "legacy compatibility" in extract_agent
+    assert "Memory Gate" in segment_package
+    assert "Platform Gate" in segment_package
     assert "mechanical_fallback" not in fast_reflection
     assert "degraded_session_only" not in fast_reflection
     assert "learning brain" in learning_brain.lower()
@@ -60,7 +60,6 @@ def test_no_second_semantic_truth_sources_are_writable() -> None:
 
     assert not (_P("app/memory/understanding_store.py").exists())
     understanding_store = 'record() is disabled contradict() writes are disabled'  # retired module contract
-    extract_agent = _read("app/services/extract_agent.py")
     heartbeat = _read("app/services/heartbeat.py")
     retriever = _read("app/memory/retriever.py")
 
@@ -70,9 +69,9 @@ def test_no_second_semantic_truth_sources_are_writable() -> None:
     # Retired outright in the F slimming pass — nonexistence is the guarantee.
     assert not _P("app/services/extract_queue_replay.py").exists()
     assert not _P("app/services/self_evolution_audit.py").exists()
-    assert "HIVE_ENABLE_LEGACY_T2_BACKFILL" in extract_agent
-    assert "schedule_extract disabled" in extract_agent
-    assert "canonical T2 uses Segment Packages" in extract_agent
+    assert not _P("app/services/extract_agent.py").exists()
+    assert not _P("app/services/extract_queue.py").exists()
+    assert not _P("app/memory/t2_store.py").exists()
     assert "load_t2_entries" not in heartbeat
     assert "include_derived_sources" not in retriever  # derived wiki opt-in retired at C7
     assert "source_type\": \"understanding_store\"" not in retriever

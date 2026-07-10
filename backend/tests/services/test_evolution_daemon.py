@@ -252,6 +252,15 @@ def test_heartbeat_source_no_longer_owns_peripheral_evolution_jobs() -> None:
     assert "sync_t3_to_memory_enhancement" not in src
 
 
+def test_evolution_daemon_has_no_retired_scene_wiki_curation_lane() -> None:
+    root = Path(__file__).parent.parent.parent
+    src = (root / "app" / "services" / "evolution_daemon.py").read_text(encoding="utf-8")
+
+    assert "run_scene_wiki_curation_tick" not in src
+    assert '"scene_wiki_curation"' not in src
+    assert not (root / "app" / "services" / "memory_curation.py").exists()
+
+
 def test_hook_setup_schedules_evolution_maintenance_after_heartbeat() -> None:
     from app.runtime import hooks_setup
     from app.runtime.hooks import HookEvent

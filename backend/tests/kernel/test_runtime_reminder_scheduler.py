@@ -462,7 +462,8 @@ async def test_first_round_request_still_carries_full_reminder():
 
     first_messages = client.calls[0]["messages"]
     assert any(m.role == "system" and "Plan Mode is active" in (m.content or "") for m in first_messages)
-    candidates = sc.metadata["runtime_reminder_candidates"]
+    candidates = sc.metadata["runtime_assembly_state"]["runtime_reminder_candidates"]
+    assert "runtime_reminder_candidates" not in sc.metadata
     assert candidates[0]["kind"] == "runtime_reminder"
     assert candidates[0]["source"] == "plan_mode_full"
     assert candidates[0]["ttl"] == "current_round"

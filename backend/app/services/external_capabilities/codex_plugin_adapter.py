@@ -5,8 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from app.services.external_capabilities.frontmatter import split_yaml_frontmatter
 from app.services.external_capabilities.types import ExternalCapabilityComponent, NormalizedExternalPluginBundle
 
 _MANIFEST_PATH = Path(".codex-plugin/plugin.json")
@@ -45,7 +44,7 @@ def _load_skills(*, root: Path, plugin_name: str, manifest: dict[str, Any]) -> l
     for skill_file in sorted(skills_root.rglob("SKILL.md")):
         if not _is_safe_file(root, skill_file):
             continue
-        frontmatter, body = _split_frontmatter(skill_file.read_text(encoding="utf-8", errors="replace"))
+        frontmatter, body = split_yaml_frontmatter(skill_file.read_text(encoding="utf-8", errors="replace"))
         relative_dir = skill_file.parent.relative_to(skills_root)
         local_name = _string(frontmatter.get("name")) or (
             ":".join(relative_dir.parts) if relative_dir.parts else skill_file.parent.name
@@ -135,18 +134,6 @@ def _relative_path(root: Path, file_path: Path) -> str:
         return str(file_path.resolve().relative_to(root.resolve()))
     except ValueError:
         return str(file_path)
-
-
-def _split_frontmatter(content: str) -> tuple[dict[str, Any], str]:
-    stripped = content.strip()
-    if not stripped.startswith("---\n"):
-        return {}, stripped
-    remainder = stripped[4:]
-    if "\n---\n" not in remainder:
-        return {}, stripped
-    frontmatter_text, body = remainder.split("\n---\n", 1)
-    loaded = yaml.safe_load(frontmatter_text) or {}
-    return (loaded if isinstance(loaded, dict) else {}), body.strip()
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:

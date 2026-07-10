@@ -1673,27 +1673,6 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
     return {fname: 0 for fname in t3_files}
 
 
-def _truncate_t2(agent_id: uuid.UUID, keep: int = 10) -> int:
-    """Archive absorbed T2 learnings beyond cap; never delete active evidence."""
-    from app.memory.t2_store import archive_absorbed_t2_entries
-
-    try:
-        archived = archive_absorbed_t2_entries(
-            Path(get_settings().AGENT_DATA_DIR),
-            agent_id,
-            keep_per_file=keep,
-            # Keep the historical `_truncate_t2` call as cap enforcement. Age
-            # sweeps can pass a positive threshold through the lower-level API.
-            min_age_days=0,
-        )
-        if archived:
-            logger.info("[Dream] T2 retention archived %d absorbed entries (keep=%d)", archived, keep)
-        return archived
-    except Exception as exc:
-        logger.warning("[Dream] Failed to archive absorbed T2 entries: %s", exc)
-        return 0
-
-
 def _update_index_md(agent_id: uuid.UUID) -> None:
     """Regenerate the canonical derived T3 index."""
     from app.memory.md_store import rebuild_index
@@ -2064,13 +2043,11 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     ]
     _update_index_md(agent_id)
     after_count = _count_t3_entries(agent_id)
-    t2_removed = _truncate_t2(agent_id, keep=10)
-    if t3_removed or t2_removed:
+    if t3_removed:
         logger.info(
-            "[AutoDream] MD consolidation for %s: T3 deduped %d, T2 truncated %d",
+            "[AutoDream] MD consolidation for %s: T3 deduped %d",
             agent_id,
             t3_removed,
-            t2_removed,
         )
 
     _mark_dreamed(
@@ -2101,7 +2078,6 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         "removed": max(0, before_count - after_count),
         "added": promoted_to_soul,
         "t3_deduped": t3_removed,
-        "t2_truncated": t2_removed,
         "t0_recent_files": t0_audit["recent_files"],
         "t0_backfilled": t0_backfill["written"],
         "repeated_feedback_held": repeated_feedback_held,
@@ -2123,7 +2099,6 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
                 "deduped": t3_removed,
                 "promoted_to_soul": promoted_to_soul,
                 "strategy": "llm+md" if llm_decision is not None else "md_only",
-                "t2_truncated": t2_removed,
                 "dedup_decisions": dedup_decisions,
                 "soul_candidate": llm_decision.get("soul_candidate") if isinstance(llm_decision, dict) else None,
                 "promotion_decisions": promotion_decisions,
@@ -2132,14 +2107,14 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
                 "dream_reasoning": dream_reasoning,
                 "llm_apply_report": llm_apply_report,
                 "memory_dream": memory_dream_report,
-                "cleanup_summary": (f"focus cleaned; T2 truncated {t2_removed}"),
+                "cleanup_summary": "canonical T3 index refreshed",
             },
         )
     except Exception as _hook_err:
         logger.debug("[AutoDream] DREAM_END hook failed (non-fatal): %s", _hook_err)
 
     logger.info(
-        "[AutoDream] Consolidated memory for %s: %d → %d facts (%d removed, %d added, strategy=%s, clusters=%d, t3_dedup=%d, t2_trunc=%d)",
+        "[AutoDream] Consolidated memory for %s: %d → %d facts (%d removed, %d added, strategy=%s, clusters=%d, t3_dedup=%d)",
         agent_id,
         before_count,
         after_count,
@@ -2148,7 +2123,6 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         "md_only",
         0,
         t3_removed,
-        t2_removed,
     )
 
     return result

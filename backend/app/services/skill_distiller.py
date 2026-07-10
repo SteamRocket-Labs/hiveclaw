@@ -36,6 +36,7 @@ from app.services.skill_lifecycle import (
     record_skill_lifecycle_event,
     update_skill_candidate_record,
 )
+from app.services.skill_distillation_stages import advance_distiller_cursor, rank_skill_candidates
 from app.services.skill_candidate_package import (
     update_skill_candidate_package_status,
     write_skill_referee_review,
@@ -1681,13 +1682,15 @@ async def run_skill_distillation_cycle(
             }
 
     processed = 0
-    last_cursor = (state.last_processed_at or "", state.last_processed_session_id or "")
+    last_cursor = advance_distiller_cursor(
+        (state.last_processed_at or "", state.last_processed_session_id or ""),
+        evidence,
+    )
     grouped: dict[str, list[SessionWorkflowEvidence]] = {}
 
     for item in evidence:
         processed += 1
         fingerprint = _build_workflow_signature(item.tool_names)
-        last_cursor = max(last_cursor, (item.occurred_at, item.session_id))
         if fingerprint.workflow_signature is None:
             if fingerprint.blocker == "external_action_workflow":
                 record_skill_lifecycle_event(
@@ -1729,21 +1732,13 @@ async def run_skill_distillation_cycle(
     save_distiller_state(workspace, state)
 
     candidates = load_skill_candidates(workspace)
-    patchable = [
-        record
-        for record in candidates.values()
-        if not record.blocker and len(record.patch_candidates) >= _PATCH_THRESHOLD
-    ]
-    patchable.sort(key=lambda item: (len(item.patch_candidates), item.last_updated_at), reverse=True)
-    promotable = [
-        record
-        for record in candidates.values()
-        if record.last_status == "success"
-        and not record.blocker
-        and len(record.promote_candidates) >= _PROMOTE_THRESHOLD
-        and len(record.patch_candidates) == 0
-    ]
-    promotable.sort(key=lambda item: (len(item.promote_candidates), item.last_updated_at), reverse=True)
+    ranked_candidates = rank_skill_candidates(
+        candidates.values(),
+        patch_threshold=_PATCH_THRESHOLD,
+        promote_threshold=_PROMOTE_THRESHOLD,
+    )
+    patchable = ranked_candidates.patchable
+    promotable = ranked_candidates.promotable
     if direct_candidate is None and not patchable and not promotable:
         direct_candidate = _select_direct_skill_candidate(
             skill_candidate_drafts=flywheel_skill_candidate_drafts,

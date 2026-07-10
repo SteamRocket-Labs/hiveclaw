@@ -270,16 +270,19 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
                     "model_window": 128000,
                     "tool_result_inline_limit": 50000,
                 },
-                "prompt_assembly_manifest": {
-                    "schema": "hive.ccplus.prompt_assembly_manifest.v1",
-                    "source_of_truth": "runtime_prompt_assembly",
-                    "turn_id": "turn-1",
-                    "session_id": str(session_id),
-                    "context_budget": {"model_window": 128000},
-                    "dynamic_sections": ["runtime_metadata_context"],
-                    "actual_system_prompt_chars": 123,
-                    "actual_dynamic_notice_chars": 45,
-                },
+                    "runtime_assembly_state": {
+                        "schema": "hive.ccplus.runtime_assembly_state.v1",
+                        "prompt_assembly_manifest": {
+                            "schema": "hive.ccplus.prompt_assembly_manifest.v1",
+                            "source_of_truth": "runtime_prompt_assembly",
+                            "turn_id": "turn-1",
+                            "session_id": str(session_id),
+                            "context_budget": {"model_window": 128000},
+                            "dynamic_sections": ["runtime_metadata_context"],
+                            "actual_system_prompt_chars": 123,
+                            "actual_dynamic_notice_chars": 45,
+                        },
+                    },
             },
         }
 

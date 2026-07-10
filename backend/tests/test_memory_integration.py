@@ -156,39 +156,6 @@ class TestT0Integration:
         assert removed == 1
 
 
-# ── §3: Extractor (Phase 2) ──
-
-
-class TestExtractorIntegration:
-    def test_v8_extractor_singleton_exists(self) -> None:
-        from app.services.extract_agent import extract_agent, ExtractAgent
-
-        assert isinstance(extract_agent, ExtractAgent)
-
-    def test_v9_pattern_fallback_works(self) -> None:
-        from app.services.extract_agent import _pattern_extract
-
-        msgs = [{"role": "user", "content": "Don't use mocks, always use real database"}]
-        results = _pattern_extract(msgs)
-        assert len(results) >= 1
-        assert results[0]["category"] == "feedback"
-
-    def test_v10_coalescing_mutex(self, monkeypatch) -> None:
-        from app.services.extract_agent import ExtractAgent
-
-        monkeypatch.setenv("HIVE_ENABLE_LEGACY_T2_BACKFILL", "1")
-        ea = ExtractAgent()
-        agent_id = uuid.uuid4()
-        key = str(agent_id)
-        ea._in_progress[key] = True
-        # Should not crash, just stash
-        import asyncio
-
-        asyncio.run(ea.extract(agent_id, [{"role": "user", "content": "Remember this important thing"}], source="web"))
-        assert key in ea._pending
-        ea._in_progress[key] = False
-
-
 # ── §4: Compression alignment (Phase 3) ──
 
 
@@ -369,22 +336,6 @@ class TestFullPipeline:
                 path = write_t0_log(agent_id, behavior_type=btype)
                 assert path is not None, f"T0 write failed for {btype}"
 
-    def test_extractor_writes_t2(self, tmp_path: Path) -> None:
-        """Phase 2: Extractor pattern fallback writes to T2 learnings."""
-        from app.services.extract_agent import _append_to_learnings
-
-        agent_id = uuid.uuid4()
-        (tmp_path / str(agent_id) / "memory" / "learnings").mkdir(parents=True)
-        with patch("app.services.extract_agent.get_settings") as mock:
-            mock.return_value.AGENT_DATA_DIR = str(tmp_path)
-            written = _append_to_learnings(
-                agent_id,
-                [
-                    {"category": "feedback", "content": "User prefers snake_case"},
-                ],
-            )
-        assert written == 1
-
     def test_t3_consolidation_no_direct_dedup_write(self, tmp_path: Path) -> None:
         """Accepted T3 dedup is committed by Platform Gate, not Dream helpers."""
         from app.services.auto_dream import _consolidate_t3_files, _write_t3_file
@@ -399,20 +350,6 @@ class TestFullPipeline:
                 _write_t3_file(agent_id, "t3/user.md", "# T3 User\n")
             stats = _consolidate_t3_files(agent_id)
         assert stats["migration_required/memory/t3/user.md"] == 0
-
-    def test_t2_truncation(self, tmp_path: Path) -> None:
-        """Phase 6: T2 retention archives only absorbed entries beyond cap."""
-        from app.services.auto_dream import _truncate_t2
-
-        agent_id = uuid.uuid4()
-        learnings = tmp_path / str(agent_id) / "memory" / "learnings"
-        learnings.mkdir(parents=True)
-        entries = [f"- [2026-04-{i:02d}][status=absorbed][absorbed_at=2026-04-20] entry {i}" for i in range(1, 21)]
-        (learnings / "insights.md").write_text("# Insights\n" + "\n".join(entries) + "\n")
-        with patch("app.services.auto_dream.get_settings") as mock:
-            mock.return_value.AGENT_DATA_DIR = str(tmp_path)
-            removed = _truncate_t2(agent_id, keep=5)
-        assert removed == 15
 
     def test_prompt_includes_all_sections(self) -> None:
         """Phase 4: Final prompt has all structured sections."""

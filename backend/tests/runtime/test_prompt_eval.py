@@ -20,7 +20,6 @@ def test_evaluate_runtime_prompt_contracts_has_no_failures() -> None:
     assert "skill_patch_instead_of_duplicate_guidance" in report["passed"]
     assert "heartbeat_skill_curation_consistency" in report["passed"]
     assert "task_playbook_review_overlay" in report["passed"]
-    assert "extractor_external_data_rule" in report["passed"]
     assert "heartbeat_weight_policy" in report["passed"]
     assert report["scenarios"]["research"]["failed"] == []
     assert report["scenarios"]["coding_review"]["failed"] == []
@@ -52,7 +51,6 @@ def test_evaluate_runtime_prompt_contracts_reports_failure_details() -> None:
             memory_recall_playbook="## Task Playbook\n(generic recall)\n",
             self_evolution_playbook="## Task Playbook\n(generic skill note)\n",
             heartbeat_template="# Heartbeat\n(no weights)\n",
-            extractor_prompt="extract anything\n",
             knowledge_section="raw knowledge\n",
             delegation_worker_prompt="worker mode\n",
         )

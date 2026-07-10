@@ -326,24 +326,6 @@ def test_summarizer_prompt_distinguishes_session_state_from_durable_memory() -> 
     assert "memory extraction runs as a separate pipeline" in normalized
 
 
-def test_extractor_prompt_emphasizes_weighted_curation_contract() -> None:
-    from app.services.extract_agent import EXTRACT_PROMPT
-
-    # PR-11 rewrote EXTRACT_PROMPT with XML structure. Weighted curation is
-    # now carried by <pipeline_context>, category priority by <extraction_types>,
-    # and the permissive-extraction rationale by the downstream-heartbeat note.
-    normalized = " ".join(EXTRACT_PROMPT.lower().split())
-    assert "feedback" in normalized
-    # Category priority ordering still exists in the prompt body.
-    assert "feedback" in normalized and "preference" in normalized
-    # The "extract permissively, heartbeat filters later" rationale must survive.
-    assert "heartbeat" in normalized
-    # XML-structured sections are part of the current best-practice shape.
-    assert "<role>" in EXTRACT_PROMPT
-    assert "<pipeline_context>" in EXTRACT_PROMPT
-    assert "<extraction_types>" in EXTRACT_PROMPT
-
-
 def test_auto_dream_prompt_distinguishes_memory_from_evolution_policy() -> None:
     from app.services.auto_dream import (
         _AUTO_DREAM_SYSTEM_PROMPT,
@@ -648,7 +630,6 @@ def test_runtime_prompt_surfaces_do_not_reintroduce_legacy_focus_truth_source() 
         "backend/app/services/heartbeat.py",
         "backend/app/services/trigger_daemon.py",
         "backend/app/services/auto_dream.py",
-        "backend/app/services/extract_agent.py",
         "backend/app/services/agent_context.py",
         "backend/app/tools/workspace.py",
         "backend/app/tools/handlers/hr.py",

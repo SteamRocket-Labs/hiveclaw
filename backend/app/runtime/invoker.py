@@ -1544,6 +1544,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
     _record_skill_runtime_usage("completed", str(result.content or ""))
     completed_messages = [*request.messages, {"role": "assistant", "content": result.content}]
     try:
+        from app.runtime.context import ensure_runtime_assembly_state
         from app.runtime.hooks import HookEvent, emit_hook
 
         _session_source = request.session_context.source if request.session_context else "runtime"
@@ -1566,7 +1567,9 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             if request.session_context
             else [],
             "last_successful_step": result.content[:300],
-            "activation_events": list((request.session_context.metadata or {}).get("activation_events") or [])
+            "activation_events": list(
+                ensure_runtime_assembly_state(request.session_context).activation_events
+            )
             if request.session_context
             else [],
         }

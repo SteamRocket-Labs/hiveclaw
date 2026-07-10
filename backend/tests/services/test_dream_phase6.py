@@ -15,7 +15,6 @@ from app.services.auto_dream import (
     _heartbeat_ticks_since_dream,
     _programmatic_dedup,
     _read_all_t3,
-    _truncate_t2,
     _update_index_md,
     _write_t3_file,
     record_heartbeat_tick,
@@ -118,36 +117,6 @@ class TestConsolidateT3:
 
         assert stats["memory/self/self.md"] == 0
         assert (memory_dir / "self.md").read_text(encoding="utf-8") == before
-
-
-class TestTruncateT2:
-    def test_archives_absorbed_entries_to_keep(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        learnings = tmp_agent_dir / str(agent_id) / "memory" / "learnings"
-        entries = [f"- [2026-04-{i:02d}][status=absorbed][entry_id=t2-{i}] entry {i}" for i in range(1, 21)]
-        (learnings / "insights.md").write_text("# Insights\n" + "\n".join(entries) + "\n", encoding="utf-8")
-
-        with patch("app.services.auto_dream.get_settings") as mock:
-            mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
-            removed = _truncate_t2(agent_id, keep=5)
-
-        assert removed == 15
-        content = (learnings / "insights.md").read_text(encoding="utf-8")
-        archive = (tmp_agent_dir / str(agent_id) / "memory" / "archive.md").read_text(encoding="utf-8")
-        assert "entry 20" in content
-        assert "[entry_id=t2-1]" in archive
-        assert "t2_retention_cap" in archive
-
-    def test_active_entries_are_never_archived_by_cap(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        learnings = tmp_agent_dir / str(agent_id) / "memory" / "learnings"
-        entries = [f"- [2026-04-{i:02d}][status=active][entry_id=t2-{i}] entry {i}" for i in range(1, 21)]
-        (learnings / "insights.md").write_text("# Insights\n" + "\n".join(entries) + "\n", encoding="utf-8")
-
-        with patch("app.services.auto_dream.get_settings") as mock:
-            mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
-            removed = _truncate_t2(agent_id, keep=5)
-
-        assert removed == 0
-        assert not (tmp_agent_dir / str(agent_id) / "memory" / "archive.md").exists()
 
 
 class TestUpdateIndexMd:

@@ -16,7 +16,7 @@ Hive 已经不是一个“缺核心 Agent 能力”的系统。当前真实状�
 
 1. **Single Agent 的 CC 主循环和大部分生命周期已经成立**：统一 Kernel 入口、工具循环、Hooks、Compaction、Plan Mode、Work Ledger、Skill、Subagent、Workflow、持久化 RuntimeTask、断线继续运行、代码沙箱均有真实消费路径。
 2. **Hive-native 优势已经形成**：T0/T2/T3/`soul.md`、Memory Gate + Platform Gate、动态激活、Dream、Skill evolution、反馈回流、Personal KB Tool-first 读取均不是空壳。
-3. **Run/Event 与 ToolDecision/Approval 两组 P0 断点已经落地关闭**：当前主要剩余风险转为兼容层与巨型模块、ConfigRevision/AI Asset、Personal KB 写入与 Local/A2A receipt、前端 typed workbench。
+3. **Run/Event、ToolDecision/Approval 与兼容层三组断点已经落地关闭**：当前主要剩余风险转为 ConfigRevision/AI Asset、Personal KB 写入与 Local/A2A receipt、前端 typed workbench。
 4. **企业 AI 资产管理还没有统一闭环**：Agent、Skill、Subagent、Workflow、外部能力各自有部分生命周期，但版本、所有权、信任、依赖、发布、回滚和消费证据没有统一控制索引。
 5. **Personal KB 的原始上下文污染问题已修正**：现在应维持 Tool-first；它不参与原始上下文组装。剩余缺口是 Agent 向 Personal KB 的受治理提案/写入闭环，以及内部服务的复杂度治理。
 6. **Company KB 是明确的第二部分已知缺失**：当前 `/enterprise/knowledge-base` 文件树不是新的企业知识权威平面。第一部分不得偷建 Company KB，也不得把它自动塞入原始上下文。
@@ -120,7 +120,7 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 | 能力 | 输入 | 权威 | 执行 | 证据 | 恢复 | 消费 | 验收 | 总判定 |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
 | Agent 定义与身份 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| 原始上下文组装 | ● | △ | ● | △ | ● | ● | ● | **局部闭环** |
+| 原始上下文组装 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | LLM 主循环 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Provider 路由与 fallback | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | 工具发现与 progressive disclosure | ● | ● | ● | ● | ● | ● | ● | **闭环** |
@@ -288,6 +288,8 @@ Personal KB 是 native tool，不是 always-on memory。Agent Memory 与 Persona
 4. `t2_store.py` 仍被 legacy extractor / archive 兼容路径牵连。需要把有效 archive 逻辑迁入 hygiene/retention，再做 fleet dry-run、apply、quarantine，最后删除 fallback。
 5. `skill_distiller.run_skill_distillation_cycle()` 约 846 行，应拆成纯阶段函数，但保留一个公共 cycle 入口，不能拆成互相调用的微服务链。
 6. `PersonalKnowledgeService` 约 3,285 行，同时承担 ACL、ingest、index、graph、job、search。应在同一 facade 后分成 `access`、`ingest`、`index_search`、`jobs` 四个内部组件；API 和工具入口不变化。
+
+**落地状态（2026-07-10）：C 包已关闭本节的 runtime compatibility 债务。** `memory_curation.py`、`extract_queue.py`、runtime `ExtractAgent` 与 `t2_store.py` 已删除，Dream 与 heartbeat maintenance 不再读取或维护旧 `memory/learnings`。历史 learnings 统一进入 `memory_hygiene_report.v2` 的可逆 quarantine：每个文件记录源/目标、bytes、SHA-256，汇总做 count/bytes/digest 对账；真实数据目录 dry-run 已完成且未移动数据。`PersonalKnowledgeService` 的职责拆分保留到 E 包，与 proposal/write 同一真实消费切片完成，避免先制造无消费者的内部层。
 
 ### 5.5 Local Agent / A2A 剩余断点
 
@@ -608,6 +610,8 @@ visibility / evidence_refs
 | CC/Codex adapter 重复 `_split_frontmatter` 等 | 提取共享 utility | characterization tests 先锁行为 |
 | legacy `TenantInstalledPlugin` projection | 完成迁移后删除 | ExternalCapabilitySnapshot/AIAssetRecord 消费已切换 |
 
+C 包已经完成前三个 legacy memory 删除项与 RuntimeAssembly mirrors：旧顶层字段由 migration 一次提升到 `runtime_assembly_state`，nested 值优先，运行时只读写 nested；CC/Codex adapter 重复 YAML frontmatter parser 也已合并为一个共享纯函数。Kernel 单循环与 Web Chat 单编排入口保持不拆散，Skill distillation 抽出 cursor/ranking 纯阶段，没有新增网络 hop、队列或平行表。
+
 ### 8.5 统一工具描述，不新增万能服务
 
 扩展现有 `ToolMeta`：
@@ -754,6 +758,8 @@ flowchart LR
 4. RuntimeAssembly 只保留 nested canonical state。
 5. 任何拆分都不能新增网络 hop、队列或新的平行数据库表。
 
+**落地状态（2026-07-10）：已闭环。** RuntimeAssembly 已完成 nested-only 运行时与存量 migration；旧 scene/wiki no-op、extract queue、ExtractAgent runtime、weighted learnings T2 store 共删除 2,783 行生产兼容实现及其仅测试消费者；hygiene v2 提供 dry-run/apply/quarantine/count/hash 机械对账；Skill distiller 与 external capability adapter 抽出可独立测试的纯阶段/共享 parser。Personal KB 内部拆分在 E 包与写入事务一起落地，避免第二次重构同一边界。
+
 ### D. 企业 AI Asset Control Plane
 
 主要触点：
@@ -877,9 +883,9 @@ Company Charter、Owner Agency Charter、不可违反的安全政策可以作为
 ### P2：复杂度与长期鲁棒性
 
 1. Kernel/WebChat/PersonalKB/SkillDistiller/AgentChat 巨型实现。
-2. no-op / zero-consumer / legacy memory 活路径。
+2. ~~no-op / zero-consumer / legacy memory 活路径。~~ **C 包已关闭。**
 3. ToolMeta 与静态能力/风险/timeout 多事实源。
-4. RuntimeAssembly compatibility mirrors。
+4. ~~RuntimeAssembly compatibility mirrors。~~ **C 包已关闭。**
 5. broad exception 的静默 fallback 风险。
 
 ---
@@ -1113,3 +1119,54 @@ git diff --check
 ```
 
 本包没有建设 Company KB，也没有把 Personal KB 放回原始上下文。本包独立提交标题：`Close approval tickets and unified tool governance`。
+
+### 15.4 C 包：兼容层、RuntimeAssembly 与 legacy memory 收敛（2026-07-10）
+
+完成内容：
+
+1. `RuntimeAssemblyState` 成为唯一序列化表示；prompt manifest、context/tool/cache/activation/skill ranking 等 14 组字段不再顶层双写。旧 metadata 在一次加载或 Alembic migration 中提升，nested 已有值优先，提升后删除 mirrors。
+2. Chat API、Session Control Plane、Kernel、Invoker、Hooks、Session Index 与 Web Chat 全部改读 nested state；历史顶层格式只存在于显式 migration/promotion 边界。
+3. 删除 `memory_curation.py` 及 evolution maintenance 中的 disabled scene/wiki 状态；删除无生产消费者的 `extract_queue.py`、runtime `ExtractAgent` 与旧 weighted-learnings `t2_store.py`，Dream 不再维护第二套 T2。
+4. `memory_hygiene_report.v2` 把历史 `memory/learnings/**` 纳入可逆 quarantine；逐文件记录 bytes/SHA-256，汇总对账 source/quarantine count、bytes 与 digest，hash 不一致直接失败。
+5. 真实 `AGENT_DATA_DIR` dry-run 扫描 65,445 个 UUID workspace，发现 200 个旧 learnings 文件、15,200 bytes；200 个计划移动项全部 hash 对账通过。该命令未执行 apply，数据移动继续受 `--apply --confirm` 显式安全门保护。
+6. CC/Codex external capability adapter 的重复 YAML frontmatter parser 合并为一个共享纯函数；Skill distillation 抽出 deterministic cursor 与 candidate ranking 纯阶段，同时保留一个公共 cycle 和原生 runtime。
+7. 本包净删除 5,000+ 行兼容实现/仅兼容测试，没有新增网络 hop、队列或数据库表；Personal KB 内部分层留在 E 包与 proposal/write 事务一起完成。
+
+七原子结果：
+
+| 输入 | 权威 | 执行 | 证据 | 恢复 | 消费 | 验收 | 判定 |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| ● | ● | ● | ● | ● | ● | ● | **闭环** |
+
+关键证据：
+
+- nested state promotion 同时覆盖“只有旧 mirrors”“已有 nested + 旧 mirrors”“重复运行”和“无 assembly 数据”四种情况。
+- migration 对 `runtime_tasks.metadata_json` 与 `chat_sessions.transcript_metadata_json` 都执行 idempotent 提升，Alembic 保持单 head。
+- hygiene dry-run 不改源文件；apply fixture 验证源消失、目标存在、bytes/hash/digest 完全一致且 archive 可追踪。
+- 全代码搜索确认旧 extractor/queue/T2 store 只剩 nonexistence 架构断言，无生产 import 或调用。
+
+验证证据：
+
+```text
+cd backend && source .venv/bin/activate
+pytest <C 包 RuntimeAssembly/migration/hygiene/evolution/skill/adapter 聚焦集合> -q
+-> 231 passed, 4 warnings in 1.92s
+
+python -m app.scripts.repair_memory_hygiene | jq '<summary>'
+-> agents_scanned=65445, agents_changed=200, legacy_learnings=200,
+   source_file_count=200, source_bytes=15200, verified_agents=65445
+
+ruff check app tests
+-> All checks passed!
+
+pytest tests -q
+-> 5944 passed, 1 skipped, 5 warnings in 113.39s
+
+cd backend && alembic heads
+-> runtime_assembly_nested_0710 (head)
+
+git diff --check
+-> passed
+```
+
+本包没有建设 Company KB，也没有执行本地/生产 legacy 数据 apply。本包独立提交标题：`Retire compatibility mirrors and legacy memory runtimes`。

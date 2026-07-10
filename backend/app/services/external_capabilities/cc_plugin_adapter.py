@@ -6,8 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from app.services.external_capabilities.frontmatter import split_yaml_frontmatter
 from app.services.external_capabilities.types import ExternalCapabilityComponent, NormalizedExternalPluginBundle
 
 _MANIFEST_PATH = Path(".claude-plugin/plugin.json")
@@ -147,7 +146,7 @@ def _manifest_command_component(
     if inline_content is not None:
         content = str(inline_content)
         local_name = spec.get("name") or "command"
-        frontmatter, body = _split_frontmatter(content)
+        frontmatter, body = split_yaml_frontmatter(content)
         return ExternalCapabilityComponent(
             component_type="slash_command",
             local_name=local_name,
@@ -167,7 +166,7 @@ def _manifest_command_component(
     if not (component_path.is_file() and component_path.suffix.lower() == ".md"):
         return None
     content = component_path.read_text(encoding="utf-8", errors="replace")
-    frontmatter, body = _split_frontmatter(content)
+    frontmatter, body = split_yaml_frontmatter(content)
     local_name = spec.get("name") or component_path.stem
     return ExternalCapabilityComponent(
         component_type="slash_command",
@@ -241,7 +240,7 @@ def _skill_component(
     *,
     skills_root: Path | None = None,
 ) -> ExternalCapabilityComponent:
-    frontmatter, body = _split_frontmatter(skill_file.read_text(encoding="utf-8", errors="replace"))
+    frontmatter, body = split_yaml_frontmatter(skill_file.read_text(encoding="utf-8", errors="replace"))
     if skills_root is not None:
         relative_dir = skill_file.parent.relative_to(skills_root)
         base_name = ":".join(relative_dir.parts) if relative_dir.parts else skill_file.parent.name
@@ -310,7 +309,7 @@ def _agent_component(
     namespace_parts: tuple[str, ...] = (),
 ) -> ExternalCapabilityComponent:
     definition = agent_file.read_text(encoding="utf-8", errors="replace")
-    frontmatter, body = _split_frontmatter(definition)
+    frontmatter, body = split_yaml_frontmatter(definition)
     base_name = _string(frontmatter.get("name")) or agent_file.stem
     local_name = ":".join((*namespace_parts, base_name)) if namespace_parts else base_name
     qualified_name = f"{plugin_name}:{local_name}"
@@ -521,7 +520,7 @@ def _markdown_component(
     plugin_name: str,
     component_type: str,
 ) -> ExternalCapabilityComponent:
-    frontmatter, body = _split_frontmatter(file_path.read_text(encoding="utf-8", errors="replace"))
+    frontmatter, body = split_yaml_frontmatter(file_path.read_text(encoding="utf-8", errors="replace"))
     local_name = _component_local_name(base_dir, file_path)
     qualified_name = f"{plugin_name}:{local_name}"
     runtime_projection = {
@@ -571,18 +570,6 @@ def _manifest_path_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, str)]
     return []
-
-
-def _split_frontmatter(content: str) -> tuple[dict[str, Any], str]:
-    stripped = content.strip()
-    if not stripped.startswith("---\n"):
-        return {}, stripped
-    remainder = stripped[4:]
-    if "\n---\n" not in remainder:
-        return {}, stripped
-    frontmatter_text, body = remainder.split("\n---\n", 1)
-    loaded = yaml.safe_load(frontmatter_text) or {}
-    return (loaded if isinstance(loaded, dict) else {}), body.strip()
 
 
 def _manifest_metadata(manifest: dict[str, Any]) -> dict[str, Any]:

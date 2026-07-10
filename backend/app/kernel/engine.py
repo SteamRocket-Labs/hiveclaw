@@ -1557,11 +1557,14 @@ def _tool_candidate_name(candidate: dict[str, Any]) -> str:
 
 
 def _tool_activation_candidate_ref(request: InvocationRequest, tool_name: str) -> dict[str, Any]:
+    from app.runtime.context import runtime_assembly_metadata
+
     session = request.session_context
     metadata = session.metadata if session is not None and isinstance(session.metadata, dict) else {}
+    assembly_state = runtime_assembly_metadata(metadata)
     pools: list[Any] = [
-        metadata.get("available_deferred_tool_candidates"),
-        metadata.get("activation_candidates"),
+        assembly_state.get("available_deferred_tool_candidates"),
+        assembly_state.get("activation_candidates"),
     ]
     for pool in pools:
         if not isinstance(pool, list | tuple):
@@ -3746,7 +3749,9 @@ class AgentKernel:
                     retrieval_context=resolved_retrieval_context,
                     skill_catalog=request.skill_catalog,
                     active_skill_names=session_ctx.active_skills,
-                    skill_ranking=list(session_ctx.metadata.get("skill_catalog_ranking") or []),
+                    skill_ranking=list(
+                        ensure_runtime_assembly_state(session_ctx).skill_catalog_ranking
+                    ),
                     system_prompt_suffix=_system_prompt_suffix,
                     system_prompt_suffix_sections=_system_prompt_suffix_sections(),
                     mcp_server_refs=list(session_ctx.metadata.get("mcp_server_refs") or []),

@@ -29,6 +29,22 @@ if TYPE_CHECKING:  # avoid circular imports at runtime
 
 
 _ASSEMBLY_STATE_KEY = "runtime_assembly_state"
+_ASSEMBLY_FIELD_KEYS = (
+    "prompt_assembly_manifest",
+    "context_usage_ledger",
+    "dynamic_context_section_ledger",
+    "tool_result_ledger",
+    "cache_decision_ledger",
+    "runtime_decision_ledger",
+    "agent_cycle_decision_ledger",
+    "runtime_reminder_candidates",
+    "activation_candidates",
+    "activation_events",
+    "available_deferred_tool_candidates",
+    "available_deferred_tools",
+    "skill_catalog_ranking",
+    "skill_catalog_ranking_inputs",
+)
 
 
 def _dict_payload(value: Any) -> dict[str, Any]:
@@ -49,13 +65,18 @@ def _manifest_payload(value: Any) -> dict[str, Any]:
     return _dict_payload(value)
 
 
+def runtime_assembly_metadata(metadata: Any) -> dict[str, Any]:
+    """Return the only live serialized RuntimeAssembly read model."""
+    return _dict_payload(_dict_payload(metadata).get(_ASSEMBLY_STATE_KEY))
+
+
 @dataclass(slots=True)
 class RuntimeAssemblyState:
     """Serializable runtime assembly ledger for one invocation/session.
 
     This is the convergence point for context/tool/skill/retrieval assembly
-    artifacts. Top-level session metadata keys remain as compatibility mirrors,
-    but this object owns the canonical runtime read model.
+    artifacts. Only ``metadata.runtime_assembly_state`` is persisted; legacy
+    top-level mirrors are promoted once by :func:`ensure_runtime_assembly_state`.
     """
 
     session: SessionContext | None = field(default=None, repr=False, compare=False)
@@ -130,34 +151,8 @@ class RuntimeAssemblyState:
             return
         metadata = self.session.metadata
         metadata[_ASSEMBLY_STATE_KEY] = self.to_metadata()
-        if self.prompt_assembly_manifest:
-            metadata["prompt_assembly_manifest"] = dict(self.prompt_assembly_manifest)
-        if self.context_usage_ledger:
-            metadata["context_usage_ledger"] = dict(self.context_usage_ledger)
-        if self.dynamic_context_section_ledger:
-            metadata["dynamic_context_section_ledger"] = dict(self.dynamic_context_section_ledger)
-        if self.tool_result_ledger:
-            metadata["tool_result_ledger"] = [dict(item) for item in self.tool_result_ledger]
-        if self.cache_decision_ledger:
-            metadata["cache_decision_ledger"] = [dict(item) for item in self.cache_decision_ledger]
-        if self.runtime_decision_ledger:
-            metadata["runtime_decision_ledger"] = [dict(item) for item in self.runtime_decision_ledger]
-        if self.agent_cycle_decision_ledger:
-            metadata["agent_cycle_decision_ledger"] = [dict(item) for item in self.agent_cycle_decision_ledger]
-        if self.runtime_reminder_candidates:
-            metadata["runtime_reminder_candidates"] = [dict(item) for item in self.runtime_reminder_candidates]
-        if self.activation_candidates:
-            metadata["activation_candidates"] = [dict(item) for item in self.activation_candidates]
-        if self.activation_events:
-            metadata["activation_events"] = [dict(item) for item in self.activation_events]
-        if self.available_deferred_tool_candidates:
-            metadata["available_deferred_tool_candidates"] = list(self.available_deferred_tool_candidates)
-        if self.available_deferred_tools:
-            metadata["available_deferred_tools"] = list(self.available_deferred_tools)
-        if self.skill_catalog_ranking:
-            metadata["skill_catalog_ranking"] = [dict(item) for item in self.skill_catalog_ranking]
-        if self.skill_catalog_ranking_inputs:
-            metadata["skill_catalog_ranking_inputs"] = dict(self.skill_catalog_ranking_inputs)
+        for key in _ASSEMBLY_FIELD_KEYS:
+            metadata.pop(key, None)
 
     def record_prompt_manifest(self, manifest: dict[str, Any]) -> None:
         self.prompt_assembly_manifest = dict(manifest)
@@ -245,6 +240,8 @@ def ensure_runtime_assembly_state(session: SessionContext | None) -> RuntimeAsse
         return RuntimeAssemblyState()
     existing = getattr(session, "runtime_assembly_state", None)
     if isinstance(existing, RuntimeAssemblyState):
+        existing.session = session
+        existing.persist()
         return existing
     state = RuntimeAssemblyState.from_metadata(session.metadata.get(_ASSEMBLY_STATE_KEY), session=session)
     if not state.prompt_assembly_manifest:

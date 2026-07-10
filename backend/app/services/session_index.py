@@ -54,10 +54,13 @@ def build_session_index(
     transcript_events: list[ChatTranscriptEvent] | None = None,
     t0_segments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    from app.runtime.context import runtime_assembly_metadata
+
     meta = _metadata(session)
+    assembly_state = runtime_assembly_metadata(meta)
     events = sorted(transcript_events or [], key=lambda item: int(item.sequence))
     checkpoints = [checkpoint for event in events if (checkpoint := _event_checkpoint(event)) is not None]
-    dynamic_tools = list(meta.get("dynamic_tools") or meta.get("available_deferred_tools") or [])
+    dynamic_tools = list(meta.get("dynamic_tools") or assembly_state.get("available_deferred_tools") or [])
     indexed_t0_segments = list(t0_segments if t0_segments is not None else meta.get("t0_segments") or [])
     return {
         "schema": "hive.session_index.v1",

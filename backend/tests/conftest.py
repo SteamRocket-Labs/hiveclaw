@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+import uuid
 
 import pytest
 
@@ -35,3 +37,40 @@ def _reset_global_engine_pools():
     database.engine.sync_engine.dispose(close=False)
     if database.schema_engine is not database.engine:
         database.schema_engine.sync_engine.dispose(close=False)
+
+
+@pytest.fixture
+async def workflow_principals(owner_sessionmaker, tenant_id):
+    """Seed real FK-backed actors for workflow asset revision/audit tests."""
+
+    from app.database import tenant_scoped_session
+    from app.models.agent import Agent
+    from app.models.user import User
+
+    user_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            User(
+                id=user_id,
+                username=f"workflow-{user_id.hex[:10]}",
+                email=f"workflow-{user_id.hex[:10]}@test.local",
+                password_hash="x",
+                display_name="Workflow Owner",
+                tenant_id=tenant_id,
+                role="org_admin",
+            )
+        )
+        await session.flush()
+        session.add(
+            Agent(
+                id=agent_id,
+                tenant_id=tenant_id,
+                name="workflow-agent",
+                role_description="Workflow test actor",
+                creator_id=user_id,
+                owner_user_id=user_id,
+                status="idle",
+            )
+        )
+    return SimpleNamespace(user_id=user_id, agent_id=agent_id)

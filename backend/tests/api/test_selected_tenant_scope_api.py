@@ -308,7 +308,14 @@ async def test_platform_admin_create_agent_pins_selected_tenant(monkeypatch):
         min_poll_interval_floor=5,
         max_webhook_rate_ceiling=5,
     )
-    db = _FakeDB([_ScalarResult(target_tenant), _ListResult([])])
+    db = _FakeDB(
+        [
+            _ScalarResult(target_tenant),
+            _ListResult([]),
+            _ScalarResult(None),  # AIAssetRecord lookup
+            _ScalarResult(None),  # active ConfigRevision lookup
+        ]
+    )
 
     async def noop_async(*_args, **_kwargs):
         return None

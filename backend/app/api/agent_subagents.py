@@ -188,12 +188,115 @@ def _parse_validated(name: str, payload: SubagentDefinitionPayload) -> SubagentS
     return spec
 
 
-def _save_and_respond(store: SubagentDefinitionStore, spec: SubagentSpec, scope: str) -> dict:
+async def _register_subagent_asset(
+    db: AsyncSession,
+    *,
+    store: SubagentDefinitionStore,
+    spec: SubagentSpec,
+    tenant_id: uuid.UUID,
+    scope: str,
+    actor_user_id: uuid.UUID,
+    agent_id: uuid.UUID | None = None,
+    lifecycle_status: str = "active",
+    change_source: str,
+) -> None:
+    from app.services.ai_asset_adapters import project_subagent
+    from app.services.ai_assets import register_projection
+
+    await register_projection(
+        db,
+        project_subagent(
+            spec,
+            tenant_id=tenant_id,
+            scope=scope,
+            owner_id=actor_user_id,
+            base_dir=store.base_dir,
+            agent_id=agent_id,
+            lifecycle_status=lifecycle_status,
+        ),
+        change_source=change_source,
+        actor_user_id=actor_user_id,
+        change_message=f"Subagent definition {change_source}",
+    )
+
+
+async def _save_subagent_asset(
+    db: AsyncSession,
+    *,
+    store: SubagentDefinitionStore,
+    spec: SubagentSpec,
+    tenant_id: uuid.UUID,
+    scope: str,
+    actor_user_id: uuid.UUID,
+    agent_id: uuid.UUID | None = None,
+    change_source: str = "update",
+) -> dict:
+    previous = store.load(spec.name)
     try:
         store.save(spec)
+        await _register_subagent_asset(
+            db,
+            store=store,
+            spec=spec,
+            tenant_id=tenant_id,
+            scope=scope,
+            actor_user_id=actor_user_id,
+            agent_id=agent_id,
+            change_source=change_source,
+        )
+        await db.commit()
     except ValueError as exc:  # name guard double-checks at the path layer
+        await db.rollback()
+        if previous is None:
+            store.delete(spec.name)
+        else:
+            store.save(previous)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        await db.rollback()
+        if previous is None:
+            store.delete(spec.name)
+        else:
+            store.save(previous)
+        raise
     return {"name": spec.name, "scope": scope, "spec": _spec_summary(spec)}
+
+
+async def _delete_subagent_asset(
+    db: AsyncSession,
+    *,
+    store: SubagentDefinitionStore,
+    name: str,
+    tenant_id: uuid.UUID,
+    scope: str,
+    actor_user_id: uuid.UUID,
+    agent_id: uuid.UUID | None = None,
+) -> bool:
+    try:
+        spec = store.load(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if spec is None:
+        return False
+    store.delete(name)
+    try:
+        await _register_subagent_asset(
+            db,
+            store=store,
+            spec=spec,
+            tenant_id=tenant_id,
+            scope=scope,
+            actor_user_id=actor_user_id,
+            agent_id=agent_id,
+            lifecycle_status="deleted",
+            change_source="revoke",
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        store.save(spec)
+        raise
+    return True
 
 
 # --- agent-level surface (daily driver, §12.2) --------------------------------
@@ -295,11 +398,20 @@ async def put_agent_subagent(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level != "manage":
         raise HTTPException(status_code=403, detail="Editing subagent definitions requires manage access")
     spec = _parse_validated(name, payload)
-    return _save_and_respond(definition_store_for_agent(agent_id), spec, SCOPE_AGENT)
+    return await _save_subagent_asset(
+        db,
+        store=definition_store_for_agent(agent_id),
+        spec=spec,
+        tenant_id=agent.tenant_id,
+        scope=SCOPE_AGENT,
+        actor_user_id=current_user.id,
+        agent_id=agent_id,
+        change_source="update",
+    )
 
 
 class EvolutionModePayload(BaseModel):
@@ -321,6 +433,15 @@ async def set_evolution_mode(
     if access_level != "manage":
         raise HTTPException(status_code=403, detail="Changing evolution mode requires manage access")
     agent.subagent_evolution_auto_approve = payload.auto_approve
+    from app.services.ai_assets import register_agent_asset
+
+    await register_agent_asset(
+        db,
+        agent,
+        change_source="update",
+        actor_user_id=current_user.id,
+        change_message="Subagent evolution mode changed",
+    )
     await db.commit()
     return {"evolution_auto_approve": payload.auto_approve}
 
@@ -332,9 +453,11 @@ async def approve_subagent_proposal(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level != "manage":
         raise HTTPException(status_code=403, detail="Approving proposals requires manage access")
+    definition_store = definition_store_for_agent(agent_id)
+    previous = definition_store.load(name)
     try:
         result = apply_proposal(agent_id, name, approved_by=str(current_user.id))
     except ValueError as exc:
@@ -349,6 +472,26 @@ async def approve_subagent_proposal(
                 "will be nominated from current state",
             )
         raise HTTPException(status_code=422, detail=f"Proposal could not be applied: {result.error}")
+    revised = definition_store.load(name)
+    if revised is None:
+        raise HTTPException(status_code=500, detail="Applied proposal did not produce a definition")
+    try:
+        await _register_subagent_asset(
+            db,
+            store=definition_store,
+            spec=revised,
+            tenant_id=agent.tenant_id,
+            scope=SCOPE_AGENT,
+            actor_user_id=current_user.id,
+            agent_id=agent_id,
+            change_source="evolve",
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        if previous is not None:
+            definition_store.save(previous)
+        raise
     return {
         "applied": True,
         "proposal_id": result.proposal_id,
@@ -363,7 +506,7 @@ async def reject_subagent_proposal(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level != "manage":
         raise HTTPException(status_code=403, detail="Rejecting proposals requires manage access")
     if not reject_proposal(agent_id, name, rejected_by=str(current_user.id)):
@@ -378,7 +521,7 @@ async def delete_agent_subagent(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level != "manage":
         raise HTTPException(status_code=403, detail="Deleting subagent definitions requires manage access")
     if current_user.role not in ("org_admin", "platform_admin"):
@@ -386,10 +529,15 @@ async def delete_agent_subagent(
             status_code=403,
             detail="Sub-agent definition is an enterprise asset; only an admin can delete it.",
         )
-    try:
-        deleted = definition_store_for_agent(agent_id).delete(name)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    deleted = await _delete_subagent_asset(
+        db,
+        store=definition_store_for_agent(agent_id),
+        name=name,
+        tenant_id=agent.tenant_id,
+        scope=SCOPE_AGENT,
+        actor_user_id=current_user.id,
+        agent_id=agent_id,
+    )
     if not deleted:
         # Tenant-level definitions are not deletable through the agent surface;
         # after an agent-level delete the name falls back to tenant scope.
@@ -460,23 +608,37 @@ async def generate_tenant_subagent(
 async def put_tenant_subagent(
     name: str,
     payload: SubagentDefinitionPayload,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     tenant_id = _require_tenant_admin(current_user)
     spec = _parse_validated(name, payload)
-    return _save_and_respond(definition_store_for_tenant(tenant_id), spec, SCOPE_TENANT)
+    return await _save_subagent_asset(
+        db,
+        store=definition_store_for_tenant(tenant_id),
+        spec=spec,
+        tenant_id=tenant_id,
+        scope=SCOPE_TENANT,
+        actor_user_id=current_user.id,
+        change_source="update",
+    )
 
 
 @enterprise_router.delete("/{name}")
 async def delete_tenant_subagent(
     name: str,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     tenant_id = _require_tenant_admin(current_user)
-    try:
-        deleted = definition_store_for_tenant(tenant_id).delete(name)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    deleted = await _delete_subagent_asset(
+        db,
+        store=definition_store_for_tenant(tenant_id),
+        name=name,
+        tenant_id=tenant_id,
+        scope=SCOPE_TENANT,
+        actor_user_id=current_user.id,
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="No tenant-level definition with this name")
     return {"deleted": name, "scope": SCOPE_TENANT}

@@ -666,7 +666,9 @@ def _commit_skill_markdown_exact(
         )
         resolved_origin = (
             skill_origin
-            or (str(existing.get("skill_origin")) if isinstance(existing, dict) and existing.get("skill_origin") else "")
+            or (
+                str(existing.get("skill_origin")) if isinstance(existing, dict) and existing.get("skill_origin") else ""
+            )
             or (ORIGIN_USER_SKILL_CREATOR if overwrite else ORIGIN_T3_AUTO_CREATED)
         )
         upsert_skill_evolution_entry(
@@ -682,6 +684,61 @@ def _commit_skill_markdown_exact(
     except Exception as exc:  # pragma: no cover - registry telemetry must not break commit
         logger.debug("[SkillDistiller] skill evolution registry update failed for %s: %s", skill_name, exc)
     return f"✅ committed exact skill draft at {target_relative_path}"
+
+
+async def _commit_skill_with_asset_revision(
+    *,
+    workspace: Path,
+    target_relative_path: str,
+    rendered_markdown: str,
+    skill_name: str,
+    overwrite: bool,
+    status: str,
+    candidate_id: str | None,
+    skill_origin: str | None,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+) -> str:
+    """Commit the native Skill and its control revision, compensating file failure."""
+
+    target = workspace / target_relative_path
+    previous = target.read_bytes() if target.is_file() else None
+    result = _commit_skill_markdown_exact(
+        workspace=workspace,
+        target_relative_path=target_relative_path,
+        rendered_markdown=rendered_markdown,
+        skill_name=skill_name,
+        overwrite=overwrite,
+        status=status,
+        candidate_id=candidate_id,
+        skill_origin=skill_origin,
+    )
+    if "✅" not in result or tenant_id is None:
+        return result
+
+    try:
+        from app.services.ai_assets import register_evolved_workspace_skill_asset
+
+        await register_evolved_workspace_skill_asset(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            workspace=workspace,
+            folder_name=Path(target_relative_path).parts[1],
+            evolution_state=status,
+        )
+    except Exception as exc:  # noqa: BLE001 - native file is compensated before surfacing failure
+        if previous is None:
+            if target.exists():
+                target.unlink()
+            parent = target.parent
+            if parent.exists() and not any(parent.iterdir()):
+                parent.rmdir()
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(previous)
+        logger.exception("[SkillDistiller] asset revision failed; restored %s", target_relative_path)
+        return f"❌ skill asset revision failed; native file restored: {type(exc).__name__}: {exc}"
+    return result
 
 
 _SKILL_ARTIFACT_OK = "HIVE_SKILL_ARTIFACT_OK"
@@ -789,7 +846,9 @@ def _skill_candidate_factor_payload(
         ],
         "artifact_ref": manifest.get("draft_path") or manifest.get("candidate_signal_path"),
         "artifact_sha256": manifest.get("draft_sha256"),
-        "authoring_contract": manifest.get("authoring_contract") if isinstance(manifest.get("authoring_contract"), dict) else {},
+        "authoring_contract": manifest.get("authoring_contract")
+        if isinstance(manifest.get("authoring_contract"), dict)
+        else {},
         "declared_components": {
             "skills": [str(manifest.get("skill_name") or draft.name)],
             "package_type": manifest.get("package_type"),
@@ -1572,9 +1631,7 @@ async def _run_skill_referee_gate(
             scores={key: 0 for key in _REFEREE_SCORE_KEYS},
             reason=f"skill referee failed: {type(exc).__name__}",
             review_markdown=(
-                "# Skill Referee Review\n\n"
-                "- decision: hold\n"
-                f"- reason: skill referee failed: {type(exc).__name__}\n"
+                f"# Skill Referee Review\n\n- decision: hold\n- reason: skill referee failed: {type(exc).__name__}\n"
             ),
         )
 
@@ -2069,7 +2126,7 @@ async def run_skill_distillation_cycle(
                 **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
             }
 
-        save_result = _commit_skill_markdown_exact(
+        save_result = await _commit_skill_with_asset_revision(
             workspace=workspace,
             target_relative_path=patch_relative_path,
             rendered_markdown=rendered,
@@ -2078,6 +2135,8 @@ async def run_skill_distillation_cycle(
             status="provisional",
             candidate_id=candidate["candidate_id"],
             skill_origin=patch_skill_origin,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
         )
         if "✅" not in save_result:
             record_promotion_decision(
@@ -2351,7 +2410,7 @@ async def run_skill_distillation_cycle(
             **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
         }
 
-    save_result = _commit_skill_markdown_exact(
+    save_result = await _commit_skill_with_asset_revision(
         workspace=workspace,
         target_relative_path=rollback_ref,
         rendered_markdown=rendered,
@@ -2360,6 +2419,8 @@ async def run_skill_distillation_cycle(
         status="provisional",
         candidate_id=candidate["candidate_id"],
         skill_origin=ORIGIN_T3_AUTO_CREATED,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
     )
     if "✅" not in save_result:
         record_promotion_decision(

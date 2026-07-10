@@ -25,3 +25,4 @@ export { officeApi } from './office';
 export { localBridgeApi } from './localBridge';
 export { ccParityApi } from './ccParity';
 export { runtimeBudgetApi } from './runtimeBudgets';
+export { aiAssetsApi } from './aiAssets';

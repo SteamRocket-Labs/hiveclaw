@@ -780,6 +780,8 @@ flowchart LR
 5. 旧资产回填版本、owner、hash、status、source/trust；无法推断项进入显式 quarantine/review queue。
 6. UI 真正消费 history/diff/dependency/trust/usage evidence。
 
+**落地状态（2026-07-10）：已闭环。** Control Plane 只保存控制元数据与 immutable revision，不搬移 Agent、Skill、Workflow、Subagent、External Capability 的 native content；所有现役写入口、evolve/publish/revoke、运行时消费证据、历史 DB/file 资产 backfill、原生 rollback 与 Enterprise UI 已接入同一 tenant-scoped 路径。Company KB 未进入本包。
+
 ### E. Personal KB 完成与 Local/A2A receipts
 
 主要触点：
@@ -874,8 +876,8 @@ Company Charter、Owner Agency Charter、不可违反的安全政策可以作为
 
 ### P1：能力看似存在但消费/恢复断开
 
-1. ConfigRevision 无生产保存消费者，rollback 不应用实体。
-2. AI 资产统一版本/所有权/信任/依赖/消费证据缺失。
+1. ~~ConfigRevision 无生产保存消费者，rollback 不应用实体。~~ **D 包已关闭。**
+2. ~~AI 资产统一版本/所有权/信任/依赖/消费证据缺失。~~ **D 包已关闭。**
 3. Personal KB Agent proposal/write 缺失。
 4. Local capability snapshot、cursor、receipt 不完整。
 5. 前端 optional field bag 与后端 string event 协议。
@@ -1170,3 +1172,67 @@ git diff --check
 ```
 
 本包没有建设 Company KB，也没有执行本地/生产 legacy 数据 apply。本包独立提交标题：`Retire compatibility mirrors and legacy memory runtimes`。
+
+### 15.5 D 包：企业 AI Asset Control Plane（2026-07-10）
+
+完成内容：
+
+1. 新增 tenant-scoped 薄控制索引 `AIAssetRecord`，统一映射 Agent、registry/workspace Skill、Workflow、Agent/Tenant Subagent、External Capability；native model、文件与 runtime 继续是内容权威，不复制成第二套执行系统。
+2. `ConfigRevision` 接通真实生产写路径，版本按 tenant + asset 串行递增；snapshot 字段由 PostgreSQL trigger 保证不可更新/删除，只允许 active revision 从 `true` 单向退役为 `false`。普通 Alembic upgrade 与 fresh database 的 `create_all + stamp` bootstrap 都安装相同约束。
+3. 所有已知 Agent 创建/配置/软删除入口、Skill CRUD/file browser、自进化 Skill/Subagent、Workflow draft/publish/deprecate/revoke、External Capability approve/revoke 都写 revision + typed change metadata + `AuditLog`。Workflow 测试也改用真实 tenant User/Agent，随机不存在的 actor 不再被当成有效权威。
+4. DB migration 回填 Agent、tenant Skill、最新 Workflow 与 External Capability 的 owner/hash/status/source/trust/control；无法推断 owner 的历史 Skill 显式进入 quarantine/review，不假称可信。
+5. `python -m app.scripts.backfill_ai_assets` 提供 file-native dry-run，对 Agent workspace Skill、Agent/Tenant Subagent 做 native key/content hash 对账；`--apply --confirm` 才补记录。未知 owner 的历史 tenant Subagent 进入 review queue，控制记录找不到 native 文件时标记 `orphaned`。
+6. rollback 先应用对应 native adapter，再强制创建新的 append-only revision 并记录 `rollback_of_revision_id`；Agent 生命周期可恢复，硬删除 tenant Skill 可从历史文件重建，Workflow rollback 铸造新 immutable version，revoked/untrusted External Capability 与 terminal evidence revision fail-closed。
+7. file-native rollback 使用字节级 snapshot 补偿；数据库 flush/commit 失败会恢复原 Skill/Subagent 文件、回滚事务，并由 API 在独立事务中持久化 `projection_status=failed` 与 `ai_asset.rollback_failed`，禁止未知副作用自动重放。
+8. InvocationSpan、Workflow resolve、`load_skill`、`spawn_subagent`、External Capability agent/session activation 都回写幂等 usage evidence；普通与 approved tool execution 走同一个消费记录 helper。
+9. Enterprise Extension 工作台新增 AI 资产目录与 inspector：真实消费 owner、lifecycle、trust、admission、source、hash、dependency、compatibility、usage evidence、revision history/diff、reconcile 与带确认 rollback；中英文状态与空态齐全。
+10. 旧 `/config-history` 退化为 `ai_asset` compatibility adapter；任何 legacy entity type 返回 `410 Gone`，不能再创建“不应用原生实体”的假 rollback。
+
+七原子结果：
+
+| 输入 | 权威 | 执行 | 证据 | 恢复 | 消费 | 验收 | 判定 |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| ● | ● | ● | ● | ● | ● | ● | **闭环** |
+
+关键故障、迁移与消费证据：
+
+- 真实 PostgreSQL 验证 Agent rollback 修改原生 Agent；相同内容连续 rollback 仍生成 v3/v4 新 revision，并都指回目标 revision，不因 hash 相同吞掉事件。
+- 真实 PostgreSQL 验证已硬删除 registry Skill 可从 active revision 原 ID、metadata 与 `SKILL.md` 重建；terminal deleted revision 本身不能作为可执行 rollback 目标。
+- 真实 PostgreSQL 验证 ConfigRevision snapshot 直接 UPDATE 被 trigger 拒绝；upgrade path 与 bootstrap path 均存在 trigger。
+- file-native backfill 验证 dry-run 零写入、apply 三项注册、重复 dry-run 三项 current、未知 tenant Subagent owner 进入 quarantine。
+- 故意让 revision commit 失败，Skill/Subagent native snapshot 被恢复，DB transaction rollback；故意让自进化 Skill revision 失败，新文件被移除、旧文件逐字节恢复。
+- RLS 为 `ai_asset_records` 强制 tenant policy；API list/detail/history/reconcile/rollback 全部从 authenticated/selected tenant 派生，member 不可 rollback。
+
+验证证据：
+
+```text
+cd backend && source .venv/bin/activate
+pytest tests/migrations/test_ai_asset_control_plane_migration.py tests/integration/test_ai_asset_control_plane.py -q
+-> 7 passed, 4 warnings in 12.23s
+
+pytest <D 包 asset/skill/subagent/external/tool 聚焦集合> -q
+-> 131 passed, 4 warnings in 3.04s
+
+pytest <D 包真实 actor 的 Workflow/trigger/audit 聚焦集合> -q
+-> 38 passed, 4 warnings in 19.33s
+
+ruff check app tests
+-> All checks passed!
+
+pytest tests -q
+-> 5986 passed, 1 skipped, 5 warnings in 118.22s
+
+cd frontend && npm test -- --run
+-> 86 test files passed, 530 tests passed
+
+npm run build
+-> 7049 modules transformed, build succeeded
+
+cd backend && alembic heads
+-> ai_asset_control_plane_0710 (head)
+
+git diff --check
+-> passed
+```
+
+本包没有建设 Company KB，也没有把 Personal KB 或企业知识检索结果放进原始上下文。本包独立提交标题：`Close enterprise AI asset control plane`。

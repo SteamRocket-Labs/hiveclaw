@@ -29,10 +29,24 @@ from app.database import get_db
 
 
 class _FakeDB:
+    def __init__(self):
+        self.added = []
+
     async def execute(self, _stmt):
-        raise AssertionError("Unexpected execute() call")
+        return SimpleNamespace(scalar_one_or_none=lambda: None)
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def flush(self):
+        for value in self.added:
+            if getattr(value, "id", None) is None:
+                value.id = uuid.uuid4()
 
     async def commit(self):
+        return None
+
+    async def rollback(self):
         return None
 
 
@@ -348,10 +362,17 @@ def test_evolution_mode_switch(monkeypatch, data_root):
     agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
     client, _db, _user = _build_client(tenant_id=tenant_id)
     _grant_access(monkeypatch, agent_id, tenant_id)
+    asset_calls = []
+
+    async def fake_register_agent_asset(*args, **kwargs):
+        asset_calls.append((args, kwargs))
+
+    monkeypatch.setattr("app.services.ai_assets.register_agent_asset", fake_register_agent_asset)
 
     resp = client.post(f"/agents/{agent_id}/subagents/evolution-mode", json={"auto_approve": True})
     assert resp.status_code == 200
     assert resp.json()["evolution_auto_approve"] is True
+    assert len(asset_calls) == 1
 
     use_client, _db2, _user2 = _build_client(tenant_id=tenant_id)
     _grant_access(monkeypatch, agent_id, tenant_id, level="use")

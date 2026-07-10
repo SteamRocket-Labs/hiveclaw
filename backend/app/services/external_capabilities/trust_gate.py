@@ -162,6 +162,16 @@ async def approve_external_capability_snapshot(
             db.add(entry)
         if catalog_entries or hook_registrations:
             await db.flush()
+        from app.services.ai_asset_adapters import project_external_capability
+        from app.services.ai_assets import register_projection
+
+        await register_projection(
+            db,
+            project_external_capability(snapshot),
+            change_source="publish",
+            actor_user_id=approved_by_user_id,
+            change_message="External capability snapshot approved",
+        )
         await db.commit()
         payload = _snapshot_to_dict(
             snapshot,
@@ -281,6 +291,16 @@ async def revoke_external_capability_snapshot(
                 },
             }
         await db.flush()
+        from app.services.ai_asset_adapters import project_external_capability
+        from app.services.ai_assets import register_projection
+
+        await register_projection(
+            db,
+            project_external_capability(snapshot),
+            change_source="revoke",
+            actor_user_id=revoked_by_user_id,
+            change_message="External capability snapshot revoked",
+        )
         await db.commit()
         return {
             "snapshot_id": str(snapshot_id),

@@ -289,6 +289,24 @@ async def record_invocation_span(
     )
     db.add(row)
     await db.flush()
+    if agent_id is not None:
+        from app.services.ai_assets import record_asset_usage
+
+        await record_asset_usage(
+            db,
+            tenant_id=tenant_id,
+            asset_type="agent",
+            native_key=f"agent:{agent_id}",
+            evidence={
+                "kind": "invocation_span",
+                "trace_id": str(trace_id),
+                "span_id": str(span_id),
+                "idempotency_key": f"span:{trace_id}:{span_id}",
+                "runtime_task_id": str(runtime_task_id) if runtime_task_id else None,
+                "session_id": str(session_id) if session_id else None,
+                "status": str(status),
+            },
+        )
     return row
 
 

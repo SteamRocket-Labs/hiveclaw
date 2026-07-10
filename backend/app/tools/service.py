@@ -592,6 +592,68 @@ class ToolRuntimeService:
             self.approval_ticket_consumer = self.approval_ticket_consumer or consume_approval_ticket
             self.approval_ticket_completer = self.approval_ticket_completer or complete_approval_ticket
 
+    async def _record_ai_asset_usage_for_tool(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict,
+        context: ToolExecutionContext,
+        tool_call_id: str,
+        result: str | ToolContentEnvelope,
+    ) -> None:
+        if tool_name not in {"load_skill", "spawn_subagent"} or not context.tenant_id:
+            return
+        if _extract_tool_error_payload(str(result)):
+            return
+        try:
+            tenant_id = uuid.UUID(str(context.tenant_id))
+            evidence = {
+                "kind": "tool_consumption",
+                "tool_name": tool_name,
+                "idempotency_key": f"tool:{context.session_id or 'none'}:{tool_call_id}",
+                "session_id": str(context.session_id) if context.session_id else None,
+                "agent_id": str(context.agent_id),
+            }
+            from app.services.ai_assets import record_runtime_asset_usage
+
+            if tool_name == "load_skill":
+                skill_name = str(arguments.get("name") or "").strip()
+                if not skill_name:
+                    return
+                recorded = await record_runtime_asset_usage(
+                    tenant_id=tenant_id,
+                    asset_type="skill",
+                    native_key=f"skill:agent:{context.agent_id}:{skill_name}",
+                    evidence=evidence,
+                )
+                if recorded:
+                    return
+                await record_runtime_asset_usage(
+                    tenant_id=tenant_id,
+                    asset_type="skill",
+                    source_ref=f"skills/{skill_name}",
+                    evidence=evidence,
+                )
+                return
+            payload = _json.loads(str(result))
+            if not payload.get("ok") or payload.get("definition_scope") not in {"agent", "tenant"}:
+                return
+            scope = str(payload["definition_scope"])
+            owner = context.agent_id if scope == "agent" else tenant_id
+            await record_runtime_asset_usage(
+                tenant_id=tenant_id,
+                asset_type="subagent",
+                native_key=f"subagent:{scope}:{owner}:{payload['subagent']}",
+                evidence=evidence,
+            )
+        except Exception as exc:  # noqa: BLE001 - evidence projection cannot break the tool result
+            logging.getLogger(__name__).warning(
+                "[ToolService] AI asset usage projection failed: tool=%s agent=%s error=%s",
+                tool_name,
+                context.agent_id,
+                exc,
+            )
+
     async def _load_capability_group_policies(self, runtime_context: ToolExecutionContext) -> dict[str, bool]:
         policy_loader = self.capability_group_policy_loader or self.pack_policy_loader
         if policy_loader is not None:
@@ -1448,6 +1510,13 @@ class ToolRuntimeService:
                     )
                 except Exception as _log_err:
                     _logger.warning("[ToolService] Activity logging failed for %s: %s", log_label, _log_err)
+            await self._record_ai_asset_usage_for_tool(
+                tool_name=tool_name,
+                arguments=arguments,
+                context=runtime_context,
+                tool_call_id=effective_tool_call_id,
+                result=result,
+            )
             post_hook_result = await self._emit_post_tool_hook(
                 tool_name,
                 arguments,
@@ -1642,6 +1711,13 @@ class ToolRuntimeService:
                 original_arguments=original_arguments,
                 effective_arguments=dict(arguments or {}),
             )
+        await self._record_ai_asset_usage_for_tool(
+            tool_name=tool_name,
+            arguments=arguments,
+            context=context,
+            tool_call_id=tool_call_id,
+            result=result,
+        )
         return result
 
     @staticmethod

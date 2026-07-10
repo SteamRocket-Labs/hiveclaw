@@ -2096,6 +2096,15 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             except Exception as _audit_exc:
                 logger.warning("Audit write failed for hr agent.created: %s", _audit_exc)
 
+            from app.services.ai_assets import register_agent_asset
+
+            await register_agent_asset(
+                db,
+                agent,
+                change_source="create",
+                actor_user_id=user.id,
+                change_message="Digital employee created by HR Agent",
+            )
             await db.commit()
 
             session_id = getattr(request.context, "session_id", None)

@@ -20,6 +20,9 @@ class _FakeSpanDB:
     async def flush(self) -> None:
         self.flushed = True
 
+    async def execute(self, _statement):
+        return SimpleNamespace(scalar_one_or_none=lambda: None)
+
 
 class _FakeClient:
     def __init__(self, responses):

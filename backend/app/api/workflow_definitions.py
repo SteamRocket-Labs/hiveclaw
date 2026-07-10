@@ -187,7 +187,11 @@ async def deprecate_definition(
     try:
         existing = await service.get_record(definition_id, tenant_id=current_user.tenant_id)
         await _authorize_record_management(db, current_user, existing)
-        record = await service.deprecate(definition_id, tenant_id=current_user.tenant_id)
+        record = await service.deprecate(
+            definition_id,
+            tenant_id=current_user.tenant_id,
+            actor_user_id=current_user.id,
+        )
     except WorkflowDefinitionError as exc:
         _raise_mapped(exc)
     return record_payload(record)
@@ -203,7 +207,11 @@ async def revoke_definition(
     try:
         existing = await service.get_record(definition_id, tenant_id=current_user.tenant_id)
         await _authorize_record_management(db, current_user, existing)
-        record = await service.revoke(definition_id, tenant_id=current_user.tenant_id)
+        record = await service.revoke(
+            definition_id,
+            tenant_id=current_user.tenant_id,
+            actor_user_id=current_user.id,
+        )
     except WorkflowDefinitionError as exc:
         _raise_mapped(exc)
     return record_payload(record)

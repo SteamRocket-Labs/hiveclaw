@@ -45,6 +45,10 @@ class _CreateSkillSession:
             if getattr(value, "id", None) is None:
                 value.id = uuid4()
 
+    async def refresh(self, value, attribute_names=None):
+        if attribute_names and "files" in attribute_names:
+            value.files = [row for row in self.added if getattr(row, "skill_id", None) == value.id]
+
     async def commit(self):
         self.committed = True
 
@@ -108,6 +112,12 @@ async def test_create_skill_scopes_custom_skill_to_current_tenant(monkeypatch):
 
     monkeypatch.setattr(skills_api, "tenant_scoped_session", lambda *a, **k: _AsyncSessionContext(session))
     monkeypatch.setattr(skills_api, "_guard_skill_files_or_raise", lambda *_args, **_kwargs: None)
+    registered = []
+
+    async def _register(_db, projection, **kwargs):
+        registered.append((projection, kwargs))
+
+    monkeypatch.setattr("app.services.ai_assets.register_projection", _register)
 
     result = await skills_api.create_skill(
         skills_api.SkillCreateIn(
@@ -125,6 +135,8 @@ async def test_create_skill_scopes_custom_skill_to_current_tenant(monkeypatch):
     assert created_skill.tenant_id == tenant_id
     assert result["name"] == "Tenant Workflow"
     assert session.committed is True
+    assert registered[0][0].native_key == f"skill:{created_skill.id}"
+    assert registered[0][1]["change_source"] == "create"
 
 
 @pytest.mark.asyncio

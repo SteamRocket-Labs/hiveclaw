@@ -24,6 +24,7 @@ Every session is tenant-scoped (the table is FORCE-RLS).
 from __future__ import annotations
 
 import copy
+import logging
 import uuid
 from dataclasses import dataclass
 
@@ -34,6 +35,9 @@ from app.database import tenant_scoped_session
 from app.models.workflow import WorkflowDefinitionRecord
 from app.runtime.workflow_compiler import CompiledWorkflow, WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
+
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowDefinitionError(ValueError):
@@ -105,6 +109,17 @@ class WorkflowDefinitionService:
             session.add(record)
             await session.flush()
             await session.refresh(record)
+            from app.services.ai_asset_adapters import project_workflow
+            from app.services.ai_assets import register_projection
+
+            await register_projection(
+                session,
+                project_workflow(record),
+                change_source="create",
+                actor_user_id=created_by_user_id,
+                actor_agent_id=created_by_agent_id,
+                change_message="Workflow draft created",
+            )
         return record
 
     async def get_record(self, definition_id: uuid.UUID, *, tenant_id: uuid.UUID) -> WorkflowDefinitionRecord:
@@ -119,7 +134,13 @@ class WorkflowDefinitionService:
         return record
 
     async def _transition(
-        self, definition_id: uuid.UUID, *, tenant_id: uuid.UUID, to_status: str, allowed_from: tuple[str, ...]
+        self,
+        definition_id: uuid.UUID,
+        *,
+        tenant_id: uuid.UUID,
+        to_status: str,
+        allowed_from: tuple[str, ...],
+        actor_user_id: uuid.UUID | None = None,
     ) -> WorkflowDefinitionRecord:
         async with self._session(tenant_id) as session:
             record = (
@@ -134,6 +155,16 @@ class WorkflowDefinitionService:
             record.status = to_status
             await session.flush()
             await session.refresh(record)
+            from app.services.ai_asset_adapters import project_workflow
+            from app.services.ai_assets import register_projection
+
+            await register_projection(
+                session,
+                project_workflow(record),
+                change_source={"active": "publish", "deprecated": "deprecate", "revoked": "revoke"}[to_status],
+                actor_user_id=actor_user_id,
+                change_message=f"Workflow moved to {to_status}",
+            )
         return record
 
     async def activate(
@@ -149,19 +180,34 @@ class WorkflowDefinitionService:
             compile_workflow(record.definition_json, known_leaves=allowed_leaves)
         except WorkflowCompileError as exc:
             raise WorkflowDefinitionError(f"activation pre-check failed: {exc}") from exc
-        return await self._transition(definition_id, tenant_id=tenant_id, to_status="active", allowed_from=("draft",))
-
-    async def deprecate(self, definition_id: uuid.UUID, *, tenant_id: uuid.UUID) -> WorkflowDefinitionRecord:
         return await self._transition(
-            definition_id, tenant_id=tenant_id, to_status="deprecated", allowed_from=("active",)
+            definition_id,
+            tenant_id=tenant_id,
+            to_status="active",
+            allowed_from=("draft",),
+            actor_user_id=actor_user_id,
         )
 
-    async def revoke(self, definition_id: uuid.UUID, *, tenant_id: uuid.UUID) -> WorkflowDefinitionRecord:
+    async def deprecate(
+        self, definition_id: uuid.UUID, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID | None = None
+    ) -> WorkflowDefinitionRecord:
+        return await self._transition(
+            definition_id,
+            tenant_id=tenant_id,
+            to_status="deprecated",
+            allowed_from=("active",),
+            actor_user_id=actor_user_id,
+        )
+
+    async def revoke(
+        self, definition_id: uuid.UUID, *, tenant_id: uuid.UUID, actor_user_id: uuid.UUID | None = None
+    ) -> WorkflowDefinitionRecord:
         return await self._transition(
             definition_id,
             tenant_id=tenant_id,
             to_status="revoked",
             allowed_from=("draft", "active", "deprecated"),
+            actor_user_id=actor_user_id,
         )
 
     # ── visibility / execution resolution (§10 decision 5) ───────
@@ -257,6 +303,33 @@ class WorkflowDefinitionService:
                 f"agent {agent_id} is not authorized to execute definition {name!r} (call_policy/visibility)"
             )
         compiled = compile_workflow(record.definition_json)
+        try:
+            async with self._session(tenant_id) as usage_session:
+                from app.services.ai_assets import record_asset_usage
+
+                await record_asset_usage(
+                    usage_session,
+                    tenant_id=tenant_id,
+                    asset_type="workflow",
+                    native_key=f"workflow:{record.name}",
+                    evidence={
+                        "kind": "workflow_resolution",
+                        "agent_id": str(agent_id),
+                        "definition_id": str(record.id),
+                        "definition_version": record.definition_version,
+                        "definition_hash": record.definition_hash,
+                    },
+                )
+        except Exception as exc:
+            # Usage projection must not turn an already-authorized workflow into
+            # an execution failure; reconciliation exposes any catalog drift.
+            logger.warning(
+                "Workflow asset usage projection failed: tenant=%s definition=%s agent=%s error=%s",
+                tenant_id,
+                record.id,
+                agent_id,
+                exc,
+            )
         return ResolvedDefinition(record=record, compiled=compiled)
 
     # ── promote (§10 decision 4) ─────────────────────────────────

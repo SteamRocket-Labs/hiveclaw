@@ -774,6 +774,18 @@ async def create_skill(
             for f in body.files:
                 db.add(SkillFile(skill_id=skill.id, path=f.path, content=f.content))
 
+        await db.flush()
+        await db.refresh(skill, attribute_names=["files"])
+        from app.services.ai_asset_adapters import project_skill
+        from app.services.ai_assets import register_projection
+
+        await register_projection(
+            db,
+            project_skill(skill, owner_user_id=current_user.id),
+            change_source="create",
+            actor_user_id=current_user.id,
+            change_message="Skill created",
+        )
         await db.commit()
         return {"id": str(skill.id), "name": skill.name}
 
@@ -830,6 +842,18 @@ async def update_skill(
             for f in body.files:
                 db.add(SkillFile(skill_id=skill.id, path=f.path, content=f.content))
 
+        await db.flush()
+        await db.refresh(skill, attribute_names=["files"])
+        from app.services.ai_asset_adapters import project_skill
+        from app.services.ai_assets import register_projection
+
+        await register_projection(
+            db,
+            project_skill(skill, owner_user_id=current_user.id),
+            change_source="update",
+            actor_user_id=current_user.id,
+            change_message="Skill updated",
+        )
         await db.commit()
         return {"id": str(skill.id), "name": skill.name}
 
@@ -841,12 +865,22 @@ async def delete_skill(
 ):
     """Delete a skill (not builtin)."""
     async with tenant_scoped_session(current_user.tenant_id) as db:
-        result = await db.execute(select(Skill).where(Skill.id == skill_id))
+        result = await db.execute(select(Skill).where(Skill.id == skill_id).options(selectinload(Skill.files)))
         skill = result.scalar_one_or_none()
         if not skill or not _skill_visible_to_user(skill, current_user):
             raise HTTPException(404, "Skill not found")
         if skill.is_builtin:
             raise HTTPException(400, "Cannot delete builtin skill")
+        from app.services.ai_asset_adapters import project_skill
+        from app.services.ai_assets import register_projection
+
+        await register_projection(
+            db,
+            project_skill(skill, owner_user_id=current_user.id, lifecycle_status="deleted"),
+            change_source="revoke",
+            actor_user_id=current_user.id,
+            change_message="Skill deleted",
+        )
         await db.delete(skill)
         await db.commit()
         return {"ok": True}
@@ -1024,6 +1058,7 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require
             skill_q = skill_q.where(scope_clause)
         result = await db.execute(skill_q)
         skill = result.scalar_one_or_none()
+        created = skill is None
         if not skill:
             tenant_id = _current_tenant_or_400(current_user)
             await _ensure_custom_skill_available(
@@ -1057,6 +1092,18 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(require
             existing.content = body.content
         else:
             db.add(SkillFile(skill_id=skill.id, path=file_path, content=body.content))
+        await db.flush()
+        await db.refresh(skill, attribute_names=["files"])
+        from app.services.ai_asset_adapters import project_skill
+        from app.services.ai_assets import register_projection
+
+        await register_projection(
+            db,
+            project_skill(skill, owner_user_id=current_user.id),
+            change_source="create" if created else "update",
+            actor_user_id=current_user.id,
+            change_message=f"Skill file written: {file_path}",
+        )
         await db.commit()
         return {"ok": True}
 
@@ -1080,6 +1127,16 @@ async def browse_delete(path: str, current_user: User = Depends(require_role("pl
 
         if len(parts) == 1:
             # Delete entire skill
+            from app.services.ai_asset_adapters import project_skill
+            from app.services.ai_assets import register_projection
+
+            await register_projection(
+                db,
+                project_skill(skill, owner_user_id=current_user.id, lifecycle_status="deleted"),
+                change_source="delete",
+                actor_user_id=current_user.id,
+                change_message="Skill deleted through file browser",
+            )
             await db.delete(skill)
         else:
             # Delete specific file
@@ -1088,5 +1145,17 @@ async def browse_delete(path: str, current_user: User = Depends(require_role("pl
                 if f.path == file_path:
                     await db.delete(f)
                     break
+            await db.flush()
+            await db.refresh(skill, attribute_names=["files"])
+            from app.services.ai_asset_adapters import project_skill
+            from app.services.ai_assets import register_projection
+
+            await register_projection(
+                db,
+                project_skill(skill, owner_user_id=current_user.id),
+                change_source="update",
+                actor_user_id=current_user.id,
+                change_message=f"Skill file deleted: {file_path}",
+            )
         await db.commit()
         return {"ok": True}

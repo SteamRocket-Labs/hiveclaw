@@ -211,8 +211,9 @@ async def test_approve_external_capability_review_creates_approved_snapshot_only
     assert snapshot["review_id"] == str(review.id)
     assert snapshot["snapshot_key"].startswith("cc_plugin:review-pack:")
     assert review.status == "approved"
-    assert len(db.added) == 1
-    created = db.added[0]
+    created_rows = [row for row in db.added if row.__class__.__name__ == "ExternalCapabilitySnapshot"]
+    assert len(created_rows) == 1
+    created = created_rows[0]
     assert created.tenant_id == tenant_id
     assert created.approved_by_user_id == reviewer_id
     assert created.component_manifest_json == {"components": [{"qualified_name": "review-pack:check"}]}
@@ -396,7 +397,17 @@ async def test_revoke_external_capability_snapshot_marks_catalog_unavailable():
     snapshot = SimpleNamespace(
         id=uuid4(),
         tenant_id=tenant_id,
+        snapshot_key="cc_plugin:review-pack:one",
+        normalized_name="review-pack",
         status="approved",
+        source_hash="hash",
+        source_format="cc_plugin",
+        source_uri="github:acme/review-pack",
+        source_ref="main",
+        admission_class="governed_runtime",
+        component_manifest_json={},
+        governance_projection_json={},
+        approved_by_user_id=reviewer_id,
         revoked_by_user_id=None,
         revoked_at=None,
     )
@@ -427,7 +438,17 @@ async def test_revoke_external_capability_snapshot_revokes_active_agent_activati
     snapshot = SimpleNamespace(
         id=uuid4(),
         tenant_id=tenant_id,
+        snapshot_key="cc_plugin:review-pack:two",
+        normalized_name="review-pack",
         status="approved",
+        source_hash="hash",
+        source_format="cc_plugin",
+        source_uri="github:acme/review-pack",
+        source_ref="main",
+        admission_class="governed_runtime",
+        component_manifest_json={},
+        governance_projection_json={},
+        approved_by_user_id=reviewer_id,
         revoked_by_user_id=None,
         revoked_at=None,
     )

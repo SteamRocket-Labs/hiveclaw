@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from app.api.activity import router as activity_router
+from app.api.ai_assets import router as ai_assets_router
 from app.api.a2a import router as a2a_router
 from app.api.admin import router as admin_router
 from app.api.advanced import router as advanced_router
@@ -830,6 +831,7 @@ _api_routers = [
     email_channel_router,
     notification_router,
     config_history_router,
+    ai_assets_router,
     custom_api_connectors_router,
     feature_flags_router,
     admin_router,

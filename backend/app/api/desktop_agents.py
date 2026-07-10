@@ -135,6 +135,16 @@ async def create_sub_agent(
     db.add(agent)
     await ensure_agent_identity(db, agent)
 
+    from app.services.ai_assets import register_agent_asset
+
+    await register_agent_asset(
+        db,
+        agent,
+        change_source="create",
+        actor_user_id=current_user.id,
+        change_message="Desktop Sub-Agent created",
+    )
+
     if current_user.tenant_id:
         await bump_sync_version(db, current_user.tenant_id)
 
@@ -156,6 +166,16 @@ async def update_sub_agent(
         setattr(agent, field, value)
     agent.config_version += 1
     await db.flush()
+
+    from app.services.ai_assets import register_agent_asset
+
+    await register_agent_asset(
+        db,
+        agent,
+        change_source="update",
+        actor_user_id=current_user.id,
+        change_message=f"Desktop Sub-Agent fields updated: {', '.join(sorted(update_data))}",
+    )
 
     if current_user.tenant_id:
         await bump_sync_version(db, current_user.tenant_id)
@@ -179,6 +199,16 @@ async def delete_sub_agent(
 
     await soft_delete_agent(db, agent, actor_id=current_user.id, reason="desktop_delete_sub_agent")
     await db.flush()
+
+    from app.services.ai_assets import register_agent_asset
+
+    await register_agent_asset(
+        db,
+        agent,
+        change_source="revoke",
+        actor_user_id=current_user.id,
+        change_message="Desktop Sub-Agent soft-deleted",
+    )
 
     if current_user.tenant_id:
         await bump_sync_version(db, current_user.tenant_id)

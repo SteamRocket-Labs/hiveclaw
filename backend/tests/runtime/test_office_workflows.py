@@ -79,7 +79,9 @@ def test_office_leaves_are_capability_bound():
 # ── contract review: artifacts + promotable ───────────────────────
 
 
-async def test_contract_review_produces_artifacts_and_promote_proposal(tenant_id, owner_sessionmaker):
+async def test_contract_review_produces_artifacts_and_promote_proposal(
+    tenant_id, owner_sessionmaker, workflow_principals
+):
     service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
 
     async def office_leaf(request: LeafRequest) -> LeafOutcome:
@@ -111,7 +113,7 @@ async def test_contract_review_produces_artifacts_and_promote_proposal(tenant_id
     definitions = WorkflowDefinitionService(session_factory=owner_sessionmaker)
     proposal = await definitions.submit_promote_proposal(
         tenant_id=tenant_id,
-        agent_id=uuid.uuid4(),
+        agent_id=workflow_principals.agent_id,
         definition_data=CONTRACT_REVIEW_EXAMPLE,
         source_run_id=handle.run_id,
     )

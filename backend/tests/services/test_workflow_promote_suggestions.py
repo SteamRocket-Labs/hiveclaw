@@ -98,7 +98,7 @@ async def test_below_threshold_stays_silent(tenant_id, owner_sessionmaker):
     assert all(s.name != "office-contract-review" for s in suggestions)
 
 
-async def test_already_registered_name_is_not_suggested(tenant_id, owner_sessionmaker):
+async def test_already_registered_name_is_not_suggested(tenant_id, owner_sessionmaker, workflow_principals):
     from app.services.workflow_definitions import WorkflowDefinitionService
 
     service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
@@ -109,7 +109,7 @@ async def test_already_registered_name_is_not_suggested(tenant_id, owner_session
     record = await definitions.create_draft(
         tenant_id=tenant_id, definition_data=CONTRACT_REVIEW_EXAMPLE, visibility_scope="tenant"
     )
-    await definitions.activate(record.id, tenant_id=tenant_id, actor_user_id=uuid.uuid4())
+    await definitions.activate(record.id, tenant_id=tenant_id, actor_user_id=workflow_principals.user_id)
 
     suggestions = await collect_promote_suggestions(tenant_id=tenant_id, session_factory=owner_sessionmaker)
     assert all(s.name != "office-contract-review" for s in suggestions), (
@@ -127,16 +127,12 @@ async def test_agent_filter_scopes_suggestions(tenant_id, owner_sessionmaker):
     for _ in range(2):
         await _run_contract_review(service, tenant_id, agent_id=agent_b)
 
-    for_a = await collect_promote_suggestions(
-        tenant_id=tenant_id, agent_id=agent_a, session_factory=owner_sessionmaker
-    )
+    for_a = await collect_promote_suggestions(tenant_id=tenant_id, agent_id=agent_a, session_factory=owner_sessionmaker)
     matching = [s for s in for_a if s.name == "office-contract-review"]
     assert len(matching) == 1
     assert matching[0].run_count == 3, "B's runs must not inflate A's evidence"
 
-    for_b = await collect_promote_suggestions(
-        tenant_id=tenant_id, agent_id=agent_b, session_factory=owner_sessionmaker
-    )
+    for_b = await collect_promote_suggestions(tenant_id=tenant_id, agent_id=agent_b, session_factory=owner_sessionmaker)
     assert all(s.name != "office-contract-review" for s in for_b), "2 < threshold stays silent"
 
     tenant_wide = await collect_promote_suggestions(tenant_id=tenant_id, session_factory=owner_sessionmaker)

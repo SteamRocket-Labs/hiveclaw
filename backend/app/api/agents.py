@@ -315,6 +315,15 @@ async def get_or_create_hr_agent(
             default_model = await _get_default_model()
             if default_model:
                 hr_agent.primary_model_id = default_model.id
+                from app.services.ai_assets import register_agent_asset
+
+                await register_agent_asset(
+                    db,
+                    hr_agent,
+                    change_source="update",
+                    actor_user_id=current_user.id,
+                    change_message="HR Agent default model assigned",
+                )
                 await db.commit()
 
         # Keep existing HR agents on the current hiring-flow contract. Older
@@ -361,6 +370,16 @@ async def get_or_create_hr_agent(
         )
     )
     await db.flush()
+
+    from app.services.ai_assets import register_agent_asset
+
+    await register_agent_asset(
+        db,
+        hr_agent,
+        change_source="create",
+        actor_user_id=current_user.id,
+        change_message="HR Agent created",
+    )
 
     # Initialize files using standard template (same as normal agents)
     await agent_manager.initialize_agent_files(db, hr_agent)
@@ -602,6 +621,16 @@ async def create_agent(
     except Exception as _audit_err:
         logger.warning("Audit write failed for agent.created: %s", _audit_err)
 
+    from app.services.ai_asset_adapters import project_agent
+    from app.services.ai_assets import register_projection
+
+    await register_projection(
+        db,
+        project_agent(agent),
+        change_source="create",
+        actor_user_id=current_user.id,
+        change_message="Agent created",
+    )
     return _agent_out(agent)
 
 
@@ -1022,6 +1051,16 @@ async def update_agent(
     except Exception:
         logger.warning("Audit write failed for agent.updated", exc_info=True)
 
+    from app.services.ai_asset_adapters import project_agent
+    from app.services.ai_assets import register_projection
+
+    await register_projection(
+        db,
+        project_agent(agent),
+        change_source="update",
+        actor_user_id=current_user.id,
+        change_message=f"Agent fields updated: {', '.join(sorted(update_data))}",
+    )
     out = _agent_out_dict(agent)
     if clamped_fields:
         out["_clamped_fields"] = clamped_fields
@@ -1055,6 +1094,17 @@ async def delete_agent(
         logger.warning("Failed to archive files for agent %s: %s", agent_id, e)
 
     await soft_delete_agent(db, agent, actor_id=current_user.id, reason="delete_agent")
+
+    from app.services.ai_asset_adapters import project_agent
+    from app.services.ai_assets import register_projection
+
+    await register_projection(
+        db,
+        project_agent(agent),
+        change_source="revoke",
+        actor_user_id=current_user.id,
+        change_message="Agent soft-deleted",
+    )
 
     # Audit: agent deleted (before commit so we still have agent data)
     try:

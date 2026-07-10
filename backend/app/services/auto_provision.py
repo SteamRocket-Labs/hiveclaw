@@ -75,5 +75,15 @@ async def ensure_main_agent(db: AsyncSession, user: User) -> Agent | None:
     db.add(agent)
     await ensure_agent_identity(db, agent)
 
+    from app.services.ai_assets import register_agent_asset
+
+    await register_agent_asset(
+        db,
+        agent,
+        change_source="create",
+        actor_user_id=user.id,
+        change_message="Main Agent auto-provisioned",
+    )
+
     await bump_sync_version(db, user.tenant_id)
     return agent

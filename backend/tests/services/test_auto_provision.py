@@ -103,7 +103,7 @@ async def test_creates_main_agent_from_dept_template():
         result = await ensure_main_agent(db, _USER_WITH_DEPT)
 
     assert result is not None
-    assert len(db.added) == 3
+    assert len([obj for obj in db.added if obj.__class__.__name__ in {"Agent", "Participant", "KnowledgeGrant"}]) == 3
     agent = next(obj for obj in db.added if obj.__class__.__name__ == "Agent")
     participant = next(obj for obj in db.added if obj.__class__.__name__ == "Participant")
     grant = next(obj for obj in db.added if obj.__class__.__name__ == "KnowledgeGrant")

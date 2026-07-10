@@ -77,6 +77,9 @@ class _FakeDB:
         self.bump_called = False
 
     async def execute(self, stmt):
+        statement_text = str(stmt)
+        if "FROM ai_asset_records" in statement_text or "FROM config_revisions" in statement_text:
+            return _ScalarResult(None)
         # For the main agent query
         return _ScalarResult(self._main_agent)
 
@@ -134,7 +137,7 @@ def test_create_sub_agent_success():
     assert data["name"] == "代码助手"
     assert data["execution_mode"] == "coordinator"
     assert data["smart_model_routing"] == {"enabled": True, "max_simple_chars": 120, "max_simple_words": 18}
-    assert len(fake_db.added) == 2
+    assert len([obj for obj in fake_db.added if obj.__class__.__name__ in {"Agent", "KnowledgeGrant"}]) == 2
     agent = next(obj for obj in fake_db.added if obj.__class__.__name__ == "Agent")
     grant = next(obj for obj in fake_db.added if obj.__class__.__name__ == "KnowledgeGrant")
     assert agent.parent_agent_id == _MAIN_AGENT_ID

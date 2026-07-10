@@ -136,6 +136,7 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "knowledge_links",
     "knowledge_index_jobs",
     "knowledge_grants",
+    "ai_asset_records",
 )
 
 # Non-null tenant-owned tables must never inherit the legacy nullable-tenant
@@ -161,6 +162,7 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "knowledge_links",
     "knowledge_index_jobs",
     "knowledge_grants",
+    "ai_asset_records",
 )
 
 REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (
@@ -396,6 +398,53 @@ def apply_rls_policies(
         )
 
 
+def apply_config_revision_immutability(connection: Connection) -> None:
+    """Install the revision snapshot guard skipped by create_all + stamp bootstrap."""
+
+    if connection.dialect.name != "postgresql":
+        return
+    if "config_revisions" not in set(inspect(connection).get_table_names()):
+        return
+    connection.execute(
+        text(
+            """
+            CREATE OR REPLACE FUNCTION enforce_config_revision_immutability()
+            RETURNS trigger AS $$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    RAISE EXCEPTION 'config revision snapshots are immutable';
+                END IF;
+                IF ROW(
+                    OLD.id, OLD.entity_type, OLD.entity_id, OLD.tenant_id, OLD.version,
+                    OLD.content_hash, OLD.content, OLD.diff_from_prev, OLD.change_source,
+                    OLD.changed_by_user_id, OLD.changed_by_agent_id, OLD.change_message,
+                    OLD.parent_revision_id, OLD.rollback_of_revision_id, OLD.created_at
+                ) IS DISTINCT FROM ROW(
+                    NEW.id, NEW.entity_type, NEW.entity_id, NEW.tenant_id, NEW.version,
+                    NEW.content_hash, NEW.content, NEW.diff_from_prev, NEW.change_source,
+                    NEW.changed_by_user_id, NEW.changed_by_agent_id, NEW.change_message,
+                    NEW.parent_revision_id, NEW.rollback_of_revision_id, NEW.created_at
+                ) OR (OLD.is_active = false AND NEW.is_active = true) THEN
+                    RAISE EXCEPTION 'config revision snapshots are immutable';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+            """
+        )
+    )
+    connection.execute(text("DROP TRIGGER IF EXISTS trg_config_revision_immutability ON config_revisions"))
+    connection.execute(
+        text(
+            """
+            CREATE TRIGGER trg_config_revision_immutability
+            BEFORE UPDATE OR DELETE ON config_revisions
+            FOR EACH ROW EXECUTE FUNCTION enforce_config_revision_immutability()
+            """
+        )
+    )
+
+
 class AlembicContextProtocol(Protocol):
     def configure(self, **kwargs) -> None: ...
 
@@ -454,6 +503,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     # Apply the RLS policies explicitly so fresh deployments are not born
     # without tenant isolation (§9 P0 gap fix).
     apply_rls_policies(connection)
+    apply_config_revision_immutability(connection)
     ensure_alembic_version_table_width(connection)
     connection.execute(text("DELETE FROM alembic_version"))
     for head in heads:

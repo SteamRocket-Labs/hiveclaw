@@ -33,6 +33,8 @@ class _ActivationSession:
 
     async def execute(self, statement):
         statement_text = str(statement)
+        if "FROM ai_asset_records" in statement_text:
+            return _ScalarResult(None)
         if "FROM agents" in statement_text:
             return _ScalarResult(self.agent)
         if "FROM chat_sessions" in statement_text:

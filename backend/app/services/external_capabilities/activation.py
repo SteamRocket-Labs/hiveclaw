@@ -78,6 +78,20 @@ async def activate_external_extension_for_agent(
     try:
         db.add(activation)
         await db.flush()
+        from app.services.ai_assets import record_asset_usage
+
+        await record_asset_usage(
+            db,
+            tenant_id=tenant_id,
+            asset_type="external_capability",
+            native_key=f"external:{snapshot.snapshot_key}",
+            evidence={
+                "kind": "agent_activation",
+                "idempotency_key": f"external-activation:{activation.id}",
+                "activation_id": str(activation.id),
+                "agent_id": str(agent_id),
+            },
+        )
         await db.commit()
         return {
             "id": str(activation.id),
@@ -154,6 +168,21 @@ async def try_external_extension_in_chat(
     try:
         db.add(activation)
         await db.flush()
+        from app.services.ai_assets import record_asset_usage
+
+        await record_asset_usage(
+            db,
+            tenant_id=tenant_id,
+            asset_type="external_capability",
+            native_key=f"external:{snapshot.snapshot_key}",
+            evidence={
+                "kind": "session_activation",
+                "idempotency_key": f"external-session-activation:{activation.id}",
+                "activation_id": str(activation.id),
+                "session_id": str(session_id),
+                "agent_id": str(agent_id),
+            },
+        )
         await db.commit()
         return {
             "id": str(activation.id),

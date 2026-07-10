@@ -636,6 +636,14 @@ async def maybe_nominate(
             if await _auto_approve_enabled(agent_id):
                 result = apply_proposal(agent_id, spec_name, approved_by="auto", agent_data_dir=agent_data_dir)
                 applied = result.applied
+                if applied:
+                    from app.services.ai_assets import register_evolved_subagent_asset
+
+                    await register_evolved_subagent_asset(
+                        agent_id=_coerce_uuid(agent_id),
+                        spec_name=spec_name,
+                        agent_data_dir=agent_data_dir,
+                    )
                 if not applied:
                     logger.warning(
                         "[SubagentEvolution] auto-approve failed (%s) — proposal %s stays pending",

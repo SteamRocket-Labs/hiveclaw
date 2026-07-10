@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import WorkspaceAIAssetsSection from './WorkspaceAIAssetsSection';
 import WorkspaceCapabilityFactorsSection from './WorkspaceCapabilityFactorsSection';
 import WorkspaceExtensionCatalogSection from './WorkspaceExtensionCatalogSection';
 import WorkspaceSkillsSection from './WorkspaceSkillsSection';
@@ -12,13 +13,14 @@ type WorkspaceExtensionsSectionProps = {
   selectedTenantId: string;
 };
 
-type WorkspaceExtensionSubview = 'catalog' | 'mcp' | 'skills' | 'subagents' | 'factors';
+type WorkspaceExtensionSubview = 'assets' | 'catalog' | 'mcp' | 'skills' | 'subagents' | 'factors';
 
 const WORKSPACE_EXTENSION_SUBVIEWS: Array<{
   id: WorkspaceExtensionSubview;
   labelKey: string;
   fallback: string;
 }> = [
+  { id: 'assets', labelKey: 'enterprise.extensions.tabs.assets', fallback: 'AI Assets' },
   { id: 'catalog', labelKey: 'enterprise.extensions.tabs.catalog', fallback: 'Catalog' },
   { id: 'mcp', labelKey: 'enterprise.extensions.tabs.mcp', fallback: 'MCP & Plugins' },
   { id: 'skills', labelKey: 'enterprise.extensions.tabs.skills', fallback: 'Skills' },
@@ -28,7 +30,7 @@ const WORKSPACE_EXTENSION_SUBVIEWS: Array<{
 
 export default function WorkspaceExtensionsSection({ selectedTenantId }: WorkspaceExtensionsSectionProps) {
   const { t } = useTranslation();
-  const [activeSubview, setActiveSubview] = useState<WorkspaceExtensionSubview>('catalog');
+  const [activeSubview, setActiveSubview] = useState<WorkspaceExtensionSubview>('assets');
 
   return (
     <section className="workspace-extensions-section" data-testid="workspace-extensions-section">
@@ -53,6 +55,11 @@ export default function WorkspaceExtensionsSection({ selectedTenantId }: Workspa
       </div>
 
       <div className="workspace-extensions-body">
+        {activeSubview === 'assets' && (
+          <div data-testid="workspace-extensions-assets-view">
+            <WorkspaceAIAssetsSection selectedTenantId={selectedTenantId} />
+          </div>
+        )}
         {activeSubview === 'catalog' && (
           <div data-testid="workspace-extensions-catalog-view">
             <WorkspaceExtensionCatalogSection />

@@ -275,6 +275,15 @@ async def ensure_default_local_agent_for_pairing(
     )
     db.add(local_agent)
     await db.flush()
+    from app.services.ai_assets import register_agent_asset
+
+    await register_agent_asset(
+        db,
+        local_agent,
+        change_source="create",
+        actor_user_id=user_id,
+        change_message="Hive Connect local Agent created",
+    )
     return local_agent
 
 
@@ -535,4 +544,3 @@ async def revoke_connection(
     connection.revoked_at = utcnow()
     await db.commit()
     return {"status": "revoked", "connection_id": str(connection.id)}
-

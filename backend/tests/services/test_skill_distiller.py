@@ -399,6 +399,12 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
         return {"factor": {"id": str(uuid4()), "status": "captured"}, "review": {"decision": "pending"}}
 
     monkeypatch.setattr("app.services.skill_distiller._capture_skill_candidate_package_factor", fake_capture_factor)
+    captured_asset_revisions: list[dict] = []
+
+    async def fake_register_asset(**kwargs):
+        captured_asset_revisions.append(kwargs)
+
+    monkeypatch.setattr("app.services.ai_assets.register_evolved_workspace_skill_asset", fake_register_asset)
     agent_id = uuid4()
     tenant_id = uuid4()
 
@@ -422,6 +428,15 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     assert state_path.exists()
     assert ledger_path.exists()
     assert validation_path.exists()
+    assert captured_asset_revisions == [
+        {
+            "agent_id": agent_id,
+            "tenant_id": tenant_id,
+            "workspace": workspace,
+            "folder_name": "market-research-loop",
+            "evolution_state": "provisional",
+        }
+    ]
     ledger_records = _jsonl_records(ledger_path)
     skill_candidates = [
         record
@@ -593,9 +608,7 @@ async def test_capture_skill_candidate_factor_writes_through_injected_session(mo
 
 
 @pytest.mark.asyncio
-async def test_distiller_consumes_skill_candidate_package_without_session_evidence(
-    monkeypatch, tmp_path: Path
-) -> None:
+async def test_distiller_consumes_skill_candidate_package_without_session_evidence(monkeypatch, tmp_path: Path) -> None:
     from app.services.skill_candidate_package import write_skill_candidate_package
     from app.services.skill_distiller import DistilledSkillDraft, run_skill_distillation_cycle
 
@@ -885,6 +898,11 @@ async def test_distiller_does_not_fetch_tenant_behavior_report_before_provisiona
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft)
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
     monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
+
+    async def fake_register_asset(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.ai_assets.register_evolved_workspace_skill_asset", fake_register_asset)
 
     runtime_config = SimpleNamespace(skill_candidate_loop_enabled=True)
     result = await run_skill_distillation_cycle(

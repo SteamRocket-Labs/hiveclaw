@@ -70,7 +70,9 @@ async def test_run_lifecycle_writes_audit_with_required_fields(tenant_id, owner_
         assert "definition_hash" in details
 
 
-async def test_promotion_audit_carries_approval_metadata(tenant_id, owner_sessionmaker, monkeypatch):
+async def test_promotion_audit_carries_approval_metadata(
+    tenant_id, owner_sessionmaker, workflow_principals, monkeypatch
+):
     import app.services.audit_logger as audit_logger_module
 
     captured: list[tuple[str, dict]] = []
@@ -81,9 +83,9 @@ async def test_promotion_audit_carries_approval_metadata(tenant_id, owner_sessio
     monkeypatch.setattr(audit_logger_module, "write_audit_log", capturing_audit)
 
     service = WorkflowDefinitionService(session_factory=owner_sessionmaker)
-    approver = uuid.uuid4()
+    approver = workflow_principals.user_id
     proposal = await service.submit_promote_proposal(
-        tenant_id=tenant_id, agent_id=uuid.uuid4(), definition_data=_definition("promoted-audit")
+        tenant_id=tenant_id, agent_id=workflow_principals.agent_id, definition_data=_definition("promoted-audit")
     )
     await service.approve_promotion(proposal.id, tenant_id=tenant_id, approver_user_id=approver)
 
@@ -94,7 +96,7 @@ async def test_promotion_audit_carries_approval_metadata(tenant_id, owner_sessio
     assert promote_rows[0]["definition_hash"] == proposal.definition_hash
 
 
-async def test_fork_audit_carries_provenance(tenant_id, owner_sessionmaker, monkeypatch):
+async def test_fork_audit_carries_provenance(tenant_id, owner_sessionmaker, workflow_principals, monkeypatch):
     import app.services.audit_logger as audit_logger_module
 
     captured: list[tuple[str, dict]] = []
@@ -108,8 +110,8 @@ async def test_fork_audit_carries_provenance(tenant_id, owner_sessionmaker, monk
     record = await service.create_draft(
         tenant_id=tenant_id, definition_data=_definition("fork-audit"), visibility_scope="tenant"
     )
-    await service.activate(record.id, tenant_id=tenant_id, actor_user_id=uuid.uuid4())
-    agent = uuid.uuid4()
+    await service.activate(record.id, tenant_id=tenant_id, actor_user_id=workflow_principals.user_id)
+    agent = workflow_principals.agent_id
     await service.fork_to_ephemeral(tenant_id=tenant_id, name="fork-audit", agent_id=agent)
 
     fork_rows = [details for action, details in captured if action == "workflow_definition_forked"]

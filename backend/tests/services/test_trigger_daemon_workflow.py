@@ -84,11 +84,11 @@ def definition_service(owner_sessionmaker) -> WorkflowDefinitionService:
     return WorkflowDefinitionService(session_factory=owner_sessionmaker)
 
 
-async def _register_active(definition_service, tenant_id, name: str):
+async def _register_active(definition_service, tenant_id, name: str, actor_user_id: uuid.UUID):
     record = await definition_service.create_draft(
         tenant_id=tenant_id, definition_data=_definition_data(name), visibility_scope="tenant"
     )
-    return await definition_service.activate(record.id, tenant_id=tenant_id, actor_user_id=uuid.uuid4())
+    return await definition_service.activate(record.id, tenant_id=tenant_id, actor_user_id=actor_user_id)
 
 
 def _fake_launch():
@@ -103,9 +103,9 @@ def _fake_launch():
 
 @pytest.mark.parametrize("trigger_type", _TRIGGER_TYPES)
 async def test_every_trigger_type_starts_workflow_with_args(
-    trigger_type, tenant_id, agent_id, definition_service, owner_sessionmaker
+    trigger_type, tenant_id, agent_id, definition_service, owner_sessionmaker, workflow_principals
 ):
-    record = await _register_active(definition_service, tenant_id, f"wf-{trigger_type}")
+    record = await _register_active(definition_service, tenant_id, f"wf-{trigger_type}", workflow_principals.user_id)
     launch, calls = _fake_launch()
 
     result = await fire_workflow_for_trigger(
@@ -155,8 +155,10 @@ async def test_every_trigger_type_starts_workflow_with_args(
     assert any(event.event_type == "schedule_fire" for event in events)
 
 
-async def test_hash_mismatch_never_runs_new_version(tenant_id, agent_id, definition_service, owner_sessionmaker):
-    record = await _register_active(definition_service, tenant_id, "wf-pin")
+async def test_hash_mismatch_never_runs_new_version(
+    tenant_id, agent_id, definition_service, owner_sessionmaker, workflow_principals
+):
+    record = await _register_active(definition_service, tenant_id, "wf-pin", workflow_principals.user_id)
     launch, calls = _fake_launch()
 
     result = await fire_workflow_for_trigger(
@@ -186,8 +188,10 @@ async def test_hash_mismatch_never_runs_new_version(tenant_id, agent_id, definit
     assert task.child_session_id == task.parent_session_id
 
 
-async def test_webhook_payload_injected_into_args(tenant_id, agent_id, definition_service, owner_sessionmaker):
-    record = await _register_active(definition_service, tenant_id, "wf-hook")
+async def test_webhook_payload_injected_into_args(
+    tenant_id, agent_id, definition_service, owner_sessionmaker, workflow_principals
+):
+    record = await _register_active(definition_service, tenant_id, "wf-hook", workflow_principals.user_id)
     launch, calls = _fake_launch()
 
     payload = json.dumps({"event": "push", "branch": "main"})
@@ -212,13 +216,17 @@ async def test_webhook_payload_injected_into_args(tenant_id, agent_id, definitio
     assert calls[0]["args"]["webhook_payload"] == {"event": "push", "branch": "main"}
 
 
-async def test_payload_exceeding_args_schema_rejected(tenant_id, agent_id, definition_service, owner_sessionmaker):
+async def test_payload_exceeding_args_schema_rejected(
+    tenant_id, agent_id, definition_service, owner_sessionmaker, workflow_principals
+):
     """The definition's args_schema does NOT declare webhook_payload here —
     admission rejects the unknown argument and the run lands suspended."""
     data = _definition_data("wf-strict")
     data["args_schema"].pop("webhook_payload")
     record = await definition_service.create_draft(tenant_id=tenant_id, definition_data=data, visibility_scope="tenant")
-    record = await definition_service.activate(record.id, tenant_id=tenant_id, actor_user_id=uuid.uuid4())
+    record = await definition_service.activate(
+        record.id, tenant_id=tenant_id, actor_user_id=workflow_principals.user_id
+    )
 
     from app.runtime.workflow_admission import WorkflowAdmissionError
 
@@ -260,9 +268,10 @@ async def test_workflow_trigger_feature_flag_fails_closed_before_launch(
     agent_id,
     definition_service,
     owner_sessionmaker,
+    workflow_principals,
     monkeypatch,
 ):
-    record = await _register_active(definition_service, tenant_id, "wf-disabled")
+    record = await _register_active(definition_service, tenant_id, "wf-disabled", workflow_principals.user_id)
     launch, calls = _fake_launch()
     settings = __import__("app.config", fromlist=["get_settings"]).get_settings()
     monkeypatch.setattr(settings, "WORKFLOW_TRIGGER_ENABLED", False)

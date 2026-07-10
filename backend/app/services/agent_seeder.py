@@ -247,6 +247,17 @@ async def seed_default_agents():
                     enabled=True,
                 )
 
+        from app.services.ai_assets import register_agent_asset
+
+        for agent in (morty, meeseeks):
+            await register_agent_asset(
+                db,
+                agent,
+                change_source="create",
+                actor_user_id=admin.id,
+                change_message="Default Agent seeded",
+            )
+
         # Plant the persistent marker so we never re-seed after user deletion
         db.add(SystemSetting(key="default_agents_seeded", value={"seeded": True}))
         await db.commit()

@@ -33,6 +33,7 @@ export type ThreadTimelineCell =
       id: string;
       title: string;
       summary?: string;
+      message: AgentChatMessage;
       index: number;
     };
 
@@ -740,34 +741,29 @@ function runtimeSectionFallbackFromMessage(
   if (message.role !== 'event') return null;
   const eventType = String(message.eventType || '').toLowerCase();
   const source = String(message.eventNotificationSource || '').toLowerCase();
-  const sourceText = `${source} ${eventType}`;
+  const itemType = message.threadItem?.item_type;
 
   let section: RuntimeSectionName | null = null;
   let runtimeKind = 'runtime_event';
   let fallbackKind = 'runtime_event';
 
-  if (
-    sourceText.includes('workflow') ||
-    eventType === 'dynamic_workflow' ||
-    eventType === 'workflow_run' ||
-    eventType === 'workflow_step'
-  ) {
+  if (itemType === 'workflow_activity' || ['dynamic_workflow', 'workflow_run', 'workflow_step', 'workflow_started', 'workflow_completed', 'workflow_failed'].includes(eventType)) {
     section = 'workflows';
     runtimeKind = 'workflow';
     fallbackKind = 'workflow';
-  } else if (sourceText.includes('agent_team') || sourceText.includes('team_member') || eventType === 'team_member') {
+  } else if (['team_member', 'member_spawned', 'member_idle', 'member_run_started', 'member_message_queued', 'member_message_rejected'].includes(eventType)) {
     section = 'agent_teams';
-    runtimeKind = sourceText.includes('team_member') || eventType === 'team_member' ? 'team_member' : 'agent_team';
+    runtimeKind = 'team_member';
     fallbackKind = runtimeKind;
-  } else if (sourceText.includes('subagent') || eventType === 'subagent' || eventType === 'child_session') {
+  } else if (itemType === 'subagent_activity' || ['subagent', 'child_session', 'agent_task_notification', 'delegation_run'].includes(eventType) || source === 'subagent_wake') {
     section = 'subagents';
     runtimeKind = 'subagent';
     fallbackKind = 'subagent';
-  } else if (sourceText.includes('background') || eventType.includes('completion_wake')) {
+  } else if (['background_agent', 'completion_wake', 'completion_wake_created', 'completion_wake_delivered'].includes(eventType) || source === 'completion_wake') {
     section = 'background';
     runtimeKind = 'background_agent';
     fallbackKind = 'background_agent';
-  } else if (eventType.startsWith('runtime_action_') || message.eventRuntimeTaskId) {
+  } else if (['runtime_action_started', 'runtime_action_progress', 'runtime_action_completed', 'runtime_action_blocked', 'runtime_action_failed'].includes(eventType) || (itemType === 'event' && message.eventRuntimeTaskId)) {
     section = 'runs';
     runtimeKind = 'runtime_task';
     fallbackKind = 'runtime_task';
@@ -1683,8 +1679,9 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
       cells.push({
         kind: 'boundary',
         id: messageId(message, `boundary-${index}`),
-        title: message.eventTitle || message.eventType || 'Session event',
+        title: message.threadItem?.item_type || message.eventTitle || message.eventType || 'Session event',
         summary: message.content || message.eventReason || message.eventNextStep,
+        message,
         index,
       });
     }

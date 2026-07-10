@@ -16,20 +16,22 @@ Hive 已经不是一个“缺核心 Agent 能力”的系统。当前真实状�
 
 1. **Single Agent 的 CC 主循环和大部分生命周期已经成立**：统一 Kernel 入口、工具循环、Hooks、Compaction、Plan Mode、Work Ledger、Skill、Subagent、Workflow、持久化 RuntimeTask、断线继续运行、代码沙箱均有真实消费路径。
 2. **Hive-native 优势已经形成**：T0/T2/T3/`soul.md`、Memory Gate + Platform Gate、动态激活、Dream、Skill evolution、反馈回流、Personal KB Tool-first 读取均不是空壳。
-3. **A-E 五组事实源与治理断点已经落地关闭**：Run/Event、ToolDecision/Approval、兼容层、AI Asset、Personal KB 写入与 Local/A2A receipt 均已进入真实消费路径；第一部分当前主要剩余项是前端 typed workbench。
+3. **A-F 六组第一部分断点已经落地关闭**：Run/Event、ToolDecision/Approval、兼容层、AI Asset、Personal KB/Local/A2A，以及 typed workbench 均已进入真实消费路径。
 4. **企业 AI 资产控制面已经闭环**：Agent、Skill、Subagent、Workflow、外部能力共享薄控制索引、不可变版本、信任、依赖、rollback 与消费证据，但保留各自 native content/runtime，未制造第二执行系统。
 5. **Personal KB 已固定为 Tool-first 资产并完成受治理写入**：它不参与原始上下文组装；Agent 只能创建 owner-scoped proposal，经权威判断、owner review、commit、revision、audit 与 rollback 后成为知识，内部机械核心也已按四职责拆分。
 6. **Company KB 是明确的第二部分已知缺失**：当前 `/enterprise/knowledge-base` 文件树不是新的企业知识权威平面。第一部分不得偷建 Company KB，也不得把它自动塞入原始上下文。
-7. **UI/UX 的主要问题不是视觉皮肤，而是协议不够类型化**：后端事件、运行状态、工具调用、审批、Plan、Subagent/Workflow 尚未形成 Codex Desktop 风格的稳定 `ThreadItem` 判别联合，导致前端巨型组件和大量可选字段。
+7. **UI/UX 已从字符串事件投影收敛为稳定协议**：后端持久化并输出 schema-versioned `ThreadItem` 判别联合，前端类型由 Pydantic schema 生成；timeline、renderer、inspector、composer、run controls 与 responsive shell 已物理拆分并由生产页面消费。
 
 ### 最终判断
 
-- **当前系统整体：局部闭环。**
-- **Single Agent CCPlus：局部闭环；运行、治理、事件与云端幂等断点已关闭，剩余主要债务是 F 包 typed workbench。**
-- **Hive-native：第一部分核心闭环；Personal KB、Local/A2A 已闭，Skill evolution 的长期 benchmark 验收仍单列为持续基线。**
-- **企业治理与 AI 资产：第一部分核心闭环；Company KB 权威平面仍按第二部分已知缺失处理。**
+- **第一部分：闭环。** A-F 的七原子均有当前 checkout 的输入、权威、唯一执行、证据、恢复、消费与验收路径。
+- **全系统（包含第二部分）：局部闭环。** 唯一明确的产品级已知缺失是 Company KB 权威平面。
+- **Single Agent CCPlus：闭环。** CC 生命周期语义、Codex 工程控制、云端 fencing/event truth 和 typed workbench 已合并为一条生产路径。
+- **Hive-native：第一部分闭环。** Personal KB、Local/A2A 与自进化基座已闭；Skill evolution 的长期 benchmark 是持续质量基线，不是消费断点。
+- **企业治理与 AI 资产：第一部分闭环。** Company KB 权威平面仍按第二部分已知缺失处理。
+- **UI/UX：闭环。** typed replay、原位状态更新、审批、证据检查器、cancel/retry、响应式与视觉回归均有验收。
 - **Company KB：已知缺失，明确进入第二部分。**
-- **目标方案置信度：95%。** 这里的 95% 指对“应如何收敛”的架构判断，不代表当前实现已经达到 95% 完成度。
+- **第一部分闭环置信度：95%。** 该结论限定于当前 checkout 的代码、迁移与测试证据；本轮没有部署生产，也不把尚未建设的 Company KB 计入第一部分。
 
 ---
 
@@ -126,21 +128,21 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 | 工具发现与 progressive disclosure | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | 工具统一执行 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | 审批与审批后执行 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Hooks | ● | △ | ● | ● | △ | ● | ● | **局部闭环** |
+| Hooks | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Transcript / event stream | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Compaction / microcompact | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| RuntimeTask 持久运行 | ● | ● | ● | ● | △ | ● | ● | **局部闭环** |
+| RuntimeTask 持久运行 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | 断线继续与重连 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| 取消 / 重试 / 重启 | ● | ● | ● | ● | △ | ● | △ | **局部闭环** |
-| Resume / fork / rewind / checkpoint | ● | ● | ● | ● | △ | ● | ● | **局部闭环** |
+| 取消 / 重试 / 重启 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| Resume / fork / rewind / checkpoint | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Plan Mode | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Work / Progress Ledger | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Skill 加载 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Subagent / delegation | ● | ● | ● | ● | △ | ● | ● | **局部闭环** |
+| Subagent / delegation | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Workflow | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Code execution / sandbox | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | 云端多 worker 争抢 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Codex typed thread/status protocol | ● | ● | △ | △ | △ | △ | △ | **局部闭环** |
+| Codex typed thread/status protocol | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 
 ### 4.2 已经真正平齐或优于 CC 的部分
 
@@ -321,23 +323,23 @@ A2A 不需要变成 Workflow。Lease/Signal/Checkpoint 继续用于协作；Work
 | CapabilityPolicy | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | ResourcePermission | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | GuardPolicy | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| ActionPreflight | ● | ● | ● | ● | △ | ● | ● | **局部闭环** |
+| ActionPreflight | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Approval | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Quota / budget | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Secrets / credential boundary | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | MCP authz | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Invocation/audit spans | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Agent 资产管理 | ● | ● | ● | △ | △ | ● | △ | **局部闭环** |
-| Skill 资产管理 | ● | △ | ● | △ | △ | ● | △ | **局部闭环** |
+| Agent 资产管理 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| Skill 资产管理 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Workflow 资产管理 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Subagent 资产管理 | ● | △ | ● | △ | △ | ● | △ | **局部闭环** |
+| Subagent 资产管理 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | External capability trust | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Config version / rollback | ● | △ | × | △ | × | × | × | **断点** |
-| 企业 AI 资产统一目录 | △ | △ | × | △ | × | △ | × | **缺失** |
+| Config version / rollback | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| 企业 AI 资产统一目录 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 
 ### 6.2 为什么治理、限制和 RLS 会让 Agent“无法运行”
 
-问题不是治理太多，而是当前有多种互不统一的 verdict：
+问题不是治理太多，而是审计起点存在多种互不统一的 verdict：
 
 - RLS 决定数据库行可见性；
 - ResourcePermission 决定资源访问；
@@ -350,6 +352,8 @@ A2A 不需要变成 Workflow。Lease/Signal/Checkpoint 继续用于协作；Work
 - permission mode 还可能生成 synthetic `bypassPermissions` profile。
 
 这些层本身有合理职责，但如果每一层都独立“再审批一次”，Agent 会进入：已经批准仍被另一层要求批准、RLS 看不到审批所需资源、恢复时 policy snapshot 改变、同一工具被多套静态表分类的状态。
+
+**落地状态（2026-07-10）：B 包已关闭。** 各领域规则仍保留，但都汇入一个 shrink-only `ToolDecision`；approval 只 materialize/consume 一次 durable ticket，RLS 只做 locator/row isolation，任何 allow 都不能覆盖 hard deny。治理因此约束 action authority，而不削弱 Agent 思考或制造循环审批。
 
 ### 6.3 终极治理模型：规则可多，最终决定只能有一个
 
@@ -418,7 +422,7 @@ tenant-scoped execution transaction
 
 ### 6.5 ConfigRevision 是典型“有表有 API但没有闭环”
 
-当前 `config_versioning.save_revision()` 无生产 caller；rollback 只新增一个 ConfigRevision 行，并不把内容应用回 Agent/Skill/Workflow。前端也没有配置历史消费者。
+审计起点的 `config_versioning.save_revision()` 无生产 caller；rollback 只新增一个 ConfigRevision 行，并不把内容应用回 Agent/Skill/Workflow。前端也没有配置历史消费者。
 
 此外，`save_revision()` 查询只选择 `version, content`，后续却读取 `row.content_hash`，已有 revision 时存在潜在错误。
 
@@ -433,9 +437,11 @@ tenant-scoped execution transaction
 5. UI 显示 history、diff、source、publisher、trust 和 rollback。
 6. 为旧资产回填 version 1 与 content hash。
 
+**落地状态（2026-07-10）：D 包已关闭。** `ConfigRevision` 已由所有现役资产写路径消费，snapshot append-only 由数据库 trigger 保护；rollback 先应用 native adapter，再生成新 revision/audit。DB/file 失败有补偿与 `projection_status=failed`，Enterprise UI 消费 history/diff/rollback，而旧 config-history 仅保留显式 `410` compatibility boundary。
+
 ### 6.6 企业 AI 资产管理：统一控制元数据，不统一内容与执行
 
-当前资产成熟度不一致：
+审计起点的资产成熟度不一致：
 
 - Workflow 已有 version/hash/status/visibility/call policy/owner/provenance；
 - Skill 缺少统一 version/status/owner/trust/evidence；
@@ -466,6 +472,8 @@ created_by / published_by / revoked_by
 
 这保证统一治理而不制造“万能 Asset Runtime”。
 
+**落地状态（2026-07-10）：D 包已关闭。** 薄 `AIAssetRecord` 已统一 Agent、Skill、Workflow、Subagent 与 External Capability 的 owner、lifecycle、trust、dependency、revision 和 usage evidence；正文与执行仍由各 native runtime 权威持有。历史 DB/file 资产有 dry-run、apply-confirm、hash 对账与 quarantine，Company KB 不属于该目录的内容平面。
+
 ---
 
 ## 7. UI/UX：对齐 Codex Desktop 的信息协议，而不是复制皮肤
@@ -474,27 +482,28 @@ created_by / published_by / revoked_by
 
 | 能力 | 输入 | 权威 | 执行 | 证据 | 恢复 | 消费 | 验收 | 总判定 |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
-| Thread / turn status | ● | ● | △ | △ | △ | ● | △ | **局部闭环** |
+| Thread / turn status | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Assistant/user message | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Tool call/result card | ● | ● | ● | △ | △ | ● | ● | **局部闭环** |
-| Approval card | ● | ● | △ | △ | △ | ● | △ | **局部闭环** |
+| Tool call/result card | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| Approval card | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Plan / progress / todo | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| Subagent / Workflow activity | ● | ● | ● | △ | △ | ● | △ | **局部闭环** |
-| Reasoning/compaction/boundary | ● | ● | △ | △ | △ | △ | △ | **局部闭环** |
-| Runtime inspector / evidence | △ | ● | △ | ● | △ | △ | △ | **局部闭环** |
-| Keyboard / command palette | ● | ● | ● | ● | ● | ● | △ | **局部闭环** |
-| Accessibility / reduced motion | △ | ● | △ | — | ● | △ | △ | **局部闭环** |
-| Empty/error/offline/reconnect | ● | ● | ● | ● | △ | ● | △ | **局部闭环** |
+| Subagent / Workflow activity | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| Reasoning/compaction/boundary | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| Runtime inspector / evidence | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| Keyboard / command palette | ● | ● | ● | ● | ● | ● | ● | **闭环** |
+| Accessibility / reduced motion | ● | ● | ● | — | ● | ● | ● | **闭环** |
+| Empty/error/offline/reconnect | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 
-### 7.2 当前结构问题
+### 7.2 当前落地结构
 
-- `AgentChatSection.tsx` 约 4,802 行，主组件约 1,708 行。
-- `AgentDetail.tsx` 约 3,164 行。
-- `AgentChatMessage` 依赖大量 optional fields 承载 event/tool/permission/session 状态。
-- `ThreadTimelineCell` 只有 `user_turn / assistant_final / active_run / boundary`，无法稳定表达 Plan、Reasoning、Command、File Change、MCP、Subagent、Review、Compaction 等项目。
-- 后端存在大量 string `event_type`，前端依赖 shape inference 和 `Record<string, unknown>`。
+- `backend/app/services/thread_items.py` 是唯一 `hive.thread_item.v1` Pydantic 判别联合；`export_thread_items.py` 生成前端 TypeScript，不手抄两份 schema。
+- `ChatTranscriptEvent.item_type/item_status` 是持久判别字段；旧 string event 只保留为具体事件名，不再承担 UI 分类。
+- 前端 `normalizeThreadItemPayload()` 只为历史数据保留 exact-map compatibility boundary；未知 payload 一律降为 `event`，不通过字段形状或 substring 猜类型。
+- `AgentChatSection.tsx` 从约 4,802 行降到 4,333 行；composer（239 行）、run controls（170 行）、renderer、inspector、runtime controller 和 CSS 已由生产页面直接消费，不是旁路 scaffold。
+- Canonical `threadItem` 驱动 timeline 与 inspector；旧 optional fields 仅作为现有专用消息 UI 的兼容投影，不再扩张为事实源。
+- App Shell 在 900px 以下默认收拢侧栏；740px 视觉用例中工作台截图宽度从 412px 提升到 624px，同时保留临时展开导航的能力。
 
-Codex Rust 当前使用显式 `ThreadItem` enum 和清晰的 Turn/Thread status。Hive 应吸收这个工程优势，但保留自己的 Memory、Workflow、Approval、Governance 项。
+这吸收了 Codex Rust 的显式 `ThreadItem` 与 Thread/Turn 状态工程优势，同时保留 Hive 的 Memory、Workflow、Approval 与 Governance 语义。
 
 ### 7.3 目标协议
 
@@ -502,12 +511,11 @@ Codex Rust 当前使用显式 `ThreadItem` enum 和清晰的 Turn/Thread status�
 
 ```text
 ThreadItem =
-  UserMessage | AgentMessage | Reasoning | Plan | WorkLedger
-  | ToolCall | ToolResult | CommandExecution | FileChange
-  | ApprovalRequest | ApprovalDecision
-  | SkillLoad | SubagentActivity | WorkflowActivity
-  | MemoryEvent | KnowledgeToolResult
-  | ContextCompaction | Checkpoint | Error | Boundary
+  UserMessage | AgentMessage | Reasoning
+  | ToolCall | ToolResult
+  | ApprovalRequest | ApprovalDecision | Plan
+  | WorkflowActivity | SubagentActivity
+  | ContextCompaction | Artifact | Boundary | Error | Event
 ```
 
 每个 item 共享：
@@ -524,7 +532,9 @@ visibility / evidence_refs
 
 - Thread：`not_loaded | idle | active | system_error`
 - Turn：`in_progress | completed | interrupted | failed`
-- Item：`pending | running | waiting_user | succeeded | failed | cancelled`
+- Item：`running | waiting_user | succeeded | failed | cancelled`；队列中的 pending/queued 归一为 `running`，不再制造同义状态。
+
+这 15 个正交 variant 是刻意的 KISS 收敛：Command、File Change、Skill、Memory、Knowledge、Checkpoint 等具体事件通过稳定 `event_type` 与 typed `item_data` 表达，只有渲染/恢复语义真正不同的能力才增加 variant。
 
 ### 7.4 目标工作台
 
@@ -547,6 +557,8 @@ visibility / evidence_refs
 5. Cancel 与 Stop 明确区分；重复点击必须幂等。
 6. 动效只表达状态迁移：150–220ms，支持 `prefers-reduced-motion`，无装饰性持续动画。
 7. 所有状态不仅靠颜色，必须有文字、图标和可访问 label。
+
+**落地状态（2026-07-10）：已闭环。** Running item 按稳定 id 原位替换并按 sequence 重排；Tool/Workflow/Subagent/Reasoning 默认折叠；审批卡显示对象、参数、风险、有效期与范围；错误项在 `retryable=true` 时锚定最近用户 turn 并复用既有 `regenerate` 入口；Stop 继续调用 durable cancel。Inspector 消费 thread/run/turn/causation/correlation、typed data、metadata 与 evidence refs。键盘选择、`aria-live`、非颜色状态、`prefers-reduced-motion`、forced colors、桌面/窄屏视觉基线均有自动化验收。
 
 ---
 
@@ -573,12 +585,12 @@ visibility / evidence_refs
 |---|---:|---|
 | `kernel/engine.py` | 约 5,855 行；`AgentKernel.handle` 约 2,400 行 | 有大量本质复杂度，但函数级过大 |
 | FreeCode `queryLoop` | 约 1,489 行 | 证明 Agent loop 本身就复杂，不能为拆而拆 |
-| `web_chat_runtime.py` | 约 4,271 行 | 生命周期、事件、恢复耦合过多 |
+| `web_chat_runtime.py` | 约 4,300 行 | 保留唯一编排入口；claim/event/terminal 已抽为受测 service，仍是持续维护热点 |
 | `personal_knowledge_service.py` | 约 3,285 行 | ACL/ingest/index/job/search 多职责 |
 | `llm_client.py` | 约 3,017 行 | provider 适配集中但可按 provider boundary 内拆 |
 | `agents/orchestrator.py` | 约 2,860 行 | 协作策略与执行混杂 |
 | `skill_distiller.py` | 约 2,479 行 | 单 cycle 约 846 行 |
-| `AgentChatSection.tsx` | 约 4,802 行 | 协议、状态、渲染、命令、恢复混杂 |
+| `AgentChatSection.tsx` | 4,333 行 | typed protocol 与 composer/controls/renderer/inspector 已拆出；仍是持续维护热点 |
 | `index.css` | 约 6,036 行 | 页面级样式边界消失 |
 
 ### 8.3 什么应该拆，什么不能拆
@@ -614,7 +626,7 @@ visibility / evidence_refs
 | CC/Codex adapter 重复 `_split_frontmatter` 等 | 提取共享 utility | characterization tests 先锁行为 |
 | legacy `TenantInstalledPlugin` projection | 完成迁移后删除 | ExternalCapabilitySnapshot/AIAssetRecord 消费已切换 |
 
-C 包已经完成前三个 legacy memory 删除项与 RuntimeAssembly mirrors：旧顶层字段由 migration 一次提升到 `runtime_assembly_state`，nested 值优先，运行时只读写 nested；CC/Codex adapter 重复 YAML frontmatter parser 也已合并为一个共享纯函数。Kernel 单循环与 Web Chat 单编排入口保持不拆散，Skill distillation 抽出 cursor/ranking 纯阶段，没有新增网络 hop、队列或平行表。
+C 包已经完成前三个 legacy memory 删除项与 RuntimeAssembly mirrors：旧顶层字段由 migration 一次提升到 `runtime_assembly_state`，nested 值优先，运行时只读写 nested；CC/Codex adapter 重复 YAML frontmatter parser 也已合并为一个共享纯函数。Kernel 单循环与 Web Chat 单编排入口保持不拆散，Skill distillation 抽出 cursor/ranking 纯阶段，没有新增网络 hop、队列或平行表。F 包继续把前端协议、composer、controls、renderer、inspector 与 responsive controller 拆成真实生产模块。大文件规模保留为持续维护信号，但不再对应双事实源、旁路或零消费者原子断点。
 
 ### 8.5 统一工具描述，不新增万能服务
 
@@ -826,6 +838,8 @@ flowchart LR
 4. 全覆盖 streaming、reconnect、approval、cancel/retry、Plan、Subagent、Workflow、compaction、error/offline。
 5. 完成键盘、screen reader、reduced motion、responsive 与视觉回归。
 
+**落地状态（2026-07-10）：已闭环。** 详细七原子与测试证据见 15.7。
+
 ---
 
 ## 11. 第二部分：Company KB 完整定义
@@ -886,13 +900,13 @@ Company Charter、Owner Agency Charter、不可违反的安全政策可以作为
 2. ~~AI 资产统一版本/所有权/信任/依赖/消费证据缺失。~~ **D 包已关闭。**
 3. ~~Personal KB Agent proposal/write 缺失。~~ **E 包已关闭。**
 4. ~~Local capability snapshot、cursor、receipt 不完整。~~ **E 包已关闭。**
-5. 前端 optional field bag 与后端 string event 协议。
+5. ~~前端 optional field bag 与后端 string event 协议。~~ **F 包已关闭：canonical 判别联合 + generated TS + exact historical adapter。**
 
 ### P2：复杂度与长期鲁棒性
 
-1. Kernel/WebChat/AgentChat 巨型实现；Personal KB 与 SkillDistiller 已完成内部纯阶段拆分。
+1. Kernel/WebChat/AgentChat 仍是规模热点；其唯一入口不拆散，Personal KB、SkillDistiller、typed UI/composer/inspector 已完成纯阶段或内部模块拆分。该项保留为持续维护基线，不是当前七原子断点。
 2. ~~no-op / zero-consumer / legacy memory 活路径。~~ **C 包已关闭。**
-3. ToolMeta 与静态能力/风险/timeout 多事实源。
+3. ~~ToolMeta 与静态能力/风险/timeout 多事实源。~~ **B 包已关闭并由注册一致性测试锁定。**
 4. ~~RuntimeAssembly compatibility mirrors。~~ **C 包已关闭。**
 5. broad exception 的静默 fallback 风险。
 
@@ -1308,3 +1322,67 @@ git diff --check
 ```
 
 本包没有建设 Company KB，也没有把 Personal KB 或 Company KB 放回原始上下文；没有部署或执行不可逆生产数据操作。本包独立提交标题：`Close Personal Knowledge and Local A2A receipts`。
+
+### 15.7 F 包：Codex Desktop 级 typed workbench（2026-07-10）
+
+完成内容：
+
+1. 新增 vendor-neutral `hive.thread_item.v1` Pydantic 判别联合，15 个正交 variant 共享 schema/version、thread/session/run/turn、sequence、causation/correlation、status、visibility 与 evidence refs；`ChatTranscriptEvent` 持久 discriminant 优先，event string 不再充当 UI 类型。
+2. 新增 schema exporter，前端 `threadItems.generated.ts` 由后端 JSON Schema 机械生成；生成一致性测试阻止 Python/TypeScript 漂移。
+3. `append_session_event()` 在唯一 transcript 写入口持久化 `item_type/item_status`；history API 与 WebSocket live event 都通过同一 builder 输出 canonical contract。历史 migration 使用 exact event map 回填，禁止 `LIKE`/substring/shape inference，并与 runtime map 做等值测试。
+4. 修复 status/replay 对账断点：`denial`、`tool_failure`、`member_run_started` 在 runtime、migration 与前端 historical adapter 得到同一状态；canonical cancellation boundary 与 artifact update 不再在 replay 中丢失。
+5. 前端 reducer 以稳定 id 原位替换 running item、按 sequence 重排 reconnect backfill；未知历史事件只降为 `event`。`chatRuntime` 继续保留 assistant/tool/artifact 专用消费，但 canonical item 不再二次走 legacy normalize。
+6. 新增 exhaustive `ThreadItemRenderer`、evidence inspector 与 responsive runtime controller；Tool/Workflow/Subagent/Reasoning 默认折叠，所有状态同时有文字、图标与 accessible label，支持键盘 Enter/Space、reduced motion 与 forced colors。
+7. Approval 卡真实展示 tool、arguments、risk、expiry、scope 与 destructive impact，并复用 B 包 durable ticket action；普通 one-shot 与 destructive-only 文案分离。
+8. Error item 的 `retryable` 不再只展示文字：它机械锚定最近一个用户 turn，并复用既有 `regenerate` 分支入口；Stop 继续使用 durable run cancel，没有第二套恢复执行器。
+9. 把 composer（239 行）、run controls（170 行）、renderer、inspector、runtime controller 与样式从巨型页面拆出，由 `AgentChatSection` 生产路径直接消费；该文件从约 4,802 行降至 4,333 行。
+10. App Shell 在 900px 以下默认收拢侧栏并允许临时展开；740px 视口下工作台截图宽度由 412px 提升到 624px。Playwright 对 1,440px desktop 与 740px narrow 使用真实 Vite 页面、typed transcript 和像素基线验收。
+
+七原子结果：
+
+| 输入 | 权威 | 执行 | 证据 | 恢复 | 消费 | 验收 | 判定 |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| ● | ● | ● | ● | ● | ● | ● | **闭环** |
+
+原子证据：
+
+- **输入**：history/live 均接收 `hive.thread_item.v1`；历史 payload 只能经 exact compatibility map 进入。
+- **权威**：session API 保留 `check_agent_access` 与 session owner/manage 校验；UI item 不能扩大 tool、approval 或 retry 权限。
+- **执行**：transcript 只有 `append_session_event()` 写 discriminant；tool/approval/cancel/regenerate 继续调用既有 governed runtime，不由 renderer 直接执行副作用。
+- **证据**：`ChatTranscriptEvent` 是运行顺序真相；Inspector 消费 event/span/artifact 等 `evidence_refs`，metadata 仅是受限投影。
+- **恢复**：stable id 原位更新、sequence backfill、canonical replay、cancel 与 regenerate 都复用 A/B 包幂等边界。
+- **消费**：Chat API、WebSocket、timeline、renderer、inspector、composer 与 App Shell 都读取新产物；没有只生成不用的 schema。
+- **验收**：后端 contract/migration/API、前端 exhaustive reducer/render/controller/composer、全仓回归、build、双 viewport visual regression 与人工原图检查均覆盖。
+
+验证证据：
+
+```text
+cd backend && source .venv/bin/activate
+pytest tests/services/test_thread_items.py tests/scripts/test_export_thread_items.py \
+  tests/migrations/test_typed_thread_items_migration.py \
+  tests/api/test_chat_sessions_transcript_window.py -q
+-> 25 passed, 3 warnings
+
+ruff check app tests
+-> All checks passed!
+
+ruff format --check <F 包 12 个 Python/migration/test 文件>
+-> 12 files already formatted
+
+pytest tests -q
+-> 6025 passed, 1 skipped, 5 warnings in 121.58s
+
+cd frontend && npm test -- --run
+-> 90 test files passed, 553 tests passed
+
+npm run build
+-> 7058 modules transformed, build succeeded
+
+npm run test:e2e -- e2e/thread-workbench.spec.ts
+-> 2 passed; desktop 1112x774, narrow 624x756
+
+cd backend && alembic heads
+-> typed_thread_items_0710 (head)
+```
+
+本包没有建设 Company KB，没有把 Personal/Company KB 注入原始上下文，没有新增 UI 侧副作用入口，也没有部署生产。本包独立提交标题：`Close typed session workbench and UI protocol`。

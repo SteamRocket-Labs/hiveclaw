@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.memory.t0.ledger import T0AppendResult
 from app.models.audit import ChatMessage
 from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.services.thread_items import classify_thread_item, classify_thread_item_status
 
 
 CHAT_MESSAGE_ROLES = {"user", "assistant", "system", "tool_call"}
@@ -110,44 +111,9 @@ def build_transcript_item_contract(
     metadata: dict[str, Any] | None,
 ) -> tuple[str, str]:
     """Map runtime events into a small vendor-neutral ThreadItem contract."""
-    normalized = str(event_type or "event").strip().lower()
     data = dict(metadata or {})
-    if normalized == "user_message" or role == "user":
-        item_type = "user_message"
-    elif normalized == "assistant_message" or role == "assistant":
-        item_type = "agent_message"
-    elif "permission_request" in normalized or "approval_request" in normalized:
-        item_type = "approval_request"
-    elif "permission" in normalized or "approval" in normalized:
-        item_type = "approval_decision"
-    elif normalized.startswith("tool_") and "result" in normalized:
-        item_type = "tool_result"
-    elif normalized.startswith("tool_"):
-        item_type = "tool_call"
-    elif "workflow" in normalized:
-        item_type = "workflow_activity"
-    elif "subagent" in normalized or "delegation" in normalized:
-        item_type = "subagent_activity"
-    elif "plan" in normalized:
-        item_type = "plan"
-    elif "compact" in normalized:
-        item_type = "context_compaction"
-    elif normalized.startswith("run_") or normalized.endswith("_boundary"):
-        item_type = "boundary"
-    else:
-        item_type = "event"
-
-    raw_status = str(data.get("status") or "").strip().lower()
-    if item_type == "approval_request" and raw_status in {"", "pending", "awaiting_confirmation"}:
-        item_status = "waiting_user"
-    elif raw_status in {"failed", "error", "blocked", "denied"} or normalized.endswith("_failed"):
-        item_status = "failed"
-    elif raw_status in {"killed", "cancelled"} or normalized.endswith("_cancelled"):
-        item_status = "cancelled"
-    elif raw_status in {"pending", "running", "started", "executing"} or normalized.endswith("_started"):
-        item_status = "running"
-    else:
-        item_status = "succeeded"
+    item_type = classify_thread_item(event_type=event_type, role=role)
+    item_status = classify_thread_item_status(item_type=item_type, event_type=event_type, metadata=data)
     return item_type, item_status
 
 

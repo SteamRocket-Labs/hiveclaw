@@ -1471,6 +1471,15 @@ async def broadcast_web_chat_event(
     run_id = event_payload.get("run_id") or event_payload.get("runtime_task_id") or _CURRENT_BROADCAST_RUN_ID.get()
     if run_id and not event_payload.get("run_id"):
         event_payload["run_id"] = str(run_id)
+    from app.services.thread_items import build_live_thread_item
+
+    event_payload.update(
+        build_live_thread_item(
+            event_payload,
+            agent_id=agent_id,
+            session_id=session_id,
+        )
+    )
     await web_chat_broker.send_session_message(str(agent_id), str(session_id) if session_id else None, event_payload)
     if run_id:
         try:

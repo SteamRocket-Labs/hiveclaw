@@ -1,22 +1,14 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  IconCalendarTime,
   IconChevronLeft,
   IconChevronRight,
-  IconChecklist,
-  IconCircleDashedCheck,
   IconDownload,
   IconExternalLink,
   IconFileText,
   IconGitBranch,
   IconHistory,
   IconLoader2,
-  IconPaperclip,
-  IconPlus,
-  IconSend2,
-  IconShieldCheck,
-  IconTargetArrow,
   IconThumbDown,
   IconThumbUp,
   IconTrash,
@@ -36,6 +28,15 @@ import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
+import { ThreadItemInspector } from '../session-workbench/ThreadItemInspector';
+import { ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
+import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
+import { SessionComposer } from '../session-workbench/SessionComposer';
+import {
+  useResponsiveRuntimePanel,
+  useThreadItemRuntimeController,
+} from '../session-workbench/threadItemRuntimeController';
+import type { ThreadItem } from '../../api/domains/threadItems.generated';
 import {
   buildSessionRightPanelModel,
   buildThreadTimeline,
@@ -60,7 +61,6 @@ import { composerShortcutText } from './sessionComposerShortcuts';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
-  getCompactionDisplayContent,
   isA2ASession,
   isDraftHumanChatSession,
   shouldUseWritableSessionSurface,
@@ -154,6 +154,13 @@ function getComposerIntentLabel(
   return null;
 }
 
+export function permissionOnceOnlyMessageKey(request: SessionPermissionRequest): string {
+  const destructive = request.destructive === true
+    || request.risk_class === 'destructive_delete'
+    || request.confirmation_kind === 'destructive_once';
+  return destructive ? 'agent.chat.permission.deleteOnceOnly' : 'agent.chat.permission.onceOnly';
+}
+
 function SessionPermissionActions({
   permissionRequest,
   onResolveSessionPermission,
@@ -199,7 +206,9 @@ function SessionPermissionActions({
       </div>
       {!allowSession && (
         <div style={{ marginTop: '7px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-          {t('agent.chat.permission.deleteOnceOnly', 'Delete actions can only be allowed once.')}
+          {permissionOnceOnlyMessageKey(permissionRequest) === 'agent.chat.permission.deleteOnceOnly'
+            ? t('agent.chat.permission.deleteOnceOnly', 'Delete actions can only be allowed once.')
+            : t('agent.chat.permission.onceOnly', 'This action can only be allowed once.')}
         </div>
       )}
     </>
@@ -436,6 +445,16 @@ export function isClarificationCardAnsweredByLaterUserMessage(messages: AgentCha
   return messages
     .slice(index + 1)
     .some((candidate) => candidate.role === 'user' && String(candidate.content || '').trim().length > 0);
+}
+
+export function findRetryAnchorMessage(
+  messages: AgentChatMessage[],
+  errorIndex: number,
+): AgentChatMessage | null {
+  for (let index = Math.min(errorIndex, messages.length) - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') return messages[index];
+  }
+  return null;
 }
 
 function branchModeLabel(item: BranchLineageItem): string {
@@ -1703,6 +1722,8 @@ function SessionRuntimePanel({
   onOpenDocument,
   onSelectSession,
   onSelectWorkflowRun,
+  selectedThreadItem,
+  onClearSelectedThreadItem,
 }: {
   messages: AgentChatMessage[];
   sessionWorkbench: SessionWorkbench | null;
@@ -1714,6 +1735,8 @@ function SessionRuntimePanel({
   onOpenDocument?: (artifact: ChatArtifactPart) => void | Promise<unknown>;
   onSelectSession?: (sessionId: string) => void | Promise<unknown>;
   onSelectWorkflowRun?: (workflow: RuntimeSectionItemModel) => void | Promise<unknown>;
+  selectedThreadItem?: ThreadItem | null;
+  onClearSelectedThreadItem?: () => void;
 }) {
   const RUNTIME_PANEL_WIDTH_KEY = 'hive.sessionRuntimePanel.width';
   const [panelWidth, setPanelWidth] = React.useState<number | null>(() => {
@@ -2236,6 +2259,9 @@ function SessionRuntimePanel({
       >
         <IconChevronRight size={15} stroke={1.8} />
       </button>
+      {selectedThreadItem ? (
+        <ThreadItemInspector item={selectedThreadItem} onClose={onClearSelectedThreadItem} />
+      ) : null}
       <section
         className="session-runtime-section session-runtime-documents"
         aria-label={t('sessionWorkbench.rightPanel.sessionArtifacts', 'Session artifacts')}
@@ -3166,11 +3192,19 @@ function AgentChatSection({
     !shouldUseWritableSessionSurface(activeSession as any, currentUser?.id);
   const isDraftSession = isDraftHumanChatSession(activeSession as any);
   const canUseComposer = Boolean(activeSession) && !isReadOnlySession && !agentExpired;
+  const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
+  const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : EMPTY_CHAT_MESSAGES;
+  const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : EMPTY_CHAT_MESSAGES;
+  const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
+  const {
+    selectedId: selectedThreadItemId,
+    selectedItem: selectedThreadItem,
+    selectItem: selectThreadItem,
+    clearSelection: clearThreadItemSelection,
+  } = useThreadItemRuntimeController(activeSessionId, visibleTimeline);
 
   const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
-  const [composerMenuOpen, setComposerMenuOpen] = React.useState(false);
-  const [permissionMenuOpen, setPermissionMenuOpen] = React.useState(false);
-  const [runtimePanelCollapsed, setRuntimePanelCollapsed] = React.useState(false);
+  const [runtimePanelCollapsed, setRuntimePanelCollapsed] = useResponsiveRuntimePanel();
   const [focusedWorkflow, setFocusedWorkflow] = React.useState<RuntimeSectionItemModel | null>(null);
   const [focusedGitCheckpointId, setFocusedGitCheckpointId] = React.useState<string | null>(null);
   const gitScrollFrameRef = React.useRef<number | null>(null);
@@ -3196,7 +3230,6 @@ function AgentChatSection({
 
   const setComposerAction = React.useCallback(
     (action: ComposerActionKey) => {
-      setComposerMenuOpen(false);
       if (action === 'upload') {
         fileInputRef.current?.click();
         return;
@@ -3216,7 +3249,6 @@ function AgentChatSection({
   );
 
   const sendFromComposer = React.useCallback(() => {
-    setComposerMenuOpen(false);
     onSendChatMsg();
   }, [onSendChatMsg]);
 
@@ -3357,44 +3389,18 @@ function AgentChatSection({
   const renderEventMessage = React.useCallback(
     (msg: AgentChatMessage, index: number) => {
       const permissionRequest = msg.sessionPermissionRequest;
-      const isSessionPermissionRequest = Boolean(permissionRequest && msg.eventStatus === 'session_permission_required');
-      const permissionToolLabel =
-        permissionRequest?.tool_display_name || permissionRequest?.tool_name || msg.eventToolName || 'this tool';
-      const statusColor =
-        msg.eventStatus === 'blocked' || msg.eventStatus === 'capability_denied'
-          ? 'var(--error)'
-          : msg.eventStatus === 'approval_required' || isSessionPermissionRequest
-            ? 'var(--warning)'
-            : 'var(--accent-primary)';
-      const metaParts: string[] = [];
-      if (typeof msg.originalMessageCount === 'number' && typeof msg.keptMessageCount === 'number') {
-        metaParts.push(
-          t('agent.chat.runtime.compactionMeta', {
-            original: msg.originalMessageCount,
-            kept: msg.keptMessageCount,
-            defaultValue: `Kept ${msg.keptMessageCount} of ${msg.originalMessageCount}`,
-          }),
-        );
-      }
-      if (msg.activatedToolGroupCount) {
-        // Runtime status only — internal tool-group names are never surfaced (§8.4).
-        metaParts.push(
-          t('agent.chat.runtime.toolGroupsActivated', {
-            count: msg.activatedToolGroupCount,
-            defaultValue: '{{count}} runtime tool groups activated',
-          }),
-        );
-      }
-      if (msg.eventToolName) metaParts.push(msg.eventToolName);
-      if (!isSessionPermissionRequest && msg.eventCapability) metaParts.push(msg.eventCapability);
-      if (!isSessionPermissionRequest && msg.eventSecurityZone) metaParts.push(`zone:${msg.eventSecurityZone}`);
-      if (!isSessionPermissionRequest && msg.eventApprovalId) metaParts.push(`approval:${msg.eventApprovalId}`);
-      const isCompactionEvent = msg.eventType === 'session_compact';
-      const compactionDisplay = isCompactionEvent ? getCompactionDisplayContent(msg.content) : null;
-      const compactionDetails = isCompactionEvent
-        ? compactionDisplay?.details || (msg.content?.trim() ? msg.content : null)
-        : null;
-      const compactionInProgress = msg.eventStatus === 'running' || msg.eventStatus === 'in_progress';
+      const item = msg.threadItem || normalizeThreadItemPayload({
+        id: msg.transcriptEventId || msg.id || `legacy-event-${index}`,
+        eventType: msg.eventType,
+        content: msg.content,
+        status: msg.eventStatus,
+        title: msg.eventTitle,
+        runtime_task_id: msg.eventRuntimeTaskId,
+        child_session_id: msg.eventChildSessionId,
+        permission_request: permissionRequest,
+        created_at: msg.timestamp,
+      });
+      if (!item) return null;
       const permissionActions = permissionRequest && msg.eventStatus === 'session_permission_required' ? (
         <SessionPermissionActions
           permissionRequest={permissionRequest}
@@ -3402,76 +3408,40 @@ function AgentChatSection({
           t={t}
         />
       ) : null;
+      const retryAnchor = item.item_type === 'error' && item.item_data.retryable
+        ? findRetryAnchorMessage(visibleTimeline, index)
+        : null;
+      const recoveryActions = retryAnchor && onBranchMessage ? (
+        <button
+          type="button"
+          className="btn btn-secondary"
+          data-testid="thread-item-retry-turn"
+          onClick={() => void onBranchMessage(retryAnchor, 'regenerate')}
+        >
+          {t('sessionWorkbench.threadItem.retryTurn', 'Retry turn')}
+        </button>
+      ) : null;
 
       return (
         <div
           key={`event-${getChatMessageKey(msg, index, 'event')}`}
           className="session-tui-render-cell"
-          style={{ paddingLeft: '36px', marginBottom: '8px' }}
+          style={{ paddingInlineStart: '36px', marginBottom: '8px' }}
           data-runtime-link-id={msg.eventRuntimeTaskId || msg.eventChildSessionId || undefined}
           onMouseEnter={() => setRuntimeLinkHighlight(msg.eventRuntimeTaskId || msg.eventChildSessionId, true)}
           onMouseLeave={() => setRuntimeLinkHighlight(msg.eventRuntimeTaskId || msg.eventChildSessionId, false)}
         >
-          <div
-            style={{
-              borderRadius: '10px',
-              border: `1px solid color-mix(in srgb, ${statusColor} 30%, transparent)`,
-              background: `color-mix(in srgb, ${statusColor} 10%, var(--bg-secondary))`,
-              padding: '10px 12px',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-              <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: statusColor, flexShrink: 0 }} />
-              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                {isCompactionEvent
-                  ? (compactionInProgress
-                      ? t('agent.chat.runtime.compactingTitle', 'Automatic compression in progress')
-                      : t('agent.chat.runtime.compactionCompleteTitle', 'Automatic compression complete'))
-                  : msg.eventTitle || t('agent.chat.runtime.eventTitle', 'Runtime Event')}
-              </span>
-            </div>
-            {isCompactionEvent ? (
-              <div style={{ display: 'grid', gap: '6px' }}>
-                <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
-                  {compactionInProgress
-                    ? t('agent.chat.runtime.compactingNotice', 'Automatically compressing context...')
-                    : t('agent.chat.runtime.compactedNotice', 'Context was compressed. The active working state was preserved.')}
-                </div>
-                {compactionDetails && (
-                  <details style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                    <summary style={{ cursor: 'pointer', userSelect: 'none' }}>
-                      {t('agent.chat.runtime.compactionDetails', 'Show compression details')}
-                    </summary>
-                    <div style={{ marginTop: '6px' }}>
-                      <RawToolResultBlock text={compactionDetails} />
-                    </div>
-                  </details>
-                )}
-              </div>
-            ) : isSessionPermissionRequest ? (
-              <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
-                {t('agent.chat.runtime.permissionNeeded', 'The agent needs permission to use {{tool}}.', {
-                  tool: permissionToolLabel,
-                })}
-              </div>
-            ) : (
-              <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-            )}
-            {(msg.eventReason || msg.eventNextStep) && (
-              <div style={{ marginTop: '8px', fontSize: '11px', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
-                {msg.eventReason && <div>{msg.eventReason}</div>}
-                {msg.eventNextStep && <div>{msg.eventNextStep}</div>}
-              </div>
-            )}
-            {permissionActions}
-            {metaParts.length > 0 && (
-              <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>{metaParts.join(' · ')}</div>
-            )}
-          </div>
+          <ThreadItemRenderer
+            item={item}
+            selected={selectedThreadItemId === item.id}
+            onSelect={selectThreadItem}
+            approvalActions={permissionActions}
+            actions={recoveryActions}
+          />
         </div>
       );
     },
-    [onResolveSessionPermission, t],
+    [onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, visibleTimeline],
   );
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => (
@@ -3595,7 +3565,7 @@ function AgentChatSection({
               />
             ) : null}
             {cell.sourceMessages.map((entry) => (
-              entry.message.role === 'event' && entry.message.sessionPermissionRequest
+              entry.message.role === 'event'
                 ? renderEventMessage(entry.message, entry.index)
                 : isInlineToolCardMessage(entry.message)
                   ? renderInlinePlanToolCall(entry.message, entry.index)
@@ -3605,42 +3575,18 @@ function AgentChatSection({
         );
         return;
       }
-      nodes.push(
-        <div
-          key={cell.id}
-          className="session-tui-render-cell"
-          data-testid="session-boundary-cell"
-          style={{
-            margin: '8px auto',
-            width: 'fit-content',
-            maxWidth: '80%',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '999px',
-            background: 'var(--bg-secondary)',
-            color: 'var(--text-tertiary)',
-            fontSize: '11px',
-            padding: '4px 9px',
-          }}
-        >
-          {cell.title}
-          {cell.summary ? ` · ${cell.summary}` : ''}
-        </div>,
-      );
+      nodes.push(renderEventMessage(cell.message, cell.index));
     });
 
     return nodes;
   };
 
-  const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
   React.useEffect(() => {
     setFocusedWorkflow(null);
   }, [activeSessionId]);
-  const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : EMPTY_CHAT_MESSAGES;
-  const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : EMPTY_CHAT_MESSAGES;
   const activeSessionHydrating = Boolean(activeSessionId) && (
     isReadOnlySession ? historyMessagesSessionId !== activeSessionId : chatMessagesSessionId !== activeSessionId
   );
-  const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
   const branchLineageRowsForGitLine = React.useMemo(
     () => (branchLineage.length > 1 ? buildBranchLineageRows(branchLineage) : []),
     [branchLineage],
@@ -4225,6 +4171,7 @@ function AgentChatSection({
             )}
             {agentExpired ? (
               <div
+                role="alert"
                 style={{
                   padding: '7px 16px',
                   borderTop: '1px solid rgba(245,158,11,0.3)',
@@ -4243,6 +4190,8 @@ function AgentChatSection({
               </div>
             ) : transportNotice ? (
               <div
+                role="status"
+                aria-live="polite"
                 style={{
                   padding: '7px 16px',
                   borderTop: '1px solid rgba(245,158,11,0.25)',
@@ -4254,7 +4203,11 @@ function AgentChatSection({
                 {transportNotice}
               </div>
             ) : !wsConnected && !isDraftSession ? (
-              <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+              <div
+                role="status"
+                aria-live="polite"
+                style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}
+              >
                 <span
                   style={{
                     display: 'inline-block',
@@ -4325,453 +4278,34 @@ function AgentChatSection({
                 onDismiss={onDismissSessionCommandControl || (() => undefined)}
                 onRunCommand={onRunSessionCommand || (() => undefined)}
               />
-              {attachedFiles.length > 0 && (
-                <div
-                  data-testid="session-composer-attachments"
-                  style={{
-                    padding: '0 0 7px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    flexWrap: 'wrap',
-                  }}
-                >
-                  {attachedFiles.map((file, index) => (
-                    <div
-                      key={index}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        fontSize: '11px',
-                        background: 'var(--bg-secondary)',
-                        padding: '4px 6px',
-                        borderRadius: '6px',
-                        border: '1px solid var(--border-subtle)',
-                        maxWidth: '220px',
-                      }}
-                    >
-                      {file.imageUrl ? (
-                        <img src={file.imageUrl} alt={file.name} style={{ width: '20px', height: '20px', borderRadius: '4px', objectFit: 'cover' }} />
-                      ) : (
-                        <IconFileText size={14} color="var(--text-tertiary)" />
-                      )}
-                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => onRemoveAttachedFile(index)}
-                        aria-label={t('agent.chat.removeAttachment', 'Remove attachment')}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: 'var(--text-tertiary)',
-                          cursor: 'pointer',
-                          padding: '1px',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                        }}
-                        title={t('agent.chat.removeAttachment', 'Remove attachment')}
-                      >
-                        <IconX size={13} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div
-                data-testid="session-composer-shell"
-                style={{
-                  position: 'relative',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: 'var(--radius-lg)',
-                  background: 'var(--bg-primary)',
-                  overflow: 'visible',
-                }}
-              >
-                <div
-                  data-testid="session-composer-plus-menu"
-                  hidden={!composerMenuOpen}
-                  style={{
-                    position: 'absolute',
-                    left: '12px',
-                    bottom: '44px',
-                    width: '248px',
-                    border: '1px solid var(--border-subtle)',
-                    borderRadius: 'var(--radius-lg)',
-                    background: 'var(--bg-primary)',
-                    boxShadow: 'var(--shadow-popover)',
-                    padding: '4px',
-                    zIndex: 16,
-                    display: composerMenuOpen ? 'grid' : 'none',
-                    gap: '2px',
-                  }}
-                >
-                  {([
-                    {
-                      key: 'upload' as const,
-                      label: t('agent.chat.composer.uploadFile', 'Upload file'),
-                      description: t('agent.chat.composer.uploadFileDesc', 'Attach files or screenshots to this turn'),
-                      icon: uploading ? <IconLoader2 size={16} /> : <IconPaperclip size={16} />,
-                      disabled: !canUseComposer || uploading || attachedFiles.length >= 10,
-                    },
-                    {
-                      key: 'plan' as const,
-                      label: t('agent.chat.composer.planMode', 'Plan Mode'),
-                      description: planModeRequested
-                        ? t('agent.chat.composer.planModeOnDesc', 'Next message will request a plan first')
-                        : t('agent.chat.composer.planModeDesc', 'Ask the agent to plan before execution'),
-                      icon: <IconChecklist size={16} />,
-                      checked: planModeRequested,
-                      disabled: !canUseComposer || isWaiting || isStreaming,
-                    },
-                    {
-                      key: 'goal' as const,
-                      label: t('agent.chat.composer.goalMode', 'Goal mode'),
-                      description: t('agent.chat.composer.goalModeDesc', 'Start a session goal through the command surface'),
-                      icon: <IconTargetArrow size={16} />,
-                      disabled: !canUseComposer || isWaiting || isStreaming,
-                    },
-                    {
-                      key: 'schedule' as const,
-                      label: t('agent.chat.composer.scheduledTask', 'Scheduled task'),
-                      description: t('agent.chat.composer.scheduledTaskDesc', 'Draft a scheduled task request for this agent'),
-                      icon: <IconCalendarTime size={16} />,
-                      disabled: !canUseComposer || isWaiting || isStreaming,
-                    },
-                  ] satisfies Array<{
-                    key: ComposerActionKey;
-                    label: string;
-                    description: string;
-                    icon: React.ReactNode;
-                    checked?: boolean;
-                    disabled: boolean;
-                  }>).map((action) => (
-                    <button
-                      key={action.key}
-                      type="button"
-                      onClick={() => setComposerAction(action.key)}
-                      disabled={action.disabled}
-                      style={{
-                        width: '100%',
-                        display: 'grid',
-                        gridTemplateColumns: action.checked === undefined ? '22px minmax(0, 1fr)' : '22px minmax(0, 1fr) 34px',
-                        gap: '9px',
-                        alignItems: 'center',
-                        padding: '9px 10px',
-                        border: 0,
-                        borderRadius: '8px',
-                        background: 'transparent',
-                        color: action.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
-                        cursor: action.disabled ? 'not-allowed' : 'pointer',
-                        textAlign: 'left',
-                      }}
-                    >
-                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
-                        {action.icon}
-                      </span>
-                      <span style={{ display: 'grid', gap: '2px', minWidth: 0 }}>
-                        <strong style={{ fontSize: '12px', fontWeight: 650 }}>{action.label}</strong>
-                        <span style={{ fontSize: '11px', lineHeight: 1.35, color: 'var(--text-tertiary)' }}>{action.description}</span>
-                      </span>
-                      {action.checked !== undefined && (
-                        <span
-                          data-testid={`session-composer-action-${action.key}-switch`}
-                          role="switch"
-                          aria-checked={action.checked}
-                          aria-label={action.label}
-                          style={{
-                            position: 'relative',
-                            width: '30px',
-                            height: '18px',
-                            borderRadius: '999px',
-                            background: action.checked ? 'var(--text-primary)' : 'var(--bg-tertiary)',
-                            border: '1px solid var(--border-subtle)',
-                            transition: 'background 0.15s ease',
-                            justifySelf: 'end',
-                          }}
-                        >
-                          <span
-                            style={{
-                              position: 'absolute',
-                              top: '2px',
-                              left: action.checked ? '14px' : '2px',
-                              width: '12px',
-                              height: '12px',
-                              borderRadius: '50%',
-                              background: 'var(--bg-primary)',
-                              border: '1px solid var(--border-default)',
-                              transition: 'left 0.15s ease',
-                            }}
-                          />
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-                <input type="file" multiple ref={fileInputRef} onChange={onHandleChatFile} style={{ display: 'none' }} />
-                <textarea
-                  data-testid="session-composer-input"
-                  ref={chatInputRef}
-                  className="chat-input"
-                  value={chatInput}
-                  onChange={(e) => onSetChatInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      sendFromComposer();
-                    }
-                  }}
-                  onPaste={onHandlePaste}
-                  placeholder={composerPlaceholder}
-                  disabled={!canUseComposer}
-                  rows={1}
-                  style={{
-                    width: '100%',
-                    minHeight: '52px',
-                    maxHeight: '180px',
-                    resize: 'none',
-                    padding: '12px 14px 6px',
-                    lineHeight: 1.5,
-                    border: 0,
-                    borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0',
-                    background: 'transparent',
-                    boxShadow: 'none',
-                    boxSizing: 'border-box',
-                  }}
-                  autoFocus
-                />
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    padding: '8px 10px 10px 12px',
-                    minHeight: '46px',
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setComposerMenuOpen((open) => !open)}
-                    aria-label={t('agent.chat.composer.openMenu', 'Open composer actions')}
-                    aria-expanded={composerMenuOpen}
-                    title={t('agent.chat.composer.openMenu', 'Open composer actions')}
-                    disabled={!canUseComposer}
-                    style={{
-                      width: '32px',
-                      height: '32px',
-                      padding: 0,
-                      border: '1px solid transparent',
-                      borderRadius: '8px',
-                      background: composerMenuOpen ? 'var(--bg-secondary)' : 'transparent',
-                      color: canUseComposer ? 'var(--text-secondary)' : 'var(--text-tertiary)',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: canUseComposer ? 'pointer' : 'not-allowed',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <IconPlus size={20} stroke={1.7} />
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="session-composer-permission-badge"
-                    aria-label={t('agent.chat.composer.permissionTitle', 'Session permission mode')}
-                    aria-expanded={permissionMenuOpen}
-                    title={t('agent.chat.composer.permissionTitle', 'Session permission mode')}
-                    onClick={() => {
-                      setPermissionMenuOpen((open) => !open);
-                      setComposerMenuOpen(false);
-                    }}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      height: '30px',
-                      padding: '0 9px',
-                      border: '1px solid transparent',
-                      borderRadius: 'var(--radius-md)',
-                      background: permissionMenuOpen ? 'var(--bg-secondary)' : 'transparent',
-                      color: 'var(--text-secondary)',
-                      fontSize: 'var(--text-row)',
-                      fontWeight: 500,
-                      whiteSpace: 'nowrap',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <IconShieldCheck size={15} stroke={1.8} />
-                    {permissionModeLabel}
-                  </button>
-                  <div
-                    data-testid="session-composer-permission-menu"
-                    hidden={!permissionMenuOpen}
-                    style={{
-                      position: 'absolute',
-                      left: '52px',
-                      bottom: '44px',
-                      width: '238px',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: 'var(--radius-lg)',
-                      background: 'var(--bg-primary)',
-                      boxShadow: 'var(--shadow-popover)',
-                      padding: '4px',
-                      zIndex: 17,
-                      display: permissionMenuOpen ? 'grid' : 'none',
-                      gap: '2px',
-                    }}
-                  >
-                    {SESSION_PERMISSION_MODE_OPTIONS.map((option) => {
-                      const selected = option.value === sessionPermissionMode;
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          data-testid={`session-composer-permission-mode-${option.value}`}
-                          aria-pressed={selected}
-                          onClick={() => {
-                            onSetSessionPermissionMode?.(option.value);
-                            setPermissionMenuOpen(false);
-                          }}
-                          style={{
-                            width: '100%',
-                            display: 'grid',
-                            gridTemplateColumns: '20px minmax(0, 1fr)',
-                            gap: '9px',
-                            alignItems: 'center',
-                            padding: '9px 10px',
-                            border: 0,
-                            borderRadius: '8px',
-                            background: selected ? 'var(--bg-secondary)' : 'transparent',
-                            color: 'var(--text-primary)',
-                            cursor: 'pointer',
-                            textAlign: 'left',
-                          }}
-                        >
-                          <IconShieldCheck size={15} stroke={selected ? 2.2 : 1.7} />
-                          <span style={{ display: 'grid', gap: '2px', minWidth: 0 }}>
-                            <strong style={{ fontSize: '12px', fontWeight: 650 }}>
-                              {t(`agent.chat.composer.permissionMode.${option.value}`, option.label)}
-                            </strong>
-                            <span style={{ fontSize: '11px', lineHeight: 1.35, color: 'var(--text-tertiary)' }}>
-                              {t(`agent.chat.composer.permissionModeDesc.${option.value}`, option.description)}
-                            </span>
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {composerIntentLabel && (
-                    <span
-                      data-testid="session-composer-intent-badge"
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        height: '28px',
-                        padding: '0 8px',
-                        borderRadius: '8px',
-                        background: 'var(--bg-secondary)',
-                        color: 'var(--text-secondary)',
-                        fontSize: '11px',
-                        fontWeight: 650,
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {composerIntentLabel}
-                    </span>
-                  )}
-                  {uploading && uploadProgress >= 0 && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '0 0 140px' }}>
-                      {uploadProgress <= 100 ? (
-                        <>
-                          <div style={{ flex: 1, height: '4px', borderRadius: '2px', background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
-                            <div
-                              style={{
-                                height: '100%',
-                                width: '100%',
-                                borderRadius: '2px',
-                                background: 'var(--accent-primary)',
-                                transform: `scaleX(${Math.max(0, Math.min(100, uploadProgress)) / 100})`,
-                                transformOrigin: 'left center',
-                                transition: 'transform 0.15s ease',
-                              }}
-                            />
-                          </div>
-                          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{uploadProgress}%</span>
-                        </>
-                      ) : (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <span
-                            style={{
-                              display: 'inline-block',
-                              width: '5px',
-                              height: '5px',
-                              borderRadius: '50%',
-                              background: 'var(--accent-primary)',
-                              animation: 'pulse 1.2s ease-in-out infinite',
-                            }}
-                          />
-                          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>Processing...</span>
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          uploadAbortRef.current?.();
-                        }}
-                        aria-label={t('common.cancel', 'Cancel')}
-                        style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', padding: '0 2px', lineHeight: 1, display: 'inline-flex' }}
-                        title="Cancel upload"
-                      >
-                        <IconX size={13} />
-                      </button>
-                    </div>
-                  )}
-                  <span style={{ flex: 1, minWidth: '12px' }} />
-                  <span
-                    data-testid="session-composer-model-badge"
-                    title={modelBadgeTitle || t('agent.chat.composer.modelTitle', 'Model information')}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '7px',
-                      minWidth: 0,
-                      maxWidth: '260px',
-                      color: 'var(--text-secondary)',
-                      fontSize: '12px',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    <IconCircleDashedCheck size={17} stroke={1.9} color="var(--text-tertiary)" />
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{modelBadgeLabel}</span>
-                    {runtimeUsageLabel && <span style={{ color: 'var(--text-tertiary)' }}>{runtimeUsageLabel}</span>}
-                  </span>
-                  {(isStreaming || isWaiting) && (
-                    <button className="btn btn-stop-generation" onClick={onAbortGeneration} style={{ padding: '6px 12px' }} title={t('chat.stop', 'Stop')}>
-                      <span className="stop-icon" />
-                    </button>
-                  )}
-                  <button
-                    data-testid="session-composer-send"
-                    className="btn btn-primary"
-                    onClick={sendFromComposer}
-                    disabled={!canUseComposer || (!chatInput.trim() && attachedFiles.length === 0)}
-                    aria-label={t('chat.send')}
-                    title={t('chat.send')}
-                    style={{
-                      width: '38px',
-                      height: '38px',
-                      padding: 0,
-                      borderRadius: '10px',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <IconSend2 size={18} />
-                  </button>
-                </div>
-              </div>
+              <SessionComposer
+                value={chatInput}
+                inputRef={chatInputRef}
+                fileInputRef={fileInputRef}
+                placeholder={composerPlaceholder}
+                disabled={!canUseComposer}
+                attachments={attachedFiles}
+                permissionMode={sessionPermissionMode}
+                permissionModeLabel={permissionModeLabel}
+                permissionOptions={SESSION_PERMISSION_MODE_OPTIONS}
+                modelLabel={modelBadgeLabel}
+                modelTitle={modelBadgeTitle}
+                runtimeUsageLabel={runtimeUsageLabel}
+                intentLabel={composerIntentLabel}
+                planModeRequested={planModeRequested}
+                uploading={uploading}
+                uploadProgress={uploadProgress}
+                running={isStreaming || isWaiting}
+                onChange={onSetChatInput}
+                onPaste={onHandlePaste}
+                onSubmit={sendFromComposer}
+                onStop={onAbortGeneration}
+                onAction={setComposerAction}
+                onPermissionModeChange={(mode) => onSetSessionPermissionMode?.(mode)}
+                onFilesSelected={onHandleChatFile}
+                onRemoveAttachment={onRemoveAttachedFile}
+                onCancelUpload={() => uploadAbortRef.current?.()}
+              />
             </div>
           </>
         )}
@@ -4788,6 +4322,8 @@ function AgentChatSection({
           onOpenDocument={openArtifact}
           onSelectSession={onSelectBranchSession}
           onSelectWorkflowRun={setFocusedWorkflow}
+          selectedThreadItem={selectedThreadItem}
+          onClearSelectedThreadItem={clearThreadItemSelection}
         />
       ) : null}
     </div>

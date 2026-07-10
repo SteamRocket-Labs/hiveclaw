@@ -910,7 +910,7 @@ async def test_get_session_transcript_returns_replayable_events(monkeypatch):
         content="final answer",
         parts_json=[{"type": "text", "text": "final answer"}],
         metadata_json={"source": "web", "role": "assistant"},
-        created_at=SimpleNamespace(isoformat=lambda: "2026-06-20T12:00:00+00:00"),
+        created_at=datetime(2026, 6, 20, 12, tzinfo=timezone.utc),
     )
     current_user = SimpleNamespace(id=owner_id, role="member")
     db = _QueryAwareDB(agent=agent, sessions=[session], transcript_events=[event])
@@ -930,11 +930,16 @@ async def test_get_session_transcript_returns_replayable_events(monkeypatch):
 
     assert result == [
         {
+            "schema": "hive.thread_item.v1",
+            "schema_version": 1,
             "id": str(event.id),
             "sequence": 42,
+            "thread_id": str(session_id),
             "session_id": str(session_id),
             "run_id": str(run_id),
             "message_id": str(message_id),
+            "item_type": "agent_message",
+            "item_status": "succeeded",
             "actor_type": "assistant",
             "event_type": "assistant_message",
             "type": "assistant_message",
@@ -945,6 +950,8 @@ async def test_get_session_transcript_returns_replayable_events(monkeypatch):
             "parts": [{"type": "text", "text": "final answer"}],
             "metadata": {"source": "web", "role": "assistant"},
             "created_at": "2026-06-20T12:00:00+00:00",
+            "evidence_refs": [],
+            "item_data": {},
         }
     ]
     assert db.commits == 1

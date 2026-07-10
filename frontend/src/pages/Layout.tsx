@@ -8,7 +8,10 @@ import { authApi } from '../api/domains/auth';
 import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
 import { adminApi } from '../api/domains/admin';
-import AppSidebar from './layout/AppSidebar';
+import AppSidebar, {
+    COMPACT_SIDEBAR_MAX_WIDTH,
+    isCompactSidebarViewport,
+} from './layout/AppSidebar';
 import NotificationCenter from './layout/NotificationCenter';
 import './Layout.css';
 
@@ -236,8 +239,30 @@ export default function Layout() {
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
         return localStorage.getItem('sidebar_collapsed') === 'true';
     });
+    const [isCompactSidebar, setIsCompactSidebar] = useState(() => (
+        typeof window !== 'undefined' && isCompactSidebarViewport(window.innerWidth)
+    ));
+    const [isCompactSidebarOpen, setIsCompactSidebarOpen] = useState(false);
+
+    useEffect(() => {
+        const media = window.matchMedia(`(max-width: ${COMPACT_SIDEBAR_MAX_WIDTH}px)`);
+        const syncViewport = (matches: boolean) => {
+            setIsCompactSidebar(matches);
+            setIsCompactSidebarOpen(false);
+        };
+        const handleChange = (event: MediaQueryListEvent) => syncViewport(event.matches);
+        syncViewport(media.matches);
+        media.addEventListener('change', handleChange);
+        return () => media.removeEventListener('change', handleChange);
+    }, []);
+
+    const effectiveSidebarCollapsed = isCompactSidebar ? !isCompactSidebarOpen : isSidebarCollapsed;
 
     const toggleSidebar = () => {
+        if (isCompactSidebar) {
+            setIsCompactSidebarOpen(prev => !prev);
+            return;
+        }
         setIsSidebarCollapsed(prev => {
             const newState = !prev;
             localStorage.setItem('sidebar_collapsed', String(newState));
@@ -319,11 +344,11 @@ export default function Layout() {
     }, [showAccountMenu]);
 
     return (
-        <div className={`app-layout${isSidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
+        <div className={`app-layout${effectiveSidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
             <AppSidebar
                 user={user}
                 theme={theme}
-                isSidebarCollapsed={isSidebarCollapsed}
+                isSidebarCollapsed={effectiveSidebarCollapsed}
                 onToggleSidebar={toggleSidebar}
                 agents={agents}
                 pinnedAgents={pinnedAgents}

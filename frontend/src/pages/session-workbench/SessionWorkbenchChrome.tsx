@@ -3,15 +3,13 @@ import { useTranslation } from 'react-i18next';
 import {
   IconActivity,
   IconShieldCheck,
-  IconChecklist,
   IconDatabase,
   IconGitBranch,
   IconGitCommit,
-  IconInfoCircle,
   IconPlayerPlay,
 } from '@tabler/icons-react';
 
-import type { SessionWorkbenchHeaderModel, SessionWorkbenchInspectorModel } from './timelineModel';
+import type { SessionWorkbenchHeaderModel } from './timelineModel';
 import './SessionWorkbenchChrome.css';
 
 function shortId(id: string | null): string {
@@ -101,52 +99,5 @@ export function SessionWorkbenchHeader({ model }: { model: SessionWorkbenchHeade
         )}
       </div>
     </div>
-  );
-}
-
-function InspectorRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="swb-inspector-row">
-      <span className="swb-inspector-row-label">{label}</span>
-      <span className="swb-inspector-row-value">{value}</span>
-    </div>
-  );
-}
-
-export function SessionWorkbenchInspector({
-  model,
-  children,
-}: {
-  model: SessionWorkbenchInspectorModel;
-  children?: React.ReactNode;
-}) {
-  const { t } = useTranslation();
-  return (
-    <aside data-testid="session-workbench-inspector" className="swb-inspector">
-      <div className="swb-inspector-head">
-        <div className="swb-inspector-title">
-          <IconInfoCircle size={15} />
-          <strong>{t('sessionWorkbench.inspectorTitle', 'Session context')}</strong>
-        </div>
-        <div className="swb-inspector-rows">
-          <InspectorRow label={t('sessionWorkbench.events', 'events')} value={model.sessionEventCount ?? '-'} />
-          <InspectorRow label={t('sessionWorkbench.t0Segments', 'T0 segments')} value={model.t0SegmentCount} />
-          <InspectorRow label={t('sessionWorkbench.latestCheckpoint', 'latest checkpoint')} value={model.latestCheckpointLabel || '-'} />
-          <InspectorRow label={t('sessionWorkbench.usedTools', 'used tools')} value={model.usedToolCount} />
-          <InspectorRow label={t('sessionWorkbench.blockedCapabilities', 'blocked')} value={model.blockedCapabilityCount} />
-          <InspectorRow label={t('sessionWorkbench.toolGroups', 'tool groups')} value={model.activatedToolGroupCount} />
-        </div>
-      </div>
-      <div className="swb-inspector-body">
-        {children}
-        <div className="swb-inspector-hint">
-          <div className="swb-inspector-hint-title">
-            <IconChecklist size={13} />
-            {t('sessionWorkbench.nativeControls', 'Session-native controls')}
-          </div>
-          {t('sessionWorkbench.nativeControlsHint', 'Goal, checkpoint, branch, team, sources, and raw tool detail belong here or in inline disclosures, not as permanent command bars.')}
-        </div>
-      </div>
-    </aside>
   );
 }

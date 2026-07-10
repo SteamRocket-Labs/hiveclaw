@@ -18,12 +18,14 @@ import AgentChatSection, {
   buildSessionRewindCommandArgs,
   buildBranchLineageRows,
   extractPlanIdFromPlanModeMessage,
+  findRetryAnchorMessage,
   getSessionGitLineDensity,
   getArtifactOpenMode,
   isPendingEmptyArtifactPreview,
   isUserFacingDeliveryArtifact,
   isClarificationCardAnsweredByLaterUserMessage,
   pickFocusedCheckpointIdForScroll,
+  permissionOnceOnlyMessageKey,
   sessionCheckpointPreview,
 } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
@@ -742,6 +744,30 @@ vi.mock('react-router-dom', () => ({
 }));
 
 describe('AgentDetail extracted sections', () => {
+  it('distinguishes destructive approval copy from ordinary one-shot scope', () => {
+    expect(permissionOnceOnlyMessageKey({
+      permission_request_id: 'controlled-write',
+      risk_class: 'controlled_write',
+      allow_session_allowed: false,
+    })).toBe('agent.chat.permission.onceOnly');
+    expect(permissionOnceOnlyMessageKey({
+      permission_request_id: 'destructive-delete',
+      risk_class: 'destructive_delete',
+      allow_session_allowed: false,
+    })).toBe('agent.chat.permission.deleteOnceOnly');
+  });
+
+  it('anchors a retryable runtime error to the nearest preceding user turn', () => {
+    const messages = [
+      { id: 'user-1', role: 'user' as const, content: 'Run the analysis.' },
+      { id: 'agent-1', role: 'assistant' as const, content: 'Starting.' },
+      { id: 'user-2', role: 'user' as const, content: 'Use the latest file.' },
+      { id: 'error-1', role: 'event' as const, content: 'Provider timed out.' },
+    ];
+
+    expect(findRetryAnchorMessage(messages, 3)).toBe(messages[2]);
+    expect(findRetryAnchorMessage(messages, 0)).toBeNull();
+  });
   it('uses session-only workbench mode for chat routes but not detail management routes', () => {
     expect(isSessionWorkbenchRoute('chat', '?session_id=session-1')).toBe(true);
     expect(isSessionWorkbenchRoute('chat', '')).toBe(false);
@@ -4939,6 +4965,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-composer"');
     expect(markup).not.toContain('Read-only');
     expect(markup).not.toContain('Connecting...');
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('aria-live="polite"');
     expect(markup).toMatch(/<textarea[^>]*class="chat-input"(?![^>]*disabled)/);
     expect(markup).toMatch(/<button[^>]*aria-label="send"(?![^>]*disabled)/);
   });

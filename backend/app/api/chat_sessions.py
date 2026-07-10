@@ -368,8 +368,7 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
         prompt_manifest.get("context_usage_ledger") or assembly_state.get("context_usage_ledger")
     )
     dynamic_context_section_ledger = _metadata_dict(
-        prompt_manifest.get("dynamic_context_section_ledger")
-        or assembly_state.get("dynamic_context_section_ledger")
+        prompt_manifest.get("dynamic_context_section_ledger") or assembly_state.get("dynamic_context_section_ledger")
     )
     categories = _metadata_list(context_usage_ledger.get("categories"))
     context_candidates = _metadata_list(prompt_manifest.get("context_candidates"))
@@ -1253,6 +1252,8 @@ def _compact_transcript_metadata(metadata: Any, truncations: list[dict[str, Any]
 
 
 def _serialize_transcript_event(event: ChatTranscriptEvent) -> dict:
+    from app.services.thread_items import build_thread_item
+
     truncations: list[dict[str, Any]] = []
     content = event.content or ""
     projected_content = (
@@ -1286,23 +1287,13 @@ def _serialize_transcript_event(event: ChatTranscriptEvent) -> dict:
         metadata["_payload_truncated"] = True
         metadata["_payload_truncations"] = truncations
 
-    return {
-        "id": str(event.id),
-        "sequence": event.sequence,
-        "session_id": str(event.session_id),
-        "run_id": str(event.run_id) if event.run_id else None,
-        "message_id": str(event.message_id) if event.message_id else None,
-        "actor_type": event.actor_type,
-        "event_type": event.event_type,
-        "type": event.event_type,
-        "role": _transcript_role_for_event(event),
-        "visibility_scope": event.visibility_scope,
-        "listed_surface": event.listed_surface,
-        "content": content,
-        "parts": parts,
-        "metadata": metadata,
-        "created_at": event.created_at.isoformat() if event.created_at else None,
-    }
+    return build_thread_item(
+        event,
+        content=content,
+        parts=parts,
+        metadata=metadata,
+        role=_transcript_role_for_event(event),
+    )
 
 
 async def _get_run_session_and_agent(

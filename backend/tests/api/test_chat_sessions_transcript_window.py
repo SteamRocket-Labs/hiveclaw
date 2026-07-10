@@ -168,6 +168,11 @@ def test_transcript_projection_caps_oversize_event_payloads():
 
     payload = api._serialize_transcript_event(event)
 
+    assert payload["schema"] == "hive.thread_item.v1"
+    assert payload["schema_version"] == 1
+    assert payload["item_type"] == "tool_result"
+    assert payload["item_status"] == "succeeded"
+    assert payload["item_data"]["event_type"] == "tool_result"
     assert payload["metadata"]["_payload_truncated"] is True
     assert "raw" not in payload["metadata"]
     assert "debug" not in payload["metadata"]

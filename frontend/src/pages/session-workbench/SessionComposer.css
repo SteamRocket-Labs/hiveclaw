@@ -1,0 +1,341 @@
+.session-composer-module,
+.session-composer-module * {
+  box-sizing: border-box;
+}
+
+.session-composer-module {
+  min-width: 0;
+}
+
+.session-composer-shell {
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+}
+
+.session-composer-shell > .chat-input {
+  width: 100%;
+  min-height: 52px;
+  max-height: 180px;
+  resize: none;
+  padding: 12px 14px 6px;
+  border: 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: transparent;
+  box-shadow: none;
+  line-height: 1.5;
+}
+
+.session-composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-block-end: 7px;
+}
+
+.session-composer-attachment {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--text-meta);
+}
+
+.session-composer-attachment img {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.session-composer-attachment > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-composer-attachment button,
+.session-composer-upload button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.session-composer-menu {
+  position: absolute;
+  z-index: 17;
+  display: grid;
+  gap: 2px;
+  width: min(248px, calc(100vw - 32px));
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-popover);
+}
+
+.session-composer-menu[hidden] {
+  display: none;
+}
+
+.session-composer-actions {
+  inset-block-end: 46px;
+  inset-inline-start: 12px;
+}
+
+.session-composer-menu > button {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: start;
+}
+
+.session-composer-menu > button:has(.session-composer-action-switch) {
+  grid-template-columns: 22px minmax(0, 1fr) 34px;
+}
+
+.session-composer-action-switch {
+  position: relative;
+  justify-self: end;
+  width: 30px;
+  height: 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+}
+
+.session-composer-action-switch[aria-checked='true'] {
+  background: var(--text-primary);
+}
+
+.session-composer-action-switch > span {
+  position: absolute;
+  inset-block-start: 2px;
+  inset-inline-start: 2px;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: var(--bg-primary);
+  transition: transform 180ms ease;
+}
+
+.session-composer-action-switch[aria-checked='true'] > span {
+  transform: translateX(12px);
+}
+
+.session-composer-menu > button:hover,
+.session-composer-menu > button:focus-visible,
+.session-composer-menu > button.is-selected {
+  background: var(--bg-secondary);
+  outline: none;
+}
+
+.session-composer-menu > button:disabled {
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+}
+
+.session-composer-menu > button > span:last-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.session-composer-menu strong {
+  font-size: var(--text-row);
+  font-weight: 650;
+}
+
+.session-composer-menu small {
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+  line-height: 1.35;
+}
+
+.session-composer-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 46px;
+  padding: 8px 10px 10px 12px;
+}
+
+.session-composer-icon-button,
+.session-composer-permission-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.session-composer-permission-button {
+  gap: 6px;
+  padding-inline: 9px;
+  font-size: var(--text-row);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.session-composer-permission-menu {
+  inset-block-end: 46px;
+  inset-inline-start: 52px;
+}
+
+.session-composer-intent {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding-inline: 8px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--text-meta);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.session-composer-upload {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 150px;
+  min-width: 84px;
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+}
+
+.session-composer-progress {
+  flex: 1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--bg-tertiary);
+}
+
+.session-composer-progress > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-primary);
+  transform-origin: left center;
+  transition: transform 180ms ease;
+}
+
+.session-composer-spacer {
+  flex: 1;
+  min-width: 8px;
+}
+
+.session-composer-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 260px;
+  color: var(--text-secondary);
+  font-size: var(--text-row);
+  white-space: nowrap;
+}
+
+.session-composer-model > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-composer-model small {
+  color: var(--text-tertiary);
+}
+
+.session-composer-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding-inline: 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 9px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.session-composer-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 10px;
+}
+
+@media (max-width: 760px) {
+  .session-composer-controls {
+    gap: 5px;
+    padding-inline: 8px;
+  }
+
+  .session-composer-model small,
+  .session-composer-intent,
+  .session-composer-stop span {
+    display: none;
+  }
+
+  .session-composer-permission-button {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .session-composer-icon-button,
+  .session-composer-permission-button,
+  .session-composer-stop,
+  .session-composer-send {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-composer-progress > span {
+    transition: none;
+  }
+
+  .session-composer-action-switch > span {
+    transition: none;
+  }
+}

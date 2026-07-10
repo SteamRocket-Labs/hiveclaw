@@ -118,6 +118,12 @@ interface AppSidebarProps {
   hrAgent?: HrAgentInfo | null;
 }
 
+export const COMPACT_SIDEBAR_MAX_WIDTH = 900;
+
+export function isCompactSidebarViewport(width: number): boolean {
+  return Number.isFinite(width) && width <= COMPACT_SIDEBAR_MAX_WIDTH;
+}
+
 const ACTIVE_AGENT_RE = /^\/agents\/([^/?#]+)/;
 const ACTIVE_SESSION_PATH_RE = /^\/agents\/[^/?#]+\/sessions\/([^/?#]+)/;
 

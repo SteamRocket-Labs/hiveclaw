@@ -7,6 +7,7 @@ import AppSidebar, {
   displaySessionTitle,
   getSessionTag,
   getSessionTags,
+  isCompactSidebarViewport,
   sidebarSessionFromLocalAgentChannelSession,
 } from './AppSidebar';
 import NotificationCenter from './NotificationCenter';
@@ -44,6 +45,11 @@ function cssBlock(css: string, selector: string) {
 }
 
 describe('Layout extracted sections', () => {
+  it('reserves the narrow viewport for the workbench by default-collapsing the app sidebar', () => {
+    expect(isCompactSidebarViewport(900)).toBe(true);
+    expect(isCompactSidebarViewport(901)).toBe(false);
+  });
+
   it('labels agent-to-agent sessions with an A2A badge', () => {
     const t = (key: string, fallback?: string) => fallback || key;
     expect(getSessionTag({

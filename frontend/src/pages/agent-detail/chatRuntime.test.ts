@@ -22,6 +22,7 @@ import {
   shouldUseWritableSessionSurface,
   shouldPreserveActiveSessionForRequestedId,
   normalizeStoredChatMessage,
+  normalizeRuntimeEventMessage,
   applyTranscriptEvent,
   createEmptyTranscriptReplayState,
   phaseUi,
@@ -36,6 +37,7 @@ import {
   shouldIgnoreObservedActiveRun,
   shouldReuseSessionTranscriptLoad,
 } from './chatRuntime';
+import { normalizeThreadItemPayload, threadItemToAgentChatMessage } from '../session-workbench/threadItemReducer';
 
 describe('chatRuntime helpers', () => {
   it('treats draft human sessions as writable local composer state, not read-only A2A state', () => {
@@ -1222,6 +1224,77 @@ describe('chatRuntime helpers', () => {
       confirmation_kind: 'destructive_once',
       allow_session_allowed: false,
     });
+  });
+
+  it('does not re-normalize a canonical ThreadItem message through the legacy adapter', () => {
+    const item = normalizeThreadItemPayload({
+      schema: 'hive.thread_item.v1',
+      schema_version: 1,
+      id: 'canonical-permission',
+      sequence: 5,
+      item_type: 'approval_request',
+      item_status: 'waiting_user',
+      actor_type: 'system',
+      event_type: 'permission_request',
+      type: 'permission_request',
+      role: 'system',
+      visibility_scope: 'direct_user',
+      listed_surface: 'chat',
+      content: 'Permission required',
+      parts: [],
+      metadata: {},
+      item_data: {
+        permission_request_id: 'permission-canonical',
+        tool_name: 'write_file',
+        arguments: { path: 'report.md' },
+        allow_session_allowed: false,
+        destructive: false,
+      },
+    });
+    if (!item) throw new Error('canonical item required');
+    const message = threadItemToAgentChatMessage(item);
+
+    expect(normalizeRuntimeEventMessage(message)).toBe(message);
+    expect(normalizeRuntimeEventMessage(message)?.sessionPermissionRequest?.permission_request_id).toBe('permission-canonical');
+  });
+
+  it('keeps canonical cancellation boundaries and artifact updates in transcript replay', () => {
+    const common = {
+      schema: 'hive.thread_item.v1' as const,
+      schema_version: 1,
+      actor_type: 'system',
+      role: 'system',
+      visibility_scope: 'direct_user',
+      listed_surface: 'chat',
+      parts: [],
+      metadata: {},
+    };
+    const state = replayTranscriptEvents([
+      {
+        ...common,
+        id: 'boundary-cancelled',
+        sequence: 8,
+        item_type: 'boundary',
+        item_status: 'cancelled',
+        event_type: 'run_cancelled',
+        type: 'run_cancelled',
+        content: 'The run was cancelled.',
+        item_data: { phase: 'cancelled', reason: 'user_stop' },
+      },
+      {
+        ...common,
+        id: 'artifact-updated',
+        sequence: 9,
+        item_type: 'artifact',
+        item_status: 'succeeded',
+        event_type: 'artifact_update',
+        type: 'artifact_update',
+        content: 'report.md was updated.',
+        item_data: { artifact_id: 'artifact-1', path: 'report.md', action: 'updated' },
+      },
+    ]);
+
+    expect(state.messages.map((message) => message.threadItem?.item_type)).toEqual(['boundary', 'artifact']);
   });
 
   it('replays artifact delivery transcript events as session artifact cards', () => {

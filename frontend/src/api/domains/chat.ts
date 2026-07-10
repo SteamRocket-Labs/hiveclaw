@@ -5,6 +5,7 @@
 import { ApiError, get, post, patch, del, upload } from '../core';
 import type { RequestOptions } from '../core/request';
 import type { ChatMessage } from '../../types';
+import type { ThreadItem } from './threadItems.generated';
 
 export interface ChatSession {
   id: string;
@@ -177,23 +178,8 @@ export interface BranchSessionResponse {
   run?: SessionRun | null;
 }
 
-export interface ChatTranscriptEvent {
-  id: string;
-  sequence: number;
-  session_id?: string;
-  run_id?: string | null;
-  message_id?: string | null;
-  actor_type?: string;
-  event_type: string;
-  type?: string;
-  role?: string;
-  visibility_scope?: string;
-  listed_surface?: string;
-  content?: string;
-  parts?: Array<Record<string, unknown>>;
-  metadata?: Record<string, unknown>;
-  created_at?: string | null;
-}
+/** Generated, schema-versioned transcript read model. */
+export type ChatTranscriptEvent = ThreadItem;
 
 export interface SessionIndex {
   schema: string;

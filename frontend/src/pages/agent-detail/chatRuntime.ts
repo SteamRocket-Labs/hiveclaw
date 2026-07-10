@@ -1,4 +1,9 @@
 import type { SessionRuntimeSummary } from '../../api/domains/chat';
+import type { ThreadItem } from '../../api/domains/threadItems.generated';
+import {
+  normalizeThreadItemPayload,
+  threadItemToAgentChatMessage,
+} from '../session-workbench/threadItemReducer';
 import { normalizeToolCallResult, type ToolCallMeta } from './toolResultEnvelope';
 
 export const MIN_COMPOSER_HEIGHT = 44;
@@ -57,7 +62,9 @@ export interface AgentChatMessage {
 	  id?: string;
 	  messageId?: string | null;
 	  transcriptEventId?: string | null;
-	  eventType?: RuntimeEventType;
+	  eventType?: string;
+  /** Canonical UI protocol. Optional only while historical rows cross the compatibility reducer. */
+  threadItem?: ThreadItem;
   eventTitle?: string;
   eventStatus?: string;
   eventToolName?: string;
@@ -178,7 +185,7 @@ export type StreamingChunkEvent = {
   reset?: boolean;
 };
 
-export type ChatTranscriptEventPayload = {
+export type ChatTranscriptEventPayload = Partial<ThreadItem> & {
   id?: string;
   sequence?: number;
   run_id?: string | null;
@@ -948,7 +955,9 @@ export function applyTranscriptEvent(
 
   const seenEventIds = new Set(state.seenEventIds);
   if (key) seenEventIds.add(key);
-  const eventType = transcriptEventType(event);
+  const threadItem = normalizeThreadItemPayload(event);
+  const canonicalThreadItem = event.schema === 'hive.thread_item.v1' ? threadItem : null;
+  const eventType = threadItem?.event_type || transcriptEventType(event);
   const timestamp = event.created_at || event.timestamp;
   const content = event.content || '';
   const pendingSessionPermissions = state.pendingSessionPermissions || [];
@@ -957,7 +966,9 @@ export function applyTranscriptEvent(
   if (eventType === 'phase') {
     // Backend first-class phase signal: updates the state machine, adds no message.
     return {
-      messages: state.messages,
+      messages: canonicalThreadItem?.item_type === 'boundary'
+        ? [...state.messages, threadItemToAgentChatMessage(canonicalThreadItem)]
+        : state.messages,
       seenEventIds,
       ui: uiForPhase(nextPhase),
       pendingSessionPermissions,
@@ -966,7 +977,9 @@ export function applyTranscriptEvent(
 
   if (eventType === 'run_started') {
     return {
-      messages: state.messages,
+      messages: canonicalThreadItem?.item_type === 'boundary'
+        ? [...state.messages, threadItemToAgentChatMessage(canonicalThreadItem)]
+        : state.messages,
       seenEventIds,
       ui: uiForPhase(nextPhase),
       pendingSessionPermissions,
@@ -975,7 +988,9 @@ export function applyTranscriptEvent(
 
   if (eventType === 'run_completed' || eventType === 'done') {
     return {
-      messages: state.messages,
+      messages: canonicalThreadItem?.item_type === 'boundary'
+        ? [...state.messages, threadItemToAgentChatMessage(canonicalThreadItem)]
+        : state.messages,
       seenEventIds,
       ui: uiForPhase(nextPhase),
       pendingSessionPermissions,
@@ -987,13 +1002,16 @@ export function applyTranscriptEvent(
     const nextPendingSessionPermissions = requestId
       ? resolveSessionPermissionQueue(pendingSessionPermissions, requestId)
       : pendingSessionPermissions;
+    const resolvedMessages = requestId
+      ? renderSessionPermissionQueue(
+          removeSessionPermissionMessage(state.messages, requestId),
+          nextPendingSessionPermissions,
+        )
+      : state.messages;
     return {
-      messages: requestId
-        ? renderSessionPermissionQueue(
-            removeSessionPermissionMessage(state.messages, requestId),
-            nextPendingSessionPermissions,
-          )
-        : state.messages,
+      messages: canonicalThreadItem?.item_type === 'approval_decision'
+        ? [...resolvedMessages, threadItemToAgentChatMessage(canonicalThreadItem)]
+        : resolvedMessages,
       seenEventIds,
       ui: uiForPhase(nextPhase),
       pendingSessionPermissions: nextPendingSessionPermissions,
@@ -1004,7 +1022,7 @@ export function applyTranscriptEvent(
     return {
       messages: applyStreamingChunkEvent(state.messages, { type: 'chunk', content: '' }).map((message, index, arr) => {
         if (index !== arr.length - 1 || message.role !== 'assistant') return message;
-        return { ...message, thinking: `${message.thinking || ''}${content}`, timestamp } as AgentChatMessage;
+        return { ...message, thinking: `${message.thinking || ''}${content}`, timestamp, threadItem: threadItem || undefined } as AgentChatMessage;
       }),
       seenEventIds,
       ui: uiForPhase(nextPhase),
@@ -1016,7 +1034,7 @@ export function applyTranscriptEvent(
     return {
       messages: applyStreamingChunkEvent(state.messages, { type: 'chunk', content }).map((message, index, arr) => {
         if (index !== arr.length - 1 || message.role !== 'assistant') return message;
-        return { ...message, timestamp } as AgentChatMessage;
+        return { ...message, timestamp, threadItem: threadItem || undefined } as AgentChatMessage;
       }),
       seenEventIds,
       ui: uiForPhase(nextPhase),
@@ -1071,6 +1089,7 @@ export function applyTranscriptEvent(
 	          role: 'user',
 	          content,
 	          timestamp,
+	          threadItem: threadItem || undefined,
 	          ...messageIdentityFromTranscriptEvent(event),
 	        },
       ],
@@ -1097,7 +1116,7 @@ export function applyTranscriptEvent(
     return {
 	      messages: messages.map((message, index, arr) => (
 	        index === arr.length - 1 && message.role === 'assistant'
-	          ? { ...message, timestamp, ...messageIdentityFromTranscriptEvent(event) }
+	          ? { ...message, timestamp, threadItem: threadItem || undefined, ...messageIdentityFromTranscriptEvent(event) }
 	          : message
 	      )),
       seenEventIds,
@@ -1126,6 +1145,7 @@ export function applyTranscriptEvent(
       toolMeta,
 	      artifacts: artifacts.length > 0 ? artifacts : undefined,
 	      timestamp,
+	      threadItem: threadItem || undefined,
 	      ...messageIdentityFromTranscriptEvent(event),
 	    };
     return {
@@ -1148,7 +1168,7 @@ export function applyTranscriptEvent(
     return {
 	      messages: messages.map((message, index, arr) => (
 	        index === arr.length - 1 && message.role === 'assistant'
-	          ? { ...message, timestamp, ...messageIdentityFromTranscriptEvent(event) }
+	          ? { ...message, timestamp, threadItem: threadItem || undefined, ...messageIdentityFromTranscriptEvent(event) }
 	          : message
 	      )),
       seenEventIds,
@@ -1216,56 +1236,6 @@ type BuildRuntimeSummaryInput = {
   connected: boolean;
 };
 
-type EventPart = {
-  type?: string;
-  event_type?: RuntimeEventType;
-  title?: string;
-  text?: string;
-  status?: string;
-  tool_name?: string;
-  approval_id?: string;
-  security_zone?: string;
-  capability?: string;
-  approval_required?: boolean;
-  reason?: string;
-  next_step?: string;
-  retryable?: boolean;
-  retry_reason?: string;
-  permission_request_id?: string;
-  permission_request?: SessionPermissionRequest;
-  hook_event?: string;
-  hook_key?: string;
-  hook_type?: string;
-  runtime_task_id?: string;
-  notification_source?: string;
-  task_id?: string;
-  task_type?: string;
-  turn_id?: string;
-  tool_call_id?: string;
-  child_session_id?: string;
-  parent_session_id?: string;
-  root_session_id?: string;
-  workflow_run_id?: string;
-  workflow_step_id?: string;
-  schedule_id?: string;
-  schedule_fire_id?: string;
-  goal_id?: string;
-  once_id?: string;
-  memory_candidate_id?: string;
-  artifact_id?: string;
-  path?: string;
-  revision_id?: string;
-  action?: string;
-  diff_summary?: string;
-  original_message_count?: number;
-  kept_message_count?: number;
-  continuity_sections_injected?: string[];
-  tool_groups?: Array<string | { name?: string }>;
-  packs?: Array<string | { name?: string }>;
-  skill_name?: string;
-  trigger_tool?: string;
-};
-
 const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
   'permission',
   'session_compact',
@@ -1300,10 +1270,6 @@ const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
   'runtime_action_blocked',
   'runtime_action_failed',
 ]);
-const RUNTIME_EVENT_TITLES: Partial<Record<RuntimeEventType, string>> = {
-  session_compact: 'Context Compacted',
-  file_changes: 'File Changes',
-};
 const RAW_COMPACTION_SECTION_LABELS = [
   'Task Ledger',
   'Decision Ledger',
@@ -1330,14 +1296,6 @@ const RAW_COMPACTION_SECTION_RE = new RegExp(`^\\*\\*(${RAW_COMPACTION_SECTION_P
 
 function isRuntimeEventType(value: unknown): value is RuntimeEventType {
   return typeof value === 'string' && RUNTIME_EVENT_TYPES.has(value as RuntimeEventType);
-}
-
-function getEventPart(payload: any): EventPart | undefined {
-  if (payload?.part && typeof payload.part === 'object') return payload.part as EventPart;
-  if (Array.isArray(payload?.parts)) {
-    return payload.parts.find((part: EventPart) => part?.type === 'event');
-  }
-  return undefined;
 }
 
 function normalizeArtifactPart(part: any): ChatArtifactPart | null {
@@ -1424,14 +1382,6 @@ function messageAlreadyContainsArtifacts(message: AgentChatMessage | undefined, 
   return artifacts.every((artifact) => (
     (artifact.id && existingIds.has(artifact.id)) || existingPaths.has(artifact.path)
   ));
-}
-
-function countActivatedToolGroups(
-  groups: EventPart['tool_groups'] | undefined,
-): number | undefined {
-  if (!Array.isArray(groups)) return undefined;
-  const valid = groups.filter((group) => (typeof group === 'string' ? group : group?.name));
-  return valid.length > 0 ? valid.length : undefined;
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> | null {
@@ -1581,95 +1531,17 @@ export function getTransportNotice(payload: any): string | null {
 
 export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
   const eventType = payload?.eventType || payload?.event_type || payload?.type;
-  if (!isRuntimeEventType(eventType)) return null;
-
-  const part = getEventPart(payload);
-  // New events carry `tool_groups`; historical persisted events carry `packs`.
-  const activatedToolGroupCount = countActivatedToolGroups(
-    payload?.tool_groups ?? part?.tool_groups ?? payload?.packs ?? part?.packs,
-  );
-  const content =
-    payload?.content ||
-    payload?.message ||
-    payload?.summary ||
-    part?.text ||
-    '';
-
-  return {
-    role: 'event',
-    content,
-    eventType,
-    eventTitle:
-      payload?.eventTitle ||
-      payload?.title ||
-      part?.title ||
-      RUNTIME_EVENT_TITLES[eventType],
-    eventStatus: payload?.eventStatus || payload?.status || part?.status || 'info',
-    eventToolName: payload?.eventToolName || payload?.tool_name || part?.tool_name,
-    eventApprovalId: payload?.eventApprovalId || payload?.approval_id || part?.approval_id,
-    eventSecurityZone: payload?.eventSecurityZone || payload?.security_zone || part?.security_zone,
-    eventCapability: payload?.eventCapability || payload?.capability || part?.capability,
-    eventApprovalRequired:
-      payload?.eventApprovalRequired ?? payload?.approval_required ?? part?.approval_required,
-    eventReason: payload?.eventReason || payload?.reason || part?.reason,
-    eventNextStep: payload?.eventNextStep || payload?.next_step || part?.next_step,
-    eventRetryable: payload?.eventRetryable ?? payload?.retryable ?? part?.retryable,
-    eventRetryReason: payload?.eventRetryReason || payload?.retry_reason || part?.retry_reason,
-    eventNotificationSource:
-      payload?.eventNotificationSource ||
-      payload?.notification_source ||
-      part?.notification_source,
-    eventRuntimeTaskId: payload?.eventRuntimeTaskId || payload?.runtime_task_id || part?.runtime_task_id,
-    eventTurnId: payload?.eventTurnId || payload?.turn_id || part?.turn_id,
-    eventToolCallId: payload?.eventToolCallId || payload?.tool_call_id || part?.tool_call_id,
-    eventHookEvent: payload?.eventHookEvent || payload?.hook_event || part?.hook_event,
-    eventHookKey: payload?.eventHookKey || payload?.hook_key || part?.hook_key,
-    eventHookType: payload?.eventHookType || payload?.hook_type || part?.hook_type,
-    eventChildSessionId: payload?.eventChildSessionId || payload?.child_session_id || part?.child_session_id,
-    eventParentSessionId: payload?.eventParentSessionId || payload?.parent_session_id || part?.parent_session_id,
-    eventRootSessionId: payload?.eventRootSessionId || payload?.root_session_id || part?.root_session_id,
-    eventWorkflowRunId: payload?.eventWorkflowRunId || payload?.workflow_run_id || part?.workflow_run_id,
-    eventWorkflowStepId: payload?.eventWorkflowStepId || payload?.workflow_step_id || part?.workflow_step_id,
-    eventScheduleId: payload?.eventScheduleId || payload?.schedule_id || part?.schedule_id,
-    eventScheduleFireId: payload?.eventScheduleFireId || payload?.schedule_fire_id || part?.schedule_fire_id,
-    eventGoalId: payload?.eventGoalId || payload?.goal_id || part?.goal_id,
-    eventOnceId: payload?.eventOnceId || payload?.once_id || part?.once_id,
-    eventMemoryCandidateId: payload?.eventMemoryCandidateId || payload?.memory_candidate_id || part?.memory_candidate_id,
-    eventArtifactId: payload?.eventArtifactId || payload?.artifact_id || part?.artifact_id,
-    eventPath: payload?.eventPath || payload?.path || part?.path,
-    eventRevisionId: payload?.eventRevisionId || payload?.revision_id || part?.revision_id,
-    eventAction: payload?.eventAction || payload?.action || part?.action,
-    eventDiffSummary: payload?.eventDiffSummary || payload?.diff_summary || part?.diff_summary,
-    sessionPermissionRequest:
-      payload?.sessionPermissionRequest ||
-      payload?.permission_request ||
-      part?.permission_request ||
-      (payload?.permission_request_id || part?.permission_request_id
-        ? { permission_request_id: payload?.permission_request_id || part?.permission_request_id }
-        : undefined),
-    originalMessageCount:
-      payload?.originalMessageCount ??
-      payload?.original_message_count ??
-      part?.original_message_count,
-    keptMessageCount:
-      payload?.keptMessageCount ??
-      payload?.kept_message_count ??
-      part?.kept_message_count,
-    continuitySectionsInjected:
-      payload?.continuitySectionsInjected ??
-      payload?.continuity_sections_injected ??
-      part?.continuity_sections_injected,
-    activatedToolGroupCount,
-    skillName: payload?.skillName || payload?.skill_name || part?.skill_name,
-    triggerTool: payload?.triggerTool || payload?.trigger_tool || part?.trigger_tool,
-    timestamp: payload?.timestamp || payload?.created_at,
-    sender_name: payload?.sender_name,
-    participant_id: payload?.participant_id,
-    id: payload?.id,
-  };
+  const item = normalizeThreadItemPayload(payload);
+  if (!item) return null;
+  if (payload?.schema === 'hive.thread_item.v1') {
+    const specialized = new Set(['user_message', 'agent_message', 'reasoning', 'tool_call', 'tool_result']);
+    return specialized.has(item.item_type) ? null : threadItemToAgentChatMessage(item);
+  }
+  return isRuntimeEventType(eventType) ? threadItemToAgentChatMessage(item) : null;
 }
 
 export function normalizeRuntimeEventMessage(payload: any): AgentChatMessage | null {
+  if (normalizeThreadItemPayload(payload?.threadItem)) return payload as AgentChatMessage;
   const embeddedPayload = getEmbeddedRuntimeEventPayload(payload);
   if (embeddedPayload) return getRuntimeEventMessage(embeddedPayload);
   return getRuntimeEventMessage(payload);

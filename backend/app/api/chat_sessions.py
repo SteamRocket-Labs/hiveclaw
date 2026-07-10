@@ -307,15 +307,10 @@ def _metadata_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list | tuple) else []
 
 
-def _is_personal_kb_activation_candidate(candidate: Any) -> bool:
-    payload = _metadata_dict(candidate)
-    if payload.get("candidate_kind") != "knowledge_base":
-        return False
-    metadata = _metadata_dict(payload.get("metadata"))
-    if metadata.get("scope") == "personal" or metadata.get("acl_scope") == "personal":
-        return True
-    candidate_ref = _metadata_dict(payload.get("candidate_ref"))
-    return str(candidate_ref.get("candidate_id") or "").startswith("knowledge_base:personal:")
+_KNOWLEDGE_TOOL_NAMES = {
+    "search_personal_kb",
+    "read_personal_kb",
+}
 
 
 def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
@@ -345,8 +340,17 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
     agent_cycle_decisions = _metadata_list(
         metadata.get("agent_cycle_decision_ledger") or assembly_state.get("agent_cycle_decision_ledger")
     )
-    activation_candidates = _metadata_list(metadata.get("activation_candidates") or assembly_state.get("activation_candidates"))
-    personal_kb_candidates = [candidate for candidate in activation_candidates if _is_personal_kb_activation_candidate(candidate)]
+    activation_candidates = _metadata_list(
+        metadata.get("activation_candidates") or assembly_state.get("activation_candidates")
+    )
+    tool_result_ledger = _metadata_list(
+        metadata.get("tool_result_ledger") or assembly_state.get("tool_result_ledger")
+    )
+    knowledge_tool_results = [
+        entry
+        for entry in tool_result_ledger
+        if str(_metadata_dict(entry).get("tool_name") or "") in _KNOWLEDGE_TOOL_NAMES
+    ]
     context_artifacts = _metadata_list(metadata.get("context_artifacts") or assembly_state.get("context_artifacts"))
     active_tools = _metadata_list(prompt_manifest.get("active_tool_names") or metadata.get("active_tool_names"))
     deferred_tools = _metadata_list(
@@ -367,9 +371,8 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
         "selected_contexts": selected_contexts,
         "suppressed_contexts": suppressed_contexts,
         "dynamic_context_sections": dynamic_context_sections,
-        "tool_result_ledger": _metadata_list(
-            metadata.get("tool_result_ledger") or assembly_state.get("tool_result_ledger")
-        ),
+        "tool_result_ledger": tool_result_ledger,
+        "knowledge_tool_results": knowledge_tool_results,
         "cache_decision_ledger": cache_decisions,
         "agent_cycle_decision_ledger": agent_cycle_decisions,
         "activation_candidates": activation_candidates,
@@ -388,7 +391,7 @@ def _session_context_usage_payload(session: ChatSession) -> dict[str, Any]:
             "cache_decisions": len(cache_decisions),
             "agent_cycle_decisions": len(agent_cycle_decisions),
             "activation_candidates": len(activation_candidates),
-            "personal_kb_candidates": len(personal_kb_candidates),
+            "knowledge_tool_results": len(knowledge_tool_results),
             "context_artifacts": len(context_artifacts),
             "tools": len(active_tools),
             "deferred_tools": len(deferred_tools),

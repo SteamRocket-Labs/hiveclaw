@@ -321,6 +321,90 @@ def test_conversation_reload_reuses_frozen_tool_result_bytes_and_call_id():
     assert conversation[1]["content"] == "MODEL-SEEN-BYTES"
 
 
+def test_personal_knowledge_replay_projection_keeps_references_not_content() -> None:
+    from app.services.web_chat_runtime import _knowledge_tool_replay_projection
+
+    document_id = str(uuid4())
+    segment_id = str(uuid4())
+    source_ref = f"kb://person/owner/documents/{document_id}#segment={segment_id}"
+    projection = _knowledge_tool_replay_projection(
+        tool_name="search_personal_kb",
+        args={"query": "operating notes", "limit": 5},
+        raw_result=json.dumps(
+            {
+                "results": [
+                    {
+                        "document_id": document_id,
+                        "segment_id": segment_id,
+                        "title": "PRIVATE-TITLE",
+                        "snippet": "PRIVATE-SNIPPET",
+                        "source_ref": source_ref,
+                        "score_trace": {"secret": "PRIVATE-TRACE"},
+                    }
+                ],
+                "warnings": [],
+            }
+        ),
+    )
+
+    assert projection is not None
+    payload = json.loads(projection)
+    assert payload == {
+        "schema": "knowledge_tool_replay.v1",
+        "tool_name": "search_personal_kb",
+        "scope": "personal",
+        "query": "operating notes",
+        "result_count": 1,
+        "references": [
+            {
+                "document_id": document_id,
+                "segment_id": segment_id,
+                "source_ref": source_ref,
+            }
+        ],
+        "content_omitted": True,
+        "instruction": "Call search_personal_kb/read_personal_kb again if the content is needed.",
+    }
+    assert "PRIVATE-TITLE" not in projection
+    assert "PRIVATE-SNIPPET" not in projection
+    assert "PRIVATE-TRACE" not in projection
+
+
+def test_personal_knowledge_read_replay_projection_omits_segment_body() -> None:
+    from app.services.web_chat_runtime import _knowledge_tool_replay_projection
+
+    document_id = str(uuid4())
+    segment_id = str(uuid4())
+    source_ref = f"kb://person/owner/documents/{document_id}#segment={segment_id}"
+    projection = _knowledge_tool_replay_projection(
+        tool_name="read_personal_kb",
+        args={"document_id": document_id, "segment_ids": [segment_id]},
+        raw_result=json.dumps(
+            {
+                "document_id": document_id,
+                "title": "PRIVATE-TITLE",
+                "segments": [
+                    {
+                        "segment_id": segment_id,
+                        "content": "PRIVATE-BODY",
+                        "source_ref": source_ref,
+                    }
+                ],
+                "warnings": [],
+            }
+        ),
+    )
+
+    assert projection is not None
+    payload = json.loads(projection)
+    assert payload["tool_name"] == "read_personal_kb"
+    assert payload["references"] == [
+        {"document_id": document_id, "segment_id": segment_id, "source_ref": source_ref}
+    ]
+    assert "PRIVATE-TITLE" not in projection
+    assert "PRIVATE-BODY" not in projection
+
+
 def test_conversation_reload_surfaces_malformed_tool_call_record() -> None:
     from app.services.web_chat_runtime import conversation_from_history_messages
 
@@ -3752,6 +3836,96 @@ async def test_persist_tool_call_appends_t0_tool_result(monkeypatch, tmp_path):
     assert events[0].metadata["tool_name"] == "read_file"
     assert events[0].metadata["status"] == "done"
     assert '"result": "file content"' in events[0].content
+
+
+@pytest.mark.asyncio
+async def test_persist_personal_kb_tool_keeps_full_evidence_but_replays_pointer(monkeypatch, tmp_path):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    document_id = str(uuid4())
+    segment_id = str(uuid4())
+    source_ref = f"kb://person/{user_id}/documents/{document_id}#segment={segment_id}"
+    raw_result = json.dumps(
+        {
+            "results": [
+                {
+                    "document_id": document_id,
+                    "segment_id": segment_id,
+                    "title": "PRIVATE-TITLE",
+                    "snippet": "PRIVATE-SNIPPET",
+                    "source_ref": source_ref,
+                    "score_trace": {"secret": "PRIVATE-TRACE"},
+                }
+            ],
+            "warnings": [],
+        }
+    )
+    added = []
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def add(self, value):
+            added.append(value)
+
+        async def commit(self):
+            return None
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    await runtime._persist_tool_call(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        data={
+            "name": "search_personal_kb",
+            "args": {"query": "operating notes", "limit": 5},
+            "status": "done",
+            "tool_call_id": "call_personal_kb",
+            "result": raw_result,
+            "content_replacement": {
+                "schema": "content_replacement_record.v1",
+                "tool_name": "search_personal_kb",
+                "tool_call_id": "call_personal_kb",
+                "reason": "result size threshold",
+                "inline_content": raw_result,
+            },
+        },
+    )
+
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert len(events) == 1
+    assert "PRIVATE-TITLE" in events[0].content
+    assert "PRIVATE-SNIPPET" in events[0].content
+
+    persisted_payload = json.loads(events[0].content)
+    replay_pointer = persisted_payload["content_replacement"]["inline_content"]
+    assert json.loads(replay_pointer)["schema"] == "knowledge_tool_replay.v1"
+    assert "PRIVATE-TITLE" not in replay_pointer
+    assert "PRIVATE-SNIPPET" not in replay_pointer
+    assert "PRIVATE-TRACE" not in replay_pointer
+
+    conversation = runtime.conversation_from_history_messages(
+        [SimpleNamespace(role="tool_call", id="db-personal-kb", content=events[0].content)]
+    )
+    assert conversation[0]["tool_calls"][0]["id"] == "call_personal_kb"
+    assert conversation[1]["tool_call_id"] == "call_personal_kb"
+    assert conversation[1]["content"] == replay_pointer
 
 
 @pytest.mark.asyncio

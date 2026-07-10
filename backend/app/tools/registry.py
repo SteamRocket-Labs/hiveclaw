@@ -68,6 +68,7 @@ _MEMORY = {
     "search_memory",
     "load_memory",
     "search_personal_kb",
+    "read_personal_kb",
     "save_memory",
     "update_memory",
     "retire_memory",

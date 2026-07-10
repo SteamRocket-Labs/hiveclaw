@@ -56,6 +56,28 @@ Context composition must be mapped one-to-one:
 
 Current session-middle parity priorities are **Skill, Sub-agent, Workflow, and Hooks**. Their prompts, tool descriptions, and lifecycle events must be source-checked against FreeCode first and kept vendor-neutral. Anthropic/Claude/Codex names may appear as documented baselines, but runtime prompts must not privilege a model vendor or product identity.
 
+## Atomic Completion Standard — 原子化闭环标准
+
+“有 API”“有表”“有页面”都不等于能力已经落地。Every architecture audit, implementation review, refactor, retirement, and completion claim MUST check each capability through these seven atoms:
+
+1. **输入（Input）**：谁发起，输入结构是什么，是否可恢复。
+2. **权威（Authority）**：谁有权读取、决定和写入，租户、用户、Agent、代理关系如何绑定。
+3. **执行（Execution）**：唯一执行入口是什么，是否可能绕过治理。
+4. **证据（Evidence）**：event、span、transcript、文件和数据库中谁是机械事实源。
+5. **恢复（Recovery）**：断线、重启、重试、取消、回滚、fork 是否幂等。
+6. **消费（Consumption）**：Memory、Skill、Workflow、Knowledge、UI 是否真实使用产物。
+7. **验收（Acceptance）**：测试、迁移、回填、故障注入、可观测性是否覆盖。
+
+Use only these completion states:
+
+- **闭环（Closed loop）**：七个原子均有当前真实消费路径。
+- **局部闭环（Partial loop）**：主路径成立，但存在双事实源、旁路、恢复或 UI 断点。
+- **断点（Breakpoint）**：能力存在，但生产路径在两个原子之间断开。
+- **缺失（Missing）**：当前源码无实现；若明确暂不建设，标成“已知缺失”，不得伪装成回归或已完成。
+- **排除（Excluded）**：CC/Codex 的服务商私有远程能力，不计入 Hive 的 CC parity 债务，但必须记录排除依据。
+
+Completion status must be supported by current-checkout code paths and verification evidence. Documentation, schemas, routes, or UI shells alone are never sufficient evidence.
+
 ## AI-Native Design Law (最高设计法律 — judges every architectural decision)
 
 Hive is an **AI-native system**. Three layers, in strict priority order:

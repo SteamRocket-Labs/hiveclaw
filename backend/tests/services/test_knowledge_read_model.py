@@ -341,6 +341,7 @@ def test_knowledge_router_registers_agent_and_personal_get_routes() -> None:
         "/agents/{agent_id}/knowledge/candidates",
         "/agents/{agent_id}/knowledge/personal/documents",
         "/agents/{agent_id}/knowledge/personal/documents/{document_id}",
+        "/agents/{agent_id}/knowledge/personal/documents/{document_id}/source-preview",
         "/agents/{agent_id}/knowledge/personal/search",
     }
 

@@ -4,6 +4,7 @@
 状态：M1 owner-scoped Personal KB 入口已落地；upload / URL 摄取仍以统一后端摄取能力为后续入口，不做前端假功能
 上游文档：
 
+- `docs/personal-knowledge-base-capability-rebaseline-2026-07-09.md`
 - `docs/personal-knowledge-base-spec.md`
 - `docs/knowledge-pyramid-agent-person-org-2026-07-03.md`
 - `docs/agent-permission-governance-spec-2026-07-07.md`
@@ -13,6 +14,8 @@
 ## 0. 当前结论
 
 Personal Knowledge Base 不另起主库。M1 采用当前 PostgreSQL 作为主存储，PostgreSQL `tsvector` / GIN 作为全文检索，canonical Markdown artifact 作为可回溯源文件。当前 Personal M1 不把 `pgvector` 作为必需依赖，避免本地 `postgres:15-alpine`、Railway Postgres 或新租户 bootstrap 因扩展缺失而不可启动；向量能力保留为后续统一检索层或企业 KB 的可插拔增强。
+
+2026-07-09 能力重基线补充：当前“索引”必须拆成 full-text / graph / vector / summary / multimodal 五类能力。full-text 不依赖 LLM；graph extraction 依赖 LLM；vector 依赖 embedding provider；summary 依赖 summary/extraction model；图片、音频、视频依赖 OCR/vision/STT/video provider。后台未配置时必须通过 capability status 和 job metadata 显示 unconfigured/degraded/failed，不允许 UI 暗示完整总结或语义索引已完成。
 
 ```text
 source file / url / paste / agent artifact

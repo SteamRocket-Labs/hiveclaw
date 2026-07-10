@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -1087,6 +1088,81 @@ def _resolved_tool_call_id(tc_data: dict, msg_id: Any) -> str:
     if original:
         return str(original)
     return f"synthetic:call_{msg_id}"
+
+
+_KNOWLEDGE_TOOL_REPLAY_SCOPES = {
+    "search_personal_kb": "personal",
+    "read_personal_kb": "personal",
+}
+
+
+def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], raw_result: Any) -> str | None:
+    """Return the pointer-only next-turn view for governed knowledge tools.
+
+    The current model turn receives ``raw_result`` directly from the kernel and
+    T0 keeps that durable evidence. Only transcript replay consumes this
+    projection, so Personal KB snippets and document bodies do not become
+    implicit context on later turns.
+    """
+    scope = _KNOWLEDGE_TOOL_REPLAY_SCOPES.get(str(tool_name or ""))
+    if scope is None:
+        return None
+
+    if isinstance(raw_result, dict):
+        payload = raw_result
+    else:
+        try:
+            parsed = json.loads(str(raw_result or "{}"))
+            payload = parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError):
+            payload = {}
+
+    result_rows = payload.get("results") if tool_name.startswith("search_") else payload.get("segments")
+    rows = result_rows if isinstance(result_rows, list) else []
+    default_document_id = str(payload.get("document_id") or "").strip()
+    references: list[dict[str, str]] = []
+    seen_references: set[tuple[str, str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        reference = {
+            "document_id": str(row.get("document_id") or default_document_id).strip(),
+            "segment_id": str(row.get("segment_id") or "").strip(),
+            "source_ref": str(row.get("source_ref") or "").strip(),
+        }
+        reference = {key: value for key, value in reference.items() if value}
+        if not reference:
+            continue
+        key = (
+            reference.get("document_id", ""),
+            reference.get("segment_id", ""),
+            reference.get("source_ref", ""),
+        )
+        if key in seen_references:
+            continue
+        seen_references.add(key)
+        references.append(reference)
+
+    projection: dict[str, Any] = {
+        "schema": "knowledge_tool_replay.v1",
+        "tool_name": tool_name,
+        "scope": scope,
+    }
+    query = str(args.get("query") or "").strip()
+    if query:
+        projection["query"] = query
+    projection.update(
+        {
+            "result_count": len(rows),
+            "references": references,
+            "content_omitted": True,
+            "instruction": "Call search_personal_kb/read_personal_kb again if the content is needed.",
+        }
+    )
+    warnings = payload.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        projection["warnings"] = [str(warning) for warning in warnings]
+    return json.dumps(projection, ensure_ascii=False, sort_keys=True)
 
 
 def conversation_from_history_messages(history_messages) -> list[dict]:
@@ -2604,7 +2680,27 @@ async def _persist_tool_call(
     }
     if status in {"done", "completed", "failed"} or "result" in data:
         payload["result"] = raw_str
-    if isinstance(content_replacement, dict):
+    knowledge_replay = None
+    if status in {"done", "completed", "failed"} or "result" in data:
+        knowledge_replay = _knowledge_tool_replay_projection(
+            tool_name=str(data.get("name") or ""),
+            args=data.get("args") if isinstance(data.get("args"), dict) else {},
+            raw_result=raw_result,
+        )
+    if knowledge_replay is not None:
+        payload["content_replacement"] = {
+            "schema": "content_replacement_record.v1",
+            "tool_name": data.get("name", ""),
+            "tool_call_id": data.get("tool_call_id"),
+            "reason": "knowledge_tool_replay_pointer",
+            "replacement_applied": knowledge_replay != str(raw_result),
+            "original_chars": len(str(raw_result)),
+            "inline_chars": len(knowledge_replay),
+            "original_sha256": hashlib.sha256(str(raw_result).encode("utf-8")).hexdigest(),
+            "inline_sha256": hashlib.sha256(knowledge_replay.encode("utf-8")).hexdigest(),
+            "inline_content": knowledge_replay,
+        }
+    elif isinstance(content_replacement, dict):
         payload["content_replacement"] = content_replacement
     elif model_seen_result is not None:
         model_seen_str = str(model_seen_result)

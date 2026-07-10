@@ -5,6 +5,8 @@
 
 上游文档：
 
+- `docs/knowledge-substrate-plugin-architecture-2026-07-09.md` — Knowledge substrate / plugin 新基线：Knowledge Gateway、三平面、Personal/Enterprise/Ontology 边界、晋升关系和可插拔 provider contract
+- `docs/personal-knowledge-base-capability-rebaseline-2026-07-09.md` — 当前能力重基线：真实 ingest/index 机制、后台模型配置缺口、OpenKnowledge/Open Notebook 重新评估、LLM/embedding/media 依赖矩阵
 - `docs/knowledge-pyramid-agent-person-org-2026-07-03.md` — 金字塔三级架构 + 三项拍板（自持薄核 / 画像双读面 / M1 直投先行）
 - `docs/memory-system-spec.md` v1.2 — Agent 层（第一级）规格；本文是其 person-scope 对应物
 - `docs/company-knowledge-ontology-plane-plan-2026-06-20.md` — 组织层设计；本文的表族是其 schema 家族的 person-scope 子集
@@ -17,6 +19,11 @@
 > `docs/personal-knowledge-base-completion-contract-2026-07-08.md`
 > 为当前执行清单。本文仍是产品/架构 spec；完成契约负责逐项记录实现证据、
 > 测试结果和 commit。
+>
+> 能力重基线：2026-07-09 起，凡涉及“可选 LLM / embedding / 多模态”
+> 的说法，以 `docs/personal-knowledge-base-capability-rebaseline-2026-07-09.md`
+> 为解释口径。“可选”表示 provider 未配置时必须可观测降级或失败，
+> 不表示产品能力可以静默缺失。
 
 - **定位**：金字塔第二级。一个人**所有经手信息的归宿**（终极知识库）+ 名下 agents 的知识聚合层（M2）。
 - **核心原则**：一份真相（canonical MD）、一次索引（person scope）、全员访问（受治理工具）。agents **不各自建索引**，获得的是检索访问。

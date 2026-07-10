@@ -117,7 +117,7 @@ async def test_invoke_agent_passes_agent_to_token_quota_before_kernel(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_injects_personal_kb_hint_before_kernel(monkeypatch):
+async def test_invoke_agent_does_not_prefetch_or_inject_personal_kb_before_kernel(monkeypatch):
     from app.kernel import InvocationResult
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 
@@ -127,8 +127,11 @@ async def test_invoke_agent_injects_personal_kb_hint_before_kernel(monkeypatch):
         metadata={"request_id": "request-kb", "tenant_id": str(uuid4()), "owner_user_id": str(uuid4())},
     )
     seen_suffixes: list[str] = []
+    prefetch_calls = 0
 
     async def fake_record_knowledge_activation(_request):
+        nonlocal prefetch_calls
+        prefetch_calls += 1
         return "## Personal Knowledge Hint\n- Retrieval notes [kb://person/owner/documents/doc#segment=seg]"
 
     class FakeKernel:
@@ -136,7 +139,14 @@ async def test_invoke_agent_injects_personal_kb_hint_before_kernel(monkeypatch):
             seen_suffixes.append(request.system_prompt_suffix)
             return InvocationResult(content="done")
 
-    monkeypatch.setattr("app.runtime.invoker._record_knowledge_activation_for_request", fake_record_knowledge_activation)
+    # Keep raising=False so the contract remains valid after the retired
+    # prefetch helper is removed from the module: adding the legacy name back
+    # must not make invoke_agent consume it.
+    monkeypatch.setattr(
+        "app.runtime.invoker._record_knowledge_activation_for_request",
+        fake_record_knowledge_activation,
+        raising=False,
+    )
     monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
 
     result = await invoke_agent(
@@ -153,8 +163,10 @@ async def test_invoke_agent_injects_personal_kb_hint_before_kernel(monkeypatch):
 
     assert result.content == "done"
     assert len(seen_suffixes) == 1
-    assert "## Personal Knowledge Hint" in seen_suffixes[0]
-    assert "Retrieval notes" in seen_suffixes[0]
+    assert prefetch_calls == 0
+    assert "## Personal Knowledge Hint" not in seen_suffixes[0]
+    assert "Retrieval notes" not in seen_suffixes[0]
+    assert "kb://person/" not in seen_suffixes[0]
 
 
 @pytest.mark.asyncio

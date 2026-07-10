@@ -4,6 +4,8 @@
 
 状态：施工契约。本文不是新产品定义，也不是阶段路线图；它把 `personal-knowledge-base-spec.md` 中已经定义的目标逐项收敛成“必须全部完成”的实现清单。完成标准以当前代码、测试、前端可操作性和文档证据同时满足为准。
 
+能力重基线：`docs/personal-knowledge-base-capability-rebaseline-2026-07-09.md` 是当前解释口径。它明确 full-text / graph / vector / summary / multimodal 的依赖边界，并把 OpenKnowledge 修正为 AI-native Markdown vault / LLM Wiki 产品参考，把 Open Notebook 定位为 ingestion / RAG / transformations / provider config 机制参考。
+
 ## 0. 总判断
 
 当前 Personal KB 已经有薄壳：

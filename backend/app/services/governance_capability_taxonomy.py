@@ -302,6 +302,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "search_memory": "agent.memory.read",
     "load_memory": "agent.memory.read",
     "search_personal_kb": "agent.knowledge.read",
+    "read_personal_kb": "agent.knowledge.read",
     "save_memory": "agent.memory.write",
     "update_memory": "agent.memory.write",
     "retire_memory": "agent.memory.write",

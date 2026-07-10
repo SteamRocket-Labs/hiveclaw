@@ -17,6 +17,8 @@ down_revision = "workflow_confirmation_0710"
 branch_labels = None
 depends_on = None
 
+_RUNTIME_NOTIFICATION_OUTBOX_TABLES = ("runtime_notification_outbox",)
+
 
 def upgrade() -> None:
     op.create_table(

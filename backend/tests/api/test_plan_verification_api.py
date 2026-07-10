@@ -20,10 +20,13 @@ async def test_plan_verify_api_persists_last_verification(monkeypatch):
 
     agent_id = uuid4()
     plan_id = uuid4()
+    session_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="member")
     plan = SimpleNamespace(
         id=plan_id,
         agent_id=agent_id,
+        session_id=str(session_id),
+        requested_by_user_id=current_user.id,
         plan_json={"success_criteria": ["API exists"]},
         metadata_json={"source": "test"},
     )
@@ -40,7 +43,20 @@ async def test_plan_verify_api_persists_last_verification(monkeypatch):
             assert requested_plan_id == plan_id
             return plan
 
+    async def fake_authorize_session_action(db_arg, user_arg, **kwargs):
+        assert db_arg is db
+        assert user_arg is current_user
+        assert kwargs == {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "action": "plan:verify",
+            "allow_manager_override": True,
+            "manager_override_reason": None,
+        }
+        return SimpleNamespace(authority_source="session_owner")
+
     monkeypatch.setattr(plans_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(plans_api, "authorize_session_action", fake_authorize_session_action)
     monkeypatch.setattr(plans_api, "get_plan_mode_service", lambda: _FakePlanService())
 
     result = await plans_api.verify_plan(

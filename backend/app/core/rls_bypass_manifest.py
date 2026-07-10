@@ -461,6 +461,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/runtime_notification_outbox.py",
+            "_worker_session",
+            "f'runtime_notification_outbox.{operation}'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/runtime_control_bus.py",
             "sweep_pending_transcript_t0_bridges",
             "'sweep pending transcript T0 projections'",

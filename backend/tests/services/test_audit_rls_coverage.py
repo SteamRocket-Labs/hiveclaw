@@ -81,6 +81,8 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
     ai_asset_module = _load_migration_module("ai_asset_control_plane_0710.py")
     personal_kb_local_module = _load_migration_module("personal_kb_local_receipts_0710.py")
     hr_creation_module = _load_migration_module("hr_creation_drafts_0710.py")
+    workflow_confirmation_module = _load_migration_module("workflow_confirmation_0710.py")
+    runtime_notification_module = _load_migration_module("runtime_notification_outbox_0710.py")
     migration_tables = (
         set(force_all_module._FORCE_TABLES)
         | set(remaining_module._ALL_TABLES)
@@ -90,6 +92,8 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
         | set(ai_asset_module._AI_ASSET_TABLES)
         | set(personal_kb_local_module._PERSONAL_KB_LOCAL_RLS_TABLES)
         | set(hr_creation_module._HR_CREATION_TABLES)
+        | set(workflow_confirmation_module._TABLES)
+        | set(runtime_notification_module._RUNTIME_NOTIFICATION_OUTBOX_TABLES)
     )
 
     missing = sorted(set(RLS_FORCED_TENANT_TABLES) - migration_tables)

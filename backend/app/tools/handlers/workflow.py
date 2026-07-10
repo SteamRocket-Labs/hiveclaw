@@ -292,8 +292,13 @@ def _dynamic_candidate_binding_error(
         },
         category="workflow",
         display_name="Propose Dynamic Workflow",
-        read_only=False,
+        # This writes only the canonical confirmation evidence ledger. It does
+        # not execute a step or mutate a user/business asset, so it has the same
+        # domain-read-only semantics as HR blueprint preview persistence.
+        read_only=True,
         parallel_safe=True,
+        risk_class="controlled_write",
+        idempotency_scope="session",
         governance="safe",
         adapter="request",
     )
@@ -338,8 +343,12 @@ async def propose_dynamic_workflow(request: ToolExecutionRequest) -> str:
         },
         category="workflow",
         display_name="Preview Workflow",
-        read_only=False,
+        # Persisting an immutable preview is evidence bookkeeping, not workflow
+        # execution. start_workflow remains the governed side-effect boundary.
+        read_only=True,
         parallel_safe=True,
+        risk_class="controlled_write",
+        idempotency_scope="session",
         governance="safe",
         adapter="request",
     )

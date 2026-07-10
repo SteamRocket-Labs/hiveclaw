@@ -1351,7 +1351,14 @@ async def _emit_completion_signal(ctx: SubagentSpawnContext, result: SubagentRes
                 content=(result.content or result.error or "")[:500],
                 signal_type=SUBAGENT_COMPLETION_SIGNAL,
                 thread_id=ctx.trace_id or None,
-                metadata={"budget_run_id": str(ctx.budget_run_id)} if ctx.budget_run_id else None,
+                metadata={
+                    "subagent_run_id": ctx.subagent_run_id,
+                    "runtime_task_id": ctx.subagent_run_id,
+                    "child_session_id": ctx.child_session_id,
+                    "parent_user_id": str(ctx.parent_user_id) if ctx.parent_user_id else None,
+                    "terminal_status": result.status,
+                    **({"budget_run_id": str(ctx.budget_run_id)} if ctx.budget_run_id else {}),
+                },
             )
     except Exception as exc:  # best-effort notification — never crash the finished worker
         logger.warning("[Subagent] completion signal emit failed (non-fatal): %s", exc)

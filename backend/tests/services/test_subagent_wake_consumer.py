@@ -122,6 +122,24 @@ async def test_subagent_completion_wakes_idle_parent_once(owner_sessionmaker, te
     assert await _signal_count(owner_sessionmaker, tenant_id) == 0
 
 
+async def test_subagent_completion_keeps_signal_when_outbox_enqueue_fails(owner_sessionmaker, tenant_id):
+    from app.services.subagent_wake_consumer import drain_subagent_completion_wakes
+
+    parent_agent_id = uuid.uuid4()
+    await _send_completion_signal(owner_sessionmaker, tenant_id, parent_agent_id)
+
+    async def failing_enqueue(_request):
+        raise RuntimeError("outbox unavailable")
+
+    result = await drain_subagent_completion_wakes(
+        session_factory=owner_sessionmaker,
+        invoke_parent=failing_enqueue,
+    )
+
+    assert result[0].status == "failed"
+    assert await _signal_count(owner_sessionmaker, tenant_id) == 1
+
+
 async def test_subagent_completion_wake_enumerates_signals_under_nonowner_rls(
     owner_sessionmaker,
     app_user_sessionmaker,
@@ -458,7 +476,7 @@ async def test_confirmation_breaker_freezes_parent_wake_signal_instead_of_consum
     assert await _signal_count(owner_sessionmaker, tenant_id) == 1
 
 
-async def test_production_parent_wake_invoker_routes_wake_context_to_continuation(monkeypatch):
+async def test_production_parent_wake_invoker_routes_wake_context_to_outbox(monkeypatch):
     """B2 core: the real production invoker routes the completed child result
     through parent-session task-notification continuation."""
     from app.services import subagent_wake_consumer as swc
@@ -497,13 +515,17 @@ async def test_production_parent_wake_invoker_routes_wake_context_to_continuatio
 
     captured: dict = {}
 
-    async def fake_continue_parent_session_with_task_notification(**kwargs):
-        captured.update(kwargs)
-        return {"ok": True, "status": "queued"}
+    outbox_id = uuid.uuid4()
+
+    async def fake_enqueue_completion_notification(db, notification):
+        captured.update({"db": db, "notification": notification})
+        return outbox_id
 
     monkeypatch.setattr(
-        "app.services.agent_session_continuation.continue_parent_session_with_task_notification",
-        fake_continue_parent_session_with_task_notification,
+        swc,
+        "enqueue_completion_notification",
+        fake_enqueue_completion_notification,
+        raising=False,
     )
 
     invoker = build_production_parent_wake_invoker()
@@ -515,22 +537,22 @@ async def test_production_parent_wake_invoker_routes_wake_context_to_continuatio
             from_agent_id="subagent:researcher",
             thread_id=f"subagent:{parent_session_id}:trace-1",
             content="found 3 sources",
-            metadata={"budget_run_id": "budget-run-1"},
+            metadata={"budget_run_id": "budget-run-1", "subagent_run_id": "subagent-run-1"},
         )
     )
 
-    assert result == {"ok": True, "status": "queued"}
-    assert captured["agent"] is agent
-    assert captured["user"] is user
-    assert captured["session"] is parent_session
-    assert captured["task_type"] == "subagent"
-    assert captured["status"] == "completed"
-    assert captured["summary"] == "found 3 sources"
-    assert captured["source"] == "subagent_wake"
-    assert captured["metadata"]["budget_run_id"] == "budget-run-1"
+    assert result == {"ok": True, "status": "queued", "outbox_id": str(outbox_id)}
+    notification = captured["notification"]
+    assert notification.source_kind == "subagent"
+    assert notification.source_run_id == "subagent-run-1"
+    assert notification.parent_agent_id == agent.id
+    assert notification.parent_user_id == user.id
+    assert notification.parent_session_id == parent_session.id
+    assert notification.summary == "found 3 sources"
+    assert notification.metadata["budget_run_id"] == "budget-run-1"
 
 
-async def test_production_parent_wake_invoker_uses_task_notification_continuation(monkeypatch):
+async def test_production_parent_wake_invoker_never_calls_model_before_outbox(monkeypatch):
     """The daemon fallback must use the same parent-session continuation path as
     direct subagent/A2A completion, instead of bypassing ToolRuntime/web-chat
     bookkeeping with a direct invoke_agent call.
@@ -572,13 +594,17 @@ async def test_production_parent_wake_invoker_uses_task_notification_continuatio
 
     captured: dict = {}
 
-    async def fake_continue_parent_session_with_task_notification(**kwargs):
-        captured.update(kwargs)
-        return {"ok": True, "status": "started"}
+    outbox_id = uuid.uuid4()
+
+    async def fake_enqueue_completion_notification(db, notification):
+        captured.update({"db": db, "notification": notification})
+        return outbox_id
 
     monkeypatch.setattr(
-        "app.services.agent_session_continuation.continue_parent_session_with_task_notification",
-        fake_continue_parent_session_with_task_notification,
+        swc,
+        "enqueue_completion_notification",
+        fake_enqueue_completion_notification,
+        raising=False,
     )
 
     async def boom_invoke_agent(_request):
@@ -598,14 +624,11 @@ async def test_production_parent_wake_invoker_uses_task_notification_continuatio
         )
     )
 
-    assert result == {"ok": True, "status": "started"}
-    assert captured["agent"] is agent
-    assert captured["user"] is user
-    assert captured["session"] is parent_session
-    assert captured["task_type"] == "subagent"
-    assert captured["status"] == "completed"
-    assert captured["source"] == "subagent_wake"
-    assert captured["summary"] == "found 3 sources"
+    assert result == {"ok": True, "status": "queued", "outbox_id": str(outbox_id)}
+    notification = captured["notification"]
+    assert notification.source_run_id
+    assert notification.parent_session_id == parent_session.id
+    assert notification.delivery_mode == "parent_continuation"
 
 
 async def test_production_parent_wake_invoker_skips_non_runnable_agent(monkeypatch):

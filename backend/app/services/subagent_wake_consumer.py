@@ -26,6 +26,7 @@ from app.services.runtime_budget_service import (
     RuntimeBudgetReservation,
     RuntimeBudgetService,
 )
+from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 
 logger = logging.getLogger(__name__)
 
@@ -301,37 +302,29 @@ async def drain_subagent_completion_wakes(
             )
             continue
 
-        consumed = await _consume_completion_signal(
-            tenant_id=tenant_id,
-            signal_id=signal_id,
-            parent_agent_id=parent_agent_id,
-            session_factory=session_factory,
-        )
-        if consumed is None:
-            await _settle_continuation_wake_budget(
-                wake_budget,
-                actual_wakes=0,
-                reason="subagent_completion_wake_already_consumed",
-            )
-            continue
-
-        # A wake is committed for this parent: count it toward both guards even
-        # if the invoke below fails, so a failing parent can't be retried in a
-        # tight loop within the same tick.
+        # Count the attempt toward both storm guards before invoking. The
+        # durable signal is acknowledged only after the outbox enqueue commits;
+        # an enqueue failure therefore remains retryable on the next tick.
         woken_parents.add(parent_agent_id)
         woken_count += 1
 
         request = SubagentWakeRequest(
             tenant_id=tenant_id,
             parent_agent_id=parent_agent_id,
-            signal_id=consumed["signal_id"],
-            from_agent_id=consumed["from_agent_id"],
-            thread_id=consumed["thread_id"],
-            content=consumed["content"],
-            metadata=consumed["metadata"],
+            signal_id=signal_id,
+            from_agent_id=from_agent_id,
+            thread_id=thread_id,
+            content=content,
+            metadata=metadata,
         )
         try:
             await invoke_parent(request)
+            await _consume_completion_signal(
+                tenant_id=tenant_id,
+                signal_id=signal_id,
+                parent_agent_id=parent_agent_id,
+                session_factory=session_factory,
+            )
             await _settle_continuation_wake_budget(
                 wake_budget,
                 actual_wakes=1,
@@ -347,11 +340,6 @@ async def drain_subagent_completion_wakes(
             )
         except Exception as exc:
             logger.error("[SubagentWake] parent wake failed for signal %s: %s", signal_id, exc, exc_info=True)
-            await _settle_continuation_wake_budget(
-                wake_budget,
-                actual_wakes=1,
-                reason="subagent_completion_wake_failed",
-            )
             results.append(
                 SubagentWakeResult(
                     tenant_id=tenant_id,
@@ -436,7 +424,6 @@ def build_production_parent_wake_invoker() -> ParentWakeInvoker:
         from app.models.agent import Agent
         from app.models.chat_session import ChatSession
         from app.models.user import User
-        from app.services.agent_session_continuation import continue_parent_session_with_task_notification
 
         parent_session_id = _parent_session_id_from_wake_thread(request.thread_id)
         if parent_session_id is None:
@@ -488,24 +475,37 @@ def build_production_parent_wake_invoker() -> ParentWakeInvoker:
                     request.parent_agent_id,
                 )
                 return None
-            return await continue_parent_session_with_task_notification(
-                db=session,
-                agent=agent,
-                user=owner,
-                session=parent_session,
-                task_id=str(request.signal_id),
-                task_type="subagent",
-                status="completed",
-                summary=request.content,
-                child_agent_name=request.from_agent_id,
-                source="subagent_wake",
-                metadata={
-                    "signal_id": str(request.signal_id),
-                    "from_agent_id": request.from_agent_id,
-                    "thread_id": request.thread_id,
-                    "parent_agent_id": str(request.parent_agent_id),
-                    **(request.metadata or {}),
-                },
+            source_run_id = str(
+                (request.metadata or {}).get("subagent_run_id")
+                or (request.metadata or {}).get("runtime_task_id")
+                or request.signal_id
             )
+            child_session_id = _uuid_or_none((request.metadata or {}).get("child_session_id"))
+            outbox_id = await enqueue_completion_notification(
+                session,
+                CompletionNotification(
+                    tenant_id=request.tenant_id,
+                    source_kind="subagent",
+                    source_run_id=source_run_id,
+                    parent_session_id=parent_session.id,
+                    parent_agent_id=agent.id,
+                    parent_user_id=owner.id,
+                    child_session_id=child_session_id,
+                    child_agent_name=request.from_agent_id,
+                    terminal_status=str((request.metadata or {}).get("terminal_status") or "completed"),
+                    task_type="subagent",
+                    summary=request.content,
+                    delivery_mode="parent_continuation",
+                    metadata={
+                        "signal_id": str(request.signal_id),
+                        "from_agent_id": request.from_agent_id,
+                        "thread_id": request.thread_id,
+                        "parent_agent_id": str(request.parent_agent_id),
+                        **(request.metadata or {}),
+                    },
+                    payload_rank=50,
+                ),
+            )
+            return {"ok": True, "status": "queued", "outbox_id": str(outbox_id)}
 
     return _wake_parent

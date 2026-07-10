@@ -8,6 +8,72 @@ from uuid import uuid4
 import pytest
 
 
+@pytest.mark.asyncio
+async def test_terminal_trigger_update_forwards_completion_outbox_atomically(monkeypatch):
+    import app.services.trigger_daemon as daemon
+    from app.services.runtime_notification_outbox import CompletionNotification
+
+    captured = {}
+
+    async def fake_update_runtime_task_record(task_id, **fields):
+        captured["task_id"] = task_id
+        captured["fields"] = fields
+        return True
+
+    monkeypatch.setattr(daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    notification = CompletionNotification(
+        tenant_id=uuid4(),
+        source_kind="trigger",
+        source_run_id=str(uuid4()),
+        parent_session_id=uuid4(),
+        parent_agent_id=uuid4(),
+        parent_user_id=uuid4(),
+        terminal_status="completed",
+        task_type="trigger",
+        summary="trigger completed",
+        delivery_mode="session_projection",
+    )
+
+    await daemon._update_trigger_runtime_task(
+        notification.source_run_id,
+        status="completed",
+        result_summary="trigger completed",
+        session_id=str(notification.parent_session_id),
+        completion_notification=notification,
+    )
+
+    assert captured["task_id"] == notification.source_run_id
+    assert captured["fields"]["status"] == "completed"
+    assert captured["fields"]["completion_notification"] is notification
+
+
+def test_trigger_completion_targets_reflection_projection_without_parent_rerun():
+    import app.services.trigger_daemon as daemon
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    notification = daemon._trigger_completion_notification(
+        runtime_task_id=str(uuid4()),
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        status="completed",
+        summary="daily brief ready",
+        trigger_names=["daily brief"],
+        trigger_types=["cron"],
+        artifacts=[{"path": "runtime_artifacts/triggers/result.json"}],
+    )
+
+    assert notification is not None
+    assert notification.source_kind == "trigger"
+    assert notification.parent_session_id == session_id
+    assert notification.delivery_mode == "session_projection"
+    assert notification.metadata["trigger_names"] == ["daily brief"]
+
+
 class _ScalarResult:
     def __init__(self, value):
         self._value = value

@@ -35,6 +35,7 @@ from app.runtime.subagent_return_contract import build_subagent_return_contract,
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.execution_admission import ExecutionAdmission
+from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 from app.services.runtime_task_service import (
     build_completion_journal_entry,
     build_restart_reconciliation_metadata,
@@ -631,6 +632,7 @@ async def update_subagent_child_session_state_for_run(
                 source="subagent",
             )
             wake_kwargs = {
+                "db": db,
                 "run_id": run_id,
                 "tenant_id": tenant_id,
                 "parent_agent_id": parent_agent_uuid,
@@ -708,6 +710,7 @@ async def update_subagent_child_session_state(
 
 async def _wake_parent_session_from_subagent_completion(
     *,
+    db: Any,
     run_id: str,
     tenant_id: uuid.UUID,
     parent_agent_id: uuid.UUID,
@@ -719,49 +722,29 @@ async def _wake_parent_session_from_subagent_completion(
     subagent_decision_entry: dict[str, Any] | None = None,
     budget_run_id: uuid.UUID | str | None = None,
 ) -> None:
-    try:
-        from app.models.user import User
-        from app.services.agent_session_continuation import continue_parent_session_with_task_notification
-
-        async with tenant_scoped_session(tenant_id) as db:
-            parent_session = (
-                await db.execute(
-                    select(ChatSession).where(
-                        ChatSession.id == parent_session_id,
-                        ChatSession.agent_id == parent_agent_id,
-                    )
-                )
-            ).scalar_one_or_none()
-            parent_agent = (await db.execute(select(Agent).where(Agent.id == parent_agent_id))).scalar_one_or_none()
-            owner = (await db.execute(select(User).where(User.id == parent_user_id))).scalar_one_or_none()
-            if parent_session is None or parent_agent is None or owner is None:
-                return
-            await continue_parent_session_with_task_notification(
-                db=db,
-                agent=parent_agent,
-                user=owner,
-                session=parent_session,
-                task_id=run_id,
-                task_type=SUBAGENT_RUN_TASK_TYPE,
-                status=status,
-                summary=summary,
-                child_session_id=child_session_id,
-                child_agent_name="Subagent",
-                source="subagent",
-                metadata={
-                    "subagent_session_state": status,
-                    "parent_agent_id": str(parent_agent_id),
-                    **({"subagent_decision_entry": subagent_decision_entry} if subagent_decision_entry else {}),
-                    **({"budget_run_id": str(budget_run_id)} if budget_run_id else {}),
-                },
-            )
-    except Exception as exc:
-        logger.warning(
-            "Failed to wake parent session %s after subagent completion %s: %s",
-            parent_session_id,
-            run_id,
-            exc,
-        )
+    await enqueue_completion_notification(
+        db,
+        CompletionNotification(
+            tenant_id=tenant_id,
+            source_kind="subagent",
+            source_run_id=run_id,
+            parent_session_id=parent_session_id,
+            parent_agent_id=parent_agent_id,
+            parent_user_id=parent_user_id,
+            child_session_id=child_session_id,
+            child_agent_name="Subagent",
+            terminal_status=status,
+            task_type=SUBAGENT_RUN_TASK_TYPE,
+            summary=summary,
+            delivery_mode="parent_continuation",
+            metadata={
+                "subagent_session_state": status,
+                "parent_agent_id": str(parent_agent_id),
+                **({"subagent_decision_entry": subagent_decision_entry} if subagent_decision_entry else {}),
+                **({"budget_run_id": str(budget_run_id)} if budget_run_id else {}),
+            },
+        ),
+    )
 
 
 async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> SubagentSpawnContext | None:

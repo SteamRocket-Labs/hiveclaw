@@ -41,6 +41,7 @@ from app.services.runtime_budget_service import (
     RuntimeBudgetSettlement,
     estimate_reservation_tokens,
 )
+from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 
 logger = logging.getLogger(__name__)
 
@@ -2067,14 +2068,15 @@ async def _project_delegation_completion_to_parent(
                 listed_surface="chat",
                 source="agent",
             )
+            await _wake_parent_session_from_delegation_completion(
+                db=db,
+                request=request,
+                task_id=task_id,
+                status=projected_status,
+                summary=projected_summary,
+                artifacts=artifact_parts,
+            )
             await db.commit()
-        await _wake_parent_session_from_delegation_completion(
-            request=request,
-            task_id=task_id,
-            status=projected_status,
-            summary=projected_summary,
-            artifacts=artifact_parts,
-        )
     except Exception as exc:
         logger.warning(
             "[Orchestrator] Failed to project delegation completion to parent session %s (task=%s): %s",
@@ -2086,6 +2088,7 @@ async def _project_delegation_completion_to_parent(
 
 async def _wake_parent_session_from_delegation_completion(
     *,
+    db: Any,
     request: AgentDelegationRequest,
     task_id: str,
     status: str,
@@ -2099,58 +2102,33 @@ async def _wake_parent_session_from_delegation_completion(
     if parent_session_uuid is None or child_session_uuid is None or parent_agent_uuid is None or tenant_uuid is None:
         return
 
-    try:
-        from sqlalchemy import select
-
-        from app.database import tenant_scoped_session
-        from app.models.agent import Agent
-        from app.models.chat_session import ChatSession
-        from app.models.user import User
-        from app.services.agent_session_continuation import continue_parent_session_with_task_notification
-
-        async with tenant_scoped_session(tenant_uuid) as db:
-            parent_session = (
-                await db.execute(
-                    select(ChatSession).where(
-                        ChatSession.id == parent_session_uuid,
-                        ChatSession.agent_id == parent_agent_uuid,
-                    )
-                )
-            ).scalar_one_or_none()
-            parent_agent = (await db.execute(select(Agent).where(Agent.id == parent_agent_uuid))).scalar_one_or_none()
-            owner = (await db.execute(select(User).where(User.id == request.owner_id))).scalar_one_or_none()
-            if parent_session is None or parent_agent is None or owner is None:
-                return
-            await continue_parent_session_with_task_notification(
-                db=db,
-                agent=parent_agent,
-                user=owner,
-                session=parent_session,
-                task_id=task_id,
-                task_type="a2a_delegation",
-                status=status,
-                summary=summary,
-                child_session_id=child_session_uuid,
-                child_agent_name=getattr(request.target, "name", None),
-                source="a2a_delegation",
-                metadata={
-                    "trace_id": request.trace_id,
-                    "interaction_type": request.interaction_type,
-                    "from_agent": str(parent_agent_uuid),
-                    "to_agent": str(request.target.id),
-                    "to_agent_name": getattr(request.target, "name", None),
-                    "depth": request.depth,
-                    **({"budget_run_id": str(request.budget_run_id)} if request.budget_run_id else {}),
-                },
-                artifacts=artifacts or [],
-            )
-    except Exception as exc:
-        logger.warning(
-            "[Orchestrator] Failed to wake parent session %s after delegation completion (task=%s): %s",
-            parent_session_uuid,
-            task_id,
-            exc,
-        )
+    await enqueue_completion_notification(
+        db,
+        CompletionNotification(
+            tenant_id=tenant_uuid,
+            source_kind="a2a_delegation",
+            source_run_id=task_id,
+            parent_session_id=parent_session_uuid,
+            parent_agent_id=parent_agent_uuid,
+            parent_user_id=request.owner_id,
+            child_session_id=child_session_uuid,
+            child_agent_name=getattr(request.target, "name", None),
+            terminal_status=status,
+            task_type="a2a_delegation",
+            summary=summary,
+            delivery_mode="parent_continuation",
+            artifacts=artifacts or [],
+            metadata={
+                "trace_id": request.trace_id,
+                "interaction_type": request.interaction_type,
+                "from_agent": str(parent_agent_uuid),
+                "to_agent": str(request.target.id),
+                "to_agent_name": getattr(request.target, "name", None),
+                "depth": request.depth,
+                **({"budget_run_id": str(request.budget_run_id)} if request.budget_run_id else {}),
+            },
+        ),
+    )
 
 
 def _spawn_async_delegation_task(

@@ -13,6 +13,7 @@ from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.runtime.tenant_admission import raise_runtime_tenant_precondition
 from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
+from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_runtime_task
 
 
@@ -447,6 +448,10 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
     if runtime_task_id is None:
         return False
 
+    completion_notification = fields.pop("completion_notification", None)
+    if completion_notification is not None and not isinstance(completion_notification, CompletionNotification):
+        raise TypeError("completion_notification must be CompletionNotification")
+
     tenant_id = await resolve_tenant_for_runtime_task(runtime_task_id, session_factory=async_session)
     if tenant_id is None:
         return False
@@ -501,6 +506,13 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
                 task.started_at = now
             if status in _TERMINAL_STATUSES and task.completed_at is None:
                 task.completed_at = now
+            if completion_notification is not None:
+                if status not in _TERMINAL_STATUSES:
+                    raise ValueError("completion_notification requires a terminal RuntimeTask status")
+                outbox_id = await enqueue_completion_notification(db, completion_notification)
+                metadata = dict(getattr(task, "metadata_json", None) or {})
+                metadata["completion_outbox_id"] = str(outbox_id)
+                task.metadata_json = metadata
 
             await db.commit()
         except Exception:

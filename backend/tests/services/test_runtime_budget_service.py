@@ -1151,8 +1151,9 @@ async def test_reject_overrun_stops_frozen_tasks_and_records_actor(owner_session
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
-async def test_approval_raises_limit_for_unbound_foreground_retry(owner_sessionmaker):
+async def test_approval_raises_limit_for_unbound_foreground_retry(owner_sessionmaker, monkeypatch):
     from app.models.runtime_budget import RuntimeBudgetRun
+    from app.services import runtime_task_worker
     from app.services.runtime_budget_service import (
         RuntimeBudgetApprovalRequired,
         RuntimeBudgetReservation,
@@ -1171,6 +1172,13 @@ async def test_approval_raises_limit_for_unbound_foreground_retry(owner_sessionm
     with pytest.raises(RuntimeBudgetApprovalRequired):
         await service.reserve(reservation)
 
+    wakeups = []
+
+    async def fake_notify_runtime_task_worker(*, reason, runtime_task_id=None):
+        wakeups.append((reason, runtime_task_id))
+
+    monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", fake_notify_runtime_task_worker)
+
     approved = await service.approve_overrun(
         tenant_id=tenant_id,
         budget_run_id=run.id,
@@ -1185,6 +1193,7 @@ async def test_approval_raises_limit_for_unbound_foreground_retry(owner_sessionm
     assert approved.max_subagents == 1
     assert retried.allowed is True
     assert stored.reserved_subagents == 1
+    assert wakeups == [("runtime_budget_approved", None)]
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

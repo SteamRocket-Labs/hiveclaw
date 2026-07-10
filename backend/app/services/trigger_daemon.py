@@ -51,6 +51,7 @@ from app.services.runtime_budget_service import (
     RuntimeBudgetRunCreate,
     RuntimeBudgetService,
 )
+from app.services.runtime_notification_outbox import CompletionNotification
 from app.services.trigger_preflight import (
     collect_trigger_runtime_options,
     evaluate_trigger_preflight,
@@ -91,6 +92,42 @@ def _runtime_task_uuid_or_none(value: str | uuid.UUID | None) -> uuid.UUID | Non
         return uuid.UUID(str(value))
     except (TypeError, ValueError, AttributeError):
         return None
+
+
+def _trigger_completion_notification(
+    *,
+    runtime_task_id: str | None,
+    tenant_id: uuid.UUID | None,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+    session_id: uuid.UUID | None,
+    status: str,
+    summary: str,
+    trigger_names: list[str] | None = None,
+    trigger_types: list[str] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> CompletionNotification | None:
+    if not runtime_task_id or tenant_id is None or user_id is None or session_id is None:
+        return None
+    return CompletionNotification(
+        tenant_id=tenant_id,
+        source_kind="trigger",
+        source_run_id=str(runtime_task_id),
+        parent_session_id=session_id,
+        parent_agent_id=agent_id,
+        parent_user_id=user_id,
+        terminal_status=status,
+        task_type="trigger",
+        summary=summary,
+        delivery_mode="session_projection",
+        artifacts=list(artifacts or []),
+        metadata={
+            "trigger_names": list(trigger_names or []),
+            "trigger_types": list(trigger_types or []),
+            **(metadata or {}),
+        },
+    )
 
 
 def _confirmed_plan_ref_from_trigger(trigger: AgentTrigger) -> dict[str, Any]:
@@ -341,6 +378,7 @@ async def _update_trigger_runtime_task(
     result_summary: str,
     session_id: str | None = None,
     metadata_json: dict | None = None,
+    completion_notification: CompletionNotification | None = None,
 ) -> None:
     if not runtime_task_id:
         return
@@ -351,6 +389,8 @@ async def _update_trigger_runtime_task(
     }
     if session_id:
         fields["child_session_id"] = session_id
+    if completion_notification is not None:
+        fields["completion_notification"] = completion_notification
     try:
         await update_runtime_task_record(runtime_task_id, **fields)
     except Exception as exc:
@@ -1714,6 +1754,9 @@ async def _invoke_agent_for_triggers(
         )
         return
     tenant_id = admission.tenant_id
+    agent_tenant_id: uuid.UUID | None = None
+    agent_creator_id: uuid.UUID | None = None
+    session_id: uuid.UUID | None = None
 
     try:
         async with tenant_scoped_session(tenant_id, require_tenant=True, source="trigger") as db:
@@ -2111,10 +2154,11 @@ async def _invoke_agent_for_triggers(
         except Exception as _success_state_err:
             logger.debug("[TriggerDaemon] Trigger success state reset failed (non-fatal): {}", _success_state_err)
 
+        completion_summary = (final_reply or "Trigger completed.")[:2000]
         await _update_trigger_runtime_task(
             runtime_task_id,
             status="completed",
-            result_summary=(final_reply or "Trigger completed.")[:2000],
+            result_summary=completion_summary,
             session_id=str(session_id),
             metadata_json={
                 **model_metadata,
@@ -2123,6 +2167,19 @@ async def _invoke_agent_for_triggers(
                 "score": trigger_score,
                 "output_artifact": output_artifact,
             },
+            completion_notification=_trigger_completion_notification(
+                runtime_task_id=runtime_task_id,
+                tenant_id=agent_tenant_id,
+                agent_id=agent_id,
+                user_id=agent_creator_id,
+                session_id=session_id,
+                status="completed",
+                summary=completion_summary,
+                trigger_names=trigger_names,
+                trigger_types=[str(getattr(trigger, "type", "")) for trigger in triggers],
+                artifacts=[output_artifact] if isinstance(output_artifact, dict) else [],
+                metadata={"outcome": trigger_outcome, "score": trigger_score},
+            ),
         )
         await _settle_trigger_runtime_budget(runtime_task_id, status="completed")
 
@@ -2156,6 +2213,7 @@ async def _invoke_agent_for_triggers(
 
     except Exception as e:
         logger.error(f"Failed to invoke agent {agent_id} for triggers: {e}", exc_info=True)
+        failure_summary = f"Trigger invocation failed: {str(e)[:500]}"
         failure_metadata = {"error": str(e)[:1000]}
         try:
             failure_metadata.update(await _record_trigger_failure_state(agent_id, triggers, str(e)))
@@ -2164,8 +2222,21 @@ async def _invoke_agent_for_triggers(
         await _update_trigger_runtime_task(
             runtime_task_id,
             status="failed",
-            result_summary=f"Trigger invocation failed: {str(e)[:500]}",
+            result_summary=failure_summary,
             metadata_json=failure_metadata,
+            session_id=str(session_id) if session_id else None,
+            completion_notification=_trigger_completion_notification(
+                runtime_task_id=runtime_task_id,
+                tenant_id=agent_tenant_id,
+                agent_id=agent_id,
+                user_id=agent_creator_id,
+                session_id=session_id,
+                status="failed",
+                summary=failure_summary,
+                trigger_names=[str(getattr(trigger, "name", "")) for trigger in triggers],
+                trigger_types=[str(getattr(trigger, "type", "")) for trigger in triggers],
+                metadata=failure_metadata,
+            ),
         )
         await _settle_trigger_runtime_budget(runtime_task_id, status="failed")
 

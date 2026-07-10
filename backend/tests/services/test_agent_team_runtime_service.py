@@ -667,13 +667,14 @@ async def test_team_member_completion_wakes_parent_session_with_task_notificatio
     db = _SequenceCompletionDB([member, team, parent_session, agent, user])
     captured = []
 
-    async def fake_continue_parent_session_with_task_notification(**kwargs):
-        captured.append(kwargs)
-        return {"ok": True, "status": "started"}
+    async def fake_enqueue_completion_notification(actual_db, notification):
+        captured.append((actual_db, notification))
+        return uuid4()
 
     monkeypatch.setattr(
-        "app.services.agent_team_runtime_service.continue_parent_session_with_task_notification",
-        fake_continue_parent_session_with_task_notification,
+        "app.services.agent_team_runtime_service.enqueue_completion_notification",
+        fake_enqueue_completion_notification,
+        raising=False,
     )
 
     payload = await project_agent_team_member_completion(
@@ -686,15 +687,14 @@ async def test_team_member_completion_wakes_parent_session_with_task_notificatio
 
     assert payload is not None
     assert len(captured) == 1
-    wake = captured[0]
-    assert wake["agent"] is agent
-    assert wake["user"] is user
-    assert wake["session"] is parent_session
-    assert wake["task_id"] == str(run_id)
-    assert wake["task_type"] == "team_member"
-    assert wake["status"] == "completed"
-    assert wake["source"] == "agent_team"
-    assert wake["child_session_id"] == str(member.chat_session_id)
-    assert wake["child_agent_name"] == "researcher"
-    assert "report ready" in wake["summary"]
-    assert member.metadata_json["parent_task_notification_side_effect"]["source"] == "agent_team"
+    actual_db, notification = captured[0]
+    assert actual_db is db
+    assert notification.source_kind == "agent_team"
+    assert notification.source_run_id == str(run_id)
+    assert notification.task_type == "team_member"
+    assert notification.terminal_status == "completed"
+    assert notification.parent_session_id == parent_session.id
+    assert notification.child_session_id == member.chat_session_id
+    assert notification.child_agent_name == "researcher"
+    assert "report ready" in notification.summary
+    assert "parent_task_notification_side_effect" not in member.metadata_json

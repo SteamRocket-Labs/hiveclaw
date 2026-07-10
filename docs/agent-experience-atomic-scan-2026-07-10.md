@@ -902,3 +902,62 @@ git diff --check -> clean
 - 第 6.2 节 Sub-agent 预算恢复：`断点 -> 闭环`。
 - 第 6.3 节 Agent Team 预算旁路：`断点 -> 闭环`。
 - 第 5 节 Trigger 证据入口：`断点 -> 闭环`；没有 RuntimeTask ledger 就不执行，批准后由 worker 恢复同一 intent。
+
+### 12.4 Runtime Notification Outbox — 已闭环
+
+**原子链**
+
+| 原子 | 当前事实源与消费路径 |
+| --- | --- |
+| 输入 | Sub-agent、Team member、Workflow、Trigger、Delegation/A2A 的 terminal producer 统一生成 `CompletionNotification`；唯一键为 `(tenant, source_kind, source_run_id, parent_session, terminal_status)`，不再由各领域自行“标记已发送”。 |
+| 权威 | outbox 固定保存 tenant / parent agent / parent session / parent user；worker 交付前重新按四元身份加载 Session、Agent、User。普通 producer 不能改变 delivery target；FORCE RLS 与 strict bootstrap policy 同时覆盖新库和升级库。 |
+| 执行 | `RuntimeNotificationOutboxService` 是唯一 parent completion consumer；代码库中 `continue_parent_session_with_task_notification()` 只剩该服务一个生产 caller。Trigger 使用 `session_projection`，其余 parent-return 使用 `parent_continuation`。 |
+| 证据 | RuntimeTask/transcript 仍是执行事实；outbox 只保存交付 intent、attempt、lease、last error、receipt。成功事件以 outbox UUID 作为 `causation_id`；PostgreSQL partial unique index保证同一 session 只出现一次 `agent_task_notification`。 |
+| 恢复 | worker 使用 `FOR UPDATE SKIP LOCKED`、processing lease、指数退避、dead letter；在“消息已 commit、ack 前 crash”场景，重试先查 causation event，再 ack，不再启动第二次 parent turn。terminal-task reconciler 回填 terminal 与 enqueue 之间的 crash gap。 |
+| 消费 | worker 每轮先 reconcile、再 drain，成功后才 ack；失败保留 pending。Sub-agent legacy Signal 先 enqueue 成功再删除，并与直接 producer 使用同一 source run id。payload rank 保证 richer authoritative artifact payload 可以升级 recovery payload，低质量 fallback 不能覆盖它。 |
+| 验收 | 真实 PostgreSQL 覆盖 deterministic enqueue、concurrent-safe lease、失败重试、lease reclaim、ack crash dedupe、payload rank、terminal repair、non-owner RLS、预算等待/批准恢复；migration 测试同时覆盖 fresh bootstrap 与 previous-head upgrade。 |
+
+**治理冲突的闭环处理**
+
+parent continuation 本身仍是一次工作放大，outbox 因此在真正启动 parent turn 前 reserve `continuation_wakes=1`：
+
+```text
+pending outbox
+  -> admission allowed -> deliver -> settle -> ack
+  -> waiting_budget_approval -> pending(deferred, no dead-letter)
+       -> admin approve -> worker wake/poll -> same outbox deliver once
+  -> hard denied / delivery error -> retry -> dead_letter with mechanical error
+```
+
+这避免了 RLS / governance 直接吞掉完成结果，也避免为了“保证返回”而旁路治理。Trigger completion 只投影到自己的 Reflection / Task Updates session，不重新触发一次模型循环。
+
+**关键实现证据**
+
+- schema / RLS / exactly-once index：`runtime_notification_outbox_0710.py`、`models/runtime_notification_outbox.py`、`models/chat_transcript_event.py`；
+- fresh-bootstrap policy：`app/db_bootstrap.py`；同时补回 `workflow_proposal_artifacts` 与 `workflow_preview_artifacts` 的 strict forced-RLS bootstrap 漏项；
+- 单一 consumer：`services/runtime_notification_outbox.py`；
+- worker / reconciliation / metrics：`services/runtime_task_worker.py`；
+- atomic producer：`subagent_run_service.py`、`agent_team_runtime_service.py`、`workflow_runtime_service.py`、`agents/orchestrator.py`、`trigger_daemon.py`、`runtime_task_service.py`；
+- 唯一 continuation primitive：`agent_session_continuation.py`。
+
+**故障注入与机械验收**
+
+```text
+Red evidence -> missing outbox; cross-tenant row visible on fresh bootstrap; wake failure consumed signal; terminal/enqueue crash gap; ack crash duplicated risk; governance approval had no durable defer; low-quality recovery payload could win race
+PostgreSQL outbox + migration contracts -> 10 passed
+completion/outbox/runtime/producer/budget related suites group A -> 81 passed, 0 failed
+Sub-agent/Team/Workflow/Delegation/Trigger producer suites group B -> 162 passed, 0 failed
+combined evidence -> 243 passed, 0 failed
+ruff check + ruff format --check affected paths -> clean
+direct continuation caller scan -> 1 production caller, RuntimeNotificationOutboxService only
+alembic heads -> runtime_notification_outbox_0710 (head)
+```
+
+**状态变化**
+
+- 第 6.4 节 Workflow parent wake：`断点 -> 闭环`。
+- 第 6.2 / 6.3 节 Sub-agent 与 Team return：`局部闭环 -> 闭环`。
+- Delegation / A2A return：`局部闭环 -> 闭环`；artifact refs 与 terminal summary 由同一 outbox item 交付。
+- Trigger completion：`局部闭环 -> 闭环`；terminal task 与 semantic task-update projection 可恢复，且不会污染普通用户 chat。
+- 第 7 节 `GOV-05` 的跨 run 通知部分：`局部闭环 -> 闭环`。
+- 第 12.2 节 Workflow confirmation RLS：补齐 fresh-bootstrap FORCE RLS；迁移库与新库现在同构。

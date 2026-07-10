@@ -783,6 +783,7 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
     ]
     assert captured_wakeups == [
         {
+            "db": captured_wakeups[0]["db"],
             "run_id": "run-1",
             "tenant_id": tenant_id,
             "parent_agent_id": parent_agent_id,
@@ -794,6 +795,46 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
             "subagent_decision_entry": parent_event["metadata"]["subagent_decision_entry"],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_subagent_parent_completion_uses_durable_outbox(monkeypatch):
+    captured: dict = {}
+    db = object()
+
+    async def fake_enqueue(actual_db, notification):
+        captured["db"] = actual_db
+        captured["notification"] = notification
+        return uuid.uuid4()
+
+    monkeypatch.setattr(svc, "enqueue_completion_notification", fake_enqueue, raising=False)
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
+
+    await svc._wake_parent_session_from_subagent_completion(
+        db=db,
+        run_id="run-1",
+        tenant_id=tenant_id,
+        parent_agent_id=parent_agent_id,
+        parent_user_id=parent_user_id,
+        parent_session_id=parent_session_id,
+        child_session_id=child_session_id,
+        status="completed",
+        summary="done",
+        subagent_decision_entry={"schema": "decision.v1"},
+    )
+
+    notification = captured["notification"]
+    assert captured["db"] is db
+    assert notification.source_kind == "subagent"
+    assert notification.source_run_id == "run-1"
+    assert notification.parent_session_id == parent_session_id
+    assert notification.child_session_id == child_session_id
+    assert notification.delivery_mode == "parent_continuation"
+    assert notification.metadata["subagent_decision_entry"] == {"schema": "decision.v1"}
 
 
 @pytest.mark.asyncio

@@ -23,14 +23,12 @@ from app.models.user import User
 from app.runtime.decision_ledger import build_agent_cycle_decision_entry
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_team_contract import teammate_creation_discovery
-from app.services.agent_session_continuation import (
-    continue_agent_session_from_mailbox,
-    continue_parent_session_with_task_notification,
-)
+from app.services.agent_session_continuation import continue_agent_session_from_mailbox
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.execution_admission import ExecutionAdmission
 from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
+from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
@@ -646,11 +644,6 @@ async def _wake_parent_session_from_team_member_completion(
 ) -> None:
     run_id = _uuid_or_none(getattr(task, "id", None))
     task_id = str(run_id or getattr(task, "id", "") or member.runtime_task_id or member.id)
-    idempotency_key = f"agent_team_parent_task_notification:{member.id}:{task_id}:{status}"
-    existing = metadata.get("parent_task_notification_side_effect")
-    if isinstance(existing, dict) and existing.get("idempotency_key") == idempotency_key:
-        return
-
     team = (await db.execute(select(AgentTeam).where(AgentTeam.id == member.team_id).limit(1))).scalar_one_or_none()
     if team is None:
         return
@@ -676,35 +669,33 @@ async def _wake_parent_session_from_team_member_completion(
     if parent_session is None or parent_agent is None or owner is None:
         return
 
-    metadata["parent_task_notification_side_effect"] = {
-        "idempotency_key": idempotency_key,
-        "source": "agent_team",
-        "task_id": task_id,
-        "status": status,
-    }
-    member.metadata_json = metadata
     summary = result_summary or f"Team member {member.member_name} finished with status {status}."
-    await continue_parent_session_with_task_notification(
-        db=db,
-        agent=parent_agent,
-        user=owner,
-        session=parent_session,
-        task_id=task_id,
-        task_type="team_member",
-        status=status,
-        summary=summary,
-        child_session_id=str(member.chat_session_id),
-        child_agent_name=member.member_name,
-        source="agent_team",
-        metadata={
-            "team_id": str(team.id),
-            "team_name": team.name,
-            "member_id": str(member.id),
-            "member_name": member.member_name,
-            "runtime_task_id": task_id,
-            "runtime_task_type": "team_member",
-            "agent_team_decision_entry": metadata.get("agent_team_decision_entry"),
-        },
+    await enqueue_completion_notification(
+        db,
+        CompletionNotification(
+            tenant_id=team.tenant_id,
+            source_kind="agent_team",
+            source_run_id=task_id,
+            parent_session_id=parent_session.id,
+            parent_agent_id=parent_agent.id,
+            parent_user_id=owner.id,
+            child_session_id=member.chat_session_id,
+            child_agent_name=member.member_name,
+            terminal_status=status,
+            task_type="team_member",
+            summary=summary,
+            delivery_mode="parent_continuation",
+            metadata={
+                "team_id": str(team.id),
+                "team_name": team.name,
+                "member_id": str(member.id),
+                "member_name": member.member_name,
+                "runtime_task_id": task_id,
+                "runtime_task_type": "team_member",
+                "agent_team_decision_entry": metadata.get("agent_team_decision_entry"),
+                **({"budget_run_id": str(metadata["budget_run_id"])} if metadata.get("budget_run_id") else {}),
+            },
+        ),
     )
 
 
@@ -753,6 +744,8 @@ async def project_agent_team_member_completion(
     metadata["artifact_paths"] = artifact_paths
     metadata["artifacts"] = artifacts
     metadata["t0_refs"] = t0_refs
+    if source_metadata.get("budget_run_id"):
+        metadata["budget_run_id"] = source_metadata["budget_run_id"]
     member.status = "idle"
     member.metadata_json = metadata
     decision_entry = build_agent_team_decision_entry(

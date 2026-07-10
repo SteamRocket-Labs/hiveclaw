@@ -700,7 +700,7 @@ async def test_completed_workflow_wakes_parent_session_with_task_notification(
 
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
-    from app.services import agent_session_continuation
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 
     parent_session_id = uuid.uuid4()
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
@@ -716,18 +716,6 @@ async def test_completed_workflow_wakes_parent_session_with_task_notification(
             )
         )
 
-    captured: list[dict] = []
-
-    async def fake_continue_parent_session_with_task_notification(**kwargs):
-        captured.append(kwargs)
-        return {"ok": True, "status": "queued"}
-
-    monkeypatch.setattr(
-        agent_session_continuation,
-        "continue_parent_session_with_task_notification",
-        fake_continue_parent_session_with_task_notification,
-    )
-
     handle = await service.start_run(
         tenant_id=tenant_id,
         definition_data=_definition(),
@@ -739,16 +727,28 @@ async def test_completed_workflow_wakes_parent_session_with_task_notification(
     )
 
     assert handle.outcome.status == "completed"
-    assert len(captured) == 1
-    wake = captured[0]
-    assert wake["task_id"] == str(handle.run_id)
-    assert wake["task_type"] == "workflow"
-    assert wake["status"] == "completed"
-    assert wake["source"] == "workflow"
-    assert wake["session"].id == parent_session_id
-    assert "Workflow run" in wake["summary"]
-    assert "scan" in wake["summary"]
-    assert "report" in wake["summary"]
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(RuntimeNotificationOutbox).where(
+                        RuntimeNotificationOutbox.source_kind == "workflow",
+                        RuntimeNotificationOutbox.source_run_id == str(handle.run_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+    notification = rows[0]
+    assert notification.status == "pending"
+    assert notification.parent_session_id == parent_session_id
+    assert notification.task_type == "workflow"
+    assert notification.terminal_status == "completed"
+    assert "Workflow run" in notification.summary
+    assert "scan" in notification.summary
+    assert "report" in notification.summary
 
 
 # ── §A-6: a headless run (no parent session) becomes session-visible ──────

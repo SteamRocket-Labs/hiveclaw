@@ -197,3 +197,31 @@ async def test_execute_claimed_subagent_task_dispatches_persisted_run(monkeypatc
     await worker._execute_claimed_subagent_task(runtime_task_id)
 
     assert calls == [runtime_task_id.hex]
+
+
+@pytest.mark.asyncio
+async def test_runtime_worker_drains_completion_outbox_and_records_counts(monkeypatch):
+    import app.services.runtime_task_worker as worker
+
+    captured = {}
+
+    class FakeOutboxService:
+        async def reconcile_terminal_tasks_once(self, *, limit):
+            captured["reconcile_limit"] = limit
+            return 4
+
+        async def drain_once(self, *, worker_id, limit):
+            captured.update({"worker_id": worker_id, "limit": limit})
+            return {"claimed": 3, "delivered": 2, "retried": 1, "dead_lettered": 0}
+
+    monkeypatch.setattr(worker, "RuntimeNotificationOutboxService", FakeOutboxService, raising=False)
+    before_delivered = int(worker._STATE.get("outbox_delivered") or 0)
+    before_retried = int(worker._STATE.get("outbox_retried") or 0)
+
+    result = await worker.drain_runtime_notification_outbox_once(worker_id="runtime-worker")
+
+    assert captured == {"reconcile_limit": 100, "worker_id": "runtime-worker", "limit": 20}
+    assert result["claimed"] == 3
+    assert result["reconciled"] == 4
+    assert worker._STATE["outbox_delivered"] == before_delivered + 2
+    assert worker._STATE["outbox_retried"] == before_retried + 1

@@ -13,6 +13,7 @@ from loguru import logger
 from app.config import get_settings
 from app.database import async_session, enter_rls_bypass
 from app.models.runtime_task import RuntimeTask
+from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
 from app.services.runtime_task_claim_service import RuntimeTaskClaimService
 from app.services.runtime_task_fence import run_claimed_runtime_task
 from app.services.web_chat_runtime import active_web_chat_run_count, dispatch_web_chat_run, is_executable_chat_task_type
@@ -40,6 +41,12 @@ _STATE: dict[str, Any] = {
     "wakeup_sent": 0,
     "wakeup_received": 0,
     "dispatched": 0,
+    "outbox_claimed": 0,
+    "outbox_reconciled": 0,
+    "outbox_delivered": 0,
+    "outbox_retried": 0,
+    "outbox_deferred": 0,
+    "outbox_dead_lettered": 0,
 }
 
 
@@ -200,6 +207,18 @@ async def claim_and_dispatch_once(*, worker_id: str | None = None) -> list[str]:
     return claimed_ids
 
 
+async def drain_runtime_notification_outbox_once(*, worker_id: str) -> dict[str, int]:
+    service = RuntimeNotificationOutboxService()
+    reconciled = await service.reconcile_terminal_tasks_once(limit=100)
+    counts = await service.drain_once(worker_id=worker_id, limit=20)
+    counts["reconciled"] = reconciled
+    _STATE["outbox_reconciled"] = int(_STATE.get("outbox_reconciled") or 0) + reconciled
+    for key in ("claimed", "delivered", "retried", "deferred", "dead_lettered"):
+        state_key = f"outbox_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    return counts
+
+
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
     if is_executable_chat_task_type(getattr(task, "task_type", None)):
         return dispatch_web_chat_run(
@@ -338,6 +357,11 @@ async def start_runtime_task_worker_loop() -> None:
     logger.info("[RuntimeTaskWorker] started worker_id={}", worker_id)
     try:
         while True:
+            try:
+                await drain_runtime_notification_outbox_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - task claiming must continue after one outbox failure.
+                _STATE["last_error"] = f"outbox:{type(exc).__name__}: {str(exc)[:500]}"
+                logger.exception("[RuntimeTaskWorker] completion outbox tick failed")
             try:
                 await claim_and_dispatch_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - worker loop must survive one bad claim.

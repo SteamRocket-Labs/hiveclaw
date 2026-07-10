@@ -25,6 +25,18 @@ class ChatTranscriptEvent(Base):
         Index("ix_chat_transcript_events_run_id", "run_id"),
         Index("ix_chat_transcript_events_message_id", "message_id"),
         Index("ix_chat_transcript_events_listed_surface", "listed_surface"),
+        Index(
+            "uq_chat_transcript_completion_causation",
+            "session_id",
+            "causation_id",
+            "event_type",
+            unique=True,
+            postgresql_where=text(
+                "causation_id IS NOT NULL AND event_type = 'agent_task_notification' "
+                "AND metadata_json ? 'completion_outbox_id'"
+            ),
+            sqlite_where=text("causation_id IS NOT NULL AND event_type = 'agent_task_notification'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

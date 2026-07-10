@@ -486,6 +486,7 @@ async def continue_parent_session_with_task_notification(
     source: str = "task_notification",
     metadata: dict[str, Any] | None = None,
     artifacts: list[dict[str, Any]] | None = None,
+    resume_parent: bool = True,
 ) -> dict[str, Any]:
     message = build_task_notification_message(
         task_id=task_id,
@@ -566,6 +567,31 @@ async def continue_parent_session_with_task_notification(
             materialize_chat_message=False,
             source="task_notification",
         )
+    if not resume_parent:
+        await _append_mailbox_event(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            event_type="agent_task_notification",
+            message=display_content,
+            parent_session_id=getattr(session, "parent_session_id", None) or getattr(session, "id", None),
+            metadata={
+                **task_metadata,
+                "consumer": "session_projection",
+            },
+            role="system",
+            parts=artifacts,
+            materialize_chat_message=False,
+            source="task_notification",
+        )
+        await db.commit()
+        return {
+            "ok": True,
+            "status": "projected",
+            "consumer": "session_projection",
+            "child_session_id": str(session.id),
+        }
     return await continue_agent_session_from_mailbox(
         db=db,
         agent=agent,

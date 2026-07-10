@@ -1885,6 +1885,59 @@ def _capture_parent_session_events(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delegation_parent_completion_uses_durable_outbox(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, _wake_parent_session_from_delegation_completion
+
+    captured = {}
+
+    async def fake_enqueue(actual_db, notification):
+        captured["db"] = actual_db
+        captured["notification"] = notification
+        return uuid4()
+
+    monkeypatch.setattr("app.agents.orchestrator.enqueue_completion_notification", fake_enqueue, raising=False)
+    db = object()
+    tenant_id = uuid4()
+    parent_agent_id = uuid4()
+    parent_session_id = uuid4()
+    child_session_id = uuid4()
+    owner_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Researcher", tenant_id=tenant_id)
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "go"}],
+        owner_id=owner_id,
+        session_id=str(child_session_id),
+        parent_agent_id=parent_agent_id,
+        parent_session_id=str(parent_session_id),
+        trace_id="trace-outbox",
+        depth=1,
+        tenant_id=tenant_id,
+        runtime_task_id="task-1",
+    )
+
+    await _wake_parent_session_from_delegation_completion(
+        db=db,
+        request=request,
+        task_id="task-1",
+        status="completed",
+        summary="done",
+        artifacts=[{"type": "artifact", "path": "workspace/report.md"}],
+    )
+
+    notification = captured["notification"]
+    assert captured["db"] is db
+    assert notification.source_kind == "a2a_delegation"
+    assert notification.source_run_id == "task-1"
+    assert notification.parent_session_id == parent_session_id
+    assert notification.parent_agent_id == parent_agent_id
+    assert notification.parent_user_id == owner_id
+    assert notification.child_session_id == child_session_id
+    assert notification.artifacts == [{"type": "artifact", "path": "workspace/report.md"}]
+
+
+@pytest.mark.asyncio
 async def test_delegation_completion_projects_child_session_event_to_parent(monkeypatch):
     """Async delegation completion must append a child_session event to the parent
     session timeline (parity with subagent_run_service), not only update RuntimeTask.

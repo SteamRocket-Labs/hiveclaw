@@ -1171,21 +1171,23 @@ class RuntimeBudgetService:
             run.status = "active"
             await db.commit()
             await db.refresh(run)
-        if resumed_task_ids:
-            from app.services.runtime_task_worker import notify_runtime_task_worker
+        from app.services.runtime_task_worker import notify_runtime_task_worker
 
-            for task_id in resumed_task_ids:
-                try:
-                    await notify_runtime_task_worker(reason="runtime_budget_approved", runtime_task_id=task_id)
-                except Exception:
-                    # The persisted task remains the authority and the worker
-                    # poller can still claim it. One failed fast wake must not
-                    # prevent the remaining approved tasks from being notified.
-                    logger.warning(
-                        "Runtime budget approval wake failed for task %s",
-                        task_id,
-                        exc_info=True,
-                    )
+        # Unbound reservations (foreground work and completion outbox delivery)
+        # have no exact RuntimeTask id, but the same worker wake should still
+        # shorten approval-to-resume latency. Polling remains the fallback.
+        wake_targets: list[uuid.UUID | None] = list(resumed_task_ids) or [None]
+        for task_id in wake_targets:
+            try:
+                await notify_runtime_task_worker(reason="runtime_budget_approved", runtime_task_id=task_id)
+            except Exception:
+                # The persisted task/outbox remains the authority. One failed
+                # fast wake must not prevent remaining targets from being notified.
+                logger.warning(
+                    "Runtime budget approval wake failed for task %s",
+                    task_id,
+                    exc_info=True,
+                )
         return run
 
     async def reject_overrun(

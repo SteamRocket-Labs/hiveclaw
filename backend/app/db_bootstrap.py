@@ -140,6 +140,9 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "local_agent_capability_snapshots",
     "ai_asset_records",
     "hr_creation_drafts",
+    "workflow_proposal_artifacts",
+    "workflow_preview_artifacts",
+    "runtime_notification_outbox",
 )
 
 # Non-null tenant-owned tables must never inherit the legacy nullable-tenant
@@ -169,6 +172,9 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "local_agent_capability_snapshots",
     "ai_asset_records",
     "hr_creation_drafts",
+    "workflow_proposal_artifacts",
+    "workflow_preview_artifacts",
+    "runtime_notification_outbox",
 )
 
 REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (

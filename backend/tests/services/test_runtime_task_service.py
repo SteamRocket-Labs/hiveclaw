@@ -274,6 +274,78 @@ class _UpdateSession:
 
 
 @pytest.mark.asyncio
+async def test_terminal_runtime_task_enqueues_completion_in_same_transaction(monkeypatch):
+    from app.services.runtime_notification_outbox import CompletionNotification
+    from app.services.runtime_task_service import update_runtime_task_record
+
+    tenant_id = uuid4()
+    task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "tenant_id": tenant_id,
+            "task_type": "trigger",
+            "status": "running",
+            "metadata_json": {},
+            "started_at": None,
+            "completed_at": None,
+            "trace_id": "trace",
+            "result_summary": None,
+            "claim_version": 0,
+        },
+    )()
+    fake_session = _UpdateSession(task)
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=tenant_id)
+
+    async def fake_resolve_runtime_task_tenant(*_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(
+        "app.services.runtime_task_service.resolve_tenant_for_runtime_task",
+        fake_resolve_runtime_task_tenant,
+    )
+    captured = {}
+
+    async def fake_enqueue(db, notification):
+        captured["db"] = db
+        captured["notification"] = notification
+        captured["commit_calls_at_enqueue"] = fake_session.commit_calls
+        return uuid4()
+
+    monkeypatch.setattr(
+        "app.services.runtime_task_service.enqueue_completion_notification",
+        fake_enqueue,
+        raising=False,
+    )
+    notification = CompletionNotification(
+        tenant_id=tenant_id,
+        source_kind="trigger",
+        source_run_id=str(task.id),
+        parent_session_id=uuid4(),
+        parent_agent_id=uuid4(),
+        parent_user_id=uuid4(),
+        terminal_status="completed",
+        task_type="trigger",
+        summary="done",
+        delivery_mode="session_projection",
+    )
+
+    updated = await update_runtime_task_record(
+        task.id.hex,
+        status="completed",
+        result_summary="done",
+        completion_notification=notification,
+    )
+
+    assert updated is True
+    assert captured["db"] is fake_session
+    assert captured["notification"] is notification
+    assert captured["commit_calls_at_enqueue"] == 0
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_create_runtime_task_record_rolls_back_on_commit_error(monkeypatch):
     from app.services.runtime_task_service import create_runtime_task_record
 

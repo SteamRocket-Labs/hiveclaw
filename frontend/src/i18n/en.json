@@ -1812,8 +1812,13 @@
         "saving": "Saving patrol...",
         "saved": "Patrol settings saved",
         "saveError": "Failed to save patrol settings",
+        "reviewError": "Failed to open Plan Mode",
         "invalidActiveHours": "Select valid start and end times.",
         "triggerReason": "Run scheduled patrols for messages, trigger state, and Agent Circle context.",
+        "planDecisionTitle": "Review before autonomous patrol",
+        "planDecisionDesc": "Patrol wakes this employee and may use tools without a new message. Review a plan, or explicitly enable it without one.",
+        "reviewPlan": "Review in Plan Mode",
+        "enableWithoutPlan": "Enable without plan",
         "circlePolicyTitle": "Agent Circle permission policy"
       },
       "channel": {

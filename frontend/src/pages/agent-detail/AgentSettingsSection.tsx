@@ -38,6 +38,9 @@ type PatrolFormState = {
   activeEnd: string;
 };
 
+type PatrolPlanDecision = 'enable_without_plan';
+export type PatrolSaveDisposition = 'review_required' | 'apply' | 'apply_with_opt_out';
+
 type AgentAccessVisibility = 'private' | 'company';
 
 const clampPatrolInterval = (value: number) => Math.max(15, Math.min(1440, Math.round(value) || DEFAULT_PATROL_INTERVAL_MINUTES));
@@ -51,6 +54,35 @@ const splitActiveHours = (value: string) => {
   };
 };
 const buildActiveHours = (form: PatrolFormState) => `${form.activeStart}-${form.activeEnd}`;
+
+export const patrolSaveDisposition = (
+  enabled: boolean,
+  persistedEnabled: boolean,
+  decision?: PatrolPlanDecision,
+): PatrolSaveDisposition => {
+  if (!enabled || persistedEnabled) return 'apply';
+  return decision === 'enable_without_plan' ? 'apply_with_opt_out' : 'review_required';
+};
+
+export const patrolEnabledUpdateValue = (
+  enabled: boolean,
+  persistedEnabled: boolean,
+): boolean | undefined => (enabled === persistedEnabled ? undefined : enabled);
+
+export const buildPatrolPlanReviewRequest = ({
+  minutes,
+  activeHours,
+  timezone,
+}: {
+  minutes: number;
+  activeHours: string;
+  timezone?: string | null;
+}) => [
+  `Plan how to enable this employee's patrol every ${minutes} minutes`,
+  `during ${activeHours}${timezone ? ` (${timezone})` : ''}.`,
+  'Review scope, permissions, expected actions, failure recovery, and budget before enabling autonomous wake.',
+  'Do not enable it until I confirm the plan.',
+].join(' ');
 
 const isSettingsPatrolTrigger = (trigger: AgentTriggerSummary) =>
   trigger.type === 'interval' &&
@@ -108,6 +140,7 @@ interface AgentSettingsSectionProps {
   wmSaved: boolean;
   onSetWmDraft: (value: string) => void;
   onSetWmSaved: (value: boolean) => void;
+  onReviewPatrolPlan?: (request: string) => void | Promise<void>;
 }
 
 const formatTokens = (n: number) => {
@@ -135,6 +168,7 @@ export default function AgentSettingsSection({
   wmSaved,
   onSetWmDraft,
   onSetWmSaved,
+  onReviewPatrolPlan,
 }: AgentSettingsSectionProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -150,6 +184,7 @@ export default function AgentSettingsSection({
   const [patrolSaving, setPatrolSaving] = React.useState(false);
   const [patrolSaved, setPatrolSaved] = React.useState(false);
   const [patrolError, setPatrolError] = React.useState('');
+  const [patrolPlanDecisionPending, setPatrolPlanDecisionPending] = React.useState(false);
   const [permissionSaving, setPermissionSaving] = React.useState(false);
   const [permissionSaved, setPermissionSaved] = React.useState(false);
   const [permissionError, setPermissionError] = React.useState('');
@@ -162,6 +197,7 @@ export default function AgentSettingsSection({
 
   React.useEffect(() => {
     setPatrolForm(persistedPatrolForm);
+    setPatrolPlanDecisionPending(false);
   }, [persistedPatrolForm]);
 
   const hasChanges =
@@ -245,7 +281,7 @@ export default function AgentSettingsSection({
     }
   };
 
-  const handleSavePatrolSettings = async () => {
+  const handleSavePatrolSettings = async (decision?: PatrolPlanDecision) => {
     if (!canManage) return;
     if (!isValidActiveTime(patrolForm.activeStart) || !isValidActiveTime(patrolForm.activeEnd)) {
       setPatrolError(t('agent.settings.patrol.invalidActiveHours', 'Select valid start and end times.'));
@@ -254,6 +290,16 @@ export default function AgentSettingsSection({
 
     const minutes = clampPatrolInterval(patrolForm.intervalMinutes);
     const activeHours = buildActiveHours(patrolForm);
+    const saveDisposition = patrolSaveDisposition(
+      patrolForm.enabled,
+      persistedPatrolForm.enabled,
+      decision,
+    );
+    if (saveDisposition === 'review_required') {
+      setPatrolPlanDecisionPending(true);
+      setPatrolError('');
+      return;
+    }
     const nextConfig: Record<string, any> = {
       ...(patrolTrigger?.config || {}),
       source: SETTINGS_PATROL_TRIGGER_SOURCE,
@@ -275,8 +321,7 @@ export default function AgentSettingsSection({
         'Run scheduled patrols for messages, trigger state, and Agent Circle context.',
       );
       let planRecommendationId: string | undefined;
-      const needsPlanModeOptOut = patrolForm.enabled;
-      if (needsPlanModeOptOut) {
+      if (saveDisposition === 'apply_with_opt_out') {
         const actionKind = patrolTrigger ? 'enable_autonomous_wake' : 'create_enabled_trigger';
         const recommendation = await planApi.createRecommendation(
           agentId,
@@ -286,8 +331,9 @@ export default function AgentSettingsSection({
         planRecommendationId = declined.id;
       }
       if (patrolTrigger) {
+        const enabledPatch = patrolEnabledUpdateValue(patrolForm.enabled, persistedPatrolForm.enabled);
         await triggerApi.update(agentId, patrolTrigger.id, {
-          is_enabled: patrolForm.enabled,
+          ...(enabledPatch === undefined ? {} : { is_enabled: enabledPatch }),
           config: nextConfig,
           reason,
           trigger_class: 'scheduled_job',
@@ -315,10 +361,29 @@ export default function AgentSettingsSection({
         activeStart: patrolForm.activeStart,
         activeEnd: patrolForm.activeEnd,
       });
+      setPatrolPlanDecisionPending(false);
       setPatrolSaved(true);
       setTimeout(() => setPatrolSaved(false), 2000);
     } catch (e: any) {
       setPatrolError(e?.message || t('agent.settings.patrol.saveError', 'Failed to save patrol settings'));
+    } finally {
+      setPatrolSaving(false);
+    }
+  };
+
+  const handleReviewPatrolPlan = async () => {
+    if (!onReviewPatrolPlan) return;
+    setPatrolSaving(true);
+    setPatrolError('');
+    try {
+      await onReviewPatrolPlan(buildPatrolPlanReviewRequest({
+        minutes: clampPatrolInterval(patrolForm.intervalMinutes),
+        activeHours: buildActiveHours(patrolForm),
+        timezone: agent?.timezone,
+      }));
+      setPatrolPlanDecisionPending(false);
+    } catch (e: any) {
+      setPatrolError(e?.message || t('agent.settings.patrol.reviewError', 'Failed to open Plan Mode'));
     } finally {
       setPatrolSaving(false);
     }
@@ -673,7 +738,10 @@ export default function AgentSettingsSection({
               type="checkbox"
               checked={patrolForm.enabled}
               disabled={!canManage || patrolLoading}
-              onChange={(e) => setPatrolForm((prev) => ({ ...prev, enabled: e.target.checked }))}
+              onChange={(e) => {
+                setPatrolPlanDecisionPending(false);
+                setPatrolForm((prev) => ({ ...prev, enabled: e.target.checked }));
+              }}
               className="agent-settings-toggle-input"
             />
             <span
@@ -758,13 +826,52 @@ export default function AgentSettingsSection({
               !canManage || !patrolHasChanges ? ' is-dimmed' : ''
             }`}
             disabled={!canManage || patrolLoading || patrolSaving || (!patrolTrigger && !patrolForm.enabled) || !patrolHasChanges}
-            onClick={handleSavePatrolSettings}
+            onClick={() => handleSavePatrolSettings()}
           >
             {patrolSaving ? t('agent.settings.patrol.saving', 'Saving patrol...') : t('agent.settings.patrol.save', 'Save patrol settings')}
           </button>
           {patrolSaved && <span className="agent-settings-status is-success">{t('agent.settings.patrol.saved', 'Patrol settings saved')}</span>}
           {patrolError && <span className="agent-settings-status is-error">{patrolError}</span>}
         </div>
+        {patrolPlanDecisionPending && patrolForm.enabled ? (
+          <section className="agent-settings-patrol-decision" data-testid="patrol-plan-decision">
+            <div>
+              <strong>{t('agent.settings.patrol.planDecisionTitle', 'Review before autonomous patrol')}</strong>
+              <p>
+                {t(
+                  'agent.settings.patrol.planDecisionDesc',
+                  'Patrol wakes this employee and may use tools without a new message. Review a plan, or explicitly enable it without one.',
+                )}
+              </p>
+            </div>
+            <div className="agent-settings-patrol-decision-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={patrolSaving || !onReviewPatrolPlan}
+                onClick={handleReviewPatrolPlan}
+              >
+                {t('agent.settings.patrol.reviewPlan', 'Review in Plan Mode')}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={patrolSaving}
+                onClick={() => handleSavePatrolSettings('enable_without_plan')}
+              >
+                {t('agent.settings.patrol.enableWithoutPlan', 'Enable without plan')}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={patrolSaving}
+                onClick={() => setPatrolPlanDecisionPending(false)}
+              >
+                {t('common.cancel', 'Cancel')}
+              </button>
+            </div>
+          </section>
+        ) : null}
       </div>
 
       <div className="agent-settings-channel">

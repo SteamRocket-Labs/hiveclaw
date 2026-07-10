@@ -29,7 +29,12 @@ import AgentChatSection, {
   sessionCheckpointPreview,
 } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
-import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
+import AgentSettingsSection, {
+  buildPatrolPlanRecommendationInput,
+  buildPatrolPlanReviewRequest,
+  patrolEnabledUpdateValue,
+  patrolSaveDisposition,
+} from './AgentSettingsSection';
 import AgentSkillsSection, { invalidateAgentSkillQueries } from './AgentSkillsSection';
 import AgentStatusSection from './AgentStatusSection';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
@@ -2199,6 +2204,29 @@ describe('AgentDetail extracted sections', () => {
       tool_name: 'trigger_rest',
       metadata: { surface: 'agent_settings_patrol' },
     });
+  });
+
+  it('requires a real patrol decision only for an enable transition', () => {
+    expect(patrolSaveDisposition(true, false)).toBe('review_required');
+    expect(patrolSaveDisposition(true, false, 'enable_without_plan')).toBe('apply_with_opt_out');
+    expect(patrolSaveDisposition(true, true)).toBe('apply');
+    expect(patrolSaveDisposition(false, true)).toBe('apply');
+    expect(patrolEnabledUpdateValue(true, true)).toBeUndefined();
+    expect(patrolEnabledUpdateValue(false, true)).toBe(false);
+    expect(patrolEnabledUpdateValue(true, false)).toBe(true);
+  });
+
+  it('builds a concrete Plan Mode handoff for patrol review', () => {
+    expect(buildPatrolPlanReviewRequest({
+      minutes: 90,
+      activeHours: '10:00-19:00',
+      timezone: 'Asia/Shanghai',
+    })).toContain('every 90 minutes');
+    expect(buildPatrolPlanReviewRequest({
+      minutes: 90,
+      activeHours: '10:00-19:00',
+      timezone: 'Asia/Shanghai',
+    })).toContain('10:00-19:00 (Asia/Shanghai)');
   });
 
   it('renders Agent access permissions inside detail settings', () => {

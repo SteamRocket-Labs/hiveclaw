@@ -1899,8 +1899,13 @@
         "saving": "正在保存巡检...",
         "saved": "巡检设置已保存",
         "saveError": "保存巡检设置失败",
+        "reviewError": "无法打开计划模式",
         "invalidActiveHours": "请选择有效的开始和结束时间。",
         "triggerReason": "按计划巡检消息、触发器状态和 Agent圈 上下文。",
+        "planDecisionTitle": "启用自主巡检前请先确认",
+        "planDecisionDesc": "巡检会在没有新消息时唤醒员工，并可能调用工具。你可以先审阅计划，或明确选择不经过计划直接启用。",
+        "reviewPlan": "在计划模式中审阅",
+        "enableWithoutPlan": "不经过计划直接启用",
         "circlePolicyTitle": "Agent圈权限策略"
       },
       "perm": {

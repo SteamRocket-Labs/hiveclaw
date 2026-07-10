@@ -95,7 +95,11 @@ import {
 } from './agent-detail/sessionCommandResult';
 import LocalAgents from './LocalAgents';
 import LocalAgentChatSection from './agent-detail/LocalAgentChatSection';
-import { readAssignmentHandoff } from './assignmentHandoff';
+import {
+    buildAssignmentHandoff,
+    buildAssignmentSessionTitle,
+    readAssignmentHandoff,
+} from './assignmentHandoff';
 import './AgentDetail.css';
 
 // P8 IA (docs/agent-memory-md-first-spec.md §10): Knowledge remains the
@@ -3035,6 +3039,13 @@ function AgentDetailInner() {
                             agent={agent}
                             llmModels={llmModels}
                             canManage={canManage}
+                            onReviewPatrolPlan={async (request) => {
+                                const handoff = buildAssignmentHandoff(request, 'plan');
+                                const session = await chatApi.createSession(id!, buildAssignmentSessionTitle(handoff.content));
+                                navigate(`/agents/${id}/sessions/${session.id}`, {
+                                    state: { assignmentDraft: handoff },
+                                });
+                            }}
                             settingsForm={settingsForm}
                             onSettingsFormChange={setSettingsForm}
                             settingsSaving={settingsSaving}

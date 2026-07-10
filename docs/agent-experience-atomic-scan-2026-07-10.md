@@ -1155,3 +1155,54 @@ ruff check + ruff format --check affected backend paths -> clean
 - `MODE-06 Rewind`：`断点 -> 闭环`。
 - Branch：继续保持非破坏性 `闭环`，活动 Run 期间仍可创建。
 - 七原子总矩阵的 Rewind：`断点 -> 闭环`。
+
+### 12.9 Patrol 显式 Plan 决策与真实审计证据 — 已闭环
+
+本节收口 `MODE-05`。启用自主巡检不再由前端后台创建 recommendation 后立即代替用户 decline；设置页现在先展示真实决策，再由用户选择进入 Plan Mode 或明确跳过计划。
+
+**原子链**
+
+| 原子 | 当前事实源与消费路径 |
+| --- | --- |
+| 输入 | 只有 `disabled -> enabled` 或首次创建启用 Trigger 才要求决策。首次点击 Save 只打开 `Review in Plan Mode / Enable without plan / Cancel` 决策面，不产生 Trigger 或 recommendation 写入。 |
+| 权威 | Settings 仍要求 `canManage`；`Enable without plan` 是用户独立点击产生的明确 opt-out。recommendation 的创建、decline 与 Trigger 写入继续由认证用户 API 绑定同一 Agent 和 action kind。 |
+| 执行 | Review 会创建真实 human-chat Session，并用结构化 assignment handoff 打开 Plan Mode，包含 interval、active hours、timezone、权限、预算与恢复要求；明确 opt-out 才执行 `create recommendation -> user decline -> Trigger create/enable`。 |
+| 证据 | `AgentPlanRecommendation.status=declined` 现在只对应真实按钮点击；Review 路径的 ChatSession、Plan Mode 请求、PlanRequest 与后续 RuntimeTask 是独立机械证据。设置页不再伪造 `plan_mode_explicitly_rejected`。 |
+| 恢复 | Review session 创建失败会保留决策面和未保存设置；opt-out 任一步失败显示错误且不标记保存成功。Cancel 不写任何后端状态。 |
+| 消费 | 用户能在原位置理解 autonomous wake 风险并选择；Review 进入真实 Agent Session，而不是无消费的 recommendation 页面。已启用巡检仅修改频率/活跃时间时省略 `is_enabled`，按后端既有低风险 config-edit 契约执行，不误触 Plan gate。 |
+| 验收 | pure decision contract 覆盖首次启用、显式 opt-out、已启用 config edit 与 disable；assignment handoff、i18n、全量前端与 production build 均通过。 |
+
+**状态机**
+
+```text
+Save disabled -> enabled
+  -> decision visible, no write
+       -> Review in Plan Mode -> new Session + Plan draft
+       -> Enable without plan -> recommendation shown/declined by same user -> Trigger enable
+       -> Cancel -> no write
+
+Save enabled -> enabled (schedule/config only)
+  -> PATCH config without is_enabled -> no false Plan gate
+```
+
+**代码极简收口**
+
+- `patrolSaveDisposition()` 是唯一 enable-transition 决策；
+- `patrolEnabledUpdateValue()` 保证 config-only patch 不携带冗余启用字段；
+- Review 复用既有 `AssignmentHandoff + ChatSession + Plan Mode`，没有新建第二套 plan runtime；
+- opt-out 继续复用既有 recommendation gate，只修正“谁在什么时候 decline”的权威与证据。
+
+**机械验收**
+
+```text
+Red evidence -> Save 自动 create + decline；用户未看见 recommendation；已启用 config edit 仍发送 is_enabled=true 并误触 gate
+targeted Patrol/Assignment/i18n suites -> 105 passed, 0 failed
+frontend full regression -> 97 files, 577 passed, 0 failed
+npm run build -> TypeScript + Vite exit 0
+git diff --check -> clean
+```
+
+**状态变化**
+
+- `MODE-05 Patrol`：`断点 -> 闭环`。
+- Plan recommendation 的 Authority / Evidence：`断点 -> 闭环`。

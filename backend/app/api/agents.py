@@ -204,9 +204,7 @@ async def list_agents(
     agent_ids = [row["id"] for row in rows]
     permission_map: dict[uuid.UUID, str] = {}
     if agent_ids:
-        permission_result = await db.execute(
-            select(AgentPermission).where(AgentPermission.agent_id.in_(agent_ids))
-        )
+        permission_result = await db.execute(select(AgentPermission).where(AgentPermission.agent_id.in_(agent_ids)))
         for permission in permission_result.scalars().all():
             applies = (
                 permission.scope_type == "company"
@@ -217,9 +215,7 @@ async def list_agents(
                     and permission.scope_id == current_user.department_id
                 )
             )
-            if applies and (
-                permission_map.get(permission.agent_id) != "manage" or permission.access_level == "manage"
-            ):
+            if applies and (permission_map.get(permission.agent_id) != "manage" or permission.access_level == "manage"):
                 permission_map[permission.agent_id] = permission.access_level or "use"
 
     output = []

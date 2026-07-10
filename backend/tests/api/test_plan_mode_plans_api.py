@@ -111,6 +111,7 @@ def _client(monkeypatch, *, service, user=None, db=None):
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr(plans_api, "check_agent_access", allow_access)
+
     async def allow_plan_action(*_args, **_kwargs):
         return "session_owner"
 

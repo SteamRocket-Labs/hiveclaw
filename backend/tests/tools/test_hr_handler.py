@@ -228,7 +228,9 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
     assert payload["summary"]["first_mission"] == "先完成行业扫描"
     assert payload["blueprint_hash"]
     assert payload["blueprint"]["source_attributions"][0]["source_type"] == "unknown_or_needs_company_source"
-    assert payload["source_attribution_policy"]["company_knowledge_lane"] == "known_missing_not_available_for_attribution"
+    assert (
+        payload["source_attribution_policy"]["company_knowledge_lane"] == "known_missing_not_available_for_attribution"
+    )
     assert any("Company KB is not implemented" in warning for warning in payload["warnings"])
     assert payload["source_attribution_policy"]["history_suggestion_lane"] == "advisory"
     assert any(item["source_type"] == "unknown_or_needs_company_source" for item in payload["knowledge_debt"])

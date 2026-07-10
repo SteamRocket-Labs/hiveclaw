@@ -440,7 +440,6 @@ async def test_local_agent_delegation_releases_budget_reservation_when_enqueue_f
 @pytest.mark.asyncio
 async def test_local_agent_delegation_waits_for_budget_approval_before_channel_write(monkeypatch):
     from app.services import local_agent_channel_service
-    from app.services.agent_tool_domains import messaging
     from app.services.agent_tool_domains.messaging import _delegate_to_local_agent_channel
     from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired
 

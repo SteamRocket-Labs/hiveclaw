@@ -92,11 +92,14 @@ def test_claim_is_idempotent_and_lease_bounded():
             lease_seconds=120,
         )
 
-    assert claim_hr_creation_draft_record(
-        draft,
-        now=now + timedelta(seconds=121),
-        lease_seconds=120,
-    ) == "claimed"
+    assert (
+        claim_hr_creation_draft_record(
+            draft,
+            now=now + timedelta(seconds=121),
+            lease_seconds=120,
+        )
+        == "claimed"
+    )
 
 
 def test_completed_draft_returns_existing_asset_without_reexecution():
@@ -107,10 +110,13 @@ def test_completed_draft_returns_existing_asset_without_reexecution():
     draft.created_agent_id = uuid4()
     draft.creation_idempotency_key = f"hr-draft:{draft.id}"
 
-    assert claim_hr_creation_draft_record(
-        draft,
-        now=datetime.now(UTC),
-    ) == "completed"
+    assert (
+        claim_hr_creation_draft_record(
+            draft,
+            now=datetime.now(UTC),
+        )
+        == "completed"
+    )
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -190,9 +196,7 @@ async def test_draft_is_the_single_created_agent_binding_source(owner_sessionmak
         await db.commit()
 
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
-        saved_draft = (
-            await db.execute(select(HrCreationDraft).where(HrCreationDraft.id == draft_id))
-        ).scalar_one()
+        saved_draft = (await db.execute(select(HrCreationDraft).where(HrCreationDraft.id == draft_id))).scalar_one()
         saved_employee = (await db.execute(select(Agent).where(Agent.id == employee_id))).scalar_one()
         assert saved_draft.created_agent_id == employee_id
         assert saved_employee.id == employee_id

@@ -499,10 +499,10 @@ async def test_preview_workflow_rejects_dynamic_candidate_artifact_mismatch():
             "preview_workflow",
             agent_id,
             {
-            "definition": mutated_definition,
-            "args": candidate["preview_args"],
-            "proposal_id": proposal["proposal_id"],
-            "candidate_id": candidate["candidate_id"],
+                "definition": mutated_definition,
+                "args": candidate["preview_args"],
+                "proposal_id": proposal["proposal_id"],
+                "candidate_id": candidate["candidate_id"],
             },
         )
     )
@@ -610,10 +610,10 @@ async def test_start_workflow_persists_dynamic_proposal_binding(monkeypatch):
                 "preview_workflow",
                 agent_id,
                 {
-                "definition": candidate["lowered_definition"],
-                "args": candidate["preview_args"],
-                "proposal_id": proposal["proposal_id"],
-                "candidate_id": candidate["candidate_id"],
+                    "definition": candidate["lowered_definition"],
+                    "args": candidate["preview_args"],
+                    "proposal_id": proposal["proposal_id"],
+                    "candidate_id": candidate["candidate_id"],
                 },
             )
         )
@@ -666,9 +666,7 @@ async def test_start_workflow_rejects_dynamic_ids_without_dynamic_preview(monkey
 async def test_start_workflow_rejects_missing_preview_binding():
     from app.tools.handlers import workflow as workflow_handlers
 
-    result = await workflow_handlers.start_workflow(
-        _start_request(uuid.uuid4(), {})
-    )
+    result = await workflow_handlers.start_workflow(_start_request(uuid.uuid4(), {}))
     payload = json.loads(result)
 
     assert payload["ok"] is False

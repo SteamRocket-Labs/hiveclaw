@@ -1979,7 +1979,9 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                         trigger_count=len(triggers),
                     )
                 except Exception as t0_exc:
-                    warnings.append("HR creation evidence projection failed; the agent exists and the draft remains auditable.")
+                    warnings.append(
+                        "HR creation evidence projection failed; the agent exists and the draft remains auditable."
+                    )
                     draft.provisioning_json = {**dict(draft.provisioning_json or {}), "t0_evidence": "failed"}
                     logger.warning(
                         "[HR] Failed to append hr_agent_created T0 event for agent %s: %s",

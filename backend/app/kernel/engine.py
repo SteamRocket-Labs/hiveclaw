@@ -972,11 +972,7 @@ def _normalize_tool_result_for_llm(result: Any) -> str:
 def _empty_assistant_fallback(collected_parts: list[dict[str, Any]]) -> str:
     """Produce a recovery-oriented terminal message without exposing raw tool payloads."""
     last_tool_part = next(
-        (
-            part
-            for part in reversed(collected_parts)
-            if isinstance(part, dict) and part.get("type") == "tool_call"
-        ),
+        (part for part in reversed(collected_parts) if isinstance(part, dict) and part.get("type") == "tool_call"),
         None,
     )
     if last_tool_part is None:
@@ -1010,10 +1006,7 @@ def _empty_assistant_fallback(collected_parts: list[dict[str, Any]]) -> str:
             f"[LLM Error] 模型在 {tool_name} 未完成后没有返回最终说明：{error_message[:300]} "
             "你可以重试本轮；完整错误和运行证据已保留在技术详情中。"
         )
-    return (
-        f"[LLM Error] 模型在 {tool_name} 完成后没有返回最终说明。"
-        "工具结果已保留，你可以重试本轮。"
-    )
+    return f"[LLM Error] 模型在 {tool_name} 完成后没有返回最终说明。工具结果已保留，你可以重试本轮。"
 
 
 def _extract_tool_side_effects(raw_result: Any) -> dict[str, Any] | None:

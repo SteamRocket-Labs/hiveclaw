@@ -324,6 +324,67 @@ async def test_delegate_async_reserves_budget_before_creating_runtime_task(monke
 
 
 @pytest.mark.asyncio
+async def test_delegate_async_approval_wait_persists_exact_task_without_dispatch(monkeypatch):
+    from app.agents import orchestrator
+    from app.agents.orchestrator import delegate_async
+    from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired
+
+    captured: dict = {}
+
+    class WaitingBudgetService:
+        async def reserve(self, reservation):
+            captured["reservation"] = reservation
+            raise RuntimeBudgetApprovalRequired(
+                "approval required",
+                budget_run_id=reservation.budget_run_id,
+                dimensions=["delegations"],
+            )
+
+    async def fake_create_runtime_task_record(**kwargs):
+        captured["create"] = kwargs
+        return kwargs["task_id"]
+
+    async def fake_notify(**kwargs):
+        captured["notify"] = kwargs
+
+    class FakeGateway:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def acquire_lease(self, **_kwargs):
+            return SimpleNamespace(acquired=True, lease=SimpleNamespace(id="lease-1"))
+
+        async def send_signal(self, **_kwargs):
+            return SimpleNamespace(id="signal-1", thread_id="trace-1")
+
+    monkeypatch.setattr(orchestrator, "create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr(orchestrator, "gateway_scope", lambda *_args, **_kwargs: FakeGateway())
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
+
+    handle = await delegate_async(
+        target=SimpleNamespace(id=uuid4(), name="BudgetedWorker", role_description=""),
+        target_model=SimpleNamespace(
+            provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None
+        ),
+        conversation_messages=[{"role": "user", "content": "do delegated work"}],
+        owner_id=uuid4(),
+        session_id="delegation-session",
+        parent_agent_id=uuid4(),
+        budget_run_id=uuid4(),
+        budget_service=WaitingBudgetService(),
+    )
+
+    assert handle.status == "waiting_budget_approval"
+    assert captured["create"]["status"] == "pending"
+    assert captured["create"]["budget_admission_status"] == "waiting_budget_approval"
+    assert captured["create"]["budget_reservation_key"] == captured["reservation"].reservation_key
+    assert "notify" not in captured
+
+
+@pytest.mark.asyncio
 async def test_local_agent_delegation_releases_budget_reservation_when_enqueue_fails(monkeypatch):
     from app.services import local_agent_channel_service
     from app.services.agent_tool_domains import messaging
@@ -374,6 +435,52 @@ async def test_local_agent_delegation_releases_budget_reservation_when_enqueue_f
     assert captured["settle"][0].budget_run_id == budget_run_id
     assert captured["settle"][0].reservation_key == captured["reserve"][0].reservation_key
     assert captured["settle"][0].reason == "local_agent_delegation_enqueue_failed"
+
+
+@pytest.mark.asyncio
+async def test_local_agent_delegation_waits_for_budget_approval_before_channel_write(monkeypatch):
+    from app.services import local_agent_channel_service
+    from app.services.agent_tool_domains import messaging
+    from app.services.agent_tool_domains.messaging import _delegate_to_local_agent_channel
+    from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired
+
+    source_agent = SimpleNamespace(
+        id=uuid4(),
+        name="Source Agent",
+        creator_id=uuid4(),
+        tenant_id=uuid4(),
+    )
+    target_agent = SimpleNamespace(
+        id=uuid4(),
+        name="Target Agent",
+        creator_id=uuid4(),
+        tenant_id=source_agent.tenant_id,
+    )
+
+    class WaitingBudgetService:
+        async def reserve(self, reservation):
+            raise RuntimeBudgetApprovalRequired(
+                "approval required",
+                budget_run_id=reservation.budget_run_id,
+                dimensions=["delegations"],
+            )
+
+    async def fail_channel_write(*_args, **_kwargs):
+        raise AssertionError("local channel must not be written before approval")
+
+    monkeypatch.setattr("app.services.runtime_budget_service.RuntimeBudgetService", WaitingBudgetService)
+    monkeypatch.setattr(local_agent_channel_service, "create_channel_session", fail_channel_write)
+
+    result = await _delegate_to_local_agent_channel(
+        source_agent=source_agent,
+        target_agent=target_agent,
+        message_text="Please work locally.",
+        args={},
+        budget_run_id=uuid4(),
+    )
+
+    assert result["status"] == "waiting_budget_approval"
+    assert result["error_code"] == "runtime_budget_approval_required"
 
 
 @pytest.mark.asyncio

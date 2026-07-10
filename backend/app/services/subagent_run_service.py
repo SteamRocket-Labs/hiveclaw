@@ -34,6 +34,7 @@ from app.runtime.subagent_decision_entry import build_subagent_decision_entry, s
 from app.runtime.subagent_return_contract import build_subagent_return_contract, subagent_return_contract_from_metadata
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
+from app.services.execution_admission import ExecutionAdmission
 from app.services.runtime_task_service import (
     build_completion_journal_entry,
     build_restart_reconciliation_metadata,
@@ -68,6 +69,7 @@ logger = logging.getLogger(__name__)
 class SubagentRunStart:
     run_id: str
     child_session_id: str | None
+    admission_status: str = "admitted"
 
 
 def _subagent_type_restart_replay_safe(spec_type: str | None) -> bool:
@@ -186,6 +188,7 @@ async def create_subagent_child_session(
     tenant_id: uuid.UUID | None = None,
     trace_id: str | None = None,
     context_mode: str = "none",
+    session_state: str = "running",
 ) -> str:
     """Create the lightweight child-session projection for a background subagent."""
 
@@ -197,7 +200,7 @@ async def create_subagent_child_session(
             run_id=run_id,
             child_session_id=str(child_session_id),
         ),
-        "session_state": "running",
+        "session_state": session_state,
         "subagent_name": spec_name,
         "subagent_type": spec_type,
         "run_id": run_id,
@@ -236,7 +239,11 @@ async def create_subagent_child_session(
             tenant_id=resolved_tenant_id,
             session_id=child_session_id,
             actor_type="agent",
-            event_type="subagent_task_started",
+            event_type=(
+                "subagent_task_waiting_budget_approval"
+                if session_state == "waiting_budget_approval"
+                else "subagent_task_started"
+            ),
             content=task,
             role="user",
             user_id=parent_user_id,
@@ -277,13 +284,14 @@ async def start_subagent_run(
     budget_uuid = _uuid_or_none(budget_run_id)
     budget_reservation_key: str | None = None
     reservation_service = budget_service or (RuntimeBudgetService() if budget_uuid is not None else None)
+    admission_status = "not_required" if budget_uuid is None else "admitted"
     if budget_uuid is not None and reservation_service is not None:
         estimated_tokens = estimate_reservation_tokens(
             default_tokens=_DEFAULT_SUBAGENT_START_TOKEN_RESERVATION,
             prompt_tokens=_estimate_prompt_tokens_from_text(task),
         )
         budget_reservation_key = f"subagent:{run_id}:start"
-        await reservation_service.reserve(
+        admission = await ExecutionAdmission(reservation_service).admit(
             RuntimeBudgetReservation(
                 budget_run_id=budget_uuid,
                 reservation_key=budget_reservation_key,
@@ -301,6 +309,7 @@ async def start_subagent_run(
                 },
             )
         )
+        admission_status = admission.status
 
     child_session_id = None
     if parent_user_id is not None:
@@ -314,6 +323,7 @@ async def start_subagent_run(
             parent_session_id=parent_session_id,
             trace_id=trace_id,
             context_mode=context_mode,
+            session_state=("waiting_budget_approval" if admission_status == "waiting_budget_approval" else "running"),
         )
     replay_safe = _subagent_type_restart_replay_safe(spec_type)
     side_effect_risk = "read_only" if replay_safe else "mutating"
@@ -398,10 +408,24 @@ async def start_subagent_run(
             metadata_json=metadata,
             budget_run_id=budget_uuid,
             budget_reservation_key=budget_reservation_key,
-            budget_admission_status="reserved" if budget_uuid is not None else None,
+            budget_admission_status=(
+                "waiting_budget_approval"
+                if admission_status == "waiting_budget_approval"
+                else "reserved"
+                if budget_uuid is not None
+                else None
+            ),
+            budget_terminal_reason=(
+                "runtime_budget_approval_required" if admission_status == "waiting_budget_approval" else None
+            ),
         )
     except Exception:
-        if budget_uuid is not None and budget_reservation_key and reservation_service is not None:
+        if (
+            budget_uuid is not None
+            and budget_reservation_key
+            and reservation_service is not None
+            and admission_status == "admitted"
+        ):
             await reservation_service.settle(
                 RuntimeBudgetSettlement(
                     budget_run_id=budget_uuid,
@@ -411,13 +435,18 @@ async def start_subagent_run(
                 )
             )
         raise
-    try:
-        from app.services.runtime_task_worker import notify_runtime_task_worker
+    if admission_status != "waiting_budget_approval":
+        try:
+            from app.services.runtime_task_worker import notify_runtime_task_worker
 
-        await notify_runtime_task_worker(reason="subagent_created", runtime_task_id=persisted_run_id)
-    except Exception:
-        logger.debug("[Subagent] runtime task worker wakeup failed for run %s", persisted_run_id, exc_info=True)
-    return SubagentRunStart(run_id=persisted_run_id, child_session_id=child_session_id)
+            await notify_runtime_task_worker(reason="subagent_created", runtime_task_id=persisted_run_id)
+        except Exception:
+            logger.debug("[Subagent] runtime task worker wakeup failed for run %s", persisted_run_id, exc_info=True)
+    return SubagentRunStart(
+        run_id=persisted_run_id,
+        child_session_id=child_session_id,
+        admission_status=admission_status,
+    )
 
 
 def make_run_completer(run_id: str):

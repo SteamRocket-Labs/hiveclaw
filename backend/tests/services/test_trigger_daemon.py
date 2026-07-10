@@ -552,6 +552,10 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
             budget_payloads.append(payload)
             return SimpleNamespace(id=budget_run_id)
 
+        async def reserve(self, reservation):
+            budget_payloads.append(reservation)
+            return SimpleNamespace(budget_run_id=reservation.budget_run_id, denied_dimensions=())
+
     async def fake_acquire_trigger_fire_lease(_trigger_id, _event_key):
         return True
 
@@ -594,7 +598,8 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     assert created[0]["metadata_json"]["restart_replay_contract"]["task_type"] == "trigger"
     assert created[0]["metadata_json"]["restart_replay_journal"][0]["phase"] == "spawn_intent_recorded"
     assert created[0]["budget_run_id"] == budget_run_id
-    assert created[0]["budget_admission_status"] == "root"
+    assert created[0]["budget_admission_status"] == "reserved"
+    assert created[0]["budget_reservation_key"] == f"trigger:{created[0]['task_id']}:start"
     assert created[0]["metadata_json"]["budget_run_id"] == str(budget_run_id)
     wake_candidate = created[0]["metadata_json"]["trigger_wake_context_candidate"]
     assert wake_candidate["context_candidate_ref"]["kind"] == "trigger_wake"
@@ -605,7 +610,81 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     assert budget_payloads[0].root_run_kind == "trigger_fire"
     assert budget_payloads[0].root_runtime_task_id.hex == created[0]["task_id"]
     assert budget_payloads[0].root_agent_id == agent_id
+    assert budget_payloads[1].background_tasks == 1
     assert scheduled_runtime_ids == ["runtime-task-1"]
+
+
+@pytest.mark.asyncio
+async def test_trigger_budget_approval_wait_persists_claimable_intent_without_starting(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+    from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    budget_run_id = uuid4()
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        name="approval wake",
+        type="cron",
+        config={"expr": "0 9 * * *"},
+    )
+    captured: dict = {}
+
+    async def fake_resolve_tenant(_agent_id, *_args, **_kwargs):
+        return tenant_id
+
+    async def fake_create_runtime_task_record(**kwargs):
+        captured["task"] = kwargs
+        return kwargs["task_id"]
+
+    class WaitingBudgetService:
+        async def resolve_policy(self, _lookup):
+            return SimpleNamespace(
+                id=uuid4(),
+                enforcement_mode="enforce",
+                fail_mode="require_confirmation",
+                max_tokens=None,
+                max_cache_miss_tokens=None,
+                max_subagents=None,
+                max_team_sessions=None,
+                max_delegations=None,
+                max_background_tasks=0,
+                max_continuation_wakes=None,
+                max_provider_calls=None,
+                max_failures=None,
+                max_needs_reconciliation=None,
+                max_child_failure_ratio=None,
+                max_parent_invocations=None,
+                policy_json={},
+            )
+
+        async def create_run(self, _payload):
+            return SimpleNamespace(id=budget_run_id)
+
+        async def reserve(self, reservation):
+            captured["reservation"] = reservation
+            raise RuntimeBudgetApprovalRequired(
+                "approval required",
+                budget_run_id=reservation.budget_run_id,
+                dimensions=["background_tasks"],
+            )
+
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", fake_resolve_tenant)
+    monkeypatch.setattr(trigger_daemon, "RuntimeBudgetService", WaitingBudgetService)
+    monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
+
+    task_ref = await trigger_daemon._create_trigger_runtime_task(
+        agent_id,
+        [trigger],
+        metadata_json={"preflight_allowed": True},
+    )
+
+    assert str(task_ref) == captured["task"]["task_id"]
+    assert task_ref.admission_status == "waiting_budget_approval"
+    assert captured["task"]["status"] == "pending"
+    assert captured["task"]["budget_admission_status"] == "waiting_budget_approval"
+    assert captured["task"]["budget_reservation_key"] == captured["reservation"].reservation_key
 
 
 @pytest.mark.asyncio

@@ -42,11 +42,12 @@ from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.agent_session_continuation import continue_agent_session_from_mailbox
+from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
 from app.services.runtime_budget_service import (
     RuntimeBudgetDenied,
     RuntimeBudgetReservation,
     RuntimeBudgetService,
-    RuntimeBudgetSettlement,
+    estimate_reservation_tokens,
 )
 from app.services.agent_team_runtime_service import (
     active_agent_team_contract_from_tool_request,
@@ -90,7 +91,7 @@ async def _reserve_agent_session_message_budget(
     budget_run_id: str | None,
     child_session_id: uuid.UUID | None,
     parent_session_id: str | None,
-) -> tuple[RuntimeBudgetService, RuntimeBudgetReservation] | None:
+) -> tuple[ExecutionAdmission, ExecutionAdmissionDecision] | None:
     budget_uuid = _uuid_or_none(budget_run_id)
     if budget_uuid is None:
         return None
@@ -105,13 +106,13 @@ async def _reserve_agent_session_message_budget(
             "parent_session_id": parent_session_id,
         },
     )
-    service = RuntimeBudgetService()
-    await service.reserve(reservation)
-    return service, reservation
+    admission = ExecutionAdmission(RuntimeBudgetService())
+    decision = await admission.admit(reservation)
+    return admission, decision
 
 
 async def _settle_agent_session_message_budget(
-    reservation_pair: tuple[RuntimeBudgetService, RuntimeBudgetReservation] | None,
+    reservation_pair: tuple[ExecutionAdmission, ExecutionAdmissionDecision] | None,
     *,
     status: str,
     consumer: str | None,
@@ -119,18 +120,29 @@ async def _settle_agent_session_message_budget(
 ) -> None:
     if reservation_pair is None:
         return
-    service, reservation = reservation_pair
+    admission, decision = reservation_pair
     actual_background_tasks = 1 if status in {"started", "queued"} and consumer != "mid_run_message_drain" else 0
-    await service.settle(
-        RuntimeBudgetSettlement(
-            budget_run_id=reservation.budget_run_id,
-            reservation_key=reservation.reservation_key,
-            actual_continuation_wakes=1 if status in {"started", "queued"} else 0,
-            actual_background_tasks=actual_background_tasks,
-            reason=reason,
-            metadata=reservation.metadata,
-        )
+    await admission.settle(
+        decision,
+        actual_continuation_wakes=1 if status in {"started", "queued"} else 0,
+        actual_background_tasks=actual_background_tasks,
+        reason=reason,
     )
+
+
+def _waiting_admission_payload(
+    reservation_pair: tuple[ExecutionAdmission, ExecutionAdmissionDecision] | None,
+) -> dict[str, Any] | None:
+    if reservation_pair is None or not reservation_pair[1].waiting:
+        return None
+    decision = reservation_pair[1]
+    return {
+        "ok": False,
+        "status": "waiting_budget_approval",
+        "error_code": "runtime_budget_approval_required",
+        "message": decision.user_message,
+        "denied_dimensions": list(decision.denied_dimensions),
+    }
 
 
 async def _resolve_parent_runtime(
@@ -736,8 +748,12 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                 "type": spec.type,
                 "definition_scope": definition_scope,
                 "team_name": normalized_args.get("team_name") or None,
-                "status": "queued",
-                "session_state": "queued",
+                "status": started.admission_status
+                if started.admission_status == "waiting_budget_approval"
+                else "queued",
+                "session_state": started.admission_status
+                if started.admission_status == "waiting_budget_approval"
+                else "queued",
                 "execution_shape_decision": execution_shape_decision,
                 "continuation": {
                     "address": child_session_id,
@@ -749,13 +765,64 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                     "parent_session_id": request.context.session_id,
                 },
                 "message": (
-                    f"Subagent {spec.name!r} is queued for the runtime worker. Keep working and wait for the "
-                    "completion wake; use check_subagent only if you explicitly need fallback status inspection."
+                    "运行额度已达上限，已请求管理员批准；该 Subagent 尚未执行，批准后会自动继续。"
+                    if started.admission_status == "waiting_budget_approval"
+                    else (
+                        f"Subagent {spec.name!r} is queued for the runtime worker. Keep working and wait for the "
+                        "completion wake; use check_subagent only if you explicitly need fallback status inspection."
+                    )
                 ),
             }
         )
 
     foreground_run_id = uuid.uuid4().hex
+    budget_uuid = _uuid_or_none(request.context.budget_run_id)
+    foreground_admission = None
+    foreground_admission_service = None
+    if budget_uuid is not None:
+        foreground_admission_service = ExecutionAdmission(RuntimeBudgetService())
+        estimated_tokens = estimate_reservation_tokens(
+            default_tokens=50_000,
+            prompt_tokens=max(1, (len(task) + 3) // 4),
+        )
+        try:
+            foreground_admission = await foreground_admission_service.admit(
+                RuntimeBudgetReservation(
+                    budget_run_id=budget_uuid,
+                    reservation_key=f"subagent:{foreground_run_id}:foreground",
+                    tokens=estimated_tokens,
+                    cache_miss_tokens=estimated_tokens,
+                    subagents=1,
+                    reason="foreground_subagent_start",
+                    metadata={
+                        "work_type": "foreground_subagent",
+                        "subagent_name": spec.name,
+                        "subagent_type": spec.type,
+                        "parent_session_id": request.context.session_id,
+                    },
+                )
+            )
+        except RuntimeBudgetDenied as exc:
+            return _json(
+                {
+                    "ok": False,
+                    "status": "blocked",
+                    "error_code": "runtime_budget_denied",
+                    "error": str(exc),
+                    "message": "运行保护已阻止启动新的 Subagent；主 Agent 仍可继续处理其他工作。",
+                }
+            )
+        if foreground_admission.waiting:
+            return _json(
+                {
+                    "ok": False,
+                    "mode": "foreground",
+                    "status": "waiting_budget_approval",
+                    "error_code": "runtime_budget_approval_required",
+                    "message": foreground_admission.user_message,
+                    "denied_dimensions": list(foreground_admission.denied_dimensions),
+                }
+            )
     child_session_id: str | None = None
     parent_session_id = str(request.context.session_id or "").strip()
     can_create_child_session = _uuid_or_none(parent_session_id) is not None and request.context.user_id is not None
@@ -782,8 +849,35 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             )
     ctx.child_session_id = child_session_id
 
-    handle = await spawn_subagent(ctx, spec, task, fork=spec.isolation, ledger_todo_id=ledger_todo_id)
+    try:
+        handle = await spawn_subagent(ctx, spec, task, fork=spec.isolation, ledger_todo_id=ledger_todo_id)
+    except Exception:
+        if foreground_admission is not None and foreground_admission_service is not None:
+            await foreground_admission_service.settle(
+                foreground_admission,
+                actual_tokens=0,
+                actual_subagents=1,
+                reason="foreground_subagent_failed",
+                metadata={
+                    "work_type": "foreground_subagent",
+                    "subagent_name": spec.name,
+                    "status": "failed_before_result",
+                },
+            )
+        raise
     result = handle.result
+    if foreground_admission is not None and foreground_admission_service is not None:
+        await foreground_admission_service.settle(
+            foreground_admission,
+            actual_tokens=max(0, int(result.tokens_used or 0)) if result is not None else 0,
+            actual_subagents=1,
+            reason="foreground_subagent_completed" if result and result.ok else "foreground_subagent_failed",
+            metadata={
+                "work_type": "foreground_subagent",
+                "subagent_name": spec.name,
+                "status": result.status if result else "failed",
+            },
+        )
     foreground_status = result.status if result else "failed"
     if child_session_id:
         await update_subagent_child_session_state(
@@ -1000,6 +1094,9 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
                     child_session_id=None,
                     parent_session_id=request.context.session_id,
                 )
+                waiting_payload = _waiting_admission_payload(reservation_pair)
+                if waiting_payload is not None:
+                    return _json(waiting_payload)
             except RuntimeBudgetDenied as exc:
                 return _json({"ok": False, "error": str(exc), "error_code": "runtime_budget_denied"})
             try:
@@ -1058,6 +1155,9 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
                 child_session_id=child_session_uuid,
                 parent_session_id=request.context.session_id,
             )
+            waiting_payload = _waiting_admission_payload(reservation_pair)
+            if waiting_payload is not None:
+                return _json(waiting_payload)
         except RuntimeBudgetDenied as exc:
             return _json({"ok": False, "error": str(exc), "error_code": "runtime_budget_denied"})
         try:

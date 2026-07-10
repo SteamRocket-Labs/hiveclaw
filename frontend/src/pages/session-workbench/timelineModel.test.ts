@@ -802,6 +802,42 @@ describe('session workbench timeline model', () => {
     ]);
   });
 
+  it('projects a budget approval blocker as user-readable waiting state', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [],
+      sessionWorkbench: {
+        runtime_sections: {
+          subagents: [
+            {
+              id: 'subagent-budget-wait',
+              runtime_kind: 'subagent',
+              label: 'Research worker',
+              status: 'pending',
+              user_blocker: {
+                kind: 'runtime_budget_approval',
+                status: 'waiting',
+                title: '等待运行额度批准',
+                reason: '本任务达到公司设置的运行上限，尚未继续执行。',
+                next_action: '你可以继续其他工作；管理员批准后本任务会自动恢复。',
+                owner: 'company_admin',
+                can_continue_other_work: true,
+                auto_resume: true,
+              },
+            },
+          ],
+        },
+      } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeConsole.summary.state).toBe('waiting');
+    expect(rightPanel.runtimeConsole.waiters).toHaveLength(1);
+    expect(rightPanel.runtimeConsole.waiters[0].userBlocker).toMatchObject({
+      title: '等待运行额度批准',
+      owner: 'company_admin',
+      autoResume: true,
+    });
+  });
+
   it('falls back to session runtime events when workbench runtime sections are missing', () => {
     const rightPanel = buildSessionRightPanelModel({
       messages: [

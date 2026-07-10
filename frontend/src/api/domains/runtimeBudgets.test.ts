@@ -33,6 +33,7 @@ describe('runtime budget API adapter', () => {
     await runtimeBudgetApi.listEvents('run-1', 25);
     await runtimeBudgetApi.cancelRun('run-1', 'stop');
     await runtimeBudgetApi.approveOverrun('run-1', { reason: 'reviewed', enforcement_mode: 'observe' });
+    await runtimeBudgetApi.rejectOverrun('run-1', 'not safe');
     await runtimeBudgetApi.setTenantEnforcementMode({ enforcement_mode: 'observe', reason: 'emergency' });
 
     expect(get).toHaveBeenNthCalledWith(1, '/runtime-budgets/policies');
@@ -45,7 +46,10 @@ describe('runtime budget API adapter', () => {
       reason: 'reviewed',
       enforcement_mode: 'observe',
     });
-    expect(post).toHaveBeenNthCalledWith(4, '/runtime-budgets/tenant/enforcement-mode', {
+    expect(post).toHaveBeenNthCalledWith(4, '/runtime-budgets/runs/run-1/reject-overrun', {
+      reason: 'not safe',
+    });
+    expect(post).toHaveBeenNthCalledWith(5, '/runtime-budgets/tenant/enforcement-mode', {
       enforcement_mode: 'observe',
       reason: 'emergency',
     });

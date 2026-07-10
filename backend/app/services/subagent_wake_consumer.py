@@ -20,11 +20,11 @@ from app.agents.subagent import SUBAGENT_COMPLETION_SIGNAL
 from app.database import enter_rls_bypass, tenant_scoped_session
 from app.models.coordination import CoordinationSignal
 from app.models.runtime_task import RuntimeTask
+from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
 from app.services.runtime_budget_service import (
     RuntimeBudgetDenied,
     RuntimeBudgetReservation,
     RuntimeBudgetService,
-    RuntimeBudgetSettlement,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ async def _reserve_continuation_wake_budget(
     signal_id: uuid.UUID,
     metadata: dict[str, Any] | None,
     session_factory: Any = None,
-) -> tuple[RuntimeBudgetService, RuntimeBudgetReservation] | None:
+) -> tuple[ExecutionAdmission, ExecutionAdmissionDecision] | None:
     budget_run_id = _uuid_or_none((metadata or {}).get("budget_run_id"))
     if budget_run_id is None:
         return None
@@ -88,29 +88,25 @@ async def _reserve_continuation_wake_budget(
     # Thread the drain's session factory through: the budget rows live in the
     # same database the drain is operating on, not the process-default engine.
     service_kwargs = {"session_factory": session_factory} if session_factory is not None else {}
-    service = RuntimeBudgetService(**service_kwargs)
-    await service.reserve(reservation)
-    return service, reservation
+    admission = ExecutionAdmission(RuntimeBudgetService(**service_kwargs))
+    decision = await admission.admit(reservation)
+    return admission, decision
 
 
 async def _settle_continuation_wake_budget(
-    reservation_pair: tuple[RuntimeBudgetService, RuntimeBudgetReservation] | None,
+    reservation_pair: tuple[ExecutionAdmission, ExecutionAdmissionDecision] | None,
     *,
     actual_wakes: int,
     reason: str,
 ) -> None:
     if reservation_pair is None:
         return
-    service, reservation = reservation_pair
+    admission, decision = reservation_pair
     try:
-        await service.settle(
-            RuntimeBudgetSettlement(
-                budget_run_id=reservation.budget_run_id,
-                reservation_key=reservation.reservation_key,
-                actual_continuation_wakes=actual_wakes,
-                reason=reason,
-                metadata=reservation.metadata,
-            )
+        await admission.settle(
+            decision,
+            actual_continuation_wakes=actual_wakes,
+            reason=reason,
         )
     except Exception as exc:
         logger.warning("[SubagentWake] failed to settle continuation wake budget reservation: %s", exc)
@@ -239,6 +235,22 @@ async def drain_subagent_completion_wakes(
                 session_factory=session_factory,
             )
             if breaker_reason is not None:
+                service_kwargs = {"session_factory": session_factory} if session_factory is not None else {}
+                breaker_run = await RuntimeBudgetService(**service_kwargs).get_run(
+                    tenant_id=tenant_id,
+                    budget_run_id=budget_run_id,
+                )
+                if breaker_run is not None and breaker_run.status == "waiting_budget_approval":
+                    results.append(
+                        SubagentWakeResult(
+                            tenant_id=tenant_id,
+                            parent_agent_id=parent_agent_id,
+                            signal_id=signal_id,
+                            status="waiting_budget_approval",
+                            detail=breaker_reason,
+                        )
+                    )
+                    continue
                 await _consume_completion_signal(
                     tenant_id=tenant_id,
                     signal_id=signal_id,
@@ -274,6 +286,17 @@ async def drain_subagent_completion_wakes(
                     signal_id=signal_id,
                     status="denied",
                     detail=str(exc)[:300],
+                )
+            )
+            continue
+        if wake_budget is not None and wake_budget[1].waiting:
+            results.append(
+                SubagentWakeResult(
+                    tenant_id=tenant_id,
+                    parent_agent_id=parent_agent_id,
+                    signal_id=signal_id,
+                    status="waiting_budget_approval",
+                    detail=wake_budget[1].user_message or "runtime budget approval required",
                 )
             )
             continue

@@ -142,7 +142,7 @@ class RuntimeBudgetCancelOut(BaseModel):
 
 class RuntimeBudgetApproveOverrunRequest(BaseModel):
     reason: str = Field(default="admin approved runtime overrun", min_length=1, max_length=1000)
-    enforcement_mode: str = "observe"
+    enforcement_mode: str = "enforce"
     max_tokens: int | None = Field(default=None, ge=0)
     max_cache_miss_tokens: int | None = Field(default=None, ge=0)
     max_subagents: int | None = Field(default=None, ge=0)
@@ -151,6 +151,10 @@ class RuntimeBudgetApproveOverrunRequest(BaseModel):
     max_background_tasks: int | None = Field(default=None, ge=0)
     max_continuation_wakes: int | None = Field(default=None, ge=0)
     max_provider_calls: int | None = Field(default=None, ge=0)
+
+
+class RuntimeBudgetRejectOverrunRequest(BaseModel):
+    reason: str = Field(default="admin rejected runtime overrun", min_length=1, max_length=1000)
 
 
 class RuntimeBudgetTenantModeRequest(BaseModel):
@@ -177,16 +181,25 @@ def _require_tenant(user: User) -> uuid.UUID:
 def _user_status(status_value: str) -> str:
     return {
         "active": "正在运行",
+        "waiting_budget_approval": "等待批准",
+        "resuming": "正在恢复",
         "completed": "已完成",
         "exhausted": "已暂停",
         "hard_stopped": "已停止",
         "expired": "已停止",
         "cancelled": "已停止",
+        "stopped": "已停止",
     }.get(status_value, "需要处理")
 
 
 def _user_reason(status_value: str, terminal_reason: str | None) -> str:
     reason = terminal_reason or ""
+    if status_value == "waiting_budget_approval":
+        return "运行额度已达上限，正在等待管理员批准"
+    if status_value == "resuming":
+        return "运行额度已批准，任务正在自动恢复"
+    if status_value == "stopped" and "approval_rejected" in reason:
+        return "运行额度申请未获批准"
     if "budget" in reason or status_value == "exhausted":
         return "运行额度已达上限"
     if "failure" in reason or "reconciliation" in reason:
@@ -201,6 +214,10 @@ def _user_reason(status_value: str, terminal_reason: str | None) -> str:
 
 
 def _user_next_action(status_value: str) -> str:
+    if status_value == "waiting_budget_approval":
+        return "你可以继续其他工作；管理员批准后本任务会自动恢复"
+    if status_value == "resuming":
+        return "无需重复提交，等待任务恢复"
     if status_value in {"exhausted", "hard_stopped"}:
         return "查看已完成结果，或联系管理员批准继续"
     if status_value == "active":
@@ -232,6 +249,10 @@ def _event_message(event) -> str:
         return "本次运行已超时，未开始的后续任务已停止。"
     if event_type == "cancelled":
         return "管理员已暂停本次运行。"
+    if event_type == "overrun_approved":
+        return "管理员已批准继续，等待中的任务会自动恢复。"
+    if event_type == "overrun_rejected":
+        return "管理员未批准继续，等待中的任务已停止。"
     if event_type == "settlement":
         return "系统已记录本次运行消耗。"
     return "运行状态已更新。"
@@ -359,6 +380,25 @@ async def approve_runtime_budget_overrun(
         max_background_tasks=body.max_background_tasks,
         max_continuation_wakes=body.max_continuation_wakes,
         max_provider_calls=body.max_provider_calls,
+    )
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="runtime budget run not found")
+    return _run_out(run)
+
+
+@router.post("/runs/{budget_run_id}/reject-overrun", response_model=RuntimeBudgetRunOut)
+async def reject_runtime_budget_overrun(
+    budget_run_id: uuid.UUID,
+    body: RuntimeBudgetRejectOverrunRequest,
+    current_user: User = Depends(get_current_admin),
+    service: RuntimeBudgetService = Depends(get_runtime_budget_service),
+):
+    tenant_id = _require_tenant(current_user)
+    run = await service.reject_overrun(
+        tenant_id=tenant_id,
+        budget_run_id=budget_run_id,
+        reason=body.reason,
+        actor_user_id=current_user.id,
     )
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="runtime budget run not found")

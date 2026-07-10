@@ -132,7 +132,7 @@ function formatDate(value?: string | null) {
 
 function statusTone(status: string) {
   if (status === 'active' || status === 'completed') return 'healthy';
-  if (status === 'exhausted' || status === 'hard_stopped') return 'warning';
+  if (['waiting_budget_approval', 'resuming', 'exhausted', 'hard_stopped'].includes(status)) return 'warning';
   return 'muted';
 }
 
@@ -205,7 +205,11 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
     [profile, profileDefault, t],
   );
   const effectivePolicy = activePolicy || builtInPolicy;
-  const protectedRuns = runs.filter((run) => ['exhausted', 'hard_stopped', 'expired', 'cancelled'].includes(run.status));
+  const protectedRuns = runs.filter((run) =>
+    ['waiting_budget_approval', 'resuming', 'exhausted', 'hard_stopped', 'stopped', 'expired', 'cancelled'].includes(
+      run.status,
+    ),
+  );
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['runtime-budget-policies'] });
@@ -268,8 +272,13 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
     mutationFn: (run: RuntimeBudgetRun) =>
       runtimeBudgetApi.approveOverrun(run.id, {
         reason: 'operator approved continued run after review',
-        enforcement_mode: 'observe',
+        enforcement_mode: 'enforce',
       }),
+    onSuccess: invalidate,
+  });
+  const rejectRun = useMutation({
+    mutationFn: (run: RuntimeBudgetRun) =>
+      runtimeBudgetApi.rejectOverrun(run.id, 'operator rejected continued run after review'),
     onSuccess: invalidate,
   });
 
@@ -422,12 +431,18 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
                     {run.user_status}
                   </div>
                   <div className="workspace-runtime-run-reason">{run.user_reason}</div>
+                  <div className="workspace-runtime-run-next">{run.user_next_action}</div>
                   <div className="workspace-runtime-run-meta">{formatDate(run.created_at)} · {run.source || run.root_run_kind}</div>
                 </div>
                 <div className="workspace-runtime-run-actions">
-                  {['exhausted', 'hard_stopped'].includes(run.status) && (
+                  {['waiting_budget_approval', 'exhausted', 'hard_stopped'].includes(run.status) && (
                     <button className="btn btn-secondary" onClick={() => approveRun.mutate(run)} disabled={approveRun.isPending}>
                       {t('runtimeBudgets.approveContinue', 'Approve')}
+                    </button>
+                  )}
+                  {run.status === 'waiting_budget_approval' && (
+                    <button className="btn btn-secondary" onClick={() => rejectRun.mutate(run)} disabled={rejectRun.isPending}>
+                      {t('runtimeBudgets.rejectContinue', 'Reject')}
                     </button>
                   )}
                   {run.status === 'active' && (

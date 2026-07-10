@@ -49,7 +49,7 @@ def test_breaker_status_for_fail_mode_maps_documented_modes():
     from app.services.runtime_budget_service import _breaker_status_for_fail_mode
 
     assert _breaker_status_for_fail_mode("summary_only") == "summary_only"
-    assert _breaker_status_for_fail_mode("require_confirmation") == "summary_only"
+    assert _breaker_status_for_fail_mode("require_confirmation") == "waiting_budget_approval"
     assert _breaker_status_for_fail_mode("hard_stop") == "hard_stopped"
     assert _breaker_status_for_fail_mode("fail_closed") == "hard_stopped"
     assert _breaker_status_for_fail_mode(None) == "hard_stopped"

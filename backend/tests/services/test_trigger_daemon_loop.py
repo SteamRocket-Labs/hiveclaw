@@ -380,6 +380,52 @@ async def test_fire_trigger_once_now_preflight_block_skips_without_invoking(monk
     assert skipped and skipped[0]["skip_reason"] == "agent_paused"
 
 
+@pytest.mark.asyncio
+async def test_fire_trigger_once_now_fails_closed_when_runtime_ledger_cannot_be_written(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    trigger = _loop_trigger(source_session_id=uuid4(), agent_id=agent_id)
+    sessions = [_SequenceSession([_ScalarResult(trigger)])]
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: sessions.pop(0))
+
+    async def fake_resolve_tenant(_agent_id, *_a, **_k):
+        return None
+
+    async def fake_lease(*_args, **_kwargs):
+        return True
+
+    async def fake_preflight(*_args, **_kwargs):
+        return True, None, "", {}
+
+    async def fake_create_rt(*_args, **_kwargs):
+        return None
+
+    async def fail_mark(*_args, **_kwargs):
+        raise AssertionError("trigger must not run without its durable RuntimeTask ledger")
+
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", fake_resolve_tenant)
+    monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_lease)
+    monkeypatch.setattr(trigger_daemon, "_preflight_trigger_group", fake_preflight)
+    monkeypatch.setattr(trigger_daemon, "_create_trigger_runtime_task", fake_create_rt)
+    monkeypatch.setattr(trigger_daemon, "_mark_trigger_fire_started", fail_mark)
+    monkeypatch.setattr(
+        trigger_daemon.asyncio,
+        "create_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("trigger must not spawn without its durable RuntimeTask ledger")
+        ),
+    )
+
+    result = await trigger_daemon.fire_trigger_once_now(agent_id, trigger.id)
+
+    assert result == {
+        "fired": False,
+        "reason": "runtime_ledger_unavailable",
+        "runtime_task_id": None,
+    }
+
+
 # ── B3: _invoke_agent_for_triggers routes same_session before new session ─
 
 

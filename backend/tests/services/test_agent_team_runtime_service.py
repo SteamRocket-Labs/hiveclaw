@@ -50,6 +50,31 @@ class _SequenceCompletionDB(_DB):
         return _ScalarOne(self.values.pop(0))
 
 
+class _ScalarMany:
+    def __init__(self, values) -> None:
+        self.values = values
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self.values)
+
+
+class _ExistingMembersDB(_DB):
+    def __init__(self, members) -> None:
+        super().__init__()
+        self.members = members
+
+    async def execute(self, _stmt):
+        return _ScalarMany(self.members)
+
+
+class _FailingFlushDB(_DB):
+    async def flush(self) -> None:
+        raise RuntimeError("flush failed")
+
+
 def test_agent_team_decision_entry_summarizes_members_and_lead_actions():
     from app.services.agent_team_runtime_service import build_agent_team_decision_entry
 
@@ -221,6 +246,208 @@ async def test_agenttool_teammate_spawn_creates_member_session_and_starts_runtim
     assert "member_spawned" in event_types
     assert "member_message_queued" in event_types
     assert parent_events and parent_events[0]["event_type"] == "team_member"
+
+
+@pytest.mark.asyncio
+async def test_agenttool_teammate_spawn_reserves_team_session_before_records_and_inherits_budget(monkeypatch):
+    from app.services.agent_team_runtime_service import (
+        TeamMemberCreateSpec,
+        create_agent_team_runtime_result,
+        spawn_agent_team_member_runtime,
+    )
+    from app.services.runtime_budget_service import RuntimeBudgetReservationResult
+
+    db = _DB()
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=uuid4())
+    parent_session = SimpleNamespace(id=uuid4(), root_session_id=None)
+    budget_run_id = uuid4()
+    captured: dict = {}
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    async def fake_append_session_event(**_kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_continue_agent_session_from_mailbox(**kwargs):
+        captured["continuation"] = kwargs
+        return {"ok": True, "status": "queued", "consumer": "teammate_spawn", "run_id": str(uuid4())}
+
+    class BudgetService:
+        async def reserve(self, reservation):
+            assert not db.added, "admission must happen before member/session records are written"
+            captured["reservation"] = reservation
+            return RuntimeBudgetReservationResult(
+                allowed=True,
+                would_deny=False,
+                idempotent=False,
+                budget_run_id=reservation.budget_run_id,
+            )
+
+        async def settle(self, settlement):
+            captured["settlement"] = settlement
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_emit_hook)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append_session_event)
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.continue_agent_session_from_mailbox",
+        fake_continue_agent_session_from_mailbox,
+    )
+    created = await create_agent_team_runtime_result(
+        db=db,
+        agent=agent,
+        user=user,
+        parent_session=parent_session,
+        name="Budget Team",
+        members=[],
+        source="unit_test",
+    )
+    db.added.clear()
+
+    payload = await spawn_agent_team_member_runtime(
+        db=db,
+        agent=agent,
+        user=user,
+        parent_session=parent_session,
+        team=created.team,
+        spec=TeamMemberCreateSpec(name="critic", role="Review"),
+        prompt="Review the work.",
+        source="unit_test",
+        budget_run_id=budget_run_id,
+        budget_service=BudgetService(),
+    )
+
+    assert payload["ok"] is True
+    assert captured["reservation"].budget_run_id == budget_run_id
+    assert captured["reservation"].team_sessions == 1
+    assert captured["reservation"].background_tasks == 1
+    assert captured["continuation"]["extra_metadata"]["budget_run_id"] == str(budget_run_id)
+    assert captured["settlement"].actual_team_sessions == 1
+    assert captured["settlement"].actual_background_tasks == 1
+
+
+@pytest.mark.asyncio
+async def test_agenttool_teammate_spawn_waits_for_approval_without_half_created_member(monkeypatch):
+    from app.models.agent_team import AgentTeamMember
+    from app.models.chat_session import ChatSession
+    from app.services.agent_team_runtime_service import TeamMemberCreateSpec, spawn_agent_team_member_runtime
+    from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired
+
+    db = _DB()
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=uuid4())
+    parent_session = SimpleNamespace(id=uuid4(), root_session_id=None)
+    team = SimpleNamespace(id=uuid4(), name="Budget Team", parent_session_id=parent_session.id)
+
+    class WaitingBudgetService:
+        async def reserve(self, reservation):
+            raise RuntimeBudgetApprovalRequired(
+                "approval required",
+                budget_run_id=reservation.budget_run_id,
+                dimensions=["team_sessions"],
+            )
+
+    payload = await spawn_agent_team_member_runtime(
+        db=db,
+        agent=agent,
+        user=user,
+        parent_session=parent_session,
+        team=team,
+        spec=TeamMemberCreateSpec(name="critic", role="Review"),
+        prompt="Review the work.",
+        source="unit_test",
+        budget_run_id=uuid4(),
+        budget_service=WaitingBudgetService(),
+    )
+
+    assert payload["ok"] is False
+    assert payload["status"] == "waiting_budget_approval"
+    assert not any(isinstance(item, (AgentTeamMember, ChatSession)) for item in db.added)
+
+
+@pytest.mark.asyncio
+async def test_agenttool_teammate_spawn_uses_unique_name_in_budget_reservation(monkeypatch):
+    from app.models.agent_team import AgentTeamMember
+    from app.services.agent_team_runtime_service import TeamMemberCreateSpec, spawn_agent_team_member_runtime
+    from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired
+
+    existing = AgentTeamMember(
+        id=uuid4(),
+        team_id=uuid4(),
+        member_name="critic",
+        chat_session_id=uuid4(),
+    )
+    db = _ExistingMembersDB([existing])
+    parent_session = SimpleNamespace(id=uuid4(), root_session_id=None)
+    team = SimpleNamespace(id=existing.team_id, name="Budget Team", parent_session_id=parent_session.id)
+    captured: dict = {}
+
+    class WaitingBudgetService:
+        async def reserve(self, reservation):
+            captured["reservation"] = reservation
+            raise RuntimeBudgetApprovalRequired(
+                "approval required",
+                budget_run_id=reservation.budget_run_id,
+                dimensions=["team_sessions"],
+            )
+
+    payload = await spawn_agent_team_member_runtime(
+        db=db,
+        agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4()),
+        user=SimpleNamespace(id=uuid4()),
+        parent_session=parent_session,
+        team=team,
+        spec=TeamMemberCreateSpec(name="critic", role="Review"),
+        prompt="Review the work.",
+        source="unit_test",
+        budget_run_id=uuid4(),
+        budget_service=WaitingBudgetService(),
+    )
+
+    assert payload["member_name"] == "critic-2"
+    assert captured["reservation"].reservation_key.endswith(":critic-2")
+
+
+@pytest.mark.asyncio
+async def test_agenttool_teammate_spawn_releases_admission_when_record_flush_fails():
+    from app.services.agent_team_runtime_service import TeamMemberCreateSpec, spawn_agent_team_member_runtime
+    from app.services.runtime_budget_service import RuntimeBudgetReservationResult
+
+    db = _FailingFlushDB()
+    parent_session = SimpleNamespace(id=uuid4(), root_session_id=None)
+    team = SimpleNamespace(id=uuid4(), name="Budget Team", parent_session_id=parent_session.id)
+    captured: dict = {}
+
+    class BudgetService:
+        async def reserve(self, reservation):
+            return RuntimeBudgetReservationResult(
+                allowed=True,
+                would_deny=False,
+                idempotent=False,
+                budget_run_id=reservation.budget_run_id,
+            )
+
+        async def settle(self, settlement):
+            captured["settlement"] = settlement
+
+    with pytest.raises(RuntimeError, match="flush failed"):
+        await spawn_agent_team_member_runtime(
+            db=db,
+            agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4()),
+            user=SimpleNamespace(id=uuid4()),
+            parent_session=parent_session,
+            team=team,
+            spec=TeamMemberCreateSpec(name="critic", role="Review"),
+            prompt="Review the work.",
+            source="unit_test",
+            budget_run_id=uuid4(),
+            budget_service=BudgetService(),
+        )
+
+    assert captured["settlement"].actual_team_sessions == 0
+    assert captured["settlement"].actual_background_tasks == 0
+    assert captured["settlement"].reason == "agent_team_member_spawn_failed"
 
 
 @pytest.mark.asyncio

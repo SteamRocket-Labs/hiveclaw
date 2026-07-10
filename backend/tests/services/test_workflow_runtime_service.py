@@ -120,6 +120,103 @@ async def test_start_run_completes_and_journals(service, tenant_id, owner_sessio
     assert quota.allocated_tokens == 50_000
 
 
+async def test_workflow_root_reserves_and_settles_background_execution(
+    service,
+    tenant_id,
+    owner_sessionmaker,
+):
+    from app.models.runtime_budget import RuntimeBudgetRun
+    from app.services.runtime_budget_service import RuntimeBudgetRunCreate, RuntimeBudgetService
+
+    budget_service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    budget_run = await budget_service.create_run(
+        RuntimeBudgetRunCreate(
+            tenant_id=tenant_id,
+            root_run_kind="workflow_test",
+            root_run_key=f"workflow-test:{uuid.uuid4()}",
+            source="workflow",
+            profile="workflow",
+            max_background_tasks=2,
+            enforcement_mode="enforce",
+        )
+    )
+
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        budget_run_id=budget_run.id,
+        budget_service=budget_service,
+    )
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        stored_budget = (
+            await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))
+        ).scalar_one()
+    assert handle.outcome.status == "completed"
+    assert task.budget_admission_status == "settled"
+    assert task.budget_reservation_key == f"workflow:{handle.run_id}:start"
+    assert stored_budget.reserved_background_tasks == 0
+    assert stored_budget.used_background_tasks == 1
+
+
+async def test_workflow_over_budget_persists_exact_frozen_task_for_approval(
+    service,
+    tenant_id,
+    owner_sessionmaker,
+):
+    from app.models.runtime_budget import RuntimeBudgetRun
+    from app.services.runtime_budget_service import RuntimeBudgetRunCreate, RuntimeBudgetService
+
+    budget_service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    budget_run = await budget_service.create_run(
+        RuntimeBudgetRunCreate(
+            tenant_id=tenant_id,
+            root_run_kind="workflow_test",
+            root_run_key=f"workflow-test:{uuid.uuid4()}",
+            source="workflow",
+            profile="workflow",
+            max_background_tasks=0,
+            enforcement_mode="enforce",
+            fail_mode="require_confirmation",
+        )
+    )
+
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        budget_run_id=budget_run.id,
+        budget_service=budget_service,
+        enqueue_only=True,
+    )
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        frozen_budget = (
+            await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))
+        ).scalar_one()
+    assert handle.outcome.status == "pending"
+    assert handle.outcome.reason == "waiting_budget_approval"
+    assert task.status == "pending"
+    assert task.budget_admission_status == "waiting_budget_approval"
+    assert frozen_budget.status == "waiting_budget_approval"
+
+    await budget_service.approve_overrun(
+        tenant_id=tenant_id,
+        budget_run_id=budget_run.id,
+        reason="approve workflow",
+        actor_user_id=uuid.uuid4(),
+    )
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        resumed_task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+    assert resumed_task.status == "pending"
+    assert resumed_task.budget_admission_status == "approved"
+
+
 async def test_dynamic_workflow_run_updates_decision_entry_with_outcome_and_repair(
     service, tenant_id, owner_sessionmaker
 ):

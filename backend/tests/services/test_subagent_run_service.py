@@ -15,7 +15,7 @@ from app.database import tenant_scoped_session
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.services import subagent_run_service as svc
-from app.services.runtime_budget_service import RuntimeBudgetDenied
+from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired, RuntimeBudgetDenied
 
 
 @pytest.mark.asyncio
@@ -125,6 +125,52 @@ async def test_start_subagent_run_budget_denial_does_not_create_runtime_task(mon
             budget_run_id=uuid.uuid4(),
             budget_service=DenyingBudgetService(),
         )
+
+
+@pytest.mark.asyncio
+async def test_start_subagent_run_approval_wait_persists_exact_task_without_waking_worker(monkeypatch):
+    captured: dict = {}
+
+    async def _fake_create(**kwargs):
+        captured["create"] = kwargs
+        return kwargs["task_id"]
+
+    async def _fake_notify(**kwargs):
+        captured["notify"] = kwargs
+
+    async def _fake_create_child_session(**kwargs):
+        captured["child_session"] = kwargs
+        return "waiting-child-session"
+
+    class WaitingBudgetService:
+        async def reserve(self, reservation):
+            captured["reservation"] = reservation
+            raise RuntimeBudgetApprovalRequired(
+                "approval required",
+                budget_run_id=reservation.budget_run_id,
+                dimensions=["subagents"],
+            )
+
+    monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    monkeypatch.setattr(svc, "create_subagent_child_session", _fake_create_child_session)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", _fake_notify)
+
+    started = await svc.start_subagent_run(
+        parent_agent_id=uuid.uuid4(),
+        parent_user_id=uuid.uuid4(),
+        spec_name="scout",
+        spec_type=SUBAGENT_TYPE_WORKER,
+        task="do x",
+        budget_run_id=uuid.uuid4(),
+        budget_service=WaitingBudgetService(),
+    )
+
+    assert started.admission_status == "waiting_budget_approval"
+    assert captured["create"]["status"] == "pending"
+    assert captured["create"]["budget_admission_status"] == "waiting_budget_approval"
+    assert captured["create"]["budget_reservation_key"] == captured["reservation"].reservation_key
+    assert captured["child_session"]["session_state"] == "waiting_budget_approval"
+    assert "notify" not in captured
 
 
 @pytest.mark.asyncio

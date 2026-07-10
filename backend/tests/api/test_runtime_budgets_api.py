@@ -19,6 +19,7 @@ class _FakeRuntimeBudgetService:
         self.created_policy: dict | None = None
         self.updated_policy: dict | None = None
         self.approved_overrun: dict | None = None
+        self.rejected_overrun: dict | None = None
         self.tenant_mode: dict | None = None
 
     async def list_policies(self, *, tenant_id):
@@ -162,6 +163,28 @@ class _FakeRuntimeBudgetService:
             completed_at=None,
         )
 
+    async def reject_overrun(self, *, tenant_id, budget_run_id, reason, actor_user_id):
+        self.rejected_overrun = {
+            "tenant_id": tenant_id,
+            "budget_run_id": budget_run_id,
+            "reason": reason,
+            "actor_user_id": actor_user_id,
+        }
+        return SimpleNamespace(
+            id=budget_run_id,
+            tenant_id=tenant_id,
+            root_run_kind="trigger_fire",
+            root_run_key="trigger:daily_scan",
+            source="scheduled",
+            profile="scheduled",
+            status="stopped",
+            enforcement_mode="enforce",
+            terminal_reason="runtime_budget_approval_rejected",
+            created_at=datetime.now(UTC),
+            expires_at=None,
+            completed_at=datetime.now(UTC),
+        )
+
     async def set_tenant_enforcement_mode(self, *, tenant_id, enforcement_mode, reason, actor_user_id):
         self.tenant_mode = {
             "tenant_id": tenant_id,
@@ -290,3 +313,34 @@ def test_runtime_budget_api_approves_overrun_and_switches_tenant_mode():
         "reason": "emergency observe",
         "actor_user_id": user.id,
     }
+
+
+def test_runtime_budget_api_rejects_waiting_work_with_actor_and_reason():
+    fake_service = _FakeRuntimeBudgetService()
+    client, user = _client(fake_service)
+
+    response = client.post(
+        f"/runtime-budgets/runs/{fake_service.run_id}/reject-overrun",
+        json={"reason": "unsafe to continue"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "stopped"
+    assert response.json()["user_status"] == "已停止"
+    assert fake_service.rejected_overrun == {
+        "tenant_id": fake_service.tenant_id,
+        "budget_run_id": fake_service.run_id,
+        "reason": "unsafe to continue",
+        "actor_user_id": user.id,
+    }
+
+
+def test_runtime_budget_waiting_status_has_user_semantics():
+    from app.api.runtime_budgets import _user_next_action, _user_reason, _user_status
+
+    assert _user_status("waiting_budget_approval") == "等待批准"
+    assert (
+        _user_reason("waiting_budget_approval", "runtime_budget_approval_required:subagents")
+        == "运行额度已达上限，正在等待管理员批准"
+    )
+    assert _user_next_action("waiting_budget_approval") == "你可以继续其他工作；管理员批准后本任务会自动恢复"

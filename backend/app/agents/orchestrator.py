@@ -22,6 +22,7 @@ from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_tools import CORE_TOOL_NAMES
 from app.services.execution_receipts import build_execution_receipt, canonical_payload_hash
+from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
 from app.services.governance_capability_taxonomy import CAPABILITY_MAP
 from app.services.invocation_trace import persist_invocation_span
 from app.services.runtime_task_service import (
@@ -1237,20 +1238,29 @@ async def _settle_delegation_budget(
         return
     reservation_key = f"delegation:{task_id}:start"
     try:
-        await RuntimeBudgetService().settle(
-            RuntimeBudgetSettlement(
+        reservation = RuntimeBudgetReservation(
+            budget_run_id=budget_run_id,
+            reservation_key=reservation_key,
+            delegations=1,
+            background_tasks=1,
+            runtime_task_id=uuid.UUID(task_id),
+            metadata={
+                "status": status,
+                "target_agent_id": str(getattr(request.target, "id", "")),
+                "target_agent_name": getattr(request.target, "name", None),
+            },
+        )
+        await ExecutionAdmission(RuntimeBudgetService()).settle(
+            ExecutionAdmissionDecision(
+                status="admitted",
+                reservation=reservation,
                 budget_run_id=budget_run_id,
-                reservation_key=reservation_key,
-                actual_delegations=1,
-                actual_background_tasks=1,
-                reason=f"delegation_{status}",
-                runtime_task_id=uuid.UUID(task_id),
-                metadata={
-                    "status": status,
-                    "target_agent_id": str(getattr(request.target, "id", "")),
-                    "target_agent_name": getattr(request.target, "name", None),
-                },
-            )
+            ),
+            actual_delegations=1,
+            actual_background_tasks=1,
+            reason=f"delegation_{status}",
+            runtime_task_id=uuid.UUID(task_id),
+            metadata=reservation.metadata,
         )
     except Exception:
         logger.debug("[Orchestrator] delegation budget settlement failed for %s", task_id, exc_info=True)
@@ -2537,12 +2547,13 @@ async def delegate_async(
         }
     )
     reservation_service = budget_service or (RuntimeBudgetService() if budget_uuid is not None else None)
+    budget_admission_status = "reserved" if budget_uuid is not None else None
     if budget_uuid is not None and reservation_service is not None:
         estimated_tokens = estimate_reservation_tokens(
             default_tokens=_DEFAULT_DELEGATION_START_TOKEN_RESERVATION,
             prompt_tokens=_estimate_prompt_tokens_from_messages(conversation_messages),
         )
-        await reservation_service.reserve(
+        admission_decision = await ExecutionAdmission(reservation_service).admit(
             RuntimeBudgetReservation(
                 budget_run_id=budget_uuid,
                 reservation_key=budget_reservation_key or f"delegation:{task_id}:start",
@@ -2560,12 +2571,14 @@ async def delegate_async(
                 },
             )
         )
+        budget_admission_status = "waiting_budget_approval" if admission_decision.waiting else "reserved"
         metadata_json["budget_run_id"] = str(budget_uuid)
         metadata_json["budget_reservation_key"] = budget_reservation_key
+        metadata_json["execution_admission_status"] = admission_decision.status
     _remember_async_task_parent(
         task_id,
         parent_agent_id,
-        status="queued",
+        status="waiting_budget_approval" if budget_admission_status == "waiting_budget_approval" else "queued",
         child_agent_name=getattr(target, "name", None),
         child_session_id=session_id,
         trace_id=real_trace_id,
@@ -2588,10 +2601,18 @@ async def delegate_async(
             metadata_json=metadata_json,
             budget_run_id=budget_uuid,
             budget_reservation_key=budget_reservation_key,
-            budget_admission_status="reserved" if budget_uuid is not None else None,
+            budget_admission_status=budget_admission_status,
+            budget_terminal_reason=(
+                "runtime_budget_approval_required" if budget_admission_status == "waiting_budget_approval" else None
+            ),
         )
     except Exception as exc:
-        if budget_uuid is not None and budget_reservation_key and reservation_service is not None:
+        if (
+            budget_uuid is not None
+            and budget_reservation_key
+            and reservation_service is not None
+            and budget_admission_status == "reserved"
+        ):
             try:
                 await reservation_service.settle(
                     RuntimeBudgetSettlement(
@@ -2606,12 +2627,13 @@ async def delegate_async(
                     "[Orchestrator] Failed to release delegation budget reservation %s", task_id, exc_info=True
                 )
         logger.warning("[Orchestrator] Failed to create runtime task record %s: %s", task_id, exc)
-    try:
-        from app.services.runtime_task_worker import notify_runtime_task_worker
+    if budget_admission_status != "waiting_budget_approval":
+        try:
+            from app.services.runtime_task_worker import notify_runtime_task_worker
 
-        await notify_runtime_task_worker(reason="delegation_created", runtime_task_id=task_id)
-    except Exception as exc:
-        logger.warning("[Orchestrator] Failed to wake runtime worker for delegation %s: %s", task_id, exc)
+            await notify_runtime_task_worker(reason="delegation_created", runtime_task_id=task_id)
+        except Exception as exc:
+            logger.warning("[Orchestrator] Failed to wake runtime worker for delegation %s: %s", task_id, exc)
 
     # P1.8: Persist delegation start to activity log for observability
     await _persist_delegation_event(
@@ -2619,14 +2641,19 @@ async def delegate_async(
         parent_agent_id=parent_agent_id,
         child_agent_name=target.name,
         trace_id=real_trace_id,
-        status="queued",
+        status="waiting_budget_approval" if budget_admission_status == "waiting_budget_approval" else "queued",
     )
-    logger.info("[Orchestrator] Async delegation queued: task_id=%s target=%s", task_id, target.name)
+    logger.info(
+        "[Orchestrator] Async delegation %s: task_id=%s target=%s",
+        budget_admission_status or "queued",
+        task_id,
+        target.name,
+    )
     return AsyncDelegationHandle(
         task_id=task_id,
         trace_id=real_trace_id,
         target_name=target.name,
-        status="queued",
+        status="waiting_budget_approval" if budget_admission_status == "waiting_budget_approval" else "queued",
         coordination_lease_id=lease_result.lease.id if lease_result.lease else None,
         signal_thread_id=signal.thread_id,
         receipt=request.execution_receipt,

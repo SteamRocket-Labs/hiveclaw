@@ -858,3 +858,47 @@ process-cache residue scan -> 0 matches
 - 第 6.4 节 process-local canonical state：`断点 -> 闭环`。
 - 第 6.4 节缺少 UI confirmation path：`断点 -> 闭环`。
 - 第 6.4 节 hash fallback / dynamic metadata 丢失：`断点 -> 闭环`；hash 仅作为 artifact evidence，不再作为启动输入。
+
+### 12.3 Unified execution admission and resumable governance — 已闭环
+
+**原子链**
+
+| 原子 | 当前事实源与消费路径 |
+| --- | --- |
+| 输入 | Sub-agent（foreground/background）、Agent Team member、Workflow root、delegation/A2A、Trigger root 与 completion wake 全部使用确定性 reservation key；Trigger 必须先创建 RuntimeTask ledger，ledger 失败则 fail-closed，不再先执行后补证据。 |
+| 权威 | budget run 继续绑定 tenant / root agent / root user / root session / root RuntimeTask；批准与拒绝 actor 只取认证后台用户，Session 只消费服务端生成的语义 blocker，不接收客户端伪造 authority。 |
+| 执行 | 新的 `ExecutionAdmission` 是所有工作放大入口共享的 reserve / wait / settle 契约；领域服务仍保留自身执行语义。额度不足且策略为 `require_confirmation` 时，exact RuntimeTask 保持 pending 且不可 claim，不再被取消。 |
+| 证据 | reservation、denial、approval/rejection、settlement 继续写 `runtime_budget_events`；RuntimeTask 保存 budget run、reservation key、admission status 与 terminal reason；Trigger definition/ids 与恢复输入保存于 RuntimeTask metadata。 |
+| 恢复 | `waiting_budget_approval -> approved -> resuming -> active` 会把 denial 原子地转换为 exact reservation、恢复同一个 pending task 并逐 task 唤醒；拒绝进入 stopped；审批等待也受 expires_at 回收；settlement exactly-once；wake 快路径失败不影响后续任务且 polling 仍可恢复。 |
+| 消费 | worker 现在消费 approved Trigger/Workflow/Sub-agent/Delegation task；Sub-agent child session、Session Runtime Console 与公司 Runtime Budget 页面消费同一语义状态；普通用户只见“原因 / 谁处理 / 是否自动恢复”，后台保留 raw limit/event。 |
+| 验收 | 五个新增边缘场景先 Red 后 Green；后端 14 个相关套件覆盖 admission、budget、Trigger、Workflow、Sub-agent、Team、delegation/A2A、worker 与 Session projection；前端 API、后台审批卡、timeline blocker 与 production build 全部通过。 |
+
+**关键实现证据**
+
+- 统一契约：`backend/app/services/execution_admission.py`；
+- 状态机与原子恢复：`backend/app/services/runtime_budget_service.py`、`backend/app/api/runtime_budgets.py`；
+- 放大执行消费者：`subagent_run_service.py`、`tools/handlers/subagent.py`、`agent_team_runtime_service.py`、`agents/orchestrator.py`、`agent_tool_domains/messaging.py`、`workflow_runtime_service.py`、`trigger_daemon.py`；
+- durable resume：`runtime_task_worker.py`、`workflow_launch.py`、`subagent_wake_consumer.py`；
+- 用户/后台双投影：`session_control_plane.py`、`timelineModel.ts`、`AgentChatSection.tsx`、`WorkspaceRuntimeBudgetsSection.tsx`。
+
+**故障注入与机械验收**
+
+```text
+Red evidence -> waiting approval never expired; child session claimed running; foreground spawn exception leaked reservation; duplicate Team name reused reservation key; Team flush failure leaked reservation
+Green evidence -> 5 passed
+pytest 14 affected backend suites -> 252 passed, 0 failed
+vitest runtime budget API/admin/timeline -> 34 passed, 0 failed
+npm run build -> tsc + vite exit 0
+ruff check affected backend paths -> All checks passed
+ruff format --check affected backend paths -> clean after canonical formatting
+git diff --check -> clean
+```
+
+**状态变化**
+
+- 第 7 节 `GOV-03`：`断点 -> 闭环`；批准恢复 exact task，拒绝才终止，summary-only 不再冒充 confirmation。
+- 第 7 节 `GOV-04`：`断点 -> 闭环`；所有当前工作放大入口使用同一 admission/settlement contract。
+- 第 7 节 `GOV-05`：`断点 -> 局部闭环`；Session 与后台语义投影已统一，跨 run completion 的可靠通知交付由下一节唯一 `RuntimeNotificationOutbox` 收口。
+- 第 6.2 节 Sub-agent 预算恢复：`断点 -> 闭环`。
+- 第 6.3 节 Agent Team 预算旁路：`断点 -> 闭环`。
+- 第 5 节 Trigger 证据入口：`断点 -> 闭环`；没有 RuntimeTask ledger 就不执行，批准后由 worker 恢复同一 intent。

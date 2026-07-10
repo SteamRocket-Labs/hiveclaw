@@ -28,6 +28,7 @@ SUPPORTED_RUNTIME_TASK_TYPES = (
     "delegation",
     "business_task",
     "subagent",
+    "trigger",
 )
 _DISPATCHED_TASKS: dict[str, tuple[str, asyncio.Task]] = {}
 _STATE: dict[str, Any] = {
@@ -214,6 +215,8 @@ def _dispatch_claimed_task(task: RuntimeTask) -> bool:
         return _dispatch_async_runtime_task(task, _execute_claimed_business_task(task.id), task_type="business_task")
     if task.task_type == "subagent":
         return _dispatch_async_runtime_task(task, _execute_claimed_subagent_task(task.id), task_type="subagent")
+    if task.task_type == "trigger":
+        return _dispatch_async_runtime_task(task, _execute_claimed_trigger_task(task.id), task_type="trigger")
     logger.warning("[RuntimeTaskWorker] Claimed unsupported task type {}; leaving task {}", task.task_type, task.id)
     return False
 
@@ -269,6 +272,18 @@ async def _execute_claimed_subagent_task(task_id: UUID) -> None:
     except Exception as exc:  # noqa: BLE001
         _STATE["last_error"] = f"subagent:{type(exc).__name__}:{str(exc)[:300]}"
         logger.exception("[RuntimeTaskWorker] subagent task {} failed", task_id)
+
+
+async def _execute_claimed_trigger_task(task_id: UUID) -> None:
+    try:
+        from app.services.trigger_daemon import execute_claimed_trigger_runtime_task
+
+        ok = await execute_claimed_trigger_runtime_task(task_id)
+        if not ok:
+            logger.warning("[RuntimeTaskWorker] trigger task {} could not be dispatched", task_id)
+    except Exception as exc:  # noqa: BLE001
+        _STATE["last_error"] = f"trigger:{type(exc).__name__}:{str(exc)[:300]}"
+        logger.exception("[RuntimeTaskWorker] trigger task {} failed", task_id)
 
 
 async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:

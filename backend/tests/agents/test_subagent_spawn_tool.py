@@ -258,6 +258,139 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_spawn_tool_foreground_uses_execution_admission_and_settles(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+    from app.services.runtime_budget_service import RuntimeBudgetReservationResult
+
+    captured: dict = {}
+    budget_run_id = uuid.uuid4()
+
+    async def fake_resolve(_agent_id):
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="done", tokens_used=7),
+        )
+
+    async def fake_active_agent_team_contract(_request):
+        return None
+
+    class BudgetService:
+        async def reserve(self, reservation):
+            captured["reservation"] = reservation
+            return RuntimeBudgetReservationResult(
+                allowed=True,
+                would_deny=False,
+                idempotent=False,
+                budget_run_id=reservation.budget_run_id,
+            )
+
+        async def settle(self, settlement):
+            captured["settlement"] = settlement
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "active_agent_team_contract_from_tool_request", fake_active_agent_team_contract)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+    monkeypatch.setattr(handler_mod, "RuntimeBudgetService", BudgetService)
+    request = _tool_request({"task": "investigate", "name": "scout"}, session_id=None)
+    request.context.budget_run_id = str(budget_run_id)
+
+    data = json.loads(await handler_mod.spawn_subagent_tool(request))
+
+    assert data["ok"] is True
+    assert captured["reservation"].budget_run_id == budget_run_id
+    assert captured["reservation"].subagents == 1
+    assert captured["reservation"].background_tasks == 0
+    assert captured["settlement"].actual_subagents == 1
+    assert captured["settlement"].actual_tokens == 7
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_foreground_releases_admission_when_spawn_raises(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+    from app.services.runtime_budget_service import RuntimeBudgetReservationResult
+
+    captured: dict = {}
+    budget_run_id = uuid.uuid4()
+
+    async def fake_resolve(_agent_id):
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
+
+    async def failing_spawn(*_args, **_kwargs):
+        raise RuntimeError("spawn failed before result")
+
+    async def fake_active_agent_team_contract(_request):
+        return None
+
+    class BudgetService:
+        async def reserve(self, reservation):
+            return RuntimeBudgetReservationResult(
+                allowed=True,
+                would_deny=False,
+                idempotent=False,
+                budget_run_id=reservation.budget_run_id,
+            )
+
+        async def settle(self, settlement):
+            captured["settlement"] = settlement
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "active_agent_team_contract_from_tool_request", fake_active_agent_team_contract)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", failing_spawn)
+    monkeypatch.setattr(handler_mod, "RuntimeBudgetService", BudgetService)
+    request = _tool_request({"task": "investigate", "name": "scout"}, session_id=None)
+    request.context.budget_run_id = str(budget_run_id)
+
+    with pytest.raises(RuntimeError, match="spawn failed before result"):
+        await handler_mod.spawn_subagent_tool(request)
+
+    assert captured["settlement"].actual_subagents == 1
+    assert captured["settlement"].actual_tokens == 0
+    assert captured["settlement"].reason == "foreground_subagent_failed"
+
+
+@pytest.mark.asyncio
+async def test_agent_session_followup_admission_exposes_approval_wait(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+    from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired
+
+    budget_run_id = uuid.uuid4()
+
+    class WaitingBudgetService:
+        async def reserve(self, reservation):
+            raise RuntimeBudgetApprovalRequired(
+                "approval required",
+                budget_run_id=reservation.budget_run_id,
+                dimensions=["continuation_wakes"],
+            )
+
+    monkeypatch.setattr(handler_mod, "RuntimeBudgetService", WaitingBudgetService)
+
+    admission_pair = await handler_mod._reserve_agent_session_message_budget(
+        budget_run_id=str(budget_run_id),
+        child_session_id=uuid.uuid4(),
+        parent_session_id=str(uuid.uuid4()),
+    )
+
+    assert admission_pair is not None
+    _admission, decision = admission_pair
+    assert decision.status == "waiting_budget_approval"
+    assert decision.user_message == "运行额度已达上限，已请求管理员批准；当前工作尚未执行。"
+
+
+@pytest.mark.asyncio
 async def test_spawn_tool_permission_profile_narrows_child_allowed_tools(monkeypatch):
     import app.tools.handlers.subagent as handler_mod
 

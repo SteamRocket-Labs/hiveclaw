@@ -40,7 +40,13 @@ from app.runtime.dynamic_workflow import (
 from app.services.channel_delivery_service import ChannelDeliveryService
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
-from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
+from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
+from app.services.runtime_budget_service import (
+    RuntimeBudgetPolicyLookup,
+    RuntimeBudgetReservation,
+    RuntimeBudgetRunCreate,
+    RuntimeBudgetService,
+)
 from app.services.runtime_task_service import list_active_runtime_task_records
 from app.runtime.workflow_admission import (
     AdmissionLimits,
@@ -782,10 +788,10 @@ class WorkflowRuntimeService:
         # BEFORE execution starts.
         run_id = run_id or uuid.uuid4()
         budget_uuid = _uuid_or_none(budget_run_id)
+        runtime_budget_service = budget_service or RuntimeBudgetService(session_factory=self._session_factory)
         budget_admission_status = "inherited" if budget_uuid is not None else None
         if budget_uuid is None:
-            service = budget_service or RuntimeBudgetService(session_factory=self._session_factory)
-            policy = await service.resolve_policy(
+            policy = await runtime_budget_service.resolve_policy(
                 RuntimeBudgetPolicyLookup(
                     tenant_id=tenant_id,
                     source="workflow",
@@ -793,7 +799,7 @@ class WorkflowRuntimeService:
                     agent_id=agent_id,
                 )
             )
-            budget_run = await service.create_run(
+            budget_run = await runtime_budget_service.create_run(
                 RuntimeBudgetRunCreate(
                     tenant_id=tenant_id,
                     root_run_kind="workflow_run",
@@ -831,6 +837,23 @@ class WorkflowRuntimeService:
             )
             budget_uuid = budget_run.id
             budget_admission_status = "root"
+        budget_reservation_key = f"workflow:{run_id}:start"
+        execution_admission = ExecutionAdmission(runtime_budget_service)
+        admission_decision = await execution_admission.admit(
+            RuntimeBudgetReservation(
+                budget_run_id=budget_uuid,
+                reservation_key=budget_reservation_key,
+                background_tasks=1,
+                reason="workflow_start",
+                runtime_task_id=run_id,
+                metadata={
+                    "work_type": "workflow",
+                    "definition_source": definition_source,
+                    "parent_session_id": str(parent_session_id) if parent_session_id else None,
+                },
+            )
+        )
+        budget_admission_status = "waiting_budget_approval" if admission_decision.waiting else "reserved"
         parent_session_value = str(parent_session_id) if parent_session_id else None
         root_session_value = str(root_session_id or parent_session_id) if root_session_id or parent_session_id else None
         metadata_json = {
@@ -851,6 +874,8 @@ class WorkflowRuntimeService:
             else definition_data,
             "args": args,
             "budget_run_id": str(budget_uuid) if budget_uuid else None,
+            "budget_reservation_key": budget_reservation_key,
+            "execution_admission_status": admission_decision.status,
         }
         if run_metadata:
             metadata_json.update(run_metadata)
@@ -859,12 +884,14 @@ class WorkflowRuntimeService:
                 id=run_id,
                 task_type="workflow",
                 tenant_id=tenant_id,
-                status="pending" if enqueue_only else "running",
+                status="pending" if enqueue_only or admission_decision.waiting else "running",
                 parent_agent_id=agent_id,
                 parent_session_id=parent_session_value,
                 child_session_id=parent_session_value,
                 budget_run_id=budget_uuid,
+                budget_reservation_key=budget_reservation_key,
                 budget_admission_status=budget_admission_status,
+                budget_terminal_reason=("runtime_budget_approval_required" if admission_decision.waiting else None),
                 metadata_json=metadata_json,
             )
             session.add(task)
@@ -895,7 +922,7 @@ class WorkflowRuntimeService:
             run_id=run_id,
             parent_session_id=parent_session_value,
             root_session_id=root_session_value,
-            status="pending" if enqueue_only else "running",
+            status="pending" if enqueue_only or admission_decision.waiting else "running",
             definition_source=definition_source,
             definition_hash=compiled.definition_hash,
         )
@@ -919,6 +946,11 @@ class WorkflowRuntimeService:
             extra={"definition_source": definition_source},
         )
 
+        if admission_decision.waiting:
+            return WorkflowRunHandle(
+                run_id=run_id,
+                outcome=WorkflowRunOutcome(status="pending", reason="waiting_budget_approval"),
+            )
         if enqueue_only:
             return WorkflowRunHandle(
                 run_id=run_id,
@@ -1840,4 +1872,30 @@ class WorkflowRuntimeService:
                     tenant_id=tenant_id,
                     metadata=task_metadata,
                 )
+        if outcome.status in {"completed", "failed", "killed"}:
+            budget_uuid = _uuid_or_none(task_metadata.get("budget_run_id"))
+            reservation_key = str(task_metadata.get("budget_reservation_key") or "").strip()
+            if budget_uuid is not None and reservation_key:
+                reservation = RuntimeBudgetReservation(
+                    budget_run_id=budget_uuid,
+                    reservation_key=reservation_key,
+                    background_tasks=1,
+                    runtime_task_id=run_id,
+                    metadata={"work_type": "workflow", "workflow_run_id": str(run_id)},
+                )
+                await ExecutionAdmission(RuntimeBudgetService(session_factory=self._session_factory)).settle(
+                    ExecutionAdmissionDecision(
+                        status="admitted",
+                        reservation=reservation,
+                        budget_run_id=budget_uuid,
+                    ),
+                    actual_background_tasks=1,
+                    reason=f"workflow_{outcome.status}",
+                    runtime_task_id=run_id,
+                )
+                async with self._session(tenant_id) as session:
+                    settled_task = (
+                        await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))
+                    ).scalar_one()
+                    settled_task.budget_admission_status = "settled"
         return outcome

@@ -135,4 +135,23 @@ describe('WorkspaceRuntimeBudgetsSection', () => {
     expect(html).toContain('Cache miss 8,000,000');
     expect(html).not.toContain('Agent Team guard');
   });
+
+  it('shows approval and rejection actions only for a durable waiting run', () => {
+    runData = [
+      {
+        ...exhaustedRun,
+        status: 'waiting_budget_approval',
+        user_status: 'Waiting for approval',
+        user_reason: 'Run limit reached and approval is required',
+        user_next_action: 'Approve to resume the exact queued task',
+      },
+    ];
+
+    const html = renderToStaticMarkup(<WorkspaceRuntimeBudgetsSection />);
+
+    expect(html).toContain('Waiting for approval');
+    expect(html).toContain('Approve to resume the exact queued task');
+    expect(html).toContain('Approve');
+    expect(html).toContain('Reject');
+  });
 });

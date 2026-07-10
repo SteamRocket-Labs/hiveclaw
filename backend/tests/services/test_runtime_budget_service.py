@@ -846,6 +846,44 @@ async def test_reaper_expires_run_releases_reservations_and_kills_pending_runtim
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
+async def test_reaper_expires_waiting_budget_approval_run(owner_sessionmaker):
+    from app.models.runtime_budget import RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_budget_service import RuntimeBudgetService
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    now = datetime.now(UTC)
+    run = await _create_run(service, tenant_id, expires_at=now - timedelta(seconds=1))
+    task_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        stored_run = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
+        stored_run.status = "waiting_budget_approval"
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="workflow",
+                status="pending",
+                budget_run_id=run.id,
+                budget_admission_status="waiting_budget_approval",
+            )
+        )
+        await db.commit()
+
+    expired = await service.reap_expired_runs(now=now)
+
+    async with owner_sessionmaker() as db:
+        stored_run = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
+        stored_task = (await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id))).scalar_one()
+
+    assert expired == 1
+    assert stored_run.status == "expired"
+    assert stored_task.status == "killed"
+    assert stored_task.budget_admission_status == "cancelled"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
 async def test_reconcile_orphaned_reservations_releases_terminal_task_reservation(owner_sessionmaker):
     from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
     from app.models.runtime_task import RuntimeTask
@@ -957,6 +995,243 @@ async def test_policy_write_approve_overrun_and_tenant_mode_switch(owner_session
     assert stored_run.enforcement_mode == "observe"
     assert stored_run.max_subagents == 12
     assert event.reason == "reviewed"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_require_confirmation_freezes_and_approval_resumes_exact_pending_task(
+    owner_sessionmaker,
+    monkeypatch,
+):
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.services import runtime_task_worker
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetApprovalRequired,
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+    )
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(
+        service,
+        tenant_id,
+        fail_mode="require_confirmation",
+        max_subagents=0,
+        max_background_tasks=0,
+    )
+    task_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="subagent",
+                status="pending",
+                budget_run_id=run.id,
+                budget_reservation_key="approval-child",
+                budget_admission_status="admitting",
+            )
+        )
+        await db.commit()
+
+    with pytest.raises(RuntimeBudgetApprovalRequired):
+        await service.reserve(
+            RuntimeBudgetReservation(
+                budget_run_id=run.id,
+                reservation_key="approval-child",
+                subagents=1,
+                background_tasks=1,
+                runtime_task_id=task_id,
+                reason="spawn child",
+            )
+        )
+
+    async with owner_sessionmaker() as db:
+        frozen_run = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
+        frozen_task = (await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id))).scalar_one()
+    assert frozen_run.status == "waiting_budget_approval"
+    assert frozen_run.completed_at is None
+    assert frozen_task.status == "pending"
+    assert frozen_task.budget_admission_status == "waiting_budget_approval"
+
+    wakeups: list[str] = []
+
+    async def fake_notify_runtime_task_worker(*, reason, runtime_task_id=None):
+        wakeups.append(f"{reason}:{runtime_task_id}")
+
+    monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", fake_notify_runtime_task_worker)
+    actor_id = uuid.uuid4()
+    approved = await service.approve_overrun(
+        tenant_id=tenant_id,
+        budget_run_id=run.id,
+        reason="owner approved one child",
+        actor_user_id=actor_id,
+    )
+
+    async with owner_sessionmaker() as db:
+        resumed_task = (await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id))).scalar_one()
+        events = list(
+            (
+                await db.execute(
+                    select(RuntimeBudgetEvent)
+                    .where(RuntimeBudgetEvent.budget_run_id == run.id)
+                    .order_by(RuntimeBudgetEvent.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert approved is not None
+    assert approved.status == "active"
+    assert approved.enforcement_mode == "enforce"
+    assert approved.reserved_subagents == 1
+    assert approved.reserved_background_tasks == 1
+    assert approved.max_subagents == 1
+    assert approved.max_background_tasks == 1
+    assert resumed_task.status == "pending"
+    assert resumed_task.budget_admission_status == "approved"
+    assert resumed_task.budget_terminal_reason is None
+    assert [event.event_type for event in events] == ["denial", "reservation", "overrun_approved"]
+    assert events[-1].metadata_json["actor_user_id"] == str(actor_id)
+    assert events[-1].metadata_json["resumed_runtime_task_ids"] == [str(task_id)]
+    assert wakeups == [f"runtime_budget_approved:{task_id}"]
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_reject_overrun_stops_frozen_tasks_and_records_actor(owner_sessionmaker):
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_budget_service import RuntimeBudgetService
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(service, tenant_id, fail_mode="require_confirmation")
+    task_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="workflow",
+                status="pending",
+                budget_run_id=run.id,
+                budget_admission_status="waiting_budget_approval",
+            )
+        )
+        stored_run = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
+        stored_run.status = "waiting_budget_approval"
+        await db.commit()
+
+    actor_id = uuid.uuid4()
+    rejected = await service.reject_overrun(
+        tenant_id=tenant_id,
+        budget_run_id=run.id,
+        reason="owner declined further work",
+        actor_user_id=actor_id,
+    )
+
+    async with owner_sessionmaker() as db:
+        stopped_task = (await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id))).scalar_one()
+        event = (
+            await db.execute(
+                select(RuntimeBudgetEvent).where(
+                    RuntimeBudgetEvent.budget_run_id == run.id,
+                    RuntimeBudgetEvent.event_type == "overrun_rejected",
+                )
+            )
+        ).scalar_one()
+    assert rejected is not None
+    assert rejected.status == "stopped"
+    assert stopped_task.status == "killed"
+    assert stopped_task.budget_admission_status == "rejected"
+    assert stopped_task.budget_terminal_reason == "runtime_budget_approval_rejected"
+    assert event.reason == "owner declined further work"
+    assert event.metadata_json["actor_user_id"] == str(actor_id)
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_approval_raises_limit_for_unbound_foreground_retry(owner_sessionmaker):
+    from app.models.runtime_budget import RuntimeBudgetRun
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetApprovalRequired,
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+    )
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(service, tenant_id, fail_mode="require_confirmation", max_subagents=0)
+    reservation = RuntimeBudgetReservation(
+        budget_run_id=run.id,
+        reservation_key="foreground-retry",
+        subagents=1,
+        reason="foreground child",
+    )
+    with pytest.raises(RuntimeBudgetApprovalRequired):
+        await service.reserve(reservation)
+
+    approved = await service.approve_overrun(
+        tenant_id=tenant_id,
+        budget_run_id=run.id,
+        reason="allow one foreground retry",
+        actor_user_id=uuid.uuid4(),
+    )
+    retried = await service.reserve(reservation)
+
+    async with owner_sessionmaker() as db:
+        stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
+    assert approved is not None
+    assert approved.max_subagents == 1
+    assert retried.allowed is True
+    assert stored.reserved_subagents == 1
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_settlement_is_idempotent_and_does_not_double_count(owner_sessionmaker):
+    from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetReservation,
+        RuntimeBudgetService,
+        RuntimeBudgetSettlement,
+    )
+
+    tenant_id = await _seed_tenant(owner_sessionmaker)
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    run = await _create_run(service, tenant_id, max_background_tasks=3)
+    await service.reserve(
+        RuntimeBudgetReservation(
+            budget_run_id=run.id,
+            reservation_key="exactly-once",
+            background_tasks=1,
+        )
+    )
+    settlement = RuntimeBudgetSettlement(
+        budget_run_id=run.id,
+        reservation_key="exactly-once",
+        actual_background_tasks=1,
+        reason="done",
+    )
+    await service.settle(settlement)
+    await service.settle(settlement)
+
+    async with owner_sessionmaker() as db:
+        stored = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
+        settlements = list(
+            (
+                await db.execute(
+                    select(RuntimeBudgetEvent).where(
+                        RuntimeBudgetEvent.budget_run_id == run.id,
+                        RuntimeBudgetEvent.event_type == "settlement",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert stored.reserved_background_tasks == 0
+    assert stored.used_background_tasks == 1
+    assert len(settlements) == 1
 
 
 def test_budget_service_failure_modes():

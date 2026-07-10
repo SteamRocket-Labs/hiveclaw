@@ -235,7 +235,19 @@ export interface RuntimeSectionItemModel {
   members: RuntimeSectionItemModel[];
   steps: RuntimeSectionItemModel[];
   leafCalls: RuntimeSectionItemModel[];
+  userBlocker?: RuntimeUserBlockerModel | null;
   raw: Record<string, unknown>;
+}
+
+export interface RuntimeUserBlockerModel {
+  kind: string;
+  status: string;
+  title: string;
+  reason: string;
+  nextAction: string;
+  owner: string;
+  canContinueOtherWork: boolean;
+  autoResume: boolean;
 }
 
 export interface RuntimeSectionModel {
@@ -293,6 +305,7 @@ export interface RuntimeConsoleWaiterModel {
   summary: string;
   childSessionId: string | null;
   enterable: boolean;
+  userBlocker: RuntimeUserBlockerModel | null;
 }
 
 export interface RuntimeConsoleModel {
@@ -599,6 +612,19 @@ function normalizeRuntimeSectionItem(
   const leafCalls = leafCallsSource
     .map((leafCall, leafIndex) => normalizeRuntimeSectionItem(leafCall, leafIndex, 'workflow_leaf'))
     .filter((leafCall): leafCall is RuntimeSectionItemModel => Boolean(leafCall));
+  const blocker = asRecord(item.user_blocker ?? item.userBlocker);
+  const userBlocker: RuntimeUserBlockerModel | null = blocker
+    ? {
+      kind: readString(blocker, ['kind'], ''),
+      status: readString(blocker, ['status'], ''),
+      title: readString(blocker, ['title'], ''),
+      reason: readString(blocker, ['reason'], ''),
+      nextAction: readString(blocker, ['next_action', 'nextAction'], ''),
+      owner: readString(blocker, ['owner'], ''),
+      canContinueOtherWork: Boolean(blocker.can_continue_other_work ?? blocker.canContinueOtherWork),
+      autoResume: Boolean(blocker.auto_resume ?? blocker.autoResume),
+    }
+    : null;
 
   return {
     id,
@@ -613,6 +639,7 @@ function normalizeRuntimeSectionItem(
     members,
     steps,
     leafCalls,
+    userBlocker,
     raw: item,
   };
 }
@@ -656,7 +683,7 @@ function isWaitingStatusText(status: string): boolean {
 }
 
 function isWaitingRuntimeItem(item: RuntimeSectionItemModel): boolean {
-  return isWaitingStatusText(runtimeStatusText(item));
+  return item.userBlocker?.status === 'waiting' || isWaitingStatusText(runtimeStatusText(item));
 }
 
 function isBlockedStatusText(status: string): boolean {
@@ -1044,12 +1071,13 @@ function runtimeWaiterFromItem(
   return {
     id: item.id,
     label: item.label || item.id,
-    status: item.status || item.state || 'waiting',
+    status: item.userBlocker?.status || item.status || item.state || 'waiting',
     segment,
     runtimeKind: item.runtimeKind,
     summary: item.summary,
     childSessionId: item.childSessionId,
     enterable: item.enterable,
+    userBlocker: item.userBlocker ?? null,
   };
 }
 

@@ -1408,7 +1408,10 @@ async def _delegate_to_local_agent_channel(
     idempotency_key = f"a2a-local:{idempotency_anchor}:{request_digest[:40]}"[:200]
     budget_reservation_key = None
     budget_service = None
+    budget_admission = None
+    budget_decision = None
     if budget_run_id is not None:
+        from app.services.execution_admission import ExecutionAdmission
         from app.services.runtime_budget_service import (
             RuntimeBudgetReservation,
             RuntimeBudgetService,
@@ -1416,12 +1419,13 @@ async def _delegate_to_local_agent_channel(
         )
 
         budget_service = RuntimeBudgetService()
+        budget_admission = ExecutionAdmission(budget_service)
         budget_reservation_key = f"delegation:local:{request_digest[:40]}:start"
         estimated_tokens = estimate_reservation_tokens(
             default_tokens=50_000,
             prompt_tokens=max(1, (len(message_text) + 3) // 4) if message_text else 0,
         )
-        await budget_service.reserve(
+        budget_decision = await budget_admission.admit(
             RuntimeBudgetReservation(
                 budget_run_id=budget_run_id,
                 reservation_key=budget_reservation_key,
@@ -1437,6 +1441,15 @@ async def _delegate_to_local_agent_channel(
                 },
             )
         )
+        if budget_decision.waiting:
+            return {
+                "status": "waiting_budget_approval",
+                "error_code": "runtime_budget_approval_required",
+                "message": budget_decision.user_message,
+                "denied_dimensions": list(budget_decision.denied_dimensions),
+                "execution_target": "local_agent",
+                "target_agent": getattr(target_agent, "name", str(target_agent.id)),
+            }
 
     try:
         async with tenant_scoped_session(tenant_id) as db:
@@ -1481,7 +1494,7 @@ async def _delegate_to_local_agent_channel(
                 await channel_ws_manager.send_to_user(target_owner_id, {"type": "message", "message": message})
             except Exception as exc:
                 logger.debug("Suppressed local-agent channel WS fanout failure: %s", exc)
-            return {
+            result = {
                 "status": "queued",
                 "execution_target": "local_agent",
                 "target_agent": getattr(target_agent, "name", str(target_agent.id)),
@@ -1494,22 +1507,20 @@ async def _delegate_to_local_agent_channel(
                     "if the computer is offline, the message remains queued until the service reconnects."
                 ),
             }
+            if budget_admission is not None and budget_decision is not None:
+                await budget_admission.settle(
+                    budget_decision,
+                    actual_delegations=1,
+                    actual_background_tasks=1,
+                    reason="local_agent_delegation_queued",
+                )
+            return result
     except Exception:
-        if budget_run_id is not None and budget_reservation_key:
+        if budget_admission is not None and budget_decision is not None:
             try:
-                from app.services.runtime_budget_service import RuntimeBudgetSettlement, RuntimeBudgetService
-
-                release_service = budget_service or RuntimeBudgetService()
-                await release_service.settle(
-                    RuntimeBudgetSettlement(
-                        budget_run_id=budget_run_id,
-                        reservation_key=budget_reservation_key,
-                        actual_tokens=0,
-                        actual_cache_miss_tokens=0,
-                        actual_delegations=0,
-                        actual_background_tasks=0,
-                        reason="local_agent_delegation_enqueue_failed",
-                    )
+                await budget_admission.settle(
+                    budget_decision,
+                    reason="local_agent_delegation_enqueue_failed",
                 )
             except Exception as settle_exc:
                 logger.warning("Failed to release local-agent delegation budget reservation: %s", settle_exc)

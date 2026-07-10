@@ -95,7 +95,8 @@ class RuntimeBudgetRun(Base):
     source: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     profile: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
 
-    # active | completed | exhausted | hard_stopped | expired | cancelled
+    # active | waiting_budget_approval | resuming | completed | exhausted |
+    # summary_only | hard_stopped | stopped | expired | cancelled
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="active", server_default="active", index=True
     )

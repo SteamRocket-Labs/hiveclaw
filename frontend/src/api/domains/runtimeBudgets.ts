@@ -115,6 +115,8 @@ export const runtimeBudgetApi = {
       max_tokens?: number | null;
     },
   ) => post<RuntimeBudgetRun>(`/runtime-budgets/runs/${runId}/approve-overrun`, payload),
+  rejectOverrun: (runId: string, reason: string) =>
+    post<RuntimeBudgetRun>(`/runtime-budgets/runs/${runId}/reject-overrun`, { reason }),
   setTenantEnforcementMode: (payload: { enforcement_mode: 'observe' | 'enforce' | string; reason: string }) =>
     post<RuntimeBudgetTenantModeResult>('/runtime-budgets/tenant/enforcement-mode', payload),
 };

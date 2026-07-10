@@ -29,6 +29,8 @@ from app.services.agent_session_continuation import (
 )
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
+from app.services.execution_admission import ExecutionAdmission
+from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
@@ -460,6 +462,8 @@ async def spawn_agent_team_member_runtime(
     prompt: str,
     source: str,
     mode: str = "",
+    budget_run_id: uuid.UUID | str | None = None,
+    budget_service: RuntimeBudgetService | None = None,
 ) -> dict[str, Any]:
     """Create and start one teammate from the AgentTool ``team_name + name`` branch."""
 
@@ -467,6 +471,9 @@ async def spawn_agent_team_member_runtime(
     if not prompt_text:
         raise ValueError("prompt is required for teammate spawn")
 
+    # Name allocation is a read-only prerequisite of admission. It must happen
+    # before the reservation key is built so repeated requested names do not
+    # collapse distinct teammate sessions onto one idempotency key.
     existing_members: list[AgentTeamMember] = []
     if hasattr(db, "execute"):
         existing_result = await db.execute(
@@ -474,6 +481,38 @@ async def spawn_agent_team_member_runtime(
         )
         existing_members = list(existing_result.scalars().all())
     unique_name = _unique_member_name(spec.name, existing_members)
+
+    budget_uuid = _uuid_or_none(budget_run_id)
+    admission = ExecutionAdmission(budget_service) if budget_uuid is not None else None
+    admission_decision = None
+    if admission is not None and budget_uuid is not None:
+        admission_decision = await admission.admit(
+            RuntimeBudgetReservation(
+                budget_run_id=budget_uuid,
+                reservation_key=f"agent_team:{team.id}:member:{unique_name.lower()}",
+                team_sessions=1,
+                background_tasks=1,
+                reason="agent_team_member_spawn",
+                metadata={
+                    "work_type": "agent_team_member",
+                    "team_id": str(team.id),
+                    "team_name": team.name,
+                    "member_name": unique_name,
+                    "parent_session_id": str(getattr(parent_session, "id", "")),
+                },
+            )
+        )
+        if admission_decision.waiting:
+            return {
+                "ok": False,
+                "status": "waiting_budget_approval",
+                "team_id": str(team.id),
+                "team_name": team.name,
+                "member_name": unique_name,
+                "message": admission_decision.user_message,
+                "denied_dimensions": list(admission_decision.denied_dimensions),
+            }
+
     member_spec = TeamMemberCreateSpec(
         name=unique_name,
         role=spec.role,
@@ -484,53 +523,82 @@ async def spawn_agent_team_member_runtime(
         display_content=spec.display_content,
         metadata={**(spec.metadata or {}), "agent_tool_branch": "teammate_spawn", "mode": mode},
     )
-    member, member_session = _build_team_member_records(
-        agent=agent,
-        user=user,
-        parent_session=parent_session,
-        team=team,
-        spec=member_spec,
-        source=source,
-    )
-    db.add(member_session)
-    db.add(member)
-    db.add(
-        AgentTeamEvent(
-            id=uuid.uuid4(),
-            team_id=team.id,
-            receiver_member_id=member.id,
-            event_type="member_spawned",
-            payload_json={
-                "member_name": member.member_name,
-                "member_role": member.member_role,
-                "source": source,
-                "mode": mode,
+    try:
+        member, member_session = _build_team_member_records(
+            agent=agent,
+            user=user,
+            parent_session=parent_session,
+            team=team,
+            spec=member_spec,
+            source=source,
+        )
+        db.add(member_session)
+        db.add(member)
+        db.add(
+            AgentTeamEvent(
+                id=uuid.uuid4(),
+                team_id=team.id,
+                receiver_member_id=member.id,
+                event_type="member_spawned",
+                payload_json={
+                    "member_name": member.member_name,
+                    "member_role": member.member_role,
+                    "source": source,
+                    "mode": mode,
+                },
+            )
+        )
+        await db.flush()
+        await _append_team_member_parent_event(
+            db=db,
+            agent=agent,
+            user=user,
+            parent_session=parent_session,
+            team=team,
+            member=member,
+            source=source,
+            command="spawn_subagent",
+        )
+        run_payload = await message_agent_team_members_runtime(
+            db=db,
+            agent=agent,
+            user=user,
+            team=team,
+            members=[member],
+            member_sessions=[member_session],
+            message=prompt_text,
+            display_content=spec.display_content or prompt_text,
+            interrupt_requested=False,
+            source=source,
+            budget_run_id=budget_uuid,
+        )
+    except Exception:
+        if admission is not None and admission_decision is not None:
+            await admission.settle(
+                admission_decision,
+                actual_team_sessions=0,
+                actual_background_tasks=0,
+                reason="agent_team_member_spawn_failed",
+            )
+        raise
+    if admission is not None and admission_decision is not None:
+        run_started = any(
+            str(item.get("status") or "") in {"queued", "started", "running"}
+            for item in list(run_payload.get("results") or [])
+            if isinstance(item, dict)
+        )
+        await admission.settle(
+            admission_decision,
+            actual_team_sessions=1,
+            actual_background_tasks=1 if run_started else 0,
+            reason="agent_team_member_spawned",
+            metadata={
+                "work_type": "agent_team_member",
+                "team_id": str(team.id),
+                "member_id": str(member.id),
+                "child_session_id": str(member.chat_session_id),
             },
         )
-    )
-    await db.flush()
-    await _append_team_member_parent_event(
-        db=db,
-        agent=agent,
-        user=user,
-        parent_session=parent_session,
-        team=team,
-        member=member,
-        source=source,
-        command="spawn_subagent",
-    )
-    run_payload = await message_agent_team_members_runtime(
-        db=db,
-        agent=agent,
-        user=user,
-        team=team,
-        members=[member],
-        member_sessions=[member_session],
-        message=prompt_text,
-        display_content=spec.display_content or prompt_text,
-        interrupt_requested=False,
-        source=source,
-    )
     return {
         "ok": bool(run_payload.get("ok")),
         "status": "teammate_spawned",
@@ -749,6 +817,7 @@ async def message_agent_team_members_runtime(
     display_content: str = "",
     interrupt_requested: bool = False,
     source: str = "agent_team",
+    budget_run_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     message_text = str(message or "").strip()
     if not message_text:
@@ -781,6 +850,7 @@ async def message_agent_team_members_runtime(
             interrupt_requested=interrupt_requested,
             parent_session_id=team.parent_session_id,
             runtime_task_type="team_member",
+            extra_metadata={"budget_run_id": str(budget_run_id)} if budget_run_id else None,
         )
         status = str(run.get("status") or "queued")
         if status in {"queued", "started", "running"}:
@@ -1018,6 +1088,7 @@ async def spawn_agent_team_member_from_tool_request(
             prompt=prompt,
             source="agent_tool_teammate_spawn",
             mode=mode,
+            budget_run_id=getattr(request.context, "budget_run_id", None),
         )
 
 

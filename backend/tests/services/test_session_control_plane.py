@@ -1238,3 +1238,43 @@ def test_runtime_task_runtime_row_bounds_oversize_metadata_values():
         "omitted_oversize_value": True,
         "workbench_projection": True,
     }
+
+
+def test_runtime_task_projection_explains_budget_wait_without_raw_budget_identity():
+    import app.services.session_control_plane as service
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type="subagent",
+        status="pending",
+        parent_agent_id=uuid4(),
+        child_agent_id=None,
+        parent_session_id="parent",
+        child_session_id=None,
+        trace_id="trace",
+        created_at=None,
+        started_at=None,
+        completed_at=None,
+        result_summary=None,
+        token_usage={},
+        budget_run_id=uuid4(),
+        budget_admission_status="waiting_budget_approval",
+        budget_terminal_reason="runtime_budget_approval_required:subagents",
+        metadata_json={"subagent_name": "researcher"},
+    )
+
+    payload = service._runtime_task_payload(task)
+    row = service._runtime_task_runtime_row(task)
+
+    for projected in (payload, row):
+        assert projected["user_blocker"] == {
+            "kind": "runtime_budget_approval",
+            "status": "waiting",
+            "title": "等待运行额度批准",
+            "reason": "本任务达到公司设置的运行上限，尚未继续执行。",
+            "next_action": "你可以继续其他工作；管理员批准后本任务会自动恢复。",
+            "owner": "company_admin",
+            "can_continue_other_work": True,
+            "auto_resume": True,
+        }
+        assert "budget_run_id" not in projected

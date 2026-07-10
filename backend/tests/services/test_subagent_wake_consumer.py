@@ -288,6 +288,54 @@ async def test_subagent_completion_wake_budget_denial_consumes_signal_without_pa
     assert await _signal_count(owner_sessionmaker, tenant_id) == 0
 
 
+async def test_subagent_completion_wake_budget_approval_wait_keeps_signal_for_resume(
+    monkeypatch,
+    owner_sessionmaker,
+    tenant_id,
+):
+    from app.services import subagent_wake_consumer as swc
+    from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired
+    from app.services.subagent_wake_consumer import SubagentWakeRequest, drain_subagent_completion_wakes
+
+    parent_agent_id = uuid.uuid4()
+    budget_run_id = uuid.uuid4()
+    signal_id = await _send_completion_signal(
+        owner_sessionmaker,
+        tenant_id,
+        parent_agent_id,
+        metadata={"budget_run_id": str(budget_run_id)},
+    )
+
+    class WaitingBudgetService:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def evaluate_wake_breaker(self, **_kwargs):
+            return None
+
+        async def reserve(self, reservation):
+            raise RuntimeBudgetApprovalRequired(
+                "approval required",
+                budget_run_id=reservation.budget_run_id,
+                dimensions=["continuation_wakes"],
+            )
+
+    async def invoke_parent(_request: SubagentWakeRequest) -> str:
+        raise AssertionError("approval-waiting wake must not invoke parent")
+
+    monkeypatch.setattr(swc, "RuntimeBudgetService", WaitingBudgetService)
+
+    result = await drain_subagent_completion_wakes(
+        session_factory=owner_sessionmaker,
+        invoke_parent=invoke_parent,
+    )
+
+    assert len(result) == 1
+    assert result[0].signal_id == signal_id
+    assert result[0].status == "waiting_budget_approval"
+    assert await _signal_count(owner_sessionmaker, tenant_id) == 1
+
+
 async def test_subagent_completion_wake_trips_child_reconciliation_breaker(owner_sessionmaker, tenant_id):
     from app.models.runtime_budget import RuntimeBudgetRun
     from app.services.runtime_budget_service import RuntimeBudgetRunCreate, RuntimeBudgetService
@@ -350,6 +398,64 @@ async def test_subagent_completion_wake_trips_child_reconciliation_breaker(owner
     assert stored_run.status == "hard_stopped"
     assert stored_run.terminal_reason == "runtime_budget_circuit_break:needs_reconciliation:3>=3"
     assert await _signal_count(owner_sessionmaker, tenant_id) == 0
+
+
+async def test_confirmation_breaker_freezes_parent_wake_signal_instead_of_consuming(
+    owner_sessionmaker,
+    tenant_id,
+):
+    from app.models.runtime_budget import RuntimeBudgetRun
+    from app.services.runtime_budget_service import RuntimeBudgetRunCreate, RuntimeBudgetService
+    from app.services.subagent_wake_consumer import SubagentWakeRequest, drain_subagent_completion_wakes
+
+    parent_agent_id = uuid.uuid4()
+    service = RuntimeBudgetService(session_factory=owner_sessionmaker)
+    budget_run = await service.create_run(
+        RuntimeBudgetRunCreate(
+            tenant_id=tenant_id,
+            root_run_kind="interactive",
+            root_run_key=f"interactive:{uuid.uuid4()}",
+            source="web_chat",
+            profile="interactive",
+            fail_mode="require_confirmation",
+            max_failures=1,
+            max_continuation_wakes=10,
+        )
+    )
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            RuntimeTask(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                task_type="subagent",
+                status="failed",
+                parent_agent_id=parent_agent_id,
+                budget_run_id=budget_run.id,
+            )
+        )
+    signal_id = await _send_completion_signal(
+        owner_sessionmaker,
+        tenant_id,
+        parent_agent_id,
+        metadata={"budget_run_id": str(budget_run.id)},
+    )
+
+    async def invoke_parent(_request: SubagentWakeRequest) -> str:
+        raise AssertionError("confirmation breaker must not wake parent before approval")
+
+    result = await drain_subagent_completion_wakes(
+        session_factory=owner_sessionmaker,
+        invoke_parent=invoke_parent,
+    )
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        stored_run = (
+            await session.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == budget_run.id))
+        ).scalar_one()
+    assert result[0].signal_id == signal_id
+    assert result[0].status == "waiting_budget_approval"
+    assert stored_run.status == "waiting_budget_approval"
+    assert await _signal_count(owner_sessionmaker, tenant_id) == 1
 
 
 async def test_production_parent_wake_invoker_routes_wake_context_to_continuation(monkeypatch):

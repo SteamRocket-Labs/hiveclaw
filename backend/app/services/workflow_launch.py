@@ -244,7 +244,7 @@ async def start_ephemeral_workflow_for_agent(
         enqueue_only=enqueue_only,
         budget_run_id=budget_run_id,
     )
-    if enqueue_only:
+    if enqueue_only and handle.outcome.reason != "waiting_budget_approval":
         try:
             from app.services.runtime_task_worker import notify_runtime_task_worker
 

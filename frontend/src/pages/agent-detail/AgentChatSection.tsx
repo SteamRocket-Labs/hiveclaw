@@ -1854,17 +1854,15 @@ function SessionRuntimePanel({
     const sessionId = waiter.childSessionId;
     const clickable = Boolean(waiter.enterable && sessionId && onSelectSession);
     const segmentLabel = t(`sessionWorkbench.rightPanel.runtimeSegments.${waiter.segment}`, waiter.segment);
-    const meta = [
-      segmentLabel,
-      waiter.runtimeKind,
-      waiter.summary,
-      sessionId ? `session:${sessionId}` : '',
-    ].filter(Boolean).join(' · ');
+    const blocker = waiter.userBlocker;
+    const meta = blocker
+      ? [blocker.reason, blocker.nextAction].filter(Boolean).join(' ')
+      : [segmentLabel, waiter.runtimeKind, waiter.summary].filter(Boolean).join(' · ');
     const content = (
       <>
         <span className="session-runtime-row-main">
-          <span className="session-runtime-row-title">{waiter.label}</span>
-          <span className="session-runtime-row-meta">{meta || waiter.id}</span>
+          <span className="session-runtime-row-title">{blocker?.title || waiter.label}</span>
+          <span className="session-runtime-row-meta">{meta || waiter.summary || waiter.label}</span>
         </span>
         <span className="session-runtime-status">{waiter.status || 'waiting'}</span>
       </>

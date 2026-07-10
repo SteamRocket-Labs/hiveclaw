@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator, Mapping
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 from typing import Any
 import uuid
 
@@ -21,6 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database import async_session, enter_rls_bypass
 from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetPolicy, RuntimeBudgetRun
 from app.models.runtime_task import RuntimeTask
+
+logger = logging.getLogger(__name__)
 
 _DIMENSIONS = (
     "tokens",
@@ -157,6 +160,10 @@ class RuntimeBudgetDenied(Exception):
 
 class RuntimeBudgetNotFound(RuntimeBudgetDenied):
     """Raised when the target budget run does not exist."""
+
+
+class RuntimeBudgetApprovalRequired(RuntimeBudgetDenied):
+    """Raised when exact queued work is frozen pending a human budget decision."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,12 +365,14 @@ def evaluate_circuit_breaker(
 def _breaker_status_for_fail_mode(fail_mode: str | None) -> str:
     """Map a policy fail_mode to the run status a tripped breaker transitions to.
 
-    ``summary_only`` and ``require_confirmation`` pause work amplification but
-    leave a lane for one final summarizing invocation / approval; every other
-    mode (``hard_stop`` and the ``fail_closed`` default) hard-stops the run.
+    ``summary_only`` leaves one final summarizing lane. ``require_confirmation``
+    freezes claimable work without cancelling it. Every other mode
+    (``hard_stop`` and the ``fail_closed`` default) hard-stops the run.
     """
 
-    if fail_mode in ("summary_only", "require_confirmation"):
+    if fail_mode == "require_confirmation":
+        return "waiting_budget_approval"
+    if fail_mode == "summary_only":
         return "summary_only"
     return "hard_stopped"
 
@@ -541,6 +550,13 @@ class RuntimeBudgetService:
                     idempotent=True,
                     budget_run_id=run.id,
                 )
+            pending_denial = await self._existing_event(db, run.id, reservation.reservation_key, "denial")
+            if pending_denial is not None and run.status == "waiting_budget_approval":
+                raise RuntimeBudgetApprovalRequired(
+                    str(pending_denial.reason or "runtime budget approval required"),
+                    budget_run_id=run.id,
+                    dimensions=list((pending_denial.metadata_json or {}).get("denied_dimensions") or []),
+                )
             if run.status == "summary_only" and _work_amplifying_amounts(amounts):
                 event = self._event(
                     run,
@@ -570,7 +586,10 @@ class RuntimeBudgetService:
                 )
                 db.add(event)
                 await db.commit()
-                raise RuntimeBudgetDenied(str(event.reason), budget_run_id=run.id)
+                error_type = (
+                    RuntimeBudgetApprovalRequired if run.status == "waiting_budget_approval" else RuntimeBudgetDenied
+                )
+                raise error_type(str(event.reason), budget_run_id=run.id)
 
             # §2 finalization lane: the single summarizing turn is admitted on a
             # summary_only run even though its token dimensions are exhausted —
@@ -609,20 +628,41 @@ class RuntimeBudgetService:
                     if run.fail_mode == "summary_only":
                         run.status = "summary_only"
                         run.terminal_reason = "runtime_budget_summary_only:" + ",".join(denied_dimensions)
+                        run.completed_at = datetime.now(UTC)
+                        await self._cancel_pending_unclaimed_tasks(
+                            db,
+                            run,
+                            terminal_reason="runtime_budget_summary_only",
+                            result_summary="Runtime budget moved to summary-only before this work was claimed.",
+                        )
+                    elif run.fail_mode == "require_confirmation":
+                        run.status = "waiting_budget_approval"
+                        run.terminal_reason = "runtime_budget_approval_required:" + ",".join(denied_dimensions)
+                        run.completed_at = None
+                        if reservation.runtime_task_id is not None:
+                            await db.execute(
+                                update(RuntimeTask)
+                                .where(
+                                    RuntimeTask.id == reservation.runtime_task_id,
+                                    RuntimeTask.budget_run_id == run.id,
+                                    RuntimeTask.status.in_(("pending", "resumable")),
+                                    RuntimeTask.claimed_by.is_(None),
+                                )
+                                .values(
+                                    budget_admission_status="waiting_budget_approval",
+                                    budget_terminal_reason=run.terminal_reason,
+                                )
+                            )
                     else:
                         run.status = "exhausted"
                         run.terminal_reason = "runtime_budget_exhausted:" + ",".join(denied_dimensions)
-                    run.completed_at = datetime.now(UTC)
-                    await self._cancel_pending_unclaimed_tasks(
-                        db,
-                        run,
-                        terminal_reason="runtime_budget_summary_only"
-                        if run.status == "summary_only"
-                        else "runtime_budget_exhausted",
-                        result_summary="Runtime budget moved to summary-only before this work was claimed."
-                        if run.status == "summary_only"
-                        else "Runtime budget exhausted before this work was claimed.",
-                    )
+                        run.completed_at = datetime.now(UTC)
+                        await self._cancel_pending_unclaimed_tasks(
+                            db,
+                            run,
+                            terminal_reason="runtime_budget_exhausted",
+                            result_summary="Runtime budget exhausted before this work was claimed.",
+                        )
                 db.add(
                     self._event(
                         run,
@@ -637,6 +677,12 @@ class RuntimeBudgetService:
                     )
                 )
                 await db.commit()
+                if run.status == "waiting_budget_approval":
+                    raise RuntimeBudgetApprovalRequired(
+                        "runtime budget approval required: " + ",".join(denied_dimensions),
+                        budget_run_id=run.id,
+                        dimensions=denied_dimensions,
+                    )
                 raise RuntimeBudgetDenied(
                     "runtime budget exhausted: " + ",".join(denied_dimensions),
                     budget_run_id=run.id,
@@ -670,6 +716,14 @@ class RuntimeBudgetService:
         actual = _positive_amounts(settlement)
         async with self._budget_session("settle") as db:
             run = await self._lock_run(db, settlement.budget_run_id)
+            existing_settlement = await self._existing_event(
+                db,
+                run.id,
+                settlement.reservation_key,
+                "settlement",
+            )
+            if existing_settlement is not None:
+                return
             reservation_event = await self._existing_event(db, run.id, settlement.reservation_key, "reservation")
             estimated = dict(reservation_event.amounts_json or {}) if reservation_event else {}
             self._release_reserved(run, estimated)
@@ -700,7 +754,7 @@ class RuntimeBudgetService:
             result = await db.execute(
                 select(RuntimeBudgetRun)
                 .where(
-                    RuntimeBudgetRun.status == "active",
+                    RuntimeBudgetRun.status.in_(("active", "waiting_budget_approval")),
                     RuntimeBudgetRun.expires_at.is_not(None),
                     RuntimeBudgetRun.expires_at <= current,
                 )
@@ -964,7 +1018,7 @@ class RuntimeBudgetService:
         budget_run_id: uuid.UUID,
         reason: str,
         actor_user_id: uuid.UUID | None = None,
-        enforcement_mode: str = "observe",
+        enforcement_mode: str = "enforce",
         max_tokens: int | None = None,
         max_cache_miss_tokens: int | None = None,
         max_subagents: int | None = None,
@@ -974,6 +1028,7 @@ class RuntimeBudgetService:
         max_continuation_wakes: int | None = None,
         max_provider_calls: int | None = None,
     ) -> RuntimeBudgetRun | None:
+        resumed_task_ids: list[uuid.UUID] = []
         async with self._budget_session("approve_overrun") as db:
             result = await db.execute(
                 select(RuntimeBudgetRun)
@@ -995,7 +1050,93 @@ class RuntimeBudgetService:
             }.items():
                 if value is not None:
                     setattr(run, field, value)
-            run.status = "active"
+            waiting_tasks = list(
+                (
+                    await db.execute(
+                        select(RuntimeTask)
+                        .where(
+                            RuntimeTask.budget_run_id == run.id,
+                            RuntimeTask.status.in_(("pending", "resumable")),
+                            RuntimeTask.claimed_by.is_(None),
+                            RuntimeTask.budget_admission_status == "waiting_budget_approval",
+                        )
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            waiting_tasks_by_key = {
+                str(task.budget_reservation_key or "").strip(): task
+                for task in waiting_tasks
+                if str(task.budget_reservation_key or "").strip()
+            }
+            waiting_tasks_by_id = {task.id: task for task in waiting_tasks}
+            pending_denials = list(
+                (
+                    await db.execute(
+                        select(RuntimeBudgetEvent)
+                        .where(
+                            RuntimeBudgetEvent.budget_run_id == run.id,
+                            RuntimeBudgetEvent.event_type == "denial",
+                        )
+                        .order_by(RuntimeBudgetEvent.created_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for denial in pending_denials:
+                reservation_key = str(denial.reservation_key or "").strip()
+                if (
+                    not reservation_key
+                    or await self._existing_event(db, run.id, reservation_key, "reservation") is not None
+                ):
+                    continue
+                amounts = {key: max(0, int(value or 0)) for key, value in (denial.amounts_json or {}).items()}
+                for dimension, amount in amounts.items():
+                    if dimension not in _DIMENSIONS or amount <= 0:
+                        continue
+                    current_max = getattr(run, f"max_{dimension}", None)
+                    required_max = (
+                        int(getattr(run, f"used_{dimension}", 0) or 0)
+                        + int(getattr(run, f"reserved_{dimension}", 0) or 0)
+                        + amount
+                    )
+                    if current_max is not None and int(current_max) < required_max:
+                        setattr(run, f"max_{dimension}", required_max)
+                task = waiting_tasks_by_key.get(reservation_key)
+                if task is None and denial.runtime_task_id is not None:
+                    task = waiting_tasks_by_id.get(denial.runtime_task_id)
+                if task is None:
+                    # Foreground/Team admission has no queued RuntimeTask to
+                    # resume. Raising the exact denied limits makes the same
+                    # idempotency key safe to retry after approval without
+                    # reserving resources for work that does not yet exist.
+                    continue
+                self._increment_reserved(run, amounts)
+                db.add(
+                    self._event(
+                        run,
+                        event_type="reservation",
+                        reservation_key=reservation_key,
+                        allowed=True,
+                        would_deny=True,
+                        reason="approved_budget_overrun_reservation",
+                        amounts=amounts,
+                        runtime_task_id=task.id,
+                        metadata={
+                            **(denial.metadata_json or {}),
+                            "approved_from_denial_event_id": str(denial.id),
+                            "actor_user_id": str(actor_user_id) if actor_user_id else None,
+                        },
+                    )
+                )
+                task.budget_admission_status = "approved"
+                task.budget_terminal_reason = None
+                task.completed_at = None
+                resumed_task_ids.append(task.id)
+            run.status = "resuming" if resumed_task_ids else "active"
             run.enforcement_mode = enforcement_mode
             run.terminal_reason = None
             run.completed_at = None
@@ -1011,12 +1152,144 @@ class RuntimeBudgetService:
                     metadata={
                         "actor_user_id": str(actor_user_id) if actor_user_id else None,
                         "enforcement_mode": enforcement_mode,
+                        "transition": ["waiting_budget_approval", "approved", "resuming", "active"],
+                        "resumed_runtime_task_ids": [str(task_id) for task_id in resumed_task_ids],
                     },
                 )
+            )
+            await self._append_session_status_event(
+                db,
+                run,
+                event_type="runtime_budget_approved",
+                content="运行额度已获批准，等待中的工作将自动继续。",
+                actor_user_id=actor_user_id,
+                metadata={
+                    "reason": reason,
+                    "resumed_runtime_task_ids": [str(task_id) for task_id in resumed_task_ids],
+                },
+            )
+            run.status = "active"
+            await db.commit()
+            await db.refresh(run)
+        if resumed_task_ids:
+            from app.services.runtime_task_worker import notify_runtime_task_worker
+
+            for task_id in resumed_task_ids:
+                try:
+                    await notify_runtime_task_worker(reason="runtime_budget_approved", runtime_task_id=task_id)
+                except Exception:
+                    # The persisted task remains the authority and the worker
+                    # poller can still claim it. One failed fast wake must not
+                    # prevent the remaining approved tasks from being notified.
+                    logger.warning(
+                        "Runtime budget approval wake failed for task %s",
+                        task_id,
+                        exc_info=True,
+                    )
+        return run
+
+    async def reject_overrun(
+        self,
+        *,
+        tenant_id: uuid.UUID | None,
+        budget_run_id: uuid.UUID,
+        reason: str,
+        actor_user_id: uuid.UUID | None = None,
+    ) -> RuntimeBudgetRun | None:
+        current = datetime.now(UTC)
+        async with self._budget_session("reject_overrun") as db:
+            run = (
+                await db.execute(
+                    select(RuntimeBudgetRun)
+                    .where(RuntimeBudgetRun.id == budget_run_id, RuntimeBudgetRun.tenant_id == tenant_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if run is None:
+                return None
+            run.status = "stopped"
+            run.terminal_reason = "runtime_budget_approval_rejected"
+            run.completed_at = current
+            self._clear_reserved(run)
+            await db.execute(
+                update(RuntimeTask)
+                .where(
+                    RuntimeTask.budget_run_id == run.id,
+                    RuntimeTask.status.in_(("pending", "resumable")),
+                    RuntimeTask.claimed_by.is_(None),
+                    RuntimeTask.budget_admission_status == "waiting_budget_approval",
+                )
+                .values(
+                    status="killed",
+                    completed_at=current,
+                    budget_admission_status="rejected",
+                    budget_terminal_reason="runtime_budget_approval_rejected",
+                    result_summary="Runtime budget approval was rejected before this work was claimed.",
+                )
+            )
+            db.add(
+                self._event(
+                    run,
+                    event_type="overrun_rejected",
+                    reservation_key=None,
+                    allowed=False,
+                    would_deny=True,
+                    reason=reason,
+                    amounts={},
+                    metadata={"actor_user_id": str(actor_user_id) if actor_user_id else None},
+                )
+            )
+            await self._append_session_status_event(
+                db,
+                run,
+                event_type="runtime_budget_rejected",
+                content="运行额度申请未获批准，等待中的工作已停止；已完成结果仍可查看。",
+                actor_user_id=actor_user_id,
+                metadata={"reason": reason},
             )
             await db.commit()
             await db.refresh(run)
             return run
+
+    async def _append_session_status_event(
+        self,
+        db: AsyncSession,
+        run: RuntimeBudgetRun,
+        *,
+        event_type: str,
+        content: str,
+        actor_user_id: uuid.UUID | None,
+        metadata: dict[str, Any],
+    ) -> None:
+        if run.root_agent_id is None or not str(run.root_session_id or "").strip():
+            return
+        try:
+            from app.services.chat_transcript import append_session_event
+
+            await append_session_event(
+                db=db,
+                agent_id=run.root_agent_id,
+                tenant_id=run.tenant_id,
+                session_id=str(run.root_session_id),
+                actor_type="system",
+                event_type=event_type,
+                content=content,
+                role="system",
+                user_id=run.root_user_id or actor_user_id,
+                run_id=run.root_runtime_task_id,
+                runtime_task_id=run.root_runtime_task_id,
+                root_session_id=str(run.root_session_id),
+                metadata={"budget_run_id": str(run.id), **metadata},
+                visibility_scope="direct_user",
+                listed_surface="chat",
+                source="runtime_budget",
+                bridge_to_t0=False,
+            )
+        except Exception:
+            # A missing legacy session must not corrupt the budget decision;
+            # RuntimeBudgetEvent remains the mechanical truth and the outbox
+            # projection can reconcile the user notification later.
+            return
 
     async def mark_summary_turn_state(
         self,
@@ -1358,7 +1631,7 @@ class RuntimeBudgetService:
         actor: str,
         source: str | None = None,
     ) -> str | None:
-        """Transition a tripped run per fail_mode, cancel queued work, log event."""
+        """Transition a tripped run per fail_mode and record the decision."""
 
         if run.status != "active":
             return None
@@ -1366,19 +1639,30 @@ class RuntimeBudgetService:
         reason = "runtime_budget_circuit_break:" + ",".join(tripped)
         run.status = target
         run.terminal_reason = reason
-        run.completed_at = datetime.now(UTC)
+        run.completed_at = None if target == "waiting_budget_approval" else datetime.now(UTC)
         if target == "hard_stopped":
             self._clear_reserved(run)
-        await self._cancel_pending_unclaimed_tasks(
-            db,
-            run,
-            terminal_reason=reason,
-            result_summary=(
-                "Runtime budget circuit breaker moved this run to summary-only before this work was claimed."
-                if target == "summary_only"
-                else "Runtime budget circuit breaker stopped this work before it was claimed."
-            ),
-        )
+        if target == "waiting_budget_approval":
+            await db.execute(
+                update(RuntimeTask)
+                .where(
+                    RuntimeTask.budget_run_id == run.id,
+                    RuntimeTask.status.in_(("pending", "resumable")),
+                    RuntimeTask.claimed_by.is_(None),
+                )
+                .values(budget_admission_status="waiting_budget_approval", budget_terminal_reason=reason)
+            )
+        else:
+            await self._cancel_pending_unclaimed_tasks(
+                db,
+                run,
+                terminal_reason=reason,
+                result_summary=(
+                    "Runtime budget circuit breaker moved this run to summary-only before this work was claimed."
+                    if target == "summary_only"
+                    else "Runtime budget circuit breaker stopped this work before it was claimed."
+                ),
+            )
         db.add(
             self._event(
                 run,

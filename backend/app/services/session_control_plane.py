@@ -254,6 +254,33 @@ def _compact_workbench_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _runtime_task_user_blocker(task: RuntimeTask) -> dict[str, Any] | None:
+    admission_status = str(getattr(task, "budget_admission_status", None) or "").strip()
+    if admission_status == "waiting_budget_approval":
+        return {
+            "kind": "runtime_budget_approval",
+            "status": "waiting",
+            "title": "等待运行额度批准",
+            "reason": "本任务达到公司设置的运行上限，尚未继续执行。",
+            "next_action": "你可以继续其他工作；管理员批准后本任务会自动恢复。",
+            "owner": "company_admin",
+            "can_continue_other_work": True,
+            "auto_resume": True,
+        }
+    if admission_status == "rejected":
+        return {
+            "kind": "runtime_budget_approval",
+            "status": "rejected",
+            "title": "运行额度申请未获批准",
+            "reason": "等待中的工作已停止，已经完成的结果仍然保留。",
+            "next_action": "可查看已有结果，或调整任务范围后重新发起。",
+            "owner": "company_admin",
+            "can_continue_other_work": True,
+            "auto_resume": False,
+        }
+    return None
+
+
 def _runtime_task_payload(task: RuntimeTask) -> dict[str, Any]:
     metadata = task.metadata_json or {}
     payload = {
@@ -273,6 +300,9 @@ def _runtime_task_payload(task: RuntimeTask) -> dict[str, Any]:
         "metadata": _compact_runtime_task_metadata(metadata),
         "terminal_reason": metadata.get("terminal_reason"),
     }
+    user_blocker = _runtime_task_user_blocker(task)
+    if user_blocker is not None:
+        payload["user_blocker"] = user_blocker
     if str(getattr(task, "task_type", "") or "") == "subagent" or metadata.get("subagent_return_contract"):
         return_contract = subagent_return_contract_from_metadata(
             metadata,
@@ -328,6 +358,9 @@ def _runtime_task_runtime_row(task: RuntimeTask, *, runtime_kind: str | None = N
         "completed_at": _iso(getattr(task, "completed_at", None)),
         "metadata": _compact_runtime_task_metadata(metadata),
     }
+    user_blocker = _runtime_task_user_blocker(task)
+    if user_blocker is not None:
+        row["user_blocker"] = user_blocker
     if metadata.get("subagent_type"):
         row["subagent_type"] = metadata.get("subagent_type")
     if is_subagent_row:

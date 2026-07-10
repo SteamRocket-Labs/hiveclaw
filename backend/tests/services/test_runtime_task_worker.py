@@ -14,6 +14,7 @@ def test_worker_claimable_task_types_cover_v3_runtime_planes():
     assert "delegation" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "business_task" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "subagent" in worker.SUPPORTED_RUNTIME_TASK_TYPES
+    assert "trigger" in worker.SUPPORTED_RUNTIME_TASK_TYPES
 
 
 def test_worker_claim_batch_is_capped_by_active_web_chat_runs(monkeypatch):
@@ -90,6 +91,7 @@ def test_default_worker_capacity_is_not_cc_hostile():
     assert limits["workflow"] >= 16
     assert limits["delegation"] >= 16
     assert limits["subagent"] >= 16
+    assert limits["trigger"] >= 8
 
 
 def test_worker_dispatches_claimed_subagent_to_runtime_task_executor(monkeypatch):
@@ -112,6 +114,29 @@ def test_worker_dispatches_claimed_subagent_to_runtime_task_executor(monkeypatch
         "task": task,
         "task_type": "subagent",
         "coro_name": "_execute_claimed_subagent_task",
+    }
+
+
+def test_worker_dispatches_claimed_trigger_to_runtime_task_executor(monkeypatch):
+    import app.services.runtime_task_worker as worker
+
+    captured = {}
+
+    def fake_dispatch(task, coro, *, task_type):
+        captured["task"] = task
+        captured["task_type"] = task_type
+        captured["coro_name"] = coro.cr_code.co_name
+        coro.close()
+        return True
+
+    task = SimpleNamespace(id=uuid4(), task_type="trigger")
+    monkeypatch.setattr(worker, "_dispatch_async_runtime_task", fake_dispatch)
+
+    assert worker._dispatch_claimed_task(task) is True
+    assert captured == {
+        "task": task,
+        "task_type": "trigger",
+        "coro_name": "_execute_claimed_trigger_task",
     }
 
 

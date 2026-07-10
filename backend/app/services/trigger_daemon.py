@@ -39,11 +39,18 @@ from app.services.runtime_task_service import (
     build_restart_replay_contract,
     build_restart_replay_journal_entry,
     create_runtime_task_record,
+    get_runtime_task_record,
     list_active_runtime_task_records,
     merge_restart_replay_journal,
     update_runtime_task_record,
 )
-from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
+from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
+from app.services.runtime_budget_service import (
+    RuntimeBudgetPolicyLookup,
+    RuntimeBudgetReservation,
+    RuntimeBudgetRunCreate,
+    RuntimeBudgetService,
+)
 from app.services.trigger_preflight import (
     collect_trigger_runtime_options,
     evaluate_trigger_preflight,
@@ -64,6 +71,17 @@ _last_invoke: dict[uuid.UUID, datetime] = {}
 
 # Track fire timestamps per agent for hourly rate limiting
 _fire_history: dict[uuid.UUID, list[datetime]] = {}
+
+
+class TriggerRuntimeTaskRef(str):
+    """String-compatible task id carrying its durable admission state."""
+
+    admission_status: str
+
+    def __new__(cls, value: str, *, admission_status: str):
+        instance = super().__new__(cls, value)
+        instance.admission_status = admission_status
+        return instance
 
 
 def _runtime_task_uuid_or_none(value: str | uuid.UUID | None) -> uuid.UUID | None:
@@ -130,7 +148,11 @@ async def _create_trigger_runtime_task(
     *,
     metadata_json: dict | None = None,
 ) -> str | None:
-    """Create a best-effort RuntimeTask ledger row for a fired trigger batch."""
+    """Create the mandatory RuntimeTask ledger row for a fired trigger batch.
+
+    Callers must fail closed on ``None``. A trigger is never allowed to execute
+    when its durable evidence/recovery row could not be committed.
+    """
     trigger_names = [str(getattr(trigger, "name", "")) for trigger in triggers]
     metadata = {
         "source": "trigger_daemon",
@@ -145,6 +167,9 @@ async def _create_trigger_runtime_task(
         ],
     }
     metadata.update(metadata_json or {})
+    reservation_service: RuntimeBudgetService | None = None
+    admission_decision: ExecutionAdmissionDecision | None = None
+    budget_reservation_key: str | None = None
     try:
         task_id = uuid.uuid4().hex
         trace_id = f"trigger:{task_id}"
@@ -165,7 +190,7 @@ async def _create_trigger_runtime_task(
             or "trigger"
         )
         if tenant_id is not None:
-            budget_service = RuntimeBudgetService()
+            reservation_service = RuntimeBudgetService()
             budget_lookup = RuntimeBudgetPolicyLookup(
                 tenant_id=tenant_id,
                 source="trigger",
@@ -173,8 +198,8 @@ async def _create_trigger_runtime_task(
                 agent_id=agent_id,
                 trigger_id=trigger_id_values[0] if len(trigger_id_values) == 1 else None,
             )
-            budget_policy = await budget_service.resolve_policy(budget_lookup)
-            budget_run = await budget_service.create_run(
+            budget_policy = await reservation_service.resolve_policy(budget_lookup)
+            budget_run = await reservation_service.create_run(
                 RuntimeBudgetRunCreate(
                     tenant_id=tenant_id,
                     root_run_kind="trigger_fire",
@@ -214,6 +239,22 @@ async def _create_trigger_runtime_task(
                     },
                 )
             )
+            if bool(metadata.get("preflight_allowed", True)):
+                budget_reservation_key = f"trigger:{task_id}:start"
+                admission_decision = await ExecutionAdmission(reservation_service).admit(
+                    RuntimeBudgetReservation(
+                        budget_run_id=budget_run.id,
+                        reservation_key=budget_reservation_key,
+                        background_tasks=1,
+                        reason="trigger_start",
+                        runtime_task_id=uuid.UUID(task_id),
+                        metadata={
+                            "work_type": "trigger",
+                            "agent_id": str(agent_id),
+                            "trigger_ids": [str(value) for value in trigger_id_values],
+                        },
+                    )
+                )
         metadata.update(
             {
                 "runtime_task_id": task_id,
@@ -232,6 +273,10 @@ async def _create_trigger_runtime_task(
         )
         if budget_run is not None:
             metadata["budget_run_id"] = str(budget_run.id)
+            metadata["budget_reservation_key"] = budget_reservation_key
+            metadata["execution_admission_status"] = (
+                admission_decision.status if admission_decision is not None else "not_required"
+            )
         trigger_wake_candidate = _build_trigger_wake_context_candidate(
             triggers,
             runtime_task_id=task_id,
@@ -250,19 +295,42 @@ async def _create_trigger_runtime_task(
                 trace_id=trace_id,
             ),
         )
-        return await create_runtime_task_record(
+        admission_status = (
+            "waiting_budget_approval" if admission_decision is not None and admission_decision.waiting else "admitted"
+        )
+        persisted_task_id = await create_runtime_task_record(
             task_id=task_id,
             task_type="trigger",
-            status="running",
+            status="pending" if admission_status == "waiting_budget_approval" else "running",
             parent_agent_id=agent_id,
             prompt=f"Trigger wake: {', '.join(name for name in trigger_names if name) or 'unknown'}",
             trace_id=trace_id,
             metadata_json=metadata,
             budget_run_id=budget_run.id if budget_run is not None else None,
-            budget_admission_status="root" if budget_run is not None else None,
+            budget_reservation_key=budget_reservation_key,
+            budget_admission_status=(
+                "waiting_budget_approval"
+                if admission_status == "waiting_budget_approval"
+                else "reserved"
+                if budget_run is not None and budget_reservation_key
+                else None
+            ),
+            budget_terminal_reason=(
+                "runtime_budget_approval_required" if admission_status == "waiting_budget_approval" else None
+            ),
         )
+        return TriggerRuntimeTaskRef(persisted_task_id, admission_status=admission_status)
     except Exception as exc:
-        logger.warning("[TriggerDaemon] Failed to create trigger RuntimeTask for {}: {}", agent_id, exc)
+        if admission_decision is not None and admission_decision.status == "admitted":
+            try:
+                await ExecutionAdmission(reservation_service).settle(
+                    admission_decision,
+                    reason="trigger_ledger_create_failed",
+                    runtime_task_id=uuid.UUID(task_id),
+                )
+            except Exception:
+                logger.exception("[TriggerDaemon] Failed to release trigger reservation after ledger failure")
+        logger.error("[TriggerDaemon] Refusing trigger without RuntimeTask ledger for {}: {}", agent_id, exc)
         return None
 
 
@@ -2056,6 +2124,7 @@ async def _invoke_agent_for_triggers(
                 "output_artifact": output_artifact,
             },
         )
+        await _settle_trigger_runtime_budget(runtime_task_id, status="completed")
 
         logger.info(f"⚡ Triggers fired for {agent.name}: {[t.name for t in triggers]}")
 
@@ -2098,6 +2167,101 @@ async def _invoke_agent_for_triggers(
             result_summary=f"Trigger invocation failed: {str(e)[:500]}",
             metadata_json=failure_metadata,
         )
+        await _settle_trigger_runtime_budget(runtime_task_id, status="failed")
+
+
+async def _settle_trigger_runtime_budget(runtime_task_id: str | None, *, status: str) -> None:
+    if not runtime_task_id:
+        return
+    try:
+        record = await get_runtime_task_record(str(runtime_task_id))
+        if not record:
+            return
+        budget_run_id = _runtime_task_uuid_or_none(record.get("budget_run_id"))
+        reservation_key = str(record.get("budget_reservation_key") or "").strip()
+        if budget_run_id is None or not reservation_key:
+            return
+        reservation = RuntimeBudgetReservation(
+            budget_run_id=budget_run_id,
+            reservation_key=reservation_key,
+            background_tasks=1,
+            runtime_task_id=uuid.UUID(str(runtime_task_id)),
+            metadata={"work_type": "trigger", "status": status},
+        )
+        await ExecutionAdmission().settle(
+            ExecutionAdmissionDecision(
+                status="admitted",
+                reservation=reservation,
+                budget_run_id=budget_run_id,
+            ),
+            actual_background_tasks=1,
+            reason=f"trigger_{status}",
+            runtime_task_id=uuid.UUID(str(runtime_task_id)),
+        )
+        await update_runtime_task_record(str(runtime_task_id), budget_admission_status="settled")
+    except Exception:
+        logger.exception("[TriggerDaemon] Failed to settle trigger budget for {}", runtime_task_id)
+
+
+async def execute_claimed_trigger_runtime_task(task_id: uuid.UUID | str) -> bool:
+    """Resume a budget-approved trigger intent from the shared RuntimeTask worker."""
+
+    task_uuid = uuid.UUID(str(task_id))
+    record = await get_runtime_task_record(task_uuid.hex)
+    if not record or record.get("task_type") != "trigger":
+        return False
+    metadata = dict(record.get("metadata") or {})
+    raw_trigger_ids = list(metadata.get("trigger_ids") or [])
+    trigger_ids = [value for value in (_runtime_task_uuid_or_none(item) for item in raw_trigger_ids) if value]
+    agent_id = _runtime_task_uuid_or_none(record.get("parent_agent_id") or metadata.get("agent_id"))
+    tenant_id = _runtime_task_uuid_or_none(record.get("tenant_id"))
+    if not trigger_ids or agent_id is None or tenant_id is None:
+        await update_runtime_task_record(
+            task_uuid.hex,
+            status="failed",
+            result_summary="Approved trigger intent is missing tenant, agent, or trigger identity.",
+        )
+        await _settle_trigger_runtime_budget(task_uuid.hex, status="failed")
+        return False
+    async with tenant_scoped_session(
+        tenant_id,
+        require_tenant=True,
+        source="approved_trigger_runtime_task",
+    ) as db:
+        triggers = list(
+            (
+                await db.execute(
+                    select(AgentTrigger).where(
+                        AgentTrigger.id.in_(trigger_ids),
+                        AgentTrigger.agent_id == agent_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    if not triggers:
+        await update_runtime_task_record(
+            task_uuid.hex,
+            status="skipped",
+            result_summary="Approved trigger intent no longer has active trigger definitions.",
+        )
+        await _settle_trigger_runtime_budget(task_uuid.hex, status="skipped")
+        return False
+    event_keys = {
+        trigger_id: str(value)
+        for raw_id, value in dict(metadata.get("fire_event_keys") or {}).items()
+        if (trigger_id := _runtime_task_uuid_or_none(raw_id)) is not None and value
+    }
+    await _mark_trigger_fire_started(
+        agent_id,
+        triggers,
+        now=datetime.now(timezone.utc),
+        runtime_task_id=task_uuid.hex,
+        event_keys=event_keys,
+    )
+    await _invoke_agent_for_triggers(agent_id, triggers, runtime_task_id=task_uuid.hex)
+    return True
 
 
 async def fire_trigger_once_now(
@@ -2148,10 +2312,15 @@ async def fire_trigger_once_now(
         [trigger],
         metadata_json={
             **preflight_metadata,
+            "preflight_allowed": preflight_ok,
             "immediate_fire": True,
             "fire_event_keys": {str(trigger.id): event_key},
         },
     )
+    if runtime_task_id is None:
+        return {"fired": False, "reason": "runtime_ledger_unavailable", "runtime_task_id": None}
+    trigger_admission_status = getattr(runtime_task_id, "admission_status", "admitted")
+    runtime_task_id = str(runtime_task_id)
     if not preflight_ok:
         await _skip_trigger_runtime_task(
             runtime_task_id,
@@ -2160,6 +2329,12 @@ async def fire_trigger_once_now(
             metadata_json=preflight_metadata,
         )
         return {"fired": False, "reason": skip_reason or "preflight_blocked", "runtime_task_id": runtime_task_id}
+    if trigger_admission_status == "waiting_budget_approval":
+        return {
+            "fired": False,
+            "reason": "waiting_budget_approval",
+            "runtime_task_id": runtime_task_id,
+        }
 
     await _mark_trigger_fire_started(
         agent_id,
@@ -2236,6 +2411,7 @@ async def _tick():
             )
             runtime_metadata = {
                 **preflight_metadata,
+                "preflight_allowed": preflight_ok,
                 "fire_event_keys": {
                     str(getattr(trigger, "id", "")): fire_event_keys.get(getattr(trigger, "id", None))
                     for trigger in agent_triggers
@@ -2247,12 +2423,26 @@ async def _tick():
                 agent_triggers,
                 metadata_json=runtime_metadata,
             )
+            if runtime_task_id is None:
+                logger.error(
+                    "[TriggerDaemon] Trigger batch for agent {} was not executed because RuntimeTask persistence failed",
+                    agent_id,
+                )
+                continue
+            trigger_admission_status = getattr(runtime_task_id, "admission_status", "admitted")
+            runtime_task_id = str(runtime_task_id)
             if not preflight_ok:
                 await _skip_trigger_runtime_task(
                     runtime_task_id,
                     skip_reason=skip_reason or "preflight_blocked",
                     result_summary=skip_summary or "Trigger wake skipped by preflight.",
                     metadata_json=preflight_metadata,
+                )
+                continue
+            if trigger_admission_status == "waiting_budget_approval":
+                logger.info(
+                    "[TriggerDaemon] Trigger batch for agent {} is waiting for runtime budget approval",
+                    agent_id,
                 )
                 continue
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -87,6 +88,14 @@ def test_core_tool_names_include_work_ledger():
     from app.services.agent_tools import CORE_TOOL_NAMES
 
     assert WORK_LEDGER_TOOLS <= CORE_TOOL_NAMES
+
+
+def test_system_hr_keeps_tool_search_for_requester_scoped_personal_knowledge():
+    from app.services.agent_tools import _core_tools_for_agent
+
+    tools = _core_tools_for_agent(SimpleNamespace(name="__system_hr__", agent_class="internal_system"))
+
+    assert "tool_search" in {tool["function"]["name"] for tool in tools}
 
 
 def test_collected_surface_provides_schemas_for_core_ledger_tools():

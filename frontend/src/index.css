@@ -985,6 +985,22 @@
   align-items: center;
 }
 
+.session-technical-drawer {
+  position: absolute;
+  inset: 40px 8px 8px;
+  z-index: 4;
+  overflow: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+.session-technical-drawer .thread-item-inspector {
+  min-height: 100%;
+  border-block-end: 0;
+}
+
 .session-runtime-collapse-toggle {
   position: absolute;
   top: 9px;
@@ -1026,6 +1042,11 @@
   flex: 0 0 40%;
   min-height: 180px;
   overflow: auto;
+}
+
+.session-runtime-documents.is-empty {
+  flex-basis: auto;
+  min-height: 112px;
 }
 
 .session-runtime-divider {
@@ -2927,7 +2948,12 @@
 }
 
 .sidebar-create-agent-link {
+  width: 100%;
+  border: 0;
+  background: transparent;
   color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
 }
 
 .sidebar-footer {

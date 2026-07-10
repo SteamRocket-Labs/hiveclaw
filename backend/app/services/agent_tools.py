@@ -401,6 +401,12 @@ def _get_always_core_tools() -> list[dict]:
     return _always_core_tools
 
 
+def _core_tools_for_agent(agent: Agent | None) -> list[dict]:
+    """Return the invariant core surface without role-specific capability loss."""
+    _ = agent
+    return list(_get_always_core_tools())
+
+
 def _get_feishu_tools() -> list[dict]:
     global _feishu_tools
     if _feishu_tools is None:
@@ -887,10 +893,7 @@ async def get_agent_tools_for_llm(
             agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
             hr_agent = is_hr_agent(agent)
-            _core = _get_always_core_tools()
-            if hr_agent:
-                # HR agent: remove tool_search (searches own workspace, useless for HR)
-                _core = [t for t in _core if t["function"]["name"] != "tool_search"]
+            _core = _core_tools_for_agent(agent)
             _always_tools = (
                 _core
                 + _filter_feishu_tools_for_access(

@@ -476,7 +476,7 @@ def test_hr_templates_prefer_identity_first_and_install_later() -> None:
     assert not hr_focus_path.exists()
 
 
-def test_hr_templates_retire_hr_guide_and_use_company_knowledge_lanes() -> None:
+def test_hr_templates_mark_company_kb_missing_and_use_canonical_creation_state() -> None:
     project_root = Path(__file__).resolve().parents[3]
     hr_create_employee = (
         project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
@@ -486,13 +486,17 @@ def test_hr_templates_retire_hr_guide_and_use_company_knowledge_lanes() -> None:
     combined = "\n".join([hr_create_employee, hr_soul])
 
     assert not hr_guide_path.exists()
-    assert "Company Knowledge Lane" in combined
+    assert "Company KB is not implemented" in combined
     assert "History Suggestion Lane" in combined
-    assert "supported_by_company_kb" in combined
+    assert "supported_by_company_kb" not in combined
     assert "suggested_by_history" in combined
     assert "unknown_or_needs_company_source" in combined
     assert "confirmed_by_user" in combined
-    assert "company knowledge" in combined.lower()
+    assert "blueprint_id" in combined
+    assert "idempotency_key" not in combined
+    assert "server-side canonical" in combined
+    assert "Do not restate" in combined
+    assert "authenticated user" in combined
     assert "history" in combined.lower()
 
 
@@ -525,8 +529,10 @@ def test_hr_templates_document_creation_failure_recovery_contract() -> None:
 
     assert "Tool Failure Recovery" in combined
     assert "Do not claim the failure is not a platform bug" in combined
-    assert "do not retry `create_digital_employee` by editing only one field" in combined
-    assert "rerun `preview_agent_blueprint`" in combined
+    assert "never reconstruct the blueprint inside the create call" in combined
+    assert "creation_in_progress" in combined
+    assert "same blueprint ID" in combined
+    assert "new exact version/hash confirmation" in combined
     assert "source_type is optional at the schema boundary" in combined
     assert "defaulted to `unknown_or_needs_company_source`" in combined
 

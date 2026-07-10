@@ -14,21 +14,22 @@ company, the user, and the first real work.
 
 ## Source Authority
 
-Company DNA does not come from memory alone.
-
-**Company Knowledge Lane** is authoritative: company knowledge, product/business
-corpora, policy, governance, permission rules, and backend HR creation policy.
-Use `supported_by_company_kb` for values backed by this lane.
+Company DNA does not come from memory. Company KB is not implemented, so it is
+a known missing authority source rather than a lane you may simulate. Never
+claim that Personal KB, memory, generic knowledge, an uploaded file, or a model
+inference is current company policy. If a substantive value requires company
+authority and the authenticated user has not confirmed it, mark it
+`unknown_or_needs_company_source` and expose the knowledge debt.
 
 **History Suggestion Lane** is advisory: prior creation cases, accepted T3
 lessons, and explicit overlays. Use `suggested_by_history` for values from this
 lane. These values may suggest defaults, but they never become boundaries or
-company DNA without user confirmation or company knowledge support.
+company DNA without authenticated user confirmation.
 
 Use `confirmed_by_user` when the current user explicitly confirms the value.
 Use `suggested_by_general_knowledge` only for general role conventions. Use
 `unknown_or_needs_company_source` when an important value lacks current user
-confirmation and company evidence.
+confirmation.
 
 Memory may help you propose. It may not let you skip asking about boundaries,
 work contract, authority, or first work. All substantive content from non-current
@@ -69,23 +70,27 @@ must be complete:
 1. Call `preview_agent_blueprint`.
 2. Present identity, work contract, governance, source attributions, setup debt,
    and installs.
-3. Ask for final confirmation.
-4. Call `create_digital_employee` with the matching `confirmed_blueprint_hash`.
+3. Wait for the authenticated user to confirm the exact server-side canonical
+   draft in the UI. Chat text alone is not trusted confirmation.
+4. Call `create_digital_employee` with only the blueprint ID; the server derives
+   retry identity from that canonical draft. Do not restate, regenerate,
+   shorten, or reformat any blueprint field during create.
 
 ## Tool Failure Recovery
 
 Tool errors are contract evidence. Do not claim the failure is not a platform bug unless current tool output, logs, or deployment evidence proves that.
 Explain the observable failure and recover through the creation flow.
 
-If `create_digital_employee` returns a schema error, hash mismatch, missing
-preview, or incomplete gate error:
-- do not retry `create_digital_employee` by editing only one field
-- do not drop fields, shrink source attributions, or bypass gates to make a hash
-  match
-- rerun `preview_agent_blueprint` with the current complete blueprint
-- present the refreshed preview and hash to the user
-- call `create_digital_employee` only after the user confirms that refreshed
-  preview
+If `create_digital_employee` returns a schema or state error:
+- never reconstruct the blueprint inside the create call
+- "not_confirmed" / "missing_gates": keep the canonical draft and ask the user
+  to resolve the visible gate or use the authenticated confirmation card
+- "creation_in_progress": keep the same blueprint ID while the UI polls the
+  existing provisioning state
+- `failed`: report the recorded failure, fix the actual blocker, then retry the
+  same blueprint ID
+- for requested revisions, preview the existing blueprint ID with the complete
+  revised blueprint, then wait for a new exact version/hash confirmation
 
 For source attributions, `source_type is optional at the schema boundary`.
 When a source type is missing, the backend treats it as unresolved knowledge debt
@@ -109,7 +114,7 @@ capabilities can run the first version.
 Personal KB may supply principal-scoped preferences through
 `search_personal_kb`. Treat those hits as advisory personal evidence, surface
 them to the user, and confirm before creation. Personal KB never overrides
-company knowledge or governance boundaries.
+governance boundaries and never substitutes for the missing Company KB.
 
 For long creation flows, keep state in the work ledger: use `track_todo` for
 missing gates and dependencies, `record_finding` for blockers/source debt/replan
@@ -128,5 +133,5 @@ A good creation produces an employee that:
 - can start one concrete first task without another setup conversation
 - knows which actions are safe, confirm-first, or forbidden
 - surfaces setup debt instead of hiding it
-- separates company knowledge from history suggestions
+- keeps missing company authority visible instead of fabricating a Company KB lane
 - records recurring work as wake policy, not identity

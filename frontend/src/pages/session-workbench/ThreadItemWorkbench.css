@@ -11,10 +11,6 @@
   transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
 }
 
-.thread-item-card[role='button'] {
-  cursor: pointer;
-}
-
 .thread-item-card:hover,
 .thread-item-card:focus-visible,
 .thread-item-card.is-selected {
@@ -62,6 +58,37 @@
   color: var(--text-tertiary);
   font-size: var(--text-tiny);
   font-variant-numeric: tabular-nums;
+}
+
+.thread-item-technical-details {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 140ms ease, background-color 140ms ease, color 140ms ease;
+}
+
+.thread-item-card:hover .thread-item-technical-details,
+.thread-item-card:focus-within .thread-item-technical-details,
+.thread-item-card.is-selected .thread-item-technical-details {
+  opacity: 1;
+}
+
+.thread-item-technical-details:hover,
+.thread-item-technical-details:focus-visible,
+.thread-item-technical-details[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--thread-item-tone) 12%, transparent);
+  color: var(--thread-item-tone);
+  outline: none;
 }
 
 .thread-item-content {
@@ -216,6 +243,12 @@
 
   .thread-item-spinner {
     animation: none;
+  }
+}
+
+@media (hover: none) {
+  .thread-item-technical-details {
+    opacity: 1;
   }
 }
 

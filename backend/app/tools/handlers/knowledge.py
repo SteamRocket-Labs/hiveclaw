@@ -31,11 +31,23 @@ def _coerce_uuid(value: Any) -> uuid.UUID | None:
     return None
 
 
-async def _resolve_agent_owner(db: Any, agent_id: uuid.UUID) -> uuid.UUID | None:
+async def _resolve_agent_owner(
+    db: Any,
+    agent_id: uuid.UUID,
+    *,
+    requester_user_id: uuid.UUID | str | None = None,
+) -> uuid.UUID | None:
     agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = agent_result.scalar_one_or_none()
     if agent is None:
         return None
+    from app.services.tool_visibility import is_hr_agent
+
+    # System HR is shared by the tenant and must never inherit whichever user
+    # originally provisioned the system asset. Its Personal KB authority is the
+    # authenticated requester for this exact runtime invocation.
+    if is_hr_agent(agent):
+        return _coerce_uuid(requester_user_id)
     return agent.owner_user_id or agent.sponsor_user_id or agent.creator_id
 
 
@@ -140,7 +152,11 @@ async def propose_personal_kb_item(request: ToolExecutionRequest) -> str:
         )
 
     async with tenant_scoped_session(tenant_id) as db:
-        owner_user_id = await _resolve_agent_owner(db, request.context.agent_id)
+        owner_user_id = await _resolve_agent_owner(
+            db,
+            request.context.agent_id,
+            requester_user_id=request.context.user_id,
+        )
         if owner_user_id is None:
             return json.dumps(
                 {"status": "rejected", "policy_outcome": "reject", "reason_codes": ["agent_not_found"]},
@@ -247,7 +263,11 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
 
     limit = max(1, min(10, int(request.arguments.get("limit") or 5)))
     async with tenant_scoped_session(tenant_id) as db:
-        owner_user_id = await _resolve_agent_owner(db, request.context.agent_id)
+        owner_user_id = await _resolve_agent_owner(
+            db,
+            request.context.agent_id,
+            requester_user_id=request.context.user_id,
+        )
         if owner_user_id is None:
             return json.dumps({"results": [], "warnings": ["agent not found"]}, ensure_ascii=False)
         hits = await PersonalKnowledgeService().search_personal(
@@ -349,7 +369,11 @@ async def read_personal_kb(request: ToolExecutionRequest) -> str:
         return json.dumps({"segments": [], "warnings": ["max_chars must be an integer"]}, ensure_ascii=False)
 
     async with tenant_scoped_session(tenant_id) as db:
-        owner_user_id = await _resolve_agent_owner(db, request.context.agent_id)
+        owner_user_id = await _resolve_agent_owner(
+            db,
+            request.context.agent_id,
+            requester_user_id=request.context.user_id,
+        )
         if owner_user_id is None:
             return json.dumps({"segments": [], "warnings": ["agent not found"]}, ensure_ascii=False)
         detail = await PersonalKnowledgeService().get_personal_document(

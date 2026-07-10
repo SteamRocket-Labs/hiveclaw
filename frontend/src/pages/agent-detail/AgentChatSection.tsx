@@ -22,6 +22,7 @@ import ThinkingDisclosure from './ThinkingDisclosure';
 import type { AgentPermissions } from '../../api/domains/agents';
 import AskUserQuestionCard from './AskUserQuestionCard';
 import PlanModeRequestCard from './PlanModeRequestCard';
+import { HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
 import CopyMessageButton from './CopyMessageButton';
 import PlanCard from './PlanCard';
 import RunDisclosureBlock from './RunDisclosureBlock';
@@ -1789,7 +1790,7 @@ function SessionRuntimePanel({
   const selectedRuntimeSegment: RuntimeConsoleSegmentKey = runtimeSegmentOverride && runtimeConsole.segments.some((segment) => segment.key === runtimeSegmentOverride)
     ? runtimeSegmentOverride
     : runtimeConsole.defaultSegment;
-  const collaborationCount = runtimeConsole.summary.runningCount > 0
+  const runStatusCount = runtimeConsole.summary.runningCount > 0
     ? t('sessionWorkbench.rightPanel.runningCount', '{{count}} running', { count: runtimeConsole.summary.runningCount })
     : t('sessionWorkbench.rightPanel.totalCount', '{{count}} total', { count: runtimeConsole.summary.totalCount });
   const metricSummary = (item: RuntimeSectionItemModel): string => [
@@ -2259,17 +2260,15 @@ function SessionRuntimePanel({
       >
         <IconChevronRight size={15} stroke={1.8} />
       </button>
-      {selectedThreadItem ? (
-        <ThreadItemInspector item={selectedThreadItem} onClose={onClearSelectedThreadItem} />
-      ) : null}
       <section
-        className="session-runtime-section session-runtime-documents"
-        aria-label={t('sessionWorkbench.rightPanel.sessionArtifacts', 'Session artifacts')}
+        data-testid="session-runtime-deliverables"
+        className={`session-runtime-section session-runtime-documents${currentSessionDocumentCount === 0 ? ' is-empty' : ''}`}
+        aria-label={t('sessionWorkbench.rightPanel.sessionArtifacts', 'Deliverables')}
       >
         <div className="session-runtime-section-header">
           <div>
             <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.session', 'Session')}</div>
-            <h3>{t('sessionWorkbench.rightPanel.sessionArtifacts', 'Session artifacts')}</h3>
+            <h3>{t('sessionWorkbench.rightPanel.sessionArtifacts', 'Deliverables')}</h3>
           </div>
           <span>{currentSessionDocumentCount}</span>
         </div>
@@ -2287,16 +2286,16 @@ function SessionRuntimePanel({
       <div data-testid="session-runtime-divider" className="session-runtime-divider" aria-hidden="true" />
 
       <section
-        data-testid="session-runtime-collaboration"
+        data-testid="session-runtime-run-status"
         className="session-runtime-section session-runtime-lower"
-        aria-label={t('sessionWorkbench.rightPanel.collaboration', 'Collaboration')}
+        aria-label={t('sessionWorkbench.rightPanel.runStatus', 'Run status')}
       >
         <div className="session-runtime-section-header">
           <div>
             <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.session', 'Session')}</div>
-            <h3>{t('sessionWorkbench.rightPanel.collaboration', 'Collaboration')}</h3>
+            <h3>{t('sessionWorkbench.rightPanel.runStatus', 'Run status')}</h3>
           </div>
-          <span>{collaborationCount}</span>
+          <span>{runStatusCount}</span>
         </div>
 
         <div data-testid="session-runtime-console" className="session-runtime-console">
@@ -2360,6 +2359,11 @@ function SessionRuntimePanel({
           {renderRuntimeConsoleBody()}
         </div>
       </section>
+      {selectedThreadItem ? (
+        <div className="session-technical-drawer" role="dialog" aria-modal="false">
+          <ThreadItemInspector item={selectedThreadItem} onClose={onClearSelectedThreadItem} />
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -2878,44 +2882,12 @@ export function StructuredToolResultBody({
   }
 
   if (toolMeta.kind === 'hr_preview') {
-    const showRawOutput = rawText.length > 0 && rawText !== toolResult;
     return (
-      <div style={{ display: 'grid', gap: '8px' }}>
-        <div style={{ display: 'grid', gap: '4px' }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-text)' }}>
-            {t('agent.chat.toolResults.blueprintPreviewTitle', 'Agent Blueprint Preview')}
-          </div>
-          {toolMeta.name && <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{toolMeta.name}</div>}
-          {toolMeta.mission && (
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              <strong>{t('agent.chat.toolResults.mission', 'Mission')}:</strong> {toolMeta.mission}
-            </div>
-          )}
-          {toolMeta.firstMission && (
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              <strong>{t('agent.chat.toolResults.firstMission', 'First Mission')}:</strong> {toolMeta.firstMission}
-            </div>
-          )}
-        </div>
-        <StructuredToolSection label={t('agent.chat.toolResults.readyNow', 'Ready Now')} items={toolMeta.readyNow} />
-        <StructuredToolSection label={t('agent.chat.toolResults.willInstall', 'Will Install')} items={toolMeta.willInstall} />
-        <StructuredToolSection
-          label={t('agent.chat.toolResults.deferredCapabilities', 'Deferred Capabilities')}
-          items={toolMeta.deferredCapabilities}
-        />
-        <StructuredToolSection label={t('agent.chat.toolResults.warnings', 'Warnings')} items={toolMeta.warnings} />
-        <StructuredToolSection label={t('agent.chat.toolResults.manualSteps', 'Manual Steps')} items={toolMeta.manualSteps} />
-        {showRawOutput && (
-          <details>
-            <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)' }}>
-              {t('agent.chat.toolResults.rawOutput', 'Raw output')}
-            </summary>
-            <div style={{ marginTop: '6px' }}>
-              <RawToolResultBlock text={rawText} />
-            </div>
-          </details>
-        )}
-      </div>
+      <HrBlueprintPreviewCard
+        agentId={agentId}
+        preview={toolMeta}
+        onSendMessage={onSendMessage}
+      />
     );
   }
 

@@ -139,6 +139,7 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "personal_knowledge_proposals",
     "local_agent_capability_snapshots",
     "ai_asset_records",
+    "hr_creation_drafts",
 )
 
 # Non-null tenant-owned tables must never inherit the legacy nullable-tenant
@@ -167,6 +168,7 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "personal_knowledge_proposals",
     "local_agent_capability_snapshots",
     "ai_asset_records",
+    "hr_creation_drafts",
 )
 
 REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (

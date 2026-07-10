@@ -9,9 +9,22 @@ export interface CreateEmployeeToolResult {
 
 export interface HrPreviewToolResult {
   kind: 'hr_preview';
+  blueprintId: string | null;
+  blueprintVersion: number;
+  blueprintHash: string | null;
+  status: string;
   name: string | null;
   mission: string | null;
   firstMission: string | null;
+  primaryUsers: string[];
+  coreOutputs: string[];
+  boundaries: string | null;
+  permissionScope: string | null;
+  sourceAttributions: Record<string, unknown>[];
+  riskClass: string | null;
+  missingGates: string[];
+  knowledgeDebt: unknown[];
+  confirmationRequirements: unknown[];
   readyNow: string[];
   willInstall: string[];
   deferredCapabilities: string[];
@@ -158,6 +171,21 @@ function normalizeStringList(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
+function normalizeRecordList(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+  );
+}
+
+function normalizeDisplayList(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  return Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry === true || (entry !== false && entry != null && entry !== ''))
+    .map(([key, entry]) => (entry === true ? key : `${key}: ${String(entry)}`));
+}
+
 export function parseCreateEmployeeToolResult(rawResult: unknown): CreateEmployeeToolResult | null {
   const raw = coerceToolResultToString(rawResult).trim();
   const parsed = parseStructuredToolPayload(rawResult);
@@ -208,9 +236,22 @@ export function parsePreviewAgentBlueprintResult(rawResult: unknown): HrPreviewT
 
   return {
     kind: 'hr_preview',
+    blueprintId: typeof parsed.blueprint_id === 'string' ? parsed.blueprint_id : null,
+    blueprintVersion: typeof parsed.blueprint_version === 'number' ? parsed.blueprint_version : 1,
+    blueprintHash: typeof parsed.blueprint_hash === 'string' ? parsed.blueprint_hash : null,
+    status: typeof parsed.draft_status === 'string' ? parsed.draft_status : 'legacy_preview',
     name: typeof blueprint.name === 'string' ? blueprint.name : null,
     mission: typeof summary.mission === 'string' ? summary.mission : null,
     firstMission: typeof summary.first_mission === 'string' ? summary.first_mission : null,
+    primaryUsers: normalizeStringList(blueprint.primary_users),
+    coreOutputs: normalizeStringList(blueprint.core_outputs),
+    boundaries: typeof blueprint.boundaries === 'string' ? blueprint.boundaries : null,
+    permissionScope: typeof blueprint.permission_scope === 'string' ? blueprint.permission_scope : null,
+    sourceAttributions: normalizeRecordList(blueprint.source_attributions),
+    riskClass: typeof parsed.risk_class === 'string' ? parsed.risk_class : null,
+    missingGates: normalizeStringList(parsed.missing_gates),
+    knowledgeDebt: normalizeDisplayList(parsed.knowledge_debt),
+    confirmationRequirements: normalizeDisplayList(parsed.confirmation_requirements),
     readyNow: normalizeStringList(parsed.ready_now ?? blueprint.ready_now),
     willInstall: normalizeStringList(parsed.will_install),
     deferredCapabilities: normalizeStringList(blueprint.deferred_capabilities ?? parsed.deferred_capabilities),

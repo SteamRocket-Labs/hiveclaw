@@ -34,7 +34,6 @@ UNKNOWN_SOURCE_ATTRIBUTION_TYPE = "unknown_or_needs_company_source"
 
 SOURCE_ATTRIBUTION_TYPES = [
     "confirmed_by_user",
-    "supported_by_company_kb",
     "suggested_by_history",
     "suggested_by_general_knowledge",
     UNKNOWN_SOURCE_ATTRIBUTION_TYPE,
@@ -57,7 +56,7 @@ SOURCE_ATTRIBUTIONS_SCHEMA = {
                 "type": "string",
                 "enum": SOURCE_ATTRIBUTION_TYPES,
                 "description": (
-                    "Whether the value is user-confirmed, company-knowledge-backed, historical, general, or unresolved. "
+                    "Whether the value is user-confirmed, historical, general, or unresolved. "
                     "If omitted, the server records it as unresolved knowledge debt."
                 ),
             },
@@ -70,7 +69,7 @@ SOURCE_ATTRIBUTIONS_SCHEMA = {
         "required": ["field"],
     },
     "description": (
-        "Source attribution for substantive blueprint content. Company knowledge is authoritative, "
+        "Source attribution for substantive blueprint content. Company knowledge is not implemented yet; "
         "history is advisory, and all non-current-session suggestions must be shown to the user for confirmation."
     ),
 }
@@ -143,8 +142,6 @@ _RESEARCH_WORKFLOW_KEYWORDS = (
 )
 
 _SKILLS_REF_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$")
-
-_HR_CREATE_FAILURE_LIMIT = 2
 
 _HIGH_RISK_KEYWORDS = (
     "美股",
@@ -262,6 +259,11 @@ def _parse_source_attributions(value: object) -> tuple[list[dict[str, Any]], lis
         if not source_type:
             source_type = UNKNOWN_SOURCE_ATTRIBUTION_TYPE
             defaulted_source_type_count += 1
+        elif source_type == "supported_by_company_kb":
+            source_type = UNKNOWN_SOURCE_ATTRIBUTION_TYPE
+            warnings.append(
+                "supported_by_company_kb was downgraded to unknown_or_needs_company_source because Company KB is not implemented"
+            )
         elif source_type not in SOURCE_ATTRIBUTION_TYPES:
             invalid_count += 1
             continue
@@ -299,16 +301,15 @@ def _knowledge_debt_from_source_attributions(source_attributions: list[dict[str,
 
 def _source_attribution_policy() -> dict[str, Any]:
     return {
-        "company_knowledge_lane": "authoritative",
+        "company_knowledge_lane": "known_missing_not_available_for_attribution",
         "history_suggestion_lane": "advisory",
         "general_knowledge_lane": "fallback",
         "confirmation_rule": (
-            "All substantive blueprint content from company knowledge, history, or general knowledge "
-            "must be presented to the user and explicitly confirmed before create_digital_employee."
+            "All substantive blueprint content from history or general knowledge must be presented to the user "
+            "and explicitly confirmed. Company KB claims are unavailable and remain knowledge debt."
         ),
         "source_type_precedence": [
             "confirmed_by_user",
-            "supported_by_company_kb",
             "suggested_by_history",
             "suggested_by_general_knowledge",
             "unknown_or_needs_company_source",
@@ -321,7 +322,7 @@ def _confirmation_requirements(source_attributions: list[dict[str, Any]]) -> dic
     return {
         "must_present_all_substantive_blueprint_content": True,
         "source_types_to_present": source_types,
-        "must_distinguish_supported_by_company_kb_from_suggested_by_history": True,
+        "company_kb_attribution_available": False,
         "must_confirm_before_create": True,
     }
 
@@ -381,7 +382,7 @@ def _build_creation_flow_gates(
     external_skill_refs: list[str],
 ) -> tuple[dict, list[str]]:
     identity_missing = []
-    if not name:
+    if len(name) < 2 or len(name) > 100:
         identity_missing.append("name")
     if not role_description:
         identity_missing.append("role_description")
@@ -434,128 +435,6 @@ def _build_creation_flow_gates(
     }
     missing_gates = [gate for gate, data in gates.items() if data["status"] == "missing"]
     return gates, missing_gates
-
-
-def _parse_tool_call_payload(content: str | None) -> dict:
-    if not content:
-        return {}
-    try:
-        value = json.loads(content)
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-def _parse_tool_result_json(payload: dict) -> dict:
-    result = payload.get("result")
-    if isinstance(result, dict):
-        return result
-    if not isinstance(result, str) or not result.strip():
-        return {}
-    try:
-        value = json.loads(result)
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-def _create_tool_confirmed_hash(payload: dict) -> str:
-    args = payload.get("args")
-    if not isinstance(args, dict):
-        args = payload.get("arguments")
-    if not isinstance(args, dict):
-        return ""
-    return str(args.get("confirmed_blueprint_hash") or args.get("blueprint_hash") or "").strip()
-
-
-def _is_create_failure_result(result: object) -> bool:
-    text = str(result or "").lower()
-    return (
-        "failed to create the digital employee" in text
-        or "create_digital_employee exceeded" in text
-        or (
-            ('"tool_name": "create_digital_employee"' in text or '"tool_name":"create_digital_employee"' in text)
-            and "timeout" in text
-        )
-    )
-
-
-async def _validate_creation_flow_confirmation(request, db) -> str | None:
-    args = request.arguments
-    preview_payload = _build_blueprint_preview_payload(args)
-    expected_hash = preview_payload["blueprint_hash"]
-    confirmed_hash = str(args.get("confirmed_blueprint_hash") or args.get("blueprint_hash") or "").strip()
-    if not confirmed_hash:
-        return (
-            "Error: confirmed_blueprint_hash is required. First call preview_agent_blueprint, present the preview "
-            "to the user, then pass the returned blueprint_hash as confirmed_blueprint_hash after explicit confirmation."
-        )
-    if confirmed_hash != expected_hash:
-        return (
-            "Error: confirmed_blueprint_hash does not match the current creation blueprint. "
-            "Regenerate the preview and ask the user to confirm the exact current blueprint."
-        )
-
-    blocking_gates = [gate for gate in preview_payload["missing_gates"] if gate != "confirmation"]
-    if blocking_gates:
-        return (
-            "Error: creation gates are incomplete before create_digital_employee: "
-            + ", ".join(blocking_gates)
-            + ". Run preview_agent_blueprint and resolve the missing gates before creation."
-        )
-
-    session_id = str(getattr(request.context, "session_id", None) or "").strip()
-    if not session_id:
-        return "Error: HR creation must run inside a session so preview and confirmation can be audited."
-
-    from sqlalchemy import select
-
-    from app.models.audit import ChatMessage
-
-    result = await db.execute(
-        select(ChatMessage)
-        .where(
-            ChatMessage.agent_id == request.context.agent_id,
-            ChatMessage.conversation_id == session_id,
-            ChatMessage.role == "tool_call",
-        )
-        .order_by(ChatMessage.created_at.desc())
-        .limit(50)
-    )
-    rows = list(result.scalars().all())
-    pending_scoped_failures = 0
-    pending_legacy_failures = 0
-    failed_creates = 0
-    preview_found = False
-    for row in rows:
-        payload = _parse_tool_call_payload(getattr(row, "content", None))
-        tool_name = payload.get("name")
-        if tool_name == "create_digital_employee" and _is_create_failure_result(payload.get("result")):
-            create_hash = _create_tool_confirmed_hash(payload)
-            if create_hash:
-                if create_hash == confirmed_hash:
-                    pending_scoped_failures += 1
-            else:
-                pending_legacy_failures += 1
-        if tool_name == "preview_agent_blueprint":
-            preview_result = _parse_tool_result_json(payload)
-            if preview_result.get("blueprint_hash") == confirmed_hash:
-                preview_found = True
-                failed_creates = pending_scoped_failures + pending_legacy_failures
-                break
-            pending_legacy_failures = 0
-
-    if failed_creates >= _HR_CREATE_FAILURE_LIMIT:
-        return (
-            f"Error: stopped after {_HR_CREATE_FAILURE_LIMIT} failed create attempts in this HR session. "
-            "Do not retry with smaller or renamed arguments. Report the failure and inspect backend logs/config instead."
-        )
-    if not preview_found:
-        return (
-            "Error: no matching preview_agent_blueprint result was found in this session. "
-            "Create must be session-bound to a previewed blueprint."
-        )
-    return None
 
 
 async def _resolve_employee_creation_model(db, tenant_id: uuid.UUID | None):
@@ -1399,7 +1278,8 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
             "mode": "dynamic_rounds_mandatory_gates",
             "instruction": (
                 "Do not treat this as a fixed five-round interview. Complete the gates dynamically, "
-                "then pass blueprint_hash as confirmed_blueprint_hash only after explicit user confirmation."
+                "then wait for the authenticated user to confirm the persisted blueprint in the UI. "
+                "Creation consumes only blueprint_id; the server derives retry identity from that draft."
             ),
             "gates": gates,
         },
@@ -1528,141 +1408,71 @@ def _append_hr_creation_t0_event(
     )
 
 
+async def _claim_canonical_hr_blueprint(
+    request: ToolExecutionRequest,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, dict[str, Any]]:
+    """Bind a retry-safe create call to one authenticated, session-scoped draft."""
+    from app.database import tenant_scoped_session
+    from app.services.hr_creation_service import claim_hr_creation_draft_record, load_hr_creation_draft
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    raw_blueprint_id = str(request.arguments.get("blueprint_id") or "").strip()
+    raw_session_id = str(getattr(request.context, "session_id", None) or "").strip()
+    if not raw_blueprint_id:
+        raise ValueError("blueprint_id is required")
+    if not raw_session_id:
+        raise ValueError("HR creation must run inside the preview session")
+
+    try:
+        draft_id = uuid.UUID(raw_blueprint_id)
+        session_id = uuid.UUID(raw_session_id)
+        user_id = uuid.UUID(str(request.context.user_id))
+        hr_agent_id = uuid.UUID(str(request.context.agent_id))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("blueprint, session, user, and HR agent identifiers must be valid UUIDs") from exc
+
+    raw_tenant_id = request.context.tenant_id or await resolve_tenant_for_agent(hr_agent_id)
+    if raw_tenant_id is None:
+        raise ValueError("could not resolve the requesting tenant")
+    tenant_id = uuid.UUID(str(raw_tenant_id))
+
+    async with tenant_scoped_session(tenant_id) as db:
+        draft = await load_hr_creation_draft(
+            db,
+            draft_id=draft_id,
+            tenant_id=tenant_id,
+            hr_agent_id=hr_agent_id,
+            requested_by_user_id=user_id,
+            session_id=session_id,
+            for_update=True,
+        )
+        claim_hr_creation_draft_record(draft)
+        canonical_blueprint = dict(draft.blueprint_json or {})
+        await db.commit()
+
+    return draft_id, tenant_id, user_id, session_id, canonical_blueprint
+
+
 @tool(
     ToolMeta(
         name="create_digital_employee",
         timeout_seconds=120.0,
         risk_class="enterprise_asset_mutation",
         description=(
-            "Create a new digital employee with the given configuration. "
-            "Use this ONLY after confirming the full plan with the user. "
-            "Returns the new employee's name and ID on success."
+            "Create a digital employee from a server-side canonical HR blueprint. "
+            "Use this only after the authenticated user confirms the exact preview in the UI. "
+            "Never restate or regenerate blueprint fields in this call."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "name": {
+                "blueprint_id": {
                     "type": "string",
-                    "description": "Name for the new digital employee (2-100 characters)",
-                },
-                "confirmed_blueprint_hash": {
-                    "type": "string",
-                    "description": (
-                        "The blueprint_hash returned by preview_agent_blueprint after the user explicitly confirms "
-                        "that exact preview. Required for session-bound HR creation."
-                    ),
-                },
-                "role_description": {
-                    "type": "string",
-                    "maxLength": ROLE_DESCRIPTION_MAX_CHARS,
-                    "description": "What this employee does — mission, core responsibilities, and domain expertise. Write 2-3 sentences minimum, be specific about the role.",
-                },
-                "personality": {
-                    "type": "string",
-                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
-                    "description": "Operating style as concrete behaviors (e.g. 'Always cite sources when presenting data', 'Proactively flag risks before they escalate'). One per line, 3-5 lines.",
-                },
-                "primary_users": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Who this agent primarily serves (e.g. ['investment team', 'research team']).",
-                },
-                "core_outputs": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Main deliverables this agent must produce (e.g. ['daily report', 'weekly report', 'feishu notification']).",
-                },
-                "boundaries": {
-                    "type": "string",
-                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
-                    "description": "Hard rules and red lines specific to this role's risk profile (e.g. 'Never fabricate financial data', 'Do not share user PII externally'). One per line, 3-5 lines.",
-                },
-                "company_charter": {
-                    "type": "object",
-                    "description": "Optional company-level charter overlay for goals, boundaries, and escalation rules.",
-                    "properties": {
-                        "goals": {"type": "array", "items": {"type": "string"}},
-                        "boundaries": {"type": "array", "items": {"type": "string"}},
-                        "escalation": {"type": "array", "items": {"type": "string"}},
-                    },
-                },
-                "owner_agency_charter": {
-                    "type": "object",
-                    "description": "Optional owner authorization charter with full_authority, confirm_first, and never_do zones.",
-                    "properties": {
-                        "full_authority": {"type": "array", "items": {"type": "string"}},
-                        "confirm_first": {"type": "array", "items": {"type": "string"}},
-                        "never_do": {"type": "array", "items": {"type": "string"}},
-                    },
-                },
-                "source_attributions": SOURCE_ATTRIBUTIONS_SCHEMA,
-                "skill_names": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": f"ONLY non-default platform-registered skill folder_names. {_default_skill_count()} default platform skill capsules are auto-installed, including web, MCP, marketplace, channel, and office playbooks. Only include extra platform skills that are mandatory on day one; otherwise let the agent evolve later. Do NOT put ClawHub or external skills here — use clawhub_slugs instead.",
-                },
-                "external_skill_urls": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "GitHub skill package URLs for third-party skills. Backward-compatible alias of external_skill_refs.",
-                },
-                "external_skill_refs": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Third-party installable skill references. Accepts GitHub URLs or skills.sh refs like owner/repo@skill.",
-                },
-                "mcp_server_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Smithery MCP server IDs to install only when the first objective is blocked without them (e.g. ['LinkupPlatform/linkup-mcp-server']). Found via discover_resources.",
-                },
-                "clawhub_slugs": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "ClawHub skill slugs to install only when builtin/default capabilities and platform skills are insufficient on day one (e.g. ['market-research-agent', 'competitor-analyst']). Found via web_search on clawhub.ai.",
-                },
-                "permission_scope": {
-                    "type": "string",
-                    "enum": ["company", "self"],
-                    "description": "'company' (everyone) or 'self' (creator only). Default: 'company'.",
-                },
-                "triggers": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string", "description": "Trigger name (e.g. 'daily_news_report')"},
-                            "type": {"type": "string", "enum": ["cron", "interval"], "description": "cron or interval"},
-                            "config": {
-                                "type": "object",
-                                "description": 'For cron: {"expr": "0 9 * * *"}. For interval: {"minutes": 30}',
-                            },
-                            "reason": {
-                                "type": "string",
-                                "description": "What the agent should do when triggered (the instruction)",
-                            },
-                        },
-                        "required": ["name", "type", "config", "reason"],
-                    },
-                    "description": "Scheduled tasks. Use cron for fixed times, interval for recurring.",
-                },
-                "welcome_message": {
-                    "type": "string",
-                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
-                    "description": "Greeting shown when someone first chats with this agent. Should introduce the agent's role and capabilities.",
-                },
-                "focus_content": {
-                    "type": "string",
-                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
-                    "description": "What should the agent work on first? Written as a task list or agenda in markdown.",
-                },
-                "heartbeat_topics": {
-                    "type": "string",
-                    "maxLength": HR_LONG_TEXT_MAX_CHARS,
-                    "description": "Role-specific exploration topics for the agent's heartbeat. E.g. 'Focus on AI/VC funding news, semiconductor breakthroughs, and founder movements.'",
+                    "format": "uuid",
+                    "description": "The canonical blueprint_id returned by preview_agent_blueprint.",
                 },
             },
-            "required": ["name", "confirmed_blueprint_hash"],
+            "required": ["blueprint_id"],
         },
         category="hr",
         display_name="Create Digital Employee",
@@ -1673,9 +1483,16 @@ def _append_hr_creation_t0_event(
     )
 )
 async def create_digital_employee(request: ToolExecutionRequest) -> str:
-    args = request.arguments
-    user_id = request.context.user_id
-    tenant_id = request.context.tenant_id
+    from app.services.hr_creation_service import HrCreationConflict
+
+    try:
+        draft_id, scope_tenant_id, user_id, session_id, args = await _claim_canonical_hr_blueprint(request)
+    except (HrCreationConflict, ValueError) as exc:
+        code = getattr(exc, "code", "invalid_request")
+        message = getattr(exc, "message", str(exc))
+        return json.dumps({"status": "error", "error": code, "message": message}, ensure_ascii=False)
+
+    tenant_id = str(scope_tenant_id)
 
     name = (args.get("name") or "").strip()
     if not name or len(name) < 2:
@@ -1727,7 +1544,6 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
     from app.models.user import User
     from app.services.agent_identity_lifecycle import ensure_agent_identity
     from app.services.agent_manager import agent_manager
-    from app.services.tenant_resolver import resolve_tenant_for_agent
     from app.services.capability_install_service import (
         build_capability_install_plan,
         record_capability_install,
@@ -1737,6 +1553,11 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
         reuse_existing_mcp_server_for_agent,
         reuse_existing_skill_for_agent,
     )
+    from app.services.hr_creation_service import (
+        load_hr_creation_draft,
+        mark_hr_creation_completed_record,
+        mark_hr_creation_failed_record,
+    )
 
     try:
         # RLS 阶段1: agent creation reads/writes many policy-bearing tables
@@ -1745,25 +1566,51 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
         # primary source; when absent, fall back to the calling HR agent's
         # tenant via the audited single-row bypass (same tenant as the user for
         # self-service creation), so the User read below is still scoped.
-        _scope_tenant_id = tenant_id or await resolve_tenant_for_agent(request.context.agent_id)
-        async with tenant_scoped_session(_scope_tenant_id) as db:
+        async with tenant_scoped_session(scope_tenant_id) as db:
             # Look up the calling user
             user_result = await db.execute(select(User).where(User.id == user_id))
             user = user_result.scalar_one_or_none()
             if not user:
                 return "Error: could not identify the requesting user."
 
-            effective_tenant_id = uuid.UUID(tenant_id) if tenant_id else user.tenant_id
-
-            creation_flow_error = await _validate_creation_flow_confirmation(request, db)
-            if creation_flow_error:
-                return creation_flow_error
+            effective_tenant_id = scope_tenant_id
+            draft = await load_hr_creation_draft(
+                db,
+                draft_id=draft_id,
+                tenant_id=scope_tenant_id,
+                hr_agent_id=uuid.UUID(str(request.context.agent_id)),
+                requested_by_user_id=user_id,
+                session_id=session_id,
+                for_update=True,
+            )
+            existing_agent_result = await db.execute(select(Agent).where(Agent.id == draft.created_agent_id))
+            existing_agent = existing_agent_result.scalar_one_or_none()
+            if existing_agent is not None:
+                mark_hr_creation_completed_record(
+                    draft,
+                    agent_id=existing_agent.id,
+                    provisioning=dict(draft.provisioning_json or {"core": "completed", "recovered": True}),
+                )
+                await db.commit()
+                return _build_create_employee_result(
+                    agent_id=str(existing_agent.id),
+                    agent_name=existing_agent.name,
+                    features=["idempotent_replay=true"],
+                    skills_dir=str(agent_manager._agent_dir(existing_agent.id) / "skills"),
+                    creation_state="ready",
+                )
 
             # Resolve default model through the shared tenant-aware model resolver. The
             # tenant setting may point at a deleted/cross-tenant/disabled model; never
             # write that raw UUID into agents.primary_model_id.
             creation_model = await _resolve_employee_creation_model(db, effective_tenant_id)
             if not creation_model:
+                mark_hr_creation_failed_record(
+                    draft,
+                    code="missing_creation_model",
+                    message="No enabled LLM model is configured for this tenant.",
+                )
+                await db.commit()
                 return (
                     f"❌ Cannot create agent '{name}': no LLM model configured for this tenant. "
                     "Please add at least one enabled LLM model in Enterprise Settings → LLM Pool."
@@ -2105,6 +1952,15 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 actor_user_id=user.id,
                 change_message="Digital employee created by HR Agent",
             )
+            draft.status = "provisioning"
+            draft.created_agent_id = agent.id
+            draft.provisioning_json = {
+                "core": "completed",
+                "workspace": "completed",
+                "default_skills": "completed",
+                "optional_capabilities": "running",
+                "t0_evidence": "pending",
+            }
             await db.commit()
 
             session_id = getattr(request.context, "session_id", None)
@@ -2123,11 +1979,15 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                         trigger_count=len(triggers),
                     )
                 except Exception as t0_exc:
+                    warnings.append("HR creation evidence projection failed; the agent exists and the draft remains auditable.")
+                    draft.provisioning_json = {**dict(draft.provisioning_json or {}), "t0_evidence": "failed"}
                     logger.warning(
                         "[HR] Failed to append hr_agent_created T0 event for agent %s: %s",
                         agent.id,
                         t0_exc,
                     )
+                else:
+                    draft.provisioning_json = {**dict(draft.provisioning_json or {}), "t0_evidence": "completed"}
 
             if install_plan:
                 try:
@@ -2416,6 +2276,15 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             if external_skill_results:
                 features.append(f"external_skills={external_skill_results}")
 
+            mark_hr_creation_completed_record(
+                draft,
+                agent_id=agent.id,
+                provisioning={
+                    **dict(draft.provisioning_json or {}),
+                    "optional_capabilities": "completed_with_warnings" if warnings else "completed",
+                },
+            )
+            await db.commit()
             return _build_create_employee_result(
                 agent_id=str(agent.id),
                 agent_name=agent.name,
@@ -2428,6 +2297,26 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
 
     except Exception as e:
         logger.error(f"[HR] create_digital_employee failed: {e}", exc_info=True)
+        try:
+            async with tenant_scoped_session(scope_tenant_id) as failure_db:
+                failed_draft = await load_hr_creation_draft(
+                    failure_db,
+                    draft_id=draft_id,
+                    tenant_id=scope_tenant_id,
+                    hr_agent_id=uuid.UUID(str(request.context.agent_id)),
+                    requested_by_user_id=user_id,
+                    session_id=session_id,
+                    for_update=True,
+                )
+                if failed_draft.status != "completed":
+                    mark_hr_creation_failed_record(
+                        failed_draft,
+                        code="provisioning_failed",
+                        message=str(e),
+                    )
+                    await failure_db.commit()
+        except Exception as state_exc:
+            logger.error("[HR] Failed to persist HR creation failure state: %s", state_exc, exc_info=True)
         return "Error: failed to create the digital employee. Please try again or contact support."
 
 
@@ -2442,6 +2331,11 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
         parameters={
             "type": "object",
             "properties": {
+                "blueprint_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Existing draft ID when revising a preview; omit to create a new draft.",
+                },
                 "name": {"type": "string", "description": "Proposed agent name."},
                 "role_description": {
                     "type": "string",
@@ -2522,11 +2416,85 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
         display_name="Preview Agent Blueprint",
         icon="🧭",
         is_default=False,
+        # The domain operation is a preview. Persisting its canonical draft is
+        # part of the platform evidence ledger, like transcript persistence;
+        # it does not create or mutate an employee/business asset.
         read_only=True,
-        parallel_safe=True,
+        parallel_safe=False,
+        risk_class="controlled_write",
+        idempotency_scope="session",
         governance="safe",
         adapter="request",
     )
 )
 async def preview_agent_blueprint(request: ToolExecutionRequest) -> str:
-    return json.dumps(_build_blueprint_preview_payload(request.arguments), ensure_ascii=False)
+    from sqlalchemy import select
+
+    from app.database import tenant_scoped_session
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.services.hr_creation_service import HrCreationConflict, hr_creation_draft_payload, upsert_hr_creation_draft
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+    from app.services.tool_visibility import is_hr_agent
+
+    preview_payload = _build_blueprint_preview_payload(request.arguments)
+    try:
+        hr_agent_id = uuid.UUID(str(request.context.agent_id))
+        user_id = uuid.UUID(str(request.context.user_id))
+        session_id = uuid.UUID(str(getattr(request.context, "session_id", None) or ""))
+        raw_blueprint_id = str(request.arguments.get("blueprint_id") or "").strip()
+        blueprint_id = uuid.UUID(raw_blueprint_id) if raw_blueprint_id else None
+    except (TypeError, ValueError):
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "invalid_context",
+                "message": "HR preview requires valid agent, user, and session identifiers.",
+            },
+            ensure_ascii=False,
+        )
+
+    raw_tenant_id = request.context.tenant_id or await resolve_tenant_for_agent(hr_agent_id)
+    if raw_tenant_id is None:
+        return json.dumps(
+            {"status": "error", "error": "tenant_not_found", "message": "Could not resolve the requesting tenant."},
+            ensure_ascii=False,
+        )
+    tenant_id = uuid.UUID(str(raw_tenant_id))
+
+    async with tenant_scoped_session(tenant_id) as db:
+        agent_result = await db.execute(select(Agent).where(Agent.id == hr_agent_id))
+        hr_agent = agent_result.scalar_one_or_none()
+        session_result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == session_id,
+                ChatSession.agent_id == hr_agent_id,
+                ChatSession.user_id == user_id,
+            )
+        )
+        if not is_hr_agent(hr_agent) or session_result.scalar_one_or_none() is None:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": "authority_mismatch",
+                    "message": "HR preview must be created by System HR inside the requesting user's session.",
+                },
+                ensure_ascii=False,
+            )
+        try:
+            draft = await upsert_hr_creation_draft(
+                db,
+                tenant_id=tenant_id,
+                hr_agent_id=hr_agent_id,
+                session_id=session_id,
+                requested_by_user_id=user_id,
+                preview_payload=preview_payload,
+                blueprint_id=blueprint_id,
+            )
+        except HrCreationConflict as exc:
+            return json.dumps(
+                {"status": "error", "error": exc.code, "message": exc.message},
+                ensure_ascii=False,
+            )
+        await db.commit()
+        return json.dumps(hr_creation_draft_payload(draft), ensure_ascii=False)

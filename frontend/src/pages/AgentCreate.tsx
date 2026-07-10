@@ -9,6 +9,7 @@ import {
   IconSparkles,
 } from '@tabler/icons-react';
 import { agentApi } from '../api/domains/agents';
+import { chatApi } from '../api/domains/chat';
 
 const capabilityRails = [
   { key: 'hrOnly', fallback: 'Employee creation is guided by the HR Agent as the single creation role.' },
@@ -28,7 +29,8 @@ export default function AgentCreate() {
     setError(null);
     try {
       const hrAgent = await agentApi.getHrAgent();
-      navigate(`/agents/${hrAgent.id}#chat`);
+      const session = await chatApi.createSession(hrAgent.id);
+      navigate(`/agents/${hrAgent.id}?session_id=${encodeURIComponent(String(session.id))}#chat`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t('agentCreate.hrError', 'Failed to open HR Agent.'));
     } finally {

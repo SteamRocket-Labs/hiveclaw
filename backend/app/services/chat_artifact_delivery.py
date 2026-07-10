@@ -36,7 +36,12 @@ CHAT_ARTIFACT_SNAPSHOT_GC_SCHEMA = "chat_artifact_snapshot_gc.v1"
 DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS = 30.0
 
 
-def tool_session_write_paths(tool_name: str, args: dict[str, Any]) -> list[str]:
+def tool_session_write_paths(
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    artifacts: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+) -> list[str]:
     """Return user-facing workspace artifact paths written by a tool call."""
     if tool_name in ("write_file", "edit_file", "fs_write"):
         path = args.get("path")
@@ -47,7 +52,14 @@ def tool_session_write_paths(tool_name: str, args: dict[str, Any]) -> list[str]:
     if tool_name == "office_document_apply":
         path = args.get("output_path") or args.get("path")
         return [str(path)] if path else []
-    return []
+    paths: list[str] = []
+    for artifact in artifacts or ():
+        if not isinstance(artifact, dict):
+            continue
+        rel = _safe_workspace_relative_path(str(artifact.get("path") or ""))
+        if rel is not None and rel.as_posix() not in paths:
+            paths.append(rel.as_posix())
+    return paths
 
 
 def ensure_agent_session_source(runtime_source: str) -> None:
@@ -782,6 +794,7 @@ async def create_chat_artifacts_for_message(
     source_agent_id: str | uuid.UUID | None = None,
     download_agent_id: str | uuid.UUID | None = None,
     delivery_agent_id: str | uuid.UUID | None = None,
+    rebind_existing_to_message: bool = False,
 ) -> list[dict[str, Any]]:
     """Create artifact rows for safe candidate paths and return message parts."""
     parts: list[dict[str, Any]] = []
@@ -853,6 +866,12 @@ async def create_chat_artifacts_for_message(
                 )
                 db.add(existing)
                 await db.flush()
+            elif rebind_existing_to_message and existing.message_id != message_id:
+                # A code-execution artifact is first attached to its tool result
+                # for immediate Workspace visibility. Once the model selects it
+                # as a final deliverable, move the canonical row to the final
+                # assistant message instead of creating a second fact source.
+                existing.message_id = message_id
             part = artifact_part_from_model(existing)
             record_workspace_artifact_provenance(workspace_root, part)
             parts.append(part)

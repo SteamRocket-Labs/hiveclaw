@@ -214,6 +214,59 @@ async def test_search_personal_kb_tool_uses_agent_owner_and_returns_json(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_system_hr_personal_kb_read_is_bound_to_current_requester(monkeypatch) -> None:
+    from app.tools.handlers import knowledge as knowledge_handler
+
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    first_creator_id = uuid.uuid4()
+    requester_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    segment_id = uuid.uuid4()
+    hit = KnowledgeSearchHit(
+        document_id=document_id,
+        segment_id=segment_id,
+        title="Requester notes",
+        snippet="Use requester scope.",
+        source_ref=f"kb://person/{requester_id}/documents/{document_id}#segment={segment_id}",
+        score=0.9,
+        heading_path=["HR"],
+        sensitivity="internal",
+        metadata={},
+        score_trace={},
+    )
+    service = _FakeSearchService(hit)
+    shared_hr = SimpleNamespace(
+        id=agent_id,
+        name="__system_hr__",
+        agent_class="internal_system",
+        owner_user_id=first_creator_id,
+        sponsor_user_id=first_creator_id,
+        creator_id=first_creator_id,
+    )
+    session_context = _SessionContext(shared_hr)
+
+    monkeypatch.setattr(knowledge_handler, "tenant_scoped_session", lambda _tenant_id: session_context)
+    monkeypatch.setattr(knowledge_handler, "PersonalKnowledgeService", lambda: service)
+
+    await knowledge_handler.search_personal_kb(
+        ToolExecutionRequest(
+            tool_name="search_personal_kb",
+            arguments={"query": "requester scope"},
+            context=ToolExecutionContext(
+                agent_id=agent_id,
+                user_id=requester_id,
+                tenant_id=str(tenant_id),
+                workspace=Path("/tmp/workspace"),
+            ),
+        )
+    )
+
+    assert service.calls[0]["owner_user_id"] == requester_id
+    assert service.calls[0]["owner_user_id"] != first_creator_id
+
+
+@pytest.mark.asyncio
 async def test_read_personal_kb_tool_uses_same_owner_acl_and_bounds_segments(monkeypatch) -> None:
     from app.tools.handlers import knowledge as knowledge_handler
 

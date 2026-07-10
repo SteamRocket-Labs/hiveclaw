@@ -173,8 +173,8 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('sidebar-workspace-select');
     expect(markup).not.toContain('tenant-switcher');
     expect(markup).not.toContain('My Workspace');
-    expect(markup).not.toContain('href="/home"');
-    expect(markup).not.toContain('title="Home"');
+    expect(markup).toContain('href="/enterprise/dashboard"');
+    expect(markup).toContain('title="Home"');
     expect(markup).toContain('Digital Employees');
     expect(markup).toContain('Tasks / Automation');
     expect(markup).toContain('Agent Circle');
@@ -196,7 +196,7 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('Agent One');
     expect(markup).toContain('Codex on Mac');
     expect(markup).toContain('Local');
-    expect(markup).toContain('Create Agent');
+    expect(markup).toContain('New digital employee');
     expect(markup).toContain('Settings');
     expect(markup).toContain('Rocky');
     expect(markup).toContain('Super Admin');
@@ -210,7 +210,7 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('Version Mock');
   });
 
-  it('keeps Create Agent as a fixed agent node instead of a workspace search block', () => {
+  it('keeps employee creation as a simple action below the employee tree', () => {
     const markup = renderToStaticMarkup(
       <AppSidebar
         user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
@@ -244,15 +244,16 @@ describe('Layout extracted sections', () => {
     expect(markup).not.toContain('Quick open');
     expect(markup).toContain('Digital Employees');
     expect(markup).toContain('Research Lead');
-    expect(markup).toContain('Create Agent');
+    expect(markup).toContain('New digital employee');
     expect(markup).toContain('data-testid="sidebar-create-agent-block"');
-    expect(markup).toContain('aria-label="Toggle Create Agent sessions"');
-    expect(markup).not.toContain('sidebar-create-agent-item');
-    expect(markup).not.toContain('href="/agents/new" class="sidebar-item sidebar-agent-link');
+    expect(markup).not.toContain('aria-label="Toggle Create Agent sessions"');
+    expect(markup).not.toContain('sidebar-create-agent-sessions');
+    expect(markup).toContain('class="sidebar-item sidebar-create-agent-link');
+    expect(markup).toContain('href="/enterprise/dashboard"');
     expect(markup).toContain('href="/local-agents"');
   });
 
-  it('uses the real HR Agent sessions for the fixed Create Agent node', () => {
+  it('routes the simple employee-creation action to the real HR Agent when available', () => {
     routeState.location = { pathname: '/agents/hr-agent-1', search: '?session_id=hr-session-1', hash: '#chat' };
     const markup = renderToStaticMarkup(
       <AppSidebar
@@ -294,21 +295,12 @@ describe('Layout extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('data-testid="sidebar-create-agent-sessions"');
     expect(markup).toContain('data-testid="sidebar-create-agent-block"');
-    expect(markup).toContain('Create Agent');
-    expect(markup).toContain('aria-label="Toggle Create Agent sessions"');
-    expect(markup).not.toContain('sidebar-create-agent-item');
-    expect(markup).not.toContain('href="/agents/hr-agent-1?manage=true#status"');
-    expect(markup).not.toContain('Open Create Agent details');
-    expect(markup).not.toContain('href="/agents/hr-agent-1#chat" class="sidebar-item sidebar-agent-link');
-    expect(markup).toContain('Onboard a sales assistant');
-    expect(markup).toContain('href="/agents/hr-agent-1?session_id=hr-session-1#chat"');
-    expect(markup).toContain('New Conversation');
-    expect(markup).not.toContain('class="sidebar-session-new"');
-    expect(markup).not.toContain('href="/agents/new?conversation=new"');
-    expect(markup).not.toContain('Current creation conversation');
-    expect(markup).not.toContain('sidebar-create-employee');
+    expect(markup).toContain('New digital employee');
+    expect(markup).not.toContain('href="/agents/hr-agent-1#chat"');
+    expect(markup).not.toContain('data-testid="sidebar-create-agent-sessions"');
+    expect(markup).not.toContain('Onboard a sales assistant');
+    expect(markup).not.toContain('aria-label="Toggle Create Agent sessions"');
   });
 
   it('keeps the user identity hidden until Settings is opened', () => {
@@ -404,8 +396,8 @@ describe('Layout extracted sections', () => {
     );
 
     expect(markup).toContain('data-testid="sidebar-agent-sessions-agent-1"');
-    expect(markup).toContain('aria-label="Toggle AI 产品经理 sessions"');
-    expect(markup).not.toContain('href="/agents/agent-1" class="sidebar-item sidebar-agent-link');
+    expect(markup).toContain('aria-label="Open AI 产品经理"');
+    expect(markup).toContain('href="/agents/agent-1#chat" class="sidebar-item sidebar-agent-link');
     expect(markup).toContain('href="/agents/agent-1?session_id=session-1#chat"');
     expect(markup).toContain('class="sidebar-session-item active"');
     expect(markup.match(/class="sidebar-session-item active"/g) || []).toHaveLength(1);

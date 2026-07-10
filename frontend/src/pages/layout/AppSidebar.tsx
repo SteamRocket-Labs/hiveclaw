@@ -15,8 +15,8 @@ import {
   IconDeviceDesktop,
   IconFolder,
   IconGitBranch,
+  IconHome,
   IconLogout,
-  IconMessageCircle,
   IconMoon,
   IconPlus,
   IconSettings,
@@ -47,6 +47,7 @@ type SidebarNavItem = {
 };
 
 const workspaceNavItems: SidebarNavItem[] = [
+  { to: '/enterprise/dashboard', labelKey: 'nav.home', fallback: 'Home', icon: <IconHome size={15} stroke={1.6} /> },
   { to: '/plaza', labelKey: 'nav.plaza', fallback: 'Agent Circle', icon: <IconSitemap size={15} stroke={1.6} /> },
   { to: '/automations', labelKey: 'nav.tasksAutomation', fallback: 'Tasks / Automation', icon: <IconCheckbox size={15} stroke={1.6} /> },
   { to: '/knowledge', labelKey: 'nav.knowledge', fallback: 'Knowledge', icon: <IconDatabase size={15} stroke={1.6} /> },
@@ -315,7 +316,6 @@ export default function AppSidebar({
   const createAgentId = resolvedHrAgent?.id ? String(resolvedHrAgent.id) : null;
   const isCreateAgentActive = isCreateAgentRoute || (!!createAgentId && activeAgentId === createAgentId);
   const [expandedAgentIds, setExpandedAgentIds] = useState<Set<string>>(() => new Set(activeAgentId ? [activeAgentId] : []));
-  const [isCreateAgentExpanded, setIsCreateAgentExpanded] = useState(isCreateAgentActive);
   const [sessionsByAgentId, setSessionsByAgentId] = useState<Record<string, ChatSession[]>>(agentSessionsByAgentId || {});
   const [sessionLoadingByAgentId, setSessionLoadingByAgentId] = useState<Record<string, boolean>>({});
   const locale = i18n.language?.startsWith('zh') ? 'zh-CN' : 'en-US';
@@ -368,10 +368,6 @@ export default function AppSidebar({
       return next;
     });
   }, [activeAgentId]);
-
-  useEffect(() => {
-    if (isCreateAgentActive) setIsCreateAgentExpanded(true);
-  }, [isCreateAgentActive]);
 
   const loadAgentSessions = async (agentId: string) => {
     if (agentSessionsByAgentId?.[agentId] || sessionsByAgentId[agentId] || sessionLoadingByAgentId[agentId]) return;
@@ -468,17 +464,6 @@ export default function AppSidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAgentId]);
 
-  useEffect(() => {
-    if (!createAgentId || !isCreateAgentActive) return;
-    void loadAgentSessions(createAgentId);
-    // Same loader as active agent expansion; route changes are the relevant
-    // trigger here, not every render-time state update.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createAgentId, isCreateAgentActive]);
-
-  const createAgentHref = createAgentId ? `/agents/${createAgentId}#chat` : '/agents/new';
-  const createAgentSessions = createAgentId ? (effectiveSessionsByAgentId[createAgentId] || []) : [];
-  const createAgentSessionsLoading = createAgentId ? sessionLoadingByAgentId[createAgentId] : false;
   const [expandedSessionFamilyIds, setExpandedSessionFamilyIds] = useState<Set<string>>(() => new Set());
 
   const isActiveSidebarSession = (agentId: string, session: ChatSession | any): boolean => {
@@ -672,17 +657,11 @@ export default function AppSidebar({
                   >
                     {isExpanded ? <IconChevronDown size={13} stroke={1.7} /> : <IconChevronRight size={13} stroke={1.7} />}
                   </button>
-                  <button
-                    type="button"
-                    className={`sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
+                  <NavLink
+                    to={`/agents/${agent.id}#chat`}
+                    className={() => `sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
                     title={agent.name}
-                    aria-label={`Toggle ${agent.name} sessions`}
-                    aria-expanded={isExpanded}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      toggleAgentSessions(String(agent.id));
-                    }}
+                    aria-label={`Open ${agent.name}`}
                   >
                     <span className="sidebar-item-icon" style={{ position: 'relative' }}>
                       <span className={`agent-avatar${isLocalAgentRuntimeType(agent) ? ' local-runtime' : ''}`}>{avatarChar}</span>
@@ -695,7 +674,7 @@ export default function AppSidebar({
                     </span>
                     <span className="sidebar-item-text">{agent.name}</span>
                     {sourceBadge && !isSidebarCollapsed && <span className="sidebar-agent-source-badge">{sourceBadge}</span>}
-                  </button>
+                  </NavLink>
                   {!isSidebarCollapsed && (
                     <span className="sidebar-agent-actions" aria-hidden={false}>
                       <button
@@ -741,75 +720,20 @@ export default function AppSidebar({
           )}
           {user && (
             <div className="sidebar-create-agent-block" data-testid="sidebar-create-agent-block">
-              <div className="sidebar-agent-row">
-                <button
-                  type="button"
-                  className="sidebar-agent-disclosure"
-                  aria-label={isCreateAgentExpanded ? t('nav.collapseAgentSessions', 'Collapse sessions') : t('nav.expandAgentSessions', 'Expand sessions')}
-                  aria-expanded={isCreateAgentExpanded}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setIsCreateAgentExpanded((prev) => !prev);
-                    if (createAgentId) void loadAgentSessions(createAgentId);
-                  }}
-                >
-                  {isCreateAgentExpanded ? <IconChevronDown size={13} stroke={1.7} /> : <IconChevronRight size={13} stroke={1.7} />}
-                </button>
-                <button
-                  type="button"
-                  className={`sidebar-item sidebar-agent-link sidebar-create-agent-link ${isCreateAgentActive && !activeSessionId ? 'active' : ''}`}
-                  title={t('nav.createAgent', 'Create Agent')}
-                  aria-label={`Toggle ${t('nav.createAgent', 'Create Agent')} sessions`}
-                  aria-expanded={isCreateAgentExpanded}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (!createAgentId) {
-                      navigate(createAgentHref);
-                      return;
-                    }
-                    setIsCreateAgentExpanded((prev) => !prev);
-                    void loadAgentSessions(createAgentId);
-                  }}
-                >
-                  <span className="sidebar-item-icon" style={{ position: 'relative' }}>
-                    <span className="agent-avatar create-agent-avatar">
-                      <IconMessageCircle size={13} stroke={1.8} />
-                    </span>
-                  </span>
-                  <span className="sidebar-item-text">{t('nav.createAgent', 'Create Agent')}</span>
-                  {!isSidebarCollapsed && <span className="sidebar-agent-source-badge">{t('nav.hrAgentBadge', 'HR')}</span>}
-                </button>
-                {!isSidebarCollapsed && createAgentId && (
-                  <span className="sidebar-agent-actions" aria-hidden={false}>
-                    <button
-                      type="button"
-                      className="sidebar-agent-action"
-                      aria-label={`New conversation with ${t('nav.createAgent', 'Create Agent')}`}
-                      title={t('agent.chat.newSession', 'New Conversation')}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void handleCreateSession(createAgentId);
-                      }}
-                    >
-                      <IconPlus size={13} stroke={1.8} />
-                    </button>
-                  </span>
-                )}
-              </div>
-              {isCreateAgentExpanded && !isSidebarCollapsed && (
-                <div className="sidebar-agent-sessions" data-testid="sidebar-create-agent-sessions">
-                  {!createAgentId || createAgentSessionsLoading ? (
-                    <div className="sidebar-session-muted">{t('common.loading', 'Loading')}</div>
-                  ) : createAgentSessions.length === 0 ? (
-                    <div className="sidebar-session-muted">{t('agent.chat.noSessionsYet', 'No conversations yet.')}</div>
-                  ) : (
-                    renderSessionFamilies(createAgentId, createAgentSessions)
-                  )}
-                </div>
-              )}
+              <button
+                type="button"
+                className={`sidebar-item sidebar-create-agent-link ${isCreateAgentActive ? 'active' : ''}`}
+                title={t('nav.newDigitalEmployee', 'New digital employee')}
+                onClick={() => {
+                  if (createAgentId) void handleCreateSession(createAgentId);
+                  else navigate('/agents/new');
+                }}
+              >
+                <span className="sidebar-item-icon sidebar-item-icon-centered">
+                  <IconPlus size={15} stroke={1.8} />
+                </span>
+                <span className="sidebar-item-text">{t('nav.newDigitalEmployee', 'New digital employee')}</span>
+              </button>
             </div>
           )}
         </div>

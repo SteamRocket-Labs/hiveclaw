@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 from app.services.code_execution.contracts import CodeExecutionResult, render_command_result
 from app.services.code_execution.service import execute_agent_command
@@ -188,10 +189,54 @@ def _promote_nested_workspace_artifacts(work_dir: Path) -> list[str]:
     return moved
 
 
-def _with_code_execution_evidence(text: str, result: CodeExecutionResult) -> str | ToolContentEnvelope:
-    if not result.evidence:
+def _workspace_file_state(work_dir: Path) -> dict[str, tuple[int, int]]:
+    """Return a cheap, bounded-to-workspace fingerprint for produced-file detection."""
+    state: dict[str, tuple[int, int]] = {}
+    for path in work_dir.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(work_dir).as_posix()
+        if rel.startswith(("_exec_tmp", "_skill_tools/", ".git/", ".hive/")):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        state[rel] = (stat.st_size, stat.st_mtime_ns)
+    return state
+
+
+def _workspace_artifact_manifest(
+    work_dir: Path,
+    before: dict[str, tuple[int, int]],
+    *,
+    source: str,
+) -> tuple[dict[str, Any], ...]:
+    after = _workspace_file_state(work_dir)
+    return tuple(
+        {
+            "path": f"workspace/{rel}",
+            "source": source,
+            "action": "created" if rel not in before else "updated",
+        }
+        for rel, fingerprint in sorted(after.items())
+        if before.get(rel) != fingerprint
+    )
+
+
+def _with_code_execution_evidence(
+    text: str,
+    result: CodeExecutionResult,
+    *,
+    artifacts: tuple[dict[str, Any], ...] = (),
+) -> str | ToolContentEnvelope:
+    if not result.evidence and not artifacts:
         return text
-    return ToolContentEnvelope(text=text, metadata={"code_execution_evidence": dict(result.evidence)})
+    return ToolContentEnvelope(
+        text=text,
+        metadata={"code_execution_evidence": dict(result.evidence)} if result.evidence else {},
+        artifacts=artifacts,
+    )
 
 
 async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
@@ -212,6 +257,7 @@ async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
         return safety_error
 
     work_dir, safe_env = _prepare_execution_environment(ws)
+    workspace_before = _workspace_file_state(work_dir)
 
     # Determine command and file extension
     if language == "python":
@@ -239,6 +285,7 @@ async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
             runtime="node24" if language == "node" else "python3.13",
         )
         _promote_nested_workspace_artifacts(work_dir)
+        artifacts = _workspace_artifact_manifest(work_dir, workspace_before, source="execute_code")
         stdout_str = result.stdout[:10000]
         stderr_str = result.stderr[:5000]
 
@@ -270,6 +317,7 @@ async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
                         for item in staged
                     ),
                     result,
+                    artifacts=artifacts,
                 )
 
         result_parts = []
@@ -278,14 +326,16 @@ async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
         if stderr_str.strip():
             result_parts.append(f"⚠️ Stderr:\n{stderr_str}")
         if result.error:
-            return _with_code_execution_evidence(result.error, result)
+            return _with_code_execution_evidence(result.error, result, artifacts=artifacts)
         if result.exit_code != 0:
             result_parts.append(f"Exit code: {result.exit_code}")
 
         if not result_parts:
-            return _with_code_execution_evidence("✅ Code executed successfully (no output)", result)
+            return _with_code_execution_evidence(
+                "✅ Code executed successfully (no output)", result, artifacts=artifacts
+            )
 
-        return _with_code_execution_evidence("\n\n".join(result_parts), result)
+        return _with_code_execution_evidence("\n\n".join(result_parts), result, artifacts=artifacts)
 
     except Exception as e:
         return f"❌ Execution error: {str(e)[:200]}"
@@ -310,6 +360,7 @@ async def _run_command(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
         return safety_error
 
     work_dir, safe_env = _prepare_execution_environment(ws)
+    workspace_before = _workspace_file_state(work_dir)
     result = await execute_agent_command(
         ["bash", "-lc", command],
         work_dir=work_dir,
@@ -318,6 +369,7 @@ async def _run_command(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
         runtime=os.environ.get("HIVE_VERCEL_SANDBOX_RUNTIME", "python3.13"),
     )
     _promote_nested_workspace_artifacts(work_dir)
+    artifacts = _workspace_artifact_manifest(work_dir, workspace_before, source="run_command")
     rendered = render_command_result(
         command,
         CodeExecutionResult(
@@ -329,4 +381,4 @@ async def _run_command(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
             evidence=result.evidence,
         ),
     )
-    return _with_code_execution_evidence(rendered, result)
+    return _with_code_execution_evidence(rendered, result, artifacts=artifacts)

@@ -68,13 +68,14 @@ function item(itemType: ThreadItemType): ThreadItem {
 }
 
 describe('ThreadItemRenderer', () => {
-  it('renders every discriminated variant with textual status and keyboard selection', () => {
+  it('renders every discriminated variant with an explicit technical-details control', () => {
     for (const itemType of Object.keys(DATA_BY_TYPE) as ThreadItemType[]) {
       const markup = renderToStaticMarkup(<ThreadItemRenderer item={item(itemType)} onSelect={() => undefined} />);
       expect(markup).toContain(`data-thread-item-type="${itemType}"`);
       expect(markup).toContain('data-thread-item-status=');
-      expect(markup).toContain('tabindex="0"');
-      expect(markup).toContain('role="button"');
+      expect(markup).toContain('data-testid="thread-item-technical-details"');
+      expect(markup).not.toContain('role="button"');
+      expect(markup).not.toContain('tabindex="0"');
     }
   });
 
@@ -102,5 +103,6 @@ describe('ThreadItemRenderer', () => {
     expect(markup).toContain('hive.thread_item.v1');
     expect(markup).toContain('transcript_event');
     expect(markup).toContain('aria-label=');
+    expect(markup).not.toContain('<details open=""');
   });
 });

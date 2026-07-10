@@ -969,6 +969,53 @@ def _normalize_tool_result_for_llm(result: Any) -> str:
     return result_str
 
 
+def _empty_assistant_fallback(collected_parts: list[dict[str, Any]]) -> str:
+    """Produce a recovery-oriented terminal message without exposing raw tool payloads."""
+    last_tool_part = next(
+        (
+            part
+            for part in reversed(collected_parts)
+            if isinstance(part, dict) and part.get("type") == "tool_call"
+        ),
+        None,
+    )
+    if last_tool_part is None:
+        return "[LLM Error] 模型没有返回可显示的回复。你可以重试本轮，运行证据已保留。"
+
+    tool_name = str(last_tool_part.get("name") or "tool").strip() or "tool"
+    raw_result = last_tool_part.get("result")
+    parsed_result: dict[str, Any] | None = raw_result if isinstance(raw_result, dict) else None
+    if parsed_result is None and isinstance(raw_result, str):
+        try:
+            candidate = json.loads(raw_result)
+        except (TypeError, ValueError):
+            candidate = None
+        if isinstance(candidate, dict):
+            parsed_result = candidate
+
+    error_message = ""
+    if parsed_result is not None and str(parsed_result.get("status") or "").lower() in {
+        "error",
+        "failed",
+        "rejected",
+    }:
+        error_message = str(parsed_result.get("message") or parsed_result.get("reason") or "").strip()
+    elif isinstance(raw_result, str):
+        normalized = raw_result.strip()
+        if normalized.lower().startswith(("error", "failed", "[tool execution error]")) or normalized.startswith("❌"):
+            error_message = normalized.lstrip("❌ ")[:300]
+
+    if error_message:
+        return (
+            f"[LLM Error] 模型在 {tool_name} 未完成后没有返回最终说明：{error_message[:300]} "
+            "你可以重试本轮；完整错误和运行证据已保留在技术详情中。"
+        )
+    return (
+        f"[LLM Error] 模型在 {tool_name} 完成后没有返回最终说明。"
+        "工具结果已保留，你可以重试本轮。"
+    )
+
+
 def _extract_tool_side_effects(raw_result: Any) -> dict[str, Any] | None:
     """Pull the ToolContentEnvelope side-effect channel off a raw tool result.
 
@@ -989,6 +1036,10 @@ def _extract_tool_side_effects(raw_result: Any) -> dict[str, Any] | None:
     terminal_signal = getattr(raw_result, "terminal_signal", None)
     if isinstance(terminal_signal, str) and terminal_signal.strip():
         side_effects["terminal_signal"] = terminal_signal
+    artifacts = getattr(raw_result, "artifacts", ()) or ()
+    artifact_records = [dict(item) for item in artifacts if isinstance(item, dict) and item.get("path")]
+    if artifact_records:
+        side_effects["artifacts"] = artifact_records
     return side_effects or None
 
 
@@ -2120,7 +2171,11 @@ async def _execute_tool_with_hooks(
             _session.track_tool_outcome(tool_name, "Listed " + (_path or "workspace root"))
         elif tool_name == "load_skill":
             pass
-        elif _write_paths := tool_session_write_paths(tool_name, _args_dict):
+        elif _write_paths := tool_session_write_paths(
+            tool_name,
+            _args_dict,
+            artifacts=tool_result_side_effects.get("artifacts"),
+        ):
             for _path in _write_paths:
                 _snapshot = _snapshot_session_file(request.agent_id, _path) if request.agent_id else None
                 _session.track_file_write(_path, snapshot=_snapshot)
@@ -4977,7 +5032,11 @@ class AgentKernel:
                             return await _abort_for_loop_guard(text_loop_decision)
 
                     if not response.tool_calls:
-                        final_content = response.content or "[LLM returned empty content]"
+                        final_content = (
+                            response.content
+                            if isinstance(response.content, str) and response.content.strip()
+                            else _empty_assistant_fallback(collected_parts)
+                        )
                         _available_tool_names = {
                             str(tool.get("function", {}).get("name"))
                             for tool in (tools_for_llm or [])
@@ -5375,6 +5434,8 @@ class AgentKernel:
                                 "reasoning_content": full_reasoning_content,
                                 "reasoning_signature": getattr(response, "reasoning_signature", None),
                             }
+                            if _side_effects and _side_effects.get("artifacts"):
+                                done_payload["artifacts"] = list(_side_effects["artifacts"])
                             if request.on_tool_call:
                                 try:
                                     await _maybe_await(request.on_tool_call(done_payload))
@@ -5638,6 +5699,8 @@ class AgentKernel:
                                 "reasoning_content": full_reasoning_content,
                                 "reasoning_signature": getattr(response, "reasoning_signature", None),
                             }
+                            if _side_effects and _side_effects.get("artifacts"):
+                                done_payload["artifacts"] = list(_side_effects["artifacts"])
                             if request.on_tool_call:
                                 try:
                                     await _maybe_await(request.on_tool_call(done_payload))

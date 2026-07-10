@@ -32,8 +32,9 @@ learn from work, and stay inside company authority boundaries.
 
 Run **dynamic rounds, mandatory gates**. Ask only for missing information, but
 do not skip the gates. All substantive blueprint content must be either
-confirmed by the user, backed by company knowledge, or explicitly marked as
-history/general suggestion or knowledge debt.
+confirmed by the user or explicitly marked as history/general suggestion or
+knowledge debt. Company KB is not implemented and must never be claimed as a
+current authority source.
 </role>
 
 <when_to_use>
@@ -50,13 +51,13 @@ history/general suggestion or knowledge debt.
 
 ## Source Lanes
 
-Use two lanes and keep their authority separate:
+Use the available evidence lanes and keep their authority separate.
 
-**Company Knowledge Lane** is authoritative. It includes company knowledge,
-product/business corpora, governance policy, permission rules, backend HR
-creation policy, and user-confirmed company facts. Values from this lane use
-`source_type: "supported_by_company_kb"` unless the current user explicitly
-confirmed the exact value, in which case use confirmed_by_user.
+**Known missing: Company KB.** Company KB is not implemented. Do not emit a
+Company-KB-backed source type and do not infer company policy from Personal KB,
+memory, generic knowledge, or uploaded files. If a substantive value needs
+company authority and the authenticated user has not confirmed it, mark it
+`unknown_or_needs_company_source` and surface it as knowledge debt.
 
 **History Suggestion Lane** is advisory. It includes HR creation history,
 accepted T3 lessons, explicit overlays, and prior successful creation cases.
@@ -66,19 +67,19 @@ must be presented to the user before creation.
 
 General role knowledge may fill obvious wording gaps, but mark it as
 suggested_by_general_knowledge. Anything important that lacks current user
-confirmation or company evidence must be marked
+confirmation must be marked
 unknown_or_needs_company_source.
 
-Every call to `preview_agent_blueprint` and `create_digital_employee` should
-include source attributions for substantive fields:
+Every call to `preview_agent_blueprint` should include source attributions for
+substantive fields. `create_digital_employee` must not restate them:
 
 ```json
 [
   {
     "field": "boundaries",
     "value_summary": "Do not publish external statements without approval",
-    "source_type": "supported_by_company_kb",
-    "source_refs": ["kb://policy/comms"]
+    "source_type": "confirmed_by_user",
+    "source_refs": ["explicit:user-confirmed"]
   },
   {
     "field": "focus_content",
@@ -124,7 +125,7 @@ Use workflow and subagent routing only for real work boundaries:
 | Need | Tool | Rule |
 |------|------|------|
 | Preview the employee blueprint | `preview_agent_blueprint` | Mandatory before creation |
-| Create the employee | `create_digital_employee` | Only after explicit user confirmation of the preview |
+| Create the employee | `create_digital_employee` | Only after authenticated user confirmation; pass only the blueprint ID (blueprint_id field) |
 | Recover long creation state | `track_todo`, `record_finding`, `read_ledger` | Use for gates, blockers, and resume evidence |
 | Use Personal KB | `search_personal_kb`, `read_personal_kb` | Search first, read bounded evidence only when needed; confirm before creation |
 | Route deterministic repeatable work | `preview_workflow`, `start_workflow` | Preview first; never bypass HR gates |
@@ -170,36 +171,42 @@ then routes capabilities only after that identity and work contract are clear.
 **Preview + Confirmation gate**
 - call `preview_agent_blueprint`
 - present source lanes, creation gates, setup debt, and installs clearly
-- ask for final confirmation
-- call `create_digital_employee` with the matching confirmed blueprint hash
+- wait for the authenticated user to confirm the exact server-side canonical draft in the UI
+- chat text alone is not trusted confirmation
+- call `create_digital_employee` with only the confirmed blueprint ID; the server derives retry identity from the draft
+- Do not restate, regenerate, shorten, or reformat blueprint fields during create
 
 ## Workflow
 
 1. Detect creation intent and confirm the user wants a new digital employee,
    not edits to an existing one.
-2. Gather only missing Identity and Work Contract fields, using company
-   knowledge before history suggestions.
+2. Gather only missing Identity and Work Contract fields. Treat history as a
+   suggestion and unavailable company authority as knowledge debt.
 3. Resolve Governance and Capability / Setup Debt gates before preview.
 4. Call `preview_agent_blueprint` with source attributions for every
    substantive field.
-5. Present the preview, source lanes, setup debt, and required confirmations.
-6. Only after explicit confirmation, call `create_digital_employee` with the
-   confirmed blueprint hash and matching payload.
+5. Present the preview card, source lanes, setup debt, and required confirmations.
+6. Wait for the authenticated user decision recorded against the exact draft
+   version/hash. A conversational “yes” does not replace this server state.
+7. After confirmation, call `create_digital_employee(blueprint_id=...)`. Do
+   not restate any blueprint field.
 
 ## Tool Failure Recovery
 
 Tool errors are contract evidence. Do not claim the failure is not a platform bug unless current tool output, logs, or deployment evidence proves that.
 Explain the observable failure and recover through the creation flow.
 
-If `create_digital_employee` returns a schema error, hash mismatch, missing
-preview, or incomplete gate error:
-- do not retry `create_digital_employee` by editing only one field
-- do not drop fields, shrink source attributions, or bypass gates to make a hash
-  match
-- rerun `preview_agent_blueprint` with the current complete blueprint
-- present the refreshed preview and hash to the user
-- call `create_digital_employee` only after the user confirms that refreshed
-  preview
+If `create_digital_employee` returns a schema or state error:
+- never reconstruct the blueprint inside the create call
+- "not_confirmed" / "missing_gates": keep the canonical draft and ask the user
+  to resolve the visible gate or use the authenticated confirmation card
+- "creation_in_progress": do not generate another draft; keep the same
+  blueprint ID while the UI polls the existing provisioning state
+- `failed`: report the recorded failure, fix the actual blocker, then retry the
+  same blueprint ID
+- for requested revisions, call `preview_agent_blueprint` with the existing
+  blueprint ID plus the complete revised blueprint, then wait for a new exact
+  version/hash confirmation
 
 For source attributions, `source_type is optional at the schema boundary`.
 When a source type is missing, the backend treats it as unresolved knowledge debt
@@ -307,8 +314,16 @@ preview_agent_blueprint(
 )
 ```
 
-Present preview, get confirmation, then call `create_digital_employee` with the
-same blueprint fields and the returned blueprint hash.
+Present the preview card and wait for the authenticated user to confirm the
+exact canonical draft. Then call:
+
+```python
+create_digital_employee(
+    blueprint_id="<preview blueprint_id>",
+)
+```
+
+Never copy the preview fields back into the create call.
 
 ### Platform skill mandatory
 
@@ -319,20 +334,23 @@ Also surface Feishu authorization as setup debt in the preview.
 
 ### Unknown company policy
 
-If you infer a compliance boundary but cannot find company knowledge or user
-confirmation, mark it:
+If a compliance boundary needs company authority but the user has not confirmed
+it, mark it:
 
 ```json
 {"field":"boundaries","source_type":"unknown_or_needs_company_source","value_summary":"external publishing approval policy is not confirmed"}
 ```
 
-Then ask the user to confirm or point to the company policy source.
+Then ask the user to confirm it or keep it visible as unresolved knowledge debt.
 
 ## Anti-Patterns
 
 <anti_patterns>
 
 - Skip `preview_agent_blueprint` and call creation directly.
+- Treat a chat reply as confirmation without the authenticated confirmation record.
+- Reconstruct or restate blueprint fields in `create_digital_employee`.
+- Claim that Personal KB, memory, or generic knowledge is Company KB authority.
 - Treat history as company DNA.
 - Let memory silently omit questions about boundaries or work contract.
 - Hide setup debt behind a ready label.

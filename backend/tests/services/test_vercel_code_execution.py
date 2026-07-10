@@ -98,12 +98,21 @@ def fake_vercel(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_command_uses_vercel_sandbox_provider_and_syncs_workspace(tmp_path, monkeypatch, fake_vercel):
     from app.services.agent_tool_domains.code_exec import _run_command
+    from app.tools.result_envelope import ToolContentEnvelope
 
     _set_vercel_env(monkeypatch)
     workspace_root = tmp_path / str(uuid4())
     result = await _run_command(workspace_root, {"command": "printf hi > out.txt; cat out.txt", "timeout": 5})
 
     assert "Output:\nhi" in result
+    assert isinstance(result, ToolContentEnvelope)
+    assert result.artifacts == (
+        {
+            "path": "workspace/out.txt",
+            "source": "run_command",
+            "action": "created",
+        },
+    )
     assert (workspace_root / "workspace" / "out.txt").read_text(encoding="utf-8") == "hi"
     assert fake_vercel.created[0]["team_id"] == "team_test"
     assert fake_vercel.created[0]["network_policy"] == "deny-all"
@@ -125,12 +134,21 @@ async def test_create_timeout_is_milliseconds_not_seconds(tmp_path, monkeypatch,
 @pytest.mark.asyncio
 async def test_execute_code_uses_vercel_sandbox(tmp_path, monkeypatch, fake_vercel):
     from app.services.agent_tool_domains.code_exec import _execute_code
+    from app.tools.result_envelope import ToolContentEnvelope
 
     _set_vercel_env(monkeypatch)
     workspace_root = tmp_path / str(uuid4())
     result = await _execute_code(workspace_root, {"language": "python", "code": "print('x')", "timeout": 5})
 
     assert "❌" not in result
+    assert isinstance(result, ToolContentEnvelope)
+    assert result.artifacts == (
+        {
+            "path": "workspace/out.txt",
+            "source": "execute_code",
+            "action": "created",
+        },
+    )
     assert fake_vercel.created[0]["runtime"] == "python3.13"
     assert fake_vercel.instances[0].stopped is True
 

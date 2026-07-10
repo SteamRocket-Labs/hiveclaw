@@ -2399,6 +2399,7 @@ async def _finalize_web_chat_run_with_assistant(
                     runtime_task_id=run_uuid,
                     paths=artifact_paths,
                     workspace_root=workspace_root,
+                    rebind_existing_to_message=True,
                 )
             if artifact_parts:
                 if metadata_json is None:
@@ -2502,6 +2503,7 @@ async def _finalize_web_chat_run_with_assistant(
             runtime_task_id=run_uuid,
             paths=artifact_paths or [],
             workspace_root=workspace_root,
+            rebind_existing_to_message=True,
         )
         if artifact_parts:
             if metadata_json is None:
@@ -2773,7 +2775,11 @@ async def _persist_tool_call(
         artifact_parts: list[dict[str, Any]] = []
         if event_type == "tool_result":
             tool_args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
-            artifact_paths = tool_session_write_paths(str(data.get("name") or ""), tool_args)
+            artifact_paths = tool_session_write_paths(
+                str(data.get("name") or ""),
+                tool_args,
+                artifacts=data.get("artifacts") if isinstance(data.get("artifacts"), list) else None,
+            )
             if artifact_paths:
                 artifact_parts = await create_chat_artifacts_for_message(
                     db=db,

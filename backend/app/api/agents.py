@@ -449,7 +449,13 @@ async def create_agent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new digital employee (any authenticated user)."""
+    """Administrative creation endpoint; standard users create through System HR."""
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="请通过 HR Agent 创建数字员工；直接创建接口仅供组织管理员使用。",
+        )
+
     # Determine target tenant: normally user's tenant; admins can override via payload
     target_tenant_id = current_user.tenant_id
     if current_user.role in ("platform_admin", "org_admin"):

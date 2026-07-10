@@ -38,6 +38,7 @@ from app.api.files import router as files_router
 from app.api.files import upload_router as files_upload_router
 from app.api.guard_policies import router as guard_policies_router
 from app.api.hooks import router as hooks_router
+from app.api.hr_creation import router as hr_creation_router
 from app.api.interoperability import router as interoperability_router
 from app.api.local_agent_channel import local_agent_browser_channel_ws
 from app.api.local_agent_channel import router as local_agent_channel_router
@@ -165,6 +166,7 @@ _API_ROLE_AGENT_PATTERNS = (
     re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/[^/]+/runs(?:/.*)?$"),
     re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/[^/]+/turns/steer/?$"),
     re.compile(r"^/api/(v1/)?agents/[^/]+/sessions/[^/]+/permissions/[^/]+/resolve/?$"),
+    re.compile(r"^/api/(v1/)?agents/[^/]+/hr-creation-drafts/[^/]+(?:/(?:confirm|reject))?/?$"),
 )
 
 
@@ -841,6 +843,7 @@ _api_routers = [
     agent_teams_router,
     advanced_plan_router,
     hooks_router,
+    hr_creation_router,
     plaza_router,
     triggers_router,
     memory_router,

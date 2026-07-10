@@ -272,6 +272,70 @@ async def test_chat_artifact_delivery_idempotent_for_same_run_path_snapshot(tmp_
     assert first[0]["path"] == second[0]["path"] == "workspace/report.md"
 
 
+@pytest.mark.asyncio
+async def test_terminal_delivery_rebinds_existing_tool_artifact_to_final_message(tmp_path):
+    from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    runtime_task_id = uuid4()
+    tool_message_id = uuid4()
+    final_message_id = uuid4()
+    workspace = tmp_path / "agent"
+    report = workspace / "workspace" / "report.xlsx"
+    report.parent.mkdir(parents=True)
+    report.write_bytes(b"xlsx")
+
+    class _Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class _Db:
+        def __init__(self):
+            self.artifact = None
+
+        async def execute(self, stmt):
+            from sqlalchemy.dialects import postgresql
+
+            if getattr(stmt, "is_insert", False):
+                params = stmt.compile(dialect=postgresql.dialect()).params
+                if self.artifact is not None:
+                    return _Result(None)
+                from app.models.chat_artifact import ChatArtifact
+
+                self.artifact = ChatArtifact(**params)
+                return _Result(params["id"])
+            return _Result(self.artifact)
+
+    db = _Db()
+    await create_chat_artifacts_for_message(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=None,
+        session_id=session_id,
+        message_id=tool_message_id,
+        runtime_task_id=runtime_task_id,
+        paths=["workspace/report.xlsx"],
+        workspace_root=workspace,
+    )
+    await create_chat_artifacts_for_message(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=None,
+        session_id=session_id,
+        message_id=final_message_id,
+        runtime_task_id=runtime_task_id,
+        paths=["workspace/report.xlsx"],
+        workspace_root=workspace,
+        rebind_existing_to_message=True,
+    )
+
+    assert db.artifact.message_id == final_message_id
+
+
 @pytest.mark.usefixtures("migrated_pg_url")
 @pytest.mark.asyncio
 async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessionmaker, tmp_path):
@@ -651,6 +715,20 @@ def test_tool_session_write_paths_skips_non_derivable_or_consumer_tools(tool_nam
     from app.services.chat_artifact_delivery import tool_session_write_paths
 
     assert tool_session_write_paths(tool_name, args) == []
+
+
+def test_tool_session_write_paths_consumes_structured_execution_artifacts():
+    from app.services.chat_artifact_delivery import tool_session_write_paths
+
+    assert tool_session_write_paths(
+        "run_command",
+        {"command": "python build.py"},
+        artifacts=[
+            {"path": "workspace/report.xlsx", "source": "run_command"},
+            {"path": "../escape.txt", "source": "run_command"},
+            {"path": "workspace/report.xlsx", "source": "run_command"},
+        ],
+    ) == ["workspace/report.xlsx"]
 
 
 def test_build_session_artifact_parts_returns_rowless_parts_for_safe_paths(tmp_path):

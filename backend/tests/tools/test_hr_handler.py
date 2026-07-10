@@ -19,45 +19,16 @@ def test_create_digital_employee_is_registered():
     assert "preview_agent_blueprint" in names
 
 
-def test_create_digital_employee_schema_requires_session_confirmed_blueprint():
-    """Creation is sensitive: it must be bound to a previewed and confirmed blueprint."""
+def test_create_digital_employee_schema_accepts_only_a_confirmed_canonical_draft_reference():
+    """Create must consume the server-side canonical draft, never restate it."""
     from app.services.agent_tools import get_combined_openai_tools
-    from app.tools.handlers.hr import HR_LONG_TEXT_MAX_CHARS, ROLE_DESCRIPTION_MAX_CHARS
 
     all_tools = get_combined_openai_tools()
     hr_tool = next(t for t in all_tools if t["function"]["name"] == "create_digital_employee")
     params = hr_tool["function"]["parameters"]
 
-    assert params["required"] == ["name", "confirmed_blueprint_hash"]
-    assert "name" in params["properties"]
-    assert "confirmed_blueprint_hash" in params["properties"]
-    assert "role_description" in params["properties"]
-    assert params["properties"]["role_description"]["maxLength"] == ROLE_DESCRIPTION_MAX_CHARS
-    assert "personality" in params["properties"]
-    assert params["properties"]["personality"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
-    assert "boundaries" in params["properties"]
-    assert params["properties"]["boundaries"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
-    assert "primary_users" in params["properties"]
-    assert "core_outputs" in params["properties"]
-    assert "skill_names" in params["properties"]
-    assert "external_skill_urls" in params["properties"]
-    assert "permission_scope" in params["properties"]
-    assert "company_charter" in params["properties"]
-    assert "owner_agency_charter" in params["properties"]
-    assert "source_attributions" in params["properties"]
-    assert params["properties"]["welcome_message"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
-    assert params["properties"]["focus_content"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
-    assert params["properties"]["heartbeat_topics"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
-    source_items_schema = params["properties"]["source_attributions"]["items"]
-    assert source_items_schema["required"] == ["field"]
-    source_schema = source_items_schema["properties"]
-    assert source_schema["source_type"]["enum"] == [
-        "confirmed_by_user",
-        "supported_by_company_kb",
-        "suggested_by_history",
-        "suggested_by_general_knowledge",
-        "unknown_or_needs_company_source",
-    ]
+    assert params["required"] == ["blueprint_id"]
+    assert set(params["properties"]) == {"blueprint_id"}
 
 
 def test_preview_agent_blueprint_schema_exposes_role_description_prompt_guard():
@@ -75,6 +46,9 @@ def test_preview_agent_blueprint_schema_exposes_role_description_prompt_guard():
     assert params["properties"]["focus_content"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
     assert params["properties"]["heartbeat_topics"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
     assert "source_attributions" in params["properties"]
+    assert "blueprint_id" in params["properties"]
+    source_schema = params["properties"]["source_attributions"]["items"]["properties"]
+    assert "supported_by_company_kb" not in source_schema["source_type"]["enum"]
 
 
 def test_hr_role_description_prompt_guard_trims_to_tool_limit():
@@ -151,6 +125,8 @@ def test_hr_tool_meta_has_correct_attributes():
     assert preview_meta.category == "hr"
     assert preview_meta.adapter == "request"
     assert preview_meta.read_only is True
+    assert preview_meta.risk_class == "controlled_write"
+    assert preview_meta.idempotency_scope == "session"
 
 
 def test_build_create_employee_result_is_structured_json():
@@ -251,11 +227,12 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
     assert payload["summary"]["core_outputs"] == ["日报", "周报"]
     assert payload["summary"]["first_mission"] == "先完成行业扫描"
     assert payload["blueprint_hash"]
-    assert payload["blueprint"]["source_attributions"][0]["source_type"] == "supported_by_company_kb"
-    assert payload["source_attribution_policy"]["company_knowledge_lane"] == "authoritative"
+    assert payload["blueprint"]["source_attributions"][0]["source_type"] == "unknown_or_needs_company_source"
+    assert payload["source_attribution_policy"]["company_knowledge_lane"] == "known_missing_not_available_for_attribution"
+    assert any("Company KB is not implemented" in warning for warning in payload["warnings"])
     assert payload["source_attribution_policy"]["history_suggestion_lane"] == "advisory"
     assert any(item["source_type"] == "unknown_or_needs_company_source" for item in payload["knowledge_debt"])
-    assert "supported_by_company_kb" in payload["confirmation_requirements"]["source_types_to_present"]
+    assert "unknown_or_needs_company_source" in payload["confirmation_requirements"]["source_types_to_present"]
     assert "suggested_by_history" in payload["confirmation_requirements"]["source_types_to_present"]
     assert payload["creation_flow"]["mode"] == "dynamic_rounds_mandatory_gates"
     assert payload["creation_flow"]["gates"]["identity"]["status"] == "complete"
@@ -263,6 +240,24 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
     assert payload["creation_flow"]["gates"]["activation"]["status"] == "complete"
     assert payload["creation_flow"]["gates"]["capabilities"]["status"] == "complete"
     assert payload["creation_flow"]["gates"]["confirmation"]["status"] == "pending"
+
+
+def test_blueprint_preview_blocks_names_that_create_would_reject():
+    from app.tools.handlers.hr import _build_blueprint_preview_payload
+
+    payload = _build_blueprint_preview_payload(
+        {
+            "name": "A",
+            "role_description": "Research markets for the investment team.",
+            "primary_users": ["Investment team"],
+            "core_outputs": ["Weekly brief"],
+            "focus_content": "Prepare the first weekly brief.",
+        }
+    )
+
+    assert payload["creation_flow"]["gates"]["identity"]["status"] == "missing"
+    assert "name" in payload["creation_flow"]["gates"]["identity"]["missing"]
+    assert "identity" in payload["missing_gates"]
 
 
 def test_build_blueprint_preview_payload_rejects_invalid_source_attribution_types() -> None:
@@ -516,7 +511,7 @@ def test_append_hr_creation_t0_event_records_source_attributed_creation_case(tmp
                 "source_attributions": [
                     {
                         "field": "boundaries",
-                        "source_type": "supported_by_company_kb",
+                        "source_type": "unknown_or_needs_company_source",
                         "source_refs": ["kb://policy/compliance"],
                         "value_summary": "不绕过合规审批",
                     },
@@ -543,7 +538,7 @@ def test_append_hr_creation_t0_event_records_source_attributed_creation_case(tmp
     assert events[0].role == "tool"
     assert events[0].metadata["created_agent_id"] == str(created_agent_id)
     assert events[0].metadata["blueprint_hash"] == "bp_123"
-    assert events[0].metadata["source_attributions"][0]["source_type"] == "supported_by_company_kb"
+    assert events[0].metadata["source_attributions"][0]["source_type"] == "unknown_or_needs_company_source"
     assert events[0].metadata["source_attributions"][1]["source_type"] == "suggested_by_history"
     assert events[0].metadata["manual_setup_debt"] == ["配置飞书授权"]
 
@@ -783,7 +778,8 @@ def test_create_digital_employee_uses_validated_model_resolution() -> None:
 
     assert "_resolve_employee_creation_model" in src
     assert "_resolve_employee_refinement_model" in src
-    assert "_validate_creation_flow_confirmation" in src
+    assert "_claim_canonical_hr_blueprint" in src
+    assert "confirmed_blueprint_hash" not in src
 
 
 def test_create_digital_employee_uses_audited_identity_bootstrap_bypass() -> None:
@@ -794,207 +790,3 @@ def test_create_digital_employee_uses_audited_identity_bootstrap_bypass() -> Non
     assert "rls_bypass_reason=" in src
     assert "HR digital employee identity bootstrap" in src
     assert "rls_bypass_actor_id=str(user.id)" in src
-
-
-@pytest.mark.asyncio
-async def test_validate_creation_flow_confirmation_rejects_missing_hash() -> None:
-    from app.tools.handlers.hr import _validate_creation_flow_confirmation
-    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
-
-    request = ToolExecutionRequest(
-        tool_name="create_digital_employee",
-        arguments={"name": "研究员"},
-        context=ToolExecutionContext(
-            agent_id=uuid4(),
-            user_id=uuid4(),
-            tenant_id=str(uuid4()),
-            workspace=__import__("pathlib").Path("/tmp"),
-            session_id=str(uuid4()),
-        ),
-    )
-
-    message = await _validate_creation_flow_confirmation(request, _QueuedDB([]))
-
-    assert message is not None
-    assert "confirmed_blueprint_hash" in message
-
-
-@pytest.mark.asyncio
-async def test_validate_creation_flow_confirmation_accepts_same_session_preview() -> None:
-    import json
-
-    from app.tools.handlers.hr import _build_blueprint_preview_payload, _validate_creation_flow_confirmation
-    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
-
-    preview = _build_blueprint_preview_payload(
-        {
-            "name": "研究员",
-            "role_description": "服务投研团队的市场研究员。",
-            "primary_users": ["投研团队"],
-            "core_outputs": ["日报"],
-            "boundaries": "不捏造来源",
-            "focus_content": "先产出日报模板",
-        }
-    )
-    preview_row = SimpleNamespace(
-        content=json.dumps(
-            {
-                "name": "preview_agent_blueprint",
-                "args": preview["blueprint"],
-                "status": "done",
-                "result": json.dumps(preview, ensure_ascii=False),
-            },
-            ensure_ascii=False,
-        )
-    )
-    request = ToolExecutionRequest(
-        tool_name="create_digital_employee",
-        arguments={
-            **preview["blueprint"],
-            "confirmed_blueprint_hash": preview["blueprint_hash"],
-        },
-        context=ToolExecutionContext(
-            agent_id=uuid4(),
-            user_id=uuid4(),
-            tenant_id=str(uuid4()),
-            workspace=__import__("pathlib").Path("/tmp"),
-            session_id=str(uuid4()),
-        ),
-    )
-
-    message = await _validate_creation_flow_confirmation(request, _QueuedDB([_ScalarsResult([preview_row])]))
-
-    assert message is None
-
-
-@pytest.mark.asyncio
-async def test_validate_creation_flow_confirmation_blocks_after_repeated_failures() -> None:
-    import json
-
-    from app.tools.handlers.hr import _build_blueprint_preview_payload, _validate_creation_flow_confirmation
-    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
-
-    preview = _build_blueprint_preview_payload(
-        {
-            "name": "研究员",
-            "role_description": "服务投研团队的市场研究员。",
-            "primary_users": ["投研团队"],
-            "core_outputs": ["日报"],
-            "boundaries": "不捏造来源",
-            "focus_content": "先产出日报模板",
-        }
-    )
-    rows = [
-        SimpleNamespace(
-            content=json.dumps(
-                {
-                    "name": "create_digital_employee",
-                    "status": "done",
-                    "result": "Error: failed to create the digital employee. Please try again or contact support.",
-                },
-                ensure_ascii=False,
-            )
-        ),
-        SimpleNamespace(
-            content=json.dumps(
-                {
-                    "name": "create_digital_employee",
-                    "status": "done",
-                    "result": "Error: failed to create the digital employee. Please try again or contact support.",
-                },
-                ensure_ascii=False,
-            )
-        ),
-        SimpleNamespace(
-            content=json.dumps(
-                {
-                    "name": "preview_agent_blueprint",
-                    "status": "done",
-                    "result": json.dumps(preview, ensure_ascii=False),
-                },
-                ensure_ascii=False,
-            )
-        ),
-    ]
-    request = ToolExecutionRequest(
-        tool_name="create_digital_employee",
-        arguments={**preview["blueprint"], "confirmed_blueprint_hash": preview["blueprint_hash"]},
-        context=ToolExecutionContext(
-            agent_id=uuid4(),
-            user_id=uuid4(),
-            tenant_id=str(uuid4()),
-            workspace=__import__("pathlib").Path("/tmp"),
-            session_id=str(uuid4()),
-        ),
-    )
-
-    message = await _validate_creation_flow_confirmation(request, _QueuedDB([_ScalarsResult(rows)]))
-
-    assert message is not None
-    assert "stopped after 2 failed create attempts" in message
-
-
-@pytest.mark.asyncio
-async def test_validate_creation_flow_confirmation_ignores_failures_before_matching_preview() -> None:
-    import json
-
-    from app.tools.handlers.hr import _build_blueprint_preview_payload, _validate_creation_flow_confirmation
-    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
-
-    preview = _build_blueprint_preview_payload(
-        {
-            "name": "研究员",
-            "role_description": "服务投研团队的市场研究员。",
-            "primary_users": ["投研团队"],
-            "core_outputs": ["日报"],
-            "boundaries": "不捏造来源",
-            "focus_content": "先产出日报模板",
-        }
-    )
-    rows = [
-        SimpleNamespace(
-            content=json.dumps(
-                {
-                    "name": "preview_agent_blueprint",
-                    "status": "done",
-                    "result": json.dumps(preview, ensure_ascii=False),
-                },
-                ensure_ascii=False,
-            )
-        ),
-        SimpleNamespace(
-            content=json.dumps(
-                {
-                    "name": "create_digital_employee",
-                    "status": "done",
-                    "result": "Error: failed to create the digital employee. Please try again or contact support.",
-                },
-                ensure_ascii=False,
-            )
-        ),
-        SimpleNamespace(
-            content=json.dumps(
-                {
-                    "name": "create_digital_employee",
-                    "status": "done",
-                    "result": "Error: failed to create the digital employee. Please try again or contact support.",
-                },
-                ensure_ascii=False,
-            )
-        ),
-    ]
-    request = ToolExecutionRequest(
-        tool_name="create_digital_employee",
-        arguments={**preview["blueprint"], "confirmed_blueprint_hash": preview["blueprint_hash"]},
-        context=ToolExecutionContext(
-            agent_id=uuid4(),
-            user_id=uuid4(),
-            tenant_id=str(uuid4()),
-            workspace=__import__("pathlib").Path("/tmp"),
-            session_id=str(uuid4()),
-        ),
-    )
-
-    message = await _validate_creation_flow_confirmation(request, _QueuedDB([_ScalarsResult(rows)]))
-
-    assert message is None

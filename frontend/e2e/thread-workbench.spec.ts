@@ -192,13 +192,22 @@ async function scrollTimelineToBottom(page: Page) {
 test('typed session workbench desktop visual contract', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 980 });
   await bootstrap(page);
-  await page.locator('[data-thread-item-type="approval_request"]').click();
-  await expect(page.getByTestId('thread-item-inspector')).toBeVisible();
+  await expect(page.getByTestId('thread-item-inspector')).toHaveCount(0);
   await scrollTimelineToBottom(page);
   await expect(page.getByTestId('session-workbench')).toHaveScreenshot('typed-workbench-desktop.png', {
     animations: 'disabled',
     caret: 'hide',
   });
+});
+
+test('technical evidence opens only from the explicit details control', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 980 });
+  await bootstrap(page);
+  const approval = page.locator('[data-thread-item-type="approval_request"]');
+  await approval.hover();
+  await approval.getByTestId('thread-item-technical-details').click();
+  await expect(page.getByTestId('thread-item-inspector')).toBeVisible();
+  await expect(page.getByTestId('session-runtime-deliverables')).toBeAttached();
 });
 
 test('typed session workbench narrow visual contract', async ({ page }) => {

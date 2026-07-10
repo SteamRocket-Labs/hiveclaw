@@ -52,12 +52,12 @@ export function ThreadItemInspector({ item, onClose }: { item: ThreadItem | null
         <InspectorRow label="visibility" value={item.visibility_scope} />
       </dl>
       {item.evidence_refs && item.evidence_refs.length > 0 && (
-        <details open className="thread-item-inspector-json">
+        <details className="thread-item-inspector-json">
           <summary>{t('sessionWorkbench.threadItem.evidenceRefs', 'Evidence references')}</summary>
           <pre>{JSON.stringify(item.evidence_refs, null, 2)}</pre>
         </details>
       )}
-      <details open className="thread-item-inspector-json">
+      <details className="thread-item-inspector-json">
         <summary>{t('sessionWorkbench.threadItem.typedData', 'Typed data')}</summary>
         <pre>{JSON.stringify(item.item_data, null, 2)}</pre>
       </details>

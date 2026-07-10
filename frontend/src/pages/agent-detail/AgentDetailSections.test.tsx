@@ -1710,7 +1710,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Every day at 09:00');
     expect(markup).toContain('Daily release check');
     expect(markup).toContain('All systems green.');
-    expect(markup).toContain('Deferred Capabilities');
+    expect(markup).toContain('Deferred capabilities');
     expect(markup).toContain('github-research');
     expect(markup).toContain('Deploy Playbook');
     expect(markup).toContain('canary rollout');
@@ -3795,7 +3795,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="chat-work-ledger-dock"');
     expect(markup).toContain('data-testid="chat-work-ledger-summary"');
     expect(markup).toContain('Task 1-2 of 2');
-    expect(markup).toContain('Session artifacts');
+    expect(markup).toContain('Deliverables');
     expect(markup).toContain('data-testid="session-workspace-documents-current"');
     expect(markup).toContain('Current session');
     expect(markup).toContain('runtime-report.md');
@@ -3805,7 +3805,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-workspace-documents-unattributed"');
     expect(markup).not.toContain('Unattributed');
     expect(markup).toContain('data-testid="session-runtime-divider"');
-    expect(markup).toContain('data-testid="session-runtime-collaboration"');
+    expect(markup).toContain('data-testid="session-runtime-run-status"');
+    expect(markup).toContain('Run status');
+    expect(markup.indexOf('Deliverables')).toBeLessThan(markup.indexOf('Run status'));
     expect(markup).toContain('data-testid="session-runtime-console"');
     expect(markup).toContain('data-testid="session-runtime-summary-strip"');
     expect(markup).toContain('data-runtime-state="waiting"');
@@ -5189,28 +5191,41 @@ describe('AgentDetail extracted sections', () => {
   it('renders structured HR preview details for tool results', () => {
     const markup = renderToStaticMarkup(
       <StructuredToolResultBody
-        toolName="preview_agent_blueprint"
-        toolResult='{"status":"preview"}'
-        toolMeta={{
-          kind: 'hr_preview',
-          name: 'Research Bot',
-          mission: 'Research competitors and write briefs.',
-          firstMission: 'Create the first competitor landscape brief.',
-          readyNow: ['Builtin tools + default skills + memory loop'],
-          willInstall: ['mcp: github'],
-          deferredCapabilities: ['github-research'],
-          warnings: ['primary_users is empty — the agent may be less clear about who it serves.'],
-          manualSteps: ['Validate the first deliverable before expanding capabilities.'],
-        }}
+          toolName="preview_agent_blueprint"
+          toolResult='{"status":"preview"}'
+          toolMeta={{
+            kind: 'hr_preview',
+            blueprintId: 'draft-1',
+            blueprintVersion: 1,
+            blueprintHash: 'sha256:canonical',
+            status: 'awaiting_confirmation',
+            name: 'Research Bot',
+            mission: 'Research competitors and write briefs.',
+            firstMission: 'Create the first competitor landscape brief.',
+            primaryUsers: ['Research team'],
+            coreOutputs: ['Competitor brief'],
+            boundaries: 'Cite sources.',
+            permissionScope: 'company',
+            sourceAttributions: [],
+            riskClass: 'standard',
+            missingGates: [],
+            knowledgeDebt: [],
+            confirmationRequirements: [],
+            readyNow: ['Builtin tools + default skills + memory loop'],
+            willInstall: ['mcp: github'],
+            deferredCapabilities: ['github-research'],
+            warnings: ['primary_users is empty — the agent may be less clear about who it serves.'],
+            manualSteps: ['Validate the first deliverable before expanding capabilities.'],
+          }}
       />,
     );
 
     expect(markup).toContain('Research Bot');
-    expect(markup).toContain('Ready Now');
-    expect(markup).toContain('Will Install');
-    expect(markup).toContain('Deferred Capabilities');
+    expect(markup).toContain('Ready now');
+    expect(markup).toContain('Will install');
+    expect(markup).toContain('Deferred capabilities');
     expect(markup).toContain('Warnings');
-    expect(markup).toContain('Manual Steps');
+    expect(markup).toContain('Manual steps');
     expect(markup).toContain('Builtin tools + default skills + memory loop');
     expect(markup).toContain('mcp: github');
     expect(markup).toContain('github-research');

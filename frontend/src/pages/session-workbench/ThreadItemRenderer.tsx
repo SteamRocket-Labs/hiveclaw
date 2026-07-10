@@ -4,6 +4,7 @@ import {
   IconAlertTriangle,
   IconBan,
   IconCheck,
+  IconBraces,
   IconChevronRight,
   IconClock,
   IconLoader2,
@@ -188,32 +189,32 @@ export function ThreadItemRenderer({
     </dl>
   );
 
-  const select = () => onSelect?.(item);
   return (
     <article
       className={`thread-item-card thread-item-${item.item_type}${selected ? ' is-selected' : ''}`}
       data-thread-item-type={item.item_type}
       data-thread-item-status={item.item_status}
       data-selected={selected || undefined}
-      role={onSelect ? 'button' : undefined}
-      tabIndex={onSelect ? 0 : undefined}
       aria-label={`${title}: ${status}`}
       aria-current={selected ? 'true' : undefined}
-      onClick={(event) => {
-        if ((event.target as HTMLElement).closest('button, a, input, textarea, summary')) return;
-        select();
-      }}
-      onKeyDown={(event) => {
-        if (!onSelect || (event.key !== 'Enter' && event.key !== ' ')) return;
-        event.preventDefault();
-        select();
-      }}
     >
       <header className="thread-item-header">
         <span className="thread-item-status-icon" data-status={item.item_status}>{statusIcon(item.item_status)}</span>
         <strong>{title}</strong>
         <span className="thread-item-status-text">{status}</span>
         <span className="thread-item-sequence">#{item.sequence}</span>
+        {onSelect ? (
+          <button
+            type="button"
+            data-testid="thread-item-technical-details"
+            className="thread-item-technical-details"
+            aria-label={t('sessionWorkbench.threadItem.inspectTechnicalDetails', 'Inspect technical details')}
+            aria-pressed={selected}
+            onClick={() => onSelect(item)}
+          >
+            <IconBraces size={13} aria-hidden="true" />
+          </button>
+        ) : null}
       </header>
       {visibleContent && <div className="thread-item-content">{visibleContent}</div>}
       {detailBody && (shouldCollapse(item) ? (

@@ -249,8 +249,8 @@ class SessionContext:
             self.file_snapshots[path] = dict(snapshot)
         if len(self.recent_writes) > 10:
             self.recent_writes.pop(0)
-        if len(self.current_turn_writes) > 10:
-            self.current_turn_writes.pop(0)
+        # Keep the complete active-turn manifest. It is cleared by begin_turn;
+        # truncating it made later files impossible to prove or deliver.
 
     def begin_turn(self) -> None:
         """Start a new model turn while keeping cross-turn restoration state."""

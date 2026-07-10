@@ -47,6 +47,28 @@ def test_llm_message_dict_round_trip_preserves_reasoning_signature() -> None:
     assert restored[0].reasoning_signature == "sig-round-trip"
 
 
+def test_empty_assistant_fallback_is_actionable_and_keeps_raw_error_in_technical_evidence() -> None:
+    from app.kernel.engine import _empty_assistant_fallback
+
+    content = _empty_assistant_fallback(
+        [
+            {
+                "type": "tool_call",
+                "name": "create_digital_employee",
+                "status": "done",
+                "result": '{"status":"error","error":"creation_in_progress","message":"Creation is already in progress."}',
+            }
+        ]
+    )
+
+    assert content.startswith("[LLM Error]")
+    assert "create_digital_employee" in content
+    assert "Creation is already in progress." in content
+    assert "重试" in content
+    assert "creation_in_progress" not in content
+    assert content != "[LLM returned empty content]"
+
+
 def test_permissions_context_exposes_plan_mode_plan_file_as_writable_root() -> None:
     from app.kernel import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _build_permissions_context
@@ -1120,6 +1142,53 @@ async def test_execute_tool_with_hooks_tracks_office_apply_output_as_session_art
         "tool": "office_document_apply",
         "summary": "Wrote workspace/proposal-v2.docx",
     }
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_with_hooks_tracks_structured_code_execution_artifacts(monkeypatch):
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    session = SessionContext(session_id="session-code-artifacts")
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "build workbook"}],
+        agent_name="Agent",
+        role_description="role",
+        session_context=session,
+        memory_session_id="session-code-artifacts",
+        agent_id=uuid4(),
+    )
+
+    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event):
+        return ToolContentEnvelope(
+            text="Workbook created",
+            artifacts=(
+                {"path": "workspace/report.xlsx", "source": "run_command", "action": "created"},
+                {"path": "workspace/chart.png", "source": "run_command", "action": "created"},
+            ),
+        )
+
+    async def emit_event(_event):
+        return None
+
+    result, _args, executed = await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        tool_name="run_command",
+        tool_args={"command": "python build.py"},
+        emit_event=emit_event,
+    )
+
+    assert executed is True
+    assert result == "Workbook created"
+    assert session.current_turn_writes == ["workspace/report.xlsx", "workspace/chart.png"]
 
 
 @pytest.mark.asyncio

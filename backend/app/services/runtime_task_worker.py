@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.database import async_session, enter_rls_bypass
 from app.models.runtime_task import RuntimeTask
 from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+from app.services.runtime_task_fence import run_claimed_runtime_task
 from app.services.web_chat_runtime import active_web_chat_run_count, dispatch_web_chat_run, is_executable_chat_task_type
 
 
@@ -200,7 +201,11 @@ async def claim_and_dispatch_once(*, worker_id: str | None = None) -> list[str]:
 
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
     if is_executable_chat_task_type(getattr(task, "task_type", None)):
-        return dispatch_web_chat_run(task.id)
+        return dispatch_web_chat_run(
+            task.id,
+            claim_version=int(getattr(task, "claim_version", 0) or 0),
+            worker_id=str(getattr(task, "claimed_by", None) or "unknown"),
+        )
     if task.task_type == "workflow":
         return _dispatch_async_runtime_task(task, _execute_claimed_workflow_task(task.id), task_type="workflow")
     if task.task_type == "delegation":
@@ -217,7 +222,16 @@ def _dispatch_async_runtime_task(task: RuntimeTask, coro, *, task_type: str) -> 
     run_key = task.id.hex
     if run_key in _DISPATCHED_TASKS:
         return False
-    async_task = asyncio.create_task(coro, name=f"runtime-{task_type}-{run_key}")
+    async_task = asyncio.create_task(
+        run_claimed_runtime_task(
+            coro,
+            task_id=task.id,
+            claim_version=int(getattr(task, "claim_version", 0) or 0),
+            worker_id=str(getattr(task, "claimed_by", None) or "unknown"),
+            lease_seconds=float(_settings().RUNTIME_TASK_CLAIM_LEASE_SECONDS),
+        ),
+        name=f"runtime-{task_type}-{run_key}",
+    )
     _DISPATCHED_TASKS[run_key] = (task_type, async_task)
     async_task.add_done_callback(lambda _task, run_id=run_key: _DISPATCHED_TASKS.pop(run_id, None))
     return True

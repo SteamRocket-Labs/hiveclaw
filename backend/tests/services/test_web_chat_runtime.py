@@ -398,9 +398,7 @@ def test_personal_knowledge_read_replay_projection_omits_segment_body() -> None:
     assert projection is not None
     payload = json.loads(projection)
     assert payload["tool_name"] == "read_personal_kb"
-    assert payload["references"] == [
-        {"document_id": document_id, "segment_id": segment_id, "source_ref": source_ref}
-    ]
+    assert payload["references"] == [{"document_id": document_id, "segment_id": segment_id, "source_ref": source_ref}]
     assert "PRIVATE-TITLE" not in projection
     assert "PRIVATE-BODY" not in projection
 
@@ -458,10 +456,13 @@ def test_terminal_artifact_paths_require_current_turn_provenance():
         ),
     ) == ["workspace/new.md"]
 
-    assert runtime._terminal_artifact_paths_for_turn(
-        context,
-        "完成，最终文档在 `workspace/scratch.md`。",
-    ) == []
+    assert (
+        runtime._terminal_artifact_paths_for_turn(
+            context,
+            "完成，最终文档在 `workspace/scratch.md`。",
+        )
+        == []
+    )
 
 
 def test_terminal_artifact_paths_accept_final_summary_mentions_and_single_doc_fallback():
@@ -489,9 +490,7 @@ def test_terminal_artifact_paths_accept_final_summary_mentions_and_single_doc_fa
     single_doc_context.track_file_write(".ultra/compact-snapshot.md")
     single_doc_context.track_file_write("workspace/scratch-notes.md")
 
-    assert runtime._terminal_artifact_paths_for_turn(single_doc_context, "已完成。") == [
-        "workspace/final-report.md"
-    ]
+    assert runtime._terminal_artifact_paths_for_turn(single_doc_context, "已完成。") == ["workspace/final-report.md"]
 
 
 @pytest.mark.asyncio
@@ -677,9 +676,7 @@ def _phase_run_fixtures():
 def _patch_phase_run(monkeypatch, runtime, *, runtime_task, agent, user, llm_model, fake_invoke, events):
     from app.runtime.session import SessionContext
 
-    runtime_context = SessionContext(
-        session_id=str(runtime_task.parent_session_id), source="web", channel="web"
-    )
+    runtime_context = SessionContext(session_id=str(runtime_task.parent_session_id), source="web", channel="web")
 
     async def fake_load_context(_run_uuid):
         return (runtime_task, agent, user, llm_model, None, [], SimpleNamespace(delivery_target_json=None))
@@ -829,12 +826,8 @@ async def test_execute_web_chat_run_persists_stream_steps_for_replay(monkeypatch
     assert all(event["materialize_chat_message"] is False for event in stream_events)
     assert all(event["run_id"] == run_id for event in stream_events)
     assert all(event["runtime_task_id"] == run_id for event in stream_events)
-    assert stream_events[0]["parts"] == [
-        {"type": "text_delta", "text": "I will inspect the session renderer."}
-    ]
-    assert stream_events[1]["parts"] == [
-        {"type": "reasoning", "text": "Checking the transcript contract."}
-    ]
+    assert stream_events[0]["parts"] == [{"type": "text_delta", "text": "I will inspect the session renderer."}]
+    assert stream_events[1]["parts"] == [{"type": "reasoning", "text": "Checking the transcript contract."}]
 
 
 @pytest.mark.asyncio
@@ -930,9 +923,7 @@ async def test_execute_web_chat_run_awaiting_approval_phase_survives_run_release
     async def fake_finalize_without_assistant(**_kwargs):
         return True
 
-    monkeypatch.setattr(
-        runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant
-    )
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -1120,7 +1111,9 @@ async def test_load_runtime_context_rejects_runtime_task_agent_tenant_mismatch(m
         started_at=datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc),
         metadata_json={"user_id": str(user_id)},
     )
-    session_row = SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=agent_tenant_id, transcript_metadata_json={})
+    session_row = SimpleNamespace(
+        id=session_id, agent_id=agent_id, tenant_id=agent_tenant_id, transcript_metadata_json={}
+    )
     agent = SimpleNamespace(
         id=agent_id,
         name="Agent",
@@ -1895,7 +1888,6 @@ async def test_finalize_web_chat_run_skips_assistant_when_run_already_terminal(m
 async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
-    from app.memory.t0.ledger import replay_t0_session_events
 
     agent_id = uuid4()
     tenant_id = uuid4()
@@ -1972,16 +1964,13 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
     assert task.status == "completed"
     assert task.result_summary == "final answer"
     assert session.commits == 1
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role, event.content) for event in events] == [
-        ("assistant_message", "assistant", "final answer")
-    ]
-    assert events[0].runtime_task_id == run_id.hex
+    assert transcript_events[0].projection_status == "pending"
+    assert transcript_events[0].run_id == run_id
+    assert transcript_events[0].metadata_json["t0_bridge_pending"] is True
 
 
 @pytest.mark.asyncio
 async def test_finalize_web_chat_run_binds_recent_workspace_artifacts(monkeypatch, tmp_path):
-    from app.memory.t0.ledger import replay_t0_session_events
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
 
@@ -2075,13 +2064,11 @@ async def test_finalize_web_chat_run_binds_recent_workspace_artifacts(monkeypatc
     assert task.metadata_json["artifact_ids"] == ["artifact-1"]
     assert metadata_update["artifact_ids"] == ["artifact-1"]
     assert metadata_update["artifacts"][0]["path"] == "workspace/report.md"
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert any(event.event_type == "artifact_delivery" for event in events)
+    assert all(event.projection_status == "pending" for event in transcript_events)
 
 
 @pytest.mark.asyncio
 async def test_finalize_web_chat_run_records_file_changes_side_channel(monkeypatch, tmp_path):
-    from app.memory.t0.ledger import replay_t0_session_events
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
 
@@ -2177,12 +2164,7 @@ async def test_finalize_web_chat_run_records_file_changes_side_channel(monkeypat
     assert task.metadata_json["file_change_paths"] == ["workspace/report.md", "workspace/scratch.md"]
     assert task.metadata_json["rejected_artifact_paths"] == ["workspace/stale.md"]
 
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [event.event_type for event in events] == [
-        "assistant_message",
-        "artifact_delivery",
-        "file_changes",
-    ]
+    assert all(event.projection_status == "pending" for event in transcript_events)
 
 
 @pytest.mark.asyncio
@@ -3315,10 +3297,12 @@ async def test_start_web_chat_run_does_not_append_t0_or_dispatch_from_api(monkey
 
 
 @pytest.mark.asyncio
-async def test_worker_materializes_initial_user_turn_to_t0_without_duplicate_chat_message(monkeypatch, tmp_path):
+async def test_worker_materializes_initial_user_turn_to_transcript_without_duplicate_chat_message(
+    monkeypatch, tmp_path
+):
     import app.services.web_chat_runtime as runtime
-    from app.memory.t0.ledger import replay_t0_session_events
     from app.models.audit import ChatMessage
+    from app.models.chat_transcript_event import ChatTranscriptEvent
 
     agent_id = uuid4()
     user_id = uuid4()
@@ -3374,12 +3358,11 @@ async def test_worker_materializes_initial_user_turn_to_t0_without_duplicate_cha
     assert snapshots
     assert answered
     assert not any(isinstance(item, ChatMessage) for item in db.added)
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role, event.content) for event in events] == [
-        ("user_message", "user", "请规划一个长任务")
-    ]
-    assert events[0].message_id == message_id.hex
-    assert events[0].metadata["worker_materialized"] is True
+    events = [item for item in db.added if isinstance(item, ChatTranscriptEvent)]
+    assert [(event.event_type, event.content) for event in events] == [("user_message", "请规划一个长任务")]
+    assert events[0].message_id == message_id
+    assert events[0].metadata_json["worker_materialized"] is True
+    assert events[0].projection_status == "pending"
 
 
 @pytest.mark.asyncio
@@ -3700,8 +3683,8 @@ async def test_steer_active_web_chat_turn_rejects_stale_turn_id():
 @pytest.mark.asyncio
 async def test_worker_claim_materializes_pending_mid_run_user_messages(monkeypatch, tmp_path):
     import app.services.web_chat_runtime as runtime
-    from app.memory.t0.ledger import replay_t0_session_events
     from app.models.audit import ChatMessage
+    from app.models.chat_transcript_event import ChatTranscriptEvent
 
     agent_id = uuid4()
     tenant_id = uuid4()
@@ -3784,18 +3767,19 @@ async def test_worker_claim_materializes_pending_mid_run_user_messages(monkeypat
     assert task.metadata_json["pending_user_message_count"] == 0
     assert session.commits == 1
     assert not any(isinstance(item, ChatMessage) for item in session.added)
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role, event.content) for event in events] == [
-        ("user_message", "user", "Use the stricter interpretation.")
+    events = [item for item in session.added if isinstance(item, ChatTranscriptEvent)]
+    assert [(event.event_type, event.content) for event in events] == [
+        ("user_message", "Use the stricter interpretation.")
     ]
-    assert events[0].runtime_task_id == run_id.hex
+    assert events[0].run_id == run_id
+    assert events[0].projection_status == "pending"
 
 
 @pytest.mark.asyncio
-async def test_persist_tool_call_appends_t0_tool_result(monkeypatch, tmp_path):
+async def test_persist_tool_call_appends_typed_transcript_tool_result(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
-    from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.chat_transcript_event import ChatTranscriptEvent
 
     agent_id = uuid4()
     tenant_id = uuid4()
@@ -3831,10 +3815,11 @@ async def test_persist_tool_call_appends_t0_tool_result(monkeypatch, tmp_path):
     )
 
     assert added[0].role == "tool_call"
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role) for event in events] == [("tool_result", "tool")]
-    assert events[0].metadata["tool_name"] == "read_file"
-    assert events[0].metadata["status"] == "done"
+    events = [item for item in added if isinstance(item, ChatTranscriptEvent)]
+    assert [(event.event_type, event.item_type) for event in events] == [("tool_result", "tool_result")]
+    assert events[0].metadata_json["tool_name"] == "read_file"
+    assert events[0].metadata_json["status"] == "done"
+    assert events[0].projection_status == "pending"
     assert '"result": "file content"' in events[0].content
 
 
@@ -3842,7 +3827,7 @@ async def test_persist_tool_call_appends_t0_tool_result(monkeypatch, tmp_path):
 async def test_persist_personal_kb_tool_keeps_full_evidence_but_replays_pointer(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
-    from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.chat_transcript_event import ChatTranscriptEvent
 
     agent_id = uuid4()
     tenant_id = uuid4()
@@ -3908,7 +3893,7 @@ async def test_persist_personal_kb_tool_keeps_full_evidence_but_replays_pointer(
         },
     )
 
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    events = [item for item in added if isinstance(item, ChatTranscriptEvent)]
     assert len(events) == 1
     assert "PRIVATE-TITLE" in events[0].content
     assert "PRIVATE-SNIPPET" in events[0].content
@@ -4009,7 +3994,7 @@ async def test_persist_tool_call_attaches_written_artifact_parts(monkeypatch, tm
 async def test_persist_tool_call_appends_running_step_contract(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
-    from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.chat_transcript_event import ChatTranscriptEvent
 
     agent_id = uuid4()
     tenant_id = uuid4()
@@ -4054,14 +4039,14 @@ async def test_persist_tool_call_appends_running_step_contract(monkeypatch, tmp_
 
     assert persisted is not None
     assert added[0].role == "tool_call"
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role) for event in events] == [("tool_call", "tool")]
-    assert events[0].runtime_task_id == run_id.hex
-    assert events[0].metadata["tool_name"] == "read_file"
-    assert events[0].metadata["status"] == "running"
-    assert events[0].metadata["tool_call_id"] == "toolu_123"
-    assert events[0].metadata["step_id"] == "tool:toolu_123"
-    assert events[0].metadata["visibility"] == "collapsed"
+    events = [item for item in added if isinstance(item, ChatTranscriptEvent)]
+    assert [(event.event_type, event.item_type) for event in events] == [("tool_call", "tool_call")]
+    assert events[0].run_id == run_id
+    assert events[0].metadata_json["tool_name"] == "read_file"
+    assert events[0].metadata_json["status"] == "running"
+    assert events[0].metadata_json["tool_call_id"] == "toolu_123"
+    assert events[0].metadata_json["step_id"] == "tool:toolu_123"
+    assert events[0].metadata_json["visibility"] == "collapsed"
     assert '"status": "running"' in events[0].content
     assert '"tool_call_id": "toolu_123"' in events[0].content
     assert '"step_id": "tool:toolu_123"' in events[0].content
@@ -4072,13 +4057,14 @@ async def test_persist_tool_call_appends_running_step_contract(monkeypatch, tmp_
 async def test_persist_tool_call_done_contract_includes_stable_ids_and_duration(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
-    from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.chat_transcript_event import ChatTranscriptEvent
 
     agent_id = uuid4()
     tenant_id = uuid4()
     user_id = uuid4()
     session_id = uuid4().hex
     run_id = uuid4()
+    added = []
 
     class _Session:
         async def __aenter__(self):
@@ -4087,8 +4073,8 @@ async def test_persist_tool_call_done_contract_includes_stable_ids_and_duration(
         async def __aexit__(self, *_args):
             return False
 
-        def add(self, _value):
-            return None
+        def add(self, value):
+            added.append(value)
 
         async def commit(self):
             return None
@@ -4116,12 +4102,12 @@ async def test_persist_tool_call_done_contract_includes_stable_ids_and_duration(
         },
     )
 
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role) for event in events] == [("tool_result", "tool")]
-    assert events[0].metadata["tool_call_id"] == "toolu_123"
-    assert events[0].metadata["step_id"] == "tool:toolu_123"
-    assert events[0].metadata["duration_ms"] == 2500
-    assert events[0].metadata["visibility"] == "collapsed"
+    events = [item for item in added if isinstance(item, ChatTranscriptEvent)]
+    assert [(event.event_type, event.item_type) for event in events] == [("tool_result", "tool_result")]
+    assert events[0].metadata_json["tool_call_id"] == "toolu_123"
+    assert events[0].metadata_json["step_id"] == "tool:toolu_123"
+    assert events[0].metadata_json["duration_ms"] == 2500
+    assert events[0].metadata_json["visibility"] == "collapsed"
     assert '"duration_ms": 2500' in events[0].content
     assert '"result": "file content"' in events[0].content
 

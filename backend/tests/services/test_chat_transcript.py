@@ -20,7 +20,7 @@ class _FakeDB:
 
 
 @pytest.mark.asyncio
-async def test_append_session_event_writes_transcript_chat_message_and_t0(monkeypatch, tmp_path):
+async def test_append_session_event_writes_typed_transcript_and_queues_t0_projection(monkeypatch, tmp_path):
     from app.memory.t0.ledger import replay_t0_session_events
     from app.models.audit import ChatMessage
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -35,8 +35,16 @@ async def test_append_session_event_writes_transcript_chat_message_and_t0(monkey
     participant_id = uuid4()
     created_at = datetime(2026, 6, 20, 12, 30, tzinfo=timezone.utc)
     db = _FakeDB()
+    published = []
+
+    async def fake_publish_transcript_t0_bridge(**kwargs):
+        published.append(kwargs)
 
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr(
+        "app.services.runtime_control_bus.publish_transcript_t0_bridge",
+        fake_publish_transcript_t0_bridge,
+    )
 
     result = await append_session_event(
         db=db,
@@ -51,7 +59,7 @@ async def test_append_session_event_writes_transcript_chat_message_and_t0(monkey
         participant_id=participant_id,
         message_id=message_id,
         content="final answer",
-        metadata={"source": "test"},
+        metadata={"source": "test", "turn_id": "turn-1"},
         created_at=created_at,
     )
 
@@ -68,18 +76,27 @@ async def test_append_session_event_writes_transcript_chat_message_and_t0(monkey
     assert transcript_events[0].event_type == "assistant_message"
     assert transcript_events[0].sequence == result.sequence
     assert transcript_events[0].created_at == created_at
+    assert transcript_events[0].schema_version == 1
+    assert transcript_events[0].item_type == "agent_message"
+    assert transcript_events[0].item_status == "succeeded"
+    assert transcript_events[0].turn_id == "turn-1"
+    assert transcript_events[0].projection_status == "pending"
 
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role, event.content) for event in events] == [
-        ("assistant_message", "assistant", "final answer")
+    assert events == []
+    assert published == [
+        {
+            "transcript_event_id": result.event_id,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "tenant_id": tenant_id,
+        }
     ]
-    assert events[0].metadata["transcript_event_id"] == str(result.event_id)
-    assert events[0].metadata["transcript_sequence"] == result.sequence
-    assert events[0].metadata["source"] == "test"
+    assert transcript_events[0].metadata_json["t0_bridge_pending"] is True
 
 
 @pytest.mark.asyncio
-async def test_append_session_event_can_record_t0_only_runtime_event(monkeypatch, tmp_path):
+async def test_append_session_event_queues_non_message_runtime_event_for_t0(monkeypatch, tmp_path):
     from app.memory.t0.ledger import replay_t0_session_events
     from app.models.audit import ChatMessage
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -89,8 +106,16 @@ async def test_append_session_event_can_record_t0_only_runtime_event(monkeypatch
     tenant_id = uuid4()
     session_id = uuid4()
     db = _FakeDB()
+    published = []
+
+    async def fake_publish_transcript_t0_bridge(**kwargs):
+        published.append(kwargs)
 
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr(
+        "app.services.runtime_control_bus.publish_transcript_t0_bridge",
+        fake_publish_transcript_t0_bridge,
+    )
 
     await append_session_event(
         db=db,
@@ -106,10 +131,14 @@ async def test_append_session_event_can_record_t0_only_runtime_event(monkeypatch
     )
 
     assert not [item for item in db.added if isinstance(item, ChatMessage)]
-    assert len([item for item in db.added if isinstance(item, ChatTranscriptEvent)]) == 1
+    transcript_events = [item for item in db.added if isinstance(item, ChatTranscriptEvent)]
+    assert len(transcript_events) == 1
+    assert transcript_events[0].item_type == "boundary"
+    assert transcript_events[0].item_status == "succeeded"
+    assert transcript_events[0].projection_status == "pending"
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert events[0].event_type == "run_completed"
-    assert events[0].metadata["status"] == "completed"
+    assert events == []
+    assert len(published) == 1
 
 
 @pytest.mark.asyncio
@@ -144,12 +173,13 @@ async def test_append_session_event_can_skip_t0_bridge_for_projection(monkeypatc
     assert transcript_events[0].content == "copied answer from the source branch"
     assert transcript_events[0].metadata_json["projection_only"] is True
     assert transcript_events[0].metadata_json["semantic_memory_eligible"] is False
+    assert transcript_events[0].projection_status == "not_requested"
     assert result.t0_result is None
     assert replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path) == []
 
 
 @pytest.mark.asyncio
-async def test_append_session_event_api_role_does_not_bridge_to_t0(monkeypatch, tmp_path):
+async def test_append_session_event_all_roles_use_committed_t0_projection(monkeypatch, tmp_path):
     from app.memory.t0.ledger import replay_t0_session_events
     from app.models.chat_transcript_event import ChatTranscriptEvent
     import app.services.chat_transcript as transcript
@@ -164,7 +194,6 @@ async def test_append_session_event_api_role_does_not_bridge_to_t0(monkeypatch, 
         published.append(kwargs)
 
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-    monkeypatch.setattr(transcript, "get_settings", lambda: SimpleNamespace(HIVE_PROCESS_ROLE="api"))
     monkeypatch.setattr(
         "app.services.runtime_control_bus.publish_transcript_t0_bridge",
         fake_publish_transcript_t0_bridge,
@@ -196,3 +225,22 @@ async def test_append_session_event_api_role_does_not_bridge_to_t0(monkeypatch, 
         }
     ]
     assert transcript_events[0].metadata_json["t0_bridge_pending"] is True
+
+
+def test_transcript_item_contract_is_typed_and_vendor_neutral() -> None:
+    from app.services.chat_transcript import build_transcript_item_contract
+
+    assert build_transcript_item_contract(event_type="assistant_message", role="assistant", metadata={}) == (
+        "agent_message",
+        "succeeded",
+    )
+    assert build_transcript_item_contract(
+        event_type="permission_request",
+        role="system",
+        metadata={"status": "pending"},
+    ) == ("approval_request", "waiting_user")
+    assert build_transcript_item_contract(
+        event_type="workflow_failed",
+        role="system",
+        metadata={"status": "failed"},
+    ) == ("workflow_activity", "failed")

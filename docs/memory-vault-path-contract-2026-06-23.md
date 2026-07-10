@@ -1,8 +1,8 @@
 # Memory Vault Path Contract
 
-Status: current contract for the single-agent memory vault (updated 2026-07-02 for the two-plane C7 cutover).
+Status: current contract for the single-agent memory vault (updated 2026-07-10 for transactional cloud event truth and exactly-once T0 evidence projection).
 
-Hive memory has one mechanical truth and one semantic gradient:
+Hive memory has one portable evidence truth and one semantic gradient. Cloud run recovery has a separate transactional event authority:
 
 ```text
 memory/
@@ -78,7 +78,8 @@ soul.md
 
 ## Meanings
 
-- `memory/t0/**` is the source transcript ledger. `events.jsonl` is the mechanical truth for resume, replay, fork, rollback, and audit. `source.md` is only a deterministic readable projection.
+- `ChatTranscriptEvent` is the transactional cloud event truth for run ordering, resume, replay, fork, checkpoint, and rollback. It is not semantic memory.
+- `memory/t0/**` is the portable raw Memory evidence ledger projected exactly once from committed runtime events. `events.jsonl` is the canonical source for T2/T3 evidence verification and audit export; `source.md` is its deterministic readable projection. T0 is not a parallel cloud run authority.
 - `memory/t2/**` is the canonical distilled evidence layer. Segment Packages and Episode Stitch Packages are LLM-authored candidates reviewed by Memory Gate and committed by Platform Gate.
 - `memory/session_state/**` is hot session continuity for resume/compaction. It is not T2, not T3, and not semantic long-term memory.
 - `memory/explicit/**` is the explicit overlay for direct user commands such as "remember this"; it is immediately activatable but still waits for T3 consolidation. `entries/<explicit_id>.md` is the per-entry truth, `manifest.jsonl` is the append-only entry state log, and `MEMORY.md` is the generated readable overlay index.
@@ -101,7 +102,7 @@ soul.md
 
 ## Ordering
 
-- T0 is ordered by `index.json` and event `sequence`; segment ids are stable turn/checkpoint anchors.
+- T0 evidence is ordered by `index.json` and its own projection `sequence`; `transcript_event_id` and `transcript_sequence` retain the join to cloud event truth. Cloud turn/checkpoint ordering uses `ChatTranscriptEvent.sequence`.
 - T2 is grouped by `session_id`, then ordered by the source T0 segment sequence recorded in `manifest.json`.
 - T2 episodes are grouped under the same `session_id` and reference source Segment Packages in `manifest.json`.
 - T3 profile-plane entries are ordered within their owning files (`memory/self/self.md`, `memory/profiles/*.md`) by accepted patch order. Knowledge-plane pages (`memory/knowledge/*.md`, `memory/milestones/*.md`) are ordered by generated read models such as `memory/indexes/wiki_map.md`; legacy flat `memory/t3/*.md` files have no active ordering authority.

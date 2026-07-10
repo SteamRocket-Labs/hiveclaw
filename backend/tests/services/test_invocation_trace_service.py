@@ -64,7 +64,14 @@ async def test_invocation_trace_service_persists_and_reads_cross_invocation_tree
             execution_identity_type="delegated_user",
             execution_identity_id=delegated_user_id,
             execution_identity_label="Rocky via web",
-            metadata={"source": "web"},
+            metadata={
+                "source": "web",
+                "decision_id": "decision-1",
+                "input_hash": "a" * 64,
+                "claim_version": 7,
+                "idempotency_key": "web_chat_turn:run-1:tool-1",
+                "side_effect_refs": ["message://sent/1"],
+            },
         )
         await record_invocation_span(
             db,
@@ -117,6 +124,11 @@ async def test_invocation_trace_service_persists_and_reads_cross_invocation_tree
         "id": str(delegated_user_id),
         "label": "Rocky via web",
     }
+    assert root["decision_id"] == "decision-1"
+    assert root["input_hash"] == "a" * 64
+    assert root["claim_version"] == 7
+    assert root["idempotency_key"] == "web_chat_turn:run-1:tool-1"
+    assert root["side_effect_refs"] == ["message://sent/1"]
     assert {child["span_id"] for child in root["children"]} == {"generation-1", "invocation"}
     child_trace = next(child for child in root["children"] if child["trace_id"] == "trace-child")
     assert child_trace["parent_trace_id"] == "trace-parent"

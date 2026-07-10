@@ -56,6 +56,10 @@ def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
         "budget_reservation_key": task.budget_reservation_key,
         "budget_admission_status": task.budget_admission_status,
         "budget_terminal_reason": task.budget_terminal_reason,
+        "claim_version": int(getattr(task, "claim_version", 0) or 0),
+        "root_idempotency_key": getattr(task, "root_idempotency_key", None),
+        "config_snapshot_hash": getattr(task, "config_snapshot_hash", None),
+        "policy_snapshot_hash": getattr(task, "policy_snapshot_hash", None),
         "metadata": task.metadata_json or {},
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "started_at": task.started_at.isoformat() if task.started_at else None,
@@ -344,6 +348,9 @@ async def create_runtime_task_record(
     budget_reservation_key: str | None = None,
     budget_admission_status: str | None = None,
     budget_terminal_reason: str | None = None,
+    root_idempotency_key: str | None = None,
+    config_snapshot_hash: str | None = None,
+    policy_snapshot_hash: str | None = None,
 ) -> str:
     runtime_task_id = _coerce_task_id(task_id)
     if runtime_task_id is None:
@@ -392,6 +399,9 @@ async def create_runtime_task_record(
                     budget_reservation_key=budget_reservation_key,
                     budget_admission_status=budget_admission_status,
                     budget_terminal_reason=budget_terminal_reason,
+                    root_idempotency_key=root_idempotency_key or f"{task_type}:{runtime_task_id}",
+                    config_snapshot_hash=config_snapshot_hash,
+                    policy_snapshot_hash=policy_snapshot_hash,
                 )
             )
             await db.commit()
@@ -415,6 +425,10 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
             task = result.scalar_one_or_none()
             if task is None:
                 return False
+
+            from app.services.runtime_task_fence import assert_runtime_task_fence
+
+            assert_runtime_task_fence(task)
 
             for key, value in fields.items():
                 if hasattr(task, key):

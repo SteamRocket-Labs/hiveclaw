@@ -6,9 +6,10 @@ Contract under test
 -------------------
 EVERY runtime entry must persist the accepted user prompt before the kernel
 (``invoke_agent`` / the task that calls it) sees the turn. In the split runtime
-topology, the API process may only queue the DB control record; the volume-backed
-worker must materialize the initial user turn to transcript / T0 before invoking
-the model. This is the crash-resumable invariant: if the process dies
+topology, the API process may only queue the DB control record; the worker must
+materialize the initial user turn to the transactional transcript before invoking
+the model. T0 is then projected asynchronously from the committed event. This is
+the crash-resumable invariant: if the process dies
 mid-response, the accepted prompt is already durable so the turn can be
 replayed/resumed instead of being silently lost.
 
@@ -18,7 +19,7 @@ worker materialization path:
 
   1. ``web_chat_runtime.start_web_chat_run`` — writes only the DB queued run
      and user read model in the API process; the worker materializes the queued
-     initial user turn to T0 before ``execute_web_chat_run`` calls
+     initial user turn to the transcript before ``execute_web_chat_run`` calls
      ``invoke_agent``.
   2. ``agents.subagent._spawn_one`` — appends the child T0 ``user_message``
      event(s) BEFORE calling ``invoke(request)`` (the kernel).
@@ -192,10 +193,10 @@ async def test_web_chat_turn_api_queues_db_only_before_worker_dispatch_accepted_
 
 @pytest.mark.asyncio
 async def test_web_chat_worker_materializes_queued_prompt_before_kernel_accepted_prompt_first(monkeypatch, tmp_path):
-    """[1] web chat worker: the queued initial user turn is materialized to T0
-    and committed before the worker can invoke the kernel."""
+    """[1] web chat worker: the queued initial user turn is committed to the
+    transactional transcript before the worker can invoke the kernel."""
     import app.services.web_chat_runtime as runtime
-    from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.chat_transcript_event import ChatTranscriptEvent
 
     order: list[str] = []
     agent_id = uuid4()
@@ -255,8 +256,10 @@ async def test_web_chat_worker_materializes_queued_prompt_before_kernel_accepted
 
     assert order == ["append", "commit", "invoke"], order
     assert runtime_task.metadata_json["initial_user_message_t0_materialized"] is True
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(e.event_type, e.role, e.content) for e in events] == [("user_message", "user", "请规划一个长任务")]
+    events = [item for item in db.added if isinstance(item, ChatTranscriptEvent)]
+    assert [(event.event_type, event.content, event.projection_status) for event in events] == [
+        ("user_message", "请规划一个长任务", "pending")
+    ]
 
 
 @pytest.mark.asyncio

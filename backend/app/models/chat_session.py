@@ -47,3 +47,7 @@ class ChatSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# Keep isolated ChatSession imports mapper-safe for runtime_task_id flushes.
+from app.models.runtime_task import RuntimeTask  # noqa: E402, F401

@@ -46,7 +46,7 @@ class _FakeRegistry:
 
 
 @pytest.mark.asyncio
-async def test_tool_runtime_service_executes_through_registry_and_logs():
+async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypatch):
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -69,12 +69,22 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
     registry = _FakeRegistry("OK")
     logged = []
     ensured = []
+    lease_renewals = []
 
     async def fake_run_governance(_context, _deps, *, event_callback=None):
         return None
 
     async def fake_log_activity(*args, **kwargs):
         logged.append((args, kwargs))
+
+    async def fake_renew_current_runtime_task_lease(*, lease_seconds):
+        lease_renewals.append(lease_seconds)
+        return None
+
+    monkeypatch.setattr(
+        "app.services.runtime_task_fence.renew_current_runtime_task_lease",
+        fake_renew_current_runtime_task_lease,
+    )
 
     service = ToolRuntimeService(
         runtime_resolver=runtime_resolver,
@@ -101,6 +111,8 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
     assert governance_resolver.context_calls[0][3] == "delegation-token-1"
     assert ensured == [True]
     assert registry.calls[0].tool_name == "write_file"
+    assert len(lease_renewals) == 1
+    assert lease_renewals[0] > 0
     assert logged and logged[0][0][0] == context.agent_id
     states = [record["lifecycle_state"] for record in context.tool_lifecycle_records]
     assert states == ["created", "validated", "governed", "preflight", "executing", "completed"]

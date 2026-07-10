@@ -96,5 +96,8 @@ async def test_claim_available_marks_tasks_running_with_lease():
     assert task.claim_expires_at > datetime.now(timezone.utc)
     assert task.started_at is not None
     assert task.attempt_count == 1
+    assert task.claim_version == 1
+    assert task.metadata_json["claim_version"] == 1
+    assert task.metadata_json["claim_fence"] == f"{task.id.hex}:1"
     assert db.commits == 1
     assert db.rollbacks == 0

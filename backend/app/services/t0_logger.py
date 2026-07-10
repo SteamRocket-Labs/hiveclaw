@@ -47,7 +47,7 @@ from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_even
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
-from app.services.chat_transcript import CHAT_MESSAGE_ROLES, append_session_event
+from app.services.chat_transcript import CHAT_MESSAGE_ROLES
 from app.services.privacy_layer import PrivacyLayer, PrivacyStore
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,7 @@ def _apply_t0_privacy_gate(content: str) -> str:
 def _category_of(behavior_type: str) -> str:
     """Map a behavior_type to its storage subdirectory.
 
-    This is the legacy logs layout. Runtime T0 mechanical truth lives in
+    This is the legacy logs layout. Portable T0 Memory evidence truth lives in
     memory/t0/sessions/**/events.jsonl. behavior/ holds legacy importable behavior
     snapshots; system/ holds legacy distiller traces. Unknown types fall back
     to system/ so they do not look like runtime session evidence.
@@ -844,7 +844,7 @@ async def backfill_recent_chat_logs(
 
     This function intentionally no longer writes ``logs/YYYY-MM-DD/**/chat-*.md``.
     The legacy per-file logger remains available for import/compatibility, but
-    session T0 mechanical truth is
+    session T0 portable Memory evidence truth is
     ``memory/t0/sessions/<session>/segments/*/events.jsonl``; ``source.md`` is
     the deterministic readable projection.
     """
@@ -918,37 +918,6 @@ async def backfill_recent_chat_logs(
                     role = str(message.role)
                     event_type = _backfill_event_type_for_role(role)
                     actor_type = _backfill_actor_type_for_role(role)
-                    if not existing_transcript and not existing_t0:
-                        await append_session_event(
-                            db=db,
-                            agent_id=agent_id,
-                            tenant_id=tenant_id or getattr(session, "tenant_id", None),
-                            session_id=session.id,
-                            actor_type=actor_type,
-                            event_type=event_type,
-                            role=role,
-                            t0_role=role,
-                            user_id=getattr(session, "user_id", None) if role == "user" else None,
-                            participant_id=getattr(session, "participant_id", None),
-                            message_id=getattr(message, "id", None),
-                            root_session_id=getattr(session, "root_session_id", None),
-                            parent_session_id=getattr(session, "parent_session_id", None),
-                            content=message.content,
-                            metadata={
-                                "source": "backfill_recent_chat_logs",
-                                "session_source": str(session.source_channel or ""),
-                                "legacy_message_id": str(getattr(message, "id", "")),
-                            },
-                            visibility_scope=str(getattr(session, "visibility_scope", None) or "direct_user"),
-                            listed_surface=str(getattr(session, "listed_surface", None) or "chat"),
-                            materialize_chat_message=False,
-                            source=str(session.source_channel or "backfill"),
-                            created_at=getattr(message, "created_at", None),
-                            data_root=data_root,
-                        )
-                        transcript_events_written += 1
-                        t0_events_written += 1
-                        continue
                     if not existing_t0:
                         append_t0_session_event(
                             agent_id=agent_id,
@@ -1089,6 +1058,12 @@ def _add_transcript_backfill_event(
         listed_surface=metadata["listed_surface"],
         content=str(getattr(message, "content", "") or ""),
         metadata_json=metadata,
+        schema_version=1,
+        item_type="user_message" if role == "user" else "agent_message" if role == "assistant" else "event",
+        item_status="succeeded",
+        projection_status="projected",
+        projection_attempts=1,
+        projected_at=_coerce_datetime(getattr(message, "created_at", None)) or datetime.now(timezone.utc),
     )
     created_at = _coerce_datetime(getattr(message, "created_at", None))
     if created_at is not None:

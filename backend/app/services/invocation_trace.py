@@ -106,6 +106,38 @@ def _extract_truth_evidence_fields(metadata: dict[str, Any]) -> tuple[list[str],
     return deduped_refs, deduped_evidence
 
 
+def _span_execution_contract(metadata: dict[str, Any]) -> dict[str, Any]:
+    preflight = metadata.get("preflight") if isinstance(metadata.get("preflight"), dict) else {}
+    side_effect_refs = _string_refs(metadata.get("side_effect_refs"))
+    side_effect_refs.extend(_string_refs(preflight.get("side_effect_refs")))
+    claim_version = metadata.get("claim_version")
+    fence = None
+    if claim_version is None:
+        try:
+            from app.services.runtime_task_fence import current_runtime_task_fence
+
+            fence = current_runtime_task_fence()
+            claim_version = fence.claim_version if fence is not None else None
+        except ImportError:
+            fence = None
+    try:
+        normalized_claim_version = int(claim_version) if claim_version is not None else None
+    except (TypeError, ValueError):
+        normalized_claim_version = None
+    return {
+        "decision_id": str(metadata.get("decision_id") or preflight.get("decision_id") or "")[:128] or None,
+        "input_hash": str(metadata.get("input_hash") or preflight.get("input_hash") or "")[:64] or None,
+        "claim_version": normalized_claim_version,
+        "idempotency_key": str(
+            metadata.get("idempotency_key")
+            or preflight.get("idempotency_key")
+            or (f"runtime-task:{fence.task_id}:claim:{fence.claim_version}" if fence is not None else "")
+        )[:200]
+        or None,
+        "side_effect_refs": list(dict.fromkeys(side_effect_refs)),
+    }
+
+
 def _span_id(span_type: str, metadata: dict[str, Any]) -> str:
     explicit = str(metadata.get("span_id") or "").strip()
     if explicit:
@@ -155,6 +187,7 @@ def append_invocation_span(
     status = _span_status(metadata)
     duration_ms = max(0.0, round(end_ms - started_at_ms, 3))
     evidence_refs, truth_evidence_json = _extract_truth_evidence_fields(metadata)
+    execution_contract = _span_execution_contract(metadata)
     payload = {
         "schema": "invocation_span.v1",
         "invocation_id": trace_id,
@@ -170,6 +203,7 @@ def append_invocation_span(
         "duration_ms": duration_ms,
         "evidence_refs": evidence_refs,
         "truth_evidence": truth_evidence_json,
+        **execution_contract,
         "metadata": metadata,
     }
     _record_span_metric(span_type=span_type, status=status, duration_ms=duration_ms, metadata=metadata)
@@ -212,10 +246,15 @@ async def record_invocation_span(
     clean_metadata = dict(metadata or {})
     identity_metadata = clean_metadata.get("execution_identity")
     if isinstance(identity_metadata, dict):
-        execution_identity_type = execution_identity_type or identity_metadata.get("identity_type") or identity_metadata.get("type")
-        execution_identity_id = execution_identity_id or identity_metadata.get("identity_id") or identity_metadata.get("id")
+        execution_identity_type = (
+            execution_identity_type or identity_metadata.get("identity_type") or identity_metadata.get("type")
+        )
+        execution_identity_id = (
+            execution_identity_id or identity_metadata.get("identity_id") or identity_metadata.get("id")
+        )
         execution_identity_label = execution_identity_label or identity_metadata.get("label")
     evidence_refs, truth_evidence_json = _extract_truth_evidence_fields(clean_metadata)
+    execution_contract = _span_execution_contract(clean_metadata)
     row = InvocationSpan(
         id=uuid.uuid4(),
         tenant_id=tenant_id,
@@ -227,6 +266,11 @@ async def record_invocation_span(
         runtime_task_id=runtime_task_id,
         session_id=str(session_id) if session_id else None,
         request_id=request_id,
+        decision_id=execution_contract["decision_id"],
+        input_hash=execution_contract["input_hash"],
+        claim_version=execution_contract["claim_version"],
+        idempotency_key=execution_contract["idempotency_key"],
+        side_effect_refs=execution_contract["side_effect_refs"],
         trace_id=str(trace_id),
         span_id=str(span_id)[:80],
         parent_span_id=str(parent_span_id)[:80] if parent_span_id else None,
@@ -331,6 +375,11 @@ def _span_to_dict(row: Any) -> dict[str, Any]:
         "runtime_task_id": str(row.runtime_task_id) if row.runtime_task_id else None,
         "session_id": row.session_id,
         "request_id": str(row.request_id) if row.request_id else None,
+        "decision_id": row.decision_id,
+        "input_hash": row.input_hash,
+        "claim_version": row.claim_version,
+        "idempotency_key": row.idempotency_key,
+        "side_effect_refs": row.side_effect_refs or [],
         "trace_id": row.trace_id,
         "span_id": row.span_id,
         "parent_span_id": row.parent_span_id,
@@ -364,19 +413,23 @@ async def get_invocation_trace_tree(
     rows_by_id: dict[uuid.UUID, Any] = {}
     while True:
         rows = (
-            await db.execute(
-                select(InvocationSpan)
-                .where(
-                    InvocationSpan.tenant_id == tenant_id,
-                    or_(
-                        InvocationSpan.trace_id.in_(trace_ids),
-                        InvocationSpan.parent_trace_id.in_(trace_ids),
-                    ),
+            (
+                await db.execute(
+                    select(InvocationSpan)
+                    .where(
+                        InvocationSpan.tenant_id == tenant_id,
+                        or_(
+                            InvocationSpan.trace_id.in_(trace_ids),
+                            InvocationSpan.parent_trace_id.in_(trace_ids),
+                        ),
+                    )
+                    .order_by(InvocationSpan.started_at.asc(), InvocationSpan.created_at.asc(), InvocationSpan.id.asc())
+                    .limit(max_spans)
                 )
-                .order_by(InvocationSpan.started_at.asc(), InvocationSpan.created_at.asc(), InvocationSpan.id.asc())
-                .limit(max_spans)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         before = len(rows_by_id)
         for row in rows:
             rows_by_id[row.id] = row

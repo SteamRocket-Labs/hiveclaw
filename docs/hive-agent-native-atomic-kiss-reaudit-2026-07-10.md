@@ -127,7 +127,7 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 | 工具统一执行 | ● | △ | △ | ● | △ | ● | ● | **局部闭环** |
 | 审批与审批后执行 | ● | △ | × | △ | △ | ● | △ | **断点** |
 | Hooks | ● | △ | ● | ● | △ | ● | ● | **局部闭环** |
-| Transcript / event stream | ● | ● | ● | × | △ | ● | △ | **断点** |
+| Transcript / event stream | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Compaction / microcompact | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | RuntimeTask 持久运行 | ● | ● | ● | ● | △ | ● | ● | **局部闭环** |
 | 断线继续与重连 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
@@ -139,7 +139,7 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 | Subagent / delegation | ● | ● | ● | ● | △ | ● | ● | **局部闭环** |
 | Workflow | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Code execution / sandbox | ● | ● | ● | ● | ● | ● | ● | **闭环** |
-| 云端多 worker 争抢 | ● | ● | ● | △ | × | ● | △ | **断点** |
+| 云端多 worker 争抢 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | Codex typed thread/status protocol | ● | ● | △ | △ | △ | △ | △ | **局部闭环** |
 
 ### 4.2 已经真正平齐或优于 CC 的部分
@@ -190,6 +190,8 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 
 **修复原则：** 每次 claim 原子递增 `claim_version`；所有状态写入和副作用 receipt 必须带 `(runtime_task_id, claim_version, idempotency_key)`，旧 token 的提交被拒绝。
 
+**落地状态（2026-07-10）：已关闭。** `RuntimeTask` 已加入单调 `claim_version`、SQLAlchemy optimistic fence、claim-bound lease renewer；所有受 worker claim 驱动的运行在 ContextVar fence 中执行，工具唯一副作用入口在执行前原子续租并校验 task/version/worker/status。旧 worker 无法续租、重新加载或提交终态，`InvocationSpan` 同步记录 claim version 与 idempotency key。
+
 #### SA-05：运行事件与 T0 事实源双主
 
 `append_session_event()` 先 flush DB event，再可能直接写 T0 文件；DB 与文件无法在同一事务提交。API role 又可能走 relay。与此同时，当前项目规范把 T0 JSONL 称为机械事实源，而云端运行恢复依赖 DB。
@@ -203,6 +205,8 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 
 这要求后续同步修订当前“T0 是所有 resume/replay 机械真相”的旧表述：T0 仍是 Memory evidence truth，但运行恢复的机械真相属于事务事件流。
 
+**落地状态（2026-07-10）：已关闭。** `append_session_event()` 只写事务 `ChatTranscriptEvent`；per-session sequence 由 PostgreSQL transaction advisory lock 分配；T0 projector 只消费 committed rows，按 session sequence 先行排空 predecessor，以 `transcript_event_id` 去重并持久化 projection status/attempt/error/watermark。Redis publish 失败由 DB sweeper 恢复；历史 backfill 作为显式一次性导入，不伪装成 runtime 双写。
+
 ---
 
 ## 5. Hive-native 七原子矩阵
@@ -211,7 +215,7 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 
 | 能力 | 输入 | 权威 | 执行 | 证据 | 恢复 | 消费 | 验收 | 总判定 |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
-| T0 原始证据 | ● | ● | ● | △ | △ | ● | ● | **局部闭环** |
+| T0 原始证据 | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | T2 Segment Package | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | T3 semantic memory | ● | ● | ● | ● | ● | ● | ● | **闭环** |
 | `soul.md` evolution | ● | ● | ● | ● | ● | ● | ● | **闭环** |
@@ -993,3 +997,51 @@ cd backend && alembic heads
 ```
 
 本节没有建设 Company KB，也没有把 Personal KB 改回自动上下文注入。
+
+### 15.2 A 包：Run / Event / Receipt 事实源与云端 fencing（2026-07-10）
+
+完成内容：
+
+1. `RuntimeTask` 增加 typed task/status 约束、`claim_version`、root idempotency key、config/policy snapshot hash；迁移对历史行逐项校验和 hash 回填。
+2. worker claim 原子递增 fence；所有 claimed runtime 均在 fence context 内运行，并持续原子续租。工具执行前再次绑定 task/version/worker/status 续租，旧 worker 被拒绝。
+3. `ChatTranscriptEvent` 成为云端 run、resume、replay、fork、rollback 的事务事实源，增加 schema/item/status、turn/causation/correlation 与 projection 状态。
+4. per-session sequence 使用 PostgreSQL transaction advisory lock + `MAX(sequence)+1`，并发 worker 不再依赖 `time.time_ns()`。
+5. T0 改为 committed-event projector：按 session sequence 投影、以 transcript event id 去重、失败状态落库、Redis 丢失由 sweeper 恢复；历史 chat backfill 保留显式一次性导入语义。
+6. `InvocationSpan` 增加 decision、input hash、claim version、idempotency key 和 side-effect refs；session command 读取 DB event first，T0 只作 legacy/evidence fallback。
+7. 同步修正根规范、Memory prompt 与当前 Memory 设计文档中的事实源表述，没有修改 Company KB 范围。
+
+七原子结果：
+
+| 输入 | 权威 | 执行 | 证据 | 恢复 | 消费 | 验收 | 判定 |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| ● | ● | ● | ● | ● | ● | ● | **闭环** |
+
+关键故障与并发证据：
+
+- 真实 PostgreSQL 两个 worker 并发 append，同一 session sequence 唯一且连续。
+- 故意先投影后序 event，projector 会先排空 predecessor，T0 顺序与 DB 顺序一致。
+- DB commit 后 T0 为空时可恢复；同一 event 重放两次只生成一个 T0 event，projection watermark 落库。
+- claim 被新 worker 接管后，旧 worker无法 reload、续租或执行下一个工具副作用；正常长任务由 lease renewer 保持 claim。
+- migration 在真实 PostgreSQL upgrade 后验证列、约束、索引、backfill 与单 head。
+
+验证证据：
+
+```text
+cd backend && source .venv/bin/activate
+pytest tests/services/test_runtime_task_fence.py tests/services/test_runtime_task_claim_service.py tests/services/test_runtime_task_worker.py tests/services/test_chat_transcript.py tests/services/test_chat_transcript_integration.py tests/services/test_runtime_control_bus.py tests/services/test_invocation_trace_service.py tests/services/test_session_command_runtime.py tests/services/test_web_chat_runtime.py tests/tools/test_service.py tests/migrations/test_runtime_event_fencing_migration.py -q
+-> 191 passed, 4 warnings in 11.05s
+
+pytest tests -q
+-> 6044 passed, 1 skipped, 5 warnings in 108.95s
+
+ruff check <A 包全部变更 Python 与测试文件>
+-> All checks passed!
+
+cd backend && alembic heads
+-> runtime_event_fencing_0710 (head)
+
+git diff --check
+-> passed
+```
+
+本包独立提交标题：`Close durable run fencing and event truth`。

@@ -37,8 +37,7 @@ class _QueuedDB:
 
 
 @pytest.mark.asyncio
-async def test_channel_legacy_runtime_writes_replayable_t0_turn(monkeypatch, tmp_path):
-    from app.memory.t0.ledger import replay_t0_session_events
+async def test_channel_runtime_commits_replayable_transcript_for_t0_projection(monkeypatch, tmp_path):
     from app.models.audit import ChatMessage
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.services.channel_agent_runtime import call_agent_llm
@@ -110,16 +109,7 @@ async def test_channel_legacy_runtime_writes_replayable_t0_turn(monkeypatch, tmp
         "tool_result",
         "assistant_message",
     ]
-
-    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role) for event in events] == [
-        ("user_message", "user"),
-        ("tool_call", "tool"),
-        ("tool_result", "tool"),
-        ("assistant_message", "assistant"),
-        ("segment_boundary", "system"),
-    ]
-    assert events[0].content == "用户通过渠道发来的原始消息"
-    assert events[2].content.endswith(tool_result_tail)
-    assert events[3].content == "channel final answer"
-    assert events[4].metadata["reason"] == "invoke_complete"
+    assert all(event.projection_status == "pending" for event in transcript_events)
+    assert transcript_events[0].content == "用户通过渠道发来的原始消息"
+    assert transcript_events[2].content.endswith(tool_result_tail)
+    assert transcript_events[3].content == "channel final answer"

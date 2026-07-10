@@ -347,7 +347,6 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
 ):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _execute_tool_with_hooks
-    from app.memory.t0.ledger import replay_t0_session_events
     from app.models.agent import Agent
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.tenant import Tenant
@@ -516,10 +515,9 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
     assert runtime_task.prompt == "Use the loaded skill `Research`."
     assert runtime_task.child_session_id == str(child_session_id)
     assert start_event.metadata_json["session_contract"]["run_id"] == run_id_text
-    t0_events = replay_t0_session_events(agent_id=parent_agent_id, session_id=child_session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role, event.content) for event in t0_events] == [
-        ("subagent_task_started", "user", "Use the loaded skill `Research`.")
-    ]
+    assert start_event.content == "Use the loaded skill `Research`."
+    assert start_event.projection_status == "pending"
+    assert start_event.metadata_json["t0_bridge_pending"] is True
 
 
 @pytest.mark.asyncio

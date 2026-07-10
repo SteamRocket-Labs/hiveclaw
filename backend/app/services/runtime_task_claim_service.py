@@ -82,12 +82,15 @@ class RuntimeTaskClaimService:
             task.claimed_by = self.worker_id
             task.claim_expires_at = claim_expires_at
             task.attempt_count = int(getattr(task, "attempt_count", 0) or 0) + 1
+            task.claim_version = int(getattr(task, "claim_version", 0) or 0) + 1
             if getattr(task, "started_at", None) is None:
                 task.started_at = now
             metadata = dict(getattr(task, "metadata_json", None) or {})
             metadata["claimed_by"] = self.worker_id
             metadata["claimed_at"] = now.isoformat()
             metadata["claim_expires_at"] = claim_expires_at.isoformat()
+            metadata["claim_version"] = task.claim_version
+            metadata["claim_fence"] = f"{task.id.hex}:{task.claim_version}"
             task.metadata_json = metadata
         await self.db.commit()
         return tasks

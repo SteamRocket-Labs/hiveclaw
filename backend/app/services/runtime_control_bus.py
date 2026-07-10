@@ -9,6 +9,7 @@ from uuid import UUID
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import get_redis
 from app.runtime.hooks import HookEvent, emit_hook
@@ -17,6 +18,7 @@ from app.runtime.hooks import HookEvent, emit_hook
 RUNTIME_CONTROL_SCHEMA = "hive.runtime.control.v1"
 RUNTIME_CONTROL_CHANNEL = "hive:runtime:control"
 RUNTIME_CONTROL_RECONNECT_SECONDS = 2.0
+TRANSCRIPT_PROJECTION_SWEEP_SECONDS = 5.0
 SESSION_LIFECYCLE_MESSAGE_LIMIT = 100
 _STATE: dict[str, Any] = {
     "running": False,
@@ -164,7 +166,9 @@ async def _load_session_lifecycle_messages(
         filters.append(ChatMessage.agent_id == agent_uuid)
 
     async with async_session() as db:
-        async with enter_rls_bypass(db, reason=f"runtime control lifecycle hook session load {session_id}") as bypass_db:
+        async with enter_rls_bypass(
+            db, reason=f"runtime control lifecycle hook session load {session_id}"
+        ) as bypass_db:
             result = await bypass_db.execute(
                 select(ChatMessage).where(*filters).order_by(ChatMessage.created_at.desc()).limit(max(1, limit))
             )
@@ -172,6 +176,34 @@ async def _load_session_lifecycle_messages(
 
     rows.reverse()
     return [{"role": row.role, "content": row.content} for row in rows if row.content is not None]
+
+
+async def _prior_unprojected_transcript_event_id(
+    db: AsyncSession,
+    *,
+    transcript_event: Any,
+) -> UUID | None:
+    """Return the earliest predecessor that must project before this event.
+
+    Per-session transcript order is the cloud truth. Projecting a later row
+    first would make the portable T0 artifact disagree with that truth, so a
+    worker drains predecessors before touching the requested row.
+    """
+    if not isinstance(db, AsyncSession):
+        return None
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    result = await db.execute(
+        select(ChatTranscriptEvent.id)
+        .where(
+            ChatTranscriptEvent.session_id == transcript_event.session_id,
+            ChatTranscriptEvent.sequence < transcript_event.sequence,
+            ChatTranscriptEvent.projection_status.in_(("pending", "failed", "projecting")),
+        )
+        .order_by(ChatTranscriptEvent.sequence.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 async def bridge_transcript_event_to_t0(
@@ -192,6 +224,7 @@ async def bridge_transcript_event_to_t0(
 
     attempts = max(1, attempts)
     for attempt in range(attempts):
+        predecessor_event_id: UUID | None = None
         async with async_session() as db:
             async with enter_rls_bypass(db, reason=f"runtime control transcript T0 bridge {event_uuid}") as bypass_db:
                 result = await bypass_db.execute(
@@ -200,68 +233,152 @@ async def bridge_transcript_event_to_t0(
                 transcript_event = result.scalar_one_or_none()
                 if transcript_event is not None:
                     metadata = dict(transcript_event.metadata_json or {})
-                    if metadata.get("t0_bridge_relayed_at"):
+                    if (
+                        metadata.get("t0_bridge_relayed_at")
+                        or getattr(transcript_event, "projection_status", None) == "projected"
+                    ):
                         return True
 
-                    chat_message = None
-                    if transcript_event.message_id:
-                        chat_message = await bypass_db.get(ChatMessage, transcript_event.message_id)
-                    actor_id = getattr(chat_message, "user_id", None) or transcript_event.agent_id
-                    role = metadata.get("t0_role") or metadata.get("role")
-                    source = str(metadata.get("source") or "runtime_control")
-
-                    existing_t0_event = next(
-                        (
-                            event
-                            for event in replay_t0_session_events(
-                                agent_id=transcript_event.agent_id,
-                                session_id=transcript_event.session_id,
-                            )
-                            if str(event.metadata.get("transcript_event_id") or "") == str(event_uuid)
-                        ),
-                        None,
+                    predecessor_event_id = await _prior_unprojected_transcript_event_id(
+                        bypass_db,
+                        transcript_event=transcript_event,
                     )
-                    if existing_t0_event is None:
-                        t0_result = append_t0_session_event(
-                            agent_id=transcript_event.agent_id,
-                            session_id=transcript_event.session_id,
-                            event_type=transcript_event.event_type,
-                            role=str(role) if role else None,
-                            content=transcript_event.content or "",
-                            message_id=transcript_event.message_id,
-                            actor_id=actor_id,
-                            tenant_id=transcript_event.tenant_id,
-                            runtime_task_id=transcript_event.run_id,
-                            source=source,
-                            metadata=metadata,
-                            created_at=transcript_event.created_at,
+                    if predecessor_event_id is None:
+                        transcript_event.projection_status = "projecting"
+                        transcript_event.projection_attempts = (
+                            int(getattr(transcript_event, "projection_attempts", 0) or 0) + 1
                         )
-                        segment_id = t0_result.segment_id
-                        t0_event_id = t0_result.event_id
-                        t0_sequence = t0_result.sequence
-                    else:
-                        segment_id = existing_t0_event.segment_id
-                        t0_event_id = existing_t0_event.event_id
-                        t0_sequence = existing_t0_event.sequence
-                    metadata.update(
-                        {
-                            "t0_bridge_pending": False,
-                            "t0_bridge_relayed_at": _now_iso(),
-                            "t0_bridge_relay_source": "runtime_control_bus",
-                            "t0_bridge_segment_id": segment_id,
-                            "t0_bridge_event_id": t0_event_id,
-                            "t0_bridge_sequence": t0_sequence,
-                        }
-                    )
-                    transcript_event.metadata_json = metadata
-                    await bypass_db.commit()
-                    return True
+                        transcript_event.projection_error = None
+
+                        chat_message = None
+                        if transcript_event.message_id:
+                            chat_message = await bypass_db.get(ChatMessage, transcript_event.message_id)
+                        actor_id = getattr(chat_message, "user_id", None) or transcript_event.agent_id
+                        role = metadata.get("t0_role") or metadata.get("role")
+                        source = str(metadata.get("source") or "runtime_control")
+
+                        existing_t0_event = next(
+                            (
+                                event
+                                for event in replay_t0_session_events(
+                                    agent_id=transcript_event.agent_id,
+                                    session_id=transcript_event.session_id,
+                                )
+                                if str(event.metadata.get("transcript_event_id") or "") == str(event_uuid)
+                            ),
+                            None,
+                        )
+                        try:
+                            if existing_t0_event is None:
+                                t0_result = append_t0_session_event(
+                                    agent_id=transcript_event.agent_id,
+                                    session_id=transcript_event.session_id,
+                                    event_type=transcript_event.event_type,
+                                    role=str(role) if role else None,
+                                    content=transcript_event.content or "",
+                                    message_id=transcript_event.message_id,
+                                    actor_id=actor_id,
+                                    tenant_id=transcript_event.tenant_id,
+                                    runtime_task_id=transcript_event.run_id,
+                                    source=source,
+                                    metadata=metadata,
+                                    created_at=transcript_event.created_at,
+                                )
+                                segment_id = t0_result.segment_id
+                                t0_event_id = t0_result.event_id
+                                t0_sequence = t0_result.sequence
+                            else:
+                                segment_id = existing_t0_event.segment_id
+                                t0_event_id = existing_t0_event.event_id
+                                t0_sequence = existing_t0_event.sequence
+                        except Exception as exc:  # noqa: BLE001 - persist the retryable projection failure.
+                            projection_error = f"{type(exc).__name__}: {str(exc)[:1000]}"
+                            transcript_event.projection_status = "failed"
+                            transcript_event.projection_error = projection_error
+                            metadata.update(
+                                {
+                                    "t0_bridge_pending": True,
+                                    "t0_bridge_last_error": projection_error,
+                                    "t0_bridge_attempts": transcript_event.projection_attempts,
+                                }
+                            )
+                            transcript_event.metadata_json = metadata
+                            await bypass_db.commit()
+                            _STATE["last_error"] = projection_error
+                            if attempt < attempts - 1:
+                                await asyncio.sleep(retry_delay_seconds)
+                                continue
+                            return False
+                        metadata.update(
+                            {
+                                "t0_bridge_pending": False,
+                                "t0_bridge_relayed_at": _now_iso(),
+                                "t0_bridge_relay_source": "runtime_control_bus",
+                                "t0_bridge_segment_id": segment_id,
+                                "t0_bridge_event_id": t0_event_id,
+                                "t0_bridge_sequence": t0_sequence,
+                            }
+                        )
+                        transcript_event.metadata_json = metadata
+                        transcript_event.projection_status = "projected"
+                        transcript_event.projection_error = None
+                        transcript_event.projected_at = datetime.now(timezone.utc)
+                        await bypass_db.commit()
+                        return True
+
+        if predecessor_event_id is not None:
+            if await bridge_transcript_event_to_t0(
+                transcript_event_id=predecessor_event_id,
+                attempts=1,
+                retry_delay_seconds=retry_delay_seconds,
+            ):
+                continue
 
         if attempt < attempts - 1:
             await asyncio.sleep(retry_delay_seconds)
 
     _STATE["last_error"] = f"LookupError: transcript_event {event_uuid} not visible after {attempts} attempts"
     return False
+
+
+async def sweep_pending_transcript_t0_bridges(*, limit: int = 100, max_attempts: int = 20) -> int:
+    """Recover committed transcript projections after publish/process failure."""
+    from app.database import async_session, enter_rls_bypass
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    async with async_session() as db:
+        async with enter_rls_bypass(db, reason="sweep pending transcript T0 projections") as bypass_db:
+            result = await bypass_db.execute(
+                select(ChatTranscriptEvent.id)
+                .where(
+                    ChatTranscriptEvent.projection_status.in_(("pending", "failed")),
+                    ChatTranscriptEvent.projection_attempts < max(1, int(max_attempts)),
+                )
+                .order_by(ChatTranscriptEvent.sequence.asc())
+                .limit(max(1, int(limit)))
+            )
+            event_ids = list(result.scalars().all())
+
+    projected = 0
+    for event_id in event_ids:
+        if await bridge_transcript_event_to_t0(transcript_event_id=event_id, attempts=1):
+            projected += 1
+    return projected
+
+
+async def _run_transcript_projection_sweeper(
+    *,
+    interval_seconds: float = TRANSCRIPT_PROJECTION_SWEEP_SECONDS,
+) -> None:
+    while True:
+        try:
+            await sweep_pending_transcript_t0_bridges()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the next sweep remains a recovery path.
+            _STATE["last_error"] = f"projection_sweeper:{type(exc).__name__}:{str(exc)[:300]}"
+            logger.warning("[RuntimeControlBus] transcript projection sweep failed: {}", exc)
+        await asyncio.sleep(max(0.1, interval_seconds))
 
 
 async def handle_runtime_control_message(message: dict[str, Any]) -> bool:
@@ -332,6 +449,10 @@ async def start_runtime_control_listener(
     reconnect_delay_seconds: float = RUNTIME_CONTROL_RECONNECT_SECONDS,
 ) -> None:
     _STATE.update({"running": True, "last_error": None})
+    projection_sweeper = asyncio.create_task(
+        _run_transcript_projection_sweeper(),
+        name="transcript-t0-projection-sweeper",
+    )
     try:
         while True:
             try:
@@ -354,6 +475,11 @@ async def start_runtime_control_listener(
         raise
     finally:
         _STATE["running"] = False
+        projection_sweeper.cancel()
+        try:
+            await projection_sweeper
+        except asyncio.CancelledError:
+            pass
 
 
 def runtime_control_bus_snapshot() -> dict[str, Any]:

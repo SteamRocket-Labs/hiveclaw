@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,7 +28,9 @@ class InvocationSpan(Base):
         Index("ix_invocation_spans_runtime_task_id", "runtime_task_id"),
         Index("ix_invocation_spans_request_id", "request_id"),
         Index("ix_invocation_spans_agent_started", "agent_id", "started_at"),
-        Index("ix_invocation_spans_execution_identity", "tenant_id", "execution_identity_type", "execution_identity_id"),
+        Index(
+            "ix_invocation_spans_execution_identity", "tenant_id", "execution_identity_type", "execution_identity_id"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -43,6 +45,11 @@ class InvocationSpan(Base):
     )
     session_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     request_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    decision_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claim_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    side_effect_refs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     trace_id: Mapped[str] = mapped_column(String(255), nullable=False)
     span_id: Mapped[str] = mapped_column(String(80), nullable=False)
     parent_span_id: Mapped[str | None] = mapped_column(String(80), nullable=True)

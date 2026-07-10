@@ -1,14 +1,14 @@
-"""Replayable chat transcript events.
+"""Transactional cloud event truth for replayable chat/session runs.
 
-This table is the indexed runtime event stream for chat/session UI projection.
-T0 remains the raw Markdown/XML evidence source; each row is bridged into T0
-through `transcript_event_id` / `transcript_sequence` metadata.
+Committed rows drive run ordering, resume/fork/rewind, and typed UI projection.
+Each row is projected exactly once into portable T0 Memory evidence through
+``transcript_event_id`` / ``transcript_sequence`` join metadata.
 """
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,10 +33,26 @@ class ChatTranscriptEvent(Base):
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
     session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=False)
     run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("runtime_tasks.id"), nullable=True)
-    parent_event_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("chat_transcript_events.id"), nullable=True)
-    root_session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True)
-    parent_session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True)
-    message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("chat_messages.id"), nullable=True)
+    parent_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_transcript_events.id"), nullable=True
+    )
+    root_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True
+    )
+    parent_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True
+    )
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_messages.id"), nullable=True
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
+    item_type: Mapped[str] = mapped_column(String(64), nullable=False, default="event", server_default=text("'event'"))
+    item_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="succeeded", server_default=text("'succeeded'")
+    )
+    turn_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    causation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    correlation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     visibility_scope: Mapped[str] = mapped_column(String(64), nullable=False, default="direct_user")
@@ -44,4 +60,10 @@ class ChatTranscriptEvent(Base):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     parts_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    projection_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default=text("'pending'"), index=True
+    )
+    projection_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    projection_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

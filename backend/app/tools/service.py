@@ -173,6 +173,16 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+async def _renew_runtime_task_lease_before_execution() -> None:
+    """Fence every tool side effect against the worker's current claim."""
+    from app.config import get_settings
+    from app.services.runtime_task_fence import renew_current_runtime_task_lease
+
+    await renew_current_runtime_task_lease(
+        lease_seconds=float(get_settings().RUNTIME_TASK_CLAIM_LEASE_SECONDS)
+    )
+
+
 async def _resolve_runtime_context(
     runtime_resolver: Any,
     *,
@@ -743,6 +753,7 @@ class ToolRuntimeService:
 
         timeout_seconds = TOOL_TIMEOUTS.get(tool_name, 30.0)
         try:
+            await _renew_runtime_task_lease_before_execution()
             _record_tool_lifecycle(
                 runtime_context,
                 tool_call_id=effective_tool_call_id,
@@ -1166,6 +1177,7 @@ class ToolRuntimeService:
                     )
                 )
 
+            await _renew_runtime_task_lease_before_execution()
             _record_tool_lifecycle(
                 runtime_context,
                 tool_call_id=effective_tool_call_id,

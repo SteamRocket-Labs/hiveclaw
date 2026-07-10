@@ -377,9 +377,17 @@ async def _load_events(
 ) -> tuple[list[ChatTranscriptEvent | T0SessionEvent], str]:
     """Load the NEWEST ``limit`` events, ascending (events[-1] is the latest).
 
-    The T0 tail replay runs in a worker thread — it is sync file IO and must
-    not block the event loop (docs/performance-slimming-plan-2026-07-02.md A1).
+    The committed DB stream is cloud run truth. T0 is a portable Memory
+    evidence projection and remains a recovery fallback for legacy/imported
+    sessions whose DB event stream is absent.
     """
+    if db is not None:
+        try:
+            db_events = await _load_db_events(db, session=session, limit=limit)
+        except Exception:  # noqa: BLE001 - legacy T0 evidence remains an observable recovery path.
+            db_events = []
+        if db_events:
+            return db_events, "chat_transcript_events"
     try:
         t0_events = await asyncio.to_thread(
             replay_t0_session_events_tail,
@@ -390,8 +398,8 @@ async def _load_events(
     except Exception:  # noqa: BLE001 - command surface must fall back to DB read model if files are unavailable.
         t0_events = []
     if t0_events:
-        return list(t0_events), "t0_events_jsonl"
-    return await _load_db_events(db, session=session, limit=limit), "chat_transcript_events_read_model"
+        return list(t0_events), "t0_events_jsonl_fallback"
+    return [], "chat_transcript_events"
 
 
 async def _last_event(db: AsyncSession, *, session: ChatSession) -> ChatTranscriptEvent | None:
@@ -446,9 +454,7 @@ def _select_user_checkpoint(
 
 async def _export_session(db: AsyncSession, *, agent: Agent, session: ChatSession) -> dict[str, Any]:
     events, truth_source = await _load_events(db, agent=agent, session=session)
-    db_events = (
-        events if truth_source == "chat_transcript_events_read_model" else await _load_db_events(db, session=session)
-    )
+    db_events = events if truth_source == "chat_transcript_events" else await _load_db_events(db, session=session)
     messages_result = await db.execute(
         select(ChatMessage).where(ChatMessage.conversation_id == str(session.id)).order_by(ChatMessage.created_at.asc())
     )
@@ -468,7 +474,7 @@ async def _export_session(db: AsyncSession, *, agent: Agent, session: ChatSessio
             "metadata": session.transcript_metadata_json or {},
         },
         "truth_source": truth_source,
-        "t0_events": [_event_payload(event) for event in events] if truth_source == "t0_events_jsonl" else [],
+        "t0_events": [_event_payload(event) for event in events] if truth_source == "t0_events_jsonl_fallback" else [],
         "transcript_events": [_event_payload(event) for event in db_events],
         "messages": [
             {
@@ -489,9 +495,9 @@ async def _export_session(db: AsyncSession, *, agent: Agent, session: ChatSessio
             }
             for artifact in artifacts
         ],
-        "truth_surface": "t0_events_jsonl_plus_markdown_projection"
-        if truth_source == "t0_events_jsonl"
-        else "chat_transcript_events_read_model_with_t0_fallback",
+        "truth_surface": "t0_events_jsonl_memory_evidence_fallback"
+        if truth_source == "t0_events_jsonl_fallback"
+        else "chat_transcript_events_cloud_truth_with_t0_memory_projection",
     }
 
 

@@ -8,10 +8,24 @@ which tracks user-facing tasks. RuntimeTask tracks the internal
 agent execution machinery.
 """
 
+import hashlib
+import json
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,6 +37,18 @@ class RuntimeTask(Base):
 
     __tablename__ = "runtime_tasks"
     __table_args__ = (
+        CheckConstraint(
+            "task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan', "
+            "'workflow', 'delegation', 'business_task', 'subagent', 'trigger', 'heartbeat', "
+            "'coordinator_worker', 'harness_canary', 'a2a_delegation')",
+            name="ck_runtime_tasks_task_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed', 'killed', 'skipped', "
+            "'needs_reconciliation', 'resumable', 'suspended')",
+            name="ck_runtime_tasks_status",
+        ),
+        UniqueConstraint("root_idempotency_key", name="uq_runtime_tasks_root_idempotency_key"),
         Index(
             "uq_runtime_tasks_active_web_chat_session",
             "parent_agent_id",
@@ -89,6 +115,10 @@ class RuntimeTask(Base):
     claimed_by: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
     claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    claim_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    root_idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    config_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # Runtime budget admission metadata
     budget_run_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -102,3 +132,56 @@ class RuntimeTask(Base):
 
     # Metadata
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    __mapper_args__ = {
+        "version_id_col": claim_version,
+        "version_id_generator": False,
+    }
+
+
+@event.listens_for(RuntimeTask, "before_insert")
+def _set_runtime_task_root_idempotency_key(_mapper, _connection, target: RuntimeTask) -> None:
+    if target.id is None:
+        target.id = uuid.uuid4()
+    if not str(getattr(target, "root_idempotency_key", "") or "").strip():
+        target.root_idempotency_key = f"{target.task_type}:{target.id}"
+    metadata = dict(getattr(target, "metadata_json", None) or {})
+    if not str(getattr(target, "config_snapshot_hash", "") or "").strip():
+        config_snapshot = {
+            "task_type": target.task_type,
+            "parent_agent_id": str(target.parent_agent_id) if target.parent_agent_id else None,
+            "child_agent_id": str(target.child_agent_id) if target.child_agent_id else None,
+            "parent_session_id": target.parent_session_id,
+            "child_session_id": target.child_session_id,
+            "depth": target.depth,
+            "prompt": target.prompt,
+            "source": metadata.get("source"),
+            "definition_hash": metadata.get("definition_hash"),
+            "model_id": metadata.get("model_id"),
+        }
+        target.config_snapshot_hash = hashlib.sha256(
+            json.dumps(config_snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+    if not str(getattr(target, "policy_snapshot_hash", "") or "").strip():
+        policy_snapshot = {
+            "tenant_id": str(target.tenant_id) if target.tenant_id else None,
+            "permission_mode": metadata.get("permission_mode"),
+            "permission_profile": metadata.get("permission_profile"),
+            "budget_run_id": str(target.budget_run_id) if target.budget_run_id else None,
+            "budget_snapshot": target.budget_snapshot_json,
+            "guard_policy": metadata.get("guard_policy"),
+        }
+        target.policy_snapshot_hash = hashlib.sha256(
+            json.dumps(policy_snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+
+
+@event.listens_for(RuntimeTask, "load")
+def _check_loaded_runtime_task_fence(target: RuntimeTask, _context) -> None:
+    from app.services.runtime_task_fence import assert_runtime_task_fence
+
+    assert_runtime_task_fence(target)
+
+
+# Keep isolated RuntimeTask imports mapper-safe for tests and maintenance tools.
+from app.models.runtime_budget import RuntimeBudgetRun  # noqa: E402, F401

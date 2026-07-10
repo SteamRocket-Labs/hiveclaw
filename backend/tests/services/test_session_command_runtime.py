@@ -156,14 +156,15 @@ async def test_session_commands_resume_detects_interrupted_transcript():
 
 
 @pytest.mark.asyncio
-async def test_session_commands_resume_prefers_t0_jsonl_truth_over_db_projection(monkeypatch):
+async def test_session_commands_resume_prefers_committed_db_event_over_t0_projection(monkeypatch):
     import app.services.session_command_runtime as runtime
 
     agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
     user = SimpleNamespace(id=uuid4(), role="member")
     session = _session(agent.id, user.id)
     t0_events = [_t0_event(session, "user_message", sequence=1, content="persisted before model loop", role="user")]
-    db = _DB(session, [])
+    db_events = [_event(session, "assistant_message", sequence=7, content="committed answer", role="assistant")]
+    db = _DB(session, db_events)
 
     monkeypatch.setattr(runtime, "replay_t0_session_events_tail", lambda **_kwargs: t0_events, raising=False)
 
@@ -177,11 +178,10 @@ async def test_session_commands_resume_prefers_t0_jsonl_truth_over_db_projection
         arguments={},
     )
 
-    assert result["truth_source"] == "t0_events_jsonl"
+    assert result["truth_source"] == "chat_transcript_events"
     assert result["event_count"] == 1
-    assert result["interrupted"] is True
-    assert result["last_replayable_event"]["ledger_event_id"] == "evt_1"
-    assert result["next_query"] == "Continue from where you left off."
+    assert result["interrupted"] is False
+    assert result["last_replayable_event"]["content"] == "committed answer"
 
 
 @pytest.mark.asyncio
@@ -292,15 +292,15 @@ async def test_session_export_returns_transcript_messages_and_artifact_refs():
         arguments={},
     )
 
-    assert result["truth_surface"] == "chat_transcript_events_read_model_with_t0_fallback"
-    assert result["truth_source"] == "chat_transcript_events_read_model"
+    assert result["truth_surface"] == "chat_transcript_events_cloud_truth_with_t0_memory_projection"
+    assert result["truth_source"] == "chat_transcript_events"
     assert result["transcript_events"][0]["content"] == "hello"
     assert result["messages"][0]["role"] == "user"
     assert result["artifacts"][0]["path"] == "workspace/report.md"
 
 
 @pytest.mark.asyncio
-async def test_session_export_uses_t0_jsonl_truth_and_db_as_read_model(monkeypatch):
+async def test_session_export_uses_t0_jsonl_as_memory_evidence_fallback(monkeypatch):
     import app.services.session_command_runtime as runtime
 
     agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
@@ -324,8 +324,8 @@ async def test_session_export_uses_t0_jsonl_truth_and_db_as_read_model(monkeypat
         arguments={},
     )
 
-    assert result["truth_surface"] == "t0_events_jsonl_plus_markdown_projection"
-    assert result["truth_source"] == "t0_events_jsonl"
+    assert result["truth_surface"] == "t0_events_jsonl_memory_evidence_fallback"
+    assert result["truth_source"] == "t0_events_jsonl_fallback"
     assert [event["content"] for event in result["t0_events"]] == ["jsonl first", "projection second"]
     assert result["transcript_events"] == []
 
@@ -545,7 +545,10 @@ async def test_rewind_workspace_mode_requires_explicit_restore_confirmation(monk
     first = _event(session, "user_message", sequence=1, content="first", role="user")
     session.transcript_metadata_json = {
         "workspace_snapshots": {
-            str(first.id): {"checkpoint_event_id": str(first.id), "manifest_path": "runtime_artifacts/snap/manifest.json"}
+            str(first.id): {
+                "checkpoint_event_id": str(first.id),
+                "manifest_path": "runtime_artifacts/snap/manifest.json",
+            }
         }
     }
     db = _DB(session, [first])
@@ -584,7 +587,10 @@ async def test_rewind_workspace_mode_restores_snapshot_when_confirmed(monkeypatc
     first = _event(session, "user_message", sequence=1, content="first", role="user")
     session.transcript_metadata_json = {
         "workspace_snapshots": {
-            str(first.id): {"checkpoint_event_id": str(first.id), "manifest_path": "runtime_artifacts/snap/manifest.json"}
+            str(first.id): {
+                "checkpoint_event_id": str(first.id),
+                "manifest_path": "runtime_artifacts/snap/manifest.json",
+            }
         }
     }
     db = _DB(session, [first])
@@ -1139,6 +1145,6 @@ async def test_load_events_returns_latest_t0_window_not_earliest(monkeypatch, tm
 
     events, truth_source = await runtime._load_events(None, agent=agent, session=session, limit=10)
 
-    assert truth_source == "t0_events_jsonl"
+    assert truth_source == "t0_events_jsonl_fallback"
     assert [event.sequence for event in events] == list(range(21, 31))
     assert events[-1].content == "m30"

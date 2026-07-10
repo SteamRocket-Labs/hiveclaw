@@ -138,7 +138,9 @@ async def test_runtime_control_web_chat_cancel_sets_local_cancel_event():
     register_web_chat_run_for_test(run_id, cancel_event=cancel_event)
 
     try:
-        await bus.handle_runtime_control_message({"schema": bus.RUNTIME_CONTROL_SCHEMA, "type": "web_chat_cancel", "run_id": run_id})
+        await bus.handle_runtime_control_message(
+            {"schema": bus.RUNTIME_CONTROL_SCHEMA, "type": "web_chat_cancel", "run_id": run_id}
+        )
         assert cancel_event.is_set() is True
     finally:
         unregister_web_chat_run_for_test(run_id)
@@ -265,6 +267,10 @@ async def test_bridge_transcript_event_to_t0_writes_ledger_and_marks_metadata(mo
         content="bridged answer",
         created_at=datetime(2026, 7, 2, 12, 30, tzinfo=timezone.utc),
         metadata_json={"role": "assistant", "source": "web", "transcript_event_id": str(transcript_event_id)},
+        projection_status="pending",
+        projection_attempts=0,
+        projection_error=None,
+        projected_at=None,
     )
     chat_message = SimpleNamespace(id=message_id, user_id=user_id)
 
@@ -310,6 +316,10 @@ async def test_bridge_transcript_event_to_t0_writes_ledger_and_marks_metadata(mo
     assert fake_session.commits == 1
     assert transcript_event.metadata_json["t0_bridge_pending"] is False
     assert transcript_event.metadata_json["t0_bridge_relay_source"] == "runtime_control_bus"
+    assert transcript_event.projection_status == "projected"
+    assert transcript_event.projection_attempts == 1
+    assert transcript_event.projection_error is None
+    assert transcript_event.projected_at is not None
 
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert [(event.event_type, event.role, event.content, event.actor_id) for event in events] == [
@@ -319,9 +329,16 @@ async def test_bridge_transcript_event_to_t0_writes_ledger_and_marks_metadata(mo
     assert await bus.bridge_transcript_event_to_t0(transcript_event_id=transcript_event_id) is True
     assert len(replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)) == 1
 
-    transcript_event.metadata_json = {"role": "assistant", "source": "web", "transcript_event_id": str(transcript_event_id)}
+    transcript_event.metadata_json = {
+        "role": "assistant",
+        "source": "web",
+        "transcript_event_id": str(transcript_event_id),
+    }
+    transcript_event.projection_status = "failed"
+    transcript_event.projected_at = None
     assert await bus.bridge_transcript_event_to_t0(transcript_event_id=transcript_event_id) is True
     assert len(replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)) == 1
+    assert transcript_event.projection_status == "projected"
 
 
 @pytest.mark.asyncio

@@ -1,25 +1,22 @@
 """Single-path chat transcript event writer.
 
-The service creates the durable DB read model for UI replay while bridging
-runtime-authored events into canonical T0. T0 writes ``events.jsonl`` first as
-mechanical truth and ``source.md`` second as a deterministic Markdown/XML
-projection. ChatMessage, ChatTranscriptEvent, and artifact rows are read models,
-not a second truth source.
+``ChatTranscriptEvent`` is the transactional cloud event truth used for run
+recovery and UI replay.  T0 remains the canonical portable Memory evidence
+artifact and is projected exactly-once from committed transcript rows.
 """
 
 from __future__ import annotations
 
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
-from app.memory.t0.ledger import T0AppendResult, append_t0_session_event
+from app.memory.t0.ledger import T0AppendResult
 from app.models.audit import ChatMessage
 from app.models.chat_transcript_event import ChatTranscriptEvent
 
@@ -40,7 +37,10 @@ class AppendSessionEventResult:
 def _uuid_or_none(value: uuid.UUID | str | None) -> uuid.UUID | None:
     if value is None:
         return None
-    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+    try:
+        return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _metadata_with_transcript_refs(
@@ -79,28 +79,76 @@ def _metadata_with_transcript_refs(
     return clean
 
 
-def _next_sequence() -> int:
-    """Return an orderable event sequence without changing T0's own sequence.
+async def allocate_transcript_sequence(db: AsyncSession, *, session_id: uuid.UUID) -> int:
+    """Allocate a collision-free sequence inside the caller's DB transaction.
 
-    The database enforces `(session_id, sequence)` uniqueness. In production this
-    uses nanosecond time as a monotonic-enough sequence source for append order;
-    T0 retains its own per-segment append sequence as raw evidence truth.
+    PostgreSQL workers serialize per session with a transaction advisory lock.
+    The following ``MAX + 1`` therefore remains monotonic for the session while
+    preserving all existing sequence values during migration.
     """
-    return time.time_ns()
+    if not isinstance(db, AsyncSession):
+        # Narrow compatibility for unit-test recording sessions; production
+        # AsyncSession always takes the DB-serialized path below.
+        return uuid.uuid4().int & ((1 << 63) - 1)
+    bind = db.get_bind() if hasattr(db, "get_bind") else None
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+    if dialect_name == "postgresql":
+        lock_key = int.from_bytes(session_id.bytes[:8], byteorder="big", signed=True)
+        await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
+    result = await db.execute(
+        select(func.coalesce(func.max(ChatTranscriptEvent.sequence), 0) + 1).where(
+            ChatTranscriptEvent.session_id == session_id
+        )
+    )
+    return int(result.scalar_one())
 
 
-def _bridge_to_t0_enabled(bridge_to_t0: bool) -> bool:
-    if not bridge_to_t0:
-        return False
-    role = str(get_settings().HIVE_PROCESS_ROLE or "runtime").strip().lower()
-    return role != "api"
+def build_transcript_item_contract(
+    *,
+    event_type: str,
+    role: str | None,
+    metadata: dict[str, Any] | None,
+) -> tuple[str, str]:
+    """Map runtime events into a small vendor-neutral ThreadItem contract."""
+    normalized = str(event_type or "event").strip().lower()
+    data = dict(metadata or {})
+    if normalized == "user_message" or role == "user":
+        item_type = "user_message"
+    elif normalized == "assistant_message" or role == "assistant":
+        item_type = "agent_message"
+    elif "permission_request" in normalized or "approval_request" in normalized:
+        item_type = "approval_request"
+    elif "permission" in normalized or "approval" in normalized:
+        item_type = "approval_decision"
+    elif normalized.startswith("tool_") and "result" in normalized:
+        item_type = "tool_result"
+    elif normalized.startswith("tool_"):
+        item_type = "tool_call"
+    elif "workflow" in normalized:
+        item_type = "workflow_activity"
+    elif "subagent" in normalized or "delegation" in normalized:
+        item_type = "subagent_activity"
+    elif "plan" in normalized:
+        item_type = "plan"
+    elif "compact" in normalized:
+        item_type = "context_compaction"
+    elif normalized.startswith("run_") or normalized.endswith("_boundary"):
+        item_type = "boundary"
+    else:
+        item_type = "event"
 
-
-def _relay_t0_bridge_enabled(bridge_to_t0: bool) -> bool:
-    if not bridge_to_t0:
-        return False
-    role = str(get_settings().HIVE_PROCESS_ROLE or "runtime").strip().lower()
-    return role == "api"
+    raw_status = str(data.get("status") or "").strip().lower()
+    if item_type == "approval_request" and raw_status in {"", "pending", "awaiting_confirmation"}:
+        item_status = "waiting_user"
+    elif raw_status in {"failed", "error", "blocked", "denied"} or normalized.endswith("_failed"):
+        item_status = "failed"
+    elif raw_status in {"killed", "cancelled"} or normalized.endswith("_cancelled"):
+        item_status = "cancelled"
+    elif raw_status in {"pending", "running", "started", "executing"} or normalized.endswith("_started"):
+        item_status = "running"
+    else:
+        item_status = "succeeded"
+    return item_type, item_status
 
 
 async def append_session_event(
@@ -148,8 +196,15 @@ async def append_session_event(
     participant_uuid = _uuid_or_none(participant_id)
     message_uuid = _uuid_or_none(message_id)
     event_id = uuid.uuid4()
-    sequence = _next_sequence()
+    if session_uuid is None:
+        raise ValueError(f"session_id must be a UUID for transcript persistence: {session_id!r}")
+    sequence = await allocate_transcript_sequence(db, session_id=session_uuid)
     content_text = content or ""
+    item_type, item_status = build_transcript_item_contract(
+        event_type=event_type,
+        role=role,
+        metadata=metadata,
+    )
 
     chat_message: ChatMessage | None = None
     if materialize_chat_message and role in CHAT_MESSAGE_ROLES:
@@ -196,6 +251,12 @@ async def append_session_event(
         root_session_id=_uuid_or_none(root_session_id),
         parent_session_id=_uuid_or_none(parent_session_id),
         message_id=message_uuid,
+        schema_version=1,
+        item_type=item_type,
+        item_status=item_status,
+        turn_id=str((metadata or {}).get("turn_id") or "").strip() or None,
+        causation_id=_uuid_or_none((metadata or {}).get("causation_id")) or _uuid_or_none(parent_event_id),
+        correlation_id=_uuid_or_none((metadata or {}).get("correlation_id")) or run_uuid,
         actor_type=actor_type,
         event_type=event_type,
         visibility_scope=visibility_scope,
@@ -203,6 +264,8 @@ async def append_session_event(
         content=content_text,
         parts_json=parts,
         metadata_json=event_metadata,
+        projection_status="pending" if bridge_to_t0 else "not_requested",
+        projection_attempts=0,
     )
     if created_at is not None:
         transcript_event.created_at = created_at
@@ -211,23 +274,7 @@ async def append_session_event(
         await db.flush()
 
     t0_result: T0AppendResult | None = None
-    if _bridge_to_t0_enabled(bridge_to_t0):
-        t0_result = append_t0_session_event(
-            agent_id=agent_uuid,
-            session_id=session_id,
-            event_type=event_type,
-            role=t0_role if t0_role is not None else role,
-            content=content_text,
-            message_id=message_uuid,
-            actor_id=user_uuid or agent_uuid,
-            tenant_id=tenant_uuid,
-            runtime_task_id=run_uuid,
-            source=source,
-            metadata=event_metadata,
-            created_at=created_at,
-            data_root=data_root,
-        )
-    elif _relay_t0_bridge_enabled(bridge_to_t0):
+    if bridge_to_t0:
         event_metadata = {**event_metadata, "t0_bridge_pending": True}
         transcript_event.metadata_json = event_metadata
         try:
@@ -240,11 +287,13 @@ async def append_session_event(
                 tenant_id=tenant_uuid,
             )
         except Exception as exc:  # noqa: BLE001 - transcript stays durable; runtime sweep/ops can observe pending state.
+            projection_error = f"{type(exc).__name__}: {str(exc)[:300]}"
             event_metadata = {
                 **event_metadata,
-                "t0_bridge_publish_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "t0_bridge_publish_error": projection_error,
             }
             transcript_event.metadata_json = event_metadata
+            transcript_event.projection_error = projection_error
     return AppendSessionEventResult(
         event_id=event_id,
         sequence=sequence,

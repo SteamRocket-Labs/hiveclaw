@@ -196,7 +196,6 @@ async def test_execute_task_blocks_without_confirmed_plan(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger(monkeypatch, tmp_path):
-    from app.memory.t0.ledger import replay_t0_session_events
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.services.task_executor import execute_task
 
@@ -314,13 +313,5 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
     ]
     assert all(event.session_id == created_session.id for event in transcript_events)
     assert all(event.listed_surface == "task_updates" for event in transcript_events)
+    assert all(event.projection_status == "pending" for event in transcript_events)
     assert transcript_events[0].metadata_json["task_id"] == str(task_id)
-
-    events = replay_t0_session_events(agent_id=agent_id, session_id=str(created_session.id), data_root=tmp_path)
-    assert [(event.event_type, event.role, event.content) for event in events] == [
-        ("user_message", "user", user_prompt.content),
-        ("tool_result", "tool", tool_call.content),
-        ("assistant_message", "assistant", assistant_reply.content),
-        ("segment_boundary", "system", "task_complete"),
-    ]
-    assert events[0].metadata["task_id"] == str(task_id)

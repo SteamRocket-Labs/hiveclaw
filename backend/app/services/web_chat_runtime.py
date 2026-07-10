@@ -544,16 +544,20 @@ def _declared_terminal_artifact_paths(content: str) -> list[str]:
     for line in str(content or "").splitlines():
         if not _TERMINAL_ARTIFACT_DECLARATION_RE.search(line):
             continue
-        declared.extend(_normalize_terminal_artifact_path(match.group(0)) for match in _TERMINAL_ARTIFACT_PATH_RE.finditer(line))
+        declared.extend(
+            _normalize_terminal_artifact_path(match.group(0)) for match in _TERMINAL_ARTIFACT_PATH_RE.finditer(line)
+        )
     return _unique_paths(declared)
 
 
 def _mentioned_terminal_artifact_paths(content: str) -> list[str]:
     """Extract workspace paths mentioned in the final answer without treating them as proven deliverables."""
-    return _unique_paths([
-        _normalize_terminal_artifact_path(match.group(0))
-        for match in _TERMINAL_ARTIFACT_PATH_RE.finditer(str(content or ""))
-    ])
+    return _unique_paths(
+        [
+            _normalize_terminal_artifact_path(match.group(0))
+            for match in _TERMINAL_ARTIFACT_PATH_RE.finditer(str(content or ""))
+        ]
+    )
 
 
 def _is_user_visible_terminal_artifact_path(path: str) -> bool:
@@ -586,9 +590,7 @@ def _terminal_artifact_paths_for_turn(runtime_session_context: Any, content: str
     current_turn_writes = set(current_turn_write_paths)
     candidates = _terminal_artifact_candidate_paths(content)
     attached = [
-        path
-        for path in candidates
-        if path in current_turn_writes and _is_user_visible_terminal_artifact_path(path)
+        path for path in candidates if path in current_turn_writes and _is_user_visible_terminal_artifact_path(path)
     ]
     if attached:
         return attached
@@ -1415,16 +1417,31 @@ def web_chat_run_capacity_remaining(*, max_concurrent: int | None = None) -> int
     return max(0, int(limit) - active_web_chat_run_count())
 
 
-def dispatch_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> bool:
+def dispatch_web_chat_run(
+    run_id: str | uuid.UUID,
+    *,
+    cancel_event: asyncio.Event | None = None,
+    claim_version: int | None = None,
+    worker_id: str | None = None,
+) -> bool:
     run_uuid = _run_id(run_id)
     run_key = run_uuid.hex
     if run_key in _TASKS:
         return False
     cancel_event = cancel_event or asyncio.Event()
     _CANCEL_EVENTS[run_key] = cancel_event
-    task = asyncio.create_task(
-        execute_web_chat_run(run_uuid, cancel_event=cancel_event), name=f"web-chat-run-{run_key}"
-    )
+    work = execute_web_chat_run(run_uuid, cancel_event=cancel_event)
+    if claim_version is not None:
+        from app.services.runtime_task_fence import run_claimed_runtime_task
+
+        work = run_claimed_runtime_task(
+            work,
+            task_id=run_uuid,
+            claim_version=claim_version,
+            worker_id=worker_id or "unknown",
+            lease_seconds=float(get_settings().RUNTIME_TASK_CLAIM_LEASE_SECONDS),
+        )
+    task = asyncio.create_task(work, name=f"web-chat-run-{run_key}")
     _TASKS[run_key] = task
     task.add_done_callback(lambda _task, run_id=run_key: _TASKS.pop(run_id, None))
     return True
@@ -1760,9 +1777,7 @@ async def start_web_chat_run(
         logger.warning("[WebChatRun] runtime task worker wakeup failed for {}: {}", run_uuid, exc)
     payload = _runtime_task_to_run(runtime_task)
     await broadcast_web_chat_event(agent.id, session.id, {"type": "run_queued", **payload})
-    await broadcast_web_chat_event(
-        agent.id, session.id, build_phase_event(RuntimePhase.QUEUED, run_id=run_uuid.hex)
-    )
+    await broadcast_web_chat_event(agent.id, session.id, build_phase_event(RuntimePhase.QUEUED, run_id=run_uuid.hex))
     return payload
 
 
@@ -1984,9 +1999,7 @@ async def start_channel_chat_run_from_saved_turn(
         logger.warning("[WebChatRun] runtime task worker wakeup failed for {}: {}", run_uuid, exc)
     payload = _runtime_task_to_run(runtime_task)
     await broadcast_web_chat_event(agent.id, session.id, {"type": "run_queued", **payload})
-    await broadcast_web_chat_event(
-        agent.id, session.id, build_phase_event(RuntimePhase.QUEUED, run_id=run_uuid.hex)
-    )
+    await broadcast_web_chat_event(agent.id, session.id, build_phase_event(RuntimePhase.QUEUED, run_id=run_uuid.hex))
     return payload
 
 
@@ -2039,9 +2052,7 @@ async def cancel_web_chat_run(
     await broadcast_web_chat_event(agent_id, session_id, {"type": "run_cancelled", **payload})
     # Cross-process cancels may land after the executing worker is already gone;
     # broadcast the terminal phase here so the UI state machine always settles.
-    await broadcast_web_chat_event(
-        agent_id, session_id, build_phase_event(RuntimePhase.CANCELLED, run_id=run_uuid.hex)
-    )
+    await broadcast_web_chat_event(agent_id, session_id, build_phase_event(RuntimePhase.CANCELLED, run_id=run_uuid.hex))
     return payload
 
 
@@ -3530,9 +3541,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             if isinstance(runtime_task.metadata_json, dict)
             else False
         )
-        await phase_emitter.transition(
-            RuntimePhase.SUMMARIZING if summary_turn_mode else RuntimePhase.STARTING
-        )
+        await phase_emitter.transition(RuntimePhase.SUMMARIZING if summary_turn_mode else RuntimePhase.STARTING)
         conversation = conversation_from_history_messages(history_messages)
         prompt = runtime_task.prompt or ""
         metadata = _merge_runtime_permission_metadata(
@@ -3718,10 +3727,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     await phase_emitter.transition(RuntimePhase.COMPACTING)
                 elif event_type in {"compaction_completed", "compaction_skipped"}:
                     await phase_emitter.transition(RuntimePhase.THINKING)
-                elif (
-                    event_type == "permission"
-                    and str(data.get("status") or "") == "session_permission_required"
-                ):
+                elif event_type == "permission" and str(data.get("status") or "") == "session_permission_required":
                     await phase_emitter.transition(RuntimePhase.AWAITING_APPROVAL)
             if event_type in SESSION_NATIVE_EVENT_TYPES:
                 event_payload = build_session_native_event(data)
@@ -3825,9 +3831,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             nonlocal terminal_tool_card_finalized, terminal_phase_hint
             if terminal_tool_card_finalized:
                 return True
-            terminal_phase_hint = _phase_for_interactive_pause(
-                summary, cancelled=bool(cancel_event.is_set())
-            )
+            terminal_phase_hint = _phase_for_interactive_pause(summary, cancelled=bool(cancel_event.is_set()))
             metadata_update = {
                 "cancelled_by_user": bool(cancel_event.is_set()),
                 "interactive_pause": summary,

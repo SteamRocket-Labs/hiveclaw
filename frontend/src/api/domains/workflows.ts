@@ -29,6 +29,7 @@ export type WorkflowRunStatus =
   | 'pending'
   | 'running'
   | 'completed'
+  | 'replayed'
   | 'failed'
   | 'suspended'
   | 'killed';
@@ -46,6 +47,13 @@ export type WorkflowDefinitionStatus = 'draft' | 'active' | 'deprecated' | 'revo
 
 export interface WorkflowPreview {
   preview_id: string;
+  session_id: string;
+  preview_status: 'ready' | 'starting' | 'started' | 'failed' | 'expired';
+  artifact_version: number;
+  artifact_hash: string;
+  run_id?: string | null;
+  attempt_count?: number;
+  failure?: { code: string | null; message: string | null } | null;
   definition_hash: string;
   args_hash: string;
   confirmation_required: boolean;
@@ -129,6 +137,8 @@ export interface WorkflowStartResult {
   definition_hash: string;
   confirmation_required: boolean;
   confirmation_reasons: string[];
+  preview_id: string;
+  reconciliation_pending?: boolean;
 }
 
 export interface WorkflowDefinitionRecord {
@@ -195,10 +205,12 @@ export function previewWorkflow(
   return post<WorkflowPreview>(`/agents/${agentId}/workflows/preview`, { definition, args });
 }
 
+export function getWorkflowPreview(agentId: string, previewId: string): Promise<WorkflowPreview> {
+  return get<WorkflowPreview>(`/agents/${agentId}/workflows/previews/${previewId}`);
+}
+
 export interface StartWorkflowOptions {
   previewId: string;
-  definitionHash: string;
-  argsHash: string;
   confirmedPlanId?: string;
   planVersion?: number;
   planHash?: string;
@@ -207,16 +219,10 @@ export interface StartWorkflowOptions {
 
 export function startWorkflow(
   agentId: string,
-  definition: Record<string, unknown>,
-  args: Record<string, unknown> = {},
   options: StartWorkflowOptions,
 ): Promise<WorkflowStartResult> {
   return post<WorkflowStartResult>(`/agents/${agentId}/workflows/runs`, {
-    definition,
-    args,
     preview_id: options.previewId,
-    definition_hash: options.definitionHash,
-    args_hash: options.argsHash,
     confirmed_plan_id: options.confirmedPlanId ?? null,
     plan_version: options.planVersion ?? null,
     plan_hash: options.planHash ?? null,

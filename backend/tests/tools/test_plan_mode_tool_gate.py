@@ -430,26 +430,9 @@ async def test_execute_does_not_plan_gate_start_workflow_by_risk_grade():
     gate = _RecordingGate(_BLOCKED)
     service = _make_service(context=context, registry=registry, gate=gate)
 
-    definition = {
-        "name": "send-report",
-        "steps": [
-            {"id": "approve", "type": "gate_step", "reason": "external send"},
-            {
-                "id": "send",
-                "type": "agent_step",
-                "leaf": {"name": "sender", "type": "worker"},
-                "task": "Send the report",
-                "effects": "external",
-            },
-        ],
-    }
-
     result = await service.execute(
         "start_workflow",
-        {
-            "definition": definition,
-            "args": {},
-        },
+        {"preview_id": str(uuid4())},
         agent_id=context.agent_id,
         user_id=context.user_id,
     )
@@ -551,23 +534,9 @@ async def test_start_workflow_never_gets_tool_intercept_activation_seed():
     gate = _RecordingGate(_BLOCKED)
     service = _make_service(context=context, registry=registry, gate=gate)
 
-    definition = {
-        "name": "send-report",
-        "steps": [
-            {"id": "approve", "type": "gate_step", "reason": "external send"},
-            {
-                "id": "send",
-                "type": "agent_step",
-                "leaf": {"name": "sender", "type": "worker"},
-                "task": "Send the report",
-                "effects": "external",
-            },
-        ],
-    }
-
     result = await service.execute(
         "start_workflow",
-        {"definition": definition, "args": {"doc": "q.md"}},
+        {"preview_id": str(uuid4())},
         agent_id=context.agent_id,
         user_id=context.user_id,
         plan_mode_interactive_available=True,

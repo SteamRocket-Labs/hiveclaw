@@ -332,6 +332,38 @@ describe('parseCreateEmployeeToolResult', () => {
     });
   });
 
+  it('normalizes a durable workflow preview into a confirmation artifact', () => {
+    const normalized = normalizeToolCallResult(
+      'preview_workflow',
+      JSON.stringify({
+        ok: true,
+        preview_id: 'preview-1',
+        session_id: 'session-1',
+        preview_status: 'ready',
+        proposal_id: 'proposal-1',
+        candidate_id: 'fanout-critic',
+        confirmation_required: true,
+        confirmation_reasons: ['external effect'],
+        planned_leaf_calls: 3,
+        budget_tokens: 12000,
+      }),
+    );
+
+    expect(normalized.displayResult).toContain('review and confirm');
+    expect(normalized.toolMeta).toEqual({
+      kind: 'workflow_preview',
+      previewId: 'preview-1',
+      sessionId: 'session-1',
+      previewStatus: 'ready',
+      proposalId: 'proposal-1',
+      candidateId: 'fanout-critic',
+      confirmationRequired: true,
+      confirmationReasons: ['external effect'],
+      plannedLeafCalls: 3,
+      budgetTokens: 12000,
+    });
+  });
+
   it('normalizes an awaiting_user_clarification tool result into clarification metadata regardless of tool name', () => {
     const normalized = normalizeToolCallResult(
       'ask_user_question',

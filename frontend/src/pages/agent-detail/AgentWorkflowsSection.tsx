@@ -89,33 +89,11 @@ function formatTimestamp(value: string | null): string {
 
 // ── preview binding + optional plan handoff for confirmation-required starts ──
 
-export type WorkflowPlanHandoffFields = {
-  confirmedPlanId: string;
-  planVersion: string;
-  planHash: string;
-};
-
 export function buildWorkflowStartOptions(
   preview: WorkflowPreview | null,
-  handoff: WorkflowPlanHandoffFields,
 ): StartWorkflowOptions | null {
   if (!preview) return null;
-  const binding = {
-    previewId: preview.preview_id,
-    definitionHash: preview.definition_hash,
-    argsHash: preview.args_hash,
-  };
-  if (!preview.confirmation_required) return binding;
-  const planVersion = Number(handoff.planVersion);
-  if (!handoff.confirmedPlanId.trim() || !Number.isInteger(planVersion) || planVersion <= 0 || !handoff.planHash.trim()) {
-    return null;
-  }
-  return {
-    ...binding,
-    confirmedPlanId: handoff.confirmedPlanId.trim(),
-    planVersion,
-    planHash: handoff.planHash.trim(),
-  };
+  return { previewId: preview.preview_id };
 }
 
 export default function AgentWorkflowsSection({ agentId, canManage = false }: AgentWorkflowsSectionProps) {
@@ -133,11 +111,6 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
   const [preview, setPreview] = useState<WorkflowPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<WorkflowStartResult | null>(null);
-  const [planHandoff, setPlanHandoff] = useState<WorkflowPlanHandoffFields>({
-    confirmedPlanId: '',
-    planVersion: '',
-    planHash: '',
-  });
 
   const invalidateAssets = () => {
     queryClient.invalidateQueries({ queryKey: ['workflow-runs', agentId] });
@@ -263,13 +236,11 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
 
   const startMutation = useMutation({
     mutationFn: async () => {
-      const payload = parsePayload();
-      if (!payload) throw new Error('invalid json');
-      const options = buildWorkflowStartOptions(preview, planHandoff);
+      const options = buildWorkflowStartOptions(preview);
       if (!options) {
-        throw new Error(t('workflows.missingPlanHandoff'));
+        throw new Error(t('workflows.previewRequired', 'Preview this workflow before running it.'));
       }
-      return startWorkflow(agentId, payload.definition, payload.args, options);
+      return startWorkflow(agentId, options);
     },
     onSuccess: (result) => {
       setLastRun(result);
@@ -281,7 +252,7 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
     },
   });
 
-  const startOptions = buildWorkflowStartOptions(preview, planHandoff);
+  const startOptions = buildWorkflowStartOptions(preview);
 
   return (
     <div className="agent-workflows-root">
@@ -582,8 +553,8 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                 className="btn btn-primary"
                 data-testid="workflow-start-button"
                 onClick={() => startMutation.mutate()}
-                disabled={startMutation.isPending || !preview || (preview.confirmation_required && !startOptions)}
-                title={preview?.confirmation_required ? t('workflows.highRiskNeedsPlan') : undefined}
+                disabled={startMutation.isPending || !startOptions}
+                title={preview?.confirmation_required ? t('workflows.explicitConfirmationRequired', 'Review the reasons below, then confirm this exact preview.') : undefined}
               >
                 {t('workflows.confirmAndRun')}
               </button>
@@ -601,37 +572,14 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                 <span className="agent-workflows-ml">
                   {t('workflows.plannedLeaves', { count: preview.planned_leaf_calls })}
                 </span>
-                <span className="agent-workflows-ml u-secondary">
-                  hash: {preview.definition_hash.slice(0, 12)}…
-                </span>
                 {preview.confirmation_required && (
                   <div data-testid="workflow-plan-required" className="agent-workflows-plan-required">
-                    {t('workflows.highRiskNeedsPlan')}
+                    {t('workflows.explicitConfirmationRequired', 'Review the reasons below, then confirm this exact preview.')}
                     <ul className="agent-workflows-reason-list">
                       {preview.confirmation_reasons.map((reason) => (
                         <li key={reason}>{reason}</li>
                       ))}
                     </ul>
-                    <div className="agent-workflows-handoff-grid">
-                      <input
-                        data-testid="workflow-confirmed-plan-id"
-                        value={planHandoff.confirmedPlanId}
-                        onChange={(event) => setPlanHandoff((current) => ({ ...current, confirmedPlanId: event.target.value }))}
-                        placeholder={t('workflows.confirmedPlanId')}
-                      />
-                      <input
-                        data-testid="workflow-plan-version"
-                        value={planHandoff.planVersion}
-                        onChange={(event) => setPlanHandoff((current) => ({ ...current, planVersion: event.target.value }))}
-                        placeholder={t('workflows.planVersion')}
-                      />
-                      <input
-                        data-testid="workflow-plan-hash"
-                        value={planHandoff.planHash}
-                        onChange={(event) => setPlanHandoff((current) => ({ ...current, planHash: event.target.value }))}
-                        placeholder={t('workflows.planHash')}
-                      />
-                    </div>
                   </div>
                 )}
               </div>

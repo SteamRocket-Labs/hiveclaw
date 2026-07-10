@@ -816,3 +816,45 @@ git diff --check -> clean
 - 第 6.1 节 `AX-AUTH-01`、`AX-AUTH-02`：`断点 -> 闭环`。
 - 第 6.1 节 `AX-AUTH-03`：`局部闭环 -> 闭环`。
 - 后续治理与 UI 只允许消费该 canonical authority projection，不得重新引入 creator 推断或第二套 session owner 判定。
+
+### 12.2 Durable Dynamic Workflow confirmation — 已闭环
+
+**原子链**
+
+| 原子 | 当前事实源与消费路径 |
+| --- | --- |
+| 输入 | Proposal / Preview 均从当前 `tenant + agent + session + user` 产生；Start 的唯一业务输入是 `preview_id`，可附带 ledger / plan provenance，但不再接受 definition、args 或 hash 复述。 |
+| 权威 | `workflow_proposal_artifacts` 与 `workflow_preview_artifacts` 都受 FORCE RLS 保护；读取、候选选择、确认与启动均重新校验四元身份。REST 自建的 workflow control session 或显式 session 都绑定当前 user。 |
+| 执行 | Preview 保存 canonical definition / normalized args；Start 只从不可变 snapshot 启动。Tool 以当前 user turn 作为确认 evidence；REST 的显式“确认并运行”请求作为确认 evidence。 |
+| 证据 | artifact version/hash、确认 actor/source/evidence、attempt、lease、failure 与 deterministic `run_id` 全部持久化；RuntimeTask metadata 反向保存 confirmation artifact 引用。 |
+| 恢复 | Preview id 同时决定 run id；未过期 lease 拒绝并发启动，started 重放返回同一 run；worker 在 RuntimeTask 已创建但 preview 未 finalize 时崩溃，下一 worker 检测既有 run 并 reconciliation，不重复执行。failed 可使用同一 run identity 安全重试。 |
+| 消费 | Agent tool、REST、Agent Workflows、聊天 Proposal 选择卡与 Preview 确认卡消费同一 artifact；卡片会重新读取 durable status，隐藏 UUID/hash/raw JSON，仅显示 Ready / Starting / Started / Retry。 |
+| 验收 | 纯状态机、Tool、API、真实 PostgreSQL 跨 session/worker/restart、前端 parser/card/API、TypeScript build 与 lint 已覆盖。 |
+
+**关键实现证据**
+
+- migration / RLS：`backend/alembic/versions/workflow_confirmation_0710.py`；
+- canonical models：`backend/app/models/workflow_confirmation.py`；
+- transition / persistence：`backend/app/services/workflow_confirmation_service.py`；
+- 唯一启动消费者：`backend/app/tools/handlers/workflow.py` 与 `backend/app/api/workflows.py`；
+- 旧的 `runtime/workflow_preview.py` 以及 proposal / preview process-local caches 已删除；
+- UI：`toolResultEnvelope.ts`、`AgentChatSection.tsx`、`AgentWorkflowsSection.tsx` 与 workflow API adapter。
+
+**机械验收**
+
+```text
+pytest workflow confirmation/tool/API -> 52 passed
+pytest Dynamic Workflow / Plan-gate / tool-spec adjacent regression -> 61 passed
+pytest real PostgreSQL cross-worker/restart integration -> 1 passed
+vitest workflow API/parser/cards/workbench -> 143 passed
+npm run build -> tsc + vite exit 0
+ruff check affected backend paths -> All checks passed
+alembic heads -> workflow_confirmation_0710 (head)
+process-cache residue scan -> 0 matches
+```
+
+**状态变化**
+
+- 第 6.4 节 process-local canonical state：`断点 -> 闭环`。
+- 第 6.4 节缺少 UI confirmation path：`断点 -> 闭环`。
+- 第 6.4 节 hash fallback / dynamic metadata 丢失：`断点 -> 闭环`；hash 仅作为 artifact evidence，不再作为启动输入。

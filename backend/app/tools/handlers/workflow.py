@@ -8,10 +8,11 @@ confirmation notes, but ``start_workflow`` never enters Plan Mode automatically.
 from __future__ import annotations
 
 import json
-import time
+import logging
 import uuid
 from typing import Any
 
+from app.database import tenant_scoped_session
 from app.runtime.dynamic_workflow import (
     build_dynamic_workflow_run_metadata,
     dump_json,
@@ -27,18 +28,23 @@ from app.runtime.workflow_admission import (
 )
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
-from app.runtime.workflow_preview import (
-    get_workflow_preview,
-    prune_workflow_preview_cache,
-    record_workflow_preview,
-    validate_workflow_preview_binding,
+from app.services.workflow_confirmation_service import (
+    WorkflowConfirmationConflict,
+    WorkflowStartClaim,
+    claim_workflow_preview_start,
+    create_workflow_preview,
+    create_workflow_proposal,
+    load_workflow_candidate,
+    load_workflow_preview,
+    mark_workflow_preview_failed_record,
+    mark_workflow_preview_started_record,
+    workflow_preview_artifact_payload,
 )
 from app.services.workflow_launch import inspect_workflow_confirmation_needs, start_ephemeral_workflow_for_agent
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
 
-_PREVIEW_TTL_SECONDS = 60 * 60
-_DYNAMIC_WORKFLOW_PROPOSAL_CACHE: dict[str, dict[str, Any]] = {}
+logger = logging.getLogger(__name__)
 
 
 _DEFINITION_PARAM = {
@@ -51,30 +57,177 @@ _DEFINITION_PARAM = {
 }
 
 
-def _cache_dynamic_workflow_proposal(proposal: dict[str, Any]) -> None:
-    proposal_id = str(proposal.get("proposal_id") or "").strip()
-    if not proposal_id:
-        return
-    _DYNAMIC_WORKFLOW_PROPOSAL_CACHE[proposal_id] = {
-        **proposal,
-        "created_at": time.monotonic(),
-    }
+def _request_identity(request: ToolExecutionRequest) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    try:
+        tenant_id = uuid.UUID(str(request.context.tenant_id or ""))
+        session_id = uuid.UUID(str(request.context.session_id or ""))
+        user_id = uuid.UUID(str(request.context.user_id))
+    except ValueError as exc:
+        raise WorkflowConfirmationConflict(
+            "missing_workflow_identity",
+            "Dynamic Workflow proposal, preview, and start require tenant, user, and current session UUIDs.",
+        ) from exc
+    return tenant_id, request.context.agent_id, session_id, user_id
 
 
-def _load_dynamic_candidate(proposal_id: str | None, candidate_id: str | None) -> dict[str, Any] | None:
+async def _persist_dynamic_proposal(request: ToolExecutionRequest, proposal: dict[str, Any]) -> dict[str, Any]:
+    tenant_id, agent_id, session_id, user_id = _request_identity(request)
+    async with tenant_scoped_session(
+        tenant_id,
+        require_tenant=True,
+        source="dynamic_workflow_proposal",
+    ) as db:
+        artifact = await create_workflow_proposal(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+            proposal=proposal,
+        )
+        return dict(artifact.proposal_json or {})
+
+
+async def _load_dynamic_candidate(
+    request: ToolExecutionRequest,
+    proposal_id: str | None,
+    candidate_id: str | None,
+) -> tuple[Any | None, dict[str, Any] | None]:
     if not proposal_id or not candidate_id:
-        return None
-    prune_workflow_preview_cache()
-    proposal = _DYNAMIC_WORKFLOW_PROPOSAL_CACHE.get(proposal_id)
-    if not proposal:
-        return None
-    if time.monotonic() - float(proposal.get("created_at", 0.0)) > _PREVIEW_TTL_SECONDS:
-        _DYNAMIC_WORKFLOW_PROPOSAL_CACHE.pop(proposal_id, None)
-        return None
-    for candidate in proposal.get("candidates") or []:
-        if isinstance(candidate, dict) and candidate.get("candidate_id") == candidate_id:
-            return candidate
-    return None
+        return None, None
+    tenant_id, agent_id, session_id, user_id = _request_identity(request)
+    try:
+        proposal_uuid = uuid.UUID(proposal_id)
+    except ValueError as exc:
+        raise WorkflowConfirmationConflict("proposal_not_found", "Dynamic Workflow proposal_id is invalid.") from exc
+    async with tenant_scoped_session(
+        tenant_id,
+        require_tenant=True,
+        source="dynamic_workflow_candidate",
+    ) as db:
+        return await load_workflow_candidate(
+            db,
+            proposal_id=proposal_uuid,
+            candidate_id=candidate_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+        )
+
+
+async def _persist_workflow_preview(
+    request: ToolExecutionRequest,
+    *,
+    definition: dict[str, Any],
+    args: dict[str, Any],
+    definition_hash: str,
+    args_hash: str,
+    preview_payload: dict[str, Any],
+    proposal: Any | None,
+    candidate_id: str | None,
+) -> dict[str, Any]:
+    tenant_id, agent_id, session_id, user_id = _request_identity(request)
+    proposal_id = getattr(proposal, "id", None)
+    async with tenant_scoped_session(
+        tenant_id,
+        require_tenant=True,
+        source="workflow_preview_artifact",
+    ) as db:
+        attached_proposal = None
+        if proposal_id is not None:
+            result = await db.get(type(proposal), proposal_id)
+            attached_proposal = result
+            if attached_proposal is None:
+                raise WorkflowConfirmationConflict(
+                    "proposal_not_found",
+                    "Dynamic Workflow proposal disappeared before preview creation.",
+                )
+        preview = await create_workflow_preview(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+            definition=definition,
+            args=args,
+            definition_hash=definition_hash,
+            args_hash=args_hash,
+            preview_payload=preview_payload,
+            proposal=attached_proposal,
+            candidate_id=candidate_id,
+        )
+        return workflow_preview_artifact_payload(preview)
+
+
+async def _claim_workflow_start(request: ToolExecutionRequest, preview_id: uuid.UUID) -> WorkflowStartClaim:
+    tenant_id, agent_id, session_id, user_id = _request_identity(request)
+    evidence_id = str(request.context.turn_id or "").strip()
+    async with tenant_scoped_session(
+        tenant_id,
+        require_tenant=True,
+        source="workflow_preview_start_claim",
+    ) as db:
+        return await claim_workflow_preview_start(
+            db,
+            preview_id=preview_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+            confirmation_source="agent_user_turn",
+            confirmation_evidence_id=evidence_id,
+        )
+
+
+async def _finish_workflow_start(
+    request: ToolExecutionRequest,
+    *,
+    preview_id: uuid.UUID,
+    claim_token: uuid.UUID,
+    run_id: uuid.UUID,
+) -> None:
+    tenant_id, agent_id, session_id, user_id = _request_identity(request)
+    async with tenant_scoped_session(tenant_id, require_tenant=True, source="workflow_preview_start_finish") as db:
+        preview = await load_workflow_preview(
+            db,
+            preview_id=preview_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+            for_update=True,
+        )
+        mark_workflow_preview_started_record(preview, run_id=run_id, claim_token=claim_token)
+        await db.flush()
+
+
+async def _fail_workflow_start(
+    request: ToolExecutionRequest,
+    *,
+    preview_id: uuid.UUID,
+    claim_token: uuid.UUID,
+    code: str,
+    message: str,
+) -> None:
+    tenant_id, agent_id, session_id, user_id = _request_identity(request)
+    async with tenant_scoped_session(tenant_id, require_tenant=True, source="workflow_preview_start_failure") as db:
+        preview = await load_workflow_preview(
+            db,
+            preview_id=preview_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+            for_update=True,
+        )
+        mark_workflow_preview_failed_record(
+            preview,
+            code=code,
+            message=message,
+            claim_token=claim_token,
+        )
+        await db.flush()
 
 
 def _dynamic_candidate_binding_error(
@@ -139,17 +292,20 @@ def _dynamic_candidate_binding_error(
         },
         category="workflow",
         display_name="Propose Dynamic Workflow",
-        read_only=True,
+        read_only=False,
         parallel_safe=True,
         governance="safe",
-        adapter="agent_args",
+        adapter="request",
     )
 )
-async def propose_dynamic_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
-    _ = agent_id
-    proposal = validate_dynamic_workflow_proposal(arguments)
-    if proposal.get("ok") is True:
-        _cache_dynamic_workflow_proposal(proposal)
+async def propose_dynamic_workflow(request: ToolExecutionRequest) -> str:
+    proposal = validate_dynamic_workflow_proposal(request.arguments)
+    if proposal.get("ok") is not True:
+        return dump_json(proposal)
+    try:
+        proposal = await _persist_dynamic_proposal(request, proposal)
+    except WorkflowConfirmationConflict as exc:
+        return dump_json({"ok": False, "error_code": exc.code, "error": exc.message})
     return dump_json(proposal)
 
 
@@ -182,26 +338,27 @@ async def propose_dynamic_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
         },
         category="workflow",
         display_name="Preview Workflow",
-        read_only=True,
+        read_only=False,
         parallel_safe=True,
         governance="safe",
-        adapter="agent_args",
+        adapter="request",
     )
 )
-async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
+async def preview_workflow(request: ToolExecutionRequest) -> str:
+    arguments = request.arguments
     definition = arguments.get("definition") or {}
     args = arguments.get("args") or {}
     proposal_id = str(arguments.get("proposal_id") or "").strip() or None
     candidate_id = str(arguments.get("candidate_id") or "").strip() or None
-    dynamic_candidate = _load_dynamic_candidate(proposal_id, candidate_id)
     try:
+        proposal, dynamic_candidate = await _load_dynamic_candidate(request, proposal_id, candidate_id)
         compiled = compile_workflow(definition)
         args = normalize_workflow_args(compiled, args)
         from app.config import get_settings
 
         admission = admit_workflow(compiled, args=args, limits=AdmissionLimits.from_settings(get_settings()))
         confirmation = inspect_workflow_confirmation_needs(compiled, args=args)
-    except (WorkflowCompileError, WorkflowAdmissionError) as exc:
+    except (WorkflowCompileError, WorkflowAdmissionError, WorkflowConfirmationConflict) as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
     args_hash = compute_definition_hash(args)
     dynamic_error = _dynamic_candidate_binding_error(
@@ -214,26 +371,35 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
     if dynamic_error:
         return json.dumps({"ok": False, "error": dynamic_error}, ensure_ascii=False)
 
+    preview_payload = {
+        "ok": True,
+        "proposal_id": proposal_id,
+        "candidate_id": candidate_id,
+        "definition_hash": compiled.definition_hash,
+        "args_hash": args_hash,
+        "confirmation_required": confirmation.requires_confirmation,
+        "confirmation_reasons": confirmation.reasons,
+        "planned_leaf_calls": admission.planned_leaf_calls,
+        "budget_tokens": admission.budget_tokens,
+        "dynamic_candidate": dynamic_candidate,
+    }
+    try:
+        persisted = await _persist_workflow_preview(
+            request,
+            definition=compiled.definition.canonical_dict(),
+            args=args,
+            definition_hash=compiled.definition_hash,
+            args_hash=args_hash,
+            preview_payload=preview_payload,
+            proposal=proposal,
+            candidate_id=candidate_id,
+        )
+    except WorkflowConfirmationConflict as exc:
+        return json.dumps({"ok": False, "error_code": exc.code, "error": exc.message}, ensure_ascii=False)
     return json.dumps(
         {
-            "ok": True,
-            "preview_id": record_workflow_preview(
-                agent_id=agent_id,
-                definition_hash=compiled.definition_hash,
-                args_hash=args_hash,
-                confirmation_required=confirmation.requires_confirmation,
-                proposal_id=proposal_id,
-                candidate_id=candidate_id,
-                dynamic_candidate=dynamic_candidate,
-            ),
-            "proposal_id": proposal_id,
-            "candidate_id": candidate_id,
-            "definition_hash": compiled.definition_hash,
-            "args_hash": args_hash,
-            "confirmation_required": confirmation.requires_confirmation,
-            "confirmation_reasons": confirmation.reasons,
-            "planned_leaf_calls": admission.planned_leaf_calls,
-            "budget_tokens": admission.budget_tokens,
+            **persisted,
+            "dynamic_candidate": None,
         },
         ensure_ascii=False,
     )
@@ -259,34 +425,17 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
         parameters={
             "type": "object",
             "properties": {
-                "definition": _DEFINITION_PARAM,
-                "args": {"type": "object", "description": "Arguments matching the definition's args_schema."},
                 "preview_id": {
                     "type": "string",
-                    "description": "The preview_id returned by preview_workflow for this exact definition and args.",
-                },
-                "definition_hash": {
-                    "type": "string",
-                    "description": "Fallback binding hash returned by preview_workflow when preview_id is unavailable.",
-                },
-                "args_hash": {
-                    "type": "string",
-                    "description": "Fallback args hash returned by preview_workflow when preview_id is unavailable.",
+                    "description": "The durable preview_id returned by preview_workflow. Definition and args are loaded from that immutable snapshot.",
                 },
                 "ledger_todo_id": {
                     "type": "string",
                     "description": "Optional work-ledger todo this run serves (observation mirror only).",
                 },
-                "proposal_id": {
-                    "type": "string",
-                    "description": "Dynamic Workflow proposal_id bound by preview_workflow.",
-                },
-                "candidate_id": {
-                    "type": "string",
-                    "description": "Dynamic Workflow candidate_id bound by preview_workflow.",
-                },
             },
-            "required": ["definition"],
+            "required": ["preview_id"],
+            "additionalProperties": False,
         },
         category="workflow",
         display_name="Start Workflow",
@@ -313,61 +462,79 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
             ensure_ascii=False,
         )
     arguments = request.arguments
-    definition = arguments.get("definition") or {}
-    args = arguments.get("args") or {}
-    ledger_todo_id = arguments.get("ledger_todo_id") or None
-    preview_id = str(arguments.get("preview_id") or "").strip() or None
-    definition_hash = str(arguments.get("definition_hash") or "").strip() or None
-    args_hash = str(arguments.get("args_hash") or "").strip() or None
-    proposal_id = str(arguments.get("proposal_id") or "").strip() or None
-    candidate_id = str(arguments.get("candidate_id") or "").strip() or None
-    try:
-        compiled = compile_workflow(definition)
-        args = normalize_workflow_args(compiled, args)
-        preview_ok, preview_error, preview_record = validate_workflow_preview_binding(
-            agent_id=agent_id,
-            definition=definition,
-            args=args,
-            preview_id=preview_id,
-            expected_definition_hash=definition_hash,
-            expected_args_hash=args_hash,
-            allow_hash_fallback=True,
+    unexpected_arguments = sorted(set(arguments) - {"preview_id", "ledger_todo_id"})
+    if unexpected_arguments:
+        return json.dumps(
+            {
+                "ok": False,
+                "error_code": "invalid_start_arguments",
+                "error": (
+                    "start_workflow accepts only preview_id and ledger_todo_id; canonical definition and args "
+                    f"come from the durable preview (unexpected: {', '.join(unexpected_arguments)})"
+                ),
+            },
+            ensure_ascii=False,
         )
-        if not preview_ok:
-            return json.dumps({"ok": False, "error": preview_error}, ensure_ascii=False)
-        preview_record = preview_record or get_workflow_preview(preview_id)
-        preview_proposal_id = str((preview_record or {}).get("proposal_id") or "").strip() or None
-        preview_candidate_id = str((preview_record or {}).get("candidate_id") or "").strip() or None
-        if (proposal_id or candidate_id) and not (preview_proposal_id and preview_candidate_id):
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "start_workflow dynamic identifiers require preview_workflow with the same proposal_id and candidate_id",
-                },
-                ensure_ascii=False,
-            )
-        if proposal_id and preview_proposal_id and proposal_id != preview_proposal_id:
-            return json.dumps(
-                {"ok": False, "error": "start_workflow proposal_id differs from preview_workflow"}, ensure_ascii=False
-            )
-        if candidate_id and preview_candidate_id and candidate_id != preview_candidate_id:
-            return json.dumps(
-                {"ok": False, "error": "start_workflow candidate_id differs from preview_workflow"}, ensure_ascii=False
-            )
-        proposal_id = proposal_id or preview_proposal_id
-        candidate_id = candidate_id or preview_candidate_id
-        dynamic_candidate = mapping((preview_record or {}).get("dynamic_candidate"))
+    ledger_todo_id = arguments.get("ledger_todo_id") or None
+    try:
+        preview_id = uuid.UUID(str(arguments.get("preview_id") or ""))
+    except ValueError:
+        return json.dumps(
+            {"ok": False, "error_code": "preview_id_required", "error": "start_workflow requires a valid preview_id"},
+            ensure_ascii=False,
+        )
+
+    try:
+        claim = await _claim_workflow_start(request, preview_id)
+    except WorkflowConfirmationConflict as exc:
+        return json.dumps({"ok": False, "error_code": exc.code, "error": exc.message}, ensure_ascii=False)
+
+    preview = claim.preview
+    if claim.outcome == "replay":
+        return json.dumps(
+            {
+                "ok": True,
+                "run_id": str(preview.run_id),
+                "status": "replayed",
+                "reason": "workflow_preview_already_started",
+                "execution_shape_decision": execution_shape_decision,
+            },
+            ensure_ascii=False,
+        )
+
+    claim_token = preview.claim_token
+    run_id = preview.run_id
+    if claim_token is None or run_id is None:
+        return json.dumps(
+            {"ok": False, "error_code": "invalid_start_claim", "error": "Workflow start claim is incomplete."},
+            ensure_ascii=False,
+        )
+
+    definition = dict(preview.definition_json or {})
+    args = dict(preview.args_json or {})
+    proposal_id = str(preview.proposal_id) if preview.proposal_id else None
+    candidate_id = preview.candidate_id
+    dynamic_candidate = mapping((preview.preview_json or {}).get("dynamic_candidate"))
+    try:
         run_metadata = build_dynamic_workflow_run_metadata(
             proposal_id=proposal_id,
             candidate_id=candidate_id,
-            preview_id=preview_id,
-            definition_hash=compiled.definition_hash,
-            args_hash=compute_definition_hash(args),
+            preview_id=str(preview_id),
+            definition_hash=preview.definition_hash,
+            args_hash=preview.args_hash,
             candidate=dynamic_candidate,
         )
         if run_metadata is None:
             run_metadata = {}
         run_metadata["execution_shape_decision"] = execution_shape_decision
+        run_metadata["workflow_confirmation"] = {
+            "preview_id": str(preview.id),
+            "artifact_version": preview.artifact_version,
+            "artifact_hash": preview.artifact_hash,
+            "confirmed_by_user_id": str(preview.confirmed_by_user_id),
+            "confirmation_source": preview.confirmation_source,
+            "confirmation_evidence_id": preview.confirmation_evidence_id,
+        }
         handle = await start_ephemeral_workflow_for_agent(
             agent_id=agent_id,
             definition=definition,
@@ -378,11 +545,38 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
             root_session_id=session_id,
             definition_source="dynamic_workflow" if proposal_id or candidate_id else "ephemeral",
             run_metadata=run_metadata,
+            run_id=run_id,
             enqueue_only=True,
             budget_run_id=request.context.budget_run_id,
         )
-    except (WorkflowCompileError, WorkflowAdmissionError, LookupError) as exc:
-        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    except Exception as exc:
+        logger.exception("Workflow launch failed for durable preview %s", preview_id)
+        try:
+            await _fail_workflow_start(
+                request,
+                preview_id=preview_id,
+                claim_token=claim_token,
+                code="workflow_launch_failed",
+                message=str(exc),
+            )
+        except Exception:
+            logger.exception("Could not persist Workflow launch failure for preview %s", preview_id)
+        return json.dumps(
+            {"ok": False, "error_code": "workflow_launch_failed", "error": str(exc)},
+            ensure_ascii=False,
+        )
+
+    reconciliation_pending = False
+    try:
+        await _finish_workflow_start(
+            request,
+            preview_id=preview_id,
+            claim_token=claim_token,
+            run_id=handle.run_id,
+        )
+    except Exception:
+        reconciliation_pending = True
+        logger.exception("Workflow run %s started but preview finalization failed", handle.run_id)
 
     return json.dumps(
         {
@@ -390,6 +584,8 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
             "run_id": str(handle.run_id),
             "status": handle.outcome.status,
             "reason": handle.outcome.reason,
+            "preview_id": str(preview_id),
+            "reconciliation_pending": reconciliation_pending,
             "execution_shape_decision": execution_shape_decision,
         },
         ensure_ascii=False,

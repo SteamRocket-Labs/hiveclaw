@@ -75,6 +75,19 @@ export interface DynamicWorkflowProposalToolMeta {
   candidates: DynamicWorkflowCandidateMeta[];
 }
 
+export interface WorkflowPreviewToolMeta {
+  kind: 'workflow_preview';
+  previewId: string;
+  sessionId: string | null;
+  previewStatus: 'ready' | 'starting' | 'started' | 'failed' | 'expired';
+  proposalId: string | null;
+  candidateId: string | null;
+  confirmationRequired: boolean;
+  confirmationReasons: string[];
+  plannedLeafCalls: number | null;
+  budgetTokens: number | null;
+}
+
 export interface ClarificationOption {
   label: string;
   description: string;
@@ -118,6 +131,7 @@ export type ToolCallMeta =
   | CreateEmployeeSuccessToolMeta
   | PlanProposalToolMeta
   | DynamicWorkflowProposalToolMeta
+  | WorkflowPreviewToolMeta
   | UserClarificationToolMeta
   | PlanModeRequestToolMeta
   | RuntimeStepToolMeta;
@@ -360,6 +374,30 @@ function buildDynamicWorkflowProposalDisplayResult(meta: DynamicWorkflowProposal
     : 'Dynamic Workflow proposal ready.';
 }
 
+function parseWorkflowPreviewResult(rawResult: unknown): WorkflowPreviewToolMeta | null {
+  const parsed = parseStructuredToolPayload(rawResult);
+  const previewId = typeof parsed?.preview_id === 'string' ? parsed.preview_id.trim() : '';
+  if (parsed?.ok !== true || !previewId || typeof parsed.planned_leaf_calls !== 'number') {
+    return null;
+  }
+  const status = typeof parsed.preview_status === 'string' ? parsed.preview_status : 'ready';
+  const previewStatus = ['ready', 'starting', 'started', 'failed', 'expired'].includes(status)
+    ? (status as WorkflowPreviewToolMeta['previewStatus'])
+    : 'ready';
+  return {
+    kind: 'workflow_preview',
+    previewId,
+    sessionId: typeof parsed.session_id === 'string' ? parsed.session_id : null,
+    previewStatus,
+    proposalId: typeof parsed.proposal_id === 'string' ? parsed.proposal_id : null,
+    candidateId: typeof parsed.candidate_id === 'string' ? parsed.candidate_id : null,
+    confirmationRequired: parsed.confirmation_required === true,
+    confirmationReasons: normalizeStringList(parsed.confirmation_reasons),
+    plannedLeafCalls: normalizeNumber(parsed.planned_leaf_calls),
+    budgetTokens: normalizeNumber(parsed.budget_tokens),
+  };
+}
+
 function parseClarificationOptions(value: unknown): ClarificationOption[] {
   if (!Array.isArray(value)) {
     return [];
@@ -466,6 +504,18 @@ export function normalizeToolCallResult(toolName: string | undefined, rawResult:
       createdAgentId: null,
       raw,
       toolMeta: dynamicWorkflowProposal,
+    };
+  }
+
+  const workflowPreview = parseWorkflowPreviewResult(rawResult);
+  if (workflowPreview) {
+    return {
+      displayResult: workflowPreview.confirmationRequired
+        ? 'Workflow preview ready — review and confirm this exact run.'
+        : 'Workflow preview ready.',
+      createdAgentId: null,
+      raw,
+      toolMeta: workflowPreview,
     };
   }
 

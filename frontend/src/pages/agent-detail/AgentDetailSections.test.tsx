@@ -107,6 +107,9 @@ vi.mock('@tanstack/react-query', () => ({
       return { data: undefined, isLoading: false, isError: false, error: null };
     }
     const key = String(queryKey[0]);
+    if (key === 'workflow-preview') {
+      return { data: { preview_status: 'ready' }, refetch: vi.fn(), isLoading: false, isError: false };
+    }
     if (key === 'agents') {
       return {
         data: [
@@ -694,6 +697,8 @@ vi.mock('@tanstack/react-query', () => ({
   useMutation: () => ({
     mutate: vi.fn(),
     isPending: false,
+    isError: false,
+    error: null,
   }),
   useQueryClient: () => ({
     invalidateQueries: vi.fn(),
@@ -5265,7 +5270,38 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Audit repository slices.');
     expect(markup).toContain('Fanout then critic');
     expect(markup).toContain('Recommended');
-    expect(markup).toContain('Call preview_workflow with the selected candidate.');
+    expect(markup).toContain('Nothing has run yet.');
+    expect(markup).not.toContain('Call preview_workflow');
+  });
+
+  it('renders a durable Workflow preview with an exact confirm-and-run action', () => {
+    const markup = renderToStaticMarkup(
+      <StructuredToolResultBody
+        agentId="agent-1"
+        toolName="preview_workflow"
+        toolResult='{"ok":true,"preview_id":"preview-1"}'
+        toolMeta={{
+          kind: 'workflow_preview',
+          previewId: 'preview-1',
+          sessionId: 'session-1',
+          previewStatus: 'ready',
+          proposalId: 'proposal-1',
+          candidateId: 'fanout-critic',
+          confirmationRequired: true,
+          confirmationReasons: ['External effect'],
+          plannedLeafCalls: 3,
+          budgetTokens: 12000,
+        }}
+      />,
+    );
+
+    expect(markup).toContain('Workflow ready to run');
+    expect(markup).toContain('3 planned work units');
+    expect(markup).toContain('Why confirmation is needed');
+    expect(markup).toContain('External effect');
+    expect(markup).toContain('Confirm and run');
+    expect(markup).not.toContain('preview-1');
+    expect(markup).not.toContain('proposal-1');
   });
 
   it('treats a persisted clarification card as answered when a later user message exists', () => {

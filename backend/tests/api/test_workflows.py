@@ -11,7 +11,7 @@ stubbed.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -67,14 +67,30 @@ def _arg_bound_definition() -> dict:
 
 
 def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_level="manage"):
+    from app.models.workflow_confirmation import WorkflowPreviewArtifact
+    from app.services.workflow_confirmation_service import (
+        WorkflowStartClaim,
+        claim_workflow_preview_record,
+        mark_workflow_preview_failed_record,
+        mark_workflow_preview_started_record,
+    )
+
     api = FastAPI()
     api.include_router(workflows_api.router)
+    previews: dict[uuid.UUID, WorkflowPreviewArtifact] = {}
+    session_id = uuid.uuid5(uuid.NAMESPACE_URL, f"workflow-api-session:{user.id}")
+
+    class FakeDB:
+        async def commit(self):
+            return None
+
+    db = FakeDB()
 
     async def override_user():
         return user
 
     async def override_db():
-        yield SimpleNamespace()
+        yield db
 
     api.dependency_overrides[get_current_user] = override_user
     api.dependency_overrides[get_db] = override_db
@@ -86,9 +102,71 @@ def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_le
 
     monkeypatch.setattr(workflows_api, "check_agent_access", fake_access)
 
+    async def fake_resolve_session(_db, **_kwargs):
+        return SimpleNamespace(id=session_id)
+
+    async def fake_create_preview(_db, **kwargs):
+        preview_id = uuid.uuid4()
+        preview = WorkflowPreviewArtifact(
+            id=preview_id,
+            tenant_id=kwargs["tenant_id"],
+            agent_id=kwargs["agent_id"],
+            session_id=kwargs["session_id"],
+            requested_by_user_id=kwargs["user_id"],
+            status="ready",
+            artifact_version=1,
+            artifact_hash=f"artifact:{preview_id}",
+            definition_hash=kwargs["definition_hash"],
+            args_hash=kwargs["args_hash"],
+            definition_json=kwargs["definition"],
+            args_json=kwargs["args"],
+            preview_json=kwargs["preview_payload"],
+            expires_at=datetime.now(UTC) + timedelta(hours=24),
+        )
+        previews[preview_id] = preview
+        return preview
+
+    async def fake_claim_preview(_db, **kwargs):
+        preview = previews[kwargs["preview_id"]]
+        outcome = claim_workflow_preview_record(
+            preview,
+            tenant_id=kwargs["tenant_id"],
+            agent_id=kwargs["agent_id"],
+            session_id=preview.session_id,
+            user_id=kwargs["user_id"],
+            confirmation_source=kwargs["confirmation_source"],
+            confirmation_evidence_id=kwargs["confirmation_evidence_id"],
+        )
+        return WorkflowStartClaim(outcome=outcome, preview=preview)
+
+    async def fake_load_preview(_db, **kwargs):
+        return previews[kwargs["preview_id"]]
+
+    async def fake_finish_preview(_db, **kwargs):
+        mark_workflow_preview_started_record(
+            previews[kwargs["preview_id"]],
+            run_id=kwargs["run_id"],
+            claim_token=kwargs["claim_token"],
+        )
+
+    async def fake_fail_preview(_db, **kwargs):
+        mark_workflow_preview_failed_record(
+            previews[kwargs["preview_id"]],
+            code=kwargs["code"],
+            message=kwargs["message"],
+            claim_token=kwargs["claim_token"],
+        )
+
+    monkeypatch.setattr(workflows_api, "_resolve_workflow_preview_session", fake_resolve_session)
+    monkeypatch.setattr(workflows_api, "_create_workflow_preview_artifact", fake_create_preview)
+    monkeypatch.setattr(workflows_api, "_claim_workflow_preview_artifact", fake_claim_preview)
+    monkeypatch.setattr(workflows_api, "load_workflow_preview", fake_load_preview)
+    monkeypatch.setattr(workflows_api, "_finish_workflow_preview_artifact", fake_finish_preview)
+    monkeypatch.setattr(workflows_api, "_fail_workflow_preview_artifact", fake_fail_preview)
+
     async def fake_launch(**kwargs):
         fake_launch.calls.append(kwargs)
-        return WorkflowRunHandle(run_id=uuid.uuid4(), outcome=WorkflowRunOutcome(status="completed"))
+        return WorkflowRunHandle(run_id=kwargs["run_id"], outcome=WorkflowRunOutcome(status="completed"))
 
     fake_launch.calls = []
     monkeypatch.setattr(workflows_api, "start_ephemeral_workflow_for_agent", fake_launch)
@@ -103,6 +181,7 @@ def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_le
     client = TestClient(api)
     client.fake_launch = fake_launch
     client.fake_gate_check = fake_gate_check
+    client.previews = previews
     return client
 
 
@@ -146,14 +225,29 @@ def test_preview_maps_compile_error_to_400(monkeypatch):
     assert resp.status_code == 400
 
 
+def test_preview_status_is_reloadable_from_durable_artifact(monkeypatch):
+    agent_id = uuid.uuid4()
+    client = _client(_user(), monkeypatch)
+    created = client.post(
+        f"/agents/{agent_id}/workflows/preview",
+        json={"definition": _low_risk_definition(), "args": {}},
+    ).json()
+
+    response = client.get(f"/agents/{agent_id}/workflows/previews/{created['preview_id']}")
+
+    assert response.status_code == 200
+    assert response.json()["preview_status"] == "ready"
+    assert response.json()["session_id"] == created["session_id"]
+
+
 def test_start_requires_preview_binding(monkeypatch):
     client = _client(_user(), monkeypatch)
     resp = client.post(
         f"/agents/{uuid.uuid4()}/workflows/runs",
-        json={"definition": _low_risk_definition(), "args": {}},
+        json={},
     )
-    assert resp.status_code == 400
-    assert "preview" in resp.json()["detail"]
+    assert resp.status_code == 422
+    assert "preview_id" in str(resp.json()["detail"])
     assert client.fake_launch.calls == []
 
 
@@ -168,11 +262,7 @@ def test_start_runs_with_preview_binding_without_plan_gate(monkeypatch):
     resp = client.post(
         f"/agents/{agent_id}/workflows/runs",
         json={
-            "definition": _low_risk_definition(),
-            "args": {},
             "preview_id": preview["preview_id"],
-            "definition_hash": preview["definition_hash"],
-            "args_hash": preview["args_hash"],
         },
     )
     assert resp.status_code == 200
@@ -181,7 +271,7 @@ def test_start_runs_with_preview_binding_without_plan_gate(monkeypatch):
     assert client.fake_gate_check.calls == []  # start never consults PlanModeGate
 
 
-def test_start_rejects_preview_bound_to_different_args(monkeypatch):
+def test_start_rejects_definition_or_args_restatement(monkeypatch):
     agent_id = uuid.uuid4()
     client = _client(_user(), monkeypatch)
     definition = _arg_bound_definition()
@@ -197,12 +287,10 @@ def test_start_rejects_preview_bound_to_different_args(monkeypatch):
             "definition": definition,
             "args": {"slice": "runtime"},
             "preview_id": preview["preview_id"],
-            "definition_hash": preview["definition_hash"],
-            "args_hash": preview["args_hash"],
         },
     )
-    assert resp.status_code == 400
-    assert "differ" in resp.json()["detail"]
+    assert resp.status_code == 422
+    assert "extra_forbidden" in str(resp.json()["detail"])
     assert client.fake_launch.calls == []
 
 
@@ -217,11 +305,7 @@ def test_external_effect_start_with_preview_binding_still_runs_without_plan_mode
     resp = client.post(
         f"/agents/{agent_id}/workflows/runs",
         json={
-            "definition": _high_risk_definition(),
-            "args": {},
             "preview_id": preview["preview_id"],
-            "definition_hash": preview["definition_hash"],
-            "args_hash": preview["args_hash"],
         },
     )
     assert resp.status_code == 200
@@ -242,11 +326,7 @@ def test_confirmed_plan_metadata_is_forwarded_as_optional_provenance_without_gat
     resp = client.post(
         f"/agents/{agent_id}/workflows/runs",
         json={
-            "definition": _high_risk_definition(),
-            "args": {},
             "preview_id": preview["preview_id"],
-            "definition_hash": preview["definition_hash"],
-            "args_hash": preview["args_hash"],
             "confirmed_plan_id": plan_id,
             "plan_version": 2,
             "plan_hash": "abc123",

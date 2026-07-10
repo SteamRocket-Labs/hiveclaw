@@ -14,7 +14,7 @@ import {
   IconTrash,
   IconX,
 } from '@tabler/icons-react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import StreamingMarkdown from '../../components/StreamingMarkdown';
@@ -56,10 +56,16 @@ import { chatApi, type RecordSessionFeedbackInput } from '../../api/domains/chat
 import { ccParityApi, type SessionContextUsage, type SessionWorkbench } from '../../api/domains/ccParity';
 import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
-import { cancelWorkflowRun, promoteWorkflowRun, repairWorkflowRun } from '../../api/domains/workflows';
+import {
+  cancelWorkflowRun,
+  getWorkflowPreview,
+  promoteWorkflowRun,
+  repairWorkflowRun,
+  startWorkflow,
+} from '../../api/domains/workflows';
 import { showAppToast } from '../../components/AppDialogs';
 import { composerShortcutText } from './sessionComposerShortcuts';
-import type { ToolCallMeta } from './toolResultEnvelope';
+import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
   isA2ASession,
@@ -2717,6 +2723,97 @@ function StructuredToolSection({ label, items }: { label: string; items: string[
   );
 }
 
+function WorkflowPreviewSummary({
+  meta,
+  status,
+}: {
+  meta: WorkflowPreviewToolMeta;
+  status: WorkflowPreviewToolMeta['previewStatus'];
+}) {
+  const { t } = useTranslation();
+  return (
+    <div style={{ display: 'grid', gap: '8px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center' }}>
+        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
+          {t('agent.chat.workflowPreview.title', 'Workflow ready to run')}
+        </div>
+        <span className={`badge ${status === 'failed' || status === 'expired' ? 'badge-error' : status === 'started' ? 'badge-success' : 'badge-neutral'}`}>
+          {status === 'started'
+            ? t('agent.chat.workflowPreview.started', 'Started')
+            : status === 'starting'
+              ? t('agent.chat.workflowPreview.starting', 'Starting')
+              : status === 'failed'
+                ? t('agent.chat.workflowPreview.failed', 'Retry available')
+                : status === 'expired'
+                  ? t('agent.chat.workflowPreview.expired', 'Expired')
+                  : t('agent.chat.workflowPreview.ready', 'Ready')}
+        </span>
+      </div>
+      <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+        {meta.plannedLeafCalls != null
+          ? t('agent.chat.workflowPreview.workUnits', '{{count}} planned work units', { count: meta.plannedLeafCalls })
+          : t('agent.chat.workflowPreview.review', 'Review the workflow before running it.')}
+        {meta.budgetTokens != null
+          ? ` · ${t('agent.chat.workflowPreview.tokenBudget', 'Token budget {{count}}', { count: meta.budgetTokens })}`
+          : ''}
+      </div>
+      <StructuredToolSection
+        label={t('agent.chat.workflowPreview.confirmationReasons', 'Why confirmation is needed')}
+        items={meta.confirmationReasons}
+      />
+    </div>
+  );
+}
+
+function InteractiveWorkflowPreviewCard({ meta, agentId }: { meta: WorkflowPreviewToolMeta; agentId: string }) {
+  const { t } = useTranslation();
+  const statusQuery = useQuery({
+    queryKey: ['workflow-preview', agentId, meta.previewId],
+    queryFn: () => getWorkflowPreview(agentId, meta.previewId),
+    refetchInterval: (query) => (query.state.data?.preview_status === 'starting' ? 1500 : false),
+  });
+  const startMutation = useMutation({
+    mutationFn: () => startWorkflow(agentId, { previewId: meta.previewId }),
+    onSuccess: () => statusQuery.refetch(),
+  });
+  const status = statusQuery.data?.preview_status ?? meta.previewStatus;
+  const canStart = status === 'ready' || status === 'failed';
+
+  return (
+    <div style={{ display: 'grid', gap: '8px' }}>
+      <WorkflowPreviewSummary meta={meta} status={status} />
+      {canStart && (
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => startMutation.mutate()}
+          disabled={startMutation.isPending}
+        >
+          {startMutation.isPending
+            ? t('agent.chat.workflowPreview.starting', 'Starting')
+            : meta.confirmationRequired
+              ? t('agent.chat.workflowPreview.confirmAndRun', 'Confirm and run')
+              : t('agent.chat.workflowPreview.run', 'Run workflow')}
+        </button>
+      )}
+      {startMutation.isError && (
+        <div className="agent-workflows-error" role="alert">
+          {startMutation.error instanceof Error
+            ? startMutation.error.message
+            : t('agent.chat.workflowPreview.startFailed', 'Workflow could not start. You can retry safely.')}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkflowPreviewConfirmationCard({ meta, agentId }: { meta: WorkflowPreviewToolMeta; agentId?: string }) {
+  if (!agentId) {
+    return <WorkflowPreviewSummary meta={meta} status={meta.previewStatus} />;
+  }
+  return <InteractiveWorkflowPreviewCard meta={meta} agentId={agentId} />;
+}
+
 export function StructuredToolResultBody({
   toolName,
   toolMeta,
@@ -2809,6 +2906,10 @@ export function StructuredToolResultBody({
     );
   }
 
+  if (toolMeta.kind === 'workflow_preview') {
+    return <WorkflowPreviewConfirmationCard meta={toolMeta} agentId={agentId} />;
+  }
+
   if (toolMeta.kind === 'dynamic_workflow_proposal') {
     return (
       <div style={{ display: 'grid', gap: '8px' }}>
@@ -2870,13 +2971,26 @@ export function StructuredToolResultBody({
                 {facts.length > 0 && (
                   <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{facts.join(' · ')}</div>
                 )}
+                {onSendMessage && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() =>
+                      onSendMessage(
+                        `选择 Dynamic Workflow 方案“${candidate.name || candidate.candidateId}”。请基于服务端已保存的当前提案生成精确预览；不要改写定义或参数，预览前不要执行。`,
+                      )
+                    }
+                  >
+                    {t('agent.chat.toolResults.selectAndPreview', 'Select and preview')}
+                  </button>
+                )}
               </div>
             );
           })}
         </div>
-        {toolMeta.nextAction && (
-          <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{toolMeta.nextAction}</div>
-        )}
+        <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+          {t('agent.chat.toolResults.dynamicWorkflowNotStarted', 'Select a candidate to create a reviewable preview. Nothing has run yet.')}
+        </div>
       </div>
     );
   }

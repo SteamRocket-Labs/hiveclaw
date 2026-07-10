@@ -9,6 +9,7 @@ import {
   activateWorkflowDefinition,
   cancelWorkflowRun,
   classifyTriggerPin,
+  getWorkflowPreview,
   getWorkflowRun,
   listWorkflowDefinitions,
   previewWorkflow,
@@ -98,10 +99,8 @@ describe('startWorkflow', () => {
       }),
     );
 
-    await startWorkflow('agent-1', { name: 'wf' }, {}, {
+    await startWorkflow('agent-1', {
       previewId: 'preview-1',
-      definitionHash: 'h',
-      argsHash: 'args-1',
       confirmedPlanId: 'plan-9',
       planVersion: 2,
       planHash: 'ph',
@@ -109,11 +108,32 @@ describe('startWorkflow', () => {
 
     const body = JSON.parse(String(requestOf().init.body));
     expect(body.preview_id).toBe('preview-1');
-    expect(body.definition_hash).toBe('h');
-    expect(body.args_hash).toBe('args-1');
+    expect(body.definition).toBeUndefined();
+    expect(body.args).toBeUndefined();
+    expect(body.definition_hash).toBeUndefined();
+    expect(body.args_hash).toBeUndefined();
     expect(body.confirmed_plan_id).toBe('plan-9');
     expect(body.plan_version).toBe(2);
     expect(body.plan_hash).toBe('ph');
+  });
+});
+
+describe('getWorkflowPreview', () => {
+  it('reloads durable preview status for an inline confirmation card', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        preview_id: 'preview-1',
+        session_id: 'session-1',
+        preview_status: 'started',
+        run_id: 'run-1',
+      }),
+    );
+
+    const preview = await getWorkflowPreview('agent-1', 'preview-1');
+
+    expect(requestOf().url).toBe('/api/agents/agent-1/workflows/previews/preview-1');
+    expect(preview.preview_status).toBe('started');
+    expect(preview.run_id).toBe('run-1');
   });
 });
 

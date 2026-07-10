@@ -14,10 +14,23 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from app.tools.plan_gate_registry import hard_gated_action_kind
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+_DEFAULT_SESSION = object()
+
+
+def _identity_for(agent_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID, str]:
+    tenant_id = uuid.uuid5(uuid.NAMESPACE_URL, f"hive:test:tenant:{agent_id}")
+    user_id = uuid.uuid5(uuid.NAMESPACE_URL, f"hive:test:user:{agent_id}")
+    session_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"hive:test:session:{agent_id}"))
+    return tenant_id, user_id, session_id
 
 
 def _low_risk_definition() -> dict:
@@ -108,19 +121,22 @@ def _start_request(
     agent_id: uuid.UUID,
     arguments: dict,
     *,
-    session_id: str = "session-workflow",
+    session_id: str | None | object = _DEFAULT_SESSION,
     budget_run_id: str | None = None,
     round_state: dict | None = None,
 ) -> ToolExecutionRequest:
+    tenant_id, user_id, default_session_id = _identity_for(agent_id)
+    resolved_session_id = default_session_id if session_id is _DEFAULT_SESSION else session_id
     return ToolExecutionRequest(
         tool_name="start_workflow",
         arguments=arguments,
         context=ToolExecutionContext(
             agent_id=agent_id,
-            user_id=uuid.uuid4(),
-            tenant_id=str(uuid.uuid4()),
+            user_id=user_id,
+            tenant_id=str(tenant_id),
             workspace=Path("/tmp/hive-workflow-test"),
-            session_id=session_id,
+            session_id=resolved_session_id,
+            turn_id="turn-workflow-confirmation",
             budget_run_id=budget_run_id,
             round_state=round_state,
         ),
@@ -132,19 +148,135 @@ def _tool_request(
     agent_id: uuid.UUID,
     arguments: dict,
     *,
-    session_id: str = "session-workflow",
+    session_id: str | None | object = _DEFAULT_SESSION,
 ) -> ToolExecutionRequest:
+    tenant_id, user_id, default_session_id = _identity_for(agent_id)
+    resolved_session_id = default_session_id if session_id is _DEFAULT_SESSION else session_id
     return ToolExecutionRequest(
         tool_name=tool_name,
         arguments=arguments,
         context=ToolExecutionContext(
             agent_id=agent_id,
-            user_id=uuid.uuid4(),
-            tenant_id=str(uuid.uuid4()),
+            user_id=user_id,
+            tenant_id=str(tenant_id),
             workspace=Path("/tmp/hive-workflow-test"),
-            session_id=session_id,
+            session_id=resolved_session_id,
+            turn_id="turn-workflow-confirmation",
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def _durable_workflow_confirmation_backend(monkeypatch):
+    """Exercise tool orchestration without replacing production persistence with a cache."""
+
+    from app.services.workflow_confirmation_service import (
+        WorkflowStartClaim,
+        claim_workflow_preview_record,
+        mark_workflow_preview_failed_record,
+        mark_workflow_preview_started_record,
+    )
+    from app.models.workflow_confirmation import WorkflowPreviewArtifact
+    from app.tools.handlers import workflow as workflow_handlers
+
+    proposals: dict[uuid.UUID, SimpleNamespace] = {}
+    previews: dict[uuid.UUID, WorkflowPreviewArtifact] = {}
+
+    async def persist_proposal(request, proposal):
+        proposal_id = uuid.uuid4()
+        canonical = {**proposal, "proposal_id": str(proposal_id)}
+        artifact = SimpleNamespace(id=proposal_id, proposal_json=canonical, status="open")
+        proposals[proposal_id] = artifact
+        return canonical
+
+    async def load_candidate(request, proposal_id, candidate_id):
+        _ = request
+        if not proposal_id or not candidate_id:
+            return None, None
+        proposal = proposals.get(uuid.UUID(str(proposal_id)))
+        if proposal is None:
+            return None, None
+        candidate = next(
+            (item for item in proposal.proposal_json["candidates"] if item["candidate_id"] == candidate_id),
+            None,
+        )
+        return proposal, candidate
+
+    async def persist_preview(
+        request,
+        *,
+        definition,
+        args,
+        definition_hash,
+        args_hash,
+        preview_payload,
+        proposal,
+        candidate_id,
+    ):
+        tenant_id, agent_id, session_id, user_id = workflow_handlers._request_identity(request)
+        preview_id = uuid.uuid4()
+        preview = WorkflowPreviewArtifact(
+            id=preview_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            requested_by_user_id=user_id,
+            proposal_id=getattr(proposal, "id", None),
+            candidate_id=candidate_id,
+            status="ready",
+            artifact_version=1,
+            artifact_hash=f"artifact:{preview_id}",
+            definition_hash=definition_hash,
+            args_hash=args_hash,
+            definition_json=definition,
+            args_json=args,
+            preview_json=preview_payload,
+            expires_at=datetime.now(UTC) + timedelta(hours=24),
+        )
+        previews[preview_id] = preview
+        return {
+            "preview_id": str(preview_id),
+            "preview_status": "ready",
+            "artifact_version": 1,
+            "artifact_hash": preview.artifact_hash,
+            **preview_payload,
+        }
+
+    async def claim_start(request, preview_id):
+        tenant_id, agent_id, session_id, user_id = workflow_handlers._request_identity(request)
+        preview = previews[preview_id]
+        outcome = claim_workflow_preview_record(
+            preview,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+            confirmation_source="agent_user_turn",
+            confirmation_evidence_id=str(request.context.turn_id or ""),
+        )
+        return WorkflowStartClaim(outcome=outcome, preview=preview)
+
+    async def finish_start(_request, *, preview_id, claim_token, run_id):
+        mark_workflow_preview_started_record(
+            previews[preview_id],
+            run_id=run_id,
+            claim_token=claim_token,
+        )
+
+    async def fail_start(_request, *, preview_id, claim_token, code, message):
+        mark_workflow_preview_failed_record(
+            previews[preview_id],
+            claim_token=claim_token,
+            code=code,
+            message=message,
+        )
+
+    monkeypatch.setattr(workflow_handlers, "_persist_dynamic_proposal", persist_proposal)
+    monkeypatch.setattr(workflow_handlers, "_load_dynamic_candidate", load_candidate)
+    monkeypatch.setattr(workflow_handlers, "_persist_workflow_preview", persist_preview)
+    monkeypatch.setattr(workflow_handlers, "_claim_workflow_start", claim_start)
+    monkeypatch.setattr(workflow_handlers, "_finish_workflow_start", finish_start)
+    monkeypatch.setattr(workflow_handlers, "_fail_workflow_start", fail_start)
 
 
 # ── plan-gate registry (early intercept) ──────────────────────────
@@ -178,6 +310,17 @@ def test_workflow_tools_registered_in_capability_map():
     assert "start_workflow" in CAPABILITY_MAP
     assert "preview_workflow" in CAPABILITY_MAP
     assert "propose_dynamic_workflow" in CAPABILITY_MAP
+
+
+def test_start_workflow_schema_accepts_only_durable_preview_reference():
+    from app.tools.decorator import get_all_registered_tools
+    import app.tools.handlers.workflow  # noqa: F401
+
+    meta, _handler = get_all_registered_tools()["start_workflow"]
+
+    assert meta.parameters["required"] == ["preview_id"]
+    assert meta.parameters["additionalProperties"] is False
+    assert set(meta.parameters["properties"]) == {"preview_id", "ledger_todo_id"}
 
 
 async def test_preview_workflow_registered_adapter_matches_agent_arguments_signature():
@@ -224,7 +367,10 @@ async def test_propose_dynamic_workflow_registered_adapter_matches_agent_argumen
 async def test_preview_workflow_returns_hash_and_confirmation_notes():
     from app.tools.handlers.workflow import preview_workflow
 
-    result = await preview_workflow(uuid.uuid4(), {"definition": _low_risk_definition(), "args": {}})
+    agent_id = uuid.uuid4()
+    result = await preview_workflow(
+        _tool_request("preview_workflow", agent_id, {"definition": _low_risk_definition(), "args": {}})
+    )
     payload = json.loads(result)
     assert payload["preview_id"]
     assert payload["definition_hash"]
@@ -238,7 +384,10 @@ async def test_preview_workflow_returns_hash_and_confirmation_notes():
 async def test_preview_workflow_external_effects_return_confirmation_notes_without_risk_level():
     from app.tools.handlers.workflow import preview_workflow
 
-    result = await preview_workflow(uuid.uuid4(), {"definition": _high_risk_definition(), "args": {}})
+    agent_id = uuid.uuid4()
+    result = await preview_workflow(
+        _tool_request("preview_workflow", agent_id, {"definition": _high_risk_definition(), "args": {}})
+    )
     payload = json.loads(result)
     assert payload["preview_id"]
     assert payload["definition_hash"]
@@ -252,7 +401,10 @@ async def test_preview_workflow_external_effects_return_confirmation_notes_witho
 async def test_preview_workflow_reports_compile_errors():
     from app.tools.handlers.workflow import preview_workflow
 
-    result = await preview_workflow(uuid.uuid4(), {"definition": {"steps": []}, "args": {}})
+    agent_id = uuid.uuid4()
+    result = await preview_workflow(
+        _tool_request("preview_workflow", agent_id, {"definition": {"steps": []}, "args": {}})
+    )
     payload = json.loads(result)
     assert payload["ok"] is False
     assert payload["error"]
@@ -275,8 +427,13 @@ async def test_preview_workflow_allows_explicit_workflow_profile_fanout_preview(
             }
         ],
     }
+    agent_id = uuid.uuid4()
     result = await preview_workflow(
-        uuid.uuid4(), {"definition": definition, "args": {"targets": [f"t{i}" for i in range(64)]}}
+        _tool_request(
+            "preview_workflow",
+            agent_id,
+            {"definition": definition, "args": {"targets": [f"t{i}" for i in range(64)]}},
+        )
     )
     payload = json.loads(result)
 
@@ -289,7 +446,10 @@ async def test_preview_workflow_allows_explicit_workflow_profile_fanout_preview(
 async def test_propose_dynamic_workflow_lowers_candidates_without_starting_runtime():
     from app.tools.handlers.workflow import propose_dynamic_workflow
 
-    result = await propose_dynamic_workflow(uuid.uuid4(), _dynamic_workflow_proposal())
+    agent_id = uuid.uuid4()
+    result = await propose_dynamic_workflow(
+        _tool_request("propose_dynamic_workflow", agent_id, _dynamic_workflow_proposal())
+    )
     payload = json.loads(result)
 
     assert payload["ok"] is True
@@ -313,7 +473,8 @@ async def test_propose_dynamic_workflow_rejects_invalid_lowered_definition():
     proposal = _dynamic_workflow_proposal()
     proposal["candidates"][0]["lowered_definition"] = {"steps": []}
 
-    result = await propose_dynamic_workflow(uuid.uuid4(), proposal)
+    agent_id = uuid.uuid4()
+    result = await propose_dynamic_workflow(_tool_request("propose_dynamic_workflow", agent_id, proposal))
     payload = json.loads(result)
 
     assert payload["ok"] is False
@@ -324,19 +485,26 @@ async def test_preview_workflow_rejects_dynamic_candidate_artifact_mismatch():
     from app.tools.handlers import workflow as workflow_handlers
 
     agent_id = uuid.uuid4()
-    proposal = json.loads(await workflow_handlers.propose_dynamic_workflow(agent_id, _dynamic_workflow_proposal()))
+    proposal = json.loads(
+        await workflow_handlers.propose_dynamic_workflow(
+            _tool_request("propose_dynamic_workflow", agent_id, _dynamic_workflow_proposal())
+        )
+    )
     candidate = proposal["candidates"][0]
     mutated_definition = json.loads(json.dumps(candidate["lowered_definition"]))
     mutated_definition["name"] = "repo-audit-mutated"
 
     result = await workflow_handlers.preview_workflow(
-        agent_id,
-        {
+        _tool_request(
+            "preview_workflow",
+            agent_id,
+            {
             "definition": mutated_definition,
             "args": candidate["preview_args"],
             "proposal_id": proposal["proposal_id"],
             "candidate_id": candidate["candidate_id"],
-        },
+            },
+        )
     )
     payload = json.loads(result)
 
@@ -354,20 +522,20 @@ async def test_start_workflow_low_risk_launches(monkeypatch):
         from app.runtime.workflow_engine import WorkflowRunOutcome
         from app.services.workflow_runtime_service import WorkflowRunHandle
 
-        return WorkflowRunHandle(run_id=uuid.uuid4(), outcome=WorkflowRunOutcome(status="completed"))
+        return WorkflowRunHandle(run_id=kwargs["run_id"], outcome=WorkflowRunOutcome(status="completed"))
 
     monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
 
     agent_id = uuid.uuid4()
     preview = json.loads(
-        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+        await workflow_handlers.preview_workflow(
+            _tool_request("preview_workflow", agent_id, {"definition": _low_risk_definition(), "args": {}})
+        )
     )
     result = await workflow_handlers.start_workflow(
         _start_request(
             agent_id,
             {
-                "definition": _low_risk_definition(),
-                "args": {},
                 "preview_id": preview["preview_id"],
             },
         )
@@ -377,31 +545,31 @@ async def test_start_workflow_low_risk_launches(monkeypatch):
     assert payload["status"] == "completed"
     assert captured["agent_id"] == agent_id
     assert captured["definition"]["name"] == "read-probe"
-    assert captured["parent_session_id"] == "session-workflow"
+    assert captured["parent_session_id"] == _identity_for(agent_id)[2]
     assert captured["enqueue_only"] is True
 
 
 async def test_start_workflow_returns_execution_shape_admission_warning(monkeypatch):
     from app.tools.handlers import workflow as workflow_handlers
 
-    async def fake_launch(**_kwargs):
+    async def fake_launch(**kwargs):
         from app.runtime.workflow_engine import WorkflowRunOutcome
         from app.services.workflow_runtime_service import WorkflowRunHandle
 
-        return WorkflowRunHandle(run_id=uuid.uuid4(), outcome=WorkflowRunOutcome(status="completed"))
+        return WorkflowRunHandle(run_id=kwargs["run_id"], outcome=WorkflowRunOutcome(status="completed"))
 
     monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
 
     agent_id = uuid.uuid4()
     preview = json.loads(
-        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+        await workflow_handlers.preview_workflow(
+            _tool_request("preview_workflow", agent_id, {"definition": _low_risk_definition(), "args": {}})
+        )
     )
     result = await workflow_handlers.start_workflow(
         _start_request(
             agent_id,
             {
-                "definition": _low_risk_definition(),
-                "args": {},
                 "preview_id": preview["preview_id"],
             },
             round_state={"execution_shape": "one_off_parallel"},
@@ -426,21 +594,28 @@ async def test_start_workflow_persists_dynamic_proposal_binding(monkeypatch):
         from app.runtime.workflow_engine import WorkflowRunOutcome
         from app.services.workflow_runtime_service import WorkflowRunHandle
 
-        return WorkflowRunHandle(run_id=uuid.uuid4(), outcome=WorkflowRunOutcome(status="completed"))
+        return WorkflowRunHandle(run_id=kwargs["run_id"], outcome=WorkflowRunOutcome(status="completed"))
 
     monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
     agent_id = uuid.uuid4()
-    proposal = json.loads(await workflow_handlers.propose_dynamic_workflow(agent_id, _dynamic_workflow_proposal()))
+    proposal = json.loads(
+        await workflow_handlers.propose_dynamic_workflow(
+            _tool_request("propose_dynamic_workflow", agent_id, _dynamic_workflow_proposal())
+        )
+    )
     candidate = proposal["candidates"][0]
     preview = json.loads(
         await workflow_handlers.preview_workflow(
-            agent_id,
-            {
+            _tool_request(
+                "preview_workflow",
+                agent_id,
+                {
                 "definition": candidate["lowered_definition"],
                 "args": candidate["preview_args"],
                 "proposal_id": proposal["proposal_id"],
                 "candidate_id": candidate["candidate_id"],
-            },
+                },
+            )
         )
     )
 
@@ -448,11 +623,7 @@ async def test_start_workflow_persists_dynamic_proposal_binding(monkeypatch):
         _start_request(
             agent_id,
             {
-                "definition": candidate["lowered_definition"],
-                "args": candidate["preview_args"],
                 "preview_id": preview["preview_id"],
-                "proposal_id": proposal["proposal_id"],
-                "candidate_id": candidate["candidate_id"],
             },
         )
     )
@@ -472,14 +643,14 @@ async def test_start_workflow_rejects_dynamic_ids_without_dynamic_preview(monkey
 
     agent_id = uuid.uuid4()
     preview = json.loads(
-        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+        await workflow_handlers.preview_workflow(
+            _tool_request("preview_workflow", agent_id, {"definition": _low_risk_definition(), "args": {}})
+        )
     )
     result = await workflow_handlers.start_workflow(
         _start_request(
             agent_id,
             {
-                "definition": _low_risk_definition(),
-                "args": {},
                 "preview_id": preview["preview_id"],
                 "proposal_id": "proposal-1",
                 "candidate_id": "candidate-1",
@@ -489,19 +660,19 @@ async def test_start_workflow_rejects_dynamic_ids_without_dynamic_preview(monkey
     payload = json.loads(result)
 
     assert payload["ok"] is False
-    assert "preview_workflow" in payload["error"]
+    assert payload["error_code"] == "invalid_start_arguments"
 
 
 async def test_start_workflow_rejects_missing_preview_binding():
     from app.tools.handlers import workflow as workflow_handlers
 
     result = await workflow_handlers.start_workflow(
-        _start_request(uuid.uuid4(), {"definition": _low_risk_definition(), "args": {}})
+        _start_request(uuid.uuid4(), {})
     )
     payload = json.loads(result)
 
     assert payload["ok"] is False
-    assert "preview_workflow" in payload["error"]
+    assert "preview_id" in payload["error"]
 
 
 async def test_start_workflow_requires_current_session(monkeypatch):
@@ -513,15 +684,15 @@ async def test_start_workflow_requires_current_session(monkeypatch):
     monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
     agent_id = uuid.uuid4()
     preview = json.loads(
-        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+        await workflow_handlers.preview_workflow(
+            _tool_request("preview_workflow", agent_id, {"definition": _low_risk_definition(), "args": {}})
+        )
     )
 
     result = await workflow_handlers.start_workflow(
         _start_request(
             agent_id,
             {
-                "definition": _low_risk_definition(),
-                "args": {},
                 "preview_id": preview["preview_id"],
             },
             session_id=None,
@@ -533,16 +704,18 @@ async def test_start_workflow_requires_current_session(monkeypatch):
     assert payload["error_code"] == "missing_workflow_session"
 
 
-async def test_start_workflow_rejects_mutated_definition_after_preview(monkeypatch):
+async def test_start_workflow_rejects_restatement_after_preview(monkeypatch):
     from app.tools.handlers import workflow as workflow_handlers
 
     async def fake_launch(**_kwargs):
-        raise AssertionError("mutated workflow must not launch")
+        raise AssertionError("a restated workflow must not launch")
 
     monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
     agent_id = uuid.uuid4()
     preview = json.loads(
-        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+        await workflow_handlers.preview_workflow(
+            _tool_request("preview_workflow", agent_id, {"definition": _low_risk_definition(), "args": {}})
+        )
     )
     mutated = _low_risk_definition()
     mutated["steps"][0]["task"] = "Different task"
@@ -551,16 +724,16 @@ async def test_start_workflow_rejects_mutated_definition_after_preview(monkeypat
         _start_request(
             agent_id,
             {
-                "definition": mutated,
-                "args": {},
                 "preview_id": preview["preview_id"],
+                "definition": mutated,
             },
         )
     )
     payload = json.loads(result)
 
     assert payload["ok"] is False
-    assert "preview" in payload["error"].lower()
+    assert payload["error_code"] == "invalid_start_arguments"
+    assert "durable preview" in payload["error"]
 
 
 async def test_start_workflow_passes_ledger_todo_id(monkeypatch):
@@ -573,26 +746,26 @@ async def test_start_workflow_passes_ledger_todo_id(monkeypatch):
         from app.runtime.workflow_engine import WorkflowRunOutcome
         from app.services.workflow_runtime_service import WorkflowRunHandle
 
-        return WorkflowRunHandle(run_id=uuid.uuid4(), outcome=WorkflowRunOutcome(status="completed"))
+        return WorkflowRunHandle(run_id=kwargs["run_id"], outcome=WorkflowRunOutcome(status="completed"))
 
     monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
     agent_id = uuid.uuid4()
     preview = json.loads(
-        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+        await workflow_handlers.preview_workflow(
+            _tool_request("preview_workflow", agent_id, {"definition": _low_risk_definition(), "args": {}})
+        )
     )
     await workflow_handlers.start_workflow(
         _start_request(
             agent_id,
             {
-                "definition": _low_risk_definition(),
-                "args": {},
                 "ledger_todo_id": "todo-9",
                 "preview_id": preview["preview_id"],
             },
         )
     )
     assert captured["ledger_todo_id"] == "todo-9"
-    assert captured["parent_session_id"] == "session-workflow"
+    assert captured["parent_session_id"] == _identity_for(agent_id)[2]
 
 
 async def test_start_workflow_threads_runtime_budget_to_workflow_launch(monkeypatch):
@@ -605,20 +778,20 @@ async def test_start_workflow_threads_runtime_budget_to_workflow_launch(monkeypa
         from app.runtime.workflow_engine import WorkflowRunOutcome
         from app.services.workflow_runtime_service import WorkflowRunHandle
 
-        return WorkflowRunHandle(run_id=uuid.uuid4(), outcome=WorkflowRunOutcome(status="completed"))
+        return WorkflowRunHandle(run_id=kwargs["run_id"], outcome=WorkflowRunOutcome(status="completed"))
 
     monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
     agent_id = uuid.uuid4()
     budget_run_id = uuid.uuid4()
     preview = json.loads(
-        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+        await workflow_handlers.preview_workflow(
+            _tool_request("preview_workflow", agent_id, {"definition": _low_risk_definition(), "args": {}})
+        )
     )
     await workflow_handlers.start_workflow(
         _start_request(
             agent_id,
             {
-                "definition": _low_risk_definition(),
-                "args": {},
                 "preview_id": preview["preview_id"],
             },
             budget_run_id=str(budget_run_id),

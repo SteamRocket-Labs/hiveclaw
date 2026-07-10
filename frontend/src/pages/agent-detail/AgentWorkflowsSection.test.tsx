@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 import AgentWorkflowsSection, {
   buildWorkflowStartOptions,
   runStatusTone,
-  type WorkflowPlanHandoffFields,
 } from './AgentWorkflowsSection';
 import type { WorkflowDefinitionRecord, WorkflowPreview, WorkflowRunSummary } from '../../api/domains/workflows';
 
@@ -161,6 +160,10 @@ describe('runStatusTone', () => {
 function preview(confirmationRequired: boolean): WorkflowPreview {
   return {
     preview_id: 'preview-1',
+    session_id: 'session-1',
+    preview_status: 'ready',
+    artifact_version: 1,
+    artifact_hash: 'artifact-1',
     definition_hash: 'hash-1',
     args_hash: 'args-1',
     confirmation_required: confirmationRequired,
@@ -170,39 +173,18 @@ function preview(confirmationRequired: boolean): WorkflowPreview {
   };
 }
 
-const emptyHandoff: WorkflowPlanHandoffFields = {
-  confirmedPlanId: '',
-  planVersion: '',
-  planHash: '',
-};
-
 describe('buildWorkflowStartOptions', () => {
-  it('always threads the preview binding', () => {
-    expect(buildWorkflowStartOptions(preview(false), emptyHandoff)).toEqual({
+  it('starts only from the durable preview identity', () => {
+    expect(buildWorkflowStartOptions(preview(false))).toEqual({
       previewId: 'preview-1',
-      definitionHash: 'hash-1',
-      argsHash: 'args-1',
     });
   });
 
-  it('blocks confirmation-required workflows until a confirmed plan handoff is present', () => {
-    expect(buildWorkflowStartOptions(preview(true), emptyHandoff)).toBeNull();
+  it('uses the explicit start action as confirmation without forcing Plan Mode', () => {
+    expect(buildWorkflowStartOptions(preview(true))).toEqual({ previewId: 'preview-1' });
   });
 
-  it('threads confirmed plan fields with the preview binding for confirmation-required starts', () => {
-    expect(
-      buildWorkflowStartOptions(preview(true), {
-        confirmedPlanId: ' plan-1 ',
-        planVersion: '2',
-        planHash: ' hash-plan ',
-      }),
-    ).toEqual({
-      previewId: 'preview-1',
-      definitionHash: 'hash-1',
-      argsHash: 'args-1',
-      confirmedPlanId: 'plan-1',
-      planVersion: 2,
-      planHash: 'hash-plan',
-    });
+  it('requires a preview before start', () => {
+    expect(buildWorkflowStartOptions(null)).toBeNull();
   });
 });

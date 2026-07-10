@@ -23,18 +23,21 @@ mirror — an ownership mismatch is indistinguishable from absence (404).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.workflow_definitions import get_workflow_definition_service, record_payload
-from app.core.permissions import check_agent_access
+from app.core.permissions import authorize_session_action, check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
+from app.models.chat_session import ChatSession
 from app.models.user import User
+from app.runtime.dynamic_workflow import build_dynamic_workflow_run_metadata, mapping
 from app.runtime.workflow_admission import (
     AdmissionLimits,
     WorkflowAdmissionError,
@@ -43,7 +46,16 @@ from app.runtime.workflow_admission import (
 )
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
-from app.runtime.workflow_preview import record_workflow_preview, validate_workflow_preview_binding
+from app.services.workflow_confirmation_service import (
+    WorkflowConfirmationConflict,
+    WorkflowStartClaim,
+    claim_workflow_preview_start,
+    create_workflow_preview,
+    load_workflow_preview,
+    mark_workflow_preview_failed_record,
+    mark_workflow_preview_started_record,
+    workflow_preview_artifact_payload,
+)
 from app.services.workflow_definitions import WorkflowDefinitionError, WorkflowDefinitionService
 from app.services.workflow_launch import (
     build_resumable_workflow_leaf_executor,
@@ -54,19 +66,21 @@ from app.services.workflow_promote_suggestions import collect_promote_suggestion
 from app.services.workflow_runtime_service import LoadedWorkflowRun, WorkflowRuntimeService
 
 router = APIRouter(prefix="/agents", tags=["workflows"])
+logger = logging.getLogger(__name__)
 
 
 class WorkflowPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     definition: dict[str, Any]
     args: dict[str, Any] = Field(default_factory=dict)
+    session_id: uuid.UUID | None = None
 
 
 class WorkflowStartRequest(BaseModel):
-    definition: dict[str, Any]
-    args: dict[str, Any] = Field(default_factory=dict)
-    preview_id: str | None = None
-    definition_hash: str | None = None
-    args_hash: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    preview_id: uuid.UUID
     confirmed_plan_id: str | None = None
     plan_version: int | None = None
     plan_hash: str | None = None
@@ -80,7 +94,7 @@ async def _plan_gate_check(db: AsyncSession, **kwargs: Any):
     return await get_plan_mode_gate().check(db, **kwargs)
 
 
-def _compile_and_assess(payload: WorkflowPreviewRequest | WorkflowStartRequest):
+def _compile_and_assess(payload: WorkflowPreviewRequest):
     from app.config import get_settings
 
     try:
@@ -93,6 +107,100 @@ def _compile_and_assess(payload: WorkflowPreviewRequest | WorkflowStartRequest):
     return compiled, admission, confirmation, args
 
 
+async def _resolve_workflow_preview_session(
+    db: AsyncSession,
+    *,
+    agent,
+    current_user: User,
+    requested_session_id: uuid.UUID | None,
+    workflow_name: str,
+) -> ChatSession:
+    if requested_session_id is not None:
+        authority = await authorize_session_action(
+            db,
+            current_user,
+            agent_id=agent.id,
+            session_id=requested_session_id,
+            action="workflow:preview",
+        )
+        return authority.session
+    session = ChatSession(
+        agent_id=agent.id,
+        tenant_id=agent.tenant_id,
+        user_id=current_user.id,
+        title=f"Workflow: {workflow_name}"[:200],
+        source_channel="web",
+        session_kind="workflow_control",
+        actor_type="user",
+        runtime_source="workflow_preview",
+        visibility_scope="direct_user",
+        listed_surface="workflow",
+    )
+    db.add(session)
+    await db.flush()
+    return session
+
+
+async def _create_workflow_preview_artifact(db: AsyncSession, **kwargs):
+    return await create_workflow_preview(db, **kwargs)
+
+
+async def _claim_workflow_preview_artifact(db: AsyncSession, **kwargs) -> WorkflowStartClaim:
+    return await claim_workflow_preview_start(db, **kwargs)
+
+
+async def _finish_workflow_preview_artifact(
+    db: AsyncSession,
+    *,
+    preview_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    run_id: uuid.UUID,
+    claim_token: uuid.UUID,
+) -> None:
+    preview = await load_workflow_preview(
+        db,
+        preview_id=preview_id,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=None,
+        user_id=user_id,
+        for_update=True,
+    )
+    mark_workflow_preview_started_record(preview, run_id=run_id, claim_token=claim_token)
+    await db.flush()
+
+
+async def _fail_workflow_preview_artifact(
+    db: AsyncSession,
+    *,
+    preview_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    claim_token: uuid.UUID,
+    code: str,
+    message: str,
+) -> None:
+    preview = await load_workflow_preview(
+        db,
+        preview_id=preview_id,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=None,
+        user_id=user_id,
+        for_update=True,
+    )
+    mark_workflow_preview_failed_record(
+        preview,
+        claim_token=claim_token,
+        code=code,
+        message=message,
+    )
+    await db.flush()
+
+
 @router.post("/{agent_id}/workflows/preview")
 async def preview_workflow_endpoint(
     agent_id: uuid.UUID,
@@ -100,16 +208,18 @@ async def preview_workflow_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access = await check_agent_access(db, current_user, agent_id)
     compiled, admission, confirmation, args = _compile_and_assess(payload)
     args_hash = compute_definition_hash(args)
-    return {
-        "preview_id": record_workflow_preview(
-            agent_id=agent_id,
-            definition_hash=compiled.definition_hash,
-            args_hash=args_hash,
-            confirmation_required=confirmation.requires_confirmation,
-        ),
+    session = await _resolve_workflow_preview_session(
+        db,
+        agent=agent,
+        current_user=current_user,
+        requested_session_id=payload.session_id,
+        workflow_name=compiled.definition.name,
+    )
+    preview_payload = {
+        "ok": True,
         "definition_hash": compiled.definition_hash,
         "args_hash": args_hash,
         "confirmation_required": confirmation.requires_confirmation,
@@ -117,49 +227,163 @@ async def preview_workflow_endpoint(
         "planned_leaf_calls": admission.planned_leaf_calls,
         "budget_tokens": admission.budget_tokens,
     }
+    preview = await _create_workflow_preview_artifact(
+        db,
+        tenant_id=agent.tenant_id,
+        agent_id=agent_id,
+        session_id=session.id,
+        user_id=current_user.id,
+        definition=compiled.definition.canonical_dict(),
+        args=args,
+        definition_hash=compiled.definition_hash,
+        args_hash=args_hash,
+        preview_payload=preview_payload,
+    )
+    return {**workflow_preview_artifact_payload(preview), "session_id": str(session.id)}
+
+
+@router.get("/{agent_id}/workflows/previews/{preview_id}")
+async def get_workflow_preview_endpoint(
+    agent_id: uuid.UUID,
+    preview_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    try:
+        preview = await load_workflow_preview(
+            db,
+            preview_id=preview_id,
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+            session_id=None,
+            user_id=current_user.id,
+        )
+    except WorkflowConfirmationConflict as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    return {**workflow_preview_artifact_payload(preview), "session_id": str(preview.session_id)}
 
 
 @router.post("/{agent_id}/workflows/runs")
 async def start_workflow_endpoint(
     agent_id: uuid.UUID,
     payload: WorkflowStartRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    await check_agent_access(db, current_user, agent_id)
-    compiled, _admission, confirmation, args = _compile_and_assess(payload)
-    preview_ok, preview_error, _preview_record = validate_workflow_preview_binding(
-        agent_id=agent_id,
-        definition=payload.definition,
-        args=args,
-        preview_id=payload.preview_id,
-        expected_definition_hash=payload.definition_hash,
-        expected_args_hash=payload.args_hash,
-        allow_hash_fallback=False,
-    )
-    if not preview_ok:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=preview_error)
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    request_id = str(getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or uuid.uuid4())
+    try:
+        claim = await _claim_workflow_preview_artifact(
+            db,
+            preview_id=payload.preview_id,
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+            session_id=None,
+            user_id=current_user.id,
+            confirmation_source="api_explicit_start",
+            confirmation_evidence_id=request_id,
+        )
+        await db.commit()
+    except WorkflowConfirmationConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": exc.code, "message": exc.message}) from exc
 
+    preview = claim.preview
+    if claim.outcome == "replay":
+        return {
+            "run_id": str(preview.run_id),
+            "status": "replayed",
+            "reason": "workflow_preview_already_started",
+            "preview_id": str(preview.id),
+            "confirmation_required": bool((preview.preview_json or {}).get("confirmation_required")),
+            "confirmation_reasons": list((preview.preview_json or {}).get("confirmation_reasons") or []),
+        }
+
+    claim_token = preview.claim_token
+    run_id = preview.run_id
+    if claim_token is None or run_id is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Workflow start claim is incomplete")
+
+    definition = dict(preview.definition_json or {})
+    args = dict(preview.args_json or {})
+    dynamic_candidate = mapping((preview.preview_json or {}).get("dynamic_candidate"))
+    run_metadata = build_dynamic_workflow_run_metadata(
+        proposal_id=str(preview.proposal_id) if preview.proposal_id else None,
+        candidate_id=preview.candidate_id,
+        preview_id=str(preview.id),
+        definition_hash=preview.definition_hash,
+        args_hash=preview.args_hash,
+        candidate=dynamic_candidate,
+    ) or {}
+    run_metadata["workflow_confirmation"] = {
+        "preview_id": str(preview.id),
+        "artifact_version": preview.artifact_version,
+        "artifact_hash": preview.artifact_hash,
+        "confirmed_by_user_id": str(preview.confirmed_by_user_id),
+        "confirmation_source": preview.confirmation_source,
+        "confirmation_evidence_id": preview.confirmation_evidence_id,
+    }
     try:
         handle = await start_ephemeral_workflow_for_agent(
             agent_id=agent_id,
-            definition=payload.definition,
+            definition=definition,
             args=args,
-            user_id=getattr(current_user, "id", None),
+            user_id=current_user.id,
             confirmed_plan_id=payload.confirmed_plan_id,
             ledger_todo_id=payload.ledger_todo_id,
+            parent_session_id=preview.session_id,
+            root_session_id=preview.session_id,
+            definition_source="dynamic_workflow" if preview.proposal_id or preview.candidate_id else "ephemeral",
+            run_metadata=run_metadata,
+            run_id=run_id,
             enqueue_only=True,
         )
-    except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Workflow API launch failed for durable preview %s", preview.id)
+        try:
+            await _fail_workflow_preview_artifact(
+                db,
+                preview_id=preview.id,
+                tenant_id=agent.tenant_id,
+                agent_id=agent_id,
+                user_id=current_user.id,
+                claim_token=claim_token,
+                code="workflow_launch_failed",
+                message=str(exc),
+            )
+            await db.commit()
+        except Exception:
+            logger.exception("Could not persist Workflow API launch failure for preview %s", preview.id)
+        if isinstance(exc, LookupError):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    reconciliation_pending = False
+    try:
+        await _finish_workflow_preview_artifact(
+            db,
+            preview_id=preview.id,
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+            user_id=current_user.id,
+            run_id=handle.run_id,
+            claim_token=claim_token,
+        )
+        await db.commit()
+    except Exception:
+        reconciliation_pending = True
+        logger.exception("Workflow run %s started but API preview finalization failed", handle.run_id)
 
     return {
         "run_id": str(handle.run_id),
         "status": handle.outcome.status,
         "reason": handle.outcome.reason,
-        "definition_hash": compiled.definition_hash,
-        "confirmation_required": confirmation.requires_confirmation,
-        "confirmation_reasons": confirmation.reasons,
+        "preview_id": str(preview.id),
+        "definition_hash": preview.definition_hash,
+        "confirmation_required": bool((preview.preview_json or {}).get("confirmation_required")),
+        "confirmation_reasons": list((preview.preview_json or {}).get("confirmation_reasons") or []),
+        "reconciliation_pending": reconciliation_pending,
     }
 
 

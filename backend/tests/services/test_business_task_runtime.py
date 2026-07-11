@@ -51,6 +51,8 @@ async def test_stage_business_task_runtime_uses_caller_transaction_and_links_exa
     tenant_id = uuid.uuid4()
     agent_id = uuid.uuid4()
     requester_id = uuid.uuid4()
+    root_session_id = uuid.uuid4()
+    delivery_target = {"channel": "telegram", "chat_id": "chat-1"}
     task = SimpleNamespace(
         id=uuid.uuid4(),
         tenant_id=tenant_id,
@@ -68,6 +70,8 @@ async def test_stage_business_task_runtime_uses_caller_transaction_and_links_exa
         requester_user_id=requester_id,
         agent_name="Research Agent",
         request_id="request-1",
+        root_session_id=root_session_id,
+        delivery_target=delivery_target,
     )
 
     assert isinstance(runtime_task, RuntimeTask)
@@ -78,6 +82,9 @@ async def test_stage_business_task_runtime_uses_caller_transaction_and_links_exa
     assert runtime_task.child_agent_id == agent_id
     assert runtime_task.metadata_json["business_task_id"] == str(task.id)
     assert runtime_task.metadata_json["requester_user_id"] == str(requester_id)
+    assert runtime_task.parent_session_id == str(root_session_id)
+    assert runtime_task.metadata_json["root_session_id"] == str(root_session_id)
+    assert runtime_task.metadata_json["delivery_target"] == delivery_target
     assert runtime_task.metadata_json["phase"] == "queued"
     assert task.active_runtime_task_id == runtime_task.id
     assert task.execution_attempt == 1

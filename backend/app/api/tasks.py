@@ -15,6 +15,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.task import Task, TaskLog
 from app.models.runtime_task import RuntimeTask
+from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.schemas.schemas import TaskCreate, TaskLogCreate, TaskLogOut, TaskOut, TaskUpdate
 from app.services.business_task_runtime import (
@@ -37,6 +38,38 @@ class TaskTriggerIn(BaseModel):
 
 router = APIRouter(prefix="/agents/{agent_id}/tasks", tags=["tasks"])
 logger = logging.getLogger(__name__)
+
+
+async def _task_delivery_context(
+    db: AsyncSession,
+    *,
+    session_id: str | None,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    requester_user_id: uuid.UUID,
+) -> tuple[uuid.UUID | None, dict | None]:
+    if not session_id:
+        return None, None
+    try:
+        session_uuid = uuid.UUID(str(session_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="confirmed plan session is invalid") from exc
+    session = (
+        await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == session_uuid,
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == agent_id,
+                ChatSession.user_id == requester_user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=403, detail="confirmed plan session is outside the requester authority")
+    target = dict(session.delivery_target_json or {})
+    if not target or str(target.get("channel") or "").strip().lower() == "web":
+        target = None
+    return session.id, target
 
 
 async def _load_matching_task_request(
@@ -209,6 +242,13 @@ async def create_task(
         plan_hash=data.confirmed_plan_hash,
         plan_authorization=plan_evidence,
     )
+    root_session_id, delivery_target = await _task_delivery_context(
+        db,
+        session_id=data.confirmed_plan_session_id,
+        tenant_id=agent.tenant_id,
+        agent_id=agent_id,
+        requester_user_id=current_user.id,
+    )
     try:
         db.add(task)
         await db.flush()
@@ -219,6 +259,8 @@ async def create_task(
             agent_name=getattr(agent, "name", None),
             request_id=data.request_id,
             request_hash=request_hash,
+            root_session_id=root_session_id,
+            delivery_target=delivery_target,
         )
         task_out = await _enrich_task_out(task, db)
         await db.commit()
@@ -378,6 +420,14 @@ async def trigger_task(
         evidence_id=evidence_id,
     ).get("plan_authorization")
 
+    root_session_id, delivery_target = await _task_delivery_context(
+        db,
+        session_id=trigger_in.confirmed_plan_session_id,
+        tenant_id=agent.tenant_id,
+        agent_id=agent_id,
+        requester_user_id=current_user.id,
+    )
+
     try:
         runtime_task = await stage_business_task_runtime(
             db=db,
@@ -386,6 +436,8 @@ async def trigger_task(
             agent_name=getattr(agent, "name", None),
             request_id=trigger_in.request_id,
             request_hash=request_hash,
+            root_session_id=root_session_id,
+            delivery_target=delivery_target,
         )
         await db.commit()
     except BusinessTaskInvariantError as exc:

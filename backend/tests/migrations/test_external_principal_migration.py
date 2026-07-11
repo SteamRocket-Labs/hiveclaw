@@ -12,7 +12,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from tests.migrations.conftest import BACKEND_ROOT, _alembic_upgrade, _current_head_parent
+from tests.migrations.conftest import BACKEND_ROOT, _alembic_upgrade
 from tests.integration.conftest import _async_url
 
 
@@ -124,7 +124,7 @@ async def test_upgrade_backfills_legacy_channel_history_without_licensed_user_po
     # migration's own downgrade to obtain an exact parent schema, then seed the
     # pre-release rows and execute the real upgrade path.
     _alembic_upgrade(database_url, "head")
-    parent = _current_head_parent()
+    parent = "channel_ingress_inbox_0711"
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "downgrade", parent],
         cwd=BACKEND_ROOT,

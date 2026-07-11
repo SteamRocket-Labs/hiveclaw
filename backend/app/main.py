@@ -32,6 +32,7 @@ from app.api.email_channel import router as email_channel_router
 from app.api.enterprise import router as enterprise_router
 from app.api.external_capabilities import router as external_capabilities_router
 from app.api.external_principals import router as external_principals_router
+from app.api.channel_deliveries import router as channel_deliveries_router
 from app.api.feature_flags import router as feature_flags_router
 from app.api.feishu import router as feishu_router
 from app.api.files import enterprise_kb_router
@@ -882,6 +883,7 @@ _api_routers = [
     tenant_channels_router,
     external_capabilities_router,
     external_principals_router,
+    channel_deliveries_router,
     tools_router,
     workflows_router,
     workflow_definitions_router,

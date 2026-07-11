@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**6 / 28**（SA-01 至 SA-06 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**7 / 28**（SA-01 至 SA-07 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -90,7 +90,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-04 | Workspace Rewind 操作 Agent 共享目录 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-05 | Channel ingress 无 durable inbox | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-06 | 外部通道身份被建成全局 User | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-07 | 最终通道交付无 durable outbox | P0 | 断点 | ✓ | ✓ | △ | ✗ | ✗ | ✗ | △ |
+| SA-07 | 最终通道交付无 durable outbox | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-08 | CC Hook surface 有 no-op/planned 壳 | P1 | 缺失/局部闭环 | ✓ | ✓ | ✗ | △ | △ | ✗ | △ |
 | SA-09 | Frozen prompt cache 依赖签名不完整 | P1 | 局部闭环 | ✓ | △ | △ | △ | △ | △ | △ |
 | SA-10 | 智能上下文机械截断无恢复指针 | P1 | 局部闭环 | △ | ✓ | △ | △ | ✗ | △ | △ |
@@ -194,6 +194,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 **验收**：相同 sender 跨租户/跨 bot、外部人后续受邀绑定、解绑、删除 provider、历史 transcript 回填、license 统计不污染。
 
 ### SA-07：Agent 完成了，但最终消息仍可能永远送不到通道 — P0
+
+**修复状态（2026-07-11）**：**闭环**。`web_chat_runtime` 不再在 terminal commit 之后直接调用 provider；终态文本、ChatArtifact snapshot ID、不可变 delivery target、User/ExternalPrincipal、ChannelConfig snapshot 与 RuntimeTask 在同一事务写入 `ChannelDeliveryOutbox`。Runtime worker 独立 claim/drain，逐项提交 text/attachment provider receipt；明确的 429/5xx 才自动重试，外部调用已开始但 receipt 未落盘的 crash-window 转 `needs_reconciliation`，禁止盲目重复发送。带已确认会话来源的 `business_task` 复用同一 outbox；org/platform admin 可在脱敏 API 查看 dead letter/reconciliation，并以原因显式重送，动作写入 AuditLog。
 
 **机械事实**：`backend/app/services/web_chat_runtime.py:3600-3631` 的最终 channel send 捕获异常后只记录日志。现有 `RuntimeNotificationOutbox` 的 reconciler 仅支持 subagent/team/workflow/delegation/a2a/trigger（`backend/app/services/runtime_notification_outbox.py:257-271`），不含 web_chat_turn 或 business_task。
 
@@ -1023,3 +1025,64 @@ alembic heads
 ```
 
 结果：Ruff `All checks passed!`；Alembic 单 head：`external_principals_0711 (head)`。
+
+### SA-07 — 最终通道交付 durable outbox 闭环
+
+状态：**闭环**。提交主题：`fix(SA-07): make terminal channel delivery durable and recoverable`。
+
+七原子证据：
+
+1. **输入**：Web/IM Agent turn 的 finalizer 在 terminal RuntimeTask、assistant transcript 与 ChatArtifact 已确定后构造 `ChannelDeliveryIntent`；带 confirmed root session 的 `business_task` 在同一个业务 finalizer 构造相同 intent。输入固定包含 tenant、run、Agent、session、User/ExternalPrincipal、terminal status、text、artifact IDs、ChannelConfig ID 与 delivery-target snapshot；web-origin turn 和 web target 明确排除，避免把历史 IM target 错用于当前 web turn。
+2. **权威**：delivery row tenant 强制非空并 FORCE RLS；发送前重新校验 immutable ChannelConfig snapshot 仍属于同 tenant/Agent/channel 且 active，ExternalPrincipal 仍 active 且仍属于同 installation。配置删除、主体撤销或 installation 漂移直接 permanent dead letter，不会静默改投新目标。org admin 只能操作自己 tenant，platform admin 必须选定 tenant；普通 member 403。
+3. **执行**：唯一执行链是 terminal/business transaction `enqueue_channel_delivery()` → runtime worker `ChannelDeliveryOutboxService.drain_once()` → 现有 `ChannelDeliveryService.send_text/send_file()`。旧 `_deliver_run_result_to_channel()` 与 finalizer 后的 inline provider call 已物理删除；interactive permission prompt 也随 tool-card terminal transaction 入同一 outbox。
+4. **证据**：`channel_delivery_outbox` 保存 immutable payload、target hash、attempt/lease、per-part `sending|failed|delivered` receipt、provider status/detail、last error、dead-letter/reconciliation 与 terminal receipt；人工重送历史保留 actor/reason/previous status/error，同时写 `AuditLog(action='channel_delivery_manual_resend')`。RuntimeTask/transcript/ChatArtifact 仍是执行与产物事实源，outbox 只负责交付消费，不制造第二运行真相。
+5. **恢复**：tenant+runtime+delivery kind+target hash 与 deterministic UUID 防重复入队；lease 支持 worker restart。每个 text/artifact 在 provider call 前先 durable 标 `sending`，成功后单独提交 receipt；已成功附件不会在下一轮重发。明确 retryable 429/5xx 使用有界指数退避和相同 idempotency key；未知异常或 stale `sending` 进入 `needs_reconciliation`，避免非幂等 provider 的 crash-window 双发。达到 max attempts 或目标失效进入 dead letter，管理员可显式清空 receipts 重送。
+6. **消费**：runtime worker 每轮先 drain channel outbox，并将 claimed/delivered/retried/dead-letter/reconciliation 计入 health snapshot；渠道用户真实收到文本和逐项附件。管理员 API 只返回 channel、脱敏 recipient hint、part counts 与错误，不暴露 webhook、interaction/context token 或完整 provider ID；manual resend 是当前可调用消费路径。
+7. **验收**：真实 PostgreSQL 覆盖事务 rollback、不可变重复入队、RLS、429 retry、相同 idempotency key、部分附件恢复、ExternalPrincipal 撤销、stale sending crash-window、人工重送审计；migration parent→head、单 head、web/runtime/business worker 回归、RLS BYPASS allowlist、强制 RLS coverage 与后端全量均通过。
+
+RED 证据（修复前由新增回归测试稳定复现）：
+
+- 首次测试收集报 `ModuleNotFoundError: app.models.channel_delivery_outbox`；架构边界测试同时确认 `web_chat_runtime` 仍存在 inline `ChannelDeliveryService.send_text()`。
+- 原实现 terminal commit 后只执行一次 fail-soft send；没有 durable payload、provider receipt、附件游标、lease、dead letter 或人工重送入口。
+- 新 migration 首轮全量回归暴露三个治理同步缺口：unsanctioned BYPASS literal、worker BYPASS callsite 未登记、bootstrap FORCE RLS 集合未纳入 release migration coverage；均在本提交内关闭。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_channel_delivery_outbox.py \
+  tests/api/test_channel_delivery_outbox_api.py \
+  tests/services/test_web_chat_runtime.py \
+  tests/services/test_business_task_runtime.py \
+  tests/services/test_runtime_task_worker.py \
+  tests/services/test_runtime_notification_outbox.py \
+  tests/services/test_channel_delivery_service.py \
+  tests/migrations/test_channel_delivery_outbox_migration.py \
+  tests/migrations/test_external_principal_migration.py \
+  tests/migrations/test_workflow_migration.py \
+  tests/architecture/test_channel_terminal_delivery_boundary.py \
+  tests/architecture/test_business_task_atomicity.py \
+  tests/security/test_rls_bypass_allowlist.py \
+  tests/api/test_rls_bypass_audit.py \
+  tests/services/test_audit_rls_coverage.py -q
+```
+
+结果：`214 passed, 4 warnings in 29.43s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q
+```
+
+结果：`6291 passed, 1 skipped, 5 warnings in 143.83s`，零失败。
+
+```bash
+backend/.venv/bin/ruff check <SA-07 当前变更 Python 文件>
+backend/.venv/bin/ruff format --check <SA-07 当前变更 Python 文件>
+cd backend && alembic heads
+```
+
+结果：Ruff `All checks passed!`，20 个变更 Python 文件格式通过；Alembic 单 head：`channel_delivery_outbox_0711 (head)`。

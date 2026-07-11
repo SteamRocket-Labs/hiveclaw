@@ -13,6 +13,7 @@ from loguru import logger
 from app.config import get_settings
 from app.database import async_session, enter_rls_bypass
 from app.models.runtime_task import RuntimeTask
+from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService
 from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
 from app.services.runtime_task_claim_service import RuntimeTaskClaimService
 from app.services.runtime_task_fence import run_claimed_runtime_task
@@ -47,6 +48,11 @@ _STATE: dict[str, Any] = {
     "outbox_retried": 0,
     "outbox_deferred": 0,
     "outbox_dead_lettered": 0,
+    "channel_outbox_claimed": 0,
+    "channel_outbox_delivered": 0,
+    "channel_outbox_retried": 0,
+    "channel_outbox_dead_lettered": 0,
+    "channel_outbox_needs_reconciliation": 0,
 }
 
 
@@ -219,6 +225,14 @@ async def drain_runtime_notification_outbox_once(*, worker_id: str) -> dict[str,
     return counts
 
 
+async def drain_channel_delivery_outbox_once(*, worker_id: str) -> dict[str, int]:
+    counts = await ChannelDeliveryOutboxService().drain_once(worker_id=worker_id, limit=20)
+    for key in ("claimed", "delivered", "retried", "dead_lettered", "needs_reconciliation"):
+        state_key = f"channel_outbox_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    return counts
+
+
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
     if is_executable_chat_task_type(getattr(task, "task_type", None)):
         return dispatch_web_chat_run(
@@ -366,6 +380,11 @@ async def start_runtime_task_worker_loop() -> None:
     logger.info("[RuntimeTaskWorker] started worker_id={}", worker_id)
     try:
         while True:
+            try:
+                await drain_channel_delivery_outbox_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - task claiming must continue after one delivery failure.
+                _STATE["last_error"] = f"channel_outbox:{type(exc).__name__}: {str(exc)[:500]}"
+                logger.exception("[RuntimeTaskWorker] channel delivery outbox tick failed")
             try:
                 await drain_runtime_notification_outbox_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - task claiming must continue after one outbox failure.

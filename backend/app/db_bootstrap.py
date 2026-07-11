@@ -146,6 +146,7 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "channel_ingress_events",
     "external_principals",
     "external_principal_binding_events",
+    "channel_delivery_outbox",
 )
 
 # Non-null tenant-owned tables must never inherit the legacy nullable-tenant
@@ -181,6 +182,7 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "channel_ingress_events",
     "external_principals",
     "external_principal_binding_events",
+    "channel_delivery_outbox",
 )
 
 REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (

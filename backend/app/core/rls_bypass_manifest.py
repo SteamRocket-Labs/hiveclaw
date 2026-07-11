@@ -329,6 +329,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/channel_delivery_outbox.py",
+            "_worker_session",
+            "f'channel_delivery_outbox.{operation}'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/business_task_runtime.py",
             "mark_business_task_execution_started",
             "'business task runtime locator'",

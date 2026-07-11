@@ -2513,6 +2513,101 @@ async def _project_agent_team_terminal_state(
     )
 
 
+async def _enqueue_terminal_channel_delivery(
+    *,
+    db: AsyncSession,
+    task: RuntimeTask,
+    agent_id: uuid.UUID,
+    session_id: str,
+    user_id: uuid.UUID | None,
+    external_principal_id: uuid.UUID | None,
+    content: str,
+    status: str,
+    artifact_parts: list[dict[str, Any]],
+    metadata_json: dict[str, Any] | None,
+    delivery_kind: str = "terminal_result",
+) -> uuid.UUID | None:
+    """Write the channel handoff in the same transaction as terminal truth."""
+    from app.models.channel_config import ChannelConfig
+    from app.models.chat_artifact import ChatArtifact
+    from app.services.channel_delivery_outbox import ChannelDeliveryIntent, enqueue_channel_delivery
+    from app.services.channel_delivery_service import ChannelDeliveryService
+
+    runtime_metadata = dict(getattr(task, "metadata_json", None) or {})
+    source = str(runtime_metadata.get("source") or "web").strip().lower()
+    if delivery_kind == "terminal_result" and source in {"", "web", "web_chat"}:
+        return None
+    session_uuid = uuid.UUID(str(session_id))
+    session = (
+        await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == session_uuid,
+                ChatSession.agent_id == agent_id,
+                ChatSession.tenant_id == task.tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    target = dict(getattr(session, "delivery_target_json", None) or {}) if session is not None else {}
+    normalized_target = ChannelDeliveryService.normalize_reply_target(target)
+    if not normalized_target or normalized_target.get("channel") == "web":
+        return None
+
+    channel = str(normalized_target["channel"])
+    channel_config = (
+        await db.execute(
+            select(ChannelConfig).where(
+                ChannelConfig.agent_id == agent_id,
+                ChannelConfig.tenant_id == task.tenant_id,
+                ChannelConfig.channel_type == channel,
+            )
+        )
+    ).scalar_one_or_none()
+    artifact_ids = [
+        uuid.UUID(str(part["artifact_id"]))
+        for part in artifact_parts
+        if isinstance(part, dict) and part.get("artifact_id")
+    ]
+    if not artifact_ids and delivery_kind == "terminal_result":
+        artifact_ids = list(
+            (
+                await db.execute(
+                    select(ChatArtifact.id).where(
+                        ChatArtifact.tenant_id == task.tenant_id,
+                        ChatArtifact.agent_id == agent_id,
+                        ChatArtifact.session_id == session_uuid,
+                        ChatArtifact.runtime_task_id == task.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    metadata = dict(metadata_json or {})
+    return await enqueue_channel_delivery(
+        db,
+        ChannelDeliveryIntent(
+            tenant_id=task.tenant_id,
+            runtime_task_id=task.id,
+            agent_id=agent_id,
+            session_id=session_uuid,
+            user_id=user_id,
+            external_principal_id=external_principal_id,
+            channel_config_id=getattr(channel_config, "id", None),
+            delivery_target=normalized_target,
+            text=content,
+            artifact_ids=artifact_ids,
+            terminal_status=status,
+            delivery_kind=delivery_kind,  # type: ignore[arg-type]
+            metadata={
+                "source": "web_chat_runtime",
+                "terminal_reason": metadata.get("terminal_reason"),
+                "turn_id": metadata.get("turn_id"),
+                "final_decision_trace_id": metadata.get("final_decision_trace_id"),
+            },
+        ),
+    )
+
+
 async def _finalize_web_chat_run_with_assistant(
     *,
     run_uuid: uuid.UUID,
@@ -2584,6 +2679,18 @@ async def _finalize_web_chat_run_with_assistant(
                 status=status,
                 result_summary=result_summary,
                 metadata_json=dict(getattr(task, "metadata_json", None) or {}),
+            )
+            await _enqueue_terminal_channel_delivery(
+                db=db,
+                task=task,
+                agent_id=agent_id,
+                session_id=session_id,
+                user_id=user_id,
+                external_principal_id=external_principal_id,
+                content=content,
+                status=status,
+                artifact_parts=[],
+                metadata_json=metadata_json,
             )
             await db.commit()
             return False
@@ -2739,6 +2846,18 @@ async def _finalize_web_chat_run_with_assistant(
                 rejected_artifact_paths=rejected_artifact_paths,
                 file_change_state_errors=file_change_state_errors,
             )
+            await _enqueue_terminal_channel_delivery(
+                db=db,
+                task=task,
+                agent_id=agent_id,
+                session_id=session_id,
+                user_id=user_id,
+                external_principal_id=external_principal_id,
+                content=content,
+                status=status,
+                artifact_parts=artifact_parts,
+                metadata_json=metadata_json,
+            )
             await _maybe_continue_goal_after_terminal_turn(
                 db=db,
                 task=task,
@@ -2845,6 +2964,18 @@ async def _finalize_web_chat_run_with_assistant(
             rejected_artifact_paths=rejected_artifact_paths,
             file_change_state_errors=file_change_state_errors,
         )
+        await _enqueue_terminal_channel_delivery(
+            db=db,
+            task=task,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+            external_principal_id=external_principal_id,
+            content=content,
+            status=status,
+            artifact_parts=artifact_parts,
+            metadata_json=metadata_json,
+        )
         await _maybe_continue_goal_after_terminal_turn(
             db=db,
             task=task,
@@ -2867,6 +2998,7 @@ async def _finalize_web_chat_run_without_assistant(
     file_change_paths: list[str] | None = None,
     file_change_states: dict[str, dict[str, Any]] | None = None,
     file_change_lineage: list[dict[str, Any]] | None = None,
+    channel_delivery_text: str | None = None,
 ) -> bool:
     """Mark a web-chat run terminal when the visible terminal output is a tool card."""
     from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -2935,6 +3067,20 @@ async def _finalize_web_chat_run_without_assistant(
             file_change_state_errors=state_errors,
             source="web_chat_runtime_tool_card",
         )
+        if channel_delivery_text:
+            await _enqueue_terminal_channel_delivery(
+                db=db,
+                task=task,
+                agent_id=agent_id,
+                session_id=str(getattr(task, "parent_session_id", "") or merged_metadata.get("session_id") or ""),
+                user_id=_uuid_or_none(merged_metadata.get("user_id")),
+                external_principal_id=_uuid_or_none(merged_metadata.get("external_principal_id")),
+                content=channel_delivery_text,
+                status=status,
+                artifact_parts=[],
+                metadata_json=merged_metadata,
+                delivery_kind="interactive_prompt",
+            )
         await _maybe_continue_goal_after_terminal_turn(
             db=db,
             task=task,
@@ -3864,40 +4010,6 @@ async def _resume_queued_plan_handoffs(
     return resumed
 
 
-async def _deliver_run_result_to_channel(agent_id: uuid.UUID, session_id: Any, text: str) -> None:
-    """Push a durable run's final assistant text back to its origin IM channel.
-
-    Web-origin sessions have no ``delivery_target_json`` and are skipped, so this
-    only fires for runs whose session came from a channel (e.g. an IM Plan Mode
-    confirmation that continues in-session — P1-2: results used to land in the web
-    UI/DB only, leaving the IM user in silence after "已启动执行"). Fail-soft: a
-    delivery error must not fail the run, but it is logged, never swallowed.
-    """
-    if not text or is_llm_error_message(text):
-        return
-    try:
-        from app.services.tenant_resolver import resolve_tenant_for_agent
-
-        tenant_id = await resolve_tenant_for_agent(agent_id)
-        async with tenant_scoped_session(tenant_id) as db:
-            session = (
-                await db.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(str(session_id))))
-            ).scalar_one_or_none()
-            target = getattr(session, "delivery_target_json", None) if session else None
-            if not target:
-                return
-            if str(target.get("channel") or "").strip().lower() == "web":
-                # Web-origin durable runs are already persisted by the finalizer
-                # and streamed through the broker. Re-delivering to the same web
-                # channel would insert a second assistant chat row.
-                return
-            from app.services.channel_delivery_service import ChannelDeliveryService
-
-            await ChannelDeliveryService.send_text(db=db, agent_id=agent_id, reply_target=target, text=text)
-    except Exception as exc:
-        logger.warning("[WebChatRun] channel delivery of run result failed (non-fatal): {}", exc)
-
-
 def _phase_for_terminal_status(status: str) -> RuntimePhase:
     if status == "killed":
         return RuntimePhase.CANCELLED
@@ -4252,7 +4364,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         interactive_pause_summary: str | None = None
         terminal_tool_card_finalized = False
 
-        async def _finalize_terminal_tool_card_now(summary: str) -> bool:
+        async def _finalize_terminal_tool_card_now(
+            summary: str,
+            *,
+            channel_delivery_text: str | None = None,
+        ) -> bool:
             """Release the active run as soon as a terminal tool card is visible."""
             nonlocal terminal_tool_card_finalized, terminal_phase_hint
             if terminal_tool_card_finalized:
@@ -4275,6 +4391,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 file_change_paths=_terminal_file_change_paths_for_turn(runtime_session_context),
                 file_change_states=_terminal_file_change_states_for_turn(runtime_session_context),
                 file_change_lineage=_terminal_file_change_lineage_for_turn(runtime_session_context),
+                channel_delivery_text=channel_delivery_text,
             )
             terminal_tool_card_finalized = finalized or terminal_tool_card_finalized
             if finalized:
@@ -4390,13 +4507,15 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 pause_summary = _interactive_pause_summary_for_tool_call(data)
                 if pause_summary:
                     interactive_pause_summary = pause_summary
+                    channel_prompt = None
                     if pause_summary == "awaiting_session_permission" and not _is_web_origin_turn(
                         metadata, runtime_session_context
                     ):
                         channel_prompt = _channel_session_permission_prompt_for_tool_call(data)
-                        if channel_prompt:
-                            await _deliver_run_result_to_channel(agent.id, session_id, channel_prompt)
-                    await _finalize_terminal_tool_card_now(pause_summary)
+                    await _finalize_terminal_tool_card_now(
+                        pause_summary,
+                        channel_delivery_text=channel_prompt,
+                    )
                     raise _TerminalToolCardSignal(pause_summary)
 
         plan_mode_token = None
@@ -4621,11 +4740,6 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             session_id,
             build_done_event(assistant_response, thinking=thinking, artifacts=metadata_update.get("artifacts")),
         )
-        if status == "completed" and not _is_web_origin_turn(metadata, runtime_session_context):
-            # P1-2: deliver the result back to the origin IM channel (no-op for
-            # web sessions). Without this, an IM plan confirmation that continues
-            # in-session streamed only to the web UI — the IM user heard nothing.
-            await _deliver_run_result_to_channel(agent.id, session_id, assistant_response)
     except Exception as exc:
         logger.exception("[WebChatRun] Run {} failed", run_uuid.hex)
         was_cancelled = cancel_event.is_set()

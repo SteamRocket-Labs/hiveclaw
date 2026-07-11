@@ -116,6 +116,8 @@ async def stage_business_task_runtime(
     agent_name: str | None,
     request_id: str,
     request_hash: str | None = None,
+    root_session_id: uuid.UUID | None = None,
+    delivery_target: dict[str, Any] | None = None,
 ) -> RuntimeTask:
     """Add a linked RuntimeTask to the caller's uncommitted transaction."""
 
@@ -155,6 +157,7 @@ async def stage_business_task_runtime(
         tenant_id=task.tenant_id,
         prompt=task.description,
         trace_id=f"business_task:{runtime_task_id.hex}",
+        parent_session_id=str(root_session_id) if root_session_id else None,
         depth=1,
         root_idempotency_key=business_task_runtime_root_key(task_id=task.id, request_id=request_id),
         metadata_json={
@@ -166,6 +169,8 @@ async def stage_business_task_runtime(
             "attempt": attempt,
             "phase": "queued",
             "source": "tasks_api",
+            "root_session_id": str(root_session_id) if root_session_id else None,
+            "delivery_target": dict(delivery_target or {}) or None,
         },
     )
     db.add(runtime_task)
@@ -231,6 +236,63 @@ def apply_business_task_outcome(
             task_id=task.id,
             content=f"{icon} {outcome.summary}" + (f"\n\n{outcome.result}" if outcome.result else ""),
         )
+    )
+
+
+async def _enqueue_business_task_channel_delivery(
+    *,
+    db: AsyncSession,
+    runtime_task: RuntimeTask,
+    outcome: TaskExecutionOutcome,
+) -> None:
+    metadata = dict(runtime_task.metadata_json or {})
+    target = metadata.get("delivery_target")
+    if not isinstance(target, dict) or not target:
+        return
+    channel = str(target.get("channel") or "").strip().lower()
+    if not channel or channel == "web":
+        return
+    try:
+        session_id = uuid.UUID(str(metadata.get("root_session_id") or runtime_task.parent_session_id))
+        requester_user_id = uuid.UUID(str(metadata["requester_user_id"]))
+    except (KeyError, ValueError) as exc:
+        raise BusinessTaskInvariantError("business task channel delivery authority is invalid") from exc
+    if runtime_task.tenant_id is None or runtime_task.parent_agent_id is None:
+        raise BusinessTaskInvariantError("business task channel delivery has no tenant or Agent")
+
+    from app.models.channel_config import ChannelConfig
+    from app.services.channel_delivery_outbox import ChannelDeliveryIntent, enqueue_channel_delivery
+
+    config = (
+        await db.execute(
+            select(ChannelConfig).where(
+                ChannelConfig.tenant_id == runtime_task.tenant_id,
+                ChannelConfig.agent_id == runtime_task.parent_agent_id,
+                ChannelConfig.channel_type == ("microsoft_teams" if channel == "teams" else channel),
+            )
+        )
+    ).scalar_one_or_none()
+    text = outcome.summary
+    if outcome.result and outcome.result.strip() != outcome.summary.strip():
+        text = f"{outcome.summary}\n\n{outcome.result}"
+    await enqueue_channel_delivery(
+        db,
+        ChannelDeliveryIntent(
+            tenant_id=runtime_task.tenant_id,
+            runtime_task_id=runtime_task.id,
+            agent_id=runtime_task.parent_agent_id,
+            session_id=session_id,
+            user_id=requester_user_id,
+            channel_config_id=getattr(config, "id", None),
+            delivery_target=target,
+            text=text[:20_000],
+            terminal_status=outcome.runtime_status,
+            metadata={
+                "source": "business_task_runtime",
+                "business_task_id": metadata.get("business_task_id"),
+                "evidence_refs": list(outcome.evidence_refs),
+            },
+        ),
     )
 
 
@@ -317,6 +379,7 @@ async def finalize_business_task_execution(
         if task is None:
             raise BusinessTaskInvariantError("business Task not found during finalization")
         apply_business_task_outcome(db=db, task=task, runtime_task=runtime_task, outcome=outcome)
+        await _enqueue_business_task_channel_delivery(db=db, runtime_task=runtime_task, outcome=outcome)
         await db.commit()
         return True
 

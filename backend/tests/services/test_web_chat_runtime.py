@@ -9,6 +9,10 @@ from uuid import uuid4
 import pytest
 
 
+async def _noop_async(*_args, **_kwargs):
+    return None
+
+
 class _ScalarResult:
     def __init__(self, value):
         self._value = value
@@ -218,7 +222,6 @@ async def test_execute_web_chat_run_keeps_channel_delivery_tools_visible_for_web
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -280,7 +283,6 @@ async def test_execute_web_chat_run_allows_channel_delivery_tools_for_explicit_w
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -590,7 +592,6 @@ async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(m
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -662,7 +663,6 @@ async def test_execute_web_chat_run_records_turn_tokens_for_goal_accounting(monk
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -728,7 +728,6 @@ def _patch_phase_run(monkeypatch, runtime, *, runtime_task, agent, user, llm_mod
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", capture_broadcast)
     monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
 
 
@@ -1961,6 +1960,7 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
 
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+    monkeypatch.setattr(runtime, "_enqueue_terminal_channel_delivery", _noop_async)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     finalized = await runtime._finalize_web_chat_run_with_assistant(
@@ -2062,6 +2062,7 @@ async def test_finalize_web_chat_run_binds_recent_workspace_artifacts(monkeypatc
 
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+    monkeypatch.setattr(runtime, "_enqueue_terminal_channel_delivery", _noop_async)
     monkeypatch.setattr(runtime, "create_chat_artifacts_for_message", fake_create_chat_artifacts_for_message)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
@@ -2183,6 +2184,7 @@ async def test_finalize_web_chat_run_records_file_changes_side_channel(monkeypat
 
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+    monkeypatch.setattr(runtime, "_enqueue_terminal_channel_delivery", _noop_async)
     monkeypatch.setattr(runtime, "create_chat_artifacts_for_message", fake_create_chat_artifacts_for_message)
     monkeypatch.setattr(runtime, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
@@ -2366,6 +2368,7 @@ async def test_finalize_web_chat_run_reuses_kernel_persisted_terminal_message(mo
 
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+    monkeypatch.setattr(runtime, "_enqueue_terminal_channel_delivery", _noop_async)
 
     finalized = await runtime._finalize_web_chat_run_with_assistant(
         run_uuid=run_id,
@@ -2436,6 +2439,7 @@ async def test_finalize_web_chat_run_skips_existing_final_assistant_marker(monke
 
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+    monkeypatch.setattr(runtime, "_enqueue_terminal_channel_delivery", _noop_async)
 
     finalized = await runtime._finalize_web_chat_run_with_assistant(
         run_uuid=run_id,
@@ -2510,7 +2514,6 @@ async def test_execute_web_chat_run_does_not_broadcast_done_when_finalization_lo
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -2573,7 +2576,6 @@ async def test_execute_web_chat_run_marks_terminal_persistence_error_when_finali
     monkeypatch.setattr(runtime, "_update_runtime_task", fake_update_runtime_task)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
     monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
@@ -2645,7 +2647,6 @@ async def test_execute_web_chat_run_treats_final_marker_unique_violation_as_lost
     monkeypatch.setattr(runtime, "_update_runtime_task", fake_update_runtime_task)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
     monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
@@ -2710,7 +2711,6 @@ async def test_execute_web_chat_run_disables_tools_for_side_question(monkeypatch
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -2780,7 +2780,6 @@ async def test_execute_web_chat_run_keeps_unbound_external_principal_read_only(m
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -2874,9 +2873,6 @@ async def test_execute_web_chat_run_finalizes_blocking_clarification_without_emp
         persisted_tools.append(kwargs["data"])
         ordering.append(f"persist:{kwargs['data'].get('name')}")
 
-    async def fake_deliver(_agent_id, _session_id, content):
-        delivered_channel_replies.append(content)
-
     async def noop_async(*_args, **_kwargs):
         return None
 
@@ -2893,7 +2889,6 @@ async def test_execute_web_chat_run_finalizes_blocking_clarification_without_emp
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", fake_deliver)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -2983,7 +2978,6 @@ async def test_execute_web_chat_run_interrupts_kernel_after_terminal_tool_card(m
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -3029,7 +3023,7 @@ async def test_execute_web_chat_run_delivers_session_permission_prompt_to_channe
     user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     session = SimpleNamespace(delivery_target_json={"channel": "telegram", "chat_id": "100", "sender_id": "200"})
-    deliveries: list[tuple] = []
+    finalized_without_assistant: list[dict] = []
 
     async def fake_load_context(_run_uuid):
         return runtime_task, agent, user, llm_model, None, [], session
@@ -3060,11 +3054,9 @@ async def test_execute_web_chat_run_delivers_session_permission_prompt_to_channe
         )
         raise AssertionError("session permission should pause before the model writes a refusal")
 
-    async def fake_finalize_without_assistant(**_kwargs):
+    async def fake_finalize_without_assistant(**kwargs):
+        finalized_without_assistant.append(kwargs)
         return True
-
-    async def fake_deliver(*args, **kwargs):
-        deliveries.append((args, kwargs))
 
     async def noop_async(*_args, **_kwargs):
         return None
@@ -3082,15 +3074,11 @@ async def test_execute_web_chat_run_delivers_session_permission_prompt_to_channe
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", fake_deliver)
 
     await runtime.execute_web_chat_run(run_id)
 
-    assert len(deliveries) == 1
-    delivered_args, _delivered_kwargs = deliveries[0]
-    assert delivered_args[0] == agent_id
-    assert delivered_args[1] == session_id
-    delivered_text = delivered_args[2]
+    assert len(finalized_without_assistant) == 1
+    delivered_text = finalized_without_assistant[0]["channel_delivery_text"]
     assert "Send Message to Agent" in delivered_text
     assert "允许" in delivered_text
     assert "本会话允许" in delivered_text
@@ -3184,7 +3172,6 @@ async def test_execute_web_chat_run_releases_active_run_inside_terminal_tool_cal
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -3272,7 +3259,6 @@ async def test_execute_web_chat_run_stops_after_create_employee_success_card(mon
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -4976,7 +4962,6 @@ async def test_execute_web_chat_run_injects_restart_resume_context(monkeypatch):
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
@@ -5341,7 +5326,7 @@ async def test_execute_web_chat_run_does_not_deliver_web_turn_to_historical_im_t
     user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     session = SimpleNamespace(delivery_target_json={"channel": "feishu", "chat_id": "oc_x"})
-    delivered = {"n": 0}
+    finalized = {"n": 0}
 
     async def fake_load_context(_run_uuid):
         return runtime_task, agent, user, llm_model, None, [], session
@@ -5350,10 +5335,8 @@ async def test_execute_web_chat_run_does_not_deliver_web_turn_to_historical_im_t
         return SimpleNamespace(content="web answer", reasoning_signature=None)
 
     async def fake_finalize(**_kwargs):
+        finalized["n"] += 1
         return True
-
-    async def fake_deliver(*_args, **_kwargs):
-        delivered["n"] += 1
 
     async def noop_async(*_args, **_kwargs):
         return None
@@ -5368,11 +5351,10 @@ async def test_execute_web_chat_run_does_not_deliver_web_turn_to_historical_im_t
     monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
-    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", fake_deliver)
 
     await runtime.execute_web_chat_run(run_id)
 
-    assert delivered["n"] == 0
+    assert finalized["n"] == 1
 
 
 @pytest.mark.asyncio
@@ -5408,129 +5390,95 @@ async def test_execute_web_chat_run_keeps_cancelled_exception_as_killed(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_deliver_run_result_pushes_to_im_channel(monkeypatch):
-    """P1-2: a run whose session carries a delivery target pushes the final text
-    back to that IM channel (the in-session plan-continuation case)."""
+async def test_terminal_channel_result_is_enqueued_instead_of_sent_inline(monkeypatch):
+    import app.services.channel_delivery_outbox as outbox
     import app.services.web_chat_runtime as runtime
 
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    user_id = uuid4()
+    config_id = uuid4()
     target = {"channel": "feishu", "chat_id": "oc_x"}
+    task = SimpleNamespace(id=run_id, tenant_id=tenant_id, metadata_json={"source": "feishu"})
+    session = SimpleNamespace(delivery_target_json=target)
+    config = SimpleNamespace(id=config_id)
+
+    class _Result:
+        def __init__(self, value=None, values=None):
+            self.value = value
+            self.values = values or []
+
+        def scalar_one_or_none(self):
+            return self.value
+
+        def scalars(self):
+            return SimpleNamespace(all=lambda: list(self.values))
+
+    class _DB:
+        def __init__(self):
+            self.results = [_Result(session), _Result(config), _Result(values=[])]
+
+        async def execute(self, _stmt):
+            return self.results.pop(0)
+
+    captured = {}
+
+    async def fake_enqueue(_db, intent):
+        captured["intent"] = intent
+        return uuid4()
+
+    monkeypatch.setattr(outbox, "enqueue_channel_delivery", fake_enqueue)
+    await runtime._enqueue_terminal_channel_delivery(
+        db=_DB(),
+        task=task,
+        agent_id=agent_id,
+        session_id=str(session_id),
+        user_id=user_id,
+        external_principal_id=None,
+        content="执行完成",
+        status="completed",
+        artifact_parts=[],
+        metadata_json={"turn_id": "turn-1"},
+    )
+
+    intent = captured["intent"]
+    assert intent.delivery_target == target
+    assert intent.text == "执行完成"
+    assert intent.channel_config_id == config_id
+    assert intent.runtime_task_id == run_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", [None, {"channel": "web", "username": "alice"}])
+async def test_terminal_channel_result_skips_non_external_delivery_targets(monkeypatch, target):
+    import app.services.channel_delivery_outbox as outbox
+    import app.services.web_chat_runtime as runtime
+
     session = SimpleNamespace(delivery_target_json=target)
 
     class _DB:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_a):
-            return False
-
         async def execute(self, _stmt):
             return SimpleNamespace(scalar_one_or_none=lambda: session)
 
-    monkeypatch.setattr(runtime, "_async_session", lambda: _DB())
-    # RLS 阶段2b: _deliver_run_result_to_channel resolves the agent's tenant and
-    # opens a tenant-scoped session. Route it through the same fake DB and stub
-    # the resolver so no real DB / bypass read happens.
-    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *_a, **_k: _DB())
+    async def fail_enqueue(*_args, **_kwargs):
+        raise AssertionError("web/no-target session must not enqueue external delivery")
 
-    async def _fake_resolve(*_a, **_k):
-        return uuid4()
-
-    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", _fake_resolve)
-
-    sent = {}
-
-    async def fake_send_text(*, db, agent_id, reply_target, text, **_kwargs):
-        sent["reply_target"] = reply_target
-        sent["text"] = text
-        return SimpleNamespace()
-
-    monkeypatch.setattr("app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text)
-
-    await runtime._deliver_run_result_to_channel(uuid4(), uuid4(), "执行完成")
-    assert sent["reply_target"] == target
-    assert sent["text"] == "执行完成"
-
-
-@pytest.mark.asyncio
-async def test_deliver_run_result_skips_web_session(monkeypatch):
-    """A web-origin session has no delivery target → no channel delivery."""
-    import app.services.web_chat_runtime as runtime
-
-    session = SimpleNamespace(delivery_target_json=None)
-
-    class _DB:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_a):
-            return False
-
-        async def execute(self, _stmt):
-            return SimpleNamespace(scalar_one_or_none=lambda: session)
-
-    monkeypatch.setattr(runtime, "_async_session", lambda: _DB())
-    # RLS 阶段2b: route the tenant-scoped session through the same fake DB and
-    # stub the resolver so this exercises the real no-target branch (not an
-    # accidental pass via a real-DB-down exception).
-    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *_a, **_k: _DB())
-
-    async def _fake_resolve(*_a, **_k):
-        return uuid4()
-
-    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", _fake_resolve)
-
-    calls = {"n": 0}
-
-    async def fake_send_text(**_kwargs):
-        calls["n"] += 1
-
-    monkeypatch.setattr("app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text)
-
-    await runtime._deliver_run_result_to_channel(uuid4(), uuid4(), "执行完成")
-    assert calls["n"] == 0  # web session → no channel delivery
-
-
-@pytest.mark.asyncio
-async def test_deliver_run_result_skips_current_web_session_delivery_target(monkeypatch):
-    """Web sessions carry delivery metadata for explicit web pushes, but a web-chat
-    run's own final response is already persisted by the run finalizer."""
-    import app.services.web_chat_runtime as runtime
-
-    session_id = uuid4()
-    session = SimpleNamespace(
-        delivery_target_json={
-            "channel": "web",
-            "username": "alice",
-            "session_id": str(session_id),
-        }
+    monkeypatch.setattr(outbox, "enqueue_channel_delivery", fail_enqueue)
+    result = await runtime._enqueue_terminal_channel_delivery(
+        db=_DB(),
+        task=SimpleNamespace(id=uuid4(), tenant_id=uuid4()),
+        agent_id=uuid4(),
+        session_id=str(uuid4()),
+        user_id=uuid4(),
+        external_principal_id=None,
+        content="执行完成",
+        status="completed",
+        artifact_parts=[],
+        metadata_json={},
     )
-
-    class _DB:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_a):
-            return False
-
-        async def execute(self, _stmt):
-            return SimpleNamespace(scalar_one_or_none=lambda: session)
-
-    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *_a, **_k: _DB())
-
-    async def _fake_resolve(*_a, **_k):
-        return uuid4()
-
-    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", _fake_resolve)
-
-    calls = {"n": 0}
-
-    async def fake_send_text(**_kwargs):
-        calls["n"] += 1
-
-    monkeypatch.setattr("app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text)
-
-    await runtime._deliver_run_result_to_channel(uuid4(), session_id, "执行完成")
-    assert calls["n"] == 0
+    assert result is None
 
 
 @pytest.mark.asyncio

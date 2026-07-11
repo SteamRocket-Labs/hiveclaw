@@ -138,6 +138,20 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(source).toContain('const TRANSCRIPT_INITIAL_WINDOW = 25;');
     expect(source).toContain('const TRANSCRIPT_OLDER_PAGE = 50;');
   });
+
+  it('never gives up transient reconnects and recovers missed durable transcript events', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+
+    expect(source).not.toContain('attempts >= 20');
+    expect(source).not.toContain('Giving up reconnect');
+    expect(source).toContain('reconnectDelayMs(previousAttempts)');
+    expect(source).toContain("window.addEventListener('online', handleOnline)");
+    expect(source).toContain("window.addEventListener('offline', handleOffline)");
+    expect(source).toContain("document.addEventListener('visibilitychange', handleVisibility)");
+    expect(source).toContain('transportPollIntervalMs(');
+    expect(source).toContain('await backfillSessionTranscript(activeSession, id)');
+    expect(source).toContain('onReconnectTransport={reconnectActiveTransport}');
+  });
 });
 
 describe('AgentDetail access failures', () => {

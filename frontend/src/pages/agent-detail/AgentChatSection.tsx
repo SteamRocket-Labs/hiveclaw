@@ -28,6 +28,8 @@ import PlanCard from './PlanCard';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
+import { SessionTransportStatus } from './SessionTransportStatus';
+import type { ChatTransportPhase } from './chatTransportRecovery';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import { ThreadItemInspector } from '../session-workbench/ThreadItemInspector';
 import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
@@ -344,6 +346,9 @@ interface AgentChatSectionProps {
   branchLineageLoading?: boolean;
   onSelectBranchSession?: (sessionId: string) => void | Promise<unknown>;
   wsConnected: boolean;
+  transportPhase?: ChatTransportPhase;
+  transportReconnectAttempt?: number;
+  onReconnectTransport?: () => void;
   allSessions: any[];
   allSessionsLoading: boolean;
   allUserFilter: string;
@@ -3373,6 +3378,9 @@ function AgentChatSection({
   branchLineageLoading = false,
   onSelectBranchSession,
   wsConnected,
+  transportPhase = wsConnected ? 'connected' : 'reconnecting',
+  transportReconnectAttempt = 0,
+  onReconnectTransport,
   allSessions,
   allSessionsLoading,
   allUserFilter,
@@ -4507,25 +4515,12 @@ function AgentChatSection({
               >
                 {transportNotice}
               </div>
-            ) : !wsConnected && !isDraftSession ? (
-              <div
-                role="status"
-                aria-live="polite"
-                style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}
-              >
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: '5px',
-                    height: '5px',
-                    borderRadius: '50%',
-                    background: 'var(--accent-primary)',
-                    opacity: 0.8,
-                    animation: 'pulse 1.2s ease-in-out infinite',
-                  }}
-                />
-                {t('agent.chat.transport.reconnecting', 'Live updates reconnecting...')}
-              </div>
+            ) : !isDraftSession ? (
+              <SessionTransportStatus
+                phase={transportPhase}
+                attempt={transportReconnectAttempt}
+                onReconnect={onReconnectTransport}
+              />
             ) : null}
             <div
               data-testid="session-composer"

@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**24 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04、用户体验 UX-01 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**25 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04、用户体验 UX-01 至 UX-02 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -108,7 +108,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | GOV-03 | Workflow promotion 需要 manager 又要求原会话 owner | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-04 | Budget 状态通知声称有 outbox，实际不存在 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-01 | 普通用户直接看到运行时/治理原始字段 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| UX-02 | WebSocket 20 次后永久放弃且无恢复入口 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
+| UX-02 | WebSocket 20 次后永久放弃且无恢复入口 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-03 | 当前 UI 无新鲜像素基线与 CI gate | P1 | 断点 | △ | ✓ | ✓ | △ | ✗ | △ | ✗ |
 | UX-04 | 核心运行时/前端巨型模块维持多责任 | P1 | 局部闭环 | ✓ | △ | △ | △ | ✗ | △ | △ |
 | UX-05 | Sidebar pin/search 状态已无消费方 | P2 | 断点 | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ |
@@ -401,6 +401,8 @@ RLS 基础设施本身不是本轮主断点：`backend/app/database.py` 已有 t
 关闭方式：后端产出双投影：`user_summary/user_action` 与 `operator_details/evidence_refs`。普通用户只看“发生了什么、需要做什么、结果在哪里”；管理员在显式 Inspector/诊断模式查看 ID、hash、span、arguments。敏感 arguments 还要字段级 redaction。
 
 ### UX-02：实时连接重试 20 次后永久停掉 — P1
+
+**修复状态（2026-07-11）**：**闭环**。瞬时网络错误现在使用无限次数、30–60秒封顶的指数退避，不再把attempt count变成永久shutdown。浏览器offline时停止无效握手，online和tab重新可见时立即唤醒socket并执行durable transcript backfill。重连期间按active run 3秒、idle 10秒读取`after_sequence`窗口并刷新active run/runtime summary；成功onopen也先补齐断线窗口。live与backfill按有效transcript sequence优先、event id兜底去重，不会重复渲染同一事实。只有4002/4003授权失败、Agent expired、明确session dispose和unmount可以禁用重连；Setup/model错误不再误伤transport。普通UI明确区分reconnecting、degraded、offline、auth failed，说明任务仍在后台运行，并在可恢复状态提供“Retry now”。
 
 `frontend/src/pages/AgentDetail.tsx:1719-1734` 在 20 次失败后把 reconnectDisabled 设为 true；`1940-1953` 的 effect 不会因网络恢复自动再触发，也没有 online listener 或用户“重新连接”按钮。UI 会长期显示 reconnecting，用户仍可能发起 HTTP run，却看不到增量和终态。
 
@@ -2283,3 +2285,66 @@ npm run build
 ```
 
 结果：`102 test files / 599 tests passed`；TypeScript + Vite production build exit 0，`7073 modules transformed`。
+
+### UX-02 — 无限重连、durable backfill 与显式恢复入口
+
+状态：**闭环**。提交主题：`fix(UX-02): make chat transport continuously recoverable`。
+
+七原子证据：
+
+1. **输入**：socket close、同步constructor失败、browser online/offline、visibility恢复、degraded poll和用户“Retry now”全部进入同一`ensureSessionSocket()`/backfill路径；session、Agent、token与Operator View参数来自当前受信UI状态。
+2. **权威**：4002/4003与Agent expired仍fail closed，不能被后台网络wake绕过；token或显式用户重试才可重新建立连接。Operator session的backfill继续携带既有审计理由，普通session不能请求operator transcript。
+3. **执行**：单一socket factory负责每个`agent_id:session_id`连接；同key的OPEN/CONNECTING socket不会重复创建。瞬时失败无限重试，退避封顶；offline不建连接，online/visibility唤醒。`SessionTransportStatus`只投影状态，不创建第二transport。
+4. **证据**：WebSocket仍是低延迟信号，`ChatTranscriptEvent.sequence`仍是恢复事实源。断线回填使用`after_sequence`升序窗口；live/backfill按正sequence优先、event id兜底合并。active-run/runtime query由同一backfill周期invalidate，不把“socket disconnected”误判为run terminal。
+5. **恢复**：reconnecting/degraded时active run每3秒、idle每10秒回填；onopen与tab回到visible时立即补洞。in-flight map禁止并发回填，同sequence不同临时ID只应用一次；分页直到追上最新sequence。手动重连会安全拆除旧handlers/timer/socket后再建连接，不触发旧onclose重复调度。
+6. **消费**：conversation继续从replay state消费补齐事件；runtime panel消费刷新后的active run与summary。用户看到connected/reconnecting/degraded/offline/auth failed语义，offline/degraded明确提示后台任务未被页面断线取消，可恢复状态有手动入口。
+7. **验收**：覆盖无限/封顶退避、五态映射、poll条件、sequence去重、connected空态、reconnecting/degraded/offline/auth文案、manual reconnect、source wiring、online/offline/visibility listeners、durable transcript/API/runtime backend契约、前端全量与production build。
+
+KISS/奥卡姆证据：恢复算法和展示组件从巨型AgentDetail中各抽出一个小型纯模块；没有引入新状态库、service worker或第二event store。polling只是在WebSocket降级时消费既有durable transcript/active-run API，connected后自动停止。
+
+RED证据：
+
+```text
+首次策略/组件测试：2 failed suites
+- chatTransportRecovery与SessionTransportStatus模块不存在
+
+sequence对抗契约：1 failed
+- 同sequence但live/durable ID不同会合并成两条事件
+
+原源码事实：
+- attempts >= 20后reconnectDisabled=true
+- 无online/offline/visibility listener
+- 无degraded transcript polling、onopen backfill或manual reconnect
+```
+
+GREEN证据：
+
+```bash
+cd frontend
+npm test -- --run \
+  src/pages/AgentDetail.test.tsx \
+  src/pages/agent-detail/chatTransportRecovery.test.ts \
+  src/pages/agent-detail/SessionTransportStatus.test.tsx \
+  src/pages/agent-detail/AgentDetailSections.test.tsx
+```
+
+结果：相关面`4 test files / 117 tests passed`；另一次Session/runtime组合验证`4 test files / 176 tests passed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/api/test_chat_sessions_transcript_window.py \
+  tests/api/test_chat_session_runs.py \
+  tests/services/test_web_chat_runtime.py -q
+```
+
+结果：durable transcript、active run与WebSocket backend契约`130 passed, 4 warnings in 3.00s`。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`104 test files / 607 tests passed`；TypeScript + Vite production build exit 0，`7075 modules transformed`。

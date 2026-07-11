@@ -71,6 +71,14 @@ import {
 } from './agent-detail/chatRuntime';
 import { buildPlanModeScopeKey, nextPlanModeRequestedForScope } from './agent-detail/planModeComposer';
 import {
+    chatTransportPhase,
+    latestTranscriptSequence,
+    mergeTranscriptBackfill,
+    reconnectDelayMs,
+    transportPollIntervalMs,
+    type ChatTransportPhase,
+} from './agent-detail/chatTransportRecovery';
+import {
     createSessionMessageStore,
     useSessionMessages,
     type ChatMessagesUpdater,
@@ -550,6 +558,7 @@ function AgentDetailInner() {
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, SessionUiState>>({});
     const transcriptReplayStateRef = useRef<Record<SessionRuntimeKey, TranscriptReplayState>>({});
     const transcriptEventsRef = useRef<Record<SessionRuntimeKey, ChatTranscriptEventPayload[]>>({});
+    const transcriptBackfillInFlightRef = useRef<Record<SessionRuntimeKey, Promise<void> | undefined>>({});
     const toolCallInvalidateAtRef = useRef<Record<SessionRuntimeKey, number>>({});
     const [transcriptHasOlder, setTranscriptHasOlder] = useState<Record<SessionRuntimeKey, boolean>>({});
     const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
@@ -703,9 +712,22 @@ function AgentDetailInner() {
         isActiveRuntime: boolean,
     ) => {
         const key = buildSessionRuntimeKey(agentId, sessionId);
+        const existingEvents = transcriptEventsRef.current[key] || [];
+        const sequenceAlreadyApplied = typeof event.sequence === 'number'
+            && event.sequence > 0
+            && existingEvents.some((candidate) => candidate.sequence === event.sequence);
+        if (sequenceAlreadyApplied) {
+            transcriptEventsRef.current[key] = mergeTranscriptBackfill(existingEvents, [event]);
+            return;
+        }
         const previous = transcriptReplayStateRef.current[key] || createEmptyTranscriptReplayState();
         const next = applyTranscriptEvent(previous, event);
+        if (next === previous) return;
         transcriptReplayStateRef.current[key] = next;
+        transcriptEventsRef.current[key] = mergeTranscriptBackfill(
+            transcriptEventsRef.current[key] || [],
+            [event],
+        );
         sessionUiStateRef.current[key] = next.ui;
         runtimeActivityAtRef.current[key] = Date.now();
 
@@ -732,6 +754,44 @@ function AgentDetailInner() {
         }
     };
 
+    const backfillSessionTranscript = async (sess: any, agentId: string) => {
+        const sessionId = String(sess?.id || '');
+        if (!sessionId) return;
+        const key = buildSessionRuntimeKey(agentId, sessionId);
+        if (!transcriptReplayStateRef.current[key]) return;
+        const inFlight = transcriptBackfillInFlightRef.current[key];
+        if (inFlight) return inFlight;
+
+        const task = (async () => {
+            let afterSequence = latestTranscriptSequence(transcriptEventsRef.current[key] || []);
+            let pageSize = 0;
+            do {
+                const events = await chatApi.getSessionTranscript(agentId, sessionId, {
+                    afterSequence,
+                    limit: 1000,
+                    ...(sess?.operator_view
+                        ? { operatorView: true, operatorReason: 'Agent session administration' }
+                        : undefined),
+                }) as ChatTranscriptEventPayload[];
+                pageSize = events.length;
+                if (pageSize === 0) break;
+                const isActiveRuntime = currentAgentIdRef.current === agentId
+                    && activeSessionIdRef.current === sessionId;
+                events.forEach((event) => applyTranscriptToSession(agentId, sessionId, event, isActiveRuntime));
+                const nextSequence = latestTranscriptSequence(events);
+                if (nextSequence <= afterSequence) break;
+                afterSequence = nextSequence;
+            } while (pageSize === 1000);
+            invalidateSessionRuntimeQueries(agentId, sessionId);
+        })().catch((error) => {
+            console.warn(`[WS] Durable transcript backfill failed for ${key}:`, error);
+        }).finally(() => {
+            delete transcriptBackfillInFlightRef.current[key];
+        });
+        transcriptBackfillInFlightRef.current[key] = task;
+        return task;
+    };
+
     const isWritableSession = (sess: any) => {
         if (!sess) return false;
         return shouldUseWritableSessionSurface(sess, currentUser?.id);
@@ -746,7 +806,15 @@ function AgentDetailInner() {
         const key = buildSessionRuntimeKey(agentId, sess.id);
         const ws = wsMapRef.current[key];
         wsRef.current = ws ?? null;
-        setWsConnected(!!ws && ws.readyState === WebSocket.OPEN);
+        const connected = !!ws && ws.readyState === WebSocket.OPEN;
+        setWsConnected(connected);
+        setTransportReconnectAttempt(reconnectAttemptsRef.current[key] || 0);
+        setTransportPhase(chatTransportPhase({
+            online: typeof navigator === 'undefined' || navigator.onLine !== false,
+            connected,
+            attempts: reconnectAttemptsRef.current[key] || 0,
+            authFailed: Boolean(reconnectDisabledRef.current[key] && agentExpired),
+        }));
     };
 
     const fetchMySessions = async (silent = false, agentId: string | undefined = id) => {
@@ -1516,6 +1584,8 @@ function AgentDetailInner() {
         activeSession?.transcript_metadata_json?.permission_mode,
     ]);
     const [wsConnected, setWsConnected] = useState(false);
+    const [transportPhase, setTransportPhase] = useState<ChatTransportPhase>('reconnecting');
+    const [transportReconnectAttempt, setTransportReconnectAttempt] = useState(0);
     const [uploading, setUploading] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
@@ -1676,6 +1746,8 @@ function AgentDetailInner() {
         setIsStreaming(false);
         setIsWaiting(false);
         setWsConnected(false);
+        setTransportPhase('reconnecting');
+        setTransportReconnectAttempt(0);
         wsRef.current = null;
         activeRunStateRef.current = {};
         pendingUserMessagesRef.current = {};
@@ -1743,23 +1815,34 @@ function AgentDetailInner() {
     const ensureSessionSocket = (sess: any, agentId: string, authToken: string) => {
         const sessionId = String(sess.id);
         const key = buildSessionRuntimeKey(agentId, sessionId);
+        if (reconnectDisabledRef.current[key]) return;
         const existing = wsMapRef.current[key];
         if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return;
-        reconnectDisabledRef.current[key] = false;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const sessionParam = `&session_id=${sessionId}`;
 
         const scheduleReconnect = () => {
             if (reconnectDisabledRef.current[key]) return;
-            const attempts = reconnectAttemptsRef.current[key] ?? 0;
-            if (attempts >= 20) {
-                console.warn(`[WS] Giving up reconnect for ${key} after ${attempts} attempts`);
-                reconnectDisabledRef.current[key] = true;
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+                clearReconnectTimer(key);
+                if (currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId) {
+                    setTransportPhase('offline');
+                    setTransportReconnectAttempt(reconnectAttemptsRef.current[key] || 0);
+                }
                 return;
             }
-            reconnectAttemptsRef.current[key] = attempts + 1;
-            const baseDelay = Math.min(2000 * Math.pow(2, attempts), 60000);
-            const delay = baseDelay * (0.5 + Math.random() * 0.5);
+            const previousAttempts = reconnectAttemptsRef.current[key] ?? 0;
+            const attempts = previousAttempts + 1;
+            reconnectAttemptsRef.current[key] = attempts;
+            const delay = reconnectDelayMs(previousAttempts);
+            if (currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId) {
+                setTransportReconnectAttempt(attempts);
+                setTransportPhase(chatTransportPhase({
+                    online: true,
+                    connected: false,
+                    attempts,
+                }));
+            }
             clearReconnectTimer(key);
             reconnectTimerRef.current[key] = setTimeout(() => {
                 reconnectTimerRef.current[key] = null;
@@ -1767,7 +1850,14 @@ function AgentDetailInner() {
             }, delay);
         };
 
-        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat/${agentId}?token=${authToken}${sessionParam}`);
+        let ws: WebSocket;
+        try {
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat/${agentId}?token=${authToken}${sessionParam}`);
+        } catch (error) {
+            console.warn(`WebSocket setup failed for session ${sessionId}:`, error);
+            scheduleReconnect();
+            return;
+        }
         wsMapRef.current[key] = ws;
         ws.onopen = () => {
             if (reconnectDisabledRef.current[key]) {
@@ -1779,7 +1869,10 @@ function AgentDetailInner() {
             if (currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId) {
                 wsRef.current = ws;
                 setWsConnected(true);
+                setTransportPhase('connected');
+                setTransportReconnectAttempt(0);
             }
+            void backfillSessionTranscript(sess, agentId);
         };
         ws.onclose = (e) => {
             if (wsMapRef.current[key] === ws) delete wsMapRef.current[key];
@@ -1796,7 +1889,10 @@ function AgentDetailInner() {
             if (e.code === 4003 || e.code === 4002) {
                 reconnectDisabledRef.current[key] = true;
                 clearReconnectTimer(key);
-                if (isActiveRuntime && e.code === 4003) setAgentExpired(true);
+                if (isActiveRuntime) {
+                    setTransportPhase('auth_failed');
+                    if (e.code === 4003) setAgentExpired(true);
+                }
                 return;
             }
             scheduleReconnect();
@@ -1955,9 +2051,10 @@ function AgentDetailInner() {
                     return [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })];
                 });
                 void selectSession(sess);
-                if (msg.includes('expired') || msg.includes('Setup failed') || msg.includes('no LLM model') || msg.includes('No model')) {
+                if (msg.includes('expired')) {
                     reconnectDisabledRef.current[key] = true;
-                    if (msg.includes('expired')) setAgentExpired(true);
+                    setTransportPhase('auth_failed');
+                    setAgentExpired(true);
                 }
             } else if (d.type === 'trigger_notification') {
                 enqueueChatMessagesUpdate(prev => [...prev, parseChatMsg({ role: 'assistant', content: d.content })]);
@@ -1981,9 +2078,114 @@ function AgentDetailInner() {
             syncActiveSocketState(activeSession, id);
             return;
         }
+        const key = buildSessionRuntimeKey(id, String(activeSession.id));
+        reconnectDisabledRef.current[key] = false;
+        reconnectAttemptsRef.current[key] = 0;
+        setTransportReconnectAttempt(0);
+        setTransportPhase(
+            typeof navigator !== 'undefined' && navigator.onLine === false
+                ? 'offline'
+                : 'reconnecting',
+        );
         ensureSessionSocket(activeSession, id, token);
         syncActiveSocketState(activeSession, id);
-    }, [canLoadAgentScopedData, id, token, activeTab, activeSession?.id]);
+    }, [canLoadAgentScopedData, id, token, activeTab, activeSession?.id, activeSession?.operator_view]);
+
+    const reconnectActiveTransport = () => {
+        if (!id || !token || !activeSession?.id || isDraftHumanChatSession(activeSession)) return;
+        const sessionId = String(activeSession.id);
+        const key = buildSessionRuntimeKey(id, sessionId);
+        reconnectDisabledRef.current[key] = false;
+        reconnectAttemptsRef.current[key] = 0;
+        clearReconnectTimer(key);
+        clearKeepaliveTimer(key);
+        const existing = wsMapRef.current[key];
+        if (existing) {
+            existing.onclose = null;
+            existing.onerror = null;
+            existing.onmessage = null;
+            existing.onopen = null;
+            delete wsMapRef.current[key];
+            if (existing.readyState !== WebSocket.CLOSED) existing.close();
+        }
+        wsRef.current = null;
+        setWsConnected(false);
+        setTransportReconnectAttempt(0);
+        setTransportPhase(
+            typeof navigator !== 'undefined' && navigator.onLine === false
+                ? 'offline'
+                : 'reconnecting',
+        );
+        void backfillSessionTranscript(activeSession, id);
+        ensureSessionSocket(activeSession, id, token);
+    };
+
+    useEffect(() => {
+        if (!canLoadAgentScopedData || !token || activeTab !== 'chat' || !id || !activeSession?.id) return;
+        if (!isWritableSession(activeSession) || isDraftHumanChatSession(activeSession)) return;
+        const sess = activeSession;
+        const sessionId = String(sess.id);
+        const key = buildSessionRuntimeKey(id, sessionId);
+
+        const wake = () => {
+            if (reconnectDisabledRef.current[key]) return;
+            clearReconnectTimer(key);
+            setTransportPhase('reconnecting');
+            setTransportReconnectAttempt(reconnectAttemptsRef.current[key] || 0);
+            void backfillSessionTranscript(sess, id);
+            ensureSessionSocket(sess, id, token);
+        };
+        const handleOnline = () => wake();
+        const handleOffline = () => {
+            clearReconnectTimer(key);
+            setWsConnected(false);
+            setTransportPhase('offline');
+        };
+        const handleVisibility = () => {
+            if (document.visibilityState !== 'visible') return;
+            void backfillSessionTranscript(sess, id);
+            const socket = wsMapRef.current[key];
+            if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) wake();
+        };
+
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+        document.addEventListener('visibilitychange', handleVisibility);
+        return () => {
+            window.removeEventListener('online', handleOnline);
+            window.removeEventListener('offline', handleOffline);
+            document.removeEventListener('visibilitychange', handleVisibility);
+        };
+    }, [canLoadAgentScopedData, token, activeTab, id, activeSession?.id, activeSession?.operator_view]);
+
+    useEffect(() => {
+        if (!canLoadAgentScopedData || activeTab !== 'chat' || !id || !activeSession?.id) return;
+        if (!isWritableSession(activeSession) || isDraftHumanChatSession(activeSession)) return;
+        const interval = transportPollIntervalMs(
+            transportPhase,
+            Boolean(activeRunStateRef.current[buildSessionRuntimeKey(id, String(activeSession.id))]),
+        );
+        if (interval === null) return;
+        let cancelled = false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const poll = async () => {
+            if (cancelled) return;
+            if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+                await backfillSessionTranscript(activeSession, id);
+            }
+            if (cancelled) return;
+            const nextInterval = transportPollIntervalMs(
+                transportPhase,
+                Boolean(activeRunStateRef.current[buildSessionRuntimeKey(id, String(activeSession.id))]),
+            );
+            if (nextInterval !== null) timer = setTimeout(poll, nextInterval);
+        };
+        timer = setTimeout(poll, interval);
+        return () => {
+            cancelled = true;
+            if (timer) clearTimeout(timer);
+        };
+    }, [canLoadAgentScopedData, activeTab, transportPhase, id, activeSession?.id, activeSession?.operator_view]);
 
     useEffect(() => {
         if (!canLoadAgentScopedData || activeTab !== 'chat' || !id || !activeSession?.id || isDraftHumanChatSession(activeSession)) {
@@ -2982,6 +3184,9 @@ function AgentDetailInner() {
                             branchLineageLoading={branchLineageLoading}
                             onSelectBranchSession={selectBranchSession}
                             wsConnected={wsConnected}
+                            transportPhase={transportPhase}
+                            transportReconnectAttempt={transportReconnectAttempt}
+                            onReconnectTransport={reconnectActiveTransport}
                             allSessions={allSessions}
                             allSessionsLoading={allSessionsLoading}
                             allUserFilter={allUserFilter}

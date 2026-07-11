@@ -324,6 +324,7 @@ async def lifespan(app: FastAPI):
     import asyncio
     import os
     from app.services.evolution_daemon import start_evolution_daemon
+    from app.services.channel_ingress_daemon import start_channel_ingress_daemon, stop_channel_ingress_daemon
     from app.services.runtime_budget_daemon import start_runtime_budget_daemon
     from app.services.trigger_daemon import start_trigger_daemon
     from app.services.tool_seeder import seed_builtin_tools
@@ -690,6 +691,7 @@ async def lifespan(app: FastAPI):
             logger.warning("[startup] runtime task worker setup failed: {}", exc)
         if _runtime_execution_startup_enabled():
             startup_background_tasks.append(("runtime_budget_daemon", start_runtime_budget_daemon()))
+            startup_background_tasks.append(("channel_ingress_daemon", start_channel_ingress_daemon()))
         if _process_role() == "api":
             from app.services.web_chat_stream_bus import start_web_chat_stream_forwarder
 
@@ -744,6 +746,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    stop_channel_ingress_daemon()
     await event_loop_lag_monitor.stop()
     try:
         request_default_workflow_drain()

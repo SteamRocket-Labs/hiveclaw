@@ -3,7 +3,20 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -75,6 +88,15 @@ class ChatMessage(Base):
     """Web chat message between user and agent."""
 
     __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index(
+            "uq_chat_messages_ingress_user",
+            "source_ingress_event_id",
+            unique=True,
+            postgresql_where=text("source_ingress_event_id IS NOT NULL"),
+            sqlite_where=text("source_ingress_event_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
@@ -94,7 +116,27 @@ class ChatMessage(Base):
     thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
     thinking_signature: Mapped[str | None] = mapped_column(Text, nullable=True)
     decision_trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    source_ingress_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("channel_ingress_events.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+@event.listens_for(ChatMessage, "before_insert")
+def _bind_chat_message_to_channel_ingress(_mapper, _connection, target: ChatMessage) -> None:
+    if target.role != "user" or target.source_ingress_event_id is not None:
+        return
+    from app.services.channel_ingress_context import current_channel_ingress_context
+
+    ingress = current_channel_ingress_context()
+    if ingress is None:
+        return
+    if target.tenant_id != ingress.tenant_id or target.agent_id != ingress.agent_id:
+        raise ValueError("channel ingress message authority does not match the claimed event")
+    target.source_ingress_event_id = ingress.event_id
 
 
 class EnterpriseInfo(Base):

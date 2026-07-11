@@ -1902,6 +1902,7 @@ async def _queue_saved_mid_run_user_message(
     attachments: list[dict[str, Any]] | None = None,
     parts: list[dict[str, Any]] | None = None,
     role: str = "user",
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     queued_role = str(role or "user").strip().lower()
     if queued_role not in {"user", "system"}:
@@ -1909,8 +1910,14 @@ async def _queue_saved_mid_run_user_message(
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     metadata = dict(getattr(active_run, "metadata_json", None) or {})
     pending = list(metadata.get("pending_user_messages") or [])
+    queued_id = str(idempotency_key or "").strip() or uuid.uuid4().hex
+    existing = next((item for item in pending if str(item.get("id") or "") == queued_id), None)
+    if existing is not None:
+        payload = _runtime_task_to_run(active_run)
+        payload["queued_user_message"] = existing
+        return payload
     queued = {
-        "id": uuid.uuid4().hex,
+        "id": queued_id,
         "content": saved_content,
         "llm_content": content,
         "display_content": display_content if display_content else saved_content,
@@ -1970,11 +1977,41 @@ async def start_channel_chat_run_from_saved_turn(
     if not content:
         raise HTTPException(status_code=400, detail="content is required")
 
+    from app.services.channel_ingress_context import (
+        bind_channel_ingress_runtime_result,
+        current_channel_ingress_context,
+    )
+
+    ingress = current_channel_ingress_context()
+    ingress_root_key: str | None = None
+    if ingress is not None:
+        if ingress.tenant_id != getattr(agent, "tenant_id", None) or ingress.agent_id != agent.id:
+            raise HTTPException(status_code=403, detail="Channel ingress authority does not match this run")
+        ingress_root_key = f"channel-ingress:{ingress.event_id}"
+
     await _lock_session_runtime_mutation(db, session_id=session.id)
+
+    if ingress_root_key is not None:
+        existing_ingress_run = (
+            await db.execute(
+                select(RuntimeTask).where(
+                    RuntimeTask.root_idempotency_key == ingress_root_key,
+                    RuntimeTask.tenant_id == ingress.tenant_id,
+                    RuntimeTask.parent_agent_id == ingress.agent_id,
+                    RuntimeTask.parent_session_id == str(session.id),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_ingress_run is not None:
+            bind_channel_ingress_runtime_result(
+                runtime_task_id=existing_ingress_run.id,
+                session_id=session.id,
+            )
+            return _runtime_task_to_run(existing_ingress_run)
 
     active = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
     if active:
-        return await _queue_saved_mid_run_user_message(
+        queued = await _queue_saved_mid_run_user_message(
             db=db,
             active_run=active,
             agent=agent,
@@ -1984,9 +2021,18 @@ async def start_channel_chat_run_from_saved_turn(
             display_content=display_content,
             file_name=file_name,
             source_channel=source_channel,
+            message_already_in_t0=False,
+            idempotency_key=f"channel-ingress:{ingress.event_id}" if ingress else None,
         )
+        if ingress is not None:
+            bind_channel_ingress_runtime_result(runtime_task_id=active.id, session_id=session.id)
+        return queued
 
-    run_uuid = uuid.uuid4()
+    run_uuid = (
+        uuid.uuid5(uuid.UUID("b8cc82c7-92ae-4e68-82d6-e64a9a5d39f5"), str(ingress.event_id))
+        if ingress
+        else uuid.uuid4()
+    )
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
     allowed_tools = [
@@ -2018,6 +2064,7 @@ async def start_channel_chat_run_from_saved_turn(
             "allowed_tools": allowed_tools,
             "writable_roots": writable_roots,
         },
+        **({"channel_ingress_event_id": str(ingress.event_id)} if ingress else {}),
         **(extra_metadata or {}),
     }
     inherited_budget_run_id = _uuid_or_none(metadata.get("budget_run_id"))
@@ -2071,6 +2118,7 @@ async def start_channel_chat_run_from_saved_turn(
         budget_run_id=budget_run_id,
         budget_admission_status=budget_admission_status,
         metadata_json=metadata,
+        root_idempotency_key=ingress_root_key or "",
     )
     db.add(runtime_task)
     try:
@@ -2078,6 +2126,23 @@ async def start_channel_chat_run_from_saved_turn(
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
+        if ingress_root_key is not None:
+            existing_ingress_run = (
+                await db.execute(
+                    select(RuntimeTask).where(
+                        RuntimeTask.root_idempotency_key == ingress_root_key,
+                        RuntimeTask.tenant_id == ingress.tenant_id,
+                        RuntimeTask.parent_agent_id == ingress.agent_id,
+                        RuntimeTask.parent_session_id == str(session.id),
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing_ingress_run is not None:
+                bind_channel_ingress_runtime_result(
+                    runtime_task_id=existing_ingress_run.id,
+                    session_id=session.id,
+                )
+                return _runtime_task_to_run(existing_ingress_run)
         if not _is_active_web_chat_unique_violation(exc):
             raise
         active_after_conflict = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
@@ -2086,7 +2151,7 @@ async def start_channel_chat_run_from_saved_turn(
                 status_code=409,
                 detail="Channel run already exists, but the active run could not be loaded. Retry the request.",
             ) from exc
-        return await _queue_saved_mid_run_user_message(
+        queued = await _queue_saved_mid_run_user_message(
             db=db,
             active_run=active_after_conflict,
             agent=agent,
@@ -2097,7 +2162,14 @@ async def start_channel_chat_run_from_saved_turn(
             file_name=file_name,
             source_channel=source_channel,
             message_already_in_t0=False,
+            idempotency_key=f"channel-ingress:{ingress.event_id}" if ingress else None,
         )
+        if ingress is not None:
+            bind_channel_ingress_runtime_result(runtime_task_id=active_after_conflict.id, session_id=session.id)
+        return queued
+
+    if ingress is not None:
+        bind_channel_ingress_runtime_result(runtime_task_id=run_uuid, session_id=session.id)
 
     try:
         from app.services.runtime_task_worker import notify_runtime_task_worker

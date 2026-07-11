@@ -401,12 +401,34 @@ class FeishuWSManager:
             event_type = body_dict.get("header", {}).get("event_type", "unknown")
             logger.info(f"[Feishu WS] Event received for agent {agent_id}: {event_type}")
 
-            # Import here to avoid circular dependencies
-            from app.api.feishu import process_feishu_event
-
             tid = await resolve_tenant_for_agent(agent_id)
             async with tenant_scoped_session(tid) as db:
-                await process_feishu_event(agent_id, body_dict, db)
+                config = (
+                    await db.execute(
+                        select(ChannelConfig).where(
+                            ChannelConfig.agent_id == agent_id,
+                            ChannelConfig.channel_type == "feishu",
+                        )
+                    )
+                ).scalar_one_or_none()
+                if config is None:
+                    raise RuntimeError("Feishu installation no longer exists")
+                from app.services.channel_ingress_inbox import (
+                    accept_authenticated_channel_event,
+                    channel_installation_ref,
+                )
+
+                await accept_authenticated_channel_event(
+                    db,
+                    tenant_id=tid,
+                    agent_id=agent_id,
+                    provider="feishu",
+                    installation_ref=channel_installation_ref(config, fallback=f"feishu:{agent_id}"),
+                    provider_event_id=str(body_dict.get("header", {}).get("event_id") or ""),
+                    handler_key="feishu.event",
+                    body=body_dict,
+                    metadata={"transport": "websocket"},
+                )
 
         except Exception as e:
             logger.opt(exception=True).error(f"[Feishu WS] Error processing event for {agent_id}: {e}")
@@ -430,16 +452,34 @@ class FeishuWSManager:
                     logger.warning(f"[Feishu WS] Unrecognized card action data type: {type(data)}")
                     return
 
-            # Forward to the card callback handler
-            from app.api.feishu import feishu_card_callback
-
-            class _CardRequest:
-                async def json(self):
-                    return body_dict.get("event", body_dict)
-
             tid = await resolve_tenant_for_agent(agent_id)
             async with tenant_scoped_session(tid) as db:
-                await feishu_card_callback(_CardRequest(), db)
+                config = (
+                    await db.execute(
+                        select(ChannelConfig).where(
+                            ChannelConfig.agent_id == agent_id,
+                            ChannelConfig.channel_type == "feishu",
+                        )
+                    )
+                ).scalar_one_or_none()
+                if config is None:
+                    raise RuntimeError("Feishu installation no longer exists")
+                from app.services.channel_ingress_inbox import (
+                    accept_authenticated_channel_event,
+                    channel_installation_ref,
+                )
+
+                await accept_authenticated_channel_event(
+                    db,
+                    tenant_id=tid,
+                    agent_id=agent_id,
+                    provider="feishu",
+                    installation_ref=channel_installation_ref(config, fallback=f"feishu:{agent_id}"),
+                    provider_event_id=str(body_dict.get("header", {}).get("event_id") or ""),
+                    handler_key="feishu.card_action",
+                    body=dict(body_dict.get("event") or body_dict),
+                    metadata={"transport": "websocket"},
+                )
 
         except Exception as e:
             logger.opt(exception=True).error(f"[Feishu WS] Error processing card action for {agent_id}: {e}")

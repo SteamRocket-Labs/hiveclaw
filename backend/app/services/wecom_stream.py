@@ -16,6 +16,56 @@ from app.models.channel_config import ChannelConfig
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
+async def _enqueue_wecom_stream_message(
+    *,
+    agent_id: uuid.UUID,
+    provider_event_id: str,
+    sender_id: str,
+    user_text: str,
+    chat_id: str,
+    chat_type: str,
+) -> str:
+    from app.services.channel_ingress_inbox import (
+        accept_authenticated_channel_event,
+        channel_installation_ref,
+        wait_for_channel_ingress_result,
+    )
+
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
+        config = (
+            await db.execute(
+                select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "wecom",
+                )
+            )
+        ).scalar_one_or_none()
+        if config is None:
+            raise RuntimeError("WeCom stream installation no longer exists")
+        receipt = await accept_authenticated_channel_event(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            provider="wecom",
+            installation_ref=channel_installation_ref(config, fallback=f"wecom:{agent_id}"),
+            provider_event_id=provider_event_id,
+            handler_key="wecom.stream_message",
+            body={
+                "sender_id": sender_id,
+                "user_text": user_text,
+                "chat_id": chat_id,
+                "chat_type": chat_type,
+            },
+            metadata={"transport": "stream"},
+        )
+    result = await wait_for_channel_ingress_result(
+        tenant_id=tenant_id,
+        event_id=receipt.event_id,
+    )
+    return str(result.get("reply_text") or "Message accepted.")
+
+
 class WeComStreamManager:
     """Manages WeCom AI Bot WebSocket clients for all agents."""
 
@@ -89,9 +139,12 @@ class WeComStreamManager:
 
                     logger.info(f"[WeCom Stream] Text from {sender_id}: {user_text[:80]}")
 
-                    # Process message and get reply
-                    reply_text = await _process_wecom_stream_message(
+                    provider_event_id = str(
+                        body.get("msgid") or body.get("msg_id") or body.get("id") or getattr(frame, "req_id", "") or ""
+                    )
+                    reply_text = await _enqueue_wecom_stream_message(
                         agent_id=agent_id,
+                        provider_event_id=provider_event_id,
                         sender_id=sender_id,
                         user_text=user_text,
                         chat_id=chat_id,

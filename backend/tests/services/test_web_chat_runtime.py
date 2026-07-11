@@ -3656,6 +3656,150 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
 
 
 @pytest.mark.asyncio
+async def test_channel_ingress_replay_reuses_the_exact_runtime_task(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.models.runtime_task import RuntimeTask
+    from app.services.channel_ingress_context import use_channel_ingress_context
+
+    event_id = uuid4()
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    existing = RuntimeTask(
+        id=uuid4(),
+        task_type="web_chat_turn",
+        status="completed",
+        parent_agent_id=agent_id,
+        child_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        child_session_id=str(session_id),
+        tenant_id=tenant_id,
+        root_idempotency_key=f"channel-ingress:{event_id}",
+        metadata_json={"channel_ingress_event_id": str(event_id)},
+    )
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id, username="slack_u", display_name="Slack User")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        title="Slack Session",
+        last_message_at=None,
+        delivery_target_json={"channel": "slack", "channel_id": "C1"},
+        transcript_metadata_json={},
+    )
+    db = _FakeDB(active_run=existing)
+
+    async def fake_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+
+    with use_channel_ingress_context(
+        event_id=event_id,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+    ) as ingress:
+        result = await runtime.start_channel_chat_run_from_saved_turn(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content="do not duplicate me",
+            source_channel="slack",
+        )
+
+    assert result["run_id"] == existing.id.hex
+    assert result["status"] == "completed"
+    assert "queued_user_message" not in result
+    assert db.added == []
+    assert ingress.runtime_task_id == existing.id
+    assert ingress.session_id == session_id
+
+
+@pytest.mark.asyncio
+async def test_channel_ingress_replay_does_not_queue_the_same_mid_run_message_twice(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.models.runtime_task import RuntimeTask
+    from app.services.channel_ingress_context import use_channel_ingress_context
+
+    event_id = uuid4()
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    pending_id = f"channel-ingress:{event_id}"
+    active = RuntimeTask(
+        id=uuid4(),
+        task_type="web_chat_turn",
+        status="running",
+        parent_agent_id=agent_id,
+        child_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        child_session_id=str(session_id),
+        tenant_id=tenant_id,
+        metadata_json={
+            "pending_user_messages": [
+                {
+                    "id": pending_id,
+                    "content": "queued once",
+                    "source": "slack",
+                }
+            ]
+        },
+    )
+
+    class _SequenceDB(_FakeDB):
+        def __init__(self):
+            super().__init__()
+            self.results = [None, active, None]
+
+        async def execute(self, _stmt):
+            return _ScalarResult(self.results.pop(0))
+
+    db = _SequenceDB()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id, username="slack_u", display_name="Slack User")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        title="Slack Session",
+        last_message_at=None,
+        delivery_target_json={"channel": "slack", "channel_id": "C1"},
+        transcript_metadata_json={},
+    )
+
+    async def fake_lock(*_args, **_kwargs):
+        return None
+
+    async def fake_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_lock_session_runtime_mutation", fake_lock)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+
+    with use_channel_ingress_context(
+        event_id=event_id,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+    ) as ingress:
+        result = await runtime.start_channel_chat_run_from_saved_turn(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content="queued once",
+            source_channel="slack",
+        )
+
+    assert len(active.metadata_json["pending_user_messages"]) == 1
+    assert result["queued_user_message"]["id"] == pending_id
+    assert ingress.runtime_task_id == active.id
+
+
+@pytest.mark.asyncio
 async def test_start_channel_chat_run_from_saved_turn_does_not_append_t0_or_dispatch_from_api(monkeypatch):
     import app.services.web_chat_runtime as runtime
     from app.models.runtime_task import RuntimeTask

@@ -228,10 +228,22 @@ async def feishu_tenant_webhook(
         # Optionally reply with "not registered" message
         return {"ok": True, "routed": False}
 
-    # Delegate to existing per-agent event processing
-    from app.api.feishu import process_feishu_event
+    from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
 
-    await process_feishu_event(target_agent_id, body, db, tenant_channel_config=config)
+    await accept_authenticated_channel_event(
+        db,
+        tenant_id=tenant_id,
+        agent_id=target_agent_id,
+        provider="feishu",
+        installation_ref=channel_installation_ref(config, fallback=f"tenant:{tenant_id}:feishu"),
+        provider_event_id=str(header.get("event_id") or ""),
+        handler_key="feishu.event",
+        body=body,
+        metadata={
+            "transport": "tenant_webhook",
+            "tenant_channel_config_id": str(getattr(config, "id", None) or ""),
+        },
+    )
 
     return {"ok": True, "routed": True}
 

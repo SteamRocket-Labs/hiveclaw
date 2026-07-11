@@ -45,6 +45,7 @@ async def main():
     import app.models.llm            # noqa
     import app.models.tool           # noqa
     import app.models.audit          # noqa
+    import app.models.channel_ingress_event # noqa
     import app.models.skill          # noqa
     import app.models.channel_config # noqa
     import app.models.schedule       # noqa

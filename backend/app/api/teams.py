@@ -390,8 +390,6 @@ async def delete_teams_channel(
 
 # ─── Event Webhook ──────────────────────────────────────
 
-_processed_teams_events: set[str] = set()
-
 
 @router.post("/channel/teams/{agent_id}/webhook")
 async def teams_event_webhook(
@@ -402,6 +400,7 @@ async def teams_event_webhook(
     """Handle Microsoft Teams Bot Framework callbacks."""
     try:
         body_bytes = await request.body()
+        replay_event_id = getattr(getattr(request, "state", None), "channel_ingress_event_id", None)
         try:
             body = json.loads(body_bytes)
         except json.JSONDecodeError as e:
@@ -452,14 +451,7 @@ async def teams_event_webhook(
                 await db.commit()
                 logger.info(f"Teams: Updated service_url for agent {agent_id} to {service_url}")
 
-        # Dedup
         activity_id = activity.get("id")
-        if activity_id in _processed_teams_events:
-            return {"ok": True}
-        if activity_id:
-            _processed_teams_events.add(activity_id)
-            if len(_processed_teams_events) > 1000:
-                _processed_teams_events.clear()
 
         # Only process message activities
         if activity.get("type") != "message":
@@ -486,6 +478,22 @@ async def teams_event_webhook(
 
         if not conversation_id or not sender_id:
             logger.warning(f"Teams: Missing conversation_id or sender_id in activity for agent {agent_id}")
+            return {"ok": True}
+
+        if replay_event_id is None:
+            from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
+
+            await accept_authenticated_channel_event(
+                db,
+                tenant_id=agent_tenant_id,
+                agent_id=agent_id,
+                provider="microsoft_teams",
+                installation_ref=channel_installation_ref(config, fallback=f"teams:{agent_id}"),
+                provider_event_id=str(activity_id or ""),
+                handler_key="teams.activity",
+                body=body,
+                metadata={"transport": "bot_framework_webhook"},
+            )
             return {"ok": True}
 
         logger.info(f"Teams: Message from={sender_id}, conversation={conversation_id}: {user_text[:80]}")

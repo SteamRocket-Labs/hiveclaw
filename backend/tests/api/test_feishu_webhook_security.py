@@ -79,12 +79,11 @@ async def test_feishu_webhook_falls_back_to_verification_token(monkeypatch):
 
     captured: dict[str, object] = {}
 
-    async def fake_process(agent_id, body, db):
-        captured["agent_id"] = agent_id
-        captured["body"] = body
-        return {"ok": True}
+    async def fake_accept(_db, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(event_id=uuid4())
 
-    monkeypatch.setattr(feishu_api, "process_feishu_event", fake_process)
+    monkeypatch.setattr("app.services.channel_ingress_inbox.accept_authenticated_channel_event", fake_accept)
 
     agent_id = uuid4()
     tenant_id = uuid4()
@@ -112,7 +111,7 @@ async def test_feishu_webhook_falls_back_to_verification_token(monkeypatch):
         db=db,
     )
 
-    assert result == {"ok": True}
+    assert result == {"code": 0, "msg": "accepted"}
     assert captured["agent_id"] == agent_id
     assert captured["body"] == {
         "token": "verification-token",
@@ -160,12 +159,11 @@ async def test_feishu_webhook_decrypts_encrypted_payload_before_processing(monke
 
     captured: dict[str, object] = {}
 
-    async def fake_process(agent_id, body, db):
-        captured["agent_id"] = agent_id
-        captured["body"] = body
-        return {"ok": True}
+    async def fake_accept(_db, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(event_id=uuid4())
 
-    monkeypatch.setattr(feishu_api, "process_feishu_event", fake_process)
+    monkeypatch.setattr("app.services.channel_ingress_inbox.accept_authenticated_channel_event", fake_accept)
 
     agent_id = uuid4()
     encrypt_key = "encrypt-key-for-tests"
@@ -207,7 +205,7 @@ async def test_feishu_webhook_decrypts_encrypted_payload_before_processing(monke
         ),
     )
 
-    assert result == {"ok": True}
+    assert result == {"code": 0, "msg": "accepted"}
     assert captured["agent_id"] == agent_id
     assert captured["body"] == decrypted_body
 
@@ -247,7 +245,6 @@ async def test_tenant_feishu_webhook_verifies_signature_before_returning_challen
 
 @pytest.mark.asyncio
 async def test_tenant_feishu_webhook_decrypts_payload_before_processing(monkeypatch):
-    import app.api.feishu as feishu_api
     import app.api.tenant_channels as tenant_channels
 
     captured: dict[str, object] = {}
@@ -258,13 +255,12 @@ async def test_tenant_feishu_webhook_decrypts_payload_before_processing(monkeypa
         assert feishu_open_id == "ou_123"
         return uuid4()
 
-    async def fake_process(agent_id, body, db, *, tenant_channel_config=None):
-        captured["body"] = body
-        captured["tenant_channel_config"] = tenant_channel_config
-        return {"ok": True}
+    async def fake_accept(_db, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(event_id=uuid4())
 
     monkeypatch.setattr(tenant_channels, "_resolve_sender_agent", fake_resolve_sender_agent)
-    monkeypatch.setattr(feishu_api, "process_feishu_event", fake_process)
+    monkeypatch.setattr("app.services.channel_ingress_inbox.accept_authenticated_channel_event", fake_accept)
 
     tenant_id = uuid4()
     encrypt_key = "tenant-encrypt-key"

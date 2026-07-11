@@ -126,8 +126,6 @@ async def delete_slack_channel(
 
 # ─── Event Webhook ──────────────────────────────────────
 
-_processed_slack_events: set[str] = set()
-
 
 def _verify_slack_signature(signing_secret: str, body: bytes, headers: dict) -> bool:
     """Verify Slack's HMAC-SHA256 request signature."""
@@ -165,6 +163,7 @@ async def slack_event_webhook(
 ):
     """Handle Slack Event API callbacks."""
     body_bytes = await request.body()
+    replay_event_id = getattr(getattr(request, "state", None), "channel_ingress_event_id", None)
 
     # Get channel config and pin tenant RLS for this public webhook.
     config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="slack")
@@ -173,7 +172,7 @@ async def slack_event_webhook(
 
     # Verify Slack signature
     signing_secret = config.encrypt_key or ""
-    if signing_secret:
+    if signing_secret and replay_event_id is None:
         if not _verify_slack_signature(signing_secret, body_bytes, dict(request.headers)):
             return Response(status_code=401)
 
@@ -192,14 +191,21 @@ async def slack_event_webhook(
 
     event = body.get("event", {})
     event_id = body.get("event_id", "")
+    if replay_event_id is None:
+        from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
 
-    # Dedup
-    if event_id in _processed_slack_events:
+        await accept_authenticated_channel_event(
+            db,
+            tenant_id=config.tenant_id,
+            agent_id=agent_id,
+            provider="slack",
+            installation_ref=channel_installation_ref(config, fallback=f"slack:{agent_id}"),
+            provider_event_id=str(event_id or ""),
+            handler_key="slack.event_callback",
+            body=body,
+            metadata={"transport": "webhook"},
+        )
         return {"ok": True}
-    if event_id:
-        _processed_slack_events.add(event_id)
-        if len(_processed_slack_events) > 1000:
-            _processed_slack_events.clear()
 
     # Ignore bot messages (avoid self-reply loop)
     if event.get("bot_id") or event.get("subtype"):

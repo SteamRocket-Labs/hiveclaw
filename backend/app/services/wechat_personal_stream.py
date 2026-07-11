@@ -70,6 +70,54 @@ def _guess_image_mime(content: bytes) -> str:
     return "image/jpeg"
 
 
+async def _enqueue_wechat_personal_message(
+    *,
+    agent_id: uuid.UUID,
+    provider_event_id: str,
+    sender_id: str,
+    user_text: str,
+    delivery_target: dict,
+) -> str:
+    from app.services.channel_ingress_inbox import (
+        accept_authenticated_channel_event,
+        channel_installation_ref,
+        wait_for_channel_ingress_result,
+    )
+
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
+        config = (
+            await db.execute(
+                select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "wechat_personal",
+                )
+            )
+        ).scalar_one_or_none()
+        if config is None:
+            raise RuntimeError("WeChat Personal installation no longer exists")
+        receipt = await accept_authenticated_channel_event(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            provider="wechat_personal",
+            installation_ref=channel_installation_ref(config, fallback=f"wechat_personal:{agent_id}"),
+            provider_event_id=provider_event_id,
+            handler_key="wechat_personal.stream_message",
+            body={
+                "sender_id": sender_id,
+                "user_text": user_text,
+                "delivery_target": delivery_target,
+            },
+            metadata={"transport": "long_poll"},
+        )
+    result = await wait_for_channel_ingress_result(
+        tenant_id=tenant_id,
+        event_id=receipt.event_id,
+    )
+    return str(result.get("reply_text") or "消息已接收。")
+
+
 class WeChatPersonalStreamManager:
     """Manages iLink long-poll clients for all wechat_personal channels."""
 
@@ -398,8 +446,9 @@ class WeChatPersonalStreamManager:
 
         # Process message through LLM pipeline
         try:
-            reply_text = await _process_wechat_message(
+            reply_text = await _enqueue_wechat_personal_message(
                 agent_id=agent_id,
+                provider_event_id=str(msg.message_id or ""),
                 sender_id=from_user,
                 user_text=user_text,
                 delivery_target=delivery_target,

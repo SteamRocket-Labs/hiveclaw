@@ -690,9 +690,6 @@ async def delete_channel_config(
 
 # ─── Feishu Event Webhook ───────────────────────────────
 
-# Simple in-memory dedup to avoid processing retried events
-_processed_events: set[str] = set()
-
 
 def _verify_feishu_signature(encrypt_key: str, timestamp: str, nonce: str, body_str: str, signature: str) -> bool:
     """Verify Feishu webhook X-Lark-Signature using HMAC-SHA256."""
@@ -736,6 +733,8 @@ async def feishu_event_webhook(
     body = _json_wb.loads(body_str)
 
     config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="feishu")
+    if config is None:
+        raise HTTPException(status_code=404, detail="Channel not found")
     if config and config.encrypt_key:
         sig = request.headers.get("X-Lark-Signature", "")
         ts = request.headers.get("X-Lark-Request-Timestamp", "")
@@ -758,7 +757,20 @@ async def feishu_event_webhook(
     if "challenge" in body:
         return {"challenge": body["challenge"]}
 
-    return await process_feishu_event(agent_id, body, db)
+    from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
+
+    await accept_authenticated_channel_event(
+        db,
+        tenant_id=config.tenant_id,
+        agent_id=agent_id,
+        provider="feishu",
+        installation_ref=channel_installation_ref(config, fallback=f"feishu:{agent_id}"),
+        provider_event_id=str(body.get("header", {}).get("event_id") or ""),
+        handler_key="feishu.event",
+        body=body,
+        metadata={"transport": "webhook"},
+    )
+    return {"code": 0, "msg": "accepted"}
 
 
 # ─── Feishu Interactive Card Callback ────────────────────
@@ -903,12 +915,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
         f"[Feishu] Event processing for {agent_id}: event_type={body.get('header', {}).get('event_type', 'N/A')}"
     )
 
-    # Deduplicate — Feishu retries on slow responses
-    # Only mark as processed AFTER successful handling so retries work on crash
-    event_id = body.get("header", {}).get("event_id", "")
-    if event_id in _processed_events:
-        return {"code": 0, "msg": "already processed"}
-
     # Get channel config — use tenant-level config if provided (Phase 6), else per-agent
     if tenant_channel_config:
         config = tenant_channel_config
@@ -922,13 +928,6 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
         config = result.scalar_one_or_none()
     if not config:
         return {"code": 1, "msg": "Channel not found"}
-
-    # Mark event as processed after config is loaded successfully
-    if event_id:
-        _processed_events.add(event_id)
-        # Keep set bounded
-        if len(_processed_events) > 1000:
-            _processed_events.clear()
 
     # Handle events
     event = body.get("event", {})

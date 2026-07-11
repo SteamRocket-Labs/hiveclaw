@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**4 / 28**（SA-01、SA-02、SA-03、SA-04 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**5 / 28**（SA-01 至 SA-05 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -88,7 +88,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-02 | Approval 后存在第二工具执行入口 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-03 | Business Task 双状态机与错误终态 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-04 | Workspace Rewind 操作 Agent 共享目录 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-05 | Channel ingress 无 durable inbox | P0 | 断点 | △ | △ | △ | ✗ | ✗ | △ | △ |
+| SA-05 | Channel ingress 无 durable inbox | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-06 | 外部通道身份被建成全局 User | P0 | 断点 | △ | ✗ | △ | ✗ | ✗ | ✗ | △ |
 | SA-07 | 最终通道交付无 durable outbox | P0 | 断点 | ✓ | ✓ | △ | ✗ | ✗ | ✗ | △ |
 | SA-08 | CC Hook surface 有 no-op/planned 壳 | P1 | 缺失/局部闭环 | ✓ | ✓ | ✗ | △ | △ | ✗ | △ |
@@ -170,6 +170,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 **验收**：两个 session 并发写+rewind、restore 中途 kill、磁盘满、checksum 错、超限文件、同 checkpoint 双重 rewind、fork 后 restore 全部覆盖。
 
 ### SA-05：外部通道入口没有 durable inbox — P0
+
+**修复状态（2026-07-11）**：**闭环**。所有实际外部 Agent 入口现在都先把已鉴权事件提交到 tenant-governed `ChannelIngressEvent`，再向 provider ACK；统一 worker 通过 lease、`SKIP LOCKED`、指数退避和 dead letter 重放 provider handler。相同 provider identity 的精确重投只消费一次；identity 相同但 payload/authority 漂移会 fail closed。入站 ChatMessage 和 RuntimeTask 绑定同一 ingress event，解决“消息已落库、run 未建立”崩溃窗口。
 
 **机械事实**：Slack 使用进程内 set 且在处理前标记（`backend/app/api/slack.py:129,194-202`）；Feishu 使用进程内 set，并在真正消息处理前的配置阶段标记（`feishu.py:693-694,907-931`）；Telegram 用 Redis NX 但 TTL 仅 1 小时且 Redis 异常时 fail open（`telegram.py:271-282,426`）；Discord 直接 background task，无持久事件账本（`discord_bot.py:213-417`）。
 
@@ -868,3 +870,78 @@ alembic heads
 ```
 
 结果：Ruff lint/format 全绿；Alembic 单 head：`business_task_atomic_state_0711 (head)`。SA-04 不新增 schema migration，复用 transcript control event 与 workspace journal 作为 FS/DB 协调证据。
+
+### SA-05 — ChannelIngressEvent durable inbox
+
+状态：**闭环**。提交主题：`fix(SA-05): make channel ingress durable and replay-safe`。
+
+七原子证据：
+
+1. **输入**：Slack、Feishu HTTP/WS、Telegram、Discord、Teams、WeCom HTTP/stream、DingTalk stream 与 WeChat Personal stream 的已鉴权 payload 统一封装为 `ChannelIngressSubmission`；provider、installation/account、provider event id、handler 与 canonical payload digest 是不可变输入。缺 event id 的 legacy transport 使用完整 canonical payload digest 生成稳定 identity，不使用随机值。
+2. **权威**：public webhook 只用 narrow audited RLS bypass 解析 URL 中 Agent 对应的 ChannelConfig 和 tenant，随即 pin tenant RLS；legacy ChannelConfig 缺 tenant 时从受信 Agent ownership 补足当前 authority。唯一键绑定 tenant/provider/installation/event，精确重复允许，payload digest、Agent 或 handler 漂移拒绝。worker 的跨租户 claim 只能通过 manifest 授权的专用 bypass；真正 handler 在 tenant-scoped session 和 ingress context 中执行。
+3. **执行**：`accept_authenticated_channel_event()` 是 transport ACK 前的唯一持久化入口；`ChannelIngressInboxService.claim_batch()` 使用 `FOR UPDATE SKIP LOCKED` 和 lease，daemon 调用显式 handler registry 的 `dispatch_channel_ingress_event()`。旧进程内 set、Telegram Redis fail-open dedupe 和 Discord/stream fire-and-forget 路径已删除。provider replay request 不携带原始不受信 headers，只携带服务端 ingress identity。
+4. **证据**：`channel_ingress_events` 是 receive/processing/failed/processed/dead-letter 的机械账本，保存 payload hash、attempt、available time、lock、error、RuntimeTask/session result 与 processing receipt。入站 user `ChatMessage.source_ingress_event_id` 有唯一部分索引；Web Chat Runtime 使用 `channel-ingress:{event_id}` root idempotency key，并把 exact RuntimeTask/session 回写 ingress receipt。
+5. **恢复**：DB commit 完成后才 ACK；ACK 后 crash 仍由 daemon 恢复。processing lease 过期可被另一 worker claim；retry 使用持久 `failed` 状态和 bounded exponential backoff，超过上限进入 dead letter。handler 在 ChatMessage commit 后、RuntimeTask 创建前崩溃时，replay 会消费已绑定消息并恢复同一 run；同一 ingress 在已有 active run 时不会重复加入 pending queue。
+6. **消费**：HTTP webhook 返回 provider ACK，WS/long-poll transport 可等待同一 durable processing receipt；dispatcher 实际重放各 provider 原处理器，Web Chat Runtime、ChatSession、ChatMessage、RuntimeTask 和最终 provider reply 均消费同一 ingress identity。应用 lifespan 启动/停止 daemon，容器 entrypoint 显式导入模型，RLS bootstrap 与 Alembic migration 同步消费新表。
+7. **验收**：覆盖跨 worker 去重、同 identity payload 碰撞、ACK 后 crash、lease expiry、failed retry、dead letter、RLS 隔离、ChatMessage 绑定、stream receipt、exact RuntimeTask replay、mid-run queue 去重、provider ACK 顺序、dispatcher registry、migration/RLS/entrypoint 和禁止 process-local dedupe/fire-and-forget 的架构边界。
+
+RED 证据（修复前由新增回归测试稳定复现）：
+
+- inbox/migration 测试在收集阶段报 `ModuleNotFoundError: app.models.channel_ingress_event`，证明不存在 durable fact source。
+- dispatcher 三条测试均因模块缺失失败；Slack/Feishu/Teams/Telegram 等入口仍直接调用 handler 或进程内去重。
+- exact ingress replay 会把同一 provider event 作为新 pending message 加入现有 run；mid-run 重放得到两个相同 pending user message。
+- `failed` 状态与 legacy tenant inheritance 两条补强测试为 `2 failed`：retry 被折回 `received`，legacy ChannelConfig 把 `tenant_id=None` 传给 durable inbox。
+- 全量兼容回归依次暴露 tenant Feishu 旧同步测试、entrypoint 模型导入和 RLS migration coverage 三个断点，均在提交前修复并重新全量验证。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_channel_ingress_inbox.py \
+  tests/api/test_channel_ingress_webhooks.py \
+  tests/migrations/test_channel_ingress_inbox_migration.py \
+  tests/architecture/test_channel_ingress_boundaries.py -q
+```
+
+结果：`18 passed, 4 warnings in 10.72s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/api/test_feishu_webhook_security.py \
+  tests/api/test_feishu_channel_runtime.py \
+  tests/api/test_feishu_identity_auth.py \
+  tests/api/test_telegram_channel.py \
+  tests/api/test_wecom_channel_validation.py \
+  tests/api/test_wecom_channel_runtime.py \
+  tests/services/test_feishu_ws.py \
+  tests/services/test_wecom_stream_runtime.py \
+  tests/services/test_wechat_personal_runtime.py \
+  tests/services/test_channel_ingress_inbox.py \
+  tests/services/test_channel_ingress_dispatcher.py \
+  tests/architecture/test_channel_ingress_boundaries.py \
+  tests/services/test_web_chat_runtime.py::test_channel_ingress_replay_reuses_the_exact_runtime_task -q
+```
+
+结果：`84 passed, 4 warnings`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q
+```
+
+结果：`6245 passed, 1 skipped, 5 warnings in 132.95s`，零失败。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <SA-05 当前变更 Python 文件>
+ruff format --check <SA-05 当前变更 Python 文件>
+alembic heads
+```
+
+结果：Ruff `All checks passed!`，34 个文件格式通过；Alembic 单 head：`channel_ingress_inbox_0711 (head)`。

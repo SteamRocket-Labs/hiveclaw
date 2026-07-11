@@ -189,62 +189,6 @@ class TestValidateBotToken:
         assert exc.value.status_code == 422
 
 
-class TestIsDuplicateUpdate:
-    @pytest.mark.asyncio
-    async def test_first_seen_not_duplicate(self, monkeypatch):
-        """First time seeing an update_id → not duplicate."""
-
-        class FakeRedis:
-            async def set(self, key, value, ex=None, nx=False):
-                return True  # Key was set (didn't exist)
-
-        async def fake_get_redis():
-            return FakeRedis()
-
-        import app.api.telegram as tg_mod
-
-        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
-
-        assert await tg_mod._is_duplicate_update(12345) is False
-
-    @pytest.mark.asyncio
-    async def test_already_seen_is_duplicate(self, monkeypatch):
-        """Second time seeing an update_id → duplicate."""
-
-        class FakeRedis:
-            async def set(self, key, value, ex=None, nx=False):
-                return None  # Key already existed
-
-        async def fake_get_redis():
-            return FakeRedis()
-
-        import app.api.telegram as tg_mod
-
-        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
-
-        assert await tg_mod._is_duplicate_update(12345) is True
-
-    @pytest.mark.asyncio
-    async def test_zero_update_id_not_duplicate(self, monkeypatch):
-        """update_id=0 is always allowed through."""
-        import app.api.telegram as tg_mod
-
-        assert await tg_mod._is_duplicate_update(0) is False
-
-    @pytest.mark.asyncio
-    async def test_redis_failure_allows_through(self, monkeypatch):
-        """If Redis is unavailable, allow the update through."""
-
-        async def failing_redis():
-            raise ConnectionError("Redis down")
-
-        import app.api.telegram as tg_mod
-
-        monkeypatch.setattr(tg_mod, "get_redis", failing_redis)
-
-        assert await tg_mod._is_duplicate_update(12345) is False
-
-
 class TestTelegramInboundFiles:
     @pytest.mark.asyncio
     async def test_extracts_document_into_workspace_hint(self, monkeypatch):
@@ -334,18 +278,6 @@ class TestTelegramWebhook:
         body = json.dumps({"update_id": 999}).encode()
         request = _build_request(body, headers={"X-Telegram-Bot-Api-Secret-Token": correct_secret})
 
-        # Stub Redis dedup
-        import app.api.telegram as tg_mod
-
-        class FakeRedis:
-            async def set(self, key, value, ex=None, nx=False):
-                return True
-
-        async def fake_get_redis():
-            return FakeRedis()
-
-        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
-
         db = _FakeDB(config=config)
         result = await telegram_webhook(config.agent_id, request, db)
         assert result == {"ok": True}
@@ -362,46 +294,42 @@ class TestTelegramWebhook:
         # No X-Telegram-Bot-Api-Secret-Token header
         request = _build_request(body)
 
-        import app.api.telegram as tg_mod
-
-        class FakeRedis:
-            async def set(self, key, value, ex=None, nx=False):
-                return True
-
-        async def fake_get_redis():
-            return FakeRedis()
-
-        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
-
         db = _FakeDB(config=config)
         result = await telegram_webhook(config.agent_id, request, db)
         # Should succeed (no message body → ok)
         assert result == {"ok": True}
 
     @pytest.mark.asyncio
-    async def test_duplicate_update_returns_ok(self, monkeypatch):
+    async def test_actionable_update_is_committed_to_durable_inbox(self, monkeypatch):
         from app.api.telegram import telegram_webhook
 
         monkeypatch.setenv("SECRET_KEY", "test-secret")
 
         config = _make_config()
-        body = json.dumps({"update_id": 777}).encode()
+        body = json.dumps(
+            {
+                "update_id": 777,
+                "message": {
+                    "text": "hello",
+                    "chat": {"id": 100},
+                    "from": {"id": 42, "is_bot": False, "first_name": "Alice"},
+                },
+            }
+        ).encode()
         request = _build_request(body)
+        captured = {}
 
-        import app.api.telegram as tg_mod
+        async def fake_accept(_db, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(event_id=uuid4())
 
-        class FakeRedis:
-            async def set(self, key, value, ex=None, nx=False):
-                return None  # Already seen
-
-        async def fake_get_redis():
-            return FakeRedis()
-
-        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
+        monkeypatch.setattr("app.services.channel_ingress_inbox.accept_authenticated_channel_event", fake_accept)
 
         db = _FakeDB(config=config)
         result = await telegram_webhook(config.agent_id, request, db)
         assert result == {"ok": True}
+        assert captured["provider_event_id"] == "777"
+        assert captured["handler_key"] == "telegram.update"
 
 
 class TestBotMessageFiltering:
@@ -425,17 +353,6 @@ class TestBotMessageFiltering:
             }
         ).encode()
         request = _build_request(body)
-
-        import app.api.telegram as tg_mod
-
-        class FakeRedis:
-            async def set(self, key, value, ex=None, nx=False):
-                return True
-
-        async def fake_get_redis():
-            return FakeRedis()
-
-        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
 
         db = _FakeDB(config=config)
         result = await telegram_webhook(config.agent_id, request, db)
@@ -463,23 +380,18 @@ class TestBotMessageFiltering:
         ).encode()
         request = _build_request(body)
 
-        import app.api.telegram as tg_mod
+        captured = {}
 
-        class FakeRedis:
-            async def set(self, key, value, ex=None, nx=False):
-                return True
+        async def fake_accept(_db, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(event_id=uuid4())
 
-        async def fake_get_redis():
-            return FakeRedis()
-
-        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
+        monkeypatch.setattr("app.services.channel_ingress_inbox.accept_authenticated_channel_event", fake_accept)
 
         db = _FakeDB(config=config)
-        # This will proceed past the is_bot guard and fail deeper
-        # (missing real DB) — that's fine, we just verify it DIDN'T
-        # return early at the bot guard.
-        with pytest.raises(Exception):
-            await telegram_webhook(config.agent_id, request, db)
+        result = await telegram_webhook(config.agent_id, request, db)
+        assert result == {"ok": True}
+        assert captured["provider_event_id"] == "556"
 
 
 class TestSendTelegramMessageFallback:
@@ -644,13 +556,6 @@ class TestTelegramChannelFileSender:
         report.write_text("# report", encoding="utf-8")
         captured: dict = {}
 
-        class FakeRedis:
-            async def set(self, key, value, ex=None, nx=False):
-                return True
-
-        async def fake_get_redis():
-            return FakeRedis()
-
         async def fake_find_or_create_channel_session(*_args, **_kwargs):
             return session
 
@@ -675,7 +580,6 @@ class TestTelegramChannelFileSender:
         async def fake_send_telegram_message(*_args, **_kwargs):
             captured["reply_sent"] = True
 
-        monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
         monkeypatch.setattr(
             "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
         )
@@ -687,6 +591,7 @@ class TestTelegramChannelFileSender:
         monkeypatch.setattr(tg_mod, "_send_telegram_message", fake_send_telegram_message)
 
         clear_execution_identity()
+        request.state.channel_ingress_event_id = uuid4()
         result = await tg_mod.telegram_webhook(config.agent_id, request, db)
 
         assert result == {"ok": True}

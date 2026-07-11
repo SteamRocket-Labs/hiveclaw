@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.channel_rls import load_public_agent_channel_config
 from app.api.channel_secrets import resolve_secret_field
 from app.config import get_settings
-from app.core.events import get_redis
 from app.core.permissions import check_agent_access, require_agent_manage_access
 from app.core.security import get_current_user
 from app.database import get_db
@@ -31,7 +30,6 @@ router = APIRouter(tags=["telegram"])
 
 TG_API = "https://api.telegram.org"
 TG_MSG_LIMIT = 4096  # Telegram message char limit
-_TG_DEDUP_TTL = 3600  # Redis TTL for update dedup (1 hour)
 _BOT_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{20,}$")
 
 
@@ -268,20 +266,6 @@ async def _extract_telegram_message_content(
     return user_text, saved_files
 
 
-async def _is_duplicate_update(update_id: int) -> bool:
-    """Check and mark a Telegram update_id using Redis for cross-worker dedup."""
-    if not update_id:
-        return False
-    key = f"tg:dedup:{update_id}"
-    try:
-        r = await get_redis()
-        was_set = await r.set(key, "1", ex=_TG_DEDUP_TTL, nx=True)
-        return was_set is None  # None → key already existed → duplicate
-    except Exception as exc:
-        logger.debug("[Telegram] Redis dedup unavailable, allowing through: %s", exc)
-        return False
-
-
 # ─── Config CRUD ────────────────────────────────────────
 
 
@@ -395,6 +379,7 @@ async def telegram_webhook(
 ):
     """Handle Telegram Bot API webhook updates."""
     body_bytes = await request.body()
+    replay_event_id = getattr(getattr(request, "state", None), "channel_ingress_event_id", None)
     try:
         body = json.loads(body_bytes)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -412,7 +397,9 @@ async def telegram_webhook(
 
     # Verify webhook secret (if header present — absent means pre-upgrade webhook)
     received_secret = request.headers.get("x-telegram-bot-api-secret-token")
-    if received_secret is not None:
+    if replay_event_id is not None:
+        pass
+    elif received_secret is not None:
         expected_secret = _compute_webhook_secret(bot_token)
         if not hmac.compare_digest(expected_secret, received_secret):
             logger.warning("[Telegram] Webhook secret mismatch for agent %s", agent_id)
@@ -423,10 +410,7 @@ async def telegram_webhook(
             agent_id,
         )
 
-    # Dedup by update_id (Redis-backed, multi-worker safe)
     update_id = body.get("update_id", 0)
-    if await _is_duplicate_update(update_id):
-        return {"ok": True}
 
     # Extract message
     message = body.get("message")
@@ -442,6 +426,22 @@ async def telegram_webhook(
 
     # Ignore messages from bots (prevents self-reply loops in group chats)
     if sender.get("is_bot"):
+        return {"ok": True}
+
+    if replay_event_id is None:
+        from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
+
+        await accept_authenticated_channel_event(
+            db,
+            tenant_id=config.tenant_id,
+            agent_id=agent_id,
+            provider="telegram",
+            installation_ref=channel_installation_ref(config, fallback=f"telegram:{agent_id}"),
+            provider_event_id=str(update_id or ""),
+            handler_key="telegram.update",
+            body=body,
+            metadata={"transport": "webhook"},
+        )
         return {"ok": True}
 
     user_text, _inbound_files = await _extract_telegram_message_content(bot_token, agent_id, message)

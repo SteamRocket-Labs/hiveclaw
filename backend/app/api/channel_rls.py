@@ -44,6 +44,12 @@ async def load_public_agent_channel_config(
         if tenant_id is None:
             agent_result = await bypass_db.execute(select(Agent.tenant_id).where(Agent.id == agent_id))
             tenant_id = agent_result.scalar_one_or_none()
+            if tenant_id is not None:
+                # Legacy rows predate ChannelConfig.tenant_id.  The public
+                # webhook has resolved authority through the owning Agent, so
+                # expose that same trusted tenant to the downstream durable
+                # inbox instead of leaving a fail-open/None identity gap.
+                config.tenant_id = tenant_id
 
     if tenant_id is not None:
         await pin_rls_tenant_context(db, tenant_id)

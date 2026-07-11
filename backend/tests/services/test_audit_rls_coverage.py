@@ -83,6 +83,7 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
     hr_creation_module = _load_migration_module("hr_creation_drafts_0710.py")
     workflow_confirmation_module = _load_migration_module("workflow_confirmation_0710.py")
     runtime_notification_module = _load_migration_module("runtime_notification_outbox_0710.py")
+    channel_ingress_module = _load_migration_module("channel_ingress_inbox_0711.py")
     migration_tables = (
         set(force_all_module._FORCE_TABLES)
         | set(remaining_module._ALL_TABLES)
@@ -94,6 +95,7 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
         | set(hr_creation_module._HR_CREATION_TABLES)
         | set(workflow_confirmation_module._TABLES)
         | set(runtime_notification_module._RUNTIME_NOTIFICATION_OUTBOX_TABLES)
+        | set(channel_ingress_module._CHANNEL_INGRESS_TABLES)
     )
 
     missing = sorted(set(RLS_FORCED_TENANT_TABLES) - migration_tables)

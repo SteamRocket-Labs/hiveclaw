@@ -16,6 +16,51 @@ from app.database import async_session, enter_rls_bypass
 from app.models.channel_config import ChannelConfig
 
 
+async def _enqueue_dingtalk_stream_message(
+    *,
+    agent_id: uuid.UUID,
+    provider_event_id: str,
+    sender_staff_id: str,
+    user_text: str,
+    conversation_id: str,
+    conversation_type: str,
+    session_webhook: str,
+) -> None:
+    from app.database import tenant_scoped_session
+    from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
+        config = (
+            await db.execute(
+                select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "dingtalk",
+                )
+            )
+        ).scalar_one_or_none()
+        if config is None:
+            raise RuntimeError("DingTalk installation no longer exists")
+        await accept_authenticated_channel_event(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            provider="dingtalk",
+            installation_ref=channel_installation_ref(config, fallback=f"dingtalk:{agent_id}"),
+            provider_event_id=provider_event_id,
+            handler_key="dingtalk.stream_message",
+            body={
+                "sender_staff_id": sender_staff_id,
+                "user_text": user_text,
+                "conversation_id": conversation_id,
+                "conversation_type": conversation_type,
+                "session_webhook": session_webhook,
+            },
+            metadata={"transport": "stream"},
+        )
+
+
 class DingTalkStreamManager:
     """Manages DingTalk Stream clients for all agents."""
 
@@ -101,13 +146,15 @@ class DingTalkStreamManager:
 
                         logger.info(f"[DingTalk Stream] Message from {sender_staff_id}: {user_text[:80]}")
 
-                        # Dispatch to the main FastAPI event loop for DB + LLM processing
-                        from app.api.dingtalk import process_dingtalk_message
-
                         if main_loop and main_loop.is_running():
+                            raw_data = callback.data if isinstance(callback.data, dict) else {}
+                            provider_event_id = str(
+                                raw_data.get("msgId") or raw_data.get("msg_id") or raw_data.get("messageId") or ""
+                            )
                             future = asyncio.run_coroutine_threadsafe(
-                                process_dingtalk_message(
+                                _enqueue_dingtalk_stream_message(
                                     agent_id=agent_id,
+                                    provider_event_id=provider_event_id,
                                     sender_staff_id=sender_staff_id,
                                     user_text=user_text,
                                     conversation_id=conversation_id,

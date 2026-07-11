@@ -366,7 +366,7 @@ async def test_handle_wechat_file_message_persists_upload_and_passes_workspace_p
     monkeypatch.setattr(wechat_stream, "store_context_token", fake_store_context_token)
     monkeypatch.setattr("app.services.wechat_personal_service.get_typing_ticket", fake_get_typing_ticket)
     monkeypatch.setattr(wechat_stream, "get_context_token", fake_get_context_token)
-    monkeypatch.setattr(wechat_stream, "_process_wechat_message", fake_process_wechat_message)
+    monkeypatch.setattr(wechat_stream, "_enqueue_wechat_personal_message", fake_process_wechat_message)
 
     msg = InboundMessage(
         seq=1,
@@ -438,7 +438,7 @@ async def test_handle_wechat_image_message_adds_vision_marker(monkeypatch, tmp_p
     monkeypatch.setattr(wechat_stream, "store_context_token", fake_noop)
     monkeypatch.setattr("app.services.wechat_personal_service.get_typing_ticket", fake_noop)
     monkeypatch.setattr(wechat_stream, "get_context_token", fake_noop)
-    monkeypatch.setattr(wechat_stream, "_process_wechat_message", fake_process_wechat_message)
+    monkeypatch.setattr(wechat_stream, "_enqueue_wechat_personal_message", fake_process_wechat_message)
 
     msg = InboundMessage(
         seq=1,

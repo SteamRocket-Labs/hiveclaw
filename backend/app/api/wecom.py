@@ -275,8 +275,6 @@ async def delete_wecom_channel(
 
 # ─── Event Webhook ──────────────────────────────────────
 
-_processed_wecom_events: set[str] = set()
-
 
 @router.get("/channel/wecom/{agent_id}/webhook")
 async def wecom_verify_webhook(
@@ -364,14 +362,6 @@ async def wecom_event_webhook(
     from_user = msg_root.findtext("FromUserName", "")  # WeCom userid
     msg_id = msg_root.findtext("MsgId", "")
 
-    # Dedup
-    if msg_id and msg_id in _processed_wecom_events:
-        return Response(content="success", media_type="text/plain")
-    if msg_id:
-        _processed_wecom_events.add(msg_id)
-        if len(_processed_wecom_events) > 1000:
-            _processed_wecom_events.clear()
-
     logger.info(f"[WeCom] Message type={msg_type}, from={from_user}, msg_id={msg_id}")
 
     if msg_type == "text":
@@ -379,10 +369,19 @@ async def wecom_event_webhook(
         if not user_text:
             return Response(content="success", media_type="text/plain")
 
-        # Process in background task
-        import asyncio
+        from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
 
-        asyncio.create_task(_process_wecom_text(db, agent_id, config, from_user, user_text))
+        await accept_authenticated_channel_event(
+            db,
+            tenant_id=config.tenant_id,
+            agent_id=agent_id,
+            provider="wecom",
+            installation_ref=channel_installation_ref(config, fallback=f"wecom:{agent_id}"),
+            provider_event_id=str(msg_id or ""),
+            handler_key="wecom.webhook",
+            body={"from_user": from_user, "user_text": user_text},
+            metadata={"transport": "encrypted_webhook", "corp_id": recv_corp_id},
+        )
 
     elif msg_type in ("image", "file"):
         # TODO: Handle image/file messages in future

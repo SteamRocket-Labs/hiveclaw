@@ -240,7 +240,14 @@ def test_webhook_routes_to_main_agent():
 
     app = FastAPI()
     app.include_router(router)
-    fake_db = _FakeDB(config=_EXISTING_CONFIG, user=fake_user, agent_id=_MAIN_AGENT_ID)
+    unsigned_config = SimpleNamespace(
+        **{
+            **vars(_EXISTING_CONFIG),
+            "encrypt_key": None,
+            "verification_token": None,
+        }
+    )
+    fake_db = _FakeDB(config=unsigned_config, user=fake_user, agent_id=_MAIN_AGENT_ID)
 
     async def override_db():
         yield fake_db
@@ -255,15 +262,21 @@ def test_webhook_routes_to_main_agent():
         },
     }
 
-    with patch("app.api.feishu.process_feishu_event", new_callable=AsyncMock) as mock_process:
+    with patch(
+        "app.services.channel_ingress_inbox.accept_authenticated_channel_event",
+        new_callable=AsyncMock,
+    ) as mock_accept:
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(f"/channel/feishu/tenant/{_TENANT_ID}/webhook", json=feishu_event)
 
     assert resp.status_code == 200
     assert resp.json()["routed"] is True
-    mock_process.assert_called_once()
-    call_args = mock_process.call_args
-    assert call_args[0][0] == _MAIN_AGENT_ID
+    mock_accept.assert_awaited_once()
+    call_kwargs = mock_accept.await_args.kwargs
+    assert call_kwargs["tenant_id"] == _TENANT_ID
+    assert call_kwargs["agent_id"] == _MAIN_AGENT_ID
+    assert call_kwargs["provider_event_id"] == "ev_test"
+    assert call_kwargs["handler_key"] == "feishu.event"
 
 
 def test_webhook_unknown_sender_not_routed():

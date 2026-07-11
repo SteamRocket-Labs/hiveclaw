@@ -217,6 +217,7 @@ async def discord_interaction_webhook(
 ):
     """Handle Discord Interaction webhooks (PING + slash commands)."""
     body_bytes = await request.body()
+    replay_event_id = getattr(getattr(request, "state", None), "channel_ingress_event_id", None)
 
     # Get channel config and pin tenant RLS for this public webhook.
     config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="discord")
@@ -225,11 +226,14 @@ async def discord_interaction_webhook(
 
     # Verify Discord signature
     public_key = config.encrypt_key or ""
-    if public_key and not _verify_discord_signature(public_key, body_bytes, dict(request.headers)):
+    if (
+        replay_event_id is None
+        and public_key
+        and not _verify_discord_signature(public_key, body_bytes, dict(request.headers))
+    ):
         return Response(content="Invalid signature", status_code=401)
 
     import json
-    import asyncio
 
     body = json.loads(body_bytes)
     interaction_type = body.get("type", 0)
@@ -251,6 +255,22 @@ async def discord_interaction_webhook(
 
         if not user_text:
             return {"type": 4, "data": {"content": "⚠️ 请提供消息内容。Usage: `/ask message:<你的问题>`"}}
+
+        if replay_event_id is None:
+            from app.services.channel_ingress_inbox import accept_authenticated_channel_event, channel_installation_ref
+
+            await accept_authenticated_channel_event(
+                db,
+                tenant_id=config.tenant_id,
+                agent_id=agent_id,
+                provider="discord",
+                installation_ref=channel_installation_ref(config, fallback=f"discord:{agent_id}"),
+                provider_event_id=str(body.get("id") or ""),
+                handler_key="discord.interaction",
+                body=body,
+                metadata={"transport": "interaction_webhook"},
+            )
+            return {"type": 5}
 
         interaction_token = body.get("token", "")
         sender_id = body.get("member", {}).get("user", {}).get("id") or body.get("user", {}).get("id", "")
@@ -408,13 +428,7 @@ async def discord_interaction_webhook(
                     except Exception as e:
                         logger.error(f"[Discord] Failed to send follow-up: {e}")
 
-        async def _safe_background():
-            try:
-                await handle_in_background()
-            except Exception as _bg_err:
-                logger.error(f"[Discord] Background task failed: {_bg_err}", exc_info=True)
-
-        asyncio.create_task(_safe_background())
+        await handle_in_background()
         # Return DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE — shows "thinking..." to user
         return {"type": 5}
 

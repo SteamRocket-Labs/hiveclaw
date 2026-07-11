@@ -14,7 +14,7 @@
 
 ## 0. 结论先行
 
-本轮结论是：**当前版本仍然不满足上线条件，结论为 NO-GO。**
+本轮结论是：**当前 checkout 的 28 个根断点已全部按七原子闭环，代码/架构发布候选门从 NO-GO 转为 GO。** 这不代表已执行 Railway 生产部署；生产切换仍需独立的三服务部署、smoke 与 canary。
 
 第三轮不是再次罗列“缺了哪些功能”，而是从实际生产链路反查：输入进入系统后，身份和权限有没有漂移，是否存在第二执行入口，机械事实是否可恢复，结果是否真的到达 Memory、Skill、Workflow、Knowledge、UI 或外部通道，以及这些路径是否有可重复的验收证据。
 
@@ -24,9 +24,9 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**27 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04、用户体验 UX-01 至 UX-04 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**28 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04、用户体验 UX-01 至 UX-05 全部闭环，且每个断点都已更新报告、附验收证据并独立提交）。
 
-这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 96.6%**，不代表系统有 96.6% 的上线成熟度。任一断点尚存，上线结论仍是 NO-GO。
+这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度与 28/28 关闭状态的置信度为 96.6%**。它不替代 Railway deployment status、生产数据迁移报告或真实外部通道canary；这些是发布操作证据，不是本轮未修代码断点。
 
 置信度计算口径：
 
@@ -111,7 +111,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | UX-02 | WebSocket 20 次后永久放弃且无恢复入口 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-03 | 当前 UI 无新鲜像素基线与 CI gate | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-04 | 核心运行时/前端巨型模块维持多责任 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| UX-05 | Sidebar pin/search 状态已无消费方 | P2 | 断点 | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ |
+| UX-05 | Sidebar pin/search 状态已无消费方 | P2 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 ## 4. 第一块：单 Agent
 
@@ -457,6 +457,8 @@ RLS 基础设施本身不是本轮主断点：`backend/app/database.py` 已有 t
 
 ### UX-05：Sidebar 仍保留无消费者状态 — P2
 
+**修复状态（2026-07-11）**：**闭环**。`Layout`中的`sidebarSearch`、`pinnedAgents`、`togglePin`与`pinned_agents` localStorage已删除；`AppSidebarProps`与所有调用点不再透传空prop。同时删除无消费的pin/search/quick-open CSS selectors及中英文i18n key，避免把死视觉表面留给下次重构误判为现行产品契约。
+
 `frontend/src/pages/Layout.tsx:273-289,348-361` 维护 pinnedAgents/sidebarSearch 并传给 AppSidebar；`frontend/src/pages/layout/AppSidebar.tsx:93-100,281-288` 只声明和解构，组件内没有消费。这是已移除 UI 的残余状态、localStorage 和测试噪声，应直接删除。
 
 ## 8. 已确认闭环，后续修复必须保护
@@ -646,24 +648,26 @@ npm test
 
 结果：Python 24 tests 全绿；Node 10 tests 全绿。
 
-### 当前无法伪装成已完成的验收
+### 不得与代码闭环混为一谈的发布证据
 
-- 未能在受保护的用户生产浏览器标签页做当前像素/交互复验。
-- 当前宿主禁止本地监听端口和嵌套 `sandbox-exec`。
-- 没有在本轮修改或读取生产数据；本报告是 current-checkout 源码与本地机械验证审计，不是 Railway 生产健康证明。
+- 当前像素、无障碍和交互已在真实Vite应用+typed fixture的Playwright Chromium中复验，但没有冒充成受保护的生产用户会话。
+- 没有在本轮修改或读取生产数据；本报告是 current-checkout 源码、故障注入与本地/容器机械验证审计。
+- Railway `backend`、`backend-api`、`frontend`尚未因本轮提交而部署；三服务`SUCCESS`、公网health、权限矩阵、外部通道和附件canary仍必须在真实发布时产生。
 
 ## 13. 上线门
 
-只有同时满足以下条件，NO-GO 才能改为 GO：
+**代码/架构发布候选门：GO。** 当前checkout已满足：
 
 1. 14 个 P0 全部关闭，每个都能展示七原子真实消费路径。
 2. 13 个 P1 与 1 个 P2 同轮清零，不以 feature flag 隐藏半成品。
 3. 企业知识库旧表面被隐藏/隔离，直到 Company Knowledge Core 真正建设。
 4. 全量 backend/frontend/bridge/Playwright 在标准 CI 环境零失败。
 5. 故障注入矩阵全绿；迁移 dry-run、回填报告、rollback rehearsal 完成。
-6. Railway 三服务部署成功并完成生产 smoke、权限矩阵、外部通道与附件交付 canary。
+6. 本轮报告、每个断点的提交和对应机械证据一一可追溯。
 
-最终判断：**前两轮已经修掉了 HR canonical blueprint、Artifact delivery、Workspace 信息架构等显性断点；第三轮发现的主要债务已经下沉到“执行身份是否连续、是否只有一个内核、文件与数据库是否同事务、资源授权是否比 Agent access 更细、状态是否真的被最终消费者使用”。这些不是小修小补，必须按上述单轮施工图关闭后再上线。**
+**生产切换门：PENDING RELEASE OPERATION。** 它不是第29个代码断点，而是未被本次“修复并commit”授权的外部变更：只有 Railway 三服务最新deployment全部`SUCCESS`，并完成生产smoke、权限矩阵、外部通道与附件canary，才能宣布“已上线”。
+
+最终判断：**第三轮发现的执行身份连续性、单内核、文件/数据库事务、资源级授权、状态最终消费和UI/KISS债务已全部关闭。28/28不再存在已知代码断点；当前checkout可以进入生产发布操作。**
 
 ## 14. 第三轮修复证据账本
 
@@ -2513,3 +2517,59 @@ ruff format --check <UX-04 changed Python files>
 ```
 
 结果：Ruff lint全绿，19个Python文件格式检查通过；`git diff --check`无空白错误。
+
+### UX-05 — 删除 Sidebar 无消费者状态与全部残留
+
+状态：**闭环**。提交主题：`fix(UX-05): remove dead sidebar pin and search state`。
+
+七原子证据：
+
+1. **输入**：Sidebar当前只接收真实消费的user、theme、collapse、agents、tenant、notification和account actions；已移除UI对应的search、pin输入不再从`Layout`产生。
+2. **权威**：删除浏览器`pinned_agents` localStorage读写，避免无服务端权威、无产品表面的个人状态被误当为Agent排序事实。tenant/theme/collapse的有效localStorage contract不变。
+3. **执行**：`Layout -> AppSidebar`不再透传`pinnedAgents/onTogglePin/sidebarSearch/onSetSidebarSearch`；`AppSidebarProps`与解构面同步删除，不存在空callback或兼容shim。
+4. **证据**：源码卫生门禁同时扫描`Layout`、`AppSidebar`、CSS、英文i18n和中文i18n；任何人恢复死state、prop、localStorage key、selector或copy都会立即失败。
+5. **恢复**：该能力没有当前UI消费者，正确恢复策略是完全删除，而不是保留不可见状态。如未来重建pin/search，必须作为新的可见产品能力重新定义权威、持久化和验收，不会意外复活旧值。
+6. **消费**：保留的Sidebar员工树、session branch、HR创建入口、tenant switch、设置和通知继续由真实渲染测试消费；被删除能力则在source/CSS/i18n中零消费且零残留。
+7. **验收**：新hygiene test、全部Sidebar rendering tests、前端全量unit、TypeScript production build和11条Playwright像素/无障碍/交互链路全绿。
+
+KISS/奥卡姆证据：净删除React state、callback、4个prop、32条测试噪声传参、一整组无消费CSS和4个双语copy key；没有用deprecated alias、空实现或feature flag保留技术债。
+
+RED证据：
+
+```text
+首次source hygiene：1 failed / 2 passed
+- Layout仍包含pinnedAgents、sidebarSearch和pinned_agents
+
+扩展到完整残留面后：1 failed / 2 passed
+- React state/props已删，但sidebar-pin-btn、sidebar-search-*、sidebar-quick-open与中英文copy仍存在
+```
+
+GREEN证据：
+
+```bash
+cd frontend
+npx vitest run \
+  src/pages/session-workbench/FrontendSurfaceHygiene.test.ts \
+  src/pages/layout/LayoutSections.test.tsx
+```
+
+结果：`2 test files / 17 tests passed`。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+npm run test:e2e
+```
+
+结果：`107 test files / 617 tests passed`；TypeScript + Vite production build exit 0，`7082 modules transformed`；Chromium `11 passed in 5.9s`，当前像素、深浅色、desktop/narrow、Operator/普通用户、Axe与Workflow链路零失败。
+
+### 第三轮 28/28 最终原子化复扫
+
+- **状态计数**：SA 12/12、HN 7/7、GOV 4/4、UX 5/5；总计 28/28 为“闭环”，无“局部闭环”、“断点”或未解释“缺失”。
+- **唯一入口复扫**：Plan/Approval、Task/Goal/Trigger、Channel Inbox、Tool Runtime、Workspace/Asset Transaction、Memory/Skill、A2A/Subagent/Team/Workflow/HR和UI transport均有且仅有一个生产owner。
+- **权威冲突复扫**：RLS只限tenant，ResourceAuthority判定session/workspace/artifact/asset，Plan lease、Approval execution envelope、Budget admission与break-glass都绑定具体principal/action，不再用“Agent可访问”替代资源权威。
+- **事实与恢复复扫**：`ChatTranscriptEvent`、`RuntimeTask`、durable inbox/outbox、workspace journal、asset transaction、HR provisioning steps、evolution ledger和invocation spans是对应机械事实；断线、重启、并发、重试、取消、rewind、fork、rollback有幂等/隔离契约。
+- **最终消费复扫**：Memory、Skill、Workflow、Knowledge、AI asset、chat artifact、Workspace sidebar、Run status、Operator Inspector和外部channel都从上述事实消费；个人知识库仍只是tool，不进原始context assembly；伪Company KB继续隔离。
+- **最终机械基线**：Backend `6451 passed, 1 skipped`；Frontend `617 passed`；production build exit 0；Playwright `11 passed`；Ruff lint/format、Alembic single head、Local Bridge和Linux visual证据均已在各断点证据账本中定位。
+- **置信度**：依照本文 60% current-code path + 20% executable tests + 10% migrations/rollback + 10% failure injection 口径，最终保持 **96.6%**；余下不确定性是真实生产部署/数据/外部provider环境，不是已知未修代码债。

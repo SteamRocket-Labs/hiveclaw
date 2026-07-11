@@ -270,24 +270,6 @@ export default function Layout() {
         });
     };
 
-    // Sidebar agent search & pin
-    const [sidebarSearch, setSidebarSearch] = useState('');
-    const [pinnedAgents, setPinnedAgents] = useState<Set<string>>(() => {
-        try {
-            const stored = localStorage.getItem('pinned_agents');
-            return stored ? new Set(JSON.parse(stored)) : new Set();
-        } catch { return new Set(); }
-    });
-    const togglePin = (agentId: string) => {
-        setPinnedAgents(prev => {
-            const next = new Set(prev);
-            if (next.has(agentId)) next.delete(agentId);
-            else next.add(agentId);
-            localStorage.setItem('pinned_agents', JSON.stringify([...next]));
-            return next;
-        });
-    };
-
     // Tenant switching (platform_admin)
     const isPlatformAdmin = user?.role === 'platform_admin';
     const [currentTenant, setCurrentTenant] = useState(() =>
@@ -351,14 +333,10 @@ export default function Layout() {
                 isSidebarCollapsed={effectiveSidebarCollapsed}
                 onToggleSidebar={toggleSidebar}
                 agents={agents}
-                pinnedAgents={pinnedAgents}
-                onTogglePin={togglePin}
                 tenants={tenants}
                 currentTenant={currentTenant}
                 onSwitchTenant={switchTenant}
                 isChinese={!!isChinese}
-                sidebarSearch={sidebarSearch}
-                onSetSidebarSearch={setSidebarSearch}
                 onToggleTheme={toggleTheme}
                 onOpenNotifications={() => {
                     setShowNotifications(v => !v);

@@ -334,7 +334,7 @@
   transition: opacity var(--transition-fast);
 }
 
-/* Sidebar agent item with pin button */
+/* Sidebar agent item */
 .sidebar-agent-item {
   position: relative;
   margin: 0 0 2px;
@@ -429,24 +429,6 @@
   background: var(--accent-primary);
   border-radius: 50%;
   border: 1.5px solid var(--bg-secondary);
-}
-
-.sidebar-pin-btn {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 3px;
-  color: var(--text-tertiary);
-  opacity: 0;
-  transition: opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-sm);
 }
 
 .sidebar-agent-source-badge {
@@ -2877,95 +2859,6 @@
   word-break: break-word;
 }
 
-.sidebar-pin-btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-tertiary);
-}
-
-.sidebar-pin-btn.pinned {
-  opacity: 0.7;
-  color: var(--accent-primary);
-}
-
-.sidebar-agent-item:hover .sidebar-pin-btn {
-  opacity: 1;
-}
-
-/* Pinned icon swap: show pin by default, unpin on hover */
-.sidebar-pin-btn.pinned .pin-hover {
-  display: none;
-}
-
-.sidebar-agent-item:hover .sidebar-pin-btn.pinned .pin-default {
-  display: none;
-}
-
-.sidebar-agent-item:hover .sidebar-pin-btn.pinned .pin-hover {
-  display: inline;
-}
-
-/* When pinned and hovered, turn red to indicate unpin */
-.sidebar-agent-item:hover .sidebar-pin-btn.pinned {
-  color: var(--error);
-  background: var(--error-subtle);
-}
-
-.sidebar-search-wrap {
-  position: relative;
-  margin: 0 0 var(--space-2);
-}
-
-.sidebar-search-icon {
-  position: absolute;
-  left: 9px;
-  top: 50%;
-  transform: translateY(-50%);
-  pointer-events: none;
-  color: var(--text-tertiary);
-}
-
-.sidebar-search-input {
-  width: 100%;
-  padding: 6px 26px 6px 28px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  font-size: var(--text-row);
-  outline: none;
-  box-sizing: border-box;
-}
-
-.sidebar-search-clear {
-  position: absolute;
-  right: 7px;
-  top: 50%;
-  transform: translateY(-50%);
-  background: none;
-  border: none;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  display: flex;
-  padding: 2px;
-}
-
-.sidebar-quick-open {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-bottom: 8px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.sidebar-quick-open-title,
-.sidebar-section-subtitle {
-  padding: 3px 2px;
-  color: var(--text-tertiary);
-  font-size: var(--text-meta);
-  font-weight: 600;
-}
-
 .sidebar-empty-note {
   padding: 8px 10px;
   font-size: var(--text-row);
@@ -3250,7 +3143,6 @@
 
 .sidebar.collapsed .sidebar-workspace-card,
 .sidebar.collapsed .sidebar-workspace-select,
-.sidebar.collapsed .sidebar-search-wrap,
 .sidebar.collapsed .sidebar-empty-note {
   display: none;
 }

@@ -90,14 +90,10 @@ interface AppSidebarProps {
   isSidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   agents: any[];
-  pinnedAgents: Set<string>;
-  onTogglePin: (agentId: string) => void;
   tenants: { id: string; name: string }[];
   currentTenant: string;
   onSwitchTenant: (tenantId: string) => void;
   isChinese: boolean;
-  sidebarSearch: string;
-  onSetSidebarSearch: (value: string) => void;
   onToggleTheme: () => void;
   onOpenNotifications: () => void;
   unreadCount: number;
@@ -278,14 +274,10 @@ export default function AppSidebar({
   isSidebarCollapsed,
   onToggleSidebar,
   agents,
-  pinnedAgents,
-  onTogglePin,
   tenants,
   currentTenant,
   onSwitchTenant,
   isChinese,
-  sidebarSearch,
-  onSetSidebarSearch,
   onToggleTheme,
   onOpenNotifications,
   unreadCount,

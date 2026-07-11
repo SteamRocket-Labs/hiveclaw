@@ -148,11 +148,7 @@ describe('Layout extracted sections', () => {
           { id: 'agent-4', name: 'Agent Four', created_at: '2026-03-24T00:00:00Z', status: 'idle', agent_type: 'native' },
           { id: 'agent-5', name: 'Codex on Mac', created_at: '2026-03-23T00:00:00Z', status: 'idle', agent_type: 'local_agent' },
         ]}
-        pinnedAgents={new Set(['agent-1'])}
-        onTogglePin={vi.fn()}
         isChinese={false}
-        sidebarSearch=""
-        onSetSidebarSearch={vi.fn()}
         onToggleTheme={vi.fn()}
         onOpenNotifications={vi.fn()}
         unreadCount={3}
@@ -221,11 +217,7 @@ describe('Layout extracted sections', () => {
         currentTenant="tenant-1"
         onSwitchTenant={vi.fn()}
         agents={[{ id: 'agent-1', name: 'Research Lead', role_description: 'Market research', created_at: '2026-03-27T00:00:00Z', status: 'running', agent_type: 'native' }]}
-        pinnedAgents={new Set()}
-        onTogglePin={vi.fn()}
         isChinese={false}
-        sidebarSearch="local"
-        onSetSidebarSearch={vi.fn()}
         onToggleTheme={vi.fn()}
         onOpenNotifications={vi.fn()}
         unreadCount={0}
@@ -277,11 +269,7 @@ describe('Layout extracted sections', () => {
             },
           ],
         }}
-        pinnedAgents={new Set()}
-        onTogglePin={vi.fn()}
         isChinese={false}
-        sidebarSearch=""
-        onSetSidebarSearch={vi.fn()}
         onToggleTheme={vi.fn()}
         onOpenNotifications={vi.fn()}
         unreadCount={0}
@@ -315,11 +303,7 @@ describe('Layout extracted sections', () => {
         currentTenant="tenant-1"
         onSwitchTenant={vi.fn()}
         agents={[]}
-        pinnedAgents={new Set()}
-        onTogglePin={vi.fn()}
         isChinese={false}
-        sidebarSearch=""
-        onSetSidebarSearch={vi.fn()}
         onToggleTheme={vi.fn()}
         onOpenNotifications={vi.fn()}
         unreadCount={0}
@@ -377,11 +361,7 @@ describe('Layout extracted sections', () => {
             } as any,
           ],
         }}
-        pinnedAgents={new Set()}
-        onTogglePin={vi.fn()}
         isChinese={false}
-        sidebarSearch=""
-        onSetSidebarSearch={vi.fn()}
         onToggleTheme={vi.fn()}
         onOpenNotifications={vi.fn()}
         unreadCount={0}
@@ -445,11 +425,7 @@ describe('Layout extracted sections', () => {
             } as any,
           ],
         }}
-        pinnedAgents={new Set()}
-        onTogglePin={vi.fn()}
         isChinese={false}
-        sidebarSearch=""
-        onSetSidebarSearch={vi.fn()}
         onToggleTheme={vi.fn()}
         onOpenNotifications={vi.fn()}
         unreadCount={0}
@@ -506,11 +482,7 @@ describe('Layout extracted sections', () => {
             },
           ],
         }}
-        pinnedAgents={new Set()}
-        onTogglePin={vi.fn()}
         isChinese={false}
-        sidebarSearch=""
-        onSetSidebarSearch={vi.fn()}
         onToggleTheme={vi.fn()}
         onOpenNotifications={vi.fn()}
         unreadCount={0}
@@ -558,11 +530,7 @@ describe('Layout extracted sections', () => {
             }),
           ],
         }}
-        pinnedAgents={new Set()}
-        onTogglePin={vi.fn()}
         isChinese={false}
-        sidebarSearch=""
-        onSetSidebarSearch={vi.fn()}
         onToggleTheme={vi.fn()}
         onOpenNotifications={vi.fn()}
         unreadCount={0}

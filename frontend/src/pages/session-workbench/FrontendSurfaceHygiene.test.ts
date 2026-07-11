@@ -20,4 +20,37 @@ describe('session frontend surface hygiene', () => {
     expect(source).not.toContain('local-chat-textarea');
     expect(source).not.toContain('composerMenuOpen');
   });
+
+  it('does not retain sidebar pin or search state after their product surfaces are removed', () => {
+    const layout = readFileSync(new URL('../Layout.tsx', import.meta.url), 'utf8');
+    const sidebar = readFileSync(new URL('../layout/AppSidebar.tsx', import.meta.url), 'utf8');
+    const css = readFileSync(new URL('../../index.css', import.meta.url), 'utf8');
+    const english = readFileSync(new URL('../../i18n/en.json', import.meta.url), 'utf8');
+    const chinese = readFileSync(new URL('../../i18n/zh.json', import.meta.url), 'utf8');
+
+    for (const retiredSymbol of [
+      'pinnedAgents',
+      'onTogglePin',
+      'sidebarSearch',
+      'onSetSidebarSearch',
+      'pinned_agents',
+    ]) {
+      expect(layout, retiredSymbol).not.toContain(retiredSymbol);
+      expect(sidebar, retiredSymbol).not.toContain(retiredSymbol);
+    }
+    for (const retiredSurface of [
+      'sidebar-pin-btn',
+      'sidebar-search-wrap',
+      'sidebar-search-icon',
+      'sidebar-search-input',
+      'sidebar-search-clear',
+      'sidebar-quick-open',
+      'workspaceSearch',
+      'quickOpen',
+    ]) {
+      expect(css, retiredSurface).not.toContain(retiredSurface);
+      expect(english, retiredSurface).not.toContain(retiredSurface);
+      expect(chinese, retiredSurface).not.toContain(retiredSurface);
+    }
+  });
 });

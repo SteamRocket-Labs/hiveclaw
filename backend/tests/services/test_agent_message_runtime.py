@@ -219,6 +219,7 @@ async def test_delegate_to_agent_async_threads_runtime_budget_to_cloud_delegatio
 
     from_agent_id = uuid4()
     budget_run_id = uuid4()
+    requester_user_id = uuid4()
     source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
     target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
     target_model = SimpleNamespace(
@@ -242,12 +243,26 @@ async def test_delegate_to_agent_async_threads_runtime_budget_to_cloud_delegatio
             "agent_name": "Target Agent",
             "message": "search memory and summarize the result",
             "_budget_run_id": str(budget_run_id),
+            "_execution_principal": {
+                "schema": "hive.execution_principal.v1",
+                "tenant_id": str(source_agent.tenant_id),
+                "source_agent_id": str(from_agent_id),
+                "requester_user_id": str(requester_user_id),
+                "root_session_id": "root-session-7",
+                "root_runtime_task_id": "root-task-7",
+                "origin": "agent_tool",
+                "delegation_chain": [],
+            },
         },
     )
 
     payload = json.loads(result)
     assert payload["task_id"] == "task-1"
     assert captured["kwargs"]["budget_run_id"] == budget_run_id
+    assert captured["kwargs"]["owner_id"] == requester_user_id
+    assert captured["kwargs"]["parent_session_id"] == "root-session-7"
+    assert captured["kwargs"]["root_runtime_task_id"] == "root-task-7"
+    assert captured["kwargs"]["execution_principal"]["requester_user_id"] == str(requester_user_id)
 
 
 @pytest.mark.asyncio

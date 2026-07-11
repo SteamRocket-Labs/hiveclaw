@@ -829,7 +829,8 @@ def test_delegate_with_confirmed_plan_passes(monkeypatch):
 
     captured = {}
 
-    async def fake_delegate(_db, _from, _to, _title, _desc, **kwargs):
+    async def fake_delegate(_db, _from, _to, _title, _desc, *, principal, **kwargs):
+        captured["principal"] = principal
         captured.update(kwargs)
         return {"task_id": "t1", "status": "delegated"}
 
@@ -855,6 +856,10 @@ def test_delegate_with_confirmed_plan_passes(monkeypatch):
     assert captured["confirmed_plan_id"] == plan_id
     assert captured["confirmed_plan_version"] == 1
     assert captured["confirmed_plan_hash"] == "sha256:abc"
+    assert captured["principal"].requester_user_id == _user.id
+    assert captured["principal"].source_agent_id == agent_id
+    assert captured["principal"].tenant_id == _user.tenant_id
+    assert captured["principal"].origin == "rest"
 
 
 def test_send_inter_agent_message_is_not_gated(monkeypatch):
@@ -866,7 +871,10 @@ def test_send_inter_agent_message_is_not_gated(monkeypatch):
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
 
-    async def fake_msg(_db, _from, _to, _msg, _type):
+    captured = {}
+
+    async def fake_msg(_db, _from, _to, _msg, _type, *, principal):
+        captured["principal"] = principal
         return {"ok": True}
 
     monkeypatch.setattr(mod.collaboration_service, "send_message_between_agents", fake_msg)
@@ -879,6 +887,9 @@ def test_send_inter_agent_message_is_not_gated(monkeypatch):
     )
 
     assert resp.status_code == 200
+    assert captured["principal"].requester_user_id == _user.id
+    assert captured["principal"].source_agent_id == agent_id
+    assert captured["principal"].tenant_id == _user.tenant_id
 
 
 # ===========================================================================

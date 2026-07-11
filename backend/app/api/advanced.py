@@ -8,7 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
-from app.core.permissions import check_agent_access, effective_agent_owner_id, require_agent_manage_access
+from app.core.execution_context import ExecutionPrincipal
+from app.core.permissions import (
+    authorize_session_action,
+    check_agent_access,
+    effective_agent_owner_id,
+    require_agent_manage_access,
+)
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
@@ -35,6 +41,7 @@ class InterAgentMessage(BaseModel):
     to_agent_id: uuid.UUID
     message: str
     msg_type: str = "notify"  # notify | consult
+    root_session_id: uuid.UUID | None = None
 
 
 @router.get("/agents/{agent_id}/collaborators")
@@ -56,7 +63,7 @@ async def delegate_task(
     db: AsyncSession = Depends(get_db),
 ):
     """Delegate a task from one agent to another."""
-    await check_agent_access(db, current_user, agent_id)
+    source_agent, _access_level = await check_agent_access(db, current_user, agent_id)
     # Plan Mode early intercept (§9.3): delegation hands execution to another agent
     # to run asynchronously, so it needs a confirmed plan (or cutover exemption).
     action_artifact = {
@@ -101,6 +108,13 @@ async def delegate_task(
             data.to_agent_id,
             data.task_title,
             data.task_description,
+            principal=ExecutionPrincipal(
+                tenant_id=source_agent.tenant_id,
+                source_agent_id=source_agent.id,
+                requester_user_id=current_user.id,
+                root_session_id=data.confirmed_plan_session_id,
+                origin="rest",
+            ),
             confirmed_plan_id=data.confirmed_plan_id,
             confirmed_plan_version=data.confirmed_plan_version,
             confirmed_plan_hash=data.confirmed_plan_hash,
@@ -120,10 +134,33 @@ async def send_inter_agent_message(
     db: AsyncSession = Depends(get_db),
 ):
     """Send a message between agents."""
-    await check_agent_access(db, current_user, agent_id)
-    return await collaboration_service.send_message_between_agents(
-        db, agent_id, data.to_agent_id, data.message, data.msg_type
-    )
+    source_agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    root_session_id = str(data.root_session_id) if data.root_session_id else None
+    if data.root_session_id is not None:
+        await authorize_session_action(
+            db,
+            current_user,
+            agent_id=agent_id,
+            session_id=data.root_session_id,
+            action="a2a_message",
+        )
+    try:
+        return await collaboration_service.send_message_between_agents(
+            db,
+            agent_id,
+            data.to_agent_id,
+            data.message,
+            data.msg_type,
+            principal=ExecutionPrincipal(
+                tenant_id=source_agent.tenant_id,
+                source_agent_id=source_agent.id,
+                requester_user_id=current_user.id,
+                root_session_id=root_session_id,
+                origin="rest",
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ─── Agent Handover ─────────────────────────────────────

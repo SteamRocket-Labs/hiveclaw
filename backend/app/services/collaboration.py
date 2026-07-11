@@ -1,12 +1,12 @@
 """Agent collaboration service — Agent-to-Agent communication."""
 
-import json
 import uuid
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.execution_context import ExecutionPrincipal
 from app.models.agent import Agent
 from app.models.audit import AuditLog
 from app.services.a2a_collaboration_policy import build_a2a_collaboration_read_model
@@ -29,6 +29,7 @@ class CollaborationService:
         task_title: str,
         task_description: str,
         *,
+        principal: ExecutionPrincipal,
         confirmed_plan_id: str | None = None,
         confirmed_plan_version: int | None = None,
         confirmed_plan_hash: str | None = None,
@@ -36,7 +37,7 @@ class CollaborationService:
         plan_authorization: dict | None = None,
     ) -> dict:
         """Delegate work through the runtime async delegation path."""
-        from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
+        from app.services.agent_tool_domains.messaging import _delegate_to_agent_async_outcome
 
         from_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
         from_agent = from_result.scalar_one_or_none()
@@ -45,6 +46,11 @@ class CollaborationService:
 
         if not from_agent or not to_agent:
             raise ValueError("Agent not found")
+        principal.assert_scope(tenant_id=from_agent.tenant_id, source_agent_id=from_agent_id)
+        if principal.requester_user_id is None:
+            raise ValueError("A2A REST delegation requires an authenticated requester")
+        if str(to_agent.tenant_id) != str(from_agent.tenant_id):
+            raise ValueError("Cross-tenant A2A delegation is forbidden")
         if to_agent.status in {"expired", "stopped", "archived"}:
             raise ValueError(f"Target agent '{to_agent.name}' is currently {to_agent.status}")
 
@@ -52,7 +58,7 @@ class CollaborationService:
         if task_description.strip():
             task_message = f"{task_message}\n\n{task_description.strip()}"
 
-        raw_result = await _delegate_to_agent_async(
+        outcome = await _delegate_to_agent_async_outcome(
             from_agent_id,
             {
                 "agent_name": to_agent.name,
@@ -64,13 +70,15 @@ class CollaborationService:
                 "confirmed_plan_session_id": confirmed_plan_session_id,
                 "plan_authorization": dict(plan_authorization or {}),
             },
+            principal=principal,
         )
-        if raw_result.startswith(("❌", "⚠️")):
-            raise ValueError(raw_result.lstrip("❌⚠️ ").strip())
-        payload = json.loads(raw_result)
+        if not outcome.ok:
+            raise ValueError(outcome.message)
+        payload = outcome.to_payload()
 
         db.add(
             AuditLog(
+                user_id=principal.requester_user_id,
                 agent_id=from_agent_id,
                 tenant_id=from_agent.tenant_id,
                 action="collaboration:delegate",
@@ -81,6 +89,8 @@ class CollaborationService:
                     "runtime_task_id": payload.get("task_id"),
                     "trace_id": payload.get("trace_id"),
                     "plan_authorization": dict(plan_authorization or {}),
+                    "execution_principal": principal.to_evidence(),
+                    "outcome_status": outcome.status,
                 },
             )
         )
@@ -113,10 +123,20 @@ class CollaborationService:
         return collaborators
 
     async def send_message_between_agents(
-        self, db: AsyncSession, from_agent_id: uuid.UUID, to_agent_id: uuid.UUID, message: str, msg_type: str = "notify"
+        self,
+        db: AsyncSession,
+        from_agent_id: uuid.UUID,
+        to_agent_id: uuid.UUID,
+        message: str,
+        msg_type: str = "notify",
+        *,
+        principal: ExecutionPrincipal,
     ) -> dict:
         """Send an inter-agent message through the governed session-backed A2A path."""
-        from app.services.agent_tool_domains.messaging import _delegate_to_agent_async, _send_message_to_agent
+        from app.services.agent_tool_domains.messaging import (
+            _delegate_to_agent_async_outcome,
+            _send_message_to_agent_outcome,
+        )
 
         from_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
         from_agent = from_result.scalar_one_or_none()
@@ -124,27 +144,34 @@ class CollaborationService:
         to_agent = to_result.scalar_one_or_none()
         if not from_agent or not to_agent:
             raise ValueError("Agent not found")
+        principal.assert_scope(tenant_id=from_agent.tenant_id, source_agent_id=from_agent_id)
+        if principal.requester_user_id is None:
+            raise ValueError("A2A REST messaging requires an authenticated requester")
+        if str(to_agent.tenant_id) != str(from_agent.tenant_id):
+            raise ValueError("Cross-tenant A2A messaging is forbidden")
+        if msg_type not in {"consult", "notify"}:
+            raise ValueError("msg_type must be consult or notify")
 
         if msg_type == "consult":
-            raw_result = await _send_message_to_agent(
+            outcome = await _send_message_to_agent_outcome(
                 from_agent_id,
                 {"target_agent_id": str(to_agent_id), "agent_name": to_agent.name, "message": message},
+                principal=principal,
             )
-            payload = {"status": "sent", "type": msg_type, "result": raw_result}
         else:
-            raw_result = await _delegate_to_agent_async(
+            outcome = await _delegate_to_agent_async_outcome(
                 from_agent_id,
                 {"target_agent_id": str(to_agent_id), "agent_name": to_agent.name, "message": message},
+                principal=principal,
             )
-            if raw_result.startswith(("❌", "⚠️")):
-                raise ValueError(raw_result.lstrip("❌⚠️ ").strip())
-            import json
-
-            payload = json.loads(raw_result)
-            payload["type"] = msg_type
+        if not outcome.ok:
+            raise ValueError(outcome.message)
+        payload = outcome.to_payload()
+        payload["type"] = msg_type
 
         db.add(
             AuditLog(
+                user_id=principal.requester_user_id,
                 agent_id=from_agent_id,
                 tenant_id=from_agent.tenant_id,
                 action=f"collaboration:{msg_type}",
@@ -153,6 +180,8 @@ class CollaborationService:
                     "message_preview": message[:100],
                     "session_id": payload.get("session_id") or payload.get("child_session_id"),
                     "runtime_task_id": payload.get("task_id"),
+                    "execution_principal": principal.to_evidence(),
+                    "outcome_status": outcome.status,
                 },
             )
         )

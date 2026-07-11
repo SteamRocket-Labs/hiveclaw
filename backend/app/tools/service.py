@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable
 from app.agents.coordination import CoordinationRuntime, coordination_runtime
 from app.agents.coordination_gateway import CoordinationGateway, InProcessCoordinationGateway
 from app.agents.coordination_wiring import gateway_scope
+from app.core.execution_context import ExecutionPrincipal
 from app.runtime.decision_ledger import build_authorization_decision_entry
 from app.runtime.ccplus_contracts import ToolCallLifecycleV1, ToolExecutionFrameV1
 from app.services.action_preflight import (
@@ -243,14 +244,28 @@ def _inject_runtime_context_arguments(
         return arguments
 
     enriched = dict(arguments)
-    if runtime_context.session_id and not enriched.get("parent_session_id"):
+    if runtime_context.session_id:
         enriched["parent_session_id"] = runtime_context.session_id
-    if runtime_context.budget_run_id and not enriched.get("_budget_run_id"):
+    if runtime_context.budget_run_id:
         enriched["_budget_run_id"] = runtime_context.budget_run_id
-    if runtime_context.turn_id and not enriched.get("_turn_id"):
+    if runtime_context.turn_id:
         enriched["_turn_id"] = runtime_context.turn_id
-    if runtime_context.runtime_task_id and not enriched.get("_runtime_task_id"):
+    if runtime_context.runtime_task_id:
         enriched["_runtime_task_id"] = runtime_context.runtime_task_id
+    enriched["_requester_user_id"] = str(runtime_context.user_id)
+    if not runtime_context.tenant_id:
+        raise ValueError("A2A tool execution requires a tenant-bound runtime context")
+    principal = ExecutionPrincipal(
+        tenant_id=runtime_context.tenant_id,
+        source_agent_id=runtime_context.agent_id,
+        requester_user_id=runtime_context.user_id,
+        root_session_id=runtime_context.session_id,
+        root_runtime_task_id=runtime_context.runtime_task_id,
+        origin="agent_tool",
+    )
+    # Reserved authority evidence is always overwritten with runtime-owned
+    # values; model-authored arguments can never choose their own requester.
+    enriched["_execution_principal"] = principal.to_evidence()
 
     profile_payload = _permission_profile_payload(runtime_context.permission_profile)
     if profile_payload and "_permission_profile" not in enriched:

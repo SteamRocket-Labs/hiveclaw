@@ -9,8 +9,10 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.core.execution_context import ExecutionPrincipal
 from app.database import tenant_scoped_session
 from app.services.a2a_collaboration_policy import resolve_a2a_collaboration_policy
+from app.services.a2a_outcome import A2AOutcome, A2AOperation
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import render_tool_error
 
@@ -121,6 +123,54 @@ def _normalize_messaging_result(tool_name: str, result: str) -> str:
         retryable=retryable,
         actionable_hint="Check recipient identity, agent availability, and channel/runtime configuration before retrying.",
     )
+
+
+def _a2a_failure(
+    operation: A2AOperation,
+    *,
+    error_code: str,
+    message: str,
+    retryable: bool = False,
+    status: str = "failed",
+) -> A2AOutcome:
+    return A2AOutcome.failure(
+        operation=operation,
+        error_code=error_code,
+        message=str(message).lstrip("❌⚠️ ").strip(),
+        retryable=retryable,
+        status=status,
+    )
+
+
+def _principal_from_args(
+    args: dict,
+    explicit: ExecutionPrincipal | None,
+    *,
+    operation: A2AOperation,
+) -> tuple[ExecutionPrincipal | None, A2AOutcome | None]:
+    if explicit is not None:
+        return explicit, None
+    try:
+        return ExecutionPrincipal.from_evidence(args.get("_execution_principal")), None
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, _a2a_failure(
+            operation,
+            error_code="invalid_execution_principal",
+            message=f"Invalid execution principal: {exc}",
+        )
+
+
+def _effective_a2a_requester(source_agent: Any, principal: ExecutionPrincipal | None) -> uuid.UUID:
+    requester = principal.requester_user_id if principal is not None else None
+    fallback = (
+        getattr(source_agent, "owner_user_id", None)
+        or getattr(source_agent, "sponsor_user_id", None)
+        or getattr(source_agent, "creator_id", None)
+    )
+    owner_id = requester or fallback
+    if owner_id is None:
+        raise ValueError("source Agent has no effective requester")
+    return owner_id
 
 
 def _parse_bool_arg(value) -> bool:
@@ -933,6 +983,9 @@ async def _invoke_agent_message_runtime(
     session_agent_id: uuid.UUID,
     participant_id: uuid.UUID | None,
     permission_profile: Any | None = None,
+    parent_session_id: str | None = None,
+    execution_principal: dict[str, Any] | None = None,
+    root_runtime_task_id: str | None = None,
 ) -> str:
     """Run the target agent reply through the shared runtime kernel."""
     from app.agents.orchestrator import AGENT_MESSAGE_TIMEOUT_SECONDS, OrchestrationPolicy, delegate_to_agent
@@ -944,7 +997,7 @@ async def _invoke_agent_message_runtime(
         owner_id=owner_id,
         session_id=session_id,
         parent_agent_id=from_agent_id,
-        parent_session_id=session_id,
+        parent_session_id=parent_session_id or session_id,
         trace_id=f"a2a:{session_id}:{from_agent_id}:{target.id}",
         tool_executor=_build_agent_message_tool_executor(
             target_agent_id=target.id,
@@ -961,6 +1014,8 @@ async def _invoke_agent_message_runtime(
         # below the tool wrapper cap, but well above short consult latency.
         policy=OrchestrationPolicy(timeout_seconds=AGENT_MESSAGE_TIMEOUT_SECONDS, tool_profile="agent_message"),
         permission_profile=permission_profile,
+        execution_principal=execution_principal,
+        root_runtime_task_id=root_runtime_task_id,
     )
 
 
@@ -971,7 +1026,12 @@ def _normalize_delegate_tool_profile(value: Any) -> str:
     return raw
 
 
-async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
+async def _send_message_to_agent_outcome(
+    from_agent_id: uuid.UUID,
+    args: dict,
+    *,
+    principal: ExecutionPrincipal | None = None,
+) -> A2AOutcome:
     """Send a message to another digital employee. Uses a single request-response pattern:
     the source agent sends a message, the target agent replies once, and the result is returned.
     If the source agent needs to continue the conversation, it can call this tool again.
@@ -980,14 +1040,21 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
     message_text = args.get("message", "").strip()
     target_agent_id = None
     target_agent_id_raw = args.get("target_agent_id")
+    principal, principal_error = _principal_from_args(args, principal, operation="consult")
+    if principal_error is not None:
+        return principal_error
     if target_agent_id_raw:
         try:
             target_agent_id = uuid.UUID(str(target_agent_id_raw))
         except (TypeError, ValueError, AttributeError):
-            return "❌ target_agent_id is invalid"
+            return _a2a_failure("consult", error_code="invalid_arguments", message="target_agent_id is invalid")
 
     if (not agent_name and target_agent_id is None) or not message_text:
-        return "❌ Please provide target agent name and message content"
+        return _a2a_failure(
+            "consult",
+            error_code="invalid_arguments",
+            message="Please provide target agent name and message content",
+        )
 
     try:
         from app.models.agent import Agent
@@ -1007,6 +1074,17 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             src_result = await db.execute(select(Agent).where(Agent.id == from_agent_id))
             source_agent = src_result.scalar_one_or_none()
             source_name = source_agent.name if source_agent else "Unknown agent"
+            if source_agent is None:
+                return _a2a_failure("consult", error_code="source_agent_not_found", message="Source agent not found")
+            if principal is not None:
+                try:
+                    principal.assert_scope(tenant_id=source_agent.tenant_id, source_agent_id=from_agent_id)
+                except ValueError as exc:
+                    return _a2a_failure(
+                        "consult",
+                        error_code="principal_scope_mismatch",
+                        message=str(exc),
+                    )
 
             # Find target agent by id or name (scoped to same tenant)
             if target_agent_id is not None:
@@ -1027,16 +1105,25 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     _avail_filter.append(Agent.tenant_id == source_agent.tenant_id)
                 all_r = await db.execute(select(Agent).where(*_avail_filter))
                 names = [a.name for a in all_r.scalars().all()]
-                return f"❌ No agent found matching '{agent_name}'. Available: {', '.join(names) if names else 'none'}"
+                return _a2a_failure(
+                    "consult",
+                    error_code="target_agent_not_found",
+                    message=f"No agent found matching '{agent_name}'. Available: {', '.join(names) if names else 'none'}",
+                )
 
             if target.status in ("expired", "stopped", "archived"):
-                return f"⚠️ {target.name} is currently {target.status} and cannot receive messages."
+                return _a2a_failure(
+                    "consult",
+                    error_code="target_agent_unavailable",
+                    message=f"{target.name} is currently {target.status} and cannot receive messages.",
+                    retryable=True,
+                )
 
             policy = await resolve_a2a_collaboration_policy(db, source_agent, target, action="message")
             if not policy.allowed:
-                return f"❌ {policy.message}"
+                return _a2a_failure("consult", error_code="a2a_policy_denied", message=policy.message)
 
-            owner_id = source_agent.creator_id if source_agent else from_agent_id
+            owner_id = _effective_a2a_requester(source_agent, principal)
             src_participant_id = await get_or_create_agent_participant_id(
                 db,
                 agent_id=from_agent_id,
@@ -1088,7 +1175,11 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     )
 
             if not target_model:
-                return f"⚠️ {target.name} has no LLM model configured"
+                return _a2a_failure(
+                    "consult",
+                    error_code="target_model_not_configured",
+                    message=f"{target.name} has no LLM model configured",
+                )
 
             # Load recent history for context
             conversation_messages: list[dict] = []
@@ -1113,7 +1204,6 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             # Save source message. RLS 阶段2b: chat_messages is USING-only —
             # stamp tenant_id so the row isn't globally visible.
-            owner_id = source_agent.creator_id if source_agent else from_agent_id
             await append_session_event(
                 db=db,
                 agent_id=session_agent_id,
@@ -1139,6 +1229,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     "to_agent": str(target.id),
                     "to_agent_name": target.name,
                     "semantic_memory_eligible": True,
+                    "execution_principal": principal.to_evidence() if principal else None,
                 },
             )
             chat_session.last_message_at = datetime.now(timezone.utc)
@@ -1154,10 +1245,18 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 session_agent_id=session_agent_id,
                 participant_id=tgt_participant_id,
                 permission_profile=args.get("_permission_profile"),
+                parent_session_id=principal.root_session_id if principal else None,
+                execution_principal=principal.to_evidence() if principal else None,
+                root_runtime_task_id=principal.root_runtime_task_id if principal else None,
             )
 
             if not target_reply:
-                return f"⚠️ {target.name} did not respond (LLM returned empty)"
+                return _a2a_failure(
+                    "consult",
+                    error_code="empty_target_response",
+                    message=f"{target.name} did not respond (LLM returned empty)",
+                    retryable=True,
+                )
 
             # Save target reply. Re-open a fresh tenant-scoped session (`db`
             # above may be detached after the long runtime invoke) and stamp
@@ -1189,6 +1288,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                         "to_agent": str(target.id),
                         "to_agent_name": target.name,
                         "semantic_memory_eligible": True,
+                        "execution_principal": principal.to_evidence() if principal else None,
                     },
                 )
                 await db2.commit()
@@ -1209,8 +1309,9 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 detail={"partner": target.name, "message": message_text[:200], "reply": target_reply[:200]},
             )
 
-            return json.dumps(
-                {
+            return A2AOutcome.success(
+                operation="consult",
+                payload={
                     "ok": True,
                     "status": "completed",
                     "session_id": session_id,
@@ -1223,18 +1324,32 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     "message": f"{target.name} replied.",
                     "continuation_tool": "send_message_to_agent",
                 },
-                ensure_ascii=False,
-                default=str,
             )
 
     except Exception as e:
         import traceback
 
         traceback.print_exc()
-        return f"❌ Message send error: {str(e)[:200]}"
+        return _a2a_failure(
+            "consult",
+            error_code="message_runtime_error",
+            message=f"Message send error: {str(e)[:200]}",
+            retryable=True,
+        )
 
 
-async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
+async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
+    """Compatibility renderer for the LLM tool surface."""
+    outcome = await _send_message_to_agent_outcome(from_agent_id, args)
+    return outcome.to_tool_result()
+
+
+async def _delegate_to_agent_async_outcome(
+    from_agent_id: uuid.UUID,
+    args: dict,
+    *,
+    principal: ExecutionPrincipal | None = None,
+) -> A2AOutcome:
     """Spawn an async subagent task and return a runtime handle."""
     agent_name = args.get("agent_name", "").strip()
     message_text = args.get("message", "").strip()
@@ -1242,14 +1357,21 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
     target_artifacts_arg = args.get("target_artifacts") if isinstance(args.get("target_artifacts"), list) else []
     target_agent_id_raw = args.get("target_agent_id")
     target_agent_id = None
+    principal, principal_error = _principal_from_args(args, principal, operation="delegate")
+    if principal_error is not None:
+        return principal_error
     if target_agent_id_raw:
         try:
             target_agent_id = uuid.UUID(str(target_agent_id_raw))
         except (TypeError, ValueError, AttributeError):
-            return "❌ target_agent_id is invalid"
+            return _a2a_failure("delegate", error_code="invalid_arguments", message="target_agent_id is invalid")
 
     if (not agent_name and target_agent_id is None) or not message_text:
-        return "❌ Please provide target agent name and message content"
+        return _a2a_failure(
+            "delegate",
+            error_code="invalid_arguments",
+            message="Please provide target agent name and message content",
+        )
 
     try:
         from app.agents.orchestrator import (
@@ -1265,27 +1387,47 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             target_agent_id=target_agent_id,
         )
         if error:
-            return error
+            return _a2a_failure(
+                "delegate",
+                error_code="target_runtime_unavailable",
+                message=error,
+                retryable=str(error).startswith("⚠️"),
+            )
         assert source_agent is not None
         assert target is not None
+        if principal is not None:
+            try:
+                principal.assert_scope(tenant_id=source_agent.tenant_id, source_agent_id=from_agent_id)
+            except ValueError as exc:
+                return _a2a_failure(
+                    "delegate",
+                    error_code="principal_scope_mismatch",
+                    message=str(exc),
+                )
+        requester_user_id = _effective_a2a_requester(source_agent, principal)
         budget_run_id = None
         if args.get("_budget_run_id"):
             try:
                 budget_run_id = uuid.UUID(str(args.get("_budget_run_id")))
             except (TypeError, ValueError, AttributeError):
-                return "❌ runtime budget id is invalid"
+                return _a2a_failure(
+                    "delegate", error_code="invalid_runtime_budget", message="runtime budget id is invalid"
+                )
 
         if str(args.get("execution_target") or "cloud_agent").strip() == "local_agent":
+            local_args = dict(args)
+            if principal is not None:
+                local_args["_execution_principal"] = principal.to_evidence()
             local_delegate_kwargs = {
                 "source_agent": source_agent,
                 "target_agent": target,
                 "message_text": message_text,
-                "args": args,
+                "args": local_args,
             }
             if budget_run_id is not None:
                 local_delegate_kwargs["budget_run_id"] = budget_run_id
             queued = await _delegate_to_local_agent_channel(**local_delegate_kwargs)
-            return json.dumps(queued, ensure_ascii=False, default=str)
+            return A2AOutcome.success(operation="delegate", payload=queued)
 
         assert target_model is not None
         timeout_seconds, timeout_error = _parse_timeout_seconds_arg(
@@ -1294,7 +1436,7 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             max_seconds=MAX_DELEGATION_TIMEOUT_SECONDS,
         )
         if timeout_error:
-            return timeout_error
+            return _a2a_failure("delegate", error_code="invalid_timeout", message=timeout_error)
         assert timeout_seconds is not None
         child_session_id = uuid.uuid4().hex
         handle = await delegate_async(
@@ -1306,11 +1448,11 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
                     "content": message_text,
                 }
             ],
-            owner_id=source_agent.creator_id,
+            owner_id=requester_user_id,
             session_id=child_session_id,
             parent_agent_id=from_agent_id,
             parent_agent_name=source_agent.name,
-            parent_session_id=args.get("parent_session_id"),
+            parent_session_id=(principal.root_session_id if principal else None) or args.get("parent_session_id"),
             max_tool_rounds=args.get("max_tool_rounds"),
             policy=OrchestrationPolicy(timeout_seconds=timeout_seconds, tool_profile=tool_profile),
             tenant_id=getattr(source_agent, "tenant_id", None),
@@ -1318,18 +1460,34 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             confirmed_plan_version=args.get("confirmed_plan_version"),
             confirmed_plan_hash=args.get("confirmed_plan_hash"),
             confirmed_plan_session_id=args.get("confirmed_plan_session_id"),
-            plan_authorization=(
-                dict(args.get("plan_authorization") or args.get("_plan_authorization") or {}) or None
-            ),
+            plan_authorization=(dict(args.get("plan_authorization") or args.get("_plan_authorization") or {}) or None),
             ledger_todo_id=str(args.get("ledger_todo_id") or "").strip() or None,
             permission_profile=args.get("_permission_profile"),
             target_artifact_path=str(args.get("target_artifact_path") or "").strip() or None,
             target_artifacts=target_artifacts_arg,
             edit_mode=str(args.get("edit_mode") or "").strip() or None,
             budget_run_id=budget_run_id,
+            execution_principal=principal.to_evidence() if principal else None,
+            root_runtime_task_id=principal.root_runtime_task_id if principal else args.get("_runtime_task_id"),
         )
-        return json.dumps(
-            {
+        if str(getattr(handle, "status", "running")).startswith("plan_required"):
+            return _a2a_failure(
+                "delegate",
+                error_code="plan_required",
+                message=str(getattr(handle, "status", "plan_required")),
+                status="blocked",
+            )
+        if str(getattr(handle, "status", "running")) == "blocked_by_lease":
+            return _a2a_failure(
+                "delegate",
+                error_code="coordination_lease_blocked",
+                message="Delegation is blocked by an active coordination lease",
+                status="blocked",
+                retryable=True,
+            )
+        return A2AOutcome.success(
+            operation="delegate",
+            payload={
                 "task_id": handle.task_id,
                 "runtime_task_id": handle.task_id,
                 "session_id": child_session_id,
@@ -1348,11 +1506,21 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
                     "agent session; use check_async_task only for runtime status."
                 ),
             },
-            ensure_ascii=False,
         )
     except Exception as e:
         logger.error("delegate_to_agent failed: %s", e, exc_info=True)
-        return f"❌ Error delegating to agent: {e}"
+        return _a2a_failure(
+            "delegate",
+            error_code="delegation_runtime_error",
+            message=f"Error delegating to agent: {e}",
+            retryable=True,
+        )
+
+
+async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
+    """Compatibility renderer for the LLM tool surface."""
+    outcome = await _delegate_to_agent_async_outcome(from_agent_id, args)
+    return outcome.to_tool_result()
 
 
 async def _delegate_to_local_agent_channel(
@@ -1384,6 +1552,10 @@ async def _delegate_to_local_agent_channel(
     )
     if source_owner_id is None or target_owner_id is None:
         raise ValueError("source/target agent owner is required for local-agent delegation")
+    principal = ExecutionPrincipal.from_evidence(args.get("_execution_principal"))
+    if principal is not None:
+        principal.assert_scope(tenant_id=tenant_id, source_agent_id=source_agent.id)
+    source_requester_id = principal.requester_user_id if principal and principal.requester_user_id else source_owner_id
     target_artifacts_arg = args.get("target_artifacts") if isinstance(args.get("target_artifacts"), list) else []
     idempotency_anchor = str(
         args.get("_runtime_task_id")
@@ -1461,7 +1633,7 @@ async def _delegate_to_local_agent_channel(
                 db,
                 tenant_id=tenant_id,
                 owner_user_id=target_owner_id,
-                actor_user_id=source_owner_id,
+                actor_user_id=source_requester_id,
                 source_agent_id=target_agent.id,
                 source="a2a",
                 title=f"A2A from {getattr(source_agent, 'name', 'agent')}",
@@ -1470,7 +1642,7 @@ async def _delegate_to_local_agent_channel(
                 db,
                 session_id=session["id"],
                 owner_user_id=target_owner_id,
-                sender_user_id=source_owner_id,
+                sender_user_id=source_requester_id,
                 sender_agent_id=source_agent.id,
                 content=message_text,
                 attachments=list(args.get("attachments") or []),
@@ -1489,6 +1661,7 @@ async def _delegate_to_local_agent_channel(
                     "edit_mode": str(args.get("edit_mode") or "").strip() or None,
                     "budget_run_id": str(budget_run_id) if budget_run_id else None,
                     "budget_reservation_key": budget_reservation_key,
+                    "execution_principal": principal.to_evidence() if principal else None,
                 },
                 idempotency_key=idempotency_key,
             )

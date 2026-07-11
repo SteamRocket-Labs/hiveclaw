@@ -28,3 +28,14 @@ def test_a2a_runtime_context_injects_stable_turn_and_task_idempotency_anchors() 
     assert enriched["parent_session_id"] == "session-1"
     assert enriched["_turn_id"] == "turn-7"
     assert enriched["_runtime_task_id"] == str(runtime_task_id)
+    assert enriched["_requester_user_id"] == str(context.user_id)
+    assert enriched["_execution_principal"] == {
+        "schema": "hive.execution_principal.v1",
+        "tenant_id": context.tenant_id,
+        "source_agent_id": str(context.agent_id),
+        "requester_user_id": str(context.user_id),
+        "root_session_id": "session-1",
+        "root_runtime_task_id": str(runtime_task_id),
+        "origin": "agent_tool",
+        "delegation_chain": [],
+    }

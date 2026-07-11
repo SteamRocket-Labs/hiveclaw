@@ -98,7 +98,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-12 | 全量测试入口不 hermetic | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-01 | Personal KB 浏览器继承 Agent owner 权威 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-02 | Memory/Skill 原生资产缺统一事务锁 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| HN-03 | A2A REST 丢 requester 且 consult 假成功 | P0 | 断点 | △ | ✗ | △ | ✗ | △ | ✗ | △ |
+| HN-03 | A2A REST 丢 requester 且 consult 假成功 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-04 | Subagent/async 查询取消只按 parent Agent | P0 | 断点 | ✓ | ✗ | △ | △ | ✗ | ✗ | △ |
 | HN-05 | HR provisioning 恢复会假完成 | P0 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
 | HN-06 | Skill provisional 只有负向回滚，无正向转正 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
@@ -280,6 +280,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 **验收**：多进程并发写、kill -9、磁盘满、旧 revision、重复 candidate、Dream 与 tool commit 同时运行、index 重建。
 
 ### HN-03：A2A REST 丢失 requester，consult 失败仍标 sent — P0
+
+**修复状态（2026-07-11）**：**闭环**。REST、受治理 tool runtime、同步 consult、异步 delegation、Local Agent Channel、child RuntimeTask、transcript、invocation span、budget admission 和 AuditLog 现在共享不可变 `ExecutionPrincipal`。内部终态统一为 typed `A2AOutcome`；emoji/string 只在最外层 LLM tool 兼容渲染，不能再参与 REST/service 控制流。
 
 `backend/app/api/advanced.py:86-97` 验证 source Agent access 后没有把 current_user/session 传入 CollaborationService。`backend/app/services/collaboration.py:110-156` 对 consult 直接包装 `{status: sent}`，即使底层返回 `❌...`；delegate 分支才识别错误。底层 A2A session owner 在 `backend/app/services/agent_tool_domains/messaging.py:1039,1116` 回退为 source_agent.creator_id，并用 broad catch+字符串错误。
 
@@ -1554,3 +1556,56 @@ pytest tests -q
 ```
 
 结果：Ruff lint/format 全绿；Alembic 单 head `channel_delivery_outbox_0711 (head)`；全量 backend `6344 passed, 1 skipped, 5 warnings in 149.40s`，零失败。HN-02 不新增数据库 schema migration。
+
+### HN-03 — ExecutionPrincipal 与 typed A2AOutcome
+
+状态：**闭环**。提交主题：`fix(HN-03): preserve A2A execution principals`。
+
+七原子证据：
+
+1. **输入**：REST 从已认证 `current_user` 与已授权 source Agent 构造 `ExecutionPrincipal`；tool runtime 从受信 `ToolExecutionContext` 构造同一 schema，并无条件覆盖模型提交的 `_requester_user_id`、`parent_session_id`、RuntimeTask 与 principal 隐藏字段。同步 consult、异步 delegation 与 Local Agent Channel 不再各自猜发起人。
+2. **权威**：principal 绑定 tenant、source Agent、requester、root session、root RuntimeTask、origin 与 delegation chain；A2A 执行前再次校验 principal tenant/source。REST 必须有 authenticated requester，cross-tenant target fail closed；message 显式绑定 root session 时复用 `authorize_session_action`，普通 Agent use 权限不能读取别人的会话。
+3. **执行**：`_send_message_to_agent_outcome` 与 `_delegate_to_agent_async_outcome` 是 service/runtime 的 typed 核心；旧 `_send_message_to_agent` / `_delegate_to_agent_async` 仅把 typed outcome 渲染成 LLM tool 兼容字符串。`CollaborationService` 已删除 JSON/emoji 分支判断，consult 失败直接终结为错误，绝不包装为 `sent`。
+4. **证据**：A2A pair transcript 的 user id、child invocation owner、RuntimeTask metadata、authority snapshot hash、budget reservation metadata、terminal invocation span、Local Agent Channel message metadata与 `AuditLog.user_id/details.execution_principal` 都消费同一 principal；A2A success/failure 由 `A2AOutcome(ok,status,error_code,retryable,payload)` 机械表达。
+5. **恢复**：async RuntimeTask 持久化完整 principal 与 root RuntimeTask id；restart rebuild 会恢复两者，authority snapshot/receipt hash也绑定 principal。旧任务无 principal 时保持 legacy owner恢复，不伪造新 requester；新任务不会在重启后退回 creator。
+6. **消费**：同步 pair session owner、target tool executor user、异步 child session owner、budget admission、审计、transcript、Local Agent Channel sender与 REST response都使用真实 requester。失败 outcome 被 REST 转为明确 400，tool surface转为 structured tool error，UI不再得到假成功。
+7. **验收**：覆盖 REST principal 传递、consult failure、AuditLog requester/root evidence、runtime隐藏字段覆盖、cloud delegation requester/session/runtime传播、Local A2A兼容、orchestrator restart、typed outcome、Plan gate、tool runtime与全量 backend；Ruff、format、Alembic 单 head均通过。
+
+KISS/奥卡姆证据：新增的只有一个不可变 principal dataclass和一个 typed outcome dataclass；没有新增权限表、A2A状态表或第二 runtime。既有 tool string contract保留在最外层 adapter，核心 service直接复用 typed object，删除了散落的 `startswith(('❌','⚠️')) + json.loads` 控制逻辑。
+
+RED 证据：
+
+```text
+HN-03 契约测试初次收集失败：1 error
+- ExecutionPrincipal 不存在，REST/service无法传递真实 requester
+- A2AOutcome 不存在，consult失败仍只能用字符串表达
+```
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q \
+  tests/services/test_collaboration_service.py \
+  tests/services/test_agent_message_runtime.py \
+  tests/services/test_local_agent_a2a.py \
+  tests/agents/test_orchestrator.py \
+  tests/agents/test_orchestrator_ledger_todo.py \
+  tests/api/test_plan_mode_rest_gate.py \
+  tests/tools/test_runtime_context_argument_injection.py \
+  tests/tools/test_service.py
+```
+
+结果：`145 passed, 4 warnings in 2.40s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <HN-03 当前变更 Python 文件>
+ruff format --check <HN-03 当前变更 Python 文件>
+alembic heads
+pytest tests -q
+```
+
+结果：Ruff lint/format全绿；Alembic 单 head `channel_delivery_outbox_0711 (head)`；全量 backend `6345 passed, 1 skipped, 5 warnings in 147.87s`，零失败。HN-03 不新增数据库 schema migration。

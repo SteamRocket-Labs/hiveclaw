@@ -577,6 +577,8 @@ class AgentDelegationRequest:
     policy: OrchestrationPolicy = field(default_factory=OrchestrationPolicy)
     interaction_type: str = "delegation"
     execution_identity: ExecutionIdentityRef | None = None
+    execution_principal: dict[str, Any] | None = None
+    root_runtime_task_id: str | None = None
     confirmed_plan_id: str | uuid.UUID | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
@@ -630,6 +632,8 @@ def _delegation_authority_snapshot_hash(request: AgentDelegationRequest) -> str:
             "tool_profile": request.policy.tool_profile,
             "permission_profile": _permission_profile_metadata(request.permission_profile),
             "execution_identity": _execution_identity_to_metadata(request.execution_identity),
+            "execution_principal": request.execution_principal,
+            "root_runtime_task_id": request.root_runtime_task_id,
             "plan_id": str(request.confirmed_plan_id or ""),
             "plan_version": request.confirmed_plan_version,
             "plan_hash": request.confirmed_plan_hash,
@@ -720,6 +724,8 @@ async def _persist_delegation_terminal_evidence(
             "side_effect_refs": receipt["result_refs"],
             "truth_evidence": [receipt],
             "execution_receipt": receipt,
+            **({"execution_principal": request.execution_principal} if request.execution_principal else {}),
+            **({"root_runtime_task_id": request.root_runtime_task_id} if request.root_runtime_task_id else {}),
             "source": "a2a_delegation",
         },
         usage=None,
@@ -997,6 +1003,10 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
     execution_identity = _execution_identity_to_metadata(request.execution_identity)
     if execution_identity:
         metadata["execution_identity"] = execution_identity
+    if request.execution_principal:
+        metadata["execution_principal"] = dict(request.execution_principal)
+    if request.root_runtime_task_id:
+        metadata["root_runtime_task_id"] = request.root_runtime_task_id
     replay_safe = _delegation_profile_restart_replay_safe(request.policy.tool_profile)
     resumable = request.tool_executor is None
     blocker = ""
@@ -1053,9 +1063,7 @@ async def _delegation_plan_gate_allows(request: AgentDelegationRequest) -> tuple
     """Final Plan Mode backstop for async delegation startup."""
     if request.interaction_type != "delegation":
         return True, None
-    has_explicit_plan_evidence = request.confirmed_plan_id is not None and isinstance(
-        request.plan_authorization, dict
-    )
+    has_explicit_plan_evidence = request.confirmed_plan_id is not None and isinstance(request.plan_authorization, dict)
     if _is_user_initiated_delegation(request) and not has_explicit_plan_evidence:
         return True, "user_initiated_delegation"
     parent_agent_id = _maybe_uuid(request.parent_agent_id)
@@ -1181,6 +1189,8 @@ async def delegate_to_agent(
     policy: OrchestrationPolicy | None = None,
     interaction_type: str = "delegation",
     execution_identity: ExecutionIdentityRef | None = None,
+    execution_principal: dict[str, Any] | None = None,
+    root_runtime_task_id: str | None = None,
     tenant_id: uuid.UUID | str | None = None,
     ledger_todo_id: str | None = None,
     permission_profile: Any | None = None,
@@ -1206,6 +1216,8 @@ async def delegate_to_agent(
         policy=policy or OrchestrationPolicy(),
         interaction_type=interaction_type,
         execution_identity=execution_identity or _capture_execution_identity_ref(),
+        execution_principal=dict(execution_principal or {}) or None,
+        root_runtime_task_id=str(root_runtime_task_id or "").strip() or None,
         tenant_id=tenant_id,
         ledger_todo_id=ledger_todo_id,
         permission_profile=permission_profile,
@@ -2403,6 +2415,10 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
             tool_profile=str(metadata.get("tool_profile") or "worker_safe"),
         ),
         execution_identity=_execution_identity_from_metadata(metadata.get("execution_identity")),
+        execution_principal=metadata.get("execution_principal")
+        if isinstance(metadata.get("execution_principal"), dict)
+        else None,
+        root_runtime_task_id=str(metadata.get("root_runtime_task_id") or "").strip() or None,
         confirmed_plan_id=metadata.get("plan_id"),
         confirmed_plan_version=metadata.get("plan_version"),
         confirmed_plan_hash=metadata.get("plan_hash"),
@@ -2474,6 +2490,8 @@ async def delegate_async(
     policy: OrchestrationPolicy | None = None,
     interaction_type: str = "delegation",
     execution_identity: ExecutionIdentityRef | None = None,
+    execution_principal: dict[str, Any] | None = None,
+    root_runtime_task_id: str | None = None,
     coordination_gateway: CoordinationGateway | None = None,
     tenant_id: uuid.UUID | str | None = None,
     confirmed_plan_id: str | uuid.UUID | None = None,
@@ -2520,6 +2538,8 @@ async def delegate_async(
         policy=policy or OrchestrationPolicy(timeout_seconds=ASYNC_DELEGATION_TIMEOUT_SECONDS),
         interaction_type=interaction_type,
         execution_identity=execution_identity or _capture_execution_identity_ref(),
+        execution_principal=dict(execution_principal or {}) or None,
+        root_runtime_task_id=str(root_runtime_task_id or "").strip() or None,
         confirmed_plan_id=confirmed_plan_id,
         confirmed_plan_version=confirmed_plan_version,
         confirmed_plan_hash=confirmed_plan_hash,
@@ -2610,6 +2630,8 @@ async def delegate_async(
                     "target_agent_id": str(getattr(target, "id", "")),
                     "target_agent_name": getattr(target, "name", None),
                     "parent_session_id": parent_session_id,
+                    "root_runtime_task_id": request.root_runtime_task_id,
+                    "requester_user_id": str(owner_id),
                 },
             )
         )

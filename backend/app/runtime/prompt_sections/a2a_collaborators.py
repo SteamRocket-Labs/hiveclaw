@@ -15,7 +15,7 @@ def _agent_line(agent: dict[str, Any], *, relation_label: str) -> str:
     return f"- **{name}**{id_part}: {relation_label}, status={status}{suffix}"
 
 
-def build_a2a_collaborators_section(read_model: dict[str, Any] | None, *, max_chars: int = 6000) -> str:
+def build_a2a_collaborators_section(read_model: dict[str, Any] | None, *, max_chars: int | None = 6000) -> str:
     """Build prompt-facing A2A collaborator context from the canonical read model."""
 
     if not read_model:
@@ -66,6 +66,6 @@ def build_a2a_collaborators_section(read_model: dict[str, Any] | None, *, max_ch
         )
 
     rendered = "## A2A Collaborators\n\n" + "\n\n".join(parts)
-    if len(rendered) > max_chars:
+    if max_chars is not None and len(rendered) > max_chars:
         return rendered[:max_chars] + "\n...(A2A collaborator context truncated)"
     return rendered

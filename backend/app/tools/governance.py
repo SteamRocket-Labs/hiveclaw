@@ -51,6 +51,7 @@ _STATIC_SAFE_TOOLS = {
     "mcp_list_resources",
     "mcp_read_resource",
     "read_file",
+    "read_context_resource",
     "read_mcp_resource",
     "load_skill",
     "search_clawhub",

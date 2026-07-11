@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 HANDLER_MODULES: tuple[str, ...] = (
     "app.tools.handlers.search",
     "app.tools.handlers.filesystem",
+    "app.tools.handlers.context_resources",
     "app.tools.handlers.skills",
     "app.tools.handlers.tasks",
     "app.tools.handlers.triggers",

@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**9 / 28**（SA-01 至 SA-09 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**10 / 28**（SA-01 至 SA-10 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -93,7 +93,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-07 | 最终通道交付无 durable outbox | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-08 | CC Hook surface 有 no-op/planned 壳 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-09 | Frozen prompt cache 依赖签名不完整 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-10 | 智能上下文机械截断无恢复指针 | P1 | 局部闭环 | △ | ✓ | △ | △ | ✗ | △ | △ |
+| SA-10 | 智能上下文机械截断无恢复指针 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-11 | Local Bridge receipt 文件并发丢写 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | △ | ✗ |
 | SA-12 | 全量测试入口不 hermetic | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | △ | ✗ |
 | HN-01 | Personal KB 浏览器继承 Agent owner 权威 | P0 | 断点 | ✓ | ✗ | △ | △ | △ | ✗ | △ |
@@ -222,6 +222,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 关闭方式：构造 versioned `ContextDependencyManifest`，每个 frozen section 必须贡献 revision/hash；缺 signature 时禁用复用而不是默认为稳定。ChannelConfig 查询必须 tenant-scoped。
 
 ### SA-10：智能上下文截断后没有检索恢复通道 — P1
+
+**修复状态（2026-07-11）**：**闭环**。Soul、Company、Organization、Configured Channels 与 A2A Collaborators 现在由同一个 Agent/tenant-bound resource loader 同时服务 resident preview 和按需全文；任何预算裁剪都留下 `agent-context://<ref>`、完整内容 SHA-256、已展示字符数与可直接执行的 `read_context_resource` continuation。工具只能从受信 `ToolExecutionContext` 取得 Agent/tenant，不接受 caller-selected principal；分页续读若 hash 漂移会返回 `stale_resource` 并要求从 offset 0 重启。Frozen/final prompt 的二次预算裁剪也留下 `ref=index` 恢复入口，System/Tasks/Tools 静态执行契约不再被 emergency trim 静默削弱。Personal KB 仍严格不在该 enum/resource loader 中，只能走独立 Personal KB tools。
 
 `backend/app/services/agent_context.py:345-350,455-474,484` 对 soul、company、org、A2A 做字符预算截断。预算本身合理，但被截掉的部分没有 source ref、tool hint 或 continuation token，模型不知道还有内容可取。
 
@@ -1212,3 +1214,69 @@ alembic heads
 ```
 
 结果：Ruff lint `All checks passed!`，7 个变更 Python 文件格式通过；Alembic 单 head：`channel_delivery_outbox_0711 (head)`。SA-09 不新增 schema migration。
+
+### SA-10 — Agent Context 可恢复裁剪闭环
+
+状态：**闭环**。提交主题：`fix(SA-10): make context budget cuts fully recoverable`。
+
+七原子证据：
+
+1. **输入**：`AgentContextResource` 统一定义 `index/soul/company/organization/channels/a2a-collaborators` 六个只读 ref；resident prompt 和 `read_context_resource` 都从同一 loader 读取。工具输入只有 `ref/offset/limit/expected_sha256`，schema 与 handler 均拒绝额外字段。
+2. **权威**：工具不接收 `agent_id`、`tenant_id`、owner 或任意路径；只使用 `ToolExecutionRequest.context.agent_id/tenant_id`。Company、Channel 与 A2A 读取继续通过 tenant-pinned 路径，organization/soul 路径由受信 Agent id/tenant id 确定；缺 tenant 的工具调用 fail closed。
+3. **执行**：`build_agent_context()` 不再维护一份截断读取，工具再维护另一份全文读取；二者都调用 `load_agent_context_resource()`。Prompt budget 先去除可恢复 Context Material，静态 `System / Tasks / Tools` 保持完整；静态契约本身超限时显式失败，不再从尾部机械削弱治理/工具说明。
+4. **证据**：每个 preview 携带 `agent-context://<ref>`、完整 SHA-256、`shown_chars/total_chars` 与 canonical continuation call；每个 tool page 返回 `hive.agent_context_resource_page.v1`、source ref、hash、offset、next offset、complete 与 total chars。
+5. **恢复**：分页以 `expected_sha256` 锁定同一内容版本；资源变化返回 `stale_resource/actual_sha256/restart_offset=0`，不会把两个版本拼接。Final system-prompt budget notice 也指向 `ref=index`；无明确 ref 时模型可先读取资源索引再选择。
+6. **消费**：Soul、Company、Organization、Channels 与 A2A 的生产 prompt 全部真实消费 recoverable preview；`read_context_resource` 是 always-on core/read-only/parallel-safe 工具，已进入 collector、taxonomy、capability mapping、Plan Mode 与 builtin bridge surface。Personal KB 明确不在 resource enum，继续只由 `search_personal_kb/read_personal_kb` 消费。
+7. **验收**：覆盖 hash-pinned 分页、stale restart、caller-selected principal 拒绝、core/taxonomy/Plan Mode 注册、Personal KB 排除、四类长上下文真实 prompt preview、immutable System/Tasks/Tools、final budget recovery pointer、tenant-pinned legacy regressions、全量后端、Ruff 与 Alembic single-head。
+
+KISS/奥卡姆证据：删除 `build_agent_context()` 内 company/channel/org 的第二套查询与四种互不一致的 `...(truncated)` 字符串；“读完整事实 → 生成可恢复 preview”只有一个资源模型和一个 continuation 协议。没有引入 Personal KB 聚合器、通用 URI resolver 或第二执行内核。
+
+RED 证据（修复前新增回归测试）：
+
+```text
+7 failed
+- AgentContextResource / read_context_resource 不存在
+- builtin/tool taxonomy 无恢复工具
+- frozen budget 会丢失 System/Tasks/Tools
+- final truncation 无恢复指针
+```
+
+第一次全量回归还精确暴露并修正了 builtin surface 固定清单漂移：`6317 passed, 1 failed`，唯一失败为 `read_context_resource` 已注册但 `test_bridge_equivalence` 旧期望未登记；修正机械合同后重新执行全量。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/tools/test_context_resource_tool.py \
+  tests/services/test_agent_context.py \
+  tests/services/test_prompt_contracts.py \
+  tests/runtime/test_prompt_builder.py \
+  tests/runtime/test_prompt_sections.py \
+  tests/services/test_capability_gate_policy_surface.py \
+  tests/services/test_capability_gate_strict_mapping.py \
+  tests/services/test_tool_registry.py \
+  tests/tools/test_collector.py \
+  tests/tools/test_plan_mode_policy.py -q
+```
+
+结果：`211 passed, 4 warnings`（新增完整 resource-consumption case 后的相关测试计数）。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q
+```
+
+结果：`6318 passed, 1 skipped, 5 warnings in 144.05s`，零失败。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <SA-10 当前变更 Python 文件>
+ruff format --check <SA-10 当前变更 Python 文件>
+alembic heads
+```
+
+结果：Ruff lint `All checks passed!`，15 个变更 Python 文件格式通过；Alembic 单 head：`channel_delivery_outbox_0711 (head)`。SA-10 不新增 schema migration。

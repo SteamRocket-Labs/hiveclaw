@@ -57,14 +57,24 @@ _FROZEN_PREFIX_TOKEN_CAP_RATIO = 0.10
 _CHARS_PER_TOKEN_ESTIMATE = 3.5
 _FROZEN_PREFIX_CHAR_LIMIT = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
 _FROZEN_PREFIX_TRIM_NOTICE = (
-    "\n\n...(frozen prefix trimmed to stay under cache budget — load extra skills via the load_skill tool)"
+    "\n\n[frozen context trimmed to stay under cache budget; recover omitted agent context with "
+    '`read_context_resource({"ref":"index"})`; load omitted skills with `load_skill(name)`]'
 )
 # I.3 Tier4: loud, distinct marker when the soul/identity section itself had to be trimmed.
 # This is intentionally MORE alarming than the generic trim notice to make
 # runaway soul growth immediately obvious in prompt logs/reviews.
 _FROZEN_IDENTITY_OVERRUN_MARKER = (
     "\n\n[identity overrun: ## Identity & Mission was trimmed to fit the context budget — "
-    "soul.md is too large; reduce it to restore full identity fidelity]"
+    'recover the full version with `read_context_resource({"ref":"soul"})` or inspect '
+    '`read_context_resource({"ref":"index"})`; reduce soul.md to restore resident identity fidelity]'
+)
+_FROZEN_CONTEXT_RECOVERY_MARKER = (
+    "\n\n[agent context omitted to preserve the immutable System / Tasks / Tools contract; "
+    'call `read_context_resource({"ref":"index"})` and load the relevant hash-pinned resource page]'
+)
+_SYSTEM_PROMPT_TRUNCATION_NOTICE = (
+    "\n\n[agent context truncated to fit the model context window; "
+    'recover it with `read_context_resource({"ref":"index"})`]'
 )
 _FROZEN_PREFIX_SECTION_RE = re.compile(r"(?m)^#{2,3}\s+(.+?)\s*$")
 _FROZEN_PREFIX_TOP_SECTION_LIMIT = 6
@@ -434,7 +444,11 @@ _CONTEXT_MATERIAL_BLOCK_RE = re.compile(
     r"(?m)^(## Context Material\b.*?)(?=^##\s|\Z)",
     re.DOTALL,
 )
-_CONTEXT_MATERIAL_OMITTED_NOTICE = "\n## Context Material\n[context material omitted to fit context budget]"
+_CONTEXT_MATERIAL_OMITTED_NOTICE = (
+    "\n## Context Material\n"
+    '[context material omitted to fit context budget; call `read_context_resource({"ref":"index"})` '
+    "and select company, organization, channels, or A2A collaborators]"
+)
 
 
 def _strip_context_material(agent_context: str) -> str:
@@ -468,14 +482,11 @@ def _enforce_frozen_prefix_budget(
         replace with a one-line notice. This information is less critical than
         the tool/task rules that come after it.
 
-    Tier3 (Tools / Tasks / System section bodies)
-        Trim the tails of the system, tasks, and tools sections. These drive
-        agent behaviour, so we trim them last among the non-identity sections.
-
-    Tier4 (soul / identity — last resort)
-        If the prefix STILL overflows after Tiers 1–3, trim the soul itself
-        but emit _FROZEN_IDENTITY_OVERRUN_MARKER (a loud, distinct marker)
-        AND log an ERROR. Never silently discard identity.
+    Tier3 (recoverable agent context)
+        Preserve System / Tasks / Tools byte-for-byte. If the prefix still
+        overflows, cut only the agent-context head and leave an explicit
+        ``read_context_resource`` continuation. A static execution contract
+        that cannot fit fails loud instead of being silently weakened.
 
     The no-op path (prefix fits under cap) is unchanged from the previous
     implementation so warm-path performance is unaffected.
@@ -514,34 +525,32 @@ def _enforce_frozen_prefix_budget(
     if len(candidate) <= char_limit:
         return candidate
 
-    # Tier3: trim tail sections (system, tasks, tools) from the END inward.
-    # We preserve their headers but trim the bodies.  Trim each from the tail
-    # so that later sections (tools) shrink before earlier ones (tasks/system).
-    # Simple approach: trim the whole assembled tail with a notice.
-    identity_chars = len(agent_context_t2)
-    tail_budget = char_limit - identity_chars - 4  # 4 = len("\n\n")
-    if tail_budget > 80:
-        trimmed_tail = _trim_block("\n\n".join(tail_parts), budget_chars=tail_budget)
-        candidate = f"{agent_context_t2}\n\n{trimmed_tail}"
-        if len(candidate) <= char_limit:
-            return candidate
+    # Tier3: the static execution contract is not recoverable from a tool and
+    # therefore must remain byte-identical. Only agent context may be reduced.
+    critical_tail = "\n\n".join(tail_parts)
+    separator = "\n\n" if critical_tail else ""
+    marker = (
+        _FROZEN_CONTEXT_RECOVERY_MARKER
+        if any(heading in agent_context_t2 for heading in ("## Context Material", "## A2A Collaborators"))
+        else _FROZEN_IDENTITY_OVERRUN_MARKER
+    )
+    available_for_agent_context = char_limit - len(separator) - len(critical_tail)
+    if available_for_agent_context <= len(marker):
+        raise ValueError(
+            "immutable System / Tasks / Tools contract exceeds the frozen-prefix budget; "
+            "refuse to silently trim safety-critical instructions"
+        )
 
-    # Tier4: soul itself is still too large — last resort.
-    # Trim agent_context but emit the loud identity-overrun marker so this
-    # catastrophic case is never silent.
     logger = logging.getLogger(__name__)
     logger.error(
-        "[PromptBuilder] Tier4 soul/identity overrun: ## Identity & Mission section alone "
-        "exceeds the frozen-prefix cap (%d chars). soul.md is too large — trim it to restore "
-        "full identity fidelity. Applying emergency identity trim.",
+        "[PromptBuilder] recoverable agent context exceeds the frozen-prefix cap (%d chars); "
+        "preserving System / Tasks / Tools and emitting a hash-pinned context recovery pointer.",
         char_limit,
     )
-    marker = _FROZEN_IDENTITY_OVERRUN_MARKER
-    available_for_soul = char_limit - len(marker) - 4
-    if available_for_soul <= 0:
-        return agent_context[:char_limit]
-    trimmed_soul = _trim_block(agent_context_t2, budget_chars=available_for_soul)
-    return trimmed_soul + marker
+    preview_budget = available_for_agent_context - len(marker)
+    preview = agent_context_t2[:preview_budget].rstrip()
+    trimmed_agent_context = f"{preview}{marker}" if preview else marker.lstrip("\n")
+    return f"{trimmed_agent_context}{separator}{critical_tail}"
 
 
 def _meter_frozen_prefix(prefix: str) -> None:
@@ -1036,10 +1045,10 @@ def assemble_runtime_prompt(
         # Trim frozen prefix from the end, preserve the cache boundary + dynamic suffix.
         if dynamic_suffix:
             dynamic_block = f"\n\n{PROMPT_CACHE_BOUNDARY}\n\n{dynamic_suffix}"
-            truncation_notice = "\n\n...(system prompt truncated to fit context window)"
+            truncation_notice = _SYSTEM_PROMPT_TRUNCATION_NOTICE
         else:
             dynamic_block = ""
-            truncation_notice = "\n\n...(system prompt truncated to fit context window)"
+            truncation_notice = _SYSTEM_PROMPT_TRUNCATION_NOTICE
 
         max_frozen = budget - len(dynamic_block) - len(truncation_notice)
         if max_frozen > 0:

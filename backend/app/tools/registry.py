@@ -46,6 +46,7 @@ def sanitize_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
 _FILE_SYSTEM = {
     "list_files",
     "read_file",
+    "read_context_resource",
     "write_file",
     "edit_file",
     "glob_search",

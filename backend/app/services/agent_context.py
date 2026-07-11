@@ -4,6 +4,9 @@ Loads soul, layered memory context, skills summary, and live A2A collaborators
 and composes a comprehensive system prompt.
 """
 
+from dataclasses import dataclass
+import hashlib
+import json
 import re
 import uuid
 from pathlib import Path
@@ -29,14 +32,82 @@ _PROMPT_INJECTION_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don't\s+have)\s+(restrictions|limits|rules)", "bypass_restrictions"),
 )
 
+AGENT_CONTEXT_RESOURCE_REFS: tuple[str, ...] = (
+    "index",
+    "soul",
+    "company",
+    "organization",
+    "channels",
+    "a2a-collaborators",
+)
+_AGENT_CONTEXT_CONTENT_RESOURCE_REFS = AGENT_CONTEXT_RESOURCE_REFS[1:]
 
-def _read_file_safe(path: Path, max_chars: int = 3000) -> str:
-    """Read a file, return empty string if missing. Truncate if too long."""
+
+@dataclass(frozen=True, slots=True)
+class AgentContextResource:
+    """One governed, agent-bound source that may be previewed in the prompt.
+
+    The full text is never caller-addressable by filesystem path, tenant id, or
+    agent id. ``read_context_resource`` resolves this object from the trusted
+    tool execution context and uses ``sha256`` as the continuation version.
+    """
+
+    ref: str
+    source_ref: str
+    content: str
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.content.encode("utf-8")).hexdigest()
+
+
+def _context_resource_continuation(resource: AgentContextResource, *, offset: int) -> str:
+    call = json.dumps(
+        {
+            "ref": resource.ref,
+            "offset": offset,
+            "expected_sha256": resource.sha256,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return (
+        f"\n[context_ref={resource.source_ref} sha256={resource.sha256} "
+        f"shown_chars={offset} total_chars={len(resource.content)}; "
+        f"continue with `read_context_resource({call})`.]"
+    )
+
+
+def render_context_resource_excerpt(resource: AgentContextResource, *, budget_chars: int) -> str:
+    """Render a bounded resident preview with a hash-pinned recovery call."""
+
+    content = resource.content.strip()
+    if not content or len(content) <= budget_chars:
+        return content
+
+    # The continuation is more important than another preview character. Two
+    # passes account for the offset digit count changing the marker length.
+    offset = max(0, budget_chars - len(_context_resource_continuation(resource, offset=0)))
+    for _ in range(2):
+        continuation = _context_resource_continuation(resource, offset=offset)
+        offset = max(0, budget_chars - len(continuation))
+    continuation = _context_resource_continuation(resource, offset=offset)
+    preview = content[:offset].rstrip()
+    rendered = f"{preview}{continuation}" if preview else continuation.lstrip("\n")
+    # Tiny custom budgets must never erase the recovery pointer. Normal runtime
+    # budgets are much larger than the marker; in the pathological case the
+    # marker is allowed to exceed the requested preview budget and the global
+    # prompt budget remains the final hard bound.
+    return rendered
+
+
+def _read_file_safe(path: Path, max_chars: int | None = 3000) -> str:
+    """Read a file, return empty if missing, and optionally cap its size."""
     if not path.exists():
         return ""
     try:
         content = path.read_text(encoding="utf-8", errors="replace").strip()
-        if len(content) > max_chars:
+        if max_chars is not None and len(content) > max_chars:
             content = content[:max_chars] + "\n...(truncated)"
         return content
     except Exception:
@@ -272,7 +343,7 @@ async def _build_a2a_collaborators_context(
     agent_id: uuid.UUID,
     *,
     tenant_id: uuid.UUID | str | None = None,
-    budget_chars: int = 6000,
+    budget_chars: int | None = 6000,
 ) -> str:
     """Build live A2A collaborator prompt context from DB policy state."""
 
@@ -291,6 +362,162 @@ async def _build_a2a_collaborators_context(
     except Exception as exc:
         logger.debug("Failed to build A2A collaborator context for agent {}: {}", agent_id, exc)
         return ""
+
+
+async def _load_configured_channel_types(
+    agent_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | str | None,
+) -> tuple[str, ...]:
+    if tenant_id is None:
+        return ()
+    try:
+        from app.database import tenant_scoped_session
+        from app.models.channel_config import ChannelConfig
+        from sqlalchemy import select as sa_select
+
+        async with tenant_scoped_session(
+            tenant_id,
+            require_tenant=True,
+            source="agent_context_resource_channels",
+        ) as db:
+            result = await db.execute(
+                sa_select(ChannelConfig.channel_type)
+                .where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.tenant_id == tenant_id,
+                    ChannelConfig.is_configured,
+                )
+                .order_by(ChannelConfig.channel_type)
+            )
+            values = result.scalars().all()
+            return tuple(
+                str(getattr(value, "channel_type", value))
+                for value in values
+                if str(getattr(value, "channel_type", value)).strip()
+            )
+    except Exception as exc:
+        logger.debug("Failed to query channel configs for agent {}: {}", agent_id, exc)
+        return ()
+
+
+async def _load_company_intro(
+    agent_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | str | None,
+) -> str:
+    if tenant_id is None:
+        return ""
+    try:
+        from app.database import tenant_scoped_session
+        from app.models.system_settings import SystemSetting
+        from sqlalchemy import select as sa_select
+
+        async with tenant_scoped_session(
+            tenant_id,
+            require_tenant=True,
+            source="agent_context_resource_company",
+        ) as db:
+            company_intro = ""
+            try:
+                from app.models.tenant_setting import TenantSetting
+
+                result = await db.execute(
+                    sa_select(TenantSetting).where(
+                        TenantSetting.tenant_id == tenant_id,
+                        TenantSetting.key == "company_intro",
+                    )
+                )
+                setting = result.scalar_one_or_none()
+                if setting and setting.value and setting.value.get("content"):
+                    company_intro = str(setting.value["content"]).strip()
+            except Exception as exc:
+                logger.debug("Failed to load tenant company intro for agent {}: {}", agent_id, exc)
+
+            if not company_intro:
+                tenant_key = f"company_intro_{tenant_id}"
+                result = await db.execute(sa_select(SystemSetting).where(SystemSetting.key == tenant_key))
+                setting = result.scalar_one_or_none()
+                if setting and setting.value and setting.value.get("content"):
+                    company_intro = str(setting.value["content"]).strip()
+
+            if not company_intro:
+                result = await db.execute(sa_select(SystemSetting).where(SystemSetting.key == "company_intro"))
+                setting = result.scalar_one_or_none()
+                if setting and setting.value and setting.value.get("content"):
+                    company_intro = str(setting.value["content"]).strip()
+            return _sanitize_prompt_context(company_intro, source_name="company_intro")
+    except Exception as exc:
+        logger.debug("Failed to load company intro for agent {}: {}", agent_id, exc)
+        return ""
+
+
+async def load_agent_context_resource(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | str | None,
+    resource_ref: str,
+) -> AgentContextResource:
+    """Resolve an agent-bound full context resource from trusted authority."""
+
+    if resource_ref not in AGENT_CONTEXT_RESOURCE_REFS:
+        raise ValueError(f"unsupported agent context resource: {resource_ref}")
+
+    source_ref = f"agent-context://{resource_ref}"
+    tool_ws = TOOL_WORKSPACE / str(agent_id)
+    data_ws = PERSISTENT_DATA / str(agent_id)
+
+    if resource_ref == "soul":
+        content = _read_file_safe(tool_ws / "soul.md", max_chars=None) or _read_file_safe(
+            data_ws / "soul.md", max_chars=None
+        )
+        content = _sanitize_prompt_context(_strip_primary_heading(content), source_name="soul.md")
+        return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)
+
+    if resource_ref == "company":
+        content = await _load_company_intro(agent_id, tenant_id=tenant_id)
+        return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)
+
+    if resource_ref == "organization":
+        content = ""
+        if tenant_id is not None:
+            org_path = PERSISTENT_DATA / f"enterprise_info_{tenant_id}" / "org_structure.md"
+            content = _read_file_safe(org_path, max_chars=None)
+            if "尚未同步" in content or "尚未填写" in content:
+                content = ""
+            content = _sanitize_prompt_context(_strip_primary_heading(content), source_name="org_structure.md")
+        return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)
+
+    if resource_ref == "channels":
+        channels = await _load_configured_channel_types(agent_id, tenant_id=tenant_id)
+        return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=", ".join(channels))
+
+    if resource_ref == "a2a-collaborators":
+        content = await _build_a2a_collaborators_context(
+            agent_id,
+            tenant_id=tenant_id,
+            budget_chars=None,
+        )
+        return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)
+
+    resources = [
+        await load_agent_context_resource(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            resource_ref=ref,
+        )
+        for ref in _AGENT_CONTEXT_CONTENT_RESOURCE_REFS
+    ]
+    lines = [
+        "Agent context resources are read-only runtime context, not Personal Knowledge Base content.",
+        "Call read_context_resource with one ref and the listed sha256 when more detail is relevant.",
+    ]
+    lines.extend(
+        f"- {resource.ref}: available={bool(resource.content)}, chars={len(resource.content)}, "
+        f"sha256={resource.sha256}, source_ref={resource.source_ref}"
+        for resource in resources
+    )
+    return AgentContextResource(ref=resource_ref, source_ref=source_ref, content="\n".join(lines))
 
 
 async def build_agent_runtime_context(
@@ -347,8 +574,6 @@ async def build_agent_context(
     markdown files as Semantic Memory. Loading them here as well would cause
     double-injection into the prompt.
     """
-    tool_ws = TOOL_WORKSPACE / str(agent_id)
-    data_ws = PERSISTENT_DATA / str(agent_id)
     _agent_tenant_id = tenant_id
     if _agent_tenant_id is None:
         try:
@@ -363,9 +588,12 @@ async def build_agent_context(
     a2a_budget = budget_profile.relationships_budget_chars if budget_profile else 6000
     company_info_budget = budget_profile.company_info_budget_chars if budget_profile else 5000
     org_structure_budget = budget_profile.org_structure_budget_chars if budget_profile else 2000
-    soul = _read_file_safe(tool_ws / "soul.md", soul_budget) or _read_file_safe(data_ws / "soul.md", soul_budget)
-    soul = _strip_primary_heading(soul)
-    soul = _sanitize_prompt_context(soul, source_name="soul.md")
+    soul_resource = await load_agent_context_resource(
+        agent_id=agent_id,
+        tenant_id=_agent_tenant_id,
+        resource_ref="soul",
+    )
+    soul = render_context_resource_excerpt(soul_resource, budget_chars=soul_budget)
 
     # --- Memory ---
     # NOTE: canonical memory files are no longer loaded here. T3 markdown memory flows
@@ -394,107 +622,40 @@ async def build_agent_context(
     )
     context_parts: list[str] = []
 
-    # --- Channel integration skills (agent reads on demand from skills/ directory) ---
-    _configured_channels = []
-    try:
-        if _agent_tenant_id is None:
-            raise RuntimeError("agent tenant is required for channel context")
-        from app.models.channel_config import ChannelConfig
-        from app.database import tenant_scoped_session
-        from sqlalchemy import select as sa_select
-
-        async with tenant_scoped_session(
-            _agent_tenant_id,
-            require_tenant=True,
-            source="frozen_agent_channel_context",
-        ) as _ctx_db:
-            _cfgs = await _ctx_db.execute(
-                sa_select(ChannelConfig)
-                .where(
-                    ChannelConfig.agent_id == agent_id,
-                    ChannelConfig.tenant_id == _agent_tenant_id,
-                    ChannelConfig.is_configured,
-                )
-                .order_by(ChannelConfig.channel_type)
-            )
-            _configured_channels = [c.channel_type for c in _cfgs.scalars().all()]
-    except Exception as exc:
-        logger.debug("Failed to query channel configs for agent {}: {}", agent_id, exc)
-
-    if _configured_channels:
-        channel_names = ", ".join(_configured_channels)
+    # These previews and the on-demand tool share one loader, so no second
+    # context truth can drift from what the model can recover later.
+    channels_resource = await load_agent_context_resource(
+        agent_id=agent_id,
+        tenant_id=_agent_tenant_id,
+        resource_ref="channels",
+    )
+    if channels_resource.content:
         context_parts.append(
             "### Channel Integrations\n"
-            f"You have {channel_names} channel(s) configured. "
+            f"You have {channels_resource.content} channel(s) configured. "
             "Read the matching integration skill before using channel-specific tools."
         )
 
-    # --- Company Intro (from system settings) ---
-    try:
-        from app.database import tenant_scoped_session
-        from app.models.system_settings import SystemSetting
-        from sqlalchemy import select as sa_select
+    company_resource = await load_agent_context_resource(
+        agent_id=agent_id,
+        tenant_id=_agent_tenant_id,
+        resource_ref="company",
+    )
+    if company_resource.content:
+        company_preview = render_context_resource_excerpt(company_resource, budget_chars=company_info_budget)
+        context_parts.append(f"### Company Information\n{company_preview}")
 
-        if _agent_tenant_id is None:
-            raise RuntimeError("agent tenant is required for company context")
-        async with tenant_scoped_session(
-            _agent_tenant_id,
-            require_tenant=True,
-            source="frozen_agent_company_context",
-        ) as db:
-            company_intro = ""
-
-            # Priority 1: tenant_settings table (new)
-            if _agent_tenant_id:
-                try:
-                    from app.models.tenant_setting import TenantSetting
-
-                    result = await db.execute(
-                        sa_select(TenantSetting).where(
-                            TenantSetting.tenant_id == _agent_tenant_id,
-                            TenantSetting.key == "company_intro",
-                        )
-                    )
-                    ts = result.scalar_one_or_none()
-                    if ts and ts.value and ts.value.get("content"):
-                        company_intro = ts.value["content"].strip()
-                except Exception as exc:
-                    logger.debug("Failed to load tenant_settings company_intro for agent {}: {}", agent_id, exc)
-
-            # Priority 2: system_settings with tenant-scoped key (backward compat)
-            if not company_intro and _agent_tenant_id:
-                tenant_key = f"company_intro_{_agent_tenant_id}"
-                result = await db.execute(sa_select(SystemSetting).where(SystemSetting.key == tenant_key))
-                setting = result.scalar_one_or_none()
-                if setting and setting.value and setting.value.get("content"):
-                    company_intro = setting.value["content"].strip()
-
-            # Priority 3: global system_settings fallback
-            if not company_intro:
-                result = await db.execute(sa_select(SystemSetting).where(SystemSetting.key == "company_intro"))
-                setting = result.scalar_one_or_none()
-                if setting and setting.value and setting.value.get("content"):
-                    company_intro = setting.value["content"].strip()
-
-            if company_intro:
-                # Cap to prevent unbounded prompt growth from large tenant metadata
-                if len(company_intro) > company_info_budget:
-                    company_intro = company_intro[:company_info_budget] + "\n...(company info truncated)"
-                company_intro = _sanitize_prompt_context(company_intro, source_name="company_intro")
-                context_parts.append(f"### Company Information\n{company_intro}")
-    except Exception as exc:
-        logger.debug("Failed to load company intro for agent {}: {}", agent_id, exc)
-
-    # --- Organization Structure (from synced workspace file) ---
-    if _agent_tenant_id:
-        org_path = PERSISTENT_DATA / f"enterprise_info_{_agent_tenant_id}" / "org_structure.md"
-        org_structure = _read_file_safe(org_path, org_structure_budget)
-        if org_structure and "尚未同步" not in org_structure and "尚未填写" not in org_structure:
-            if org_structure.startswith("# "):
-                org_structure = "\n".join(org_structure.split("\n")[1:]).strip()
-            if org_structure:
-                org_structure = _sanitize_prompt_context(org_structure, source_name="org_structure.md")
-                context_parts.append(f"### Organization Structure\n{org_structure}")
+    organization_resource = await load_agent_context_resource(
+        agent_id=agent_id,
+        tenant_id=_agent_tenant_id,
+        resource_ref="organization",
+    )
+    if organization_resource.content:
+        organization_preview = render_context_resource_excerpt(
+            organization_resource,
+            budget_chars=org_structure_budget,
+        )
+        context_parts.append(f"### Organization Structure\n{organization_preview}")
 
     # soul personality is now rendered inside identity_section (build_identity_section)
 
@@ -504,11 +665,12 @@ async def build_agent_context(
     skills_section = (
         build_skill_catalog_section_for_agent(agent_id, budget_profile=budget_profile) if include_skill_catalog else ""
     )
-    a2a_section = await _build_a2a_collaborators_context(
-        agent_id,
+    a2a_resource = await load_agent_context_resource(
+        agent_id=agent_id,
         tenant_id=_agent_tenant_id,
-        budget_chars=a2a_budget,
+        resource_ref="a2a-collaborators",
     )
+    a2a_section = render_context_resource_excerpt(a2a_resource, budget_chars=a2a_budget)
 
     # Operating contract via modular section
     operating_contract = build_executing_actions_section(invocation_scope)

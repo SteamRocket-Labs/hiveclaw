@@ -6,6 +6,86 @@ from uuid import uuid4
 import pytest
 
 
+def test_recoverable_context_excerpt_carries_hash_pinned_continuation():
+    from app.services.agent_context import AgentContextResource, render_context_resource_excerpt
+
+    resource = AgentContextResource(
+        ref="company",
+        source_ref="agent-context://company",
+        content="A" * 500 + "OMITTED_SUFFIX",
+    )
+
+    rendered = render_context_resource_excerpt(resource, budget_chars=320)
+
+    assert "OMITTED_SUFFIX" not in rendered
+    assert "context_ref=agent-context://company" in rendered
+    assert "read_context_resource" in rendered
+    assert '"ref":"company"' in rendered
+    assert '"offset":' in rendered
+    assert f'"expected_sha256":"{resource.sha256}"' in rendered
+
+
+def test_personal_kb_is_not_an_agent_context_resource():
+    from app.services.agent_context import AGENT_CONTEXT_RESOURCE_REFS
+
+    assert "personal-kb" not in AGENT_CONTEXT_RESOURCE_REFS
+    assert "knowledge" not in AGENT_CONTEXT_RESOURCE_REFS
+
+
+@pytest.mark.asyncio
+async def test_build_agent_context_renders_recoverable_previews_for_every_bounded_resource(monkeypatch, tmp_path):
+    import app.services.agent_context as agent_context
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    soul = "SOUL_HEAD\n" + ("s" * 900) + "SOUL_SUFFIX"
+    company = "COMPANY_HEAD\n" + ("c" * 900) + "COMPANY_SUFFIX"
+    organization = "ORG_HEAD\n" + ("o" * 900) + "ORG_SUFFIX"
+    a2a = "## A2A Collaborators\nA2A_HEAD\n" + ("a" * 900) + "A2A_SUFFIX"
+
+    tool_agent_root = tmp_path / "tool" / str(agent_id)
+    tool_agent_root.mkdir(parents=True)
+    (tool_agent_root / "soul.md").write_text(soul, encoding="utf-8")
+    org_root = tmp_path / "data" / f"enterprise_info_{tenant_id}"
+    org_root.mkdir(parents=True)
+    (org_root / "org_structure.md").write_text(organization, encoding="utf-8")
+
+    sessions = [
+        _FakeSession([[]]),
+        _FakeSession([SimpleNamespace(value={"content": company})]),
+    ]
+
+    def fake_tenant_scoped_session(*_args, **_kwargs):
+        return sessions.pop(0)
+
+    async def fake_a2a(*_args, **_kwargs):
+        return a2a
+
+    monkeypatch.setattr("app.database.tenant_scoped_session", fake_tenant_scoped_session)
+    monkeypatch.setattr(agent_context, "TOOL_WORKSPACE", tmp_path / "tool")
+    monkeypatch.setattr(agent_context, "PERSISTENT_DATA", tmp_path / "data")
+    monkeypatch.setattr(agent_context, "_build_a2a_collaborators_context", fake_a2a)
+    budget = SimpleNamespace(
+        soul_budget_chars=360,
+        relationships_budget_chars=360,
+        company_info_budget_chars=360,
+        org_structure_budget_chars=360,
+    )
+
+    prompt = await agent_context.build_agent_context(
+        agent_id,
+        "Ops Agent",
+        tenant_id=tenant_id,
+        budget_profile=budget,
+        include_skill_catalog=False,
+    )
+
+    for ref in ("soul", "company", "organization", "a2a-collaborators"):
+        assert f'"ref":"{ref}"' in prompt
+    for omitted_suffix in ("SOUL_SUFFIX", "COMPANY_SUFFIX", "ORG_SUFFIX", "A2A_SUFFIX"):
+        assert omitted_suffix not in prompt
+
+
 class _FakeScalarResult:
     def __init__(self, value):
         self._value = value

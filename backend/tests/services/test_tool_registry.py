@@ -75,6 +75,7 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "request_shell_escalation",
         "list_files",
         "read_file",
+        "read_context_resource",
         "write_file",
         "edit_file",
         "glob_search",

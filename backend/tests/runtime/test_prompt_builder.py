@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 
 import pytest
 
@@ -539,10 +540,12 @@ class TestFrozenPrefixHardCap:
         prefix = build_frozen_prompt_prefix(agent_context=oversize_ctx)
 
         assert len(prefix) <= _FROZEN_PREFIX_CHAR_LIMIT
-        # Either the generic trim notice or the Tier4 identity-overrun marker must appear.
-        assert prefix.endswith(_FROZEN_PREFIX_TRIM_NOTICE) or prefix.endswith(_FROZEN_IDENTITY_OVERRUN_MARKER), (
-            "Last-resort trim must end with an observable notice"
-        )
+        # The marker now sits before the immutable System/Tasks/Tools tail so
+        # safety-critical instructions remain byte-for-byte present.
+        assert _FROZEN_PREFIX_TRIM_NOTICE in prefix or _FROZEN_IDENTITY_OVERRUN_MARKER in prefix
+        assert "## System" in prefix
+        assert "## Doing Tasks" in prefix
+        assert "## Using Your Tools" in prefix
         # Head of agent_context must be preserved (highest-value content).
         assert prefix.startswith("soul_data")
 
@@ -804,6 +807,49 @@ class TestFrozenBudgetInversionFix:
             "## Context Material (Tier2) must be trimmed/stripped; "
             "currently it survives while Tools (Tier3) is lost — inversion bug"
         )
+
+    def test_budget_cut_keeps_static_contract_and_context_recovery_pointer(self) -> None:
+        from app.runtime.prompt_builder import _enforce_frozen_prefix_budget
+
+        agent_context = (
+            "## Identity & Mission\n\n"
+            + ("identity evidence " * 900)
+            + "\n\n## Context Material\n\n"
+            + ("company evidence " * 900)
+            + "\n\n## A2A Collaborators\n\n"
+            + ("collaborator evidence " * 900)
+        )
+        system = "## System\n\nSYSTEM_CONTRACT_MUST_SURVIVE"
+        tasks = "## Doing Tasks\n\nTASK_CONTRACT_MUST_SURVIVE"
+        tools = "## Using Your Tools\n\nTOOL_CONTRACT_MUST_SURVIVE"
+
+        rendered = _enforce_frozen_prefix_budget(
+            [agent_context, system, tasks, tools],
+            "",
+            char_limit=3500,
+        )
+
+        assert len(rendered) <= 3500
+        assert "SYSTEM_CONTRACT_MUST_SURVIVE" in rendered
+        assert "TASK_CONTRACT_MUST_SURVIVE" in rendered
+        assert "TOOL_CONTRACT_MUST_SURVIVE" in rendered
+        assert "read_context_resource" in rendered
+        assert '"ref":"index"' in rendered
+
+
+def test_final_system_prompt_truncation_has_recovery_pointer():
+    from app.runtime.prompt_builder import assemble_runtime_prompt
+
+    prompt = assemble_runtime_prompt(
+        "FROZEN_HEAD\n" + ("frozen " * 1200),
+        "DYNAMIC_SUFFIX",
+        budget_profile=SimpleNamespace(system_prompt_budget_chars=1200),
+    )
+
+    assert len(prompt) <= 1200
+    assert "read_context_resource" in prompt
+    assert '"ref":"index"' in prompt
+    assert "DYNAMIC_SUFFIX" in prompt
 
     def test_frozen_cap_scales_with_window(self) -> None:
         """Cap formula: max(16000, min(int(0.10 * window), 32000)) tokens.

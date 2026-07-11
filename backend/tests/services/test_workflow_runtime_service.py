@@ -625,7 +625,8 @@ async def test_list_runs_for_agent_scopes_counts_and_provenance(service, tenant_
         agent_id=agent_a,
     )
 
-    # promote the first run → provenance must surface in the listing
+    # A legacy direct draft is deliberately quarantined and must NOT make the
+    # run look promoted. Only an approved immutable proposal surfaces.
     definitions = WorkflowDefinitionService(session_factory=owner_sessionmaker)
     record = await definitions.create_draft(
         tenant_id=tenant_id,
@@ -641,7 +642,8 @@ async def test_list_runs_for_agent_scopes_counts_and_provenance(service, tenant_
         "newest first, only agent A's tenant-mirrored runs"
     )
     by_id = {s.task.id: s for s in summaries}
-    assert by_id[first.run_id].promoted_definition_id == record.id
+    assert record.promotion_proposal_id is None
+    assert by_id[first.run_id].promoted_definition_id is None
     assert by_id[second.run_id].promoted_definition_id is None
     assert by_id[first.run_id].step_counts.get("done") == 2
     assert by_id[first.run_id].task.metadata_json["definition_json"]["name"] == "two-step"

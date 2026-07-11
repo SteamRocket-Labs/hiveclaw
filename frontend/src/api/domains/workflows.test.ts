@@ -353,29 +353,50 @@ describe('run history + promote (asset view)', () => {
     expect(runs[0].description).toContain('OCR');
   });
 
-  it('POSTs promote and returns the draft record with provenance', async () => {
-    const { promoteWorkflowRun } = await import('./workflows');
+  it('submits immutable promotion evidence and supports manager review lifecycle', async () => {
+    const {
+      listWorkflowPromotionProposals,
+      reviewWorkflowPromotionProposal,
+      submitWorkflowPromotionProposal,
+      withdrawWorkflowPromotionProposal,
+    } = await import('./workflows');
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
-        id: 'd1',
+        id: 'p1',
+        run_id: 'r1',
+        status: 'pending',
         name: 'contract-batch',
         description: 'OCR → extract → risk table',
-        definition_version: 1,
-        definition_hash: 'h',
-        status: 'draft',
-        visibility_scope: 'agent',
-        owner_type: 'agent',
-        owner_id: 'agent-1',
-        call_policy: null,
-        promoted_from_run_id: 'r1',
+        requested_by_me: true,
+        can_review: false,
+        can_withdraw: true,
+        evidence: { run_status: 'completed', steps_total: 3, leaves_total: 2, completed_at: null },
+        review_reason: null,
+        created_at: null,
+        reviewed_at: null,
+        definition_id: null,
       }),
     );
-    const record = await promoteWorkflowRun('agent-1', 'r1');
-    const { url, init } = requestOf();
-    expect(url).toContain('/agents/agent-1/workflows/runs/r1/promote');
+    const proposal = await submitWorkflowPromotionProposal('agent-1', 'r1');
+    let { url, init } = requestOf();
+    expect(url).toContain('/agents/agent-1/workflows/runs/r1/promotion-proposals');
     expect(init.method).toBe('POST');
-    expect(record.status).toBe('draft');
-    expect(record.promoted_from_run_id).toBe('r1');
+    expect(proposal.status).toBe('pending');
+
+    fetchMock.mockResolvedValueOnce(jsonResponse([proposal]));
+    const proposals = await listWorkflowPromotionProposals('agent-1');
+    expect(requestOf(1).url).toContain('/agents/agent-1/workflows/promotion-proposals');
+    expect(proposals[0].can_withdraw).toBe(true);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...proposal, status: 'approved', definition_id: 'd1' }));
+    await reviewWorkflowPromotionProposal('agent-1', 'p1', 'approve', 'verified');
+    ({ url, init } = requestOf(2));
+    expect(url).toContain('/agents/agent-1/workflows/promotion-proposals/p1/review');
+    expect(JSON.parse(String(init.body))).toEqual({ decision: 'approve', reason: 'verified' });
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...proposal, status: 'withdrawn' }));
+    await withdrawWorkflowPromotionProposal('agent-1', 'p1');
+    expect(requestOf(3).url).toContain('/agents/agent-1/workflows/promotion-proposals/p1/withdraw');
   });
 
   it('GETs promote suggestions', async () => {

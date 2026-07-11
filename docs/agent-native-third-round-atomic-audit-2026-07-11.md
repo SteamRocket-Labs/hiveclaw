@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**21 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-02 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**22 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-03 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -105,7 +105,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | HN-07 | AI 资产用量投影只覆盖部分实际消费 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-01 | Agent use 与 Session/Resource ownership 混用 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-02 | 企业知识库“语义缺失、产品已上线” | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| GOV-03 | Workflow promotion 需要 manager 又要求原会话 owner | P1 | 断点 | ✓ | ✗ | △ | △ | △ | ✗ | △ |
+| GOV-03 | Workflow promotion 需要 manager 又要求原会话 owner | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-04 | Budget 状态通知声称有 outbox，实际不存在 | P1 | 断点 | ✓ | ✓ | △ | ✓ | ✗ | ✗ | △ |
 | UX-01 | 普通用户直接看到运行时/治理原始字段 | P1 | 局部闭环 | ✓ | △ | ✓ | ✓ | ✓ | ✗ | △ |
 | UX-02 | WebSocket 20 次后永久放弃且无恢复入口 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
@@ -357,6 +357,12 @@ Upload 在 `files.py:696-726` 用 fire-and-forget `asyncio.create_task` 写 Open
 **落地结果**：Company KB 继续作为第二部分的明确“已知缺失”；旧 route/UI/自动检索已退役，Company Intro 与 org structure保留为治理/组织上下文，现存文件已从 Agent 与普通产品面隔离并有管理员只读导出。未来 Company KB 必须建立在 KnowledgeDocument/Grant/IndexJob 的 company scope 上，不能扩写 legacy folder或重新接回默认 context assembly。
 
 ### GOV-03：Workflow promotion 的两种权威相互否定 — P1
+
+**修复状态（2026-07-11）**：**闭环**。固化改为真正的双人状态机：发起运行的 session owner 通过 `POST .../runs/{run_id}/promotion-proposals` 提交不可变提案，不需要 manage；另一位具有 Agent manage 权限且属于同租户的自然人通过 review API 批准或拒绝，不再冒充原 session owner。批准会在同一个 tenant transaction 中生成 active、versioned `WorkflowDefinitionRecord`、注册 AI asset revision、写 proposal terminal state 与 `workflow_promotion.approved` 审计；任一步失败全部回滚。
+
+`workflow_promotion_proposals` 固化 definition、run/session/requester、definition hash 与包含 step/leaf/quota/result/metadata hash 的 run evidence snapshot。数据库 trigger 禁止改写或删除快照、非法回退 terminal 状态；运行证据在审批时重新计算，任何 drift 都把提案持久化为 `stale`，不生成资产。submit、withdraw、withdraw replay、withdraw 后 resubmit、approve/reject replay 与并发审批均有确定性恢复语义；version 分配使用 transaction advisory lock，proposal→definition 有唯一约束。
+
+旧 `/runs/{id}/promote` 与 `/workflow-definitions/{id}/approve-promotion` 已删除。历史 direct promotion 不做不可信自动背书：`promoted_from_run_id` 存在但没有 proposal 的 definition 显式进入 `legacy_quarantined`；即使伪造非空 proposal id，执行、fork、activate 与 run-history promoted 投影仍会逐项核验 proposal 必须 approved，且 run/hash/definition/Agent 完全一致。前端让 run owner 看到“提交固化审批/等待审批/撤回”，管理员看到安全 evidence summary 与批准/带理由拒绝；Operator View/read-only session 不提供执行回调，manager suggestion 也不再代替 owner 提交。
 
 `backend/app/api/workflows.py:900-924` 先要求 Agent manage，然后又调用 `_authorize_workflow_run_action`；该 helper 在 `548-572` 要求当前人正好拥有 initiating parent session。管理员无法固化员工会话产生的优质 workflow，普通会话 owner 又通常没有 manage。
 
@@ -2038,3 +2044,80 @@ pytest tests -q
 ```
 
 结果：Ruff lint/format全绿；最终backend全量 `6425 passed, 1 skipped, 5 warnings in 151.64s`，零失败。
+
+### GOV-03 — Immutable two-person Workflow promotion
+
+状态：**闭环**。提交主题：`fix(GOV-03): make workflow promotion two-person and immutable`。
+
+七原子证据：
+
+1. **输入**：只有 completed 的 ephemeral/dynamic Workflow run 可提交；service 从 tenant+Agent+run 重新读取 archived definition，验证 metadata tenant、definition source 与 canonical definition hash，并从 root ChatSession 证明 requester 是发起人。模型、manager 或 URL 参数不能自称 session owner。
+2. **权威**：submit 只要求 Agent use 加真实 session ownership；review 只要求 Agent manage，并在 service 内再次确认 reviewer 属于同 tenant 且不是 requester。manager 不调用 session-owner helper；普通用户 list 只见本人 proposal，manager list 才见 Agent review queue。Operator View保持只读。
+3. **执行**：`WorkflowPromotionService` 是唯一固化 kernel。旧 direct promote 与 generic approve-promotion API 已物理删除；批准在一次 tenant transaction 内执行 compile、name-version advisory lock、active definition、AI asset publish、proposal terminal transition和AuditLog。Generic draft activate只服务手工定义，不能替代 run promotion。
+4. **证据**：FORCE-RLS `workflow_promotion_proposals` 是提案事实源，保存不可变 definition/evidence JSON与两个hash；evidence覆盖run status、config/policy snapshot、metadata/result摘要hash、step/leaf journal、quota和完成时间。DB trigger禁止snapshot update/delete及terminal review改写；definition保存proposal/run双向provenance，AI asset保存published revision。
+5. **恢复**：proposal hash使相同submit并发/重放只产生一条记录；approved/rejected/withdraw replay幂等；withdrawn可由同一owner安全reopen；审批用proposal row lock与definition unique约束防双发布。审批前证据漂移持久化为stale后返回409；事务内任一projection/audit失败不会留下半成品。
+6. **消费**：Workflow resolver、activate、fork和run-history promoted badge都只消费approved且run/hash/definition/Agent完全匹配的proposal；legacy direct与伪造pending link fail closed。Agent Workflows UI消费本人proposal状态、withdraw与提交动作，manager UI消费review queue/evidence summary/reason；Session Workflow窗口的“Promote”改为“Submit for approval”。
+7. **验收**：覆盖owner无manage提交、不同manager无session ownership审批、same-person/cross-tenant拒绝、definition/evidence drift、pending-link绕过、legacy quarantine、snapshot update/delete、approve/reject/withdraw/resubmit replay、唯一active definition+audit、API旁路404、RLS/immutability migration、fresh create-all head→parent downgrade、前端owner/admin/read-only消费、Ruff、全量前后端与生产构建。
+
+KISS/奥卡姆证据：只增加一个 proposal aggregate 与一个纵向 service；Workflow run仍是 `RuntimeTask`，Workflow definition和AI asset仍是既有事实源，没有新队列、第二工作流引擎或manager shadow session。删除了 direct promote、generic approve和“manager同时必须是session owner”三套互相冲突的语义。
+
+RED证据：
+
+```text
+Migration首个契约：1 failed
+- workflow_promotion_proposals_0711 migration不存在
+
+Frontend首个契约：4 failed, 24 passed
+- 新submit/list/review/withdraw adapter不存在
+- run owner无manage时看不到提交动作
+- manager没有独立review queue
+
+恢复与绕过补充契约逐项先红：
+- withdrawn proposal再次提交仍停在withdrawn
+- 非本tenant reviewer可以审批
+- pending proposal id可伪装成已治理active definition执行
+- snapshot缺DB级update/delete保护
+
+第一次backend全量：6428 passed, 4 failed, 1 skipped
+- payload test double缺新字段兼容
+- create-all FK命名与migration downgrade不一致
+- 新FORCE-RLS表未进入migration coverage机械清单
+```
+
+GREEN证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q \
+  tests/services/test_workflow_promotion_service.py \
+  tests/services/test_workflow_promote_fork.py \
+  tests/services/test_workflow_audit.py \
+  tests/runtime/test_office_workflows.py \
+  tests/api/test_workflows.py \
+  tests/api/test_workflow_definitions.py \
+  tests/services/test_workflow_definitions.py \
+  tests/services/test_workflow_runtime_service.py \
+  tests/migrations/test_workflow_promotion_proposals_migration.py
+```
+
+相关面最终转绿；其中新promotion service `10 passed`，覆盖真实PostgreSQL trigger、RLS与AI asset transaction。独立的 fresh-bootstrap `head → channel_ingress_inbox_0711` downgrade/re-upgrade契约通过。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`102 test files / 592 tests passed`；TypeScript + Vite production build exit 0，`7073 modules transformed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <GOV-03当前变更Python文件>
+ruff format --check <GOV-03当前变更Python文件>
+alembic heads
+pytest tests -q
+```
+
+结果：Alembic单head `workflow_promotion_proposals_0711 (head)`；最终backend全量 `6432 passed, 1 skipped, 5 warnings in 153.39s`，零失败。Ruff lint/format与diff check全绿。

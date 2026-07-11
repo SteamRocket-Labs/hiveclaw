@@ -83,6 +83,20 @@ async def test_contract_review_produces_artifacts_and_promote_proposal(
     tenant_id, owner_sessionmaker, workflow_principals
 ):
     service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
+    from app.models.chat_session import ChatSession
+
+    session_id = uuid.uuid4()
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as db:
+        db.add(
+            ChatSession(
+                id=session_id,
+                tenant_id=tenant_id,
+                agent_id=workflow_principals.agent_id,
+                user_id=workflow_principals.user_id,
+                title="Office contract review",
+                source_channel="web",
+            )
+        )
 
     async def office_leaf(request: LeafRequest) -> LeafOutcome:
         return LeafOutcome(
@@ -97,6 +111,10 @@ async def test_contract_review_produces_artifacts_and_promote_proposal(
         definition_data=CONTRACT_REVIEW_EXAMPLE,
         args={"doc_path": "contracts/msa.docx"},
         leaf_executor=office_leaf,
+        agent_id=workflow_principals.agent_id,
+        user_id=workflow_principals.user_id,
+        parent_session_id=session_id,
+        root_session_id=session_id,
     )
 
     assert handle.outcome.status == "completed"
@@ -107,18 +125,18 @@ async def test_contract_review_produces_artifacts_and_promote_proposal(
     artifact_refs = [step.result_ref for step in loaded.steps if step.result_ref]
     assert any("risk-table" in (ref or "") for ref in artifact_refs), "the risk table artifact must be journaled"
 
-    # …and the proven flow can be PROPOSED as a template (draft only — §10.4).
-    from app.services.workflow_definitions import WorkflowDefinitionService
+    # …and only the initiating session owner can submit its immutable evidence.
+    from app.services.workflow_promotion_service import WorkflowPromotionService
 
-    definitions = WorkflowDefinitionService(session_factory=owner_sessionmaker)
-    proposal = await definitions.submit_promote_proposal(
+    promotions = WorkflowPromotionService(session_factory=owner_sessionmaker)
+    proposal = await promotions.submit(
         tenant_id=tenant_id,
         agent_id=workflow_principals.agent_id,
-        definition_data=CONTRACT_REVIEW_EXAMPLE,
-        source_run_id=handle.run_id,
+        run_id=handle.run_id,
+        requester_user_id=workflow_principals.user_id,
     )
-    assert proposal.status == "draft"
-    assert proposal.promoted_from_run_id == handle.run_id
+    assert proposal.status == "pending"
+    assert proposal.run_id == handle.run_id
 
 
 # ── distribution: the external send is gate-locked ────────────────

@@ -1,14 +1,16 @@
-"""§9 P9 red tests: run lifecycle + promote/fork audit trail on real PG."""
+"""§9 P9 red tests: run lifecycle + fork audit trail on real PG.
+
+Atomic promotion audit is asserted with its immutable proposal transaction in
+``test_workflow_promotion_service.py``.
+"""
 
 from __future__ import annotations
 
 import uuid
 
 import pytest
-from sqlalchemy import select
 
 from app.database import tenant_scoped_session
-from app.models.audit import AuditLog
 from app.runtime.workflow_engine import LeafOutcome, LeafRequest
 from app.services.workflow_definitions import WorkflowDefinitionService
 from app.services.workflow_runtime_service import WorkflowRuntimeService
@@ -34,11 +36,6 @@ async def tenant_id(owner_sessionmaker) -> uuid.UUID:
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
         session.add(Tenant(id=tid, name="wf-audit", slug=f"wa-{tid.hex[:10]}"))
     return tid
-
-
-async def _audit_rows(owner_sessionmaker, action: str) -> list[AuditLog]:
-    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
-        return list((await session.execute(select(AuditLog).where(AuditLog.action == action))).scalars().all())
 
 
 async def test_run_lifecycle_writes_audit_with_required_fields(tenant_id, owner_sessionmaker, monkeypatch):
@@ -68,32 +65,6 @@ async def test_run_lifecycle_writes_audit_with_required_fields(tenant_id, owner_
         assert details["tenant_id"] == str(tenant_id)
         assert details["run_id"] == str(handle.run_id)
         assert "definition_hash" in details
-
-
-async def test_promotion_audit_carries_approval_metadata(
-    tenant_id, owner_sessionmaker, workflow_principals, monkeypatch
-):
-    import app.services.audit_logger as audit_logger_module
-
-    captured: list[tuple[str, dict]] = []
-
-    async def capturing_audit(action, details=None, agent_id=None, user_id=None):
-        captured.append((action, details or {}))
-
-    monkeypatch.setattr(audit_logger_module, "write_audit_log", capturing_audit)
-
-    service = WorkflowDefinitionService(session_factory=owner_sessionmaker)
-    approver = workflow_principals.user_id
-    proposal = await service.submit_promote_proposal(
-        tenant_id=tenant_id, agent_id=workflow_principals.agent_id, definition_data=_definition("promoted-audit")
-    )
-    await service.approve_promotion(proposal.id, tenant_id=tenant_id, approver_user_id=approver)
-
-    promote_rows = [details for action, details in captured if action == "workflow_definition_promoted"]
-    assert len(promote_rows) == 1
-    assert promote_rows[0]["approver_user_id"] == str(approver)
-    assert promote_rows[0]["tenant_id"] == str(tenant_id)
-    assert promote_rows[0]["definition_hash"] == proposal.definition_hash
 
 
 async def test_fork_audit_carries_provenance(tenant_id, owner_sessionmaker, workflow_principals, monkeypatch):

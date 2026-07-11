@@ -5,21 +5,24 @@ import { useTranslation } from 'react-i18next';
 import './AgentWorkflowsSection.css';
 import {
   activateWorkflowDefinition,
-  approveWorkflowPromotion,
   cancelWorkflowRun,
   deprecateWorkflowDefinition,
   forkWorkflowDefinition,
   getWorkflowRun,
   listPromoteSuggestions,
+  listWorkflowPromotionProposals,
   listWorkflowDefinitions,
   listWorkflowRuns,
   previewWorkflow,
-  promoteWorkflowRun,
   repairWorkflowRun,
+  reviewWorkflowPromotionProposal,
   revokeWorkflowDefinition,
   startWorkflow,
+  submitWorkflowPromotionProposal,
+  withdrawWorkflowPromotionProposal,
   type WorkflowDefinitionRecord,
   type WorkflowPreview,
+  type WorkflowPromotionProposal,
   type WorkflowRunStatus,
   type WorkflowRunSummary,
   type StartWorkflowOptions,
@@ -103,6 +106,7 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
   // ── asset view state ──
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [reviewReasons, setReviewReasons] = useState<Record<string, string>>({});
 
   // ── advanced (manual run) state — original P12 flow, demoted ──
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -116,6 +120,7 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
     queryClient.invalidateQueries({ queryKey: ['workflow-runs', agentId] });
     queryClient.invalidateQueries({ queryKey: ['workflow-definitions', agentId] });
     queryClient.invalidateQueries({ queryKey: ['workflow-promote-suggestions', agentId] });
+    queryClient.invalidateQueries({ queryKey: ['workflow-promotion-proposals', agentId] });
   };
 
   // ── queries ──
@@ -139,6 +144,12 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
     enabled: !!agentId && canManage,
   });
 
+  const { data: promotionProposals = [] } = useQuery({
+    queryKey: ['workflow-promotion-proposals', agentId],
+    queryFn: () => listWorkflowPromotionProposals(agentId),
+    enabled: !!agentId,
+  });
+
   const { data: expandedRun } = useQuery({
     queryKey: ['workflow-run', agentId, expandedRunId],
     queryFn: () => getWorkflowRun(agentId, expandedRunId!),
@@ -154,8 +165,27 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
   });
 
   // ── mutations ──
-  const promoteMutation = useMutation({
-    mutationFn: async (runId: string) => promoteWorkflowRun(agentId, runId),
+  const submitPromotionMutation = useMutation({
+    mutationFn: async (runId: string) => submitWorkflowPromotionProposal(agentId, runId),
+    onSuccess: () => {
+      setActionError(null);
+      invalidateAssets();
+    },
+    onError: (error: unknown) => setActionError(error instanceof Error ? error.message : String(error)),
+  });
+
+  const reviewPromotionMutation = useMutation({
+    mutationFn: async ({ proposal, decision }: { proposal: WorkflowPromotionProposal; decision: 'approve' | 'reject' }) =>
+      reviewWorkflowPromotionProposal(agentId, proposal.id, decision, reviewReasons[proposal.id]),
+    onSuccess: () => {
+      setActionError(null);
+      invalidateAssets();
+    },
+    onError: (error: unknown) => setActionError(error instanceof Error ? error.message : String(error)),
+  });
+
+  const withdrawPromotionMutation = useMutation({
+    mutationFn: async (proposalId: string) => withdrawWorkflowPromotionProposal(agentId, proposalId),
     onSuccess: () => {
       setActionError(null);
       invalidateAssets();
@@ -183,11 +213,10 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
   });
 
   const lifecycleMutation = useMutation({
-    mutationFn: async ({ id, action }: { id: string; action: 'activate' | 'deprecate' | 'revoke' | 'promote' }) => {
+    mutationFn: async ({ id, action }: { id: string; action: 'activate' | 'deprecate' | 'revoke' }) => {
       if (action === 'activate') return activateWorkflowDefinition(id);
       if (action === 'deprecate') return deprecateWorkflowDefinition(id);
-      if (action === 'revoke') return revokeWorkflowDefinition(id);
-      return approveWorkflowPromotion(id);
+      return revokeWorkflowDefinition(id);
     },
     onSuccess: () => {
       setActionError(null);
@@ -272,19 +301,83 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
               <span className="u-body">
                 {t('workflows.suggestionBody', { name: suggestion.name, count: suggestion.run_count })}
               </span>
-              {canManage && suggestion.sample_run_ids.length > 0 && (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => promoteMutation.mutate(suggestion.sample_run_ids[0])}
-                  disabled={promoteMutation.isPending}
-                >
-                  {t('workflows.promote')}
-                </button>
-              )}
             </div>
           ))}
         </div>
+      )}
+
+      {promotionProposals.length > 0 && (
+        <section data-testid="workflow-promotion-proposals">
+          <h3 className="agent-workflows-section-title">{t('workflows.promotionReviewTitle')}</h3>
+          <p className="agent-workflows-hint">{t('workflows.promotionReviewHint')}</p>
+          <div className="agent-workflows-list">
+            {promotionProposals.map((proposal) => {
+              const reason = reviewReasons[proposal.id] ?? '';
+              return (
+                <div key={proposal.id} className="agent-workflows-card">
+                  <div className="agent-workflows-card-head">
+                    <strong className="u-emphasis">{proposal.name}</strong>
+                    <span className={badgeClass(proposal.status === 'approved' ? 'ok' : proposal.status === 'pending' ? 'warn' : proposal.status === 'stale' ? 'error' : 'muted')}>
+                      {t(`workflows.promotionStatus.${proposal.status}`)}
+                    </span>
+                    <span className="u-row u-secondary">
+                      {t('workflows.evidenceSummary', {
+                        steps: proposal.evidence.steps_total,
+                        leaves: proposal.evidence.leaves_total,
+                      })}
+                    </span>
+                  </div>
+                  {proposal.description && <p className="agent-workflows-card-desc">{proposal.description}</p>}
+                  {proposal.review_reason && <p className="agent-workflows-hint">{proposal.review_reason}</p>}
+                  {canManage && proposal.can_review && (
+                    <div className="agent-workflows-actions">
+                      <input
+                        type="text"
+                        value={reason}
+                        maxLength={2000}
+                        placeholder={t('workflows.reviewReasonPlaceholder')}
+                        aria-label={t('workflows.reviewReason')}
+                        onChange={(event) =>
+                          setReviewReasons((current) => ({ ...current, [proposal.id]: event.target.value }))
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        data-testid={`workflow-approve-${proposal.id}`}
+                        onClick={() => reviewPromotionMutation.mutate({ proposal, decision: 'approve' })}
+                        disabled={reviewPromotionMutation.isPending}
+                      >
+                        {t('workflows.approveProposal')}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        data-testid={`workflow-reject-${proposal.id}`}
+                        onClick={() => reviewPromotionMutation.mutate({ proposal, decision: 'reject' })}
+                        disabled={reviewPromotionMutation.isPending || !reason.trim()}
+                      >
+                        {t('workflows.rejectProposal')}
+                      </button>
+                    </div>
+                  )}
+                  {proposal.can_withdraw && (
+                    <div className="agent-workflows-actions">
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => withdrawPromotionMutation.mutate(proposal.id)}
+                        disabled={withdrawPromotionMutation.isPending}
+                      >
+                        {t('workflows.withdrawProposal')}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
       )}
 
       {/* ── ① templates: 固化资产 ── */}
@@ -304,9 +397,13 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                 <div className="agent-workflows-card-head">
                   <strong className="u-emphasis">{record.name}</strong>
                   <span className="u-row u-tertiary">v{record.definition_version}</span>
-                  <span className={badgeClass(definitionTone(record.status))}>
-                    {t(DEFINITION_STATUS_KEYS[record.status] ?? record.status)}
-                  </span>
+                  {record.promotion_state === 'legacy_quarantined' ? (
+                    <span className={badgeClass('error')}>{t('workflows.legacyPromotionQuarantined')}</span>
+                  ) : (
+                    <span className={badgeClass(definitionTone(record.status))}>
+                      {t(DEFINITION_STATUS_KEYS[record.status] ?? record.status)}
+                    </span>
+                  )}
                   <span className="u-row u-secondary">
                     {t(VISIBILITY_KEYS[record.visibility_scope] ?? record.visibility_scope)}
                   </span>
@@ -319,18 +416,23 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                 {record.description && <p className="agent-workflows-card-desc">{record.description}</p>}
                 {canManage && (
                   <div className="agent-workflows-actions">
-                    {record.status === 'draft' && (
+                    {record.promotion_state !== 'legacy_quarantined' && record.status === 'draft' && (
                       <button
                         type="button"
                         className="btn btn-ghost"
-                        onClick={() => lifecycleMutation.mutate({ id: record.id, action: 'promote' })}
+                        onClick={() => lifecycleMutation.mutate({ id: record.id, action: 'activate' })}
                       >
-                        {t('workflows.approvePromotion')}
+                        {t('workflows.activate')}
                       </button>
                     )}
-                    {record.status === 'active' && (
+                    {record.promotion_state !== 'legacy_quarantined' && record.status === 'active' && (
                       <>
-                        <button type="button" className="btn btn-ghost" onClick={() => forkMutation.mutate(record)}>
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          data-testid={`workflow-fork-${record.id}`}
+                          onClick={() => forkMutation.mutate(record)}
+                        >
                           {t('workflows.fork')}
                         </button>
                         <button
@@ -372,6 +474,9 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
               const dynamicWorkflow = run.dynamic_workflow ?? null;
               const outcomeEvidence = run.outcome_evidence ?? dynamicWorkflow?.outcome_evidence ?? null;
               const repairPlan = run.repair_plan ?? dynamicWorkflow?.repair_plan ?? null;
+              const promotionProposal = promotionProposals.find(
+                (proposal) => proposal.run_id === run.run_id && proposal.status === 'pending',
+              );
               return (
                 <div key={run.run_id} data-testid={`workflow-run-row-${run.run_id}`} className="agent-workflows-card">
                   <div
@@ -423,18 +528,19 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                   <div className="agent-workflows-actions">
                     {run.promoted_definition_id ? (
                       <span className={badgeClass('ok')}>{t('workflows.promoted')}</span>
+                    ) : promotionProposal ? (
+                      <span className={badgeClass('warn')}>{t('workflows.awaitingPromotionReview')}</span>
                     ) : (
-                      canManage &&
                       run.status === 'completed' &&
-                      run.definition_source === 'ephemeral' && (
+                      (run.definition_source === 'ephemeral' || run.definition_source === 'dynamic_workflow') && (
                         <button
                           type="button"
                           className="btn btn-ghost"
-                          data-testid={`workflow-promote-${run.run_id}`}
-                          onClick={() => promoteMutation.mutate(run.run_id)}
-                          disabled={promoteMutation.isPending}
+                          data-testid={`workflow-submit-promotion-${run.run_id}`}
+                          onClick={() => submitPromotionMutation.mutate(run.run_id)}
+                          disabled={submitPromotionMutation.isPending}
                         >
-                          {t('workflows.promote')}
+                          {t('workflows.submitForApproval')}
                         </button>
                       )
                     )}

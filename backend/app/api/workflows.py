@@ -9,9 +9,10 @@ Confirmation notes:
   definitions + step aggregates + promote provenance).
 * ``GET  .../workflows/runs/{run_id}`` — run + step journal.
 * ``POST .../workflows/runs/{run_id}/cancel`` — kill (resumable later).
-* ``POST .../workflows/runs/{run_id}/promote`` — 固化: archived ephemeral
-  definition → registered DRAFT with ``promoted_from_run_id`` provenance
-  (activation still walks the human approve-promotion path, §10 decision 4).
+* ``POST .../workflows/runs/{run_id}/promotion-proposals`` — the initiating
+  session owner submits immutable evidence for independent manager review.
+* ``POST .../workflows/promotion-proposals/{id}/review`` — a different human
+  manager approves/rejects; approval atomically publishes the Workflow asset.
 * ``GET  .../workflows/promote-suggestions`` — repeated-run evidence.
 
 All endpoints are agent-scoped and gated by :func:`check_agent_access`.
@@ -33,7 +34,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.workflow_definitions import get_workflow_definition_service, record_payload
 from app.core.permissions import authorize_session_action, check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
@@ -63,7 +63,14 @@ from app.services.workflow_confirmation_service import (
     workflow_candidate_preview_id,
     workflow_preview_artifact_payload,
 )
-from app.services.workflow_definitions import WorkflowDefinitionError, WorkflowDefinitionService
+from app.services.workflow_promotion_service import (
+    WorkflowPromotionConflict,
+    WorkflowPromotionForbidden,
+    WorkflowPromotionNotFound,
+    WorkflowPromotionReviewResult,
+    WorkflowPromotionService,
+    WorkflowPromotionStaleError,
+)
 from app.services.workflow_launch import inspect_workflow_confirmation_needs, start_ephemeral_workflow_for_agent
 from app.services.workflow_promote_suggestions import collect_promote_suggestions
 from app.services.workflow_runtime_service import LoadedWorkflowRun, WorkflowRuntimeService
@@ -97,6 +104,60 @@ class WorkflowGateDecisionRequest(BaseModel):
 
     step_id: str = Field(min_length=1, max_length=200)
     decision: Literal["approve", "reject"]
+
+
+class WorkflowPromotionReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject"]
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+def get_workflow_promotion_service() -> WorkflowPromotionService:
+    return WorkflowPromotionService()
+
+
+def _promotion_error(exc: Exception) -> None:
+    if isinstance(exc, WorkflowPromotionNotFound):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if isinstance(exc, WorkflowPromotionForbidden):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    if isinstance(exc, (WorkflowPromotionConflict, WorkflowPromotionStaleError)):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    raise exc
+
+
+def _promotion_payload(
+    proposal,
+    definition,
+    *,
+    current_user_id: uuid.UUID,
+    can_manage: bool,
+) -> dict[str, Any]:
+    evidence = dict(proposal.run_evidence_json or {})
+    definition_json = dict(proposal.definition_json or {})
+    return {
+        "id": str(proposal.id),
+        "run_id": str(proposal.run_id),
+        "status": proposal.status,
+        "name": definition_json.get("name") or "Workflow",
+        "description": definition_json.get("description") or "",
+        "requested_by_me": proposal.requester_user_id == current_user_id,
+        "can_review": bool(
+            can_manage and proposal.status == "pending" and proposal.requester_user_id != current_user_id
+        ),
+        "can_withdraw": bool(proposal.status == "pending" and proposal.requester_user_id == current_user_id),
+        "evidence": {
+            "run_status": evidence.get("status"),
+            "steps_total": len(evidence.get("steps") or []),
+            "leaves_total": len(evidence.get("leaves") or []),
+            "completed_at": evidence.get("completed_at"),
+        },
+        "review_reason": proposal.review_reason,
+        "created_at": proposal.created_at.isoformat() if proposal.created_at else None,
+        "reviewed_at": proposal.reviewed_at.isoformat() if proposal.reviewed_at else None,
+        "definition_id": str(definition.id) if definition is not None else None,
+    }
 
 
 async def _plan_gate_check(db: AsyncSession, **kwargs: Any):
@@ -946,58 +1007,120 @@ async def decide_workflow_gate(
     )
 
 
-@router.post("/{agent_id}/workflows/runs/{run_id}/promote")
-async def promote_workflow_run(
+@router.post("/{agent_id}/workflows/runs/{run_id}/promotion-proposals")
+async def submit_workflow_promotion_proposal(
     agent_id: uuid.UUID,
     run_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    definition_service: WorkflowDefinitionService = Depends(get_workflow_definition_service),
+    promotion_service: WorkflowPromotionService = Depends(get_workflow_promotion_service),
 ) -> dict:
-    """固化: register the run's archived definition as a DRAFT template with
-    ``promoted_from_run_id`` provenance. Activation still requires the human
-    approve-promotion step (§10 decision 4)."""
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    try:
+        proposal = await promotion_service.submit(
+            tenant_id=agent.tenant_id,
+            agent_id=agent.id,
+            run_id=run_id,
+            requester_user_id=current_user.id,
+        )
+    except (WorkflowPromotionNotFound, WorkflowPromotionForbidden, WorkflowPromotionConflict) as exc:
+        _promotion_error(exc)
+    return _promotion_payload(
+        proposal,
+        None,
+        current_user_id=current_user.id,
+        can_manage=access_level == "manage",
+    )
+
+
+@router.get("/{agent_id}/workflows/promotion-proposals")
+async def list_workflow_promotion_proposals(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    promotion_service: WorkflowPromotionService = Depends(get_workflow_promotion_service),
+) -> list[dict]:
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    rows = await promotion_service.list_proposals(
+        tenant_id=agent.tenant_id,
+        agent_id=agent.id,
+        requester_user_id=current_user.id,
+        include_all=access_level == "manage",
+    )
+    return [
+        _promotion_payload(
+            proposal,
+            definition,
+            current_user_id=current_user.id,
+            can_manage=access_level == "manage",
+        )
+        for proposal, definition in rows
+    ]
+
+
+@router.post("/{agent_id}/workflows/promotion-proposals/{proposal_id}/review")
+async def review_workflow_promotion_proposal(
+    agent_id: uuid.UUID,
+    proposal_id: uuid.UUID,
+    payload: WorkflowPromotionReviewRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    promotion_service: WorkflowPromotionService = Depends(get_workflow_promotion_service),
+) -> dict:
     agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level != "manage":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Promoting a workflow to a template requires agent manage access",
-        )
-    loaded = await _load_owned_run(run_id, agent=agent)
-    await _authorize_workflow_run_action(
-        db,
-        agent=agent,
-        current_user=current_user,
-        loaded=loaded,
-        action="workflow:promote",
-    )
-    if loaded.task.status != "completed":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="only completed runs can be promoted to a template",
-        )
-    definition = (loaded.task.metadata_json or {}).get("definition_json")
-    if not definition:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="run has no archived definition to promote",
+            detail="Workflow promotion review requires agent manage access",
         )
     try:
-        record = await definition_service.create_draft(
+        reviewed: WorkflowPromotionReviewResult = await promotion_service.review(
             tenant_id=agent.tenant_id,
-            definition_data=definition,
-            created_by_user_id=getattr(current_user, "id", None),
-            visibility_scope="agent",
-            owner_type="agent",
-            owner_id=agent.id,
-            promoted_from_run_id=run_id,
+            agent_id=agent.id,
+            proposal_id=proposal_id,
+            reviewer_user_id=current_user.id,
+            decision=payload.decision,
+            reason=payload.reason,
         )
-    except WorkflowDefinitionError as exc:
-        message = str(exc)
-        if "not found" in message:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message) from exc
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message) from exc
-    return record_payload(record)
+    except (
+        WorkflowPromotionNotFound,
+        WorkflowPromotionForbidden,
+        WorkflowPromotionConflict,
+        WorkflowPromotionStaleError,
+    ) as exc:
+        _promotion_error(exc)
+    return _promotion_payload(
+        reviewed.proposal,
+        reviewed.definition,
+        current_user_id=current_user.id,
+        can_manage=True,
+    )
+
+
+@router.post("/{agent_id}/workflows/promotion-proposals/{proposal_id}/withdraw")
+async def withdraw_workflow_promotion_proposal(
+    agent_id: uuid.UUID,
+    proposal_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    promotion_service: WorkflowPromotionService = Depends(get_workflow_promotion_service),
+) -> dict:
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    try:
+        proposal = await promotion_service.withdraw(
+            tenant_id=agent.tenant_id,
+            agent_id=agent.id,
+            proposal_id=proposal_id,
+            requester_user_id=current_user.id,
+        )
+    except (WorkflowPromotionNotFound, WorkflowPromotionForbidden, WorkflowPromotionConflict) as exc:
+        _promotion_error(exc)
+    return _promotion_payload(
+        proposal,
+        None,
+        current_user_id=current_user.id,
+        can_manage=access_level == "manage",
+    )
 
 
 @router.get("/{agent_id}/workflows/promote-suggestions")

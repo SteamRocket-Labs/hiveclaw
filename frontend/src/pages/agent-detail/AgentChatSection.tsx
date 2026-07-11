@@ -66,9 +66,9 @@ import {
   decideWorkflowGate,
   getWorkflowPreview,
   previewWorkflowCandidate,
-  promoteWorkflowRun,
   repairWorkflowRun,
   startWorkflow,
+  submitWorkflowPromotionProposal,
 } from '../../api/domains/workflows';
 import { showAppToast } from '../../components/AppDialogs';
 import { composerShortcutText } from './sessionComposerShortcuts';
@@ -2484,7 +2484,7 @@ export function WorkflowRunFocusPanel({
     if (action === 'reject_gate') return t('sessionWorkbench.workflowRunWindow.rejectGate', 'Reject');
     if (action === 'repair') return t('sessionWorkbench.workflowRunWindow.repair', 'Repair');
     if (action === 'cancel') return t('sessionWorkbench.workflowRunWindow.cancel', 'Cancel');
-    return t('sessionWorkbench.workflowRunWindow.promote', 'Promote');
+    return t('sessionWorkbench.workflowRunWindow.promote', 'Submit for approval');
   };
   const renderWorkflowAction = (action: WorkflowRunActionModel) => (
     <button
@@ -3854,7 +3854,7 @@ function AgentChatSection({
         if (action.action === 'cancel') {
           await cancelWorkflowRun(effectiveAgentId, action.runId);
         } else if (action.action === 'promote') {
-          await promoteWorkflowRun(effectiveAgentId, action.runId);
+          await submitWorkflowPromotionProposal(effectiveAgentId, action.runId);
         } else if (action.action === 'approve_gate' || action.action === 'reject_gate') {
           if (!action.stepId) throw new Error('Workflow gate step is missing');
           await decideWorkflowGate(
@@ -4341,7 +4341,6 @@ function AgentChatSection({
                       workflow={focusedWorkflow}
                       onClose={() => setFocusedWorkflow(null)}
                       onSelectSession={onSelectBranchSession}
-                      onWorkflowAction={handleWorkflowAction}
                     />
                   ) : activeSessionHydrating ? (
                     <SessionHydratingState label={t('common.loading', 'Loading')} />

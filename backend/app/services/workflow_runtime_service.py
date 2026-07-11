@@ -1297,7 +1297,7 @@ class WorkflowRuntimeService:
         """
         from sqlalchemy import func
 
-        from app.models.workflow import WorkflowDefinitionRecord
+        from app.models.workflow import WorkflowDefinitionRecord, WorkflowPromotionProposal
 
         async with self._session(tenant_id) as session:
             tasks = (
@@ -1332,8 +1332,20 @@ class WorkflowRuntimeService:
                     counts[rid][step_status] = n
                 promo_rows = (
                     await session.execute(
-                        select(WorkflowDefinitionRecord.id, WorkflowDefinitionRecord.promoted_from_run_id).where(
-                            WorkflowDefinitionRecord.promoted_from_run_id.in_(run_ids)
+                        select(WorkflowDefinitionRecord.id, WorkflowDefinitionRecord.promoted_from_run_id)
+                        .where(
+                            WorkflowDefinitionRecord.promoted_from_run_id.in_(run_ids),
+                            WorkflowDefinitionRecord.promotion_proposal_id.is_not(None),
+                            WorkflowDefinitionRecord.status == "active",
+                        )
+                        .join(
+                            WorkflowPromotionProposal,
+                            WorkflowPromotionProposal.id == WorkflowDefinitionRecord.promotion_proposal_id,
+                        )
+                        .where(
+                            WorkflowPromotionProposal.status == "approved",
+                            WorkflowPromotionProposal.run_id == WorkflowDefinitionRecord.promoted_from_run_id,
+                            WorkflowPromotionProposal.definition_hash == WorkflowDefinitionRecord.definition_hash,
                         )
                     )
                 ).all()

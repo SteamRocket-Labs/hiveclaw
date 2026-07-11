@@ -9,13 +9,14 @@
  *   GET  /agents/{agentId}/workflows/runs               run history (asset view §4)
  *   GET  /agents/{agentId}/workflows/runs/{runId}       run + step journal
  *   POST /agents/{agentId}/workflows/runs/{runId}/cancel kill (resumable later)
- *   POST /agents/{agentId}/workflows/runs/{runId}/promote 固化 → registered DRAFT (provenance kept)
+ *   POST /agents/{agentId}/workflows/runs/{runId}/promotion-proposals immutable owner proposal
+ *   GET  /agents/{agentId}/workflows/promotion-proposals owner/manager scoped review queue
+ *   POST /agents/{agentId}/workflows/promotion-proposals/{id}/review independent manager decision
  *   GET  /agents/{agentId}/workflows/promote-suggestions repeated-run evidence
  *
  *   POST /workflow-definitions                          create draft (versioned, immutable)
  *   GET  /workflow-definitions                          list visible to the tenant/agent
  *   POST /workflow-definitions/{id}/activate|deprecate|revoke
- *   POST /workflow-definitions/{id}/approve-promotion   human approver only (§10 decision 4)
  *   POST /workflow-definitions/{id}/fork                registered + patch → ephemeral data
  */
 
@@ -155,6 +156,31 @@ export interface WorkflowDefinitionRecord {
   owner_id: string | null;
   call_policy: Record<string, unknown> | null;
   promoted_from_run_id: string | null;
+  promotion_proposal_id?: string | null;
+  promotion_state?: 'governed' | 'legacy_quarantined' | null;
+}
+
+export type WorkflowPromotionProposalStatus = 'pending' | 'approved' | 'rejected' | 'stale' | 'withdrawn';
+
+export interface WorkflowPromotionProposal {
+  id: string;
+  run_id: string;
+  status: WorkflowPromotionProposalStatus;
+  name: string;
+  description: string;
+  requested_by_me: boolean;
+  can_review: boolean;
+  can_withdraw: boolean;
+  evidence: {
+    run_status: string | null;
+    steps_total: number;
+    leaves_total: number;
+    completed_at: string | null;
+  };
+  review_reason: string | null;
+  created_at: string | null;
+  reviewed_at: string | null;
+  definition_id: string | null;
 }
 
 /** One row of the agent's run history — the archived ephemeral flow. */
@@ -283,9 +309,38 @@ export function listWorkflowRuns(agentId: string, limit = 50): Promise<WorkflowR
   return get<WorkflowRunSummary[]>(`/agents/${agentId}/workflows/runs?limit=${limit}`);
 }
 
-/** 固化: archive → registered DRAFT. Activation still walks approve-promotion. */
-export function promoteWorkflowRun(agentId: string, runId: string): Promise<WorkflowDefinitionRecord> {
-  return post<WorkflowDefinitionRecord>(`/agents/${agentId}/workflows/runs/${runId}/promote`);
+export function submitWorkflowPromotionProposal(
+  agentId: string,
+  runId: string,
+): Promise<WorkflowPromotionProposal> {
+  return post<WorkflowPromotionProposal>(
+    `/agents/${agentId}/workflows/runs/${runId}/promotion-proposals`,
+  );
+}
+
+export function listWorkflowPromotionProposals(agentId: string): Promise<WorkflowPromotionProposal[]> {
+  return get<WorkflowPromotionProposal[]>(`/agents/${agentId}/workflows/promotion-proposals`);
+}
+
+export function reviewWorkflowPromotionProposal(
+  agentId: string,
+  proposalId: string,
+  decision: 'approve' | 'reject',
+  reason?: string,
+): Promise<WorkflowPromotionProposal> {
+  return post<WorkflowPromotionProposal>(
+    `/agents/${agentId}/workflows/promotion-proposals/${encodeURIComponent(proposalId)}/review`,
+    { decision, reason: reason?.trim() || null },
+  );
+}
+
+export function withdrawWorkflowPromotionProposal(
+  agentId: string,
+  proposalId: string,
+): Promise<WorkflowPromotionProposal> {
+  return post<WorkflowPromotionProposal>(
+    `/agents/${agentId}/workflows/promotion-proposals/${encodeURIComponent(proposalId)}/withdraw`,
+  );
 }
 
 export function listPromoteSuggestions(agentId: string): Promise<WorkflowPromoteSuggestion[]> {
@@ -331,10 +386,6 @@ export function deprecateWorkflowDefinition(definitionId: string): Promise<Workf
 
 export function revokeWorkflowDefinition(definitionId: string): Promise<WorkflowDefinitionRecord> {
   return post<WorkflowDefinitionRecord>(`/workflow-definitions/${definitionId}/revoke`);
-}
-
-export function approveWorkflowPromotion(definitionId: string): Promise<WorkflowDefinitionRecord> {
-  return post<WorkflowDefinitionRecord>(`/workflow-definitions/${definitionId}/approve-promotion`);
 }
 
 export function forkWorkflowDefinition(

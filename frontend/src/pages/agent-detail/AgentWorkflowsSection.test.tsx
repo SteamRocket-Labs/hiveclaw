@@ -82,9 +82,41 @@ const definitionRows: WorkflowDefinitionRecord[] = [
     call_policy: null,
     promoted_from_run_id: 'run-promoted',
   },
+  {
+    id: 'def-legacy',
+    name: 'legacy-direct',
+    description: 'old unreviewed promotion',
+    definition_version: 1,
+    definition_hash: 'legacy-hash',
+    status: 'active',
+    visibility_scope: 'agent',
+    owner_type: 'agent',
+    owner_id: 'agent-1',
+    call_policy: null,
+    promoted_from_run_id: 'legacy-run',
+    promotion_proposal_id: null,
+    promotion_state: 'legacy_quarantined',
+  },
 ];
 
 const suggestionRows = [{ definition_hash: 'h1', name: 'contract-batch', run_count: 3, sample_run_ids: ['run-unpromoted'] }];
+const proposalRows = [
+  {
+    id: 'proposal-pending',
+    run_id: 'run-awaiting-review',
+    status: 'pending' as const,
+    name: 'contract-batch',
+    description: 'OCR → extract → risk table',
+    requested_by_me: false,
+    can_review: true,
+    can_withdraw: false,
+    evidence: { run_status: 'completed', steps_total: 3, leaves_total: 2, completed_at: null },
+    review_reason: null,
+    created_at: null,
+    reviewed_at: null,
+    definition_id: null,
+  },
+];
 
 vi.mock('@tanstack/react-query', () => ({
   useQuery: ({ queryKey, enabled }: { queryKey: unknown[]; enabled?: boolean }) => {
@@ -93,6 +125,7 @@ vi.mock('@tanstack/react-query', () => ({
     if (key === 'workflow-runs') return { data: runRows, isLoading: false };
     if (key === 'workflow-definitions') return { data: definitionRows, isLoading: false };
     if (key === 'workflow-promote-suggestions') return { data: suggestionRows, isLoading: false };
+    if (key === 'workflow-promotion-proposals') return { data: proposalRows, isLoading: false };
     return { data: undefined, isLoading: false };
   },
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
@@ -107,15 +140,25 @@ describe('AgentWorkflowsSection (asset view)', () => {
     expect(html).toContain('statusActive');
     expect(html).toContain('visibilityAgent');
     expect(html).toContain('promotedFrom');
+    expect(html).toContain('legacyPromotionQuarantined');
+    expect(html).not.toContain('workflow-fork-def-legacy');
   });
 
-  it('renders run history with promote action for proven unpromoted runs', () => {
-    const html = renderToStaticMarkup(<AgentWorkflowsSection agentId="agent-1" canManage={true} />);
+  it('lets the run owner submit for independent review without manage access', () => {
+    const html = renderToStaticMarkup(<AgentWorkflowsSection agentId="agent-1" canManage={false} />);
     expect(html).toContain('contract-batch');
     expect(html).toContain('OCR → extract → risk table');
-    expect(html).toContain('workflow-promote-run-unpromoted'); // promote button testid
+    expect(html).toContain('workflow-submit-promotion-run-unpromoted');
     expect(html).toContain('>promoted<'); // 已固化 badge on the promoted run
     expect(html).toContain('stepsProgress:3,3');
+  });
+
+  it('gives a different manager approve and reject actions on pending proposals', () => {
+    const html = renderToStaticMarkup(<AgentWorkflowsSection agentId="agent-1" canManage={true} />);
+    expect(html).toContain('workflow-promotion-proposals');
+    expect(html).toContain('workflow-approve-proposal-pending');
+    expect(html).toContain('workflow-reject-proposal-pending');
+    expect(html).toContain('evidenceSummary:3,2');
   });
 
   it('surfaces dynamic workflow evidence and repair action', () => {
@@ -128,9 +171,10 @@ describe('AgentWorkflowsSection (asset view)', () => {
     expect(html).toContain('leafEvidence:1,2');
   });
 
-  it('hides promote actions without manage access', () => {
+  it('does not expose manager review controls without manage access', () => {
     const html = renderToStaticMarkup(<AgentWorkflowsSection agentId="agent-1" canManage={false} />);
-    expect(html).not.toContain('workflow-promote-run-unpromoted');
+    expect(html).toContain('workflow-submit-promotion-run-unpromoted');
+    expect(html).not.toContain('workflow-approve-proposal-pending');
     expect(html).not.toContain('approvePromotion');
     expect(html).not.toContain('workflow-suggestions-banner');
   });

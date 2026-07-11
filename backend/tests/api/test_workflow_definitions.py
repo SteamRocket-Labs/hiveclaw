@@ -35,6 +35,7 @@ def _record(**overrides):
         owner_id=None,
         call_policy=None,
         promoted_from_run_id=None,
+        promotion_proposal_id=None,
         definition_json={"name": "weekly-report"},
     )
     defaults.update(overrides)
@@ -73,11 +74,6 @@ class _StubService:
         self.calls.append(("revoke", {"definition_id": definition_id, **kwargs}))
         self._maybe_raise()
         return _record(status="revoked")
-
-    async def approve_promotion(self, definition_id, **kwargs):
-        self.calls.append(("approve_promotion", {"definition_id": definition_id, **kwargs}))
-        self._maybe_raise()
-        return _record(status="active")
 
     async def get_record(self, definition_id, **kwargs):
         self.calls.append(("get_record", {"definition_id": definition_id, **kwargs}))
@@ -154,22 +150,11 @@ def test_not_found_maps_to_404():
     assert resp.status_code == 404
 
 
-def test_approve_promotion_threads_human_approver():
+def test_legacy_definition_approve_promotion_route_is_removed():
     user, stub = _user(), _StubService()
     client = _client(user, stub)
     resp = client.post(f"/workflow-definitions/{uuid.uuid4()}/approve-promotion")
-    assert resp.status_code == 200
-    name, kwargs = next(call for call in stub.calls if call[0] == "approve_promotion")
-    assert name == "approve_promotion"
-    assert kwargs["approver_user_id"] == user.id
-
-
-def test_missing_approver_maps_to_403():
-    user, stub = _user(), _StubService()
-    stub.raises = PermissionError("promotion approval requires a human approver")
-    client = _client(user, stub)
-    resp = client.post(f"/workflow-definitions/{uuid.uuid4()}/approve-promotion")
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
 
 def test_fork_returns_ephemeral_definition():

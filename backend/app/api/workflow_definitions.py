@@ -1,7 +1,8 @@
 """Registered workflow definition REST API (§9 P6) — thin shell over
 :class:`WorkflowDefinitionService`. Tenant comes from the authenticated user;
-typed service errors map onto status codes (PermissionError → 403,
-lifecycle/visibility violations → 409, not-found phrasing → 404)."""
+typed service errors map lifecycle/visibility violations to 409 and missing
+records to 404. Run promotion review lives on the Agent-scoped Workflow API;
+generic definition drafts cannot impersonate that authority path."""
 
 from __future__ import annotations
 
@@ -33,10 +34,6 @@ class DefinitionCreateRequest(BaseModel):
     call_policy: dict[str, Any] | None = None
 
 
-class PromotionApprovalRequest(BaseModel):
-    pass
-
-
 class ForkRequest(BaseModel):
     agent_id: uuid.UUID
     version: int | None = None
@@ -46,6 +43,8 @@ class ForkRequest(BaseModel):
 def record_payload(record) -> dict:
     """Wire shape of a registered definition (shared with the promote-from-run
     endpoint in app.api.workflows)."""
+    promotion_proposal_id = getattr(record, "promotion_proposal_id", None)
+    promoted_from_run_id = getattr(record, "promoted_from_run_id", None)
     return {
         "id": str(record.id),
         "name": record.name,
@@ -57,7 +56,15 @@ def record_payload(record) -> dict:
         "owner_type": record.owner_type,
         "owner_id": str(record.owner_id) if record.owner_id else None,
         "call_policy": record.call_policy,
-        "promoted_from_run_id": str(record.promoted_from_run_id) if record.promoted_from_run_id else None,
+        "promoted_from_run_id": str(promoted_from_run_id) if promoted_from_run_id else None,
+        "promotion_proposal_id": str(promotion_proposal_id) if promotion_proposal_id else None,
+        "promotion_state": (
+            "legacy_quarantined"
+            if promoted_from_run_id is not None and promotion_proposal_id is None
+            else "governed"
+            if promotion_proposal_id is not None
+            else None
+        ),
     }
 
 
@@ -212,26 +219,6 @@ async def revoke_definition(
             tenant_id=current_user.tenant_id,
             actor_user_id=current_user.id,
         )
-    except WorkflowDefinitionError as exc:
-        _raise_mapped(exc)
-    return record_payload(record)
-
-
-@router.post("/{definition_id}/approve-promotion")
-async def approve_promotion(
-    definition_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-    service: WorkflowDefinitionService = Depends(get_workflow_definition_service),
-) -> dict:
-    try:
-        existing = await service.get_record(definition_id, tenant_id=current_user.tenant_id)
-        await _authorize_record_management(db, current_user, existing)
-        record = await service.approve_promotion(
-            definition_id, tenant_id=current_user.tenant_id, approver_user_id=current_user.id
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except WorkflowDefinitionError as exc:
         _raise_mapped(exc)
     return record_payload(record)

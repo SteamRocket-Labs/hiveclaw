@@ -87,6 +87,7 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
     channel_ingress_module = _load_migration_module("channel_ingress_inbox_0711.py")
     external_principal_module = _load_migration_module("external_principals_0711.py")
     channel_delivery_module = _load_migration_module("channel_delivery_outbox_0711.py")
+    workflow_promotion_module = _load_migration_module("workflow_promotion_proposals_0711.py")
     migration_tables = (
         set(force_all_module._FORCE_TABLES)
         | set(remaining_module._ALL_TABLES)
@@ -102,6 +103,7 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
         | set(channel_ingress_module._CHANNEL_INGRESS_TABLES)
         | set(external_principal_module._EXTERNAL_PRINCIPAL_RLS_TABLES)
         | set(channel_delivery_module._CHANNEL_DELIVERY_OUTBOX_TABLES)
+        | set(workflow_promotion_module._WORKFLOW_PROMOTION_TABLES)
     )
 
     missing = sorted(set(RLS_FORCED_TENANT_TABLES) - migration_tables)

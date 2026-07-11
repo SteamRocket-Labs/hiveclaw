@@ -12,9 +12,8 @@ definition lifecycle. This service owns that lifecycle:
   who SEES a definition, ``call_policy`` (allowed_agents / allowed_orgs /
   allowed_roles) governs who may RUN it; leaf capabilities are still checked
   per run on top;
-* §10 decision 4 — promote: agents can only SUBMIT a proposal (draft);
-  activation demands a human approver and re-runs compile + admission +
-  capability checks;
+* promoted records are executable only when linked to a matching APPROVED
+  immutable run-evidence proposal; legacy direct promotions are quarantined;
 * fork: registered version + patch → ephemeral definition DATA for a one-off
   run; the registered record is never mutated.
 
@@ -32,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import tenant_scoped_session
-from app.models.workflow import WorkflowDefinitionRecord
+from app.models.workflow import WorkflowDefinitionRecord, WorkflowPromotionProposal
 from app.runtime.workflow_compiler import CompiledWorkflow, WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 
@@ -57,6 +56,40 @@ class WorkflowDefinitionService:
 
     def _session(self, tenant_id: uuid.UUID | str | None):
         return tenant_scoped_session(str(tenant_id) if tenant_id else None, session_factory=self._session_factory)
+
+    async def _require_governed_promotion(
+        self,
+        record: WorkflowDefinitionRecord,
+        *,
+        tenant_id: uuid.UUID,
+    ) -> None:
+        if record.promoted_from_run_id is None:
+            return
+        if record.promotion_proposal_id is None:
+            raise WorkflowDefinitionError(
+                "legacy direct Workflow promotion has no immutable promotion proposal and is quarantined"
+            )
+        async with self._session(tenant_id) as session:
+            proposal = (
+                await session.execute(
+                    select(WorkflowPromotionProposal).where(
+                        WorkflowPromotionProposal.id == record.promotion_proposal_id,
+                        WorkflowPromotionProposal.tenant_id == tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
+        if (
+            proposal is None
+            or proposal.status != "approved"
+            or proposal.run_id != record.promoted_from_run_id
+            or proposal.definition_hash != record.definition_hash
+            or proposal.definition_json != record.definition_json
+            or proposal.agent_id not in {record.owner_id, record.created_by_agent_id}
+            or compute_definition_hash(record.definition_json) != record.definition_hash
+        ):
+            raise WorkflowDefinitionError(
+                "promoted Workflow is not bound to a matching approved promotion proposal and is quarantined"
+            )
 
     # ── creation / lifecycle ─────────────────────────────────────
 
@@ -177,6 +210,7 @@ class WorkflowDefinitionService:
         allowed_leaves: set[str] | None = None,
     ) -> WorkflowDefinitionRecord:
         record = await self.get_record(definition_id, tenant_id=tenant_id)
+        await self._require_governed_promotion(record, tenant_id=tenant_id)
         try:
             compile_workflow(record.definition_json, known_leaves=allowed_leaves)
         except WorkflowCompileError as exc:
@@ -286,6 +320,8 @@ class WorkflowDefinitionService:
 
         record = next((r for r in records if r.status == "active"), records[0]) if version is None else records[0]
 
+        await self._require_governed_promotion(record, tenant_id=tenant_id)
+
         if record.status == "revoked":
             raise WorkflowDefinitionError(f"definition {name!r} v{record.definition_version} is revoked")
         if record.status == "draft":
@@ -334,60 +370,6 @@ class WorkflowDefinitionService:
                     f"definition {name!r} v{record.definition_version} has no immutable AI asset revision"
                 )
         return ResolvedDefinition(record=record, compiled=compiled, asset_ref=asset_ref)
-
-    # ── promote (§10 decision 4) ─────────────────────────────────
-
-    async def submit_promote_proposal(
-        self,
-        *,
-        tenant_id: uuid.UUID,
-        agent_id: uuid.UUID,
-        definition_data: dict,
-        source_run_id: uuid.UUID | None = None,
-    ) -> WorkflowDefinitionRecord:
-        """Agents may only PROPOSE: the result is always a draft."""
-        return await self.create_draft(
-            tenant_id=tenant_id,
-            definition_data=definition_data,
-            created_by_agent_id=agent_id,
-            owner_type="agent",
-            owner_id=agent_id,
-            promoted_from_run_id=source_run_id,
-        )
-
-    async def approve_promotion(
-        self,
-        definition_id: uuid.UUID,
-        *,
-        tenant_id: uuid.UUID,
-        approver_user_id: uuid.UUID | None,
-        allowed_leaves: set[str] | None = None,
-    ) -> WorkflowDefinitionRecord:
-        if approver_user_id is None:
-            raise PermissionError("promotion approval requires a human approver (§10 decision 4)")
-        record = await self.activate(
-            definition_id, tenant_id=tenant_id, actor_user_id=approver_user_id, allowed_leaves=allowed_leaves
-        )
-        try:
-            from app.services.audit_logger import write_audit_log
-
-            await write_audit_log(
-                "workflow_definition_promoted",
-                details={
-                    "tenant_id": str(tenant_id),
-                    "definition_id": str(record.id),
-                    "definition_hash": record.definition_hash,
-                    "definition_version": record.definition_version,
-                    "approver_user_id": str(approver_user_id),
-                    "promoted_from_run_id": str(record.promoted_from_run_id) if record.promoted_from_run_id else None,
-                },
-                user_id=approver_user_id,
-            )
-        except Exception:  # audit is observation-only — never blocks the promotion
-            import logging
-
-            logging.getLogger(__name__).warning("promotion audit write failed (non-fatal)", exc_info=True)
-        return record
 
     # ── fork ─────────────────────────────────────────────────────
 
@@ -444,6 +426,7 @@ class WorkflowDefinitionService:
         validates and forks the row identified by the URL.
         """
         record = await self.get_record(definition_id, tenant_id=tenant_id)
+        await self._require_governed_promotion(record, tenant_id=tenant_id)
         if expected_version is not None and record.definition_version != expected_version:
             raise WorkflowDefinitionError(
                 f"definition version mismatch for {definition_id}: "

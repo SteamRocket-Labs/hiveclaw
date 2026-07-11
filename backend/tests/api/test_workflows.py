@@ -793,96 +793,122 @@ def test_workflow_gate_decision_is_session_authorized_and_queued(monkeypatch):
     assert client.gate_decision_calls[-1]["decision"] == "approve"
 
 
-# ── promote from run (固化) ────────────────────────────────────────
+# ── immutable two-person promotion ────────────────────────────────
 
 
-def _promote_client(user, monkeypatch, *, access_level="manage"):
-    from app.api.workflow_definitions import get_workflow_definition_service
+def _promotion_client(user, monkeypatch, *, access_level="use", requester_user_id=None):
+    from app.services.workflow_promotion_service import WorkflowPromotionReviewResult
 
     client = _client(user, monkeypatch, access_level=access_level)
-    created: list[dict] = []
+    calls: list[tuple[str, dict]] = []
+    proposal = SimpleNamespace(
+        id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        status="pending",
+        requester_user_id=requester_user_id or user.id,
+        definition_json={"name": "contract-batch", "description": "OCR → extract → risk table"},
+        run_evidence_json={"status": "completed", "steps": [{"id": "one"}], "leaves": [], "completed_at": None},
+        review_reason=None,
+        created_at=datetime.now(UTC),
+        reviewed_at=None,
+    )
 
-    class FakeDefinitionService:
-        async def create_draft(self, **kwargs):
-            created.append(kwargs)
-            definition = kwargs["definition_data"]
-            return SimpleNamespace(
-                id=uuid.uuid4(),
-                name=definition["name"],
-                definition_version=1,
-                definition_hash="newhash",
-                definition_json=definition,
-                status="draft",
-                visibility_scope=kwargs.get("visibility_scope", "agent"),
-                owner_type=kwargs.get("owner_type", "agent"),
-                owner_id=kwargs.get("owner_id"),
-                call_policy=None,
-                promoted_from_run_id=kwargs.get("promoted_from_run_id"),
-            )
+    class FakePromotionService:
+        async def submit(self, **kwargs):
+            calls.append(("submit", kwargs))
+            proposal.run_id = kwargs["run_id"]
+            proposal.requester_user_id = kwargs["requester_user_id"]
+            return proposal
 
-    client.app.dependency_overrides[get_workflow_definition_service] = lambda: FakeDefinitionService()
-    client.created = created
+        async def list_proposals(self, **kwargs):
+            calls.append(("list", kwargs))
+            return [(proposal, None)]
+
+        async def review(self, **kwargs):
+            calls.append(("review", kwargs))
+            proposal.status = "approved" if kwargs["decision"] == "approve" else "rejected"
+            proposal.review_reason = kwargs.get("reason")
+            proposal.reviewed_at = datetime.now(UTC)
+            definition = SimpleNamespace(id=uuid.uuid4()) if proposal.status == "approved" else None
+            return WorkflowPromotionReviewResult(proposal=proposal, definition=definition)
+
+        async def withdraw(self, **kwargs):
+            calls.append(("withdraw", kwargs))
+            proposal.status = "withdrawn"
+            return proposal
+
+    client.app.dependency_overrides[workflows_api.get_workflow_promotion_service] = lambda: FakePromotionService()
+    client.promotion_calls = calls
+    client.proposal = proposal
     return client
 
 
-def test_promote_run_creates_draft_with_provenance(monkeypatch):
+def test_session_owner_can_submit_without_manage_access(monkeypatch):
     user = _user()
-    client = _promote_client(user, monkeypatch)
+    client = _promotion_client(user, monkeypatch, access_level="use")
     run_id = uuid.uuid4()
     agent_id = uuid.uuid4()
-    _patch_load(
-        monkeypatch,
-        lambda rid: SimpleNamespace(
-            task=_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id),
-            steps=[],
-        ),
-    )
-    resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/promote")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "draft"
-    assert body["promoted_from_run_id"] == str(run_id)
-    assert body["description"] == "OCR → extract → risk table"
-    kwargs = client.created[0]
-    assert kwargs["promoted_from_run_id"] == run_id
-    assert kwargs["owner_type"] == "agent"
-    assert kwargs["owner_id"] == agent_id
-    assert kwargs["created_by_user_id"] == user.id
-    assert kwargs["definition_data"]["name"] == "contract-batch"
+
+    response = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/promotion-proposals")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert response.json()["requested_by_me"] is True
+    assert client.promotion_calls == [
+        (
+            "submit",
+            {
+                "tenant_id": user.tenant_id,
+                "agent_id": agent_id,
+                "run_id": run_id,
+                "requester_user_id": user.id,
+            },
+        )
+    ]
+    assert client.authorizations == [], "promotion submission must not require manager impersonation"
 
 
-def test_promote_run_requires_manage_access(monkeypatch):
-    user = _user()
-    client = _promote_client(user, monkeypatch, access_level="use")
-    run_id = uuid.uuid4()
+def test_different_manager_reviews_without_owning_source_session(monkeypatch):
+    manager = _user()
+    manager.role = "org_admin"
+    requester_id = uuid.uuid4()
+    client = _promotion_client(manager, monkeypatch, access_level="manage", requester_user_id=requester_id)
     agent_id = uuid.uuid4()
-    _patch_load(
-        monkeypatch,
-        lambda rid: SimpleNamespace(
-            task=_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id),
-            steps=[],
-        ),
+
+    response = client.post(
+        f"/agents/{agent_id}/workflows/promotion-proposals/{client.proposal.id}/review",
+        json={"decision": "approve", "reason": "verified"},
     )
-    resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/promote")
-    assert resp.status_code == 403
-    assert client.created == []
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "approved"
+    assert response.json()["definition_id"]
+    assert client.promotion_calls[0][0] == "review"
+    assert client.authorizations == [], "manager review must not pretend to own the source session"
 
 
-def test_promote_run_rejects_uncompleted_run(monkeypatch):
+def test_non_manager_cannot_review_but_can_list_own_proposal(monkeypatch):
     user = _user()
-    client = _promote_client(user, monkeypatch)
-    run_id = uuid.uuid4()
+    client = _promotion_client(user, monkeypatch, access_level="use")
     agent_id = uuid.uuid4()
-    _patch_load(
-        monkeypatch,
-        lambda rid: SimpleNamespace(
-            task=_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id, status="running"),
-            steps=[],
-        ),
+
+    listed = client.get(f"/agents/{agent_id}/workflows/promotion-proposals")
+    denied = client.post(
+        f"/agents/{agent_id}/workflows/promotion-proposals/{client.proposal.id}/review",
+        json={"decision": "approve"},
     )
-    resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/promote")
-    assert resp.status_code == 409
-    assert client.created == []
+
+    assert listed.status_code == 200
+    assert listed.json()[0]["requested_by_me"] is True
+    assert denied.status_code == 403
+    assert [name for name, _kwargs in client.promotion_calls] == ["list"]
+
+
+def test_legacy_direct_promote_route_is_removed(monkeypatch):
+    user = _user()
+    client = _promotion_client(user, monkeypatch, access_level="manage")
+    response = client.post(f"/agents/{uuid.uuid4()}/workflows/runs/{uuid.uuid4()}/promote")
+    assert response.status_code == 404
 
 
 # ── promote suggestions ────────────────────────────────────────────

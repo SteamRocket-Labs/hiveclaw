@@ -148,6 +148,7 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "external_principals",
     "external_principal_binding_events",
     "channel_delivery_outbox",
+    "workflow_promotion_proposals",
 )
 
 # Non-null tenant-owned tables must never inherit the legacy nullable-tenant
@@ -185,6 +186,7 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "external_principals",
     "external_principal_binding_events",
     "channel_delivery_outbox",
+    "workflow_promotion_proposals",
 )
 
 REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (
@@ -467,6 +469,70 @@ def apply_config_revision_immutability(connection: Connection) -> None:
     )
 
 
+def apply_workflow_promotion_immutability(connection: Connection) -> None:
+    """Install the proposal snapshot guard on create_all + stamp bootstraps."""
+
+    if connection.dialect.name != "postgresql":
+        return
+    if "workflow_promotion_proposals" not in set(inspect(connection).get_table_names()):
+        return
+    connection.execute(
+        text(
+            """
+            CREATE OR REPLACE FUNCTION workflow_promotion_snapshot_immutable()
+            RETURNS trigger AS $$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    RAISE EXCEPTION 'workflow promotion proposal snapshots are immutable';
+                END IF;
+                IF OLD.status IS DISTINCT FROM NEW.status
+                   AND NOT (
+                       (OLD.status = 'pending' AND NEW.status IN ('approved','rejected','stale','withdrawn'))
+                       OR (OLD.status = 'withdrawn' AND NEW.status = 'pending')
+                   ) THEN
+                    RAISE EXCEPTION 'invalid workflow promotion proposal transition';
+                END IF;
+                IF OLD.status IN ('approved','rejected','stale')
+                   AND (
+                       OLD.reviewer_user_id IS DISTINCT FROM NEW.reviewer_user_id
+                       OR OLD.review_reason IS DISTINCT FROM NEW.review_reason
+                       OR OLD.reviewed_at IS DISTINCT FROM NEW.reviewed_at
+                   ) THEN
+                    RAISE EXCEPTION 'terminal workflow promotion review is immutable';
+                END IF;
+                IF OLD.tenant_id IS DISTINCT FROM NEW.tenant_id
+                   OR OLD.agent_id IS DISTINCT FROM NEW.agent_id
+                   OR OLD.run_id IS DISTINCT FROM NEW.run_id
+                   OR OLD.root_session_id IS DISTINCT FROM NEW.root_session_id
+                   OR OLD.requester_user_id IS DISTINCT FROM NEW.requester_user_id
+                   OR OLD.proposal_hash IS DISTINCT FROM NEW.proposal_hash
+                   OR OLD.run_evidence_hash IS DISTINCT FROM NEW.run_evidence_hash
+                   OR OLD.definition_hash IS DISTINCT FROM NEW.definition_hash
+                   OR OLD.definition_json IS DISTINCT FROM NEW.definition_json
+                   OR OLD.run_evidence_json IS DISTINCT FROM NEW.run_evidence_json
+                   OR OLD.created_at IS DISTINCT FROM NEW.created_at THEN
+                    RAISE EXCEPTION 'workflow promotion proposal snapshots are immutable';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+            """
+        )
+    )
+    connection.execute(
+        text("DROP TRIGGER IF EXISTS trg_workflow_promotion_snapshot_immutable ON workflow_promotion_proposals")
+    )
+    connection.execute(
+        text(
+            """
+            CREATE TRIGGER trg_workflow_promotion_snapshot_immutable
+            BEFORE UPDATE OR DELETE ON workflow_promotion_proposals
+            FOR EACH ROW EXECUTE FUNCTION workflow_promotion_snapshot_immutable()
+            """
+        )
+    )
+
+
 class AlembicContextProtocol(Protocol):
     def configure(self, **kwargs) -> None: ...
 
@@ -526,6 +592,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     # without tenant isolation (§9 P0 gap fix).
     apply_rls_policies(connection)
     apply_config_revision_immutability(connection)
+    apply_workflow_promotion_immutability(connection)
     ensure_alembic_version_table_width(connection)
     connection.execute(text("DELETE FROM alembic_version"))
     for head in heads:

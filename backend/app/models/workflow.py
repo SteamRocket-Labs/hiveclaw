@@ -26,7 +26,17 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,6 +55,7 @@ class WorkflowDefinitionRecord(Base):
     __tablename__ = "workflow_definitions"
     __table_args__ = (
         UniqueConstraint("tenant_id", "name", "definition_version", name="uq_workflow_definition_version"),
+        UniqueConstraint("promotion_proposal_id", name="uq_workflow_definition_promotion_proposal"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -70,11 +81,68 @@ class WorkflowDefinitionRecord(Base):
     created_by_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     # promote provenance: the ephemeral run this version was promoted from
     promoted_from_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    promotion_proposal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "workflow_promotion_proposals.id",
+            ondelete="RESTRICT",
+            name="fk_workflow_definitions_promotion_proposal_id",
+        ),
+        nullable=True,
+        index=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class WorkflowPromotionProposal(Base):
+    """Immutable run evidence submitted by its session owner for two-person review.
+
+    Only review lifecycle columns may change after insert. PostgreSQL enforces
+    snapshot immutability as well, so an ORM bypass cannot rewrite what the
+    reviewer approved.
+    """
+
+    __tablename__ = "workflow_promotion_proposals"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "proposal_hash", name="uq_workflow_promotion_proposal_hash"),
+        CheckConstraint(
+            "status IN ('pending','approved','rejected','stale','withdrawn')",
+            name="ck_workflow_promotion_proposal_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("runtime_tasks.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    root_session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    requester_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    reviewer_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    proposal_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    definition_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    run_evidence_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", server_default="pending")
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class WorkflowStep(Base):

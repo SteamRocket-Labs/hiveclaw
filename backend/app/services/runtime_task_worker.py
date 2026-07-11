@@ -307,26 +307,32 @@ async def _execute_claimed_trigger_task(task_id: UUID) -> None:
 
 async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
     try:
-        from app.services.runtime_task_service import get_runtime_task_record, update_runtime_task_record
+        from app.services.business_task_runtime import (
+            TaskExecutionOutcome,
+            TaskExecutionStatus,
+            finalize_business_task_execution,
+            mark_business_task_execution_started,
+        )
         from app.services.task_executor import execute_task
 
-        record = await get_runtime_task_record(runtime_task_id.hex)
-        metadata = record.get("metadata") if record else {}
-        business_task_id = metadata.get("business_task_id") if isinstance(metadata, dict) else None
-        agent_id = record.get("parent_agent_id") if record else None
-        if not business_task_id or not agent_id:
-            await update_runtime_task_record(
-                runtime_task_id.hex,
-                status="failed",
-                result_summary="business_task RuntimeTask is missing business_task_id or parent_agent_id",
-            )
-            return
-        await execute_task(UUID(str(business_task_id)), UUID(str(agent_id)))
-        await update_runtime_task_record(
-            runtime_task_id.hex,
-            status="completed",
-            result_summary=f"business task {business_task_id} completed",
+        business_task_id, agent_id, requester_user_id = await mark_business_task_execution_started(
+            runtime_task_id=runtime_task_id
         )
+        try:
+            outcome = await execute_task(
+                business_task_id,
+                agent_id,
+                requester_user_id=requester_user_id,
+            )
+        except Exception as exc:  # convert operational executor failure into the typed terminal contract.
+            outcome = TaskExecutionOutcome(
+                status=TaskExecutionStatus.FAILED,
+                summary=f"Business task executor failed: {type(exc).__name__}: {str(exc)[:500]}",
+                error_code=type(exc).__name__,
+                retryable=True,
+            )
+        if not await finalize_business_task_execution(runtime_task_id=runtime_task_id, outcome=outcome):
+            raise RuntimeError("business task finalization could not locate the claimed runtime task")
     except Exception as exc:  # noqa: BLE001
         _STATE["last_error"] = f"business_task:{type(exc).__name__}:{str(exc)[:300]}"
         logger.exception("[RuntimeTaskWorker] business task {} failed", runtime_task_id)
@@ -335,8 +341,11 @@ async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
 
             await update_runtime_task_record(
                 runtime_task_id.hex,
-                status="failed",
-                result_summary=f"business_task worker failed: {type(exc).__name__}: {str(exc)[:500]}",
+                status="needs_reconciliation",
+                result_summary=(
+                    "business_task worker failed outside the atomic finalizer; side effects are unknown: "
+                    f"{type(exc).__name__}: {str(exc)[:500]}"
+                ),
             )
         except Exception as persist_exc:  # noqa: BLE001 - original failure is already logged.
             logger.warning(

@@ -141,7 +141,7 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     )
     monkeypatch.setattr("app.services.activity_logger.log_activity", fake_log_activity)
 
-    await execute_task(task_id, agent_id)
+    outcome = await execute_task(task_id, agent_id)
 
     request = captured["request"]
     assert request.model is model
@@ -169,9 +169,13 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     assert request.execution_identity.identity_id == agent_id
     assert request.execution_identity.label == "Agent: Ops Agent (task)"
 
-    assert task.status == "done"
-    assert task.completed_at is not None
-    assert any("✅ 任务完成" in entry.content and "任务已完成" in entry.content for entry in final_session.added)
+    assert outcome.status.value == "succeeded"
+    assert outcome.result == "任务已完成"
+    # The executor records evidence but cannot invent a terminal Task status.
+    # The Task + RuntimeTask atomic finalizer applies that outcome together.
+    assert task.status == "doing"
+    assert task.completed_at is None
+    assert any(getattr(entry, "content", None) == "任务已完成" for entry in final_session.added)
     assert activity_calls
     assert len(verified_authorizations) == 1
     assert verified_authorizations[0]["db"] is setup_session
@@ -208,9 +212,11 @@ async def test_execute_task_blocks_without_confirmed_plan(monkeypatch):
 
     monkeypatch.setattr("app.services.task_executor.invoke_agent", fake_invoke_agent)
 
-    await execute_task(task_id, agent_id)
+    outcome = await execute_task(task_id, agent_id)
 
     assert task.status == "pending"
+    assert outcome.status.value == "blocked"
+    assert outcome.error_code == "plan_authorization_evidence_missing"
     assert any("Plan Mode blocked" in item.content for item in setup_session.added)
 
 

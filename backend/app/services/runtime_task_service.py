@@ -11,6 +11,7 @@ from sqlalchemy import or_, select
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
+from app.models.task import Task
 from app.runtime.tenant_admission import raise_runtime_tenant_precondition
 from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
@@ -694,7 +695,7 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                     if task_type in _RESTART_RESUMABLE_TASK_TYPES:
                         continue
                     metadata.setdefault("restart_resume_blocker", "restart_resume_not_confirmed")
-                if task_type in {"delegation", "subagent", "trigger", "heartbeat"}:
+                if task_type in {"delegation", "subagent", "trigger", "heartbeat", "business_task"}:
                     task.status = "needs_reconciliation"
                     blocker = str(metadata.get("restart_resume_blocker") or "non_idempotent_restart_orphan")
                     if not task.result_summary:
@@ -713,6 +714,28 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                         trace_id=getattr(task, "trace_id", None),
                         session_id=getattr(task, "child_session_id", None) or getattr(task, "parent_session_id", None),
                     )
+                    if task_type == "business_task":
+                        try:
+                            business_task_id = uuid.UUID(str(metadata.get("business_task_id")))
+                        except (TypeError, ValueError):
+                            business_task_id = None
+                        if business_task_id is not None:
+                            business_task = (
+                                await db.execute(
+                                    select(Task)
+                                    .where(
+                                        Task.id == business_task_id,
+                                        Task.tenant_id == tenant_id,
+                                        Task.agent_id == task.parent_agent_id,
+                                    )
+                                    .with_for_update()
+                                )
+                            ).scalar_one_or_none()
+                            if business_task is not None and business_task.active_runtime_task_id == task.id:
+                                business_task.status = "needs_reconciliation"
+                                business_task.last_execution_status = "needs_reconciliation"
+                                business_task.last_error = task.result_summary
+                                business_task.completed_at = now
                     task.completed_at = now
                     updated += 1
                     continue

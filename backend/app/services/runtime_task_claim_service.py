@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import desc, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.runtime_budget import RuntimeBudgetRun
 from app.models.runtime_task import RuntimeTask
+from app.models.task import Task
 
 
 CLAIMABLE_RUNTIME_TASK_STATUSES = ("pending", "resumable")
@@ -49,6 +51,81 @@ def build_runtime_task_claim_statement(
     return stmt
 
 
+def _quarantine_business_task_claim(
+    runtime_task: RuntimeTask,
+    *,
+    metadata: dict[str, Any],
+    now: datetime,
+    reason: str,
+) -> None:
+    runtime_task.status = "needs_reconciliation"
+    runtime_task.result_summary = reason
+    runtime_task.completed_at = now
+    metadata.update(
+        {
+            "phase": "terminal",
+            "terminal_at": now.isoformat(),
+            "outcome": {
+                "status": "needs_reconciliation",
+                "summary": reason,
+            },
+        }
+    )
+    runtime_task.metadata_json = metadata
+
+
+async def _bind_business_task_claim(
+    db: AsyncSession,
+    *,
+    runtime_task: RuntimeTask,
+    now: datetime,
+) -> bool:
+    """Move the user-facing Task to running in the RuntimeTask claim transaction."""
+
+    metadata = dict(runtime_task.metadata_json or {})
+    try:
+        business_task_id = UUID(str(metadata["business_task_id"]))
+    except (KeyError, TypeError, ValueError):
+        _quarantine_business_task_claim(
+            runtime_task,
+            metadata=metadata,
+            now=now,
+            reason="business task projection link has no valid business_task_id",
+        )
+        return False
+    if runtime_task.tenant_id is None or runtime_task.parent_agent_id is None:
+        _quarantine_business_task_claim(
+            runtime_task,
+            metadata=metadata,
+            now=now,
+            reason="business task projection link has no tenant or Agent authority",
+        )
+        return False
+    business_task = (
+        await db.execute(
+            select(Task)
+            .where(
+                Task.id == business_task_id,
+                Task.tenant_id == runtime_task.tenant_id,
+                Task.agent_id == runtime_task.parent_agent_id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if business_task is None or business_task.active_runtime_task_id != runtime_task.id:
+        _quarantine_business_task_claim(
+            runtime_task,
+            metadata=metadata,
+            now=now,
+            reason="business task projection link is missing or no longer active",
+        )
+        return False
+    business_task.status = "doing"
+    business_task.last_execution_status = "running"
+    business_task.completed_at = None
+    return True
+
+
 class RuntimeTaskClaimService:
     def __init__(
         self,
@@ -77,7 +154,14 @@ class RuntimeTaskClaimService:
             return []
 
         claim_expires_at = now + timedelta(seconds=self.lease_seconds)
+        claimed_tasks: list[RuntimeTask] = []
         for task in tasks:
+            if task.task_type == "business_task" and not await _bind_business_task_claim(
+                self.db,
+                runtime_task=task,
+                now=now,
+            ):
+                continue
             task.status = "running"
             task.claimed_by = self.worker_id
             task.claim_expires_at = claim_expires_at
@@ -92,8 +176,9 @@ class RuntimeTaskClaimService:
             metadata["claim_version"] = task.claim_version
             metadata["claim_fence"] = f"{task.id.hex}:{task.claim_version}"
             task.metadata_json = metadata
+            claimed_tasks.append(task)
         await self.db.commit()
-        return tasks
+        return claimed_tasks
 
 
 def runtime_task_claim_snapshot() -> dict[str, Any]:

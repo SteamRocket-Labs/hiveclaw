@@ -24,6 +24,8 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
+当前修复进度：**3 / 28**（SA-01、SA-02、SA-03 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
 置信度计算口径：
@@ -84,7 +86,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 |---|---|---:|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | SA-01 | Plan 授权未绑定具体动作 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-02 | Approval 后存在第二工具执行入口 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-03 | Business Task 双状态机与错误终态 | P0 | 断点 | △ | △ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| SA-03 | Business Task 双状态机与错误终态 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-04 | Workspace Rewind 操作 Agent 共享目录 | P0 | 断点 | ✓ | ✗ | ✗ | △ | ✗ | △ | △ |
 | SA-05 | Channel ingress 无 durable inbox | P0 | 断点 | △ | △ | △ | ✗ | ✗ | △ | △ |
 | SA-06 | 外部通道身份被建成全局 User | P0 | 断点 | △ | ✗ | △ | ✗ | ✗ | ✗ | △ |
@@ -140,6 +142,8 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 **验收**：同一工具在 direct/ask/approved/retry/resume 五条入口必须产生同构 span、hook、preflight、timeout、artifact 和 terminal event；属性测试证明不存在第二 backend execution call site。
 
 ### SA-03：Business Task 的 Task 与 RuntimeTask 不是一个状态机 — P0
+
+**修复状态（2026-07-11）**：**闭环**。Task 创建与对应 `RuntimeTask(task_type="business_task")` 现在共用一次数据库事务；`execute_task` 只返回 typed `TaskExecutionOutcome`，唯一 finalizer 在 tenant row-lock 下同步转移两种投影。创建与手动触发都要求 caller-owned `request_id`，并用 principal-bound request hash、数据库唯一键和冲突恢复保证并发重试只产生一个逻辑 run。Plan block、Agent/Model 缺失、空内容、异常、取消与未知副作用不再伪装成 completed。旧 running 数据在迁移中进入 `needs_reconciliation`，pending 数据得到可恢复 RuntimeTask；状态 REST/retired CRUD 旁路和跨 Agent TaskLog 访问同时关闭。
 
 **机械事实**：`backend/app/api/tasks.py:104-157` 先 commit `Task`，再创建 `RuntimeTask`；创建 RuntimeTask 失败会留下 orphan pending Task，HTTP 重试会再建一条 Task。`backend/app/services/runtime_task_service.py:23-29` 的 restart-resumable 类型没有 `business_task`。worker 在 `runtime_task_worker.py:308-329` 调用 `execute_task` 后无条件把 RuntimeTask 标 completed。
 
@@ -712,3 +716,70 @@ alembic heads
 ```
 
 结果：Ruff `All checks passed!`；Alembic 单 head：`approval_execution_envelope_0711 (head)`。
+
+### SA-03 — BusinessTask 单一原子状态机
+
+状态：**闭环**。提交主题：`fix(SA-03): make business task lifecycle atomic`。
+
+七原子证据：
+
+1. **输入**：`TaskCreate.request_id` 与 `TaskTriggerIn.request_id` 为必填稳定幂等键；canonical request hash 绑定 tenant、Agent、requester、动作和完整 payload。前端 `taskApi.create/trigger` 明确传递 request id 与 Plan provenance，不再发送无 body trigger。
+2. **权威**：Task 和 RuntimeTask 都保存同 tenant/Agent/requester 绑定；开始与终结时重新定位 tenant，并在 tenant-scoped transaction 内同时校验 `business_task_id`、`active_runtime_task_id`、parent Agent 和 requester metadata。TaskLog route 先验证 Task 属于 path Agent；reflection session 使用实际 Task requester，而不是 Agent creator。
+3. **执行**：`stage_business_task_runtime()` 是唯一 Task→RuntimeTask staging 入口；REST 创建只 commit 一次。通用 claim service 在同一次 claim transaction 内把 RuntimeTask 与 linked Task 同步转为 running/doing，非法 link 直接隔离为 `needs_reconciliation` 且不 dispatch；worker随后只能调用 `mark_business_task_execution_started()` → `execute_task()` → `finalize_business_task_execution()`。执行器不能自行写 terminal Task 状态，REST/retired CRUD 也不能改写 linked execution status。
+4. **证据**：Task 保存 request/hash、active RuntimeTask、attempt、last execution status/error/result；RuntimeTask metadata 保存 immutable Task/requester/request/attempt/phase/outcome；reflection transcript/T0 与 TaskLog 保存用户可读执行证据。两种状态和 terminal log 在同一 finalizer transaction 落盘。
+5. **恢复**：数据库唯一键覆盖 `(tenant_id, agent_id, request_id)` 与 RuntimeTask root key；并发唯一键冲突 rollback 后读取同 hash winner，payload drift 409。Task 行锁与 active pointer authority invariant 还保证不同 request id 不能并发执行同一 Task。启动 reconciler 同事务把 orphan business RuntimeTask 与 linked Task 标为 `needs_reconciliation`。迁移只重排 pending legacy Task；旧 doing 不自动重放，明确进入人工/策略 reconciliation。
+6. **消费**：Runtime worker、Task API、Task log、reflection session、T0 ledger 和前端 Task 类型均消费同一 typed terminal contract；blocked/failed/cancelled/needs_reconciliation 不再被 UI 或 worker折叠为 completed/done。
+7. **验收**：覆盖 typed outcome 映射、同事务 staging、link invariant、Plan block、executor failure、并发重复 create/trigger、status 旁路、跨 Agent log、startup reconciliation、legacy backfill/downgrade、前端请求 body 和 TypeScript production build。
+
+RED 证据（修复前失败）：
+
+- 新原子状态机/迁移/边界测试：`8 failed`；模块与迁移不存在，API 仍调用二次事务 helper，worker仍有无条件 completed 路径。
+- 旧执行器/worker/API 契约：`1 + 1 + 4 failed`；成功调用直接写 Task done、失败依赖独立 RuntimeTask update、trigger 缺 request body 会产生 500。
+- 前端 durable request identity：`1 failed, 1 passed`；trigger 发出的 HTTP body 为 `undefined`。
+- 并发恢复与状态旁路架构测试：`2 failed, 3 passed`；无 `IntegrityError` recovery，TaskUpdate 仍可直接写 status。
+- 单 Task 多请求竞态：active-run 与 row-lock 目标测试先为 `2 failed`；外键归属目标测试为 `1 failed`；API 对不同 request 的并发触发最初返回 `500`，修复后统一 `409` 且 transaction rollback。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_business_task_runtime.py \
+  tests/services/test_task_executor.py \
+  tests/services/test_runtime_task_worker.py \
+  tests/services/test_runtime_task_service.py \
+  tests/services/test_runtime_task_claim_service.py \
+  tests/api/test_plan_mode_rest_gate.py \
+  tests/architecture/test_business_task_atomicity.py \
+  tests/migrations/test_business_task_atomic_state_migration.py \
+  tests/integration/test_stage2b_backfill.py::test_backfill_task_logs_chains_after_tasks -q
+```
+
+结果：`75 passed, 4 warnings in 9.82s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q -k 'task'
+```
+
+结果：`274 passed, 5914 deselected, 5 warnings in 19.95s`。
+
+```bash
+cd frontend
+npm test -- --run src/api/domains/tasks.test.ts
+npm run build
+```
+
+结果：`2 passed`；TypeScript + Vite production build exit 0，`7068 modules transformed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <SA-03 changed Python files>
+ruff format --check <SA-03 changed Python files>
+alembic heads
+```
+
+结果：Ruff `All checks passed!`，15 个文件格式通过；Alembic 单 head：`business_task_atomic_state_0711 (head)`。

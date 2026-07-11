@@ -1,10 +1,12 @@
 """Task management API routes."""
 
 import uuid
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
@@ -12,11 +14,20 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.task import Task, TaskLog
+from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.schemas.schemas import TaskCreate, TaskLogCreate, TaskLogOut, TaskOut, TaskUpdate
+from app.services.business_task_runtime import (
+    BusinessTaskInvariantError,
+    business_task_request_key,
+    business_task_runtime_root_key,
+    stage_business_task_runtime,
+)
+from app.services.runtime_task_worker import notify_runtime_task_worker
 
 
 class TaskTriggerIn(BaseModel):
+    request_id: str
     # Plan Mode (§9.3): a confirmed plan authorising this auto-executing task run.
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
@@ -25,37 +36,63 @@ class TaskTriggerIn(BaseModel):
 
 
 router = APIRouter(prefix="/agents/{agent_id}/tasks", tags=["tasks"])
+logger = logging.getLogger(__name__)
 
 
-async def _enqueue_business_task_execution(
+async def _load_matching_task_request(
+    db: AsyncSession,
     *,
-    runtime_task_id: uuid.UUID,
+    tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
-    agent_name: str | None,
-    task_id: uuid.UUID,
-    user_id: uuid.UUID,
-    prompt: str | None,
-) -> None:
-    from app.services.runtime_task_service import create_runtime_task_record
-    from app.services.runtime_task_worker import notify_runtime_task_worker
+    request_id: str,
+    request_hash: str,
+) -> Task | None:
+    task = (
+        await db.execute(
+            select(Task).where(
+                Task.tenant_id == tenant_id,
+                Task.agent_id == agent_id,
+                Task.request_id == request_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if task is not None and task.request_hash != request_hash:
+        raise HTTPException(status_code=409, detail="request_id was already used for a different task payload")
+    return task
 
-    await create_runtime_task_record(
-        task_id=runtime_task_id.hex,
-        task_type="business_task",
-        status="pending",
-        parent_agent_id=agent_id,
-        child_agent_id=agent_id,
-        child_agent_name=agent_name,
-        prompt=prompt,
-        trace_id=f"business_task:{runtime_task_id.hex}",
-        depth=1,
-        metadata_json={
-            "business_task_id": str(task_id),
-            "user_id": str(user_id),
-            "source": "tasks_api",
-        },
+
+async def _load_matching_runtime_request(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    task_id: uuid.UUID,
+    requester_user_id: uuid.UUID,
+    request_id: str,
+    request_hash: str,
+) -> RuntimeTask | None:
+    root_key = business_task_runtime_root_key(task_id=task_id, request_id=request_id)
+    runtime_task = (
+        await db.execute(
+            select(RuntimeTask).where(
+                RuntimeTask.root_idempotency_key == root_key,
+                RuntimeTask.tenant_id == tenant_id,
+                RuntimeTask.parent_agent_id == agent_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if runtime_task is None:
+        return None
+    metadata = dict(runtime_task.metadata_json or {})
+    authority_matches = (
+        runtime_task.task_type == "business_task"
+        and metadata.get("business_task_id") == str(task_id)
+        and metadata.get("requester_user_id") == str(requester_user_id)
+        and metadata.get("request_hash") == request_hash
     )
-    await notify_runtime_task_worker(reason="business_task_created", runtime_task_id=runtime_task_id)
+    if not authority_matches:
+        raise HTTPException(status_code=409, detail="request_id was already used for a different trigger payload")
+    return runtime_task
 
 
 async def _enrich_task_out(task: Task, db: AsyncSession) -> TaskOut:
@@ -110,9 +147,27 @@ async def create_task(
 ):
     """Create a new task for an agent."""
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    if agent.tenant_id is None:
+        raise HTTPException(status_code=409, detail="Agent tenant is required for task execution")
     # Plan Mode early intercept (§9.3): a todo task auto-executes in the
     # background (execute_task), so it needs a confirmed plan.
     action_artifact = data.model_dump(mode="json")
+    request_hash = business_task_request_key(
+        tenant_id=agent.tenant_id,
+        agent_id=agent_id,
+        requester_user_id=current_user.id,
+        action="create",
+        payload=action_artifact,
+    )
+    existing = await _load_matching_task_request(
+        db,
+        tenant_id=agent.tenant_id,
+        agent_id=agent_id,
+        request_id=data.request_id,
+        request_hash=request_hash,
+    )
+    if existing is not None:
+        return await _enrich_task_out(existing, db)
     evidence_id = f"task-create:{uuid.uuid4()}"
     plan_decision = await enforce_plan_gate(
         db,
@@ -147,31 +202,45 @@ async def create_task(
         priority=data.priority,
         due_date=data.due_date,
         created_by=current_user.id,
+        request_id=data.request_id,
+        request_hash=request_hash,
         plan_id=uuid.UUID(data.confirmed_plan_id) if data.confirmed_plan_id else None,
         plan_version=data.confirmed_plan_version,
         plan_hash=data.confirmed_plan_hash,
         plan_authorization=plan_evidence,
     )
-    db.add(task)
-    await db.flush()
-
-    task_out = await _enrich_task_out(task, db)
-
-    # Commit so the background executor can see the task in its own session
-    await db.commit()
-
-    runtime_task_id = uuid.uuid4()
     try:
-        await _enqueue_business_task_execution(
-            runtime_task_id=runtime_task_id,
-            agent_id=agent_id,
+        db.add(task)
+        await db.flush()
+        runtime_task = await stage_business_task_runtime(
+            db=db,
+            task=task,
+            requester_user_id=current_user.id,
             agent_name=getattr(agent, "name", None),
-            task_id=task.id,
-            user_id=current_user.id,
-            prompt=data.description,
+            request_id=data.request_id,
+            request_hash=request_hash,
         )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to enqueue task execution: {exc}") from exc
+        task_out = await _enrich_task_out(task, db)
+        await db.commit()
+    except BusinessTaskInvariantError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        existing = await _load_matching_task_request(
+            db,
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+            request_id=data.request_id,
+            request_hash=request_hash,
+        )
+        if existing is None:
+            raise HTTPException(status_code=409, detail="task request conflict could not be recovered") from exc
+        return await _enrich_task_out(existing, db)
+    try:
+        await notify_runtime_task_worker(reason="business_task_created", runtime_task_id=runtime_task.id)
+    except Exception as exc:  # polling remains a durable fallback after the committed intent.
+        logger.warning("business task wakeup failed for %s: %s", runtime_task.id, exc)
 
     return task_out
 
@@ -186,7 +255,7 @@ async def update_task(
 ):
     """Update a task."""
     await check_agent_access(db, current_user, agent_id)
-    result = await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))
+    result = await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id).with_for_update())
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
@@ -206,6 +275,9 @@ async def get_task_logs(
 ):
     """Get progress logs for a task."""
     await check_agent_access(db, current_user, agent_id)
+    task = (await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
     result = await db.execute(select(TaskLog).where(TaskLog.task_id == task_id).order_by(TaskLog.created_at.asc()))
     return [TaskLogOut.model_validate(log_item) for log_item in result.scalars().all()]
 
@@ -220,6 +292,9 @@ async def add_task_log(
 ):
     """Add a progress log entry to a task."""
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    task = (await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
     log = TaskLog(tenant_id=agent.tenant_id, task_id=task_id, content=data.content)
     db.add(log)
     await db.flush()
@@ -230,7 +305,7 @@ async def add_task_log(
 async def trigger_task(
     agent_id: uuid.UUID,
     task_id: uuid.UUID,
-    data: TaskTriggerIn | None = None,
+    data: TaskTriggerIn,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -238,17 +313,19 @@ async def trigger_task(
     from app.core.permissions import is_agent_expired
 
     agent, _access = await check_agent_access(db, current_user, agent_id)
+    if agent.tenant_id is None:
+        raise HTTPException(status_code=409, detail="Agent tenant is required for task execution")
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
 
-    result = await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))
+    result = await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id).with_for_update())
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
     # Plan Mode early intercept (§9.3): a manual trigger fires the background
     # execute_task loop, so it needs a confirmed plan.
-    trigger_in = data or TaskTriggerIn()
+    trigger_in = data
     action_artifact = {
         "task_id": str(task.id),
         "title": getattr(task, "title", ""),
@@ -257,6 +334,24 @@ async def trigger_task(
         "priority": getattr(task, "priority", "medium"),
         "due_date": task.due_date.isoformat() if getattr(task, "due_date", None) else None,
     }
+    request_hash = business_task_request_key(
+        tenant_id=agent.tenant_id,
+        agent_id=agent_id,
+        requester_user_id=current_user.id,
+        action="trigger",
+        payload={**action_artifact, **trigger_in.model_dump(mode="json")},
+    )
+    existing_run = await _load_matching_runtime_request(
+        db,
+        tenant_id=agent.tenant_id,
+        agent_id=agent_id,
+        task_id=task.id,
+        requester_user_id=current_user.id,
+        request_id=trigger_in.request_id,
+        request_hash=request_hash,
+    )
+    if existing_run is not None:
+        return {"status": "triggered", "task_id": str(task_id), "runtime_task_id": existing_run.id.hex}
     evidence_id = f"task-run:{task.id}:{uuid.uuid4()}"
     plan_decision = await enforce_plan_gate(
         db,
@@ -283,17 +378,40 @@ async def trigger_task(
         evidence_id=evidence_id,
     ).get("plan_authorization")
 
-    runtime_task_id = uuid.uuid4()
     try:
-        await _enqueue_business_task_execution(
-            runtime_task_id=runtime_task_id,
-            agent_id=agent_id,
+        runtime_task = await stage_business_task_runtime(
+            db=db,
+            task=task,
+            requester_user_id=current_user.id,
             agent_name=getattr(agent, "name", None),
-            task_id=task.id,
-            user_id=current_user.id,
-            prompt=getattr(task, "description", None),
+            request_id=trigger_in.request_id,
+            request_hash=request_hash,
         )
+        await db.commit()
+    except BusinessTaskInvariantError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        existing_run = await _load_matching_runtime_request(
+            db,
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+            task_id=task.id,
+            requester_user_id=current_user.id,
+            request_id=trigger_in.request_id,
+            request_hash=request_hash,
+        )
+        if existing_run is None:
+            raise HTTPException(status_code=409, detail="task trigger conflict could not be recovered") from exc
+        return {
+            "status": "triggered",
+            "task_id": str(task_id),
+            "runtime_task_id": existing_run.id.hex,
+        }
+    try:
+        await notify_runtime_task_worker(reason="business_task_triggered", runtime_task_id=runtime_task.id)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to enqueue task execution: {exc}") from exc
+        logger.warning("business task trigger wakeup failed for %s: %s", runtime_task.id, exc)
 
-    return {"status": "triggered", "task_id": str(task_id), "runtime_task_id": runtime_task_id.hex}
+    return {"status": "triggered", "task_id": str(task_id), "runtime_task_id": runtime_task.id.hex}

@@ -63,6 +63,7 @@ class _QueuedDB:
         self.results = list(results or [])
         self.added = []
         self.committed = False
+        self.rollbacks = 0
         self.flushed = False
         self.deleted = []
 
@@ -82,6 +83,9 @@ class _QueuedDB:
 
     async def commit(self):
         self.committed = True
+
+    async def rollback(self):
+        self.rollbacks += 1
 
     async def flush(self):
         self.flushed = True
@@ -128,6 +132,10 @@ async def _fake_enrich_task_out(task, _db):
         priority=task.priority or "medium",
         assignee="agent",
         created_by=task.created_by,
+        request_id=task.request_id,
+        request_hash=task.request_hash,
+        active_runtime_task_id=getattr(task, "active_runtime_task_id", None),
+        execution_attempt=getattr(task, "execution_attempt", 0) or 0,
         created_at=now,
         updated_at=now,
     )
@@ -881,7 +889,7 @@ def test_send_inter_agent_message_is_not_gated(monkeypatch):
 def test_create_todo_task_without_plan_returns_409(monkeypatch):
     import app.api.tasks as mod
 
-    db = _QueuedDB()
+    db = _QueuedDB([_ScalarResult(None)])
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     gate = _StubGate(_requires_confirmation_decision())
@@ -891,7 +899,12 @@ def test_create_todo_task_without_plan_returns_409(monkeypatch):
     agent_id = uuid4()
     resp = client.post(
         f"/agents/{agent_id}/tasks/",
-        json={"title": "auto research", "description": "go", "type": "todo"},
+        json={
+            "request_id": "create-no-plan-1",
+            "title": "auto research",
+            "description": "go",
+            "type": "todo",
+        },
     )
 
     assert resp.status_code == 409
@@ -905,19 +918,27 @@ def test_create_todo_task_without_plan_returns_409(monkeypatch):
 def test_create_todo_task_with_confirmed_plan_passes(monkeypatch):
     import app.api.tasks as mod
 
-    db = _QueuedDB()
+    db = _QueuedDB([_ScalarResult(None)])
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(mod, "_enrich_task_out", _fake_enrich_task_out)
     gate = _StubGate(_allow_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
-    enqueued = {}
+    staged = {}
 
-    async def fake_enqueue(**kwargs):
-        enqueued.update(kwargs)
+    async def fake_stage(**kwargs):
+        staged.update(kwargs)
+        runtime_task = SimpleNamespace(id=uuid4())
+        kwargs["task"].active_runtime_task_id = runtime_task.id
+        kwargs["task"].execution_attempt = 1
+        return runtime_task
 
-    monkeypatch.setattr(mod, "_enqueue_business_task_execution", fake_enqueue)
+    async def fake_notify(**_kwargs):
+        return None
+
+    monkeypatch.setattr(mod, "stage_business_task_runtime", fake_stage)
+    monkeypatch.setattr(mod, "notify_runtime_task_worker", fake_notify)
 
     client = TestClient(app)
     agent_id = uuid4()
@@ -925,6 +946,7 @@ def test_create_todo_task_with_confirmed_plan_passes(monkeypatch):
     resp = client.post(
         f"/agents/{agent_id}/tasks/",
         json={
+            "request_id": "create-confirmed-1",
             "title": "auto research",
             "description": "go",
             "type": "todo",
@@ -937,8 +959,9 @@ def test_create_todo_task_with_confirmed_plan_passes(monkeypatch):
     assert resp.status_code == 201
     assert db.committed is True
     assert gate.calls[0]["confirmed_plan_id"] == plan_id
-    assert enqueued["agent_id"] == agent_id
-    assert enqueued["prompt"] == "go"
+    assert staged["task"].agent_id == agent_id
+    assert staged["task"].description == "go"
+    assert staged["request_id"] == "create-confirmed-1"
 
 
 def test_trigger_task_without_plan_returns_409(monkeypatch):
@@ -946,7 +969,7 @@ def test_trigger_task_without_plan_returns_409(monkeypatch):
 
     task = SimpleNamespace(id=uuid4(), agent_id=uuid4())
     # check_agent_access returns a non-expired agent; then the task lookup.
-    db = _QueuedDB([_ScalarResult(task)])
+    db = _QueuedDB([_ScalarResult(task), _ScalarResult(None)])
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
@@ -961,7 +984,10 @@ def test_trigger_task_without_plan_returns_409(monkeypatch):
     monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute)
 
     client = TestClient(app)
-    resp = client.post(f"/agents/{task.agent_id}/tasks/{task.id}/trigger")
+    resp = client.post(
+        f"/agents/{task.agent_id}/tasks/{task.id}/trigger",
+        json={"request_id": "trigger-no-plan-1"},
+    )
 
     assert resp.status_code == 409
     assert resp.json()["detail"]["status"] == "requires_confirmation"
@@ -970,7 +996,91 @@ def test_trigger_task_without_plan_returns_409(monkeypatch):
 
 
 def test_trigger_task_with_confirmed_plan_enqueues_runtime_task(monkeypatch):
-    import asyncio
+    import app.api.tasks as mod
+
+    task = SimpleNamespace(id=uuid4(), agent_id=uuid4(), description="go")
+    db = _QueuedDB([_ScalarResult(task), _ScalarResult(None)])
+    app, _user, allow_access = _make_client(mod, db=db)
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
+    gate = _StubGate(_allow_decision())
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
+
+    staged = {}
+
+    async def fake_stage(**kwargs):
+        staged.update(kwargs)
+        return SimpleNamespace(id=uuid4())
+
+    async def fake_execute(_task_id, _agent_id):  # pragma: no cover - must not run
+        raise AssertionError("trigger_task must enqueue RuntimeTask instead of spawning execute_task")
+
+    async def fake_notify(**_kwargs):
+        return None
+
+    monkeypatch.setattr(mod, "stage_business_task_runtime", fake_stage)
+    monkeypatch.setattr(mod, "notify_runtime_task_worker", fake_notify)
+    monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute)
+
+    client = TestClient(app)
+    plan_id = str(uuid4())
+    resp = client.post(
+        f"/agents/{task.agent_id}/tasks/{task.id}/trigger",
+        json={
+            "request_id": "trigger-confirmed-1",
+            "confirmed_plan_id": plan_id,
+            "confirmed_plan_version": 1,
+            "confirmed_plan_hash": "sha256:abc",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert staged["task"] is task
+    assert staged["request_id"] == "trigger-confirmed-1"
+    assert gate.calls[0]["confirmed_plan_id"] == plan_id
+
+
+def test_create_task_recovers_concurrent_same_request(monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+
+    import app.api.tasks as mod
+
+    db = _QueuedDB()
+    app, _user, allow_access = _make_client(mod, db=db)
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    monkeypatch.setattr(mod, "_enrich_task_out", _fake_enrich_task_out)
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: _StubGate(_allow_decision()))
+    load_calls = 0
+
+    async def fake_load(*_args, **_kwargs):
+        nonlocal load_calls
+        load_calls += 1
+        return None if load_calls == 1 else db.added[0]
+
+    async def duplicate_stage(**_kwargs):
+        raise IntegrityError("INSERT tasks", {}, RuntimeError("duplicate request"))
+
+    monkeypatch.setattr(mod, "_load_matching_task_request", fake_load)
+    monkeypatch.setattr(mod, "stage_business_task_runtime", duplicate_stage)
+
+    response = TestClient(app).post(
+        f"/agents/{uuid4()}/tasks/",
+        json={
+            "request_id": "concurrent-create-1",
+            "title": "one logical task",
+            "confirmed_plan_id": str(uuid4()),
+            "confirmed_plan_version": 1,
+            "confirmed_plan_hash": "sha256:plan",
+        },
+    )
+
+    assert response.status_code == 201
+    assert db.rollbacks == 1
+    assert load_calls == 2
+
+
+def test_trigger_task_recovers_concurrent_same_request(monkeypatch):
+    from sqlalchemy.exc import IntegrityError
 
     import app.api.tasks as mod
 
@@ -979,42 +1089,64 @@ def test_trigger_task_with_confirmed_plan_enqueues_runtime_task(monkeypatch):
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
-    gate = _StubGate(_allow_decision())
-    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: _StubGate(_allow_decision()))
+    winning_runtime = SimpleNamespace(id=uuid4())
+    load_calls = 0
 
-    enqueued = {}
+    async def fake_load(*_args, **_kwargs):
+        nonlocal load_calls
+        load_calls += 1
+        return None if load_calls == 1 else winning_runtime
 
-    async def fake_enqueue(**kwargs):
-        enqueued.update(kwargs)
+    async def duplicate_stage(**_kwargs):
+        raise IntegrityError("INSERT runtime_tasks", {}, RuntimeError("duplicate request"))
 
-    async def fake_execute(_task_id, _agent_id):  # pragma: no cover - must not run
-        raise AssertionError("trigger_task must enqueue RuntimeTask instead of spawning execute_task")
+    monkeypatch.setattr(mod, "_load_matching_runtime_request", fake_load)
+    monkeypatch.setattr(mod, "stage_business_task_runtime", duplicate_stage)
 
-    created = []
-
-    def fake_create_task(coro):
-        created.append(coro)
-        coro.close()
-        return SimpleNamespace()
-
-    monkeypatch.setattr(mod, "_enqueue_business_task_execution", fake_enqueue)
-    monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute)
-    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
-
-    client = TestClient(app)
-    plan_id = str(uuid4())
-    resp = client.post(
+    response = TestClient(app).post(
         f"/agents/{task.agent_id}/tasks/{task.id}/trigger",
         json={
-            "confirmed_plan_id": plan_id,
+            "request_id": "concurrent-trigger-1",
+            "confirmed_plan_id": str(uuid4()),
             "confirmed_plan_version": 1,
-            "confirmed_plan_hash": "sha256:abc",
+            "confirmed_plan_hash": "sha256:plan",
         },
     )
 
-    assert resp.status_code == 200
-    assert created == []
-    assert enqueued["agent_id"] == task.agent_id
-    assert enqueued["task_id"] == task.id
-    assert enqueued["prompt"] == "go"
-    assert gate.calls[0]["confirmed_plan_id"] == plan_id
+    assert response.status_code == 200
+    assert response.json()["runtime_task_id"] == winning_runtime.id.hex
+    assert db.rollbacks == 1
+    assert load_calls == 2
+
+
+def test_trigger_task_rejects_a_different_request_while_task_is_active(monkeypatch):
+    from app.services.business_task_runtime import BusinessTaskInvariantError
+
+    import app.api.tasks as mod
+
+    task = SimpleNamespace(id=uuid4(), agent_id=uuid4(), description="go")
+    db = _QueuedDB([_ScalarResult(task), _ScalarResult(None)])
+    app, _user, allow_access = _make_client(mod, db=db)
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: _StubGate(_allow_decision()))
+
+    async def active_stage(**_kwargs):
+        raise BusinessTaskInvariantError("business task already has an active run")
+
+    monkeypatch.setattr(mod, "stage_business_task_runtime", active_stage)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        f"/agents/{task.agent_id}/tasks/{task.id}/trigger",
+        json={
+            "request_id": "different-trigger-request",
+            "confirmed_plan_id": str(uuid4()),
+            "confirmed_plan_version": 1,
+            "confirmed_plan_hash": "sha256:plan",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "active run" in response.json()["detail"]
+    assert db.rollbacks == 1

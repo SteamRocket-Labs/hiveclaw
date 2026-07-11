@@ -2,7 +2,6 @@
 
 import json
 import uuid
-from datetime import datetime, timezone
 
 from loguru import logger
 from sqlalchemy import select
@@ -25,6 +24,7 @@ from app.services.plan_authorization_lease import (
     verify_consumed_plan_authorization_lease,
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.services.business_task_runtime import TaskExecutionOutcome, TaskExecutionStatus
 
 
 TASK_EXECUTION_ADDENDUM = """<role>
@@ -303,7 +303,12 @@ async def _task_plan_gate_allows(
     return True, "confirmed_plan_lease_verified"
 
 
-async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
+async def execute_task(
+    task_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    *,
+    requester_user_id: uuid.UUID | None = None,
+) -> TaskExecutionOutcome:
     """Execute a task using the agent's configured LLM with full context.
 
     Uses the same context as chat dialog: build_agent_context for system prompt,
@@ -318,14 +323,30 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     # agents/llm_models (RLS-policied) and the whole flow must pin one tenant. Resolve
     # the owning tenant once via an audited bypass read, then pin every session below.
     tenant_id = await resolve_tenant_for_agent(agent_id)
+    if tenant_id is None:
+        return TaskExecutionOutcome(
+            status=TaskExecutionStatus.FAILED,
+            summary="Task execution has no tenant authority.",
+            error_code="tenant_missing",
+        )
 
     # Step 1: Mark as doing
     async with tenant_scoped_session(tenant_id) as db:
-        result = await db.execute(select(Task).where(Task.id == task_id))
+        result = await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))
         task = result.scalar_one_or_none()
         if not task:
             logger.warning(f"[TaskExec] Task {task_id} not found")
-            return
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.FAILED,
+                summary="Business task was not found for this Agent.",
+                error_code="task_not_found",
+            )
+        task_requester_id = requester_user_id or getattr(task, "created_by", None)
+        if task_requester_id is None and isinstance(getattr(task, "plan_authorization", None), dict):
+            try:
+                task_requester_id = uuid.UUID(str(task.plan_authorization.get("requester_user_id")))
+            except (TypeError, ValueError):
+                task_requester_id = None
 
         plan_allowed, plan_reason = await _task_plan_gate_allows(
             db,
@@ -346,9 +367,15 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
             )
             await db.commit()
             logger.info("[TaskExec] Plan Mode blocked task {} for agent {}: {}", task_id, agent_id, plan_reason)
-            return
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.BLOCKED,
+                summary=f"Plan Mode blocked task execution: {plan_reason or 'plan_required'}.",
+                error_code=plan_reason or "plan_required",
+                retryable=True,
+            )
 
         task.status = "doing"
+        task.last_execution_status = "running"
         db.add(TaskLog(tenant_id=tenant_id, task_id=task_id, content="🤖 开始执行任务..."))
         await db.commit()
         task_title = task.title
@@ -367,7 +394,11 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         agent = agent_result.scalar_one_or_none()
         if not agent:
             await _log_error(task_id, "数字员工未找到", tenant_id=tenant_id)
-            return
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.FAILED,
+                summary="Digital employee was not found.",
+                error_code="agent_not_found",
+            )
         lifecycle_reason = get_agent_lifecycle_block_reason(agent)
         if lifecycle_reason:
             await _log_error(
@@ -375,12 +406,22 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
                 f"数字员工当前不可执行：{lifecycle_reason}",
                 tenant_id=tenant_id,
             )
-            return
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.BLOCKED,
+                summary=f"Digital employee cannot execute: {lifecycle_reason}.",
+                error_code="agent_lifecycle_blocked",
+                retryable=True,
+            )
 
         model_id = agent.primary_model_id or agent.fallback_model_id
         if not model_id:
             await _log_error(task_id, f"{agent.name} 未配置 LLM 模型，无法执行任务", tenant_id=tenant_id)
-            return
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.BLOCKED,
+                summary=f"{agent.name} has no configured LLM model.",
+                error_code="model_not_configured",
+                retryable=True,
+            )
 
         model_result = await db.execute(
             select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == agent.tenant_id)
@@ -395,10 +436,16 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
             fallback_model = fb_result.scalar_one_or_none()
         if not model:
             await _log_error(task_id, "配置的模型不存在", tenant_id=tenant_id)
-            return
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.BLOCKED,
+                summary="The configured LLM model no longer exists.",
+                error_code="model_not_found",
+                retryable=True,
+            )
 
         agent_name = agent.name
-        creator_id = agent.creator_id
+        if task_requester_id is None:
+            task_requester_id = agent.creator_id
         participant_result = await db.execute(
             select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
         )
@@ -408,7 +455,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         reflection_session = ChatSession(
             agent_id=agent_id,
             tenant_id=tenant_id,
-            user_id=creator_id,
+            user_id=task_requester_id,
             participant_id=agent_participant_id,
             source_channel="task",
             session_kind="user_task",
@@ -432,7 +479,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
             actor_type="user",
             role="user",
             content=user_prompt,
-            actor_id=creator_id,
+            actor_id=task_requester_id,
             tenant_id=tenant_id,
             participant_id=agent_participant_id,
             metadata={"title": task_title},
@@ -496,7 +543,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
                 agent_name=agent_name,
                 role_description=agent.role_description or "",
                 agent_id=agent_id,
-                user_id=creator_id,
+                user_id=task_requester_id,
                 execution_identity=ExecutionIdentityRef(
                     identity_type="agent_bot",
                     identity_id=agent_id,
@@ -517,46 +564,65 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
                 max_tool_rounds=getattr(agent, "max_tool_rounds", None),
             )
         )
-        reply = result.content
+        reply = str(result.content or "").strip()
+        if not reply:
+            await _log_error(task_id, "模型返回空内容，任务未完成", tenant_id=tenant_id)
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.FAILED,
+                summary="The model returned empty content; no delivery was produced.",
+                error_code="empty_model_content",
+                retryable=True,
+                reflection_session_id=str(reflection_session_id),
+            )
         logger.info(f"[TaskExec] Runtime reply: {reply[:80]}")
     except Exception as e:
         error_msg = str(e) or repr(e)
         logger.error(f"[TaskExec] Error: {error_msg}")
         await _log_error(task_id, f"执行出错: {error_msg[:150]}", tenant_id=tenant_id)
-        return
+        return TaskExecutionOutcome(
+            status=TaskExecutionStatus.FAILED,
+            summary=f"Task execution failed: {error_msg[:500]}",
+            error_code=type(e).__name__,
+            retryable=True,
+            reflection_session_id=str(reflection_session_id),
+        )
 
     # Step 5: Save result and update status
     async with tenant_scoped_session(tenant_id) as db:
-        result = await db.execute(select(Task).where(Task.id == task_id))
+        result = await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))
         task = result.scalar_one_or_none()
-        if task:
-            await _append_task_session_event(
-                db=db,
-                agent_id=agent_id,
-                session_id=reflection_session_id,
-                task_id=task_id,
-                task_type=task_type,
-                event_type="assistant_message",
-                actor_type="assistant",
-                role="assistant",
-                content=reply,
-                actor_id=agent_id,
-                tenant_id=tenant_id,
-                participant_id=agent_participant_id,
-                metadata={"title": task_title},
+        if task is None:
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.NEEDS_RECONCILIATION,
+                summary="Task disappeared after the agent produced a result.",
+                result=reply,
+                error_code="task_missing_after_invocation",
+                reflection_session_id=str(reflection_session_id),
             )
-            task.status = "done"
-            task.completed_at = datetime.now(timezone.utc)
-            db.add(TaskLog(tenant_id=tenant_id, task_id=task_id, content=f"✅ 任务完成\n\n{reply}"))
-            await db.commit()
-            _seal_task_t0_segment(
-                agent_id=agent_id,
-                session_id=reflection_session_id,
-                task_id=task_id,
-                task_type=task_type,
-                tenant_id=tenant_id,
-            )
-            logger.info(f"[TaskExec] Task {task_id} completed!")
+        await _append_task_session_event(
+            db=db,
+            agent_id=agent_id,
+            session_id=reflection_session_id,
+            task_id=task_id,
+            task_type=task_type,
+            event_type="assistant_message",
+            actor_type="assistant",
+            role="assistant",
+            content=reply,
+            actor_id=agent_id,
+            tenant_id=tenant_id,
+            participant_id=agent_participant_id,
+            metadata={"title": task_title},
+        )
+        await db.commit()
+        _seal_task_t0_segment(
+            agent_id=agent_id,
+            session_id=reflection_session_id,
+            task_id=task_id,
+            task_type=task_type,
+            tenant_id=tenant_id,
+        )
+        logger.info(f"[TaskExec] Task {task_id} produced a terminal outcome")
 
     # Log activity
     from app.services.activity_logger import log_activity
@@ -567,6 +633,12 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         f"任务执行: {task_title[:60]}",
         detail={"task_id": str(task_id), "task_type": task_type, "title": task_title, "reply": reply[:500]},
         related_id=task_id,
+    )
+    return TaskExecutionOutcome(
+        status=TaskExecutionStatus.SUCCEEDED,
+        summary=f"Business task {task_title} completed.",
+        result=reply,
+        reflection_session_id=str(reflection_session_id),
     )
 
 

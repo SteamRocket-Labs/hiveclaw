@@ -17,6 +17,7 @@ from sqlalchemy import select
 from app.database import tenant_scoped_session
 from app.models.task import Task
 from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.services.business_task_runtime import business_task_request_key
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,19 @@ async def _manage_tasks(
     # tenant so SELECT/UPDATE/DELETE survive the non-owner role and stamp
     # tenant_id on new tasks — a NULL would be globally visible.
     tenant_id = await resolve_tenant_for_agent(agent_id)
+    if tenant_id is None:
+        raise RuntimeError("Agent tenant authority is required for task management")
     async with tenant_scoped_session(tenant_id) as db:
         if action == "create":
             task_type = args.get("task_type", "todo")
+            request_id = str(args.get("request_id") or f"internal:{uuid.uuid4()}")
+            request_hash = business_task_request_key(
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                requester_user_id=user_id,
+                action="manual_crud_create",
+                payload=dict(args),
+            )
             task = Task(
                 agent_id=agent_id,
                 tenant_id=tenant_id,
@@ -50,6 +61,8 @@ async def _manage_tasks(
                 priority=args.get("priority", "medium"),
                 created_by=user_id,
                 status="pending",
+                request_id=request_id,
+                request_hash=request_hash,
                 plan_id=uuid.UUID(str(args["confirmed_plan_id"])) if args.get("confirmed_plan_id") else None,
                 plan_version=args.get("confirmed_plan_version"),
                 plan_hash=args.get("confirmed_plan_hash"),
@@ -66,6 +79,8 @@ async def _manage_tasks(
             task = result.scalars().first()
             if not task:
                 return f"No task found matching '{title}'"
+            if task.active_runtime_task_id is not None:
+                return "Cannot update: linked execution task is read-only"
             old = task.status
             task.status = args["status"]
             if args["status"] == "done":
@@ -81,6 +96,8 @@ async def _manage_tasks(
             task = result.scalars().first()
             if not task:
                 return f"No task found matching '{title}'"
+            if task.active_runtime_task_id is not None:
+                return "Cannot delete: linked execution task is read-only"
             task_title = task.title
             await db.execute(sa_delete(TaskLog).where(TaskLog.task_id == task.id))
             await db.delete(task)

@@ -191,6 +191,7 @@ class AgentStatusOut(BaseModel):
 
 
 class TaskCreate(BaseModel):
+    request_id: str = Field(min_length=8, max_length=128)
     title: str = Field(min_length=1, max_length=500)
     description: str | None = None
     type: str = "todo"  # todo
@@ -213,6 +214,13 @@ class TaskOut(BaseModel):
     priority: str
     assignee: str
     created_by: uuid.UUID
+    request_id: str
+    request_hash: str
+    active_runtime_task_id: uuid.UUID | None = None
+    execution_attempt: int = 0
+    last_execution_status: str | None = None
+    last_error: str | None = None
+    last_result: str | None = None
     creator_username: str | None = None
     due_date: datetime | None = None
     plan_id: uuid.UUID | None = None
@@ -230,9 +238,10 @@ class TaskOut(BaseModel):
 class TaskUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
-    status: str | None = None
     priority: str | None = None
     due_date: datetime | None = None
+
+    model_config = {"extra": "forbid"}
 
 
 class TaskLogCreate(BaseModel):

@@ -143,38 +143,45 @@ def test_worker_dispatches_claimed_trigger_to_runtime_task_executor(monkeypatch)
 @pytest.mark.asyncio
 async def test_execute_claimed_business_task_marks_failed_on_executor_error(monkeypatch):
     import app.services.runtime_task_worker as worker
+    from app.services.business_task_runtime import TaskExecutionStatus
 
     runtime_task_id = uuid4()
     business_task_id = uuid4()
     agent_id = uuid4()
-    updates = []
+    requester_id = uuid4()
+    finalized = []
 
-    async def fake_get_runtime_task_record(task_id):
-        assert task_id == runtime_task_id.hex
-        return {
-            "metadata": {"business_task_id": str(business_task_id)},
-            "parent_agent_id": str(agent_id),
-        }
+    async def fake_mark_started(*, runtime_task_id):
+        assert runtime_task_id == expected_runtime_task_id
+        return business_task_id, agent_id, requester_id
 
-    async def fake_update_runtime_task_record(task_id, **kwargs):
-        updates.append((task_id, kwargs))
+    async def fake_finalize(*, runtime_task_id, outcome):
+        finalized.append((runtime_task_id, outcome))
         return True
 
-    async def fake_execute_task(_business_task_id, _agent_id):
+    async def fake_execute_task(_business_task_id, _agent_id, *, requester_user_id):
+        assert requester_user_id == requester_id
         raise RuntimeError("executor exploded")
 
-    monkeypatch.setattr("app.services.runtime_task_service.get_runtime_task_record", fake_get_runtime_task_record)
-    monkeypatch.setattr("app.services.runtime_task_service.update_runtime_task_record", fake_update_runtime_task_record)
+    expected_runtime_task_id = runtime_task_id
+    monkeypatch.setattr(
+        "app.services.business_task_runtime.mark_business_task_execution_started",
+        fake_mark_started,
+    )
+    monkeypatch.setattr(
+        "app.services.business_task_runtime.finalize_business_task_execution",
+        fake_finalize,
+    )
     monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute_task)
 
     await worker._execute_claimed_business_task(runtime_task_id)
 
-    assert any(
-        task_id == runtime_task_id.hex
-        and payload.get("status") == "failed"
-        and "executor exploded" in payload.get("result_summary", "")
-        for task_id, payload in updates
-    )
+    assert len(finalized) == 1
+    finalized_task_id, outcome = finalized[0]
+    assert finalized_task_id == runtime_task_id
+    assert outcome.status is TaskExecutionStatus.FAILED
+    assert outcome.retryable is True
+    assert "executor exploded" in outcome.summary
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -14,6 +14,13 @@ class Task(Base):
     """Task assigned to or managed by a digital employee."""
 
     __tablename__ = "tasks"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "agent_id", "request_id", name="uq_tasks_tenant_agent_request_id"),
+        CheckConstraint(
+            "status IN ('pending','doing','done','blocked','failed','cancelled','needs_reconciliation')",
+            name="ck_tasks_status",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
@@ -25,11 +32,7 @@ class Task(Base):
         default="todo",
         nullable=False,
     )
-    status: Mapped[str] = mapped_column(
-        Enum("pending", "doing", "done", name="task_status_enum"),
-        default="pending",
-        nullable=False,
-    )
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     priority: Mapped[str] = mapped_column(
         Enum("low", "medium", "high", "urgent", name="task_priority_enum"),
         default="medium",
@@ -37,6 +40,15 @@ class Task(Base):
     )
     assignee: Mapped[str] = mapped_column(String(50), default="self")  # "self" or user_id
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    active_runtime_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("runtime_tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    execution_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_execution_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_result: Mapped[str | None] = mapped_column(Text, nullable=True)
     due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Plan Mode provenance for autonomous task execution backstop.

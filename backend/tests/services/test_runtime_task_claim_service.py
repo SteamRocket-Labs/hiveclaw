@@ -16,6 +16,14 @@ class _ScalarListResult:
         return SimpleNamespace(all=lambda: self._values)
 
 
+class _ScalarOneResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
 class _FakeDB:
     def __init__(self, tasks):
         self.tasks = tasks
@@ -32,6 +40,18 @@ class _FakeDB:
 
     async def rollback(self):
         self.rollbacks += 1
+
+
+class _BusinessTaskDB(_FakeDB):
+    def __init__(self, runtime_tasks, business_task):
+        super().__init__(runtime_tasks)
+        self.business_task = business_task
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        if len(self.statements) == 1:
+            return _ScalarListResult(self.tasks)
+        return _ScalarOneResult(self.business_task)
 
 
 def test_runtime_task_claim_statement_uses_skip_locked_and_queue_order():
@@ -101,3 +121,73 @@ async def test_claim_available_marks_tasks_running_with_lease():
     assert task.metadata_json["claim_fence"] == f"{task.id.hex}:1"
     assert db.commits == 1
     assert db.rollbacks == 0
+
+
+@pytest.mark.asyncio
+async def test_business_task_claim_updates_both_state_projections_in_one_commit():
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+
+    task_id = uuid4()
+    runtime_task = RuntimeTask(
+        id=uuid4(),
+        task_type="business_task",
+        status="pending",
+        parent_agent_id=uuid4(),
+        tenant_id=uuid4(),
+        metadata_json={"business_task_id": str(task_id), "phase": "queued"},
+        attempt_count=0,
+    )
+    business_task = SimpleNamespace(
+        id=task_id,
+        agent_id=runtime_task.parent_agent_id,
+        tenant_id=runtime_task.tenant_id,
+        active_runtime_task_id=runtime_task.id,
+        status="pending",
+        last_execution_status="queued",
+        completed_at=None,
+    )
+    db = _BusinessTaskDB([runtime_task], business_task)
+
+    claimed = await RuntimeTaskClaimService(
+        db=db,
+        worker_id="worker-a",
+        task_types=("business_task",),
+        lease_seconds=60,
+    ).claim_available(batch_size=1)
+
+    assert claimed == [runtime_task]
+    assert runtime_task.status == "running"
+    assert business_task.status == "doing"
+    assert business_task.last_execution_status == "running"
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_business_task_claim_quarantines_an_invalid_projection_link():
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+
+    runtime_task = RuntimeTask(
+        id=uuid4(),
+        task_type="business_task",
+        status="pending",
+        parent_agent_id=uuid4(),
+        tenant_id=uuid4(),
+        metadata_json={"business_task_id": str(uuid4()), "phase": "queued"},
+        attempt_count=0,
+    )
+    db = _BusinessTaskDB([runtime_task], None)
+
+    claimed = await RuntimeTaskClaimService(
+        db=db,
+        worker_id="worker-a",
+        task_types=("business_task",),
+        lease_seconds=60,
+    ).claim_available(batch_size=1)
+
+    assert claimed == []
+    assert runtime_task.status == "needs_reconciliation"
+    assert runtime_task.metadata_json["phase"] == "terminal"
+    assert "link" in runtime_task.result_summary
+    assert db.commits == 1

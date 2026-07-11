@@ -6,19 +6,31 @@ import { get, post, patch } from '../core';
 import type { Task } from '../../types';
 
 export interface TaskCreateParams {
+  request_id: string;
   title: string;
   description?: string;
   type?: 'todo';
   priority?: 'low' | 'medium' | 'high' | 'urgent';
   assignee?: string;
   due_date?: string;
+  confirmed_plan_id?: string;
+  confirmed_plan_version?: number;
+  confirmed_plan_hash?: string;
+  confirmed_plan_session_id?: string;
 }
 
 export interface TaskUpdateParams {
   title?: string;
   description?: string;
-  status?: 'pending' | 'doing' | 'done';
   priority?: 'low' | 'medium' | 'high' | 'urgent';
+}
+
+export interface TaskTriggerParams {
+  request_id: string;
+  confirmed_plan_id?: string;
+  confirmed_plan_version?: number;
+  confirmed_plan_hash?: string;
+  confirmed_plan_session_id?: string;
 }
 
 export interface TaskLog {
@@ -34,5 +46,9 @@ export const taskApi = {
   update: (agentId: string, taskId: string, data: TaskUpdateParams) =>
     patch<Task>(`/agents/${agentId}/tasks/${taskId}`, data),
   getLogs: (agentId: string, taskId: string) => get<TaskLog[]>(`/agents/${agentId}/tasks/${taskId}/logs`),
-  trigger: (agentId: string, taskId: string) => post<void>(`/agents/${agentId}/tasks/${taskId}/trigger`),
+  trigger: (agentId: string, taskId: string, data: TaskTriggerParams) =>
+    post<{ status: 'triggered'; task_id: string; runtime_task_id: string }>(
+      `/agents/${agentId}/tasks/${taskId}/trigger`,
+      data,
+    ),
 };

@@ -78,7 +78,13 @@ async def test_backfill_task_logs_chains_after_tasks(owner_sessionmaker):
         tid = await _mk_tenant(db)
         uid = await _mk_user(db, tid)
         aid = await _mk_agent(db, creator_id=uid, tenant_id=tid)
-        task = Task(agent_id=aid, title="T", created_by=uid)
+        task = Task(
+            agent_id=aid,
+            title="T",
+            created_by=uid,
+            request_id=f"tenant-backfill:{uuid.uuid4()}",
+            request_hash="0" * 64,
+        )
         db.add(task)
         await db.flush()
         log = TaskLog(task_id=task.id, content="c")

@@ -60,10 +60,17 @@ export interface Task {
     title: string;
     description?: string;
     type: 'todo';
-    status: 'pending' | 'doing' | 'done' | 'paused';
+    status: 'pending' | 'doing' | 'done' | 'blocked' | 'failed' | 'cancelled' | 'needs_reconciliation';
     priority: 'low' | 'medium' | 'high' | 'urgent';
     assignee: string;
     created_by: string;
+    request_id: string;
+    request_hash: string;
+    active_runtime_task_id?: string;
+    execution_attempt: number;
+    last_execution_status?: string;
+    last_error?: string;
+    last_result?: string;
     creator_username?: string;
     due_date?: string;
     remind_schedule?: string;

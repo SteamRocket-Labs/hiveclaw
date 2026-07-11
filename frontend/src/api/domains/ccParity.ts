@@ -177,6 +177,8 @@ export interface MessageAgentTeamMemberInput {
 
 export interface SessionWorkbench {
   schema: string;
+  audience?: 'user' | 'operator';
+  operator_details_available?: boolean;
   agent_id: string;
   session: Record<string, unknown>;
   active_turn?: {

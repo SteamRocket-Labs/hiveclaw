@@ -12,7 +12,7 @@ vi.mock('react-i18next', () => ({
 
 import type { ThreadItem, ThreadItemType } from '../../api/domains/threadItems.generated';
 import { ThreadItemInspector } from './ThreadItemInspector';
-import { ThreadItemRenderer } from './ThreadItemRenderer';
+import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from './ThreadItemRenderer';
 
 const DATA_BY_TYPE: Record<ThreadItemType, Record<string, unknown>> = {
   user_message: {},
@@ -64,6 +64,15 @@ function item(itemType: ThreadItemType): ThreadItem {
     metadata: {},
     evidence_refs: [{ kind: 'transcript_event', id: `item-${itemType}` }],
     item_data: DATA_BY_TYPE[itemType],
+    audience: 'operator',
+    user_summary: `${itemType} summary`,
+    user_action: null,
+    operator_details: {
+      item_data: DATA_BY_TYPE[itemType],
+      metadata: {},
+      evidence_refs: [{ kind: 'transcript_event', id: `item-${itemType}` }],
+      links: {},
+    },
   } as ThreadItem;
 }
 
@@ -79,18 +88,19 @@ describe('ThreadItemRenderer', () => {
     }
   });
 
-  it('shows the approval subject, arguments, risk, expiry, and action slot', () => {
+  it('shows the approval subject, safe impact, expiry, and action slot without raw governance data', () => {
     const approval = item('approval_request');
     const markup = renderToStaticMarkup(
       <ThreadItemRenderer item={approval} approvalActions={<button type="button">Allow once</button>} />,
     );
 
     expect(markup).toContain('write_file');
-    expect(markup).toContain('report.md');
-    expect(markup).toContain('controlled_write');
     expect(markup).toContain('2026-07-10T12:30:00Z');
     expect(markup).toContain('Allow once');
     expect(markup).toContain('waiting_user');
+    expect(markup).not.toContain('report.md');
+    expect(markup).not.toContain('controlled_write');
+    expect(markup).not.toContain('permission-7');
   });
 
   it('exposes selected evidence identifiers and typed detail in the inspector', () => {
@@ -104,5 +114,59 @@ describe('ThreadItemRenderer', () => {
     expect(markup).toContain('transcript_event');
     expect(markup).toContain('aria-label=');
     expect(markup).not.toContain('<details open=""');
+  });
+
+  it('renders only user summary/action and never offers the technical inspector on user projection', () => {
+    const approval = {
+      ...item('approval_request'),
+      audience: 'user',
+      user_summary: '需要你的确认：Write final report',
+      user_action: {
+        kind: 'resolve_approval',
+        token: 'permission-7',
+        label: '确认后继续',
+        impact: '可撤销或只读操作',
+        details: [{ label: 'path', value: 'reports/final.md' }],
+      },
+      operator_details: null,
+    } as ThreadItem;
+    const markup = renderToStaticMarkup(
+      <ThreadItemRenderer item={approval} onSelect={() => undefined} approvalActions={<button>Allow once</button>} />,
+    );
+
+    expect(markup).toContain('需要你的确认：Write final report');
+    expect(markup).toContain('reports/final.md');
+    expect(markup).toContain('可撤销或只读操作');
+    expect(markup).toContain('Allow once');
+    expect(markup).not.toContain('permission-7');
+    expect(markup).not.toContain('controlled_write');
+    expect(markup).not.toContain('data-testid="thread-item-technical-details"');
+  });
+
+  it('does not render an inspector payload for a user projection', () => {
+    const userItem = { ...item('error'), audience: 'user', operator_details: null } as ThreadItem;
+    const markup = renderToStaticMarkup(<ThreadItemInspector item={userItem} />);
+
+    expect(markup).toContain('Technical details are available only in Operator View.');
+    expect(markup).not.toContain('provider_timeout');
+    expect(markup).not.toContain('item-error');
+  });
+
+  it('keeps runtime mechanics in the status surface while preserving user actions in conversation', () => {
+    const userItem = (itemType: ThreadItemType) => ({
+      ...item(itemType),
+      audience: 'user',
+      operator_details: null,
+    } as ThreadItem);
+
+    expect(shouldRenderThreadItemInConversation(userItem('tool_call'), false)).toBe(false);
+    expect(shouldRenderThreadItemInConversation(userItem('workflow_activity'), false)).toBe(false);
+    expect(shouldRenderThreadItemInConversation(userItem('context_compaction'), false)).toBe(false);
+    expect(shouldRenderThreadItemInConversation(userItem('event'), false)).toBe(false);
+    expect(shouldRenderThreadItemInConversation(userItem('artifact'), false)).toBe(false);
+    expect(shouldRenderThreadItemInConversation(userItem('approval_request'), false)).toBe(true);
+    expect(shouldRenderThreadItemInConversation(userItem('error'), false)).toBe(true);
+    expect(shouldRenderThreadItemInConversation(userItem('plan'), false)).toBe(true);
+    expect(shouldRenderThreadItemInConversation(item('event'), true)).toBe(true);
   });
 });

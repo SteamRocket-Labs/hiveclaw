@@ -140,6 +140,77 @@ class _ListResult:
         return self._values
 
 
+@pytest.mark.asyncio
+async def test_session_owner_cannot_self_elevate_to_operator_projection_with_query_params(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    owner_id = uuid4()
+    session = SimpleNamespace(id=uuid4(), user_id=owner_id)
+    agent = SimpleNamespace(id=uuid4())
+    current_user = SimpleNamespace(id=owner_id)
+    audited = []
+
+    async def fake_audit(*args, **kwargs):
+        audited.append((args, kwargs))
+
+    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+
+    authority_source = await chat_sessions_api._authorize_loaded_session(
+        session=session,
+        agent=agent,
+        access_level="use",
+        current_user=current_user,
+        action="read_transcript",
+        operator_view=True,
+        operator_reason="Trying to reveal technical details",
+    )
+
+    assert authority_source == "session_owner"
+    assert audited == []
+
+
+@pytest.mark.asyncio
+async def test_manager_operator_projection_requires_reason_and_writes_audit(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    owner_id = uuid4()
+    manager_id = uuid4()
+    session = SimpleNamespace(id=uuid4(), user_id=owner_id)
+    agent = SimpleNamespace(id=uuid4())
+    current_user = SimpleNamespace(id=manager_id)
+    audited = []
+
+    async def fake_audit(*args, **kwargs):
+        audited.append((args, kwargs))
+
+    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+
+    with pytest.raises(HTTPException) as exc:
+        await chat_sessions_api._authorize_loaded_session(
+            session=session,
+            agent=agent,
+            access_level="manage",
+            current_user=current_user,
+            action="read_transcript",
+            operator_view=True,
+        )
+    assert exc.value.status_code == 403
+
+    authority_source = await chat_sessions_api._authorize_loaded_session(
+        session=session,
+        agent=agent,
+        access_level="manage",
+        current_user=current_user,
+        action="read_transcript",
+        operator_view=True,
+        operator_reason="Investigating a delivery incident",
+    )
+
+    assert authority_source == "manager_override"
+    assert audited[0][1]["details"]["authority_source"] == "manager_override"
+    assert audited[0][1]["details"]["reason"] == "Investigating a delivery incident"
+
+
 class _QueryAwareDB:
     def __init__(
         self,
@@ -1010,32 +1081,17 @@ async def test_get_session_transcript_returns_replayable_events(monkeypatch):
         db=db,
     )
 
-    assert result == [
-        {
-            "schema": "hive.thread_item.v1",
-            "schema_version": 1,
-            "id": str(event.id),
-            "sequence": 42,
-            "thread_id": str(session_id),
-            "session_id": str(session_id),
-            "run_id": str(run_id),
-            "message_id": str(message_id),
-            "item_type": "agent_message",
-            "item_status": "succeeded",
-            "actor_type": "assistant",
-            "event_type": "assistant_message",
-            "type": "assistant_message",
-            "role": "assistant",
-            "visibility_scope": "direct_user",
-            "listed_surface": "chat",
-            "content": "final answer",
-            "parts": [{"type": "text", "text": "final answer"}],
-            "metadata": {"source": "web", "role": "assistant"},
-            "created_at": "2026-06-20T12:00:00+00:00",
-            "evidence_refs": [],
-            "item_data": {},
-        }
-    ]
+    assert len(result) == 1
+    assert result[0]["schema"] == "hive.thread_item.v1"
+    assert result[0]["id"] == str(event.id)
+    assert result[0]["sequence"] == 42
+    assert result[0]["item_type"] == "agent_message"
+    assert result[0]["audience"] == "user"
+    assert result[0]["user_summary"] == "final answer"
+    assert result[0]["content"] == "final answer"
+    assert result[0]["metadata"] == {"status": "succeeded"}
+    assert result[0]["evidence_refs"] == []
+    assert "operator_details" not in result[0]
     assert db.commits == 1
 
 

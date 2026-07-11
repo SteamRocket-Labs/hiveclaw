@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**23 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**24 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04、用户体验 UX-01 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -107,7 +107,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | GOV-02 | 企业知识库“语义缺失、产品已上线” | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-03 | Workflow promotion 需要 manager 又要求原会话 owner | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-04 | Budget 状态通知声称有 outbox，实际不存在 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| UX-01 | 普通用户直接看到运行时/治理原始字段 | P1 | 局部闭环 | ✓ | △ | ✓ | ✓ | ✓ | ✗ | △ |
+| UX-01 | 普通用户直接看到运行时/治理原始字段 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-02 | WebSocket 20 次后永久放弃且无恢复入口 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
 | UX-03 | 当前 UI 无新鲜像素基线与 CI gate | P1 | 断点 | △ | ✓ | ✓ | △ | ✗ | △ | ✗ |
 | UX-04 | 核心运行时/前端巨型模块维持多责任 | P1 | 局部闭环 | ✓ | △ | △ | △ | ✗ | △ | △ |
@@ -391,6 +391,8 @@ RLS 基础设施本身不是本轮主断点：`backend/app/database.py` 已有 t
 普通用户当前不是固定三栏：`frontend/src/pages/agent-detail/AgentChatSection.tsx:4069-4072,4188-4205` 只有 admin manage 模式才出现左侧 All Users；普通 session 是中央对话 + 右侧 Workspace。右侧已经按用户目标调整：Deliverables 在上、Run status 在下，可折叠、可拖拽（`2292-2408`）。这部分方向正确。
 
 ### UX-01：普通用户仍直接消费 operator/debug 数据 — P1
+
+**修复状态（2026-07-11）**：**闭环**。ThreadItem现在在同一机械事实之上生成`user_summary/user_action`与`operator_details/evidence_refs`双投影。Session owner即使手工追加`operator_view=true`也只能获得用户投影；只有真实`manage`权威、显式Operator View和非空审计理由共同成立时，API才返回operator投影并写`session_authority_override`。普通聊天不再渲染tool/hook/workflow/subagent/compaction/artifact等运行机械卡片；它们继续进入右侧Run status与Deliverables消费者。对话只保留approval、error、plan及未来显式user action。用户可见状态统一映射为Ready/Working/Waiting/Completed/Needs attention等语义标签，未知枚举fail-closed为Working；raw reasoning、未知runtime content、provider error、arguments、risk、hash、span和内部ID不再进入普通渲染。Operator Inspector只从`operator_details`读取完整typed data、runtime links和evidence。
 
 `frontend/src/pages/session-workbench/ThreadItemRenderer.tsx:53-149` 默认列出 tool_call_id、permission_request_id、risk class、arguments、approver id、plan hash、runtime task/session ids、compaction counters、provider error code。`151-228` 只折叠 tool/result/workflow/subagent/reasoning，approval/error/plan/artifact/boundary/event 详情默认展开；组件没有 audience/role policy 参数。
 
@@ -2195,3 +2197,89 @@ npm run build
 ```
 
 结果：`102 test files / 593 tests passed`；TypeScript + Vite production build exit 0，`7073 modules transformed`。
+
+### UX-01 — User / Operator 双投影与会话信息分层
+
+状态：**闭环**。提交主题：`fix(UX-01): separate user and operator runtime projections`。
+
+七原子证据：
+
+1. **输入**：Transcript replay、WebSocket live event、Workbench与JSON export全部显式选择`user`或`operator` audience；legacy event先归一化为同一typed ThreadItem。普通对话只消费`user_summary/user_action`，不再自行解释任意metadata。
+2. **权威**：audience由服务端`_authorize_loaded_session()`的真实authority decision派生，不信任query参数。Session owner的`operator_view=true`不能自提权；manager必须同时提供显式Operator View与审计理由，成功后写`session_authority_override`。Frontend只有active session已标记operator且响应本身为operator时才开放Inspector。
+3. **执行**：`build_thread_item()`与`project_session_workbench_for_audience()`是两个既有读模型的唯一投影边界；durable transcript、runtime task、span和provider ledger不被改写。普通conversation只渲染approval/error/plan或明确user action，其余运行事件由右侧Run status/Deliverables消费；Operator View保留完整事件流。
+4. **证据**：operator projection把原始`item_data/metadata/evidence_refs/runtime links`集中到`operator_details`；user projection保留稳定item/sequence及动作token，但清除arguments、risk、plan hash、provider error、span和raw evidence。live broker在发送前再次删除operator-only顶层字段，避免兼容payload旁漏。
+5. **恢复**：持久事实与sequence不变，断线后仍按transcript窗口重放；user/operator projection可从同一事件确定性重建。legacy reducer保留内部状态机所需字段，但用户摘要对reasoning与未知event fail-closed，且普通conversation visibility policy不会渲染运行机械卡片。
+6. **消费**：普通用户看到“发生了什么、是否需要操作、交付物在哪里”；approval继续通过`user_action`与既有resolve bridge执行。右侧runtime状态使用固定语义标签，未知raw state不再直出。管理员只有在显式Operator Inspector中消费ID、hash、typed data和evidence。
+7. **验收**：覆盖用户参数/secret/provider error净化、operator evidence保留、live broker、Workbench/Export双投影、owner自提权拒绝、manager reason+audit、transcript replay、legacy reasoning/未知event fail-closed、conversation信息策略、所有ThreadItem variant、runtime status映射、Ruff、前后端全量与production build。
+
+KISS/奥卡姆证据：没有复制transcript或创建第二运行状态机；同一durable fact只在读边界生成两种投影。删除普通Renderer中逐variant罗列的raw字段，Inspector不再回读顶层兼容字段。用户conversation visibility是一个小型allow policy，运行事实继续由现有右侧runtime模型消费。
+
+RED证据：
+
+```text
+首次backend投影契约：2 failed
+- build_thread_item不接受audience，user/operator投影不存在
+
+首次frontend契约：3 failed
+- 普通Renderer仍展示raw治理字段并开放Inspector
+- runtime state缺用户语义映射
+
+Workbench投影契约首次收集失败：
+- ImportError: project_session_workbench_for_audience不存在
+
+authority接线回归：1 failed
+- Workbench仍引用未定义authority_source，证明返回值语义尚未完整传播
+
+对抗审查补充契约：backend 2 failed；frontend 2 failed
+- raw thinking与未知provider/runtime文本仍可进入用户摘要
+
+第一次frontend全量：7 failed
+- 5项证明legacy内部状态不可被净化层误删，改为“内部保留、普通呈现隐藏”
+- 2项为旧测试仍要求raw status文案，更新为语义状态契约
+```
+
+GREEN证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_thread_items.py \
+  tests/services/test_session_control_plane.py \
+  tests/services/test_session_graph_projection.py \
+  tests/kernel/test_turn_state_acceptance.py \
+  tests/api/test_chat_sessions_permissions.py \
+  tests/api/test_chat_sessions_transcript_window.py \
+  tests/api/test_cc_codex_parity_api.py -q
+```
+
+结果：相关面`119 passed, 4 warnings in 2.67s`。
+
+```bash
+cd frontend
+npm test -- --run \
+  src/pages/session-workbench/ThreadItemRenderer.test.tsx \
+  src/pages/session-workbench/threadItemReducer.test.ts \
+  src/pages/agent-detail/chatRuntime.test.ts \
+  src/pages/session-workbench/SessionExperiencePolicy.test.tsx \
+  src/pages/agent-detail/AgentDetailSections.test.tsx
+```
+
+结果：最终相关面`5 test files / 188 tests passed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <UX-01当前变更Python文件>
+pytest tests -q
+```
+
+结果：Ruff `All checks passed!`；最终backend全量`6448 passed, 1 skipped, 5 warnings in 157.72s`，零失败。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`102 test files / 599 tests passed`；TypeScript + Vite production build exit 0，`7073 modules transformed`。

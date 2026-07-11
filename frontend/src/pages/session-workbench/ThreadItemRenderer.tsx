@@ -37,11 +37,6 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled ThreadItem renderer variant: ${String(value)}`);
 }
 
-function json(value: unknown): React.ReactNode {
-  if (!value || (typeof value === 'object' && Object.keys(value as object).length === 0)) return null;
-  return <pre className="thread-item-json">{JSON.stringify(value, null, 2)}</pre>;
-}
-
 function statusIcon(status: ThreadItemStatus): React.ReactNode {
   if (status === 'running') return <IconLoader2 className="thread-item-spinner" size={14} aria-hidden="true" />;
   if (status === 'waiting_user') return <IconClock size={14} aria-hidden="true" />;
@@ -51,6 +46,19 @@ function statusIcon(status: ThreadItemStatus): React.ReactNode {
 }
 
 function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => string): Detail[] {
+  const userAction = item.user_action;
+  if (userAction) {
+    const safeActionDetails = (userAction.details || []).flatMap((detail) => {
+      const label = typeof detail.label === 'string' ? detail.label : '';
+      const value = typeof detail.value === 'string' ? detail.value : '';
+      return label && value ? [{ label, value }] : [];
+    });
+    return [
+      { label: 'impact', value: userAction.impact },
+      { label: 'expires', value: userAction.expires_at },
+      ...safeActionDetails,
+    ];
+  }
   switch (item.item_type) {
     case 'user_message':
     case 'agent_message':
@@ -59,70 +67,33 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
         { label: 'file', value: item.item_data.file_name },
       ];
     case 'reasoning':
-      return [{ label: 'signature', value: item.item_data.signature }];
+      return [];
     case 'tool_call':
-      return [
-        { label: 'tool', value: item.item_data.tool_name },
-        { label: 'call', value: item.item_data.tool_call_id },
-        { label: 'risk', value: item.item_data.risk_class },
-        { label: 'arguments', value: json(item.item_data.arguments) },
-      ];
+      return [{ label: 'tool', value: item.item_data.tool_name }];
     case 'tool_result':
       return [
         { label: 'tool', value: item.item_data.tool_name },
-        { label: 'call', value: item.item_data.tool_call_id },
         { label: 'result', value: item.item_data.success ? t('sessionWorkbench.threadItem.value.success', 'success') : t('sessionWorkbench.threadItem.value.failure', 'failure') },
       ];
     case 'approval_request':
       return [
-        { label: 'request', value: item.item_data.permission_request_id },
-        { label: 'tool', value: item.item_data.tool_name },
-        { label: 'permission', value: item.item_data.permission_mode },
-        { label: 'risk', value: item.item_data.risk_class },
+        { label: 'tool', value: item.item_data.tool_display_name || item.item_data.tool_name },
         { label: 'expires', value: item.item_data.expires_at },
-        { label: 'scope', value: item.item_data.allow_session_allowed ? t('sessionWorkbench.threadItem.value.sessionAllowed', 'session allowed') : t('sessionWorkbench.threadItem.value.oneAction', 'one action') },
         { label: 'impact', value: item.item_data.destructive ? t('sessionWorkbench.threadItem.value.destructive', 'destructive') : t('sessionWorkbench.threadItem.value.reversible', 'reversible or read-only') },
-        { label: 'arguments', value: json(item.item_data.arguments) },
       ];
     case 'approval_decision':
-      return [
-        { label: 'request', value: item.item_data.permission_request_id },
-        { label: 'action', value: item.item_data.action },
-        { label: 'reason', value: item.item_data.decision_reason },
-        { label: 'approver', value: item.item_data.approver_id },
-      ];
+      return [{ label: 'action', value: item.item_data.action }];
     case 'plan':
-      return [
-        { label: 'plan', value: item.item_data.plan_id },
-        { label: 'version', value: item.item_data.plan_version },
-        { label: 'hash', value: item.item_data.plan_hash },
-        { label: 'phase', value: item.item_data.phase },
-      ];
+      return [{ label: 'phase', value: item.item_data.phase }];
     case 'workflow_activity':
-      return [
-        { label: 'workflow', value: item.item_data.workflow_run_id },
-        { label: 'step', value: item.item_data.workflow_step_id },
-        { label: 'task', value: item.item_data.runtime_task_id },
-        { label: 'label', value: item.item_data.label },
-      ];
+      return [{ label: 'label', value: item.item_data.label }];
     case 'subagent_activity':
-      return [
-        { label: 'agent', value: item.item_data.target_agent_name },
-        { label: 'task', value: item.item_data.runtime_task_id },
-        { label: 'child session', value: item.item_data.child_session_id },
-        { label: 'parent session', value: item.item_data.parent_session_id },
-      ];
+      return [{ label: 'agent', value: item.item_data.target_agent_name }];
     case 'context_compaction':
-      return [
-        { label: 'original messages', value: item.item_data.original_message_count },
-        { label: 'kept messages', value: item.item_data.kept_message_count },
-        { label: 'continuity', value: item.item_data.continuity_sections_injected?.join(', ') },
-      ];
+      return [];
     case 'artifact':
       return [
-        { label: 'artifact', value: item.item_data.artifact_id },
         { label: 'path', value: item.item_data.path },
-        { label: 'revision', value: item.item_data.revision_id },
         { label: 'action', value: item.item_data.action },
       ];
     case 'boundary':
@@ -132,17 +103,10 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
       ];
     case 'error':
       return [
-        { label: 'code', value: item.item_data.code },
-        { label: 'reason', value: item.item_data.reason },
         { label: 'retry', value: item.item_data.retryable ? t('sessionWorkbench.threadItem.value.retryable', 'retryable') : t('sessionWorkbench.threadItem.value.notRetryable', 'not retryable') },
-        { label: 'retry reason', value: item.item_data.retry_reason },
       ];
     case 'event':
-      return [
-        { label: 'event', value: item.item_data.event_type },
-        { label: 'task', value: item.item_data.runtime_task_id },
-        { label: 'reason', value: item.item_data.reason },
-      ];
+      return [];
     default:
       return assertNever(item);
   }
@@ -160,6 +124,14 @@ export interface ThreadItemRendererProps {
   actions?: React.ReactNode;
 }
 
+const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request', 'error', 'plan']);
+
+export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorView: boolean): boolean {
+  if (operatorView && item.audience === 'operator') return true;
+  if (USER_CONVERSATION_ITEM_TYPES.has(item.item_type)) return true;
+  return Boolean(item.user_action && item.user_action.kind !== 'open_artifact');
+}
+
 export function ThreadItemRenderer({
   item,
   selected = false,
@@ -171,13 +143,13 @@ export function ThreadItemRenderer({
   const details = detailsFor(item, t).filter((detail) => detail.value !== null && detail.value !== undefined && detail.value !== '');
   const title = t(`sessionWorkbench.threadItem.type.${item.item_type}`, TITLES[item.item_type]);
   const status = t(`sessionWorkbench.threadItem.status.${item.item_status}`, item.item_status);
-  const visibleContent = item.item_type === 'approval_request'
+  const visibleContent = item.user_summary || (item.item_type === 'approval_request'
     ? t(
         'sessionWorkbench.threadItem.permissionNeeded',
         'The agent needs permission to use {{tool}}.',
         { tool: item.item_data.tool_display_name || item.item_data.tool_name || t('sessionWorkbench.threadItem.thisTool', 'this tool') },
       )
-    : item.content;
+    : item.content);
   const detailBody = details.length > 0 && (
     <dl className="thread-item-details">
       {details.map((detail) => (
@@ -203,7 +175,7 @@ export function ThreadItemRenderer({
         <strong>{title}</strong>
         <span className="thread-item-status-text">{status}</span>
         <span className="thread-item-sequence">#{item.sequence}</span>
-        {onSelect ? (
+        {onSelect && item.audience === 'operator' && item.operator_details ? (
           <button
             type="button"
             data-testid="thread-item-technical-details"

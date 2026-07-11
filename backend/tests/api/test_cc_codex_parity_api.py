@@ -439,9 +439,17 @@ async def test_chat_sessions_api_exposes_unified_workbench_and_json_export(monke
 
     async def fake_get_run_session_and_agent(**kwargs):
         captured.append(("access", kwargs))
-        return session, agent, "manage"
+        return session, agent, "session_owner"
 
-    async def fake_build_session_workbench(db_arg, *, agent, session, timeline_limit=50, include=None):
+    async def fake_build_session_workbench(
+        db_arg,
+        *,
+        agent,
+        session,
+        timeline_limit=50,
+        include=None,
+        audience="operator",
+    ):
         captured.append(
             (
                 "workbench",
@@ -450,7 +458,8 @@ async def test_chat_sessions_api_exposes_unified_workbench_and_json_export(monke
                     "agent": agent,
                     "session": session,
                     "timeline_limit": timeline_limit,
-                    "include": include,
+                        "include": include,
+                        "audience": audience,
                 },
             )
         )
@@ -461,8 +470,8 @@ async def test_chat_sessions_api_exposes_unified_workbench_and_json_export(monke
             "controls": {"can_export_json": True},
         }
 
-    async def fake_build_session_json_export(db_arg, *, agent, session):
-        captured.append(("export", {"db": db_arg, "agent": agent, "session": session}))
+    async def fake_build_session_json_export(db_arg, *, agent, session, audience="operator"):
+        captured.append(("export", {"db": db_arg, "agent": agent, "session": session, "audience": audience}))
         return {
             "schema": "hive.ccplus.session_export.v1",
             "session": {"id": str(session.id), "title": session.title},
@@ -491,6 +500,8 @@ async def test_chat_sessions_api_exposes_unified_workbench_and_json_export(monke
     assert exported["schema"] == "hive.ccplus.session_export.v1"
     assert exported["transcript"]["events"][0]["sequence"] == 1
     assert [item[0] for item in captured] == ["access", "workbench", "access", "export"]
+    assert captured[1][1]["audience"] == "user"
+    assert captured[3][1]["audience"] == "user"
 
 
 @pytest.mark.asyncio

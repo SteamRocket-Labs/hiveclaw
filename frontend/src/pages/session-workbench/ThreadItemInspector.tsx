@@ -25,6 +25,18 @@ export function ThreadItemInspector({ item, onClose }: { item: ThreadItem | null
       </aside>
     );
   }
+  if (item.audience !== 'operator' || !item.operator_details) {
+    return (
+      <aside className="thread-item-inspector is-empty" data-testid="thread-item-inspector" aria-label={t('sessionWorkbench.threadItem.inspector', 'Thread item inspector')}>
+        <IconBraces size={18} aria-hidden="true" />
+        <p>{t('sessionWorkbench.threadItem.operatorOnly', 'Technical details are available only in Operator View.')}</p>
+      </aside>
+    );
+  }
+  const details = item.operator_details;
+  const links = details.links || {};
+  const link = (key: string) => typeof links[key] === 'string' ? String(links[key]) : null;
+  const evidenceRefs = details.evidence_refs || [];
 
   return (
     <aside className="thread-item-inspector" data-testid="thread-item-inspector" aria-label={t('sessionWorkbench.threadItem.inspector', 'Thread item inspector')}>
@@ -41,29 +53,29 @@ export function ThreadItemInspector({ item, onClose }: { item: ThreadItem | null
       </header>
       <dl className="thread-item-inspector-rows">
         <InspectorRow label="schema" value={item.schema} />
-        <InspectorRow label="id" value={item.id} />
+        <InspectorRow label="id" value={link('id')} />
         <InspectorRow label="status" value={item.item_status} />
         <InspectorRow label="sequence" value={item.sequence} />
-        <InspectorRow label="thread" value={item.thread_id} />
-        <InspectorRow label="turn" value={item.turn_id} />
-        <InspectorRow label="run" value={item.run_id} />
-        <InspectorRow label="causation" value={item.causation_id} />
-        <InspectorRow label="correlation" value={item.correlation_id} />
+        <InspectorRow label="thread" value={link('session_id')} />
+        <InspectorRow label="turn" value={link('turn_id')} />
+        <InspectorRow label="run" value={link('run_id')} />
+        <InspectorRow label="causation" value={link('causation_id')} />
+        <InspectorRow label="correlation" value={link('correlation_id')} />
         <InspectorRow label="visibility" value={item.visibility_scope} />
       </dl>
-      {item.evidence_refs && item.evidence_refs.length > 0 && (
+      {evidenceRefs.length > 0 && (
         <details className="thread-item-inspector-json">
           <summary>{t('sessionWorkbench.threadItem.evidenceRefs', 'Evidence references')}</summary>
-          <pre>{JSON.stringify(item.evidence_refs, null, 2)}</pre>
+          <pre>{JSON.stringify(evidenceRefs, null, 2)}</pre>
         </details>
       )}
       <details className="thread-item-inspector-json">
         <summary>{t('sessionWorkbench.threadItem.typedData', 'Typed data')}</summary>
-        <pre>{JSON.stringify(item.item_data, null, 2)}</pre>
+        <pre>{JSON.stringify(details.item_data, null, 2)}</pre>
       </details>
       <details className="thread-item-inspector-json">
         <summary>{t('sessionWorkbench.threadItem.evidenceMetadata', 'Evidence metadata')}</summary>
-        <pre>{JSON.stringify(item.metadata || {}, null, 2)}</pre>
+        <pre>{JSON.stringify(details.metadata, null, 2)}</pre>
       </details>
     </aside>
   );

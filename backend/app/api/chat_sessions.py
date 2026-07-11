@@ -1253,16 +1253,12 @@ def _compact_transcript_metadata(metadata: Any, truncations: list[dict[str, Any]
     return compact
 
 
-def _serialize_transcript_event(event: ChatTranscriptEvent) -> dict:
+def _serialize_transcript_event(event: ChatTranscriptEvent, *, audience: str = "operator") -> dict:
     from app.services.thread_items import build_thread_item
 
     truncations: list[dict[str, Any]] = []
     content = event.content or ""
-    projected_content = (
-        _project_interactive_tool_card_content(event, content)
-        if len(content) > _TRANSCRIPT_CONTENT_CHAR_LIMIT
-        else None
-    )
+    projected_content = _project_interactive_tool_card_content(event, content)
     if projected_content is not None:
         content = projected_content
         truncations.append(
@@ -1295,6 +1291,11 @@ def _serialize_transcript_event(event: ChatTranscriptEvent) -> dict:
         parts=parts,
         metadata=metadata,
         role=_transcript_role_for_event(event),
+        audience="operator" if audience == "operator" else "user",
+        preserve_user_content=(
+            projected_content is not None
+            or str(getattr(event, "event_type", "")) in {"user_message", "assistant_message"}
+        ),
     )
 
 
@@ -1314,7 +1315,7 @@ async def _get_run_session_and_agent(
         raise HTTPException(status_code=404, detail="Session not found")
 
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    await _authorize_loaded_session(
+    authority_source = await _authorize_loaded_session(
         session=session,
         agent=agent,
         access_level=access_level,
@@ -1323,7 +1324,7 @@ async def _get_run_session_and_agent(
         operator_view=operator_view,
         operator_reason=operator_reason,
     )
-    return session, agent, access_level
+    return session, agent, authority_source
 
 
 async def _authorize_loaded_session(
@@ -1336,8 +1337,6 @@ async def _authorize_loaded_session(
     operator_view: bool = False,
     operator_reason: str | None = None,
 ) -> str:
-    if str(session.user_id) == str(current_user.id):
-        return "session_owner"
     reason = operator_reason if isinstance(operator_reason, str) else None
     reason = str(reason or "").strip()
     if access_level == "manage" and operator_view is True and reason:
@@ -1356,6 +1355,8 @@ async def _authorize_loaded_session(
             user_id=current_user.id,
         )
         return "manager_override"
+    if str(session.user_id) == str(current_user.id):
+        return "session_owner"
     raise HTTPException(status_code=403, detail="This session belongs to a different user")
 
 
@@ -1585,7 +1586,7 @@ async def update_session_permission_profile(
     db: AsyncSession = Depends(get_db),
 ):
     """Update the current CCPlus session permission mode immediately."""
-    session, _agent, _access_level = await _get_run_session_and_agent(
+    session, _agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -1672,7 +1673,7 @@ async def record_feedback_for_session(
     db: AsyncSession = Depends(get_db),
 ):
     """Record owner/user Useful or Misleading feedback for one session."""
-    session, agent, _access_level = await _get_run_session_and_agent(
+    session, agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -1703,7 +1704,7 @@ async def get_session_activation_feedback_sidecar(
     db: AsyncSession = Depends(get_db),
 ):
     """Read the activation-feedback audit sidecar for session debugging."""
-    session, agent, _access_level = await _get_run_session_and_agent(
+    session, agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -1780,7 +1781,7 @@ async def start_session_run(
     db: AsyncSession = Depends(get_db),
 ):
     """Start a durable in-process web chat run for a session."""
-    session, agent, _access_level = await _get_run_session_and_agent(
+    session, agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -1813,7 +1814,7 @@ async def branch_session(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a non-destructive conversation branch from a transcript event."""
-    source_session, agent, _access_level = await _get_run_session_and_agent(
+    source_session, agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -1930,7 +1931,7 @@ async def get_session_lineage(
     db: AsyncSession = Depends(get_db),
 ):
     """Return the branch family for the selected session."""
-    session, _agent, _access_level = await _get_run_session_and_agent(
+    session, _agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -1996,7 +1997,7 @@ async def get_session_context_usage(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    session, _agent, _access_level = await _get_run_session_and_agent(
+    session, _agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -2019,7 +2020,7 @@ async def get_session_workbench(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    session, agent, _access_level = await _get_run_session_and_agent(
+    session, agent, authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -2029,12 +2030,14 @@ async def get_session_workbench(
         operator_reason=operator_reason,
     )
     include_sections = {part.strip() for part in include.split(",") if part.strip()}
+    audience = "operator" if authority_source == "manager_override" else "user"
     payload = await build_session_workbench(
         db,
         agent=agent,
         session=session,
         timeline_limit=timeline_limit,
         include=include_sections,
+        audience=audience,
     )
     await db.commit()
     return payload
@@ -2049,7 +2052,7 @@ async def export_session_json(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    session, agent, _access_level = await _get_run_session_and_agent(
+    session, agent, authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -2058,7 +2061,12 @@ async def export_session_json(
         operator_view=operator_view is True,
         operator_reason=operator_reason,
     )
-    payload = await build_session_json_export(db, agent=agent, session=session)
+    payload = await build_session_json_export(
+        db,
+        agent=agent,
+        session=session,
+        audience="operator" if authority_source == "manager_override" else "user",
+    )
     await db.commit()
     return payload
 
@@ -2094,7 +2102,7 @@ async def steer_session_turn(
     db: AsyncSession = Depends(get_db),
 ):
     """Queue an additional user message into the currently active turn."""
-    session, agent, _access_level = await _get_run_session_and_agent(
+    session, agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -2125,7 +2133,7 @@ async def resolve_session_permission(
     db: AsyncSession = Depends(get_db),
 ):
     """Resolve a CCPlus session-local permission request inside the same chat session."""
-    session, agent, _access_level = await _get_run_session_and_agent(
+    session, agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -2462,7 +2470,7 @@ async def read_thread(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Thread-style alias for reading a durable session JSON export."""
-    session, agent, _access_level = await _get_run_session_and_agent(
+    session, agent, authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
@@ -2471,7 +2479,12 @@ async def read_thread(
         operator_view=operator_view is True,
         operator_reason=operator_reason,
     )
-    payload = await build_session_json_export(db, agent=agent, session=session)
+    payload = await build_session_json_export(
+        db,
+        agent=agent,
+        session=session,
+        audience="operator" if authority_source == "manager_override" else "user",
+    )
     await db.commit()
     return payload
 
@@ -2512,7 +2525,7 @@ async def get_session_transcript(
         raise HTTPException(status_code=404, detail="Session not found")
 
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    await _authorize_loaded_session(
+    authority_source = await _authorize_loaded_session(
         session=session,
         agent=agent,
         access_level=access_level,
@@ -2541,7 +2554,8 @@ async def get_session_transcript(
             .limit(limit)
         )
         rows = list(events_result.scalars().all())
-    payload = [_serialize_transcript_event(event) for event in rows]
+    audience = "operator" if authority_source == "manager_override" else "user"
+    payload = [_serialize_transcript_event(event, audience=audience) for event in rows]
     await db.commit()
     return payload
 

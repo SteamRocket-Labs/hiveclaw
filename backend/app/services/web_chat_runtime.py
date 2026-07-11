@@ -1563,6 +1563,28 @@ async def broadcast_web_chat_event(
             session_id=session_id,
         )
     )
+    # The broker is a direct-user surface. Operational handles needed by the
+    # reducer live in the typed user_action/item_data projection; raw governance
+    # inputs and provider evidence stay on the transcript/operator surface.
+    for operator_only_key in (
+        "arguments",
+        "args",
+        "permission_request",
+        "risk_class",
+        "permission_mode",
+        "decision_reason",
+        "approver_id",
+        "plan_hash",
+        "input_hash",
+        "policy_snapshot",
+        "execution_envelope",
+        "provider_error_code",
+        "error_code",
+        "evidence_refs",
+        "typed_data",
+        "raw",
+    ):
+        event_payload.pop(operator_only_key, None)
     await web_chat_broker.send_session_message(str(agent_id), str(session_id) if session_id else None, event_payload)
     if run_id:
         try:

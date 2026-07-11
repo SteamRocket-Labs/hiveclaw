@@ -103,6 +103,23 @@ describe('typed ThreadItem reducer', () => {
     expect(item?.item_type).toBe('event');
   });
 
+  it.each([
+    ['thinking', 'reasoning'],
+    ['future_provider_event', 'event'],
+  ])('fails closed when a legacy %s payload contains raw runtime text', (eventType, itemType) => {
+    const rawInternalContent = 'provider request secret: sk-runtime-must-not-leak';
+    const item = normalizeThreadItemPayload({
+      id: `legacy-${eventType}`,
+      type: eventType,
+      role: itemType === 'reasoning' ? 'assistant' : 'system',
+      content: rawInternalContent,
+      provider_error: rawInternalContent,
+    });
+
+    expect(item?.item_type).toBe(itemType);
+    expect(item?.user_summary).not.toContain(rawInternalContent);
+  });
+
   it('keeps legacy status normalization aligned with the backend backfill', () => {
     const cases = [
       ['denial', 'failed'],

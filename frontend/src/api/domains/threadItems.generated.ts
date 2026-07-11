@@ -31,6 +31,10 @@ export interface ThreadItemBase {
   created_at?: string | null;
   completed_at?: string | null;
   evidence_refs?: Array<Record<string, unknown>>;
+  audience: "user" | "operator";
+  user_summary: string;
+  user_action?: UserAction | null;
+  operator_details?: OperatorDetails | null;
 }
 
 export interface ApprovalDecisionItemData {
@@ -93,6 +97,13 @@ export interface MessageItemData {
   file_name?: string | null;
 }
 
+export interface OperatorDetails {
+  item_data?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  evidence_refs?: Array<Record<string, unknown>>;
+  links?: Record<string, unknown>;
+}
+
 export interface PlanItemData {
   plan_id?: string | null;
   plan_version?: number | null;
@@ -123,6 +134,15 @@ export interface ToolResultItemData {
   tool_name?: string | null;
   tool_call_id?: string | null;
   success: boolean;
+}
+
+export interface UserAction {
+  kind: string;
+  token?: string | null;
+  label: string;
+  expires_at?: string | null;
+  impact?: string | null;
+  details?: Array<Record<string, unknown>>;
 }
 
 export interface WorkflowItemData {

@@ -67,7 +67,11 @@ def _setup(monkeypatch):
         return agent, "use"
 
     monkeypatch.setattr(api, "check_agent_access", fake_check_agent_access)
-    monkeypatch.setattr(api, "_serialize_transcript_event", lambda event: {"sequence": event.sequence})
+    monkeypatch.setattr(
+        api,
+        "_serialize_transcript_event",
+        lambda event, **_kwargs: {"sequence": event.sequence},
+    )
     return api, agent, session, user
 
 

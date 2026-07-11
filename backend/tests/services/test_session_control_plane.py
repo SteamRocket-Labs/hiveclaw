@@ -103,6 +103,84 @@ def test_provider_call_ledger_payload_extracts_latest_tokens_and_cache_metrics()
     assert payload["latest"]["tool_count"] == 147
 
 
+def test_user_workbench_projection_removes_operator_only_ledgers_and_raw_task_evidence():
+    from app.services.session_control_plane import project_session_workbench_for_audience
+
+    payload = {
+        "schema": "hive.ccplus.session_workbench.v1",
+        "agent_id": "agent-1",
+        "session": {"id": "session-1", "title": "Report"},
+        "timeline": {
+            "schema": "hive.ccplus.session_timeline.v1",
+            "truth_source": "chat_transcript_events",
+            "events": [
+                {
+                    "id": "event-1",
+                    "sequence": 1,
+                    "event_type": "tool_call",
+                    "content": '{"arguments":{"api_token":"secret"}}',
+                    "metadata": {"tool_call_id": "call-1", "arguments": {"api_token": "secret"}},
+                }
+            ],
+        },
+        "tool_calls": [{"tool_call_id": "call-1"}],
+        "hooks": [{"span_id": "span-1"}],
+        "provider_call_ledger": {"provider": "openai", "request_id": "request-1"},
+        "prompt_manifest": {"system_prompt_hash": "hash-1"},
+        "codex_optimization_ledger": {"compactions": 2},
+        "agent_cycle_decision_matrix": {"raw": True},
+        "runtime_reminder_candidates": [{"raw": True}],
+        "runtime_tasks": [
+            {
+                "id": "task-1",
+                "task_type": "subagent",
+                "status": "running",
+                "result_summary": "Researching",
+                "trace_id": "trace-1",
+                "token_usage": {"input": 100},
+                "metadata": {"provider_request_id": "request-1", "api_token": "secret"},
+            }
+        ],
+        "controls": {},
+        "goals": [],
+        "teams": [],
+        "runtime_sections": {},
+        "turn": {"truth_source": "chat_transcript_events", "event_count": 1},
+    }
+
+    user = project_session_workbench_for_audience(payload, audience="user")
+    encoded = str(user)
+
+    assert user["audience"] == "user"
+    assert user["operator_details_available"] is True
+    assert "tool_calls" not in user
+    assert "hooks" not in user
+    assert "provider_call_ledger" not in user
+    assert "prompt_manifest" not in user
+    assert "codex_optimization_ledger" not in user
+    assert user["runtime_tasks"] == [
+        {
+            "id": "task-1",
+            "task_type": "subagent",
+            "status": "running",
+            "user_status": "正在处理",
+            "result_summary": "Researching",
+        }
+    ]
+    assert user["timeline"]["events"][0] == {
+        "id": "event-1",
+        "sequence": 1,
+        "event_type": "tool_call",
+        "user_summary": "Agent 正在执行一个步骤。",
+    }
+    assert "secret" not in encoded
+    assert "request-1" not in encoded
+
+    operator = project_session_workbench_for_audience(payload, audience="operator")
+    assert operator["audience"] == "operator"
+    assert operator["provider_call_ledger"]["request_id"] == "request-1"
+
+
 def test_compaction_payloads_ignore_context_window_decision_events():
     import app.services.session_control_plane as service
 

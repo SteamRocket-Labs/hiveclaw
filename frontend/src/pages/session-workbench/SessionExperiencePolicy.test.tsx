@@ -77,7 +77,7 @@ describe('session experience information policy', () => {
     } satisfies RuntimeSectionItemModel;
 
     expect(runtimeItemDisplayMeta(item)).toBe('Market analyst · Compared the three vendors. · 2m · 1.2K tokens · 3 tools');
-    expect(runtimeItemDisplayStatus(item)).toBe('idle · completed');
+    expect(runtimeItemDisplayStatus(item)).toBe('Ready · Completed');
     expect(runtimeItemDisplayMeta(item)).not.toContain(item.id);
     expect(runtimeItemDisplayMeta(item)).not.toContain(item.childSessionId!);
     expect(runtimeItemDisplayMeta(item)).not.toContain('team_member');
@@ -108,6 +108,6 @@ describe('session experience information policy', () => {
       raw: { close_status: 'failed', close_failure: 'Provider timeout' },
     } satisfies RuntimeSectionItemModel;
 
-    expect(runtimeItemDisplayStatus(item)).toBe('active · close failed');
+    expect(runtimeItemDisplayStatus(item)).toBe('Working · Needs attention');
   });
 });

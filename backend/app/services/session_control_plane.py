@@ -1759,6 +1759,153 @@ WORKBENCH_HEAVY_SECTIONS = frozenset({"timeline", "tool_calls", "hooks", "compac
 WORKBENCH_DEFAULT_TIMELINE_LIMIT = 50
 WORKBENCH_MAX_TIMELINE_LIMIT = 1000
 
+_USER_RUNTIME_STATUS = {
+    "pending": "等待开始",
+    "queued": "等待开始",
+    "running": "正在处理",
+    "resumable": "等待恢复",
+    "waiting_budget_approval": "等待批准",
+    "completed": "已完成",
+    "succeeded": "已完成",
+    "failed": "需要处理",
+    "needs_reconciliation": "等待管理员核对",
+    "killed": "已停止",
+    "cancelled": "已取消",
+}
+_USER_WORKBENCH_KEYS = {
+    "schema",
+    "agent_id",
+    "session",
+    "active_turn",
+    "agent_session",
+    "session_graph",
+    "timeline",
+    "approvals",
+    "branches",
+    "permission_profile",
+    "context_policy",
+    "turn",
+    "controls",
+    "active_run",
+    "runtime_tasks",
+    "completion_wake_policy",
+    "completion_wake_summary",
+    "completion_wakes",
+    "runtime_sections",
+    "goals",
+    "teams",
+    "session_index",
+    "links",
+}
+_OPERATOR_FIELD_MARKERS = (
+    "secret",
+    "password",
+    "credential",
+    "api_key",
+    "provider_",
+    "span_id",
+    "trace_id",
+    "hash",
+    "arguments",
+    "metadata",
+    "prompt",
+    "evidence",
+    "raw",
+)
+
+
+def _sanitize_user_workbench_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_sanitize_user_workbench_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    clean: dict[str, Any] = {}
+    for key, item in value.items():
+        normalized = str(key).lower()
+        if any(marker in normalized for marker in _OPERATOR_FIELD_MARKERS):
+            continue
+        clean[str(key)] = _sanitize_user_workbench_value(item)
+    return clean
+
+
+def _user_timeline_event(event: dict[str, Any]) -> dict[str, Any]:
+    event_type = str(event.get("event_type") or event.get("type") or "event")
+    summary = {
+        "tool_call": "Agent 正在执行一个步骤。",
+        "tool_result": "一个执行步骤已完成。",
+        "permission_request": "Agent 正在等待你的确认。",
+        "approval_request": "Agent 正在等待你的确认。",
+        "workflow_started": "工作流已开始。",
+        "workflow_completed": "工作流已完成。",
+        "workflow_failed": "工作流需要处理。",
+        "run_started": "任务已开始。",
+        "run_completed": "任务已完成。",
+        "run_cancelled": "任务已取消。",
+    }.get(event_type, "运行状态已更新。")
+    return {
+        key: event[key]
+        for key in ("id", "sequence", "event_type", "created_at")
+        if event.get(key) is not None
+    } | {"user_summary": summary}
+
+
+def _user_runtime_task(task: dict[str, Any]) -> dict[str, Any]:
+    status = str(task.get("status") or "").lower()
+    clean = {
+        "id": task.get("id"),
+        "task_type": task.get("task_type"),
+        "status": task.get("status"),
+        "user_status": _USER_RUNTIME_STATUS.get(status, "正在处理"),
+        "result_summary": task.get("result_summary"),
+        "user_blocker": _sanitize_user_workbench_value(task.get("user_blocker")),
+        "safe_to_retry": task.get("safe_to_retry"),
+        "required_user_action": task.get("required_user_action"),
+        "created_at": task.get("created_at"),
+        "started_at": task.get("started_at"),
+        "completed_at": task.get("completed_at"),
+    }
+    return {key: value for key, value in clean.items() if value is not None}
+
+
+def project_session_workbench_for_audience(
+    payload: dict[str, Any],
+    *,
+    audience: str,
+) -> dict[str, Any]:
+    """Split the always-on user surface from explicit Operator View evidence."""
+
+    if audience == "operator":
+        return {**payload, "audience": "operator", "operator_details_available": True}
+    user = {key: payload[key] for key in _USER_WORKBENCH_KEYS if key in payload}
+    user["audience"] = "user"
+    user["operator_details_available"] = True
+    timeline = dict(user.get("timeline") or {})
+    timeline["events"] = [_user_timeline_event(dict(item)) for item in list(timeline.get("events") or [])]
+    user["timeline"] = timeline
+    user["runtime_tasks"] = [_user_runtime_task(dict(item)) for item in list(user.get("runtime_tasks") or [])]
+    for key in (
+        "active_turn",
+        "agent_session",
+        "session_graph",
+        "approvals",
+        "branches",
+        "permission_profile",
+        "context_policy",
+        "turn",
+        "controls",
+        "active_run",
+        "completion_wake_policy",
+        "completion_wake_summary",
+        "completion_wakes",
+        "runtime_sections",
+        "goals",
+        "teams",
+        "session_index",
+    ):
+        if key in user:
+            user[key] = _sanitize_user_workbench_value(user[key])
+    return user
+
 
 async def build_session_workbench(
     db: AsyncSession,
@@ -1767,6 +1914,7 @@ async def build_session_workbench(
     session: ChatSession,
     timeline_limit: int = WORKBENCH_DEFAULT_TIMELINE_LIMIT,
     include: set[str] | frozenset[str] | None = None,
+    audience: str = "operator",
 ) -> dict[str, Any]:
     """Session workbench read model.
 
@@ -1821,7 +1969,7 @@ async def build_session_workbench(
         turn_envelope=turn_envelope,
     )
     prompt_manifest = _prompt_manifest_with_runtime_reminders(prompt_manifest, runtime_reminder_candidates)
-    return {
+    payload = {
         "schema": "hive.ccplus.session_workbench.v1",
         "agent_id": str(agent.id),
         "session": _session_payload(session),
@@ -1878,15 +2026,23 @@ async def build_session_workbench(
             "transcript": f"/api/agents/{agent.id}/sessions/{session.id}/transcript",
         },
     }
+    return project_session_workbench_for_audience(payload, audience=audience)
 
 
-async def build_session_json_export(db: AsyncSession, *, agent: Agent, session: ChatSession) -> dict[str, Any]:
+async def build_session_json_export(
+    db: AsyncSession,
+    *,
+    agent: Agent,
+    session: ChatSession,
+    audience: str = "operator",
+) -> dict[str, Any]:
     workbench = await build_session_workbench(
         db,
         agent=agent,
         session=session,
         timeline_limit=WORKBENCH_MAX_TIMELINE_LIMIT,
         include=WORKBENCH_HEAVY_SECTIONS,
+        audience=audience,
     )
     events, truth_source = await _load_events(db, agent=agent, session=session, limit=10000)
     return {
@@ -1898,6 +2054,11 @@ async def build_session_json_export(db: AsyncSession, *, agent: Agent, session: 
         "transcript": {
             "truth_source": truth_source,
             "event_count": len(events),
-            "events": [_event_payload(event) for event in events],
+            "events": (
+                [_event_payload(event) for event in events]
+                if audience == "operator"
+                else [_user_timeline_event(_event_payload(event)) for event in events]
+            ),
         },
+        "audience": "operator" if audience == "operator" else "user",
     }

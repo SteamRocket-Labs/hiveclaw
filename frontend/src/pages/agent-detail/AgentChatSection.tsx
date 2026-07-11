@@ -30,7 +30,7 @@ import SlashCommandMenu from './SlashCommandMenu';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import { ThreadItemInspector } from '../session-workbench/ThreadItemInspector';
-import { ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
+import { shouldRenderThreadItemInConversation, ThreadItemRenderer } from '../session-workbench/ThreadItemRenderer';
 import { normalizeThreadItemPayload } from '../session-workbench/threadItemReducer';
 import { SessionComposer } from '../session-workbench/SessionComposer';
 import { SessionGoalPanel } from '../session-workbench/SessionGoalPanel';
@@ -1806,7 +1806,9 @@ export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel): string 
       || metadata.last_turn_status
       || metadata.lastTurnStatus,
   ).trim();
-  return outcome && outcome !== status ? `${status} · ${outcome}` : status;
+  const safeStatus = userFacingRuntimeStatus(status);
+  const safeOutcome = outcome ? userFacingRuntimeStatus(outcome) : '';
+  return safeOutcome && safeOutcome !== safeStatus ? `${safeStatus} · ${safeOutcome}` : safeStatus;
 }
 
 export function subagentWorkerRecoveryModel(worker: RuntimeSectionItemModel): {
@@ -1831,6 +1833,38 @@ function runtimeItemDisplayLabel(item: RuntimeSectionItemModel, fallback: string
   const label = stringValue(item.label).trim();
   if (!label || label === item.id || isUuidLike(label)) return fallback;
   return label;
+}
+
+export function userFacingRuntimeStatus(status: unknown): string {
+  const normalized = String(status || '').trim().toLowerCase();
+  const labels: Record<string, string> = {
+    idle: 'Ready',
+    queued: 'Queued',
+    pending: 'Queued',
+    running: 'Working',
+    streaming: 'Working',
+    resuming: 'Resuming',
+    waiting: 'Waiting',
+    waiting_user: 'Waiting for you',
+    awaiting_approval: 'Waiting for approval',
+    waiting_budget_approval: 'Waiting for approval',
+    completed: 'Completed',
+    succeeded: 'Completed',
+    failed: 'Needs attention',
+    killed: 'Stopped',
+    cancelled: 'Cancelled',
+    exhausted: 'Paused',
+    hard_stopped: 'Stopped',
+    needs_reconciliation: 'Needs admin review',
+  };
+  const exact = labels[normalized];
+  if (exact) return exact;
+  if (normalized.includes('approval') || normalized.includes('confirm') || normalized.includes('wait')) return 'Waiting';
+  if (normalized.includes('fail') || normalized.includes('error') || normalized.includes('reconcil')) return 'Needs attention';
+  if (normalized.includes('complete') || normalized.includes('success') || normalized.includes('done')) return 'Completed';
+  if (normalized.includes('cancel') || normalized.includes('stop') || normalized.includes('kill')) return 'Stopped';
+  if (normalized.includes('queue') || normalized.includes('pending')) return 'Queued';
+  return 'Working';
 }
 
 function SessionRuntimePanel({
@@ -1983,7 +2017,7 @@ function SessionRuntimePanel({
           <span className="session-runtime-row-title">{blocker?.title || waiter.label}</span>
           <span className="session-runtime-row-meta">{meta || waiter.summary || waiter.label}</span>
         </span>
-        <span className="session-runtime-status">{waiter.status || 'waiting'}</span>
+        <span className="session-runtime-status">{userFacingRuntimeStatus(waiter.status || 'waiting')}</span>
       </>
     );
     return clickable ? (
@@ -2397,11 +2431,14 @@ function SessionRuntimePanel({
               <span className="session-runtime-summary-dot" aria-hidden="true" />
               <span>
                 <strong>
-                  {t(`sessionWorkbench.rightPanel.runtimeStates.${runtimeConsole.summary.state}`, runtimeConsole.summary.state)}
+                  {t(
+                    `sessionWorkbench.rightPanel.runtimeStates.${runtimeConsole.summary.state}`,
+                    userFacingRuntimeStatus(runtimeConsole.summary.state),
+                  )}
                 </strong>
                 <small>
                   {sessionWindow
-                    ? [sessionWindow.label, sessionWindow.status].filter(Boolean).join(' · ')
+                    ? [sessionWindow.label, userFacingRuntimeStatus(sessionWindow.status)].filter(Boolean).join(' · ')
                     : t('sessionWorkbench.rightPanel.noMainSession', 'No selected session')}
                 </small>
               </span>
@@ -2448,7 +2485,7 @@ function SessionRuntimePanel({
           {renderRuntimeConsoleBody()}
         </div>
       </section>
-      {selectedThreadItem ? (
+      {selectedThreadItem?.audience === 'operator' && selectedThreadItem.operator_details ? (
         <div className="session-technical-drawer" role="dialog" aria-modal="false">
           <ThreadItemInspector item={selectedThreadItem} onClose={onClearSelectedThreadItem} />
         </div>
@@ -2514,7 +2551,7 @@ export function WorkflowRunFocusPanel({
           {step.summary || t('sessionWorkbench.workflowRunWindow.noStepDetails', 'No additional details')}
         </span>
       </span>
-      <span className="session-runtime-status">{step.status || 'unknown'}</span>
+      <span className="session-runtime-status">{userFacingRuntimeStatus(step.status)}</span>
     </div>
   );
   const renderLeaf = (leaf: RuntimeSectionItemModel, index: number) => {
@@ -2529,7 +2566,7 @@ export function WorkflowRunFocusPanel({
             {leaf.summary || t('sessionWorkbench.workflowRunWindow.noLeafDetails', 'No additional details')}
           </span>
         </span>
-        <span className="session-runtime-status">{leaf.status || 'unknown'}</span>
+        <span className="session-runtime-status">{userFacingRuntimeStatus(leaf.status)}</span>
       </>
     );
     return canEnter ? (
@@ -3618,6 +3655,7 @@ function AgentChatSection({
         created_at: msg.timestamp,
       });
       if (!item) return null;
+      if (!shouldRenderThreadItemInConversation(item, Boolean(activeSession?.operator_view))) return null;
       const permissionActions = permissionRequest && msg.eventStatus === 'session_permission_required' ? (
         <SessionPermissionActions
           permissionRequest={permissionRequest}
@@ -3651,14 +3689,14 @@ function AgentChatSection({
           <ThreadItemRenderer
             item={item}
             selected={selectedThreadItemId === item.id}
-            onSelect={selectThreadItem}
+            onSelect={item.audience === 'operator' && activeSession?.operator_view ? selectThreadItem : undefined}
             approvalActions={permissionActions}
             actions={recoveryActions}
           />
         </div>
       );
     },
-    [onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, visibleTimeline],
+    [activeSession?.operator_view, onBranchMessage, onResolveSessionPermission, selectThreadItem, selectedThreadItemId, t, visibleTimeline],
   );
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => (
@@ -4203,7 +4241,7 @@ function AgentChatSection({
                 background: teamMemberWindow.status === 'failed' ? 'rgb(220,38,38)' : 'var(--accent-primary)',
               }}
             />
-            {teamMemberWindow.status}
+            {userFacingRuntimeStatus(teamMemberWindow.status)}
           </span>
         </div>
       </div>

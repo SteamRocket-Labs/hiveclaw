@@ -224,6 +224,27 @@ function legacyItemData(itemType: ThreadItemType, eventType: string, data: Recor
   }
 }
 
+function legacyUserSummary(
+  itemType: ThreadItemType,
+  data: Record<string, unknown>,
+  content: string,
+): string {
+  const toolName = text(data.tool_display_name || data.tool_name || data.name) || 'this tool';
+  if (itemType === 'approval_request') return `The agent needs permission to use ${toolName}.`;
+  if (itemType === 'approval_decision') return 'Your decision was recorded.';
+  if (itemType === 'tool_call') return `Using ${toolName}…`;
+  if (itemType === 'tool_result') return `${toolName} finished.`;
+  if (itemType === 'reasoning') return 'The agent is organizing its reasoning.';
+  if (itemType === 'error') {
+    return data.retryable === true
+      ? 'The connection or service is temporarily unavailable. This turn can be retried safely.'
+      : 'The task stopped because it needs attention.';
+  }
+  if (itemType === 'context_compaction') return 'Conversation context was organized and the task can continue.';
+  if (itemType === 'event') return 'Runtime status updated.';
+  return content;
+}
+
 function assertNever(value: never): never {
   throw new Error(`Unhandled ThreadItem variant: ${String(value)}`);
 }
@@ -244,6 +265,10 @@ export function normalizeThreadItemPayload(value: unknown): ThreadItem | null {
   const sequence = finiteNumber(payload.sequence) || 0;
   const id = text(payload.id || payload.transcript_event_id)
     || `legacy:${text(payload.session_id) || 'session'}:${sequence}:${eventType}`;
+  const visibleContent = text(payload.content || payload.message || payload.summary || eventPart(parts).text) || '';
+  const audience = payload.audience === 'operator' ? 'operator' : 'user';
+  const userSummary = text(payload.user_summary) || legacyUserSummary(itemType, data, visibleContent);
+  const itemStatus = legacyItemStatus(itemType, eventType, data);
 
   return {
     schema: 'hive.thread_item.v1',
@@ -261,19 +286,23 @@ export function normalizeThreadItemPayload(value: unknown): ThreadItem | null {
     causation_id: text(payload.causation_id),
     correlation_id: text(payload.correlation_id || payload.run_id),
     item_type: itemType,
-    item_status: legacyItemStatus(itemType, eventType, data),
+    item_status: itemStatus,
     actor_type: text(payload.actor_type) || (role === 'assistant' ? 'assistant' : 'system'),
     event_type: eventType,
     type: eventType,
     role,
     visibility_scope: text(payload.visibility_scope) || 'direct_user',
     listed_surface: text(payload.listed_surface) || 'chat',
-    content: text(payload.content || payload.message || payload.summary || eventPart(parts).text) || '',
+    content: visibleContent,
     parts,
     metadata: data,
     created_at: text(payload.created_at || payload.timestamp),
     completed_at: text(payload.completed_at),
     evidence_refs: asRecords(payload.evidence_refs || data.evidence_refs),
+    audience,
+    user_summary: userSummary,
+    user_action: isRecord(payload.user_action) ? payload.user_action : null,
+    operator_details: isRecord(payload.operator_details) ? payload.operator_details : null,
     item_data: legacyItemData(itemType, eventType, data),
   } as ThreadItem;
 }

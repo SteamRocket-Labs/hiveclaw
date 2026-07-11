@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 ThreadItemStatus = Literal["running", "waiting_user", "succeeded", "failed", "cancelled"]
+ThreadItemAudience = Literal["user", "operator"]
 
 THREAD_ITEM_TYPES = {
     "user_message",
@@ -206,6 +207,22 @@ class EventItemData(_ThreadModel):
     reason: str | None = None
 
 
+class UserAction(_ThreadModel):
+    kind: str
+    token: str | None = None
+    label: str
+    expires_at: str | None = None
+    impact: str | None = None
+    details: list[dict[str, str]] = Field(default_factory=list)
+
+
+class OperatorDetails(_ThreadModel):
+    item_data: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    links: dict[str, str] = Field(default_factory=dict)
+
+
 class ThreadItemBase(_ThreadModel):
     schema_name: Literal["hive.thread_item.v1"] = Field(
         default="hive.thread_item.v1",
@@ -238,6 +255,10 @@ class ThreadItemBase(_ThreadModel):
     created_at: str | None = None
     completed_at: str | None = None
     evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    audience: ThreadItemAudience = "operator"
+    user_summary: str = ""
+    user_action: UserAction | None = None
+    operator_details: OperatorDetails | None = None
 
 
 class UserMessageThreadItem(ThreadItemBase):
@@ -517,6 +538,261 @@ def _item_data(item_type: str, *, event_type: str, data: dict[str, Any]) -> dict
     }
 
 
+_USER_ARGUMENT_KEYS = {
+    "path",
+    "filename",
+    "file_name",
+    "channel",
+    "recipient",
+    "target",
+    "query",
+    "url",
+    "title",
+}
+_SENSITIVE_ARGUMENT_MARKERS = (
+    "secret",
+    "token",
+    "password",
+    "credential",
+    "authorization",
+    "cookie",
+    "api_key",
+    "private_key",
+)
+
+
+def _display_name(value: Any, fallback: str) -> str:
+    clean = _text(value)
+    if not clean:
+        clean = fallback
+    return clean.replace("_", " ").strip().capitalize()
+
+
+def _safe_argument_details(arguments: Any) -> list[dict[str, str]]:
+    if not isinstance(arguments, dict):
+        return []
+    details: list[dict[str, str]] = []
+    for key, value in arguments.items():
+        normalized = str(key).strip().lower()
+        if normalized not in _USER_ARGUMENT_KEYS or any(marker in normalized for marker in _SENSITIVE_ARGUMENT_MARKERS):
+            continue
+        if not isinstance(value, (str, int, float, bool)) or value in (None, ""):
+            continue
+        text_value = str(value)
+        details.append({"label": normalized, "value": text_value[:240]})
+    return details[:6]
+
+
+def _user_summary(
+    *,
+    item_type: str,
+    event_type: str,
+    item_status: ThreadItemStatus,
+    data: dict[str, Any],
+    content: str,
+) -> str:
+    tool = _display_name(data.get("tool_display_name") or data.get("tool_name") or data.get("name"), "Tool")
+    if item_type in {"user_message", "agent_message"}:
+        return content
+    if item_type == "reasoning":
+        return "Agent 正在整理思路。"
+    if item_type == "tool_call":
+        return f"正在使用：{tool}"
+    if item_type == "tool_result":
+        return f"{tool}{'未完成' if item_status == 'failed' else '已完成'}"
+    if item_type == "approval_request":
+        return f"需要你的确认：{tool}"
+    if item_type == "approval_decision":
+        return "已记录你的决定。"
+    if item_type == "plan":
+        return "计划已更新。"
+    if item_type == "workflow_activity":
+        label = _text(data.get("label") or data.get("title") or data.get("name"))
+        return f"工作流：{label}" if label else "工作流状态已更新。"
+    if item_type == "subagent_activity":
+        label = _text(data.get("target_agent_name") or data.get("child_agent_name"))
+        return f"协作 Agent：{label}" if label else "协作 Agent 状态已更新。"
+    if item_type == "context_compaction":
+        return "已整理会话上下文，任务会继续。"
+    if item_type == "artifact":
+        path = _text(data.get("path") or data.get("filename"))
+        return f"交付物已更新：{path.rsplit('/', 1)[-1]}" if path else "交付物已更新。"
+    if item_type == "boundary":
+        phase = str(data.get("phase") or data.get("status") or event_type).lower()
+        return {
+            "run_queued": "任务已排队。",
+            "queued": "任务已排队。",
+            "run_started": "任务已开始。",
+            "running": "任务正在运行。",
+            "run_completed": "任务已完成。",
+            "completed": "任务已完成。",
+            "run_cancelled": "任务已取消。",
+            "cancelled": "任务已取消。",
+        }.get(phase, "任务状态已更新。")
+    if item_type == "error":
+        if bool(data.get("retryable")):
+            return "连接或服务暂时不可用，本次任务可以安全重试。"
+        return "任务遇到问题，已停止继续执行。"
+    return "运行状态已更新。"
+
+
+def _user_action(
+    *,
+    item_type: str,
+    item_status: ThreadItemStatus,
+    data: dict[str, Any],
+) -> dict[str, Any] | None:
+    if item_type == "approval_request":
+        destructive = bool(data.get("destructive"))
+        return {
+            "kind": "resolve_approval",
+            "token": _text(data.get("permission_request_id") or data.get("request_id")),
+            "label": "确认后继续",
+            "expires_at": _iso(data.get("expires_at")),
+            "impact": "可能产生不可逆影响" if destructive else "可撤销或只读操作",
+            "details": _safe_argument_details(data.get("arguments")),
+        }
+    if item_type == "error" and bool(data.get("retryable")):
+        return {
+            "kind": "retry_turn",
+            "label": "重试本轮",
+            "details": [],
+        }
+    if item_type == "artifact":
+        artifact_id = _text(data.get("artifact_id"))
+        path = _text(data.get("path"))
+        if artifact_id or path:
+            return {
+                "kind": "open_artifact",
+                "token": artifact_id,
+                "label": "打开交付物",
+                "details": ([{"label": "path", "value": path}] if path else []),
+            }
+    if item_status == "waiting_user":
+        return {"kind": "review", "label": "查看并处理", "details": []}
+    return None
+
+
+def _user_item_data(item_type: str, item_data: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(item_data)
+    if item_type == "tool_call":
+        clean["tool_call_id"] = None
+        clean["arguments"] = {}
+        clean["risk_class"] = None
+    elif item_type == "tool_result":
+        clean["tool_call_id"] = None
+    elif item_type == "approval_request":
+        clean["arguments"] = {}
+        clean["risk_class"] = None
+        clean["permission_mode"] = None
+        clean["decision_reason"] = None
+        clean["capability"] = None
+        clean["security_zone"] = None
+    elif item_type == "approval_decision":
+        clean["decision_reason"] = None
+        clean["approver_id"] = None
+    elif item_type == "plan":
+        clean["plan_id"] = None
+        clean["plan_hash"] = None
+        clean["plan_version"] = None
+    elif item_type == "workflow_activity":
+        clean["workflow_run_id"] = None
+        clean["workflow_step_id"] = None
+        clean["runtime_task_id"] = None
+    elif item_type == "subagent_activity":
+        clean["runtime_task_id"] = None
+        clean["child_session_id"] = None
+        clean["parent_session_id"] = None
+    elif item_type == "context_compaction":
+        clean["original_message_count"] = None
+        clean["kept_message_count"] = None
+        clean["continuity_sections_injected"] = []
+    elif item_type == "error":
+        clean["code"] = None
+        clean["reason"] = None
+        clean["retry_reason"] = None
+    elif item_type == "event":
+        clean["runtime_task_id"] = None
+        clean["reason"] = None
+    return clean
+
+
+def _user_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe_parts: list[dict[str, Any]] = []
+    artifact_keys = {
+        "type",
+        "id",
+        "artifact_id",
+        "name",
+        "filename",
+        "path",
+        "mime_type",
+        "preview_kind",
+        "size",
+        "action",
+    }
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "artifact":
+            safe_parts.append({key: value for key, value in part.items() if key in artifact_keys})
+        elif part.get("type") == "text" and isinstance(part.get("text"), str):
+            safe_parts.append({"type": "text", "text": str(part["text"])})
+    return safe_parts
+
+
+def _project_for_audience(
+    raw: dict[str, Any],
+    *,
+    audience: ThreadItemAudience,
+    preserve_user_content: bool,
+) -> dict[str, Any]:
+    merged = _merged_data(dict(raw["metadata"]), list(raw["parts"]))
+    summary = _user_summary(
+        item_type=str(raw["item_type"]),
+        event_type=str(raw["event_type"]),
+        item_status=raw["item_status"],
+        data=merged,
+        content=str(raw["content"]),
+    )
+    action = _user_action(item_type=str(raw["item_type"]), item_status=raw["item_status"], data=merged)
+    raw["audience"] = audience
+    raw["user_summary"] = summary
+    raw["user_action"] = action
+    if audience == "operator":
+        raw["operator_details"] = {
+            "item_data": dict(raw["item_data"]),
+            "metadata": dict(raw["metadata"]),
+            "evidence_refs": list(raw["evidence_refs"]),
+            "links": {
+                key: str(raw[key])
+                for key in (
+                    "id",
+                    "session_id",
+                    "run_id",
+                    "message_id",
+                    "turn_id",
+                    "causation_id",
+                    "correlation_id",
+                )
+                if raw.get(key)
+            },
+        }
+        return raw
+    raw["operator_details"] = None
+    preservable_content_types = {"user_message", "agent_message", "tool_call", "tool_result", "plan", "artifact"}
+    raw["content"] = (
+        str(raw["content"])
+        if preserve_user_content and str(raw["item_type"]) in preservable_content_types
+        else summary
+    )
+    raw["parts"] = _user_parts(list(raw["parts"]))
+    raw["metadata"] = {"status": str(raw["item_status"])}
+    raw["evidence_refs"] = []
+    raw["item_data"] = _user_item_data(str(raw["item_type"]), dict(raw["item_data"]))
+    return raw
+
+
 def build_thread_item(
     event: Any,
     *,
@@ -524,6 +800,8 @@ def build_thread_item(
     parts: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
     role: str | None = None,
+    audience: ThreadItemAudience = "operator",
+    preserve_user_content: bool = False,
 ) -> dict[str, Any]:
     event_type = str(getattr(event, "event_type", None) or "event")
     clean_parts = list(parts if parts is not None else (getattr(event, "parts_json", None) or []))
@@ -583,6 +861,7 @@ def build_thread_item(
         "evidence_refs": clean_evidence_refs,
         "item_data": _item_data(item_type, event_type=event_type, data=merged),
     }
+    raw = _project_for_audience(raw, audience=audience, preserve_user_content=preserve_user_content)
     validated = THREAD_ITEM_ADAPTER.validate_python(raw)
     return THREAD_ITEM_ADAPTER.dump_python(validated, mode="json", by_alias=True, exclude_none=True)
 
@@ -631,4 +910,4 @@ def build_live_thread_item(
             "agent_id": agent_id,
         },
     )()
-    return build_thread_item(transient, role=role)
+    return build_thread_item(transient, role=role, audience="user")

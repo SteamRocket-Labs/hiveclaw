@@ -28,6 +28,7 @@ import AgentChatSection, {
   permissionOnceOnlyMessageKey,
   sessionCheckpointPreview,
   subagentWorkerRecoveryModel,
+  userFacingRuntimeStatus,
 } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, {
@@ -54,6 +55,13 @@ import {
   isSessionWorkbenchRoute,
 } from '../AgentDetail';
 import type { PlanRequest } from '../../api/domains/plans';
+
+describe('userFacingRuntimeStatus', () => {
+  it('maps known states and never falls back to raw runtime values', () => {
+    expect(userFacingRuntimeStatus('waiting_budget_approval')).toBe('Waiting for approval');
+    expect(userFacingRuntimeStatus('provider_stream_half_closed_internal')).toBe('Working');
+  });
+});
 
 const queryKeyCalls = vi.hoisted(() => [] as unknown[][]);
 
@@ -3193,7 +3201,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Child Session');
     expect(markup).toContain('Research worker completed.');
     expect(markup).not.toContain('session:child-session-1');
-    expect(markup).toContain('run-1');
+    expect(markup).not.toContain('run-1');
   });
 
   it('routes chat artifacts to the session inspector only when the file type is previewable', () => {

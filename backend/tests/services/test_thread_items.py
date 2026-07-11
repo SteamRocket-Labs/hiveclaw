@@ -94,6 +94,86 @@ def test_build_thread_item_uses_persisted_discriminant_and_typed_approval_data()
     }
 
 
+def test_user_thread_projection_contains_actionable_summary_without_operator_evidence() -> None:
+    from app.services.thread_items import build_thread_item
+
+    event = _event(
+        metadata_json={
+            **_event().metadata_json,
+            "tool_display_name": "Write final report",
+            "arguments": {
+                "path": "reports/final.md",
+                "api_token": "secret-token-must-not-leak",
+                "payload": {"private": "raw"},
+            },
+            "provider_error_code": "provider_timeout_internal",
+        }
+    )
+
+    item = build_thread_item(event, audience="user")
+    encoded = str(item)
+
+    assert item["audience"] == "user"
+    assert item["user_summary"] == "需要你的确认：Write final report"
+    assert item["user_action"] == {
+        "kind": "resolve_approval",
+        "token": "permission-7",
+        "label": "确认后继续",
+        "expires_at": "2026-07-10T12:00:00+00:00",
+        "impact": "可撤销或只读操作",
+        "details": [{"label": "path", "value": "reports/final.md"}],
+    }
+    assert item["item_data"]["arguments"] == {}
+    assert item["evidence_refs"] == []
+    assert item["metadata"] == {"status": "waiting_user"}
+    assert "operator_details" not in item
+    assert "secret-token-must-not-leak" not in encoded
+    assert "provider_timeout_internal" not in encoded
+    assert "span-7" not in encoded
+
+
+def test_operator_thread_projection_preserves_evidence_only_in_explicit_details() -> None:
+    from app.services.thread_items import build_thread_item
+
+    item = build_thread_item(_event(), audience="operator")
+
+    assert item["audience"] == "operator"
+    assert item["operator_details"]["item_data"]["arguments"] == {"path": "report.md"}
+    assert item["operator_details"]["evidence_refs"] == [{"kind": "invocation_span", "id": "span-7"}]
+    assert item["operator_details"]["links"]["run_id"] == "33333333-3333-3333-3333-333333333333"
+
+
+@pytest.mark.parametrize(
+    ("event_type", "item_type", "role"),
+    [
+        ("thinking", "reasoning", "assistant"),
+        ("unknown_future_event", "event", "system"),
+    ],
+)
+def test_user_thread_projection_never_echoes_raw_reasoning_or_unknown_runtime_content(
+    event_type: str,
+    item_type: str,
+    role: str,
+) -> None:
+    from app.services.thread_items import build_thread_item
+
+    raw_internal_content = "provider request secret: sk-runtime-must-not-leak"
+    item = build_thread_item(
+        _event(
+            event_type=event_type,
+            item_type=item_type,
+            content=raw_internal_content,
+            metadata_json={"provider_error": raw_internal_content},
+        ),
+        audience="user",
+        role=role,
+        preserve_user_content=True,
+    )
+
+    assert raw_internal_content not in str(item)
+    assert item["content"] == item["user_summary"]
+
+
 @pytest.mark.parametrize(
     ("event_type", "role", "expected"),
     [
@@ -162,3 +242,7 @@ async def test_live_web_chat_broadcast_carries_same_thread_item_contract(monkeyp
     assert sent[0]["item_type"] == "approval_request"
     assert sent[0]["item_status"] == "waiting_user"
     assert sent[0]["item_data"]["permission_request_id"] == "permission-live"
+    assert sent[0]["audience"] == "user"
+    assert sent[0]["item_data"]["arguments"] == {}
+    assert "arguments" not in sent[0]
+    assert "risk_class" not in sent[0]

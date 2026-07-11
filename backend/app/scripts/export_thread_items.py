@@ -92,7 +92,12 @@ def render_typescript_contract() -> str:
         _interface("ThreadItemBase", base_schema),
     ]
 
-    for definition_name in sorted(name for name in definitions if name.endswith("ItemData")):
+    auxiliary_definitions = {
+        name
+        for name in definitions
+        if name.endswith("ItemData") or name in {"UserAction", "OperatorDetails"}
+    }
+    for definition_name in sorted(auxiliary_definitions):
         blocks.extend(["", _interface(definition_name, definitions[definition_name])])
 
     for item_name in root_items:

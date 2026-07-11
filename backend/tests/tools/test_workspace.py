@@ -331,7 +331,7 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     assert "# Soul — 投后助手" in soul_content
     assert "负责投后分析" in soul_content
     enterprise_dir = tmp_path / f"enterprise_info_{tenant_id}"
-    assert (enterprise_dir / "knowledge_base").is_dir()
+    assert not (enterprise_dir / "knowledge_base").exists()
     assert (enterprise_dir / "company_profile.md").exists()
     assert sync_calls == [(agent_id, workspace)]
 
@@ -344,6 +344,41 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
         workspace / "evolution" / "reflections.md",
     ):
         assert not reflections_path.exists(), f"dead stub created: {reflections_path}"
+
+
+def test_agent_workspace_exposes_only_canonical_company_context(monkeypatch, tmp_path):
+    from app.services.agent_tool_domains import workspace as workspace_domain
+
+    tenant_id = uuid4()
+    agent_workspace = tmp_path / "agent"
+    agent_workspace.mkdir()
+    company_dir = tmp_path / f"enterprise_info_{tenant_id}"
+    company_dir.mkdir()
+    (company_dir / "company_profile.md").write_text("# Company\n", encoding="utf-8")
+    (company_dir / "org_structure.md").write_text("# Org\n", encoding="utf-8")
+    (company_dir / "knowledge_base").mkdir()
+    (company_dir / "knowledge_base" / "policy.md").write_text("legacy secret\n", encoding="utf-8")
+    (company_dir / "legacy-upload.md").write_text("legacy upload\n", encoding="utf-8")
+    monkeypatch.setattr(workspace_domain, "WORKSPACE_ROOT", tmp_path)
+
+    listing = workspace_domain._list_files(agent_workspace, "enterprise_info", str(tenant_id))
+    blocked_file = workspace_domain._read_file(
+        agent_workspace,
+        "enterprise_info/knowledge_base/policy.md",
+        str(tenant_id),
+    )
+    blocked_legacy_root = workspace_domain._read_file(
+        agent_workspace,
+        "enterprise_info/legacy-upload.md",
+        str(tenant_id),
+    )
+
+    assert "company_profile.md" in listing
+    assert "org_structure.md" in listing
+    assert "knowledge_base" not in listing
+    assert "legacy-upload.md" not in listing
+    assert "auth_or_permission" in blocked_file
+    assert "auth_or_permission" in blocked_legacy_root
 
 
 @pytest.mark.asyncio

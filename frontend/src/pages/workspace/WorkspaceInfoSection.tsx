@@ -13,7 +13,7 @@ interface WorkspaceInfoSectionProps {
   onSaveCompanyIntro: () => void;
   companyIntroSaving: boolean;
   companyIntroSaved: boolean;
-  kbBrowser: ReactNode;
+  legacyCompanyFilesCard: ReactNode;
   themeColorPicker: ReactNode;
   broadcastSection: ReactNode;
   onDeleteCompany: () => void;
@@ -28,7 +28,7 @@ export default function WorkspaceInfoSection({
   onSaveCompanyIntro,
   companyIntroSaving,
   companyIntroSaved,
-  kbBrowser,
+  legacyCompanyFilesCard,
   themeColorPicker,
   broadcastSection,
   onDeleteCompany,
@@ -64,13 +64,7 @@ export default function WorkspaceInfoSection({
         </div>
       </div>
 
-      <h3 className="ws-info-heading">{t('enterprise.kb.title')}</h3>
-      <p className="ws-info-desc">
-        {t('enterprise.kb.description', 'Shared files accessible to all agents via enterprise_info/ directory.')}
-      </p>
-      <div className="card ws-info-card">
-        {kbBrowser}
-      </div>
+      {legacyCompanyFilesCard}
 
       {themeColorPicker}
       {broadcastSection}

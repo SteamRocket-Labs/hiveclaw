@@ -22,7 +22,7 @@ describe('WorkspaceInfoSection', () => {
         onSaveCompanyIntro={() => {}}
         companyIntroSaving={false}
         companyIntroSaved={true}
-        kbBrowser={<div>Knowledge Base Browser</div>}
+        legacyCompanyFilesCard={<div>Legacy shared files export</div>}
         themeColorPicker={<div>Theme Color Picker</div>}
         broadcastSection={<div>Broadcast Section</div>}
         onDeleteCompany={() => {}}
@@ -30,7 +30,9 @@ describe('WorkspaceInfoSection', () => {
     );
 
     expect(markup).toContain('Company Intro');
-    expect(markup).toContain('Knowledge Base Browser');
+    expect(markup).toContain('Legacy shared files export');
+    expect(markup).not.toContain('Company Knowledge Base');
+    expect(markup).not.toContain('Knowledge Base Browser');
     expect(markup).toContain('Delete This Company');
   });
 });

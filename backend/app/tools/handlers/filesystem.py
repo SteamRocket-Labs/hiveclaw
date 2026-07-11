@@ -40,7 +40,7 @@ def _call_with_optional_authority(handler, workspace, arguments, tenant_id, auth
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory path to list, defaults to root (empty string). e.g.: '', 'skills', 'workspace', 'enterprise_info', 'enterprise_info/knowledge_base'",
+                    "description": "Directory path to list, defaults to root (empty string). e.g.: '', 'skills', 'workspace', 'enterprise_info'",
                 }
             },
         },
@@ -356,7 +356,7 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None, 
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Document file path, e.g.: workspace/knowledge_base/report.pdf, enterprise_info/knowledge_base/policy.docx",
+                    "description": "Document file path, e.g.: workspace/knowledge_base/report.pdf",
                 },
                 "mode": {
                     "type": "string",

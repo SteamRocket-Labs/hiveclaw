@@ -591,38 +591,6 @@ def _last_user_query(messages: list[dict]) -> str:
     return ""
 
 
-async def fetch_relevant_knowledge(
-    query: str,
-    tenant_id: uuid.UUID | None = None,
-    *,
-    agent_id: uuid.UUID | str | None = None,
-    current_user_id: uuid.UUID | str | None = None,
-    source_collector: list[dict[str, Any]] | None = None,
-    max_tokens: int = 500,
-    max_chars: int | None = None,
-    limit: int = 3,
-) -> str:
-    """Prompt-context seam over TruthSearchService.
-
-    Kept local to the invoker so older tests can patch retrieval without
-    reintroducing the retired OpenViking prompt-injection module.
-    """
-    from app.services.truth_search_service import TruthSearchService
-
-    service = TruthSearchService()
-    char_budget = max_chars if max_chars and max_chars > 0 else max_tokens * 3
-    evidence = await service.search(
-        query,
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        current_user_id=current_user_id,
-        limit=limit,
-        source_collector=source_collector,
-        max_chars=char_budget,
-    )
-    return service.render_prompt_context(evidence, max_chars=char_budget)
-
-
 def _resolve_context_budget(request: AgentInvocationRequest) -> ContextBudget:
     context_window_tokens = getattr(request.model, "max_input_tokens", None) if request.model else None
     active_pack_count = len(request.session_context.active_tool_groups) if request.session_context else 0
@@ -776,50 +744,15 @@ async def _resolve_retrieval_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
 ) -> str:
-    if (request.standalone_system_prompt or "").strip():
-        return ""  # CC subagent semantics: no host retrieval context
-    query = _last_user_query(request.messages)
-    if not query:
-        return ""
+    """Default runtime never prefetches Personal or Company KB content.
 
-    parts: list[str] = []
-    budget_profile = _resolve_context_budget(request)
-    connector_source_items: list[dict[str, Any]] = []
+    The kernel dependency remains an explicit retrieval-context seam for
+    specialized runtimes that already possess governed evidence. Knowledge
+    discovery itself must happen through the corresponding tools.
+    """
 
-    _knowledge_kwargs = {}
-    _knowledge_sig = inspect.signature(fetch_relevant_knowledge).parameters
-    if "max_tokens" in _knowledge_sig:
-        _knowledge_kwargs["max_tokens"] = max(500, budget_profile.knowledge_budget_chars // 3)
-    if "max_chars" in _knowledge_sig:
-        _knowledge_kwargs["max_chars"] = budget_profile.knowledge_budget_chars
-    if "limit" in _knowledge_sig:
-        _knowledge_kwargs["limit"] = budget_profile.external_limit
-    if "agent_id" in _knowledge_sig:
-        _knowledge_kwargs["agent_id"] = request.agent_id
-    if "current_user_id" in _knowledge_sig:
-        _knowledge_kwargs["current_user_id"] = request.user_id
-    if "source_collector" in _knowledge_sig:
-        _knowledge_kwargs["source_collector"] = connector_source_items
-    knowledge = await _maybe_await(fetch_relevant_knowledge(query, tenant_id, **_knowledge_kwargs))
-    if connector_source_items and request.session_context is not None:
-        from app.services.connector_acl import register_connector_source_items
-
-        register_connector_source_items(
-            request.session_context,
-            connector_source_items,
-            origin="knowledge_provider:relevant",
-        )
-    if knowledge:
-        parts.append(
-            _context_engine().inject(
-                request.session_context,
-                kind="knowledge_relevant",
-                source="knowledge_provider:relevant",
-                content=knowledge,
-            )
-        )
-
-    return "\n\n".join(parts)
+    del request, tenant_id
+    return ""
 
 
 def _serialize_pack(pack) -> dict[str, Any]:

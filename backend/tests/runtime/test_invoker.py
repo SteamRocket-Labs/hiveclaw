@@ -207,7 +207,7 @@ async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_retrieval_context_appends_knowledge_only(monkeypatch):
+async def test_resolve_retrieval_context_does_not_prefetch_knowledge(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _resolve_retrieval_context
 
     async def fake_build_memory_context(*args, **kwargs):
@@ -217,7 +217,6 @@ async def test_resolve_retrieval_context_appends_knowledge_only(monkeypatch):
         raise AssertionError("runtime metadata belongs to _resolve_runtime_metadata_context")
 
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_build_memory_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", lambda *_args, **_kwargs: "KNOWLEDGE")
     monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_build_agent_runtime_context)
 
     request = AgentInvocationRequest(
@@ -232,9 +231,8 @@ async def test_resolve_retrieval_context_appends_knowledge_only(monkeypatch):
 
     result = await _resolve_retrieval_context(request, tenant_id=uuid4())
 
-    assert "KNOWLEDGE" in result
-    assert '<context_block kind="knowledge_relevant" source="knowledge_provider:relevant">' in result
-    assert [item["kind"] for item in request.session_context.metadata["context_artifacts"]] == ["knowledge_relevant"]
+    assert result == ""
+    assert "context_artifacts" not in request.session_context.metadata
 
 
 @pytest.mark.asyncio
@@ -255,9 +253,6 @@ async def test_invoke_agent_keeps_core_tools_when_skill_read_has_no_declared_exp
 
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
-
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
 
     async def fake_compress(messages, **kwargs):
         return messages
@@ -297,7 +292,6 @@ async def test_invoke_agent_keeps_core_tools_when_skill_read_has_no_declared_exp
     )
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
     monkeypatch.setattr("app.runtime.invoker.execute_tool", fake_execute_tool)
@@ -365,7 +359,6 @@ async def test_invoke_agent_applies_model_temperature_and_reasoning_kwargs(monke
         return "BASE_PROMPT"
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", fake_resolve_runtime_config)
@@ -445,9 +438,6 @@ async def test_invoke_agent_forwards_delegation_token_to_tool_governance(monkeyp
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
     async def fake_empty_context(*args, **kwargs):
         return ""
 
@@ -457,7 +447,6 @@ async def test_invoke_agent_forwards_delegation_token_to_tool_governance(monkeyp
         return RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", fake_resolve_runtime_config)
@@ -1002,9 +991,6 @@ async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monk
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
     async def fake_compress(messages, **kwargs):
         return messages
 
@@ -1016,7 +1002,6 @@ async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monk
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
     monkeypatch.setattr("app.kernel.engine.asyncio.ensure_future", lambda coro: asyncio.create_task(coro))
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
     monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
@@ -1080,16 +1065,12 @@ async def test_invoke_agent_emits_response_complete_only_once(monkeypatch):
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
     async def fake_compress(messages, **kwargs):
         return messages
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
     monkeypatch.setattr("app.kernel.engine.asyncio.ensure_future", lambda coro: asyncio.create_task(coro))
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
     monkeypatch.setattr(
@@ -1219,9 +1200,6 @@ async def test_invoke_agent_filters_excluded_tools_from_runtime_surface(monkeypa
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
     async def fake_compress(messages, **kwargs):
         return messages
 
@@ -1242,7 +1220,6 @@ async def test_invoke_agent_filters_excluded_tools_from_runtime_surface(monkeypa
         ]
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
     monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
@@ -1291,9 +1268,6 @@ async def test_invoke_agent_filters_allowed_tools_from_runtime_surface(monkeypat
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
     async def fake_compress(messages, **kwargs):
         return messages
 
@@ -1314,7 +1288,6 @@ async def test_invoke_agent_filters_allowed_tools_from_runtime_surface(monkeypat
         ]
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_get_agent_tools_for_llm)
     monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
@@ -1363,9 +1336,6 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return "KB_CONTEXT"
-
     async def fake_empty_context(*args, **kwargs):
         return ""
 
@@ -1375,7 +1345,6 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
     monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_empty_context)
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_empty_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
     monkeypatch.setattr(
@@ -1414,7 +1383,7 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
     assert "search_memory" in dynamic_notice.content
     assert "memory_provider:recall" not in dynamic_notice.content
     assert 'kind="memory_recall"' not in dynamic_notice.content
-    assert "KB_CONTEXT" in dynamic_notice.content
+    assert "KB_CONTEXT" not in dynamic_notice.content
 
 
 @pytest.mark.asyncio
@@ -1444,9 +1413,6 @@ async def test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt(m
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return "KB_CONTEXT"
-
     async def fake_runtime_context(*args, **kwargs):
         return "RUNTIME_CONTEXT"
 
@@ -1459,7 +1425,6 @@ async def test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt(m
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
     monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_runtime_context)
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_empty_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
     monkeypatch.setattr(
@@ -1498,7 +1463,7 @@ async def test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt(m
     assert manifest["loaded_skills"] == ["load_skill"]
     assert "runtime_metadata_context" in manifest["dynamic_sections"]
     assert "skill_catalog" in manifest["dynamic_sections"]
-    assert "knowledge_context" in manifest["dynamic_sections"]
+    assert "knowledge_context" not in manifest["dynamic_sections"]
     ledger = manifest["context_usage_ledger"]
     categories = {item["name"]: item for item in ledger["categories"]}
     assert ledger["schema"] == "hive.ccplus.context_usage_ledger.v1"
@@ -1789,9 +1754,6 @@ async def test_invoke_agent_emits_compaction_events(monkeypatch):
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
     async def fake_compress(messages, **kwargs):
         on_compaction = kwargs.get("on_compaction")
         assert on_compaction is not None
@@ -1805,7 +1767,6 @@ async def test_invoke_agent_emits_compaction_events(monkeypatch):
         return [{"role": "system", "content": "[Previous conversation summary]\nolder context compressed"}]
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
     monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
@@ -1884,9 +1845,6 @@ async def test_invoke_agent_forwards_permission_events(monkeypatch):
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
     async def fake_compress(messages, **kwargs):
         return messages
 
@@ -1905,7 +1863,6 @@ async def test_invoke_agent_forwards_permission_events(monkeypatch):
         return "⏳ This action requires approval. An approval request has been sent. (Approval ID: approval-123)"
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr(
         "app.runtime.invoker.get_agent_tools_for_llm",
@@ -1984,9 +1941,6 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
     async def fake_build_memory_context(_agent_id, _tenant_id, *, session_id=None, query="", **_kwargs):
         captured["loaded"] = (_agent_id, _tenant_id, session_id, query)
         return "RUNTIME_MEMORY"
@@ -2008,7 +1962,6 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
     monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", fake_resolve_runtime_config)
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
     monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_build_agent_runtime_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_build_memory_context)
     monkeypatch.setattr("app.runtime.invoker.persist_runtime_memory", fake_persist_runtime_memory)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
@@ -2545,14 +2498,10 @@ async def test_invoke_agent_uses_request_max_output_tokens(monkeypatch):
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
 
-    async def fake_fetch_relevant_knowledge(*args, **kwargs):
-        return ""
-
     async def fake_compress(messages, **kwargs):
         return messages
 
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
-    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
     monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)

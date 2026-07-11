@@ -316,7 +316,6 @@ def test_killed_process_invoke_agent_persists_recoverable_tool_matrix(
             invoker.build_agent_context = empty_async
             invoker.build_agent_runtime_context = empty_async
             invoker.build_memory_context = empty_async
-            invoker.fetch_relevant_knowledge = empty_async
             invoker.build_skill_catalog_section_for_agent = lambda *_args, **_kwargs: ""
             invoker.get_agent_tools_for_llm = lambda *_args, **_kwargs: {tool_schema!r}
             invoker.check_user_token_quota = allow_quota

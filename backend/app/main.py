@@ -35,7 +35,6 @@ from app.api.external_principals import router as external_principals_router
 from app.api.channel_deliveries import router as channel_deliveries_router
 from app.api.feature_flags import router as feature_flags_router
 from app.api.feishu import router as feishu_router
-from app.api.files import enterprise_kb_router
 from app.api.files import router as files_router
 from app.api.files import upload_router as files_upload_router
 from app.api.guard_policies import router as guard_policies_router
@@ -757,12 +756,6 @@ async def lifespan(app: FastAPI):
     await wechat_personal_stream_manager.stop_all()
     await close_redis()
     try:
-        from app.services.viking_client import close as close_viking
-
-        await close_viking()
-    except Exception as exc:
-        logger.debug(f"OpenViking client cleanup skipped: {exc}")
-    try:
         from app.memory.backend import aclose_all_backends
 
         await aclose_all_backends()
@@ -834,7 +827,6 @@ _api_routers = [
     tenants_router,
     schedules_router,
     files_upload_router,
-    enterprise_kb_router,
     skills_router,
     users_router,
     slack_router,

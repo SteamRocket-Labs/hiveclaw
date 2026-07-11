@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from app.config import get_settings
+from app.services.legacy_company_files import COMPANY_CONTEXT_FILENAMES, company_context_path_allowed
 from app.services.managed_capability_guard import sanitize_managed_credential_guidance
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
@@ -90,7 +91,10 @@ def _list_files(
     tool_name: str = "list_files",
     authority_scope=None,
 ) -> str:
-    if rel_path and rel_path.startswith("enterprise_info"):
+    enterprise_context = bool(rel_path and rel_path.startswith("enterprise_info"))
+    if enterprise_context:
+        if not company_context_path_allowed(rel_path, directory=True):
+            return _workspace_error(tool_name, "auth_or_permission", "Only generated company context is available.")
         if tenant_id:
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
         else:
@@ -126,6 +130,8 @@ def _list_files(
     file_count = 0
     for p in sorted(target.iterdir()):
         if p.name.startswith("."):
+            continue
+        if enterprise_context and p.name not in COMPANY_CONTEXT_FILENAMES:
             continue
         if authority_scope is not None and not authority_scope.visible_child(
             rel_path,
@@ -165,6 +171,8 @@ def _read_file(
     if not _authority_allows_path(authority_scope, rel_path):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if rel_path and rel_path.startswith("enterprise_info"):
+        if not company_context_path_allowed(rel_path):
+            return _workspace_error(tool_name, "auth_or_permission", "Only generated company context is available.")
         if tenant_id:
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
         else:
@@ -798,6 +806,8 @@ async def _read_document(
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     workspace_root = ws
     if rel_path and rel_path.startswith("enterprise_info"):
+        if not company_context_path_allowed(rel_path):
+            return _workspace_error(tool_name, "auth_or_permission", "Only generated company context is available.")
         if tenant_id:
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
         else:
@@ -908,7 +918,7 @@ _ROOT_PREFIX_ALLOWLIST = {"workspace", "skills"}
 _ENTERPRISE_ASSET_PREFIX_MESSAGES = {
     "subagents": "subagents/ contains enterprise Sub-agent assets; use governed Sub-agent APIs instead of raw file writes.",
     "enterprise_info": (
-        "enterprise_info/ contains governed company knowledge; use enterprise knowledge APIs instead of raw file writes."
+        "enterprise_info/ is generated read-only company context; only company_profile.md and org_structure.md are exposed."
     ),
 }
 _ROOT_MANAGED_FILE_MESSAGES = {

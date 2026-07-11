@@ -2,7 +2,7 @@
  * Enterprise domain adapter — LLM, org, audit, settings, invitations.
  */
 
-import { get, getBlob, post, put, patch, del, upload } from '../core';
+import { get, getBlob, post, put, patch, del } from '../core';
 
 export interface LLMModel {
   id: string;
@@ -55,6 +55,15 @@ export interface InvitationCode {
 export interface SystemSetting {
   key: string;
   value: Record<string, any>;
+}
+
+export interface LegacyCompanyFilesStatus {
+  available: boolean;
+  file_count: number;
+  total_bytes: number;
+  excluded_symlink_count: number;
+  read_only: true;
+  retired: true;
 }
 
 export interface PaginatedResponse<T> {
@@ -214,13 +223,11 @@ export const enterpriseApi = {
   updateSetting: (key: string, value: Record<string, unknown>, tenantId?: string) =>
     put<SystemSetting>(`/enterprise/system-settings/${key}${tenantId ? `?tenant_id=${tenantId}` : ''}`, { value }),
 
-  /** Knowledge base */
-  kbFiles: (tenantId?: string) => get<any[]>(`/enterprise/knowledge-base/files${tenantId ? `?tenant_id=${tenantId}` : ''}`),
-  kbRead: (path: string) => get<any>(`/enterprise/knowledge-base/content?path=${encodeURIComponent(path)}`),
-  kbWrite: (path: string, content: string) => put<any>('/enterprise/knowledge-base/content', { path, content }),
-  kbDelete: (path: string) => del(`/enterprise/knowledge-base/content?path=${encodeURIComponent(path)}`),
-  kbUpload: (file: File, path?: string) =>
-    upload('/enterprise/knowledge-base/upload', file, path ? { path } : undefined),
+  /** Read-only recovery surface for files left by the retired fake Company KB. */
+  getLegacyCompanyFilesStatus: (tenantId?: string) =>
+    get<LegacyCompanyFilesStatus>(`/enterprise/legacy-company-files/status${tenantId ? `?tenant_id=${tenantId}` : ''}`),
+  exportLegacyCompanyFiles: (tenantId?: string) =>
+    getBlob(`/enterprise/legacy-company-files/export${tenantId ? `?tenant_id=${tenantId}` : ''}`),
 
   /** OIDC */
   getOIDCConfig: () => get<Record<string, unknown>>('/enterprise/oidc-config'),

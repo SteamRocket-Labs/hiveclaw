@@ -2652,24 +2652,16 @@
     },
     "companyIntro": {
       "title": "公司简介",
-      "description": "描述你的公司使命、产品和文化。保存后会写入公司知识库，所有数字员工可读取。",
-      "hint": "此内容会写入公司知识库，所有数字员工可读取"
+      "description": "描述公司的使命、产品与文化。该受治理的公司上下文会进入 Agent 对话。",
+      "hint": "此内容会出现在每个 Agent 的系统上下文中"
     },
-    "kb": {
-      "title": "公司知识库",
-      "description": "共享文件，所有员工可通过 enterprise_info/ 目录访问。",
-      "rootDir": "根目录",
-      "uploadFile": "上传文件",
-      "newFolder": "新建文件夹",
-      "folderName": "文件夹名称",
-      "noFiles": "暂无文件。上传文档让员工可以参考。",
-      "dragOrClick": "拖拽或点击上传",
-      "delete": "删除",
-      "save": "保存",
-      "edit": "编辑",
-      "cancel": "取消",
-      "viewFile": "查看文件",
-      "confirmDelete": "确认删除"
+    "legacyCompanyFiles": {
+      "title": "已退役的共享文件",
+      "description": "这些文件来自已退役的共享目录功能，Agent 无法访问。清理旧数据前，请先导出只读归档。",
+      "summary": "{{count}} 个文件 · {{size}}",
+      "export": "导出只读归档",
+      "exporting": "正在准备归档…",
+      "exportFailed": "导出失败"
     },
     "audit": {
       "title": "审计日志",

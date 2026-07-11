@@ -17,11 +17,12 @@ def test_context_engine_contract_exists() -> None:
     assert "context_artifacts" in source
 
 
-def test_invoker_routes_memory_and_knowledge_through_context_engine() -> None:
+def test_invoker_routes_native_context_but_does_not_prefetch_knowledge() -> None:
     source = (APP_ROOT / "runtime" / "invoker.py").read_text(encoding="utf-8")
 
     assert "DefaultContextEngine" in source
     assert "_context_engine().inject(" in source
     assert "memory_provider:context" in source
     assert "runtime_context:agent" in source
-    assert "knowledge_provider:relevant" in source
+    assert "knowledge_provider:relevant" not in source
+    assert "Default runtime never prefetches Personal or Company KB content" in source

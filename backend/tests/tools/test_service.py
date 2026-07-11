@@ -440,8 +440,7 @@ async def test_approved_asset_tool_fails_closed_when_revision_changed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink():
-    from app.runtime.ccplus_contracts import TruthEvidencePackV1
+async def test_tool_runtime_service_does_not_prefetch_company_knowledge_for_preflight():
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -459,17 +458,6 @@ async def test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sin
         tool_name="write_file",
         arguments={"path": "workspace/notes.md", "content": "x"},
     )
-    evidence = TruthEvidencePackV1(
-        evidence_id="truth://policy/write-file",
-        query="write_file workspace policy",
-        source_refs=("knowledge://policy/workspace.md",),
-        confidence=0.91,
-    )
-
-    class FakeTruthSearch:
-        async def search(self, *_args, **_kwargs):
-            return (evidence,)
-
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
         governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
@@ -478,7 +466,6 @@ async def test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sin
         governance_runner=lambda *_args, **_kwargs: None,
         fallback_executor=lambda *_args, **_kwargs: "fallback",
         direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
-        truth_search_service=FakeTruthSearch(),
     )
     trace_metadata_sink: dict[str, object] = {}
 
@@ -491,16 +478,8 @@ async def test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sin
     )
 
     assert result == "OK"
-    assert trace_metadata_sink["evidence_refs"] == ["truth://policy/write-file"]
-    assert trace_metadata_sink["truth_evidence"] == [
-        {
-            "evidence_id": "truth://policy/write-file",
-            "query": "write_file workspace policy",
-            "source_refs": ["knowledge://policy/workspace.md"],
-            "provider": "knowledge_core",
-            "confidence": 0.91,
-        }
-    ]
+    assert "evidence_refs" not in trace_metadata_sink
+    assert "truth_evidence" not in trace_metadata_sink
 
 
 @pytest.mark.asyncio
@@ -1480,7 +1459,6 @@ def _extract_tool_error_payload(result: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_tool_runtime_service_preflight_asks_before_external_visible_tool():
-    from app.runtime.ccplus_contracts import TruthEvidencePackV1
     from app.services.decision_trace import DecisionTraceStore
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -1495,19 +1473,6 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
     registry = _FakeRegistry("SHOULD_NOT_RUN")
     traces = DecisionTraceStore()
 
-    class _FakeTruthSearch:
-        async def search(self, *_args, **_kwargs):
-            return [
-                TruthEvidencePackV1(
-                    evidence_id="truth://policy/email-confirmation",
-                    query="send external message via send_feishu_message",
-                    source_refs=("knowledge://policy/email",),
-                    citations=("policy/email",),
-                    tenant_id="tenant-1",
-                    trace_refs=("trace://truth/email-confirmation",),
-                )
-            ]
-
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
         governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
@@ -1518,7 +1483,6 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
         direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
         activity_logger=None,
         decision_trace_store=traces,
-        truth_search_service=_FakeTruthSearch(),
     )
 
     result = await service.execute(
@@ -1543,13 +1507,12 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
     assert decisions[0].tool_name == "send_feishu_message"
     assert decisions[0].preflight["decision"] == "ask"
     assert decisions[0].preflight["checkpoint_id"]
-    assert decisions[0].preflight["evidence_refs"] == "truth://policy/email-confirmation"
+    assert "evidence_refs" not in decisions[0].preflight
 
 
 @pytest.mark.asyncio
 async def test_tool_runtime_service_allows_delegated_user_feishu_message():
     from app.core.execution_context import ExecutionIdentity
-    from app.runtime.ccplus_contracts import TruthEvidencePackV1
     from app.services.decision_trace import DecisionTraceStore
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -1568,19 +1531,6 @@ async def test_tool_runtime_service_allows_delegated_user_feishu_message():
     registry = _FakeRegistry("SENT")
     traces = DecisionTraceStore()
 
-    class _SuccessfulTruthSearch:
-        async def search(self, *_args, **_kwargs):
-            return [
-                TruthEvidencePackV1(
-                    evidence_id="truth://policy/delegated-user-send",
-                    query="send_feishu_message",
-                    source_refs=("knowledge://policy/delegated-user-send",),
-                    citations=("policy/delegated-user-send",),
-                    tenant_id="tenant-1",
-                    trace_refs=("trace://truth/delegated-user-send",),
-                )
-            ]
-
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
         governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
@@ -1591,7 +1541,6 @@ async def test_tool_runtime_service_allows_delegated_user_feishu_message():
         direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
         activity_logger=None,
         decision_trace_store=traces,
-        truth_search_service=_SuccessfulTruthSearch(),
     )
 
     result = await service.execute(

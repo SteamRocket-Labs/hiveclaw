@@ -30,9 +30,10 @@ _GOVERNED_SOURCE_PREFIXES = (
     "gmail://",
     "email://",
     "openviking://",
+    "viking://",
 )
 _GOVERNED_SOURCE_RE = re.compile(
-    r"\b(?:feishu|drive|google-drive|office|onlyoffice|slack|gmail|email|openviking)://[^\s\]\)\"'<>]+",
+    r"\b(?:feishu|drive|google-drive|office|onlyoffice|slack|gmail|email|openviking|viking)://[^\s\]\)\"'<>]+",
     re.IGNORECASE,
 )
 _ARG_SOURCE_DENY_ACL = {"deny_by_default": True}

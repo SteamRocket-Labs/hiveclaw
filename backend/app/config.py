@@ -152,9 +152,6 @@ class Settings(BaseSettings):
     # Secrets encryption (set a strong random string in production)
     SECRETS_MASTER_KEY: str = ""
 
-    # OpenViking knowledge backbone (optional — set URL to enable)
-    OPENVIKING_URL: str = ""
-
     # Self-evolution cadence (P1-W2-5)
     # Tick frequency for the evolution daemon (heartbeat dispatcher).
     # Production: 60s. Dev/staging may set 5-15s to exercise the path.
@@ -235,8 +232,6 @@ class Settings(BaseSettings):
     # coordination writers across workers and process restarts.
     # "memory" — explicit dev/test override for in-process Lease/Signal/Checkpoint.
     COORDINATION_BACKEND: str = "postgres"
-    OPENVIKING_API_KEY: str = ""
-
     # Tavily Search API
     TAVILY_API_KEY: str = ""
 

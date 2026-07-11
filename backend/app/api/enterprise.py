@@ -1,10 +1,12 @@
 """Enterprise management API routes: LLM pool, enterprise info, approvals, audit logs."""
 
 import logging
+from pathlib import Path
 import uuid
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_current_admin, get_current_user
 from app.core.permissions import agent_owned_by_clause
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
+from app.config import get_settings
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.audit import ApprovalRequest, AuditLog, EnterpriseInfo
@@ -38,6 +41,7 @@ from app.services.llm_utils import get_provider_manifest
 from app.services.secrets_provider import get_secrets_provider
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 TENANT_SYSTEM_SETTING_KEYS = {"agent_permission_default", "feishu_org_sync"}
@@ -1121,6 +1125,98 @@ def _require_tenant_admin(current_user: User) -> None:
         raise HTTPException(status_code=403, detail="Requires admin privileges")
     if current_user.role != "platform_admin" and not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No company assigned")
+
+
+def _legacy_company_files_dir(tenant_id: uuid.UUID) -> Path:
+    return Path(settings.AGENT_DATA_DIR) / f"enterprise_info_{tenant_id}"
+
+
+@router.get("/legacy-company-files/status")
+async def get_legacy_company_files_status(
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Report isolated files left by the retired Company KB file tree."""
+
+    from app.services.legacy_company_files import scan_legacy_company_files
+
+    _require_tenant_admin(current_user)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    snapshot = scan_legacy_company_files(_legacy_company_files_dir(target_tenant_id))
+    return {
+        "available": snapshot.file_count > 0,
+        "file_count": snapshot.file_count,
+        "total_bytes": snapshot.total_bytes,
+        "excluded_symlink_count": snapshot.excluded_symlink_count,
+        "read_only": True,
+        "retired": True,
+    }
+
+
+@router.get("/legacy-company-files/export")
+async def export_legacy_company_files(
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download an immutable snapshot; this endpoint never edits legacy files."""
+
+    from app.services.legacy_company_files import (
+        LegacyCompanyFilesChangedError,
+        build_legacy_company_files_export,
+    )
+
+    _require_tenant_admin(current_user)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        archive = build_legacy_company_files_export(
+            _legacy_company_files_dir(target_tenant_id),
+            tenant_id=str(target_tenant_id),
+        )
+    except LegacyCompanyFilesChangedError as exc:
+        raise HTTPException(status_code=409, detail="Legacy files changed during export; retry the export") from exc
+    if archive.snapshot.file_count == 0:
+        archive.stream.close()
+        raise HTTPException(status_code=404, detail="No retired company files are available for export")
+
+    db.add(
+        AuditLog(
+            tenant_id=target_tenant_id,
+            user_id=current_user.id,
+            action="legacy_company_files_exported",
+            details={
+                "schema": "hive.legacy_company_files_export.v1",
+                "file_count": archive.snapshot.file_count,
+                "total_bytes": archive.snapshot.total_bytes,
+                "excluded_symlink_count": archive.snapshot.excluded_symlink_count,
+                "read_only": True,
+            },
+        )
+    )
+    try:
+        await db.commit()
+    except Exception:
+        archive.stream.close()
+        raise
+
+    def stream_archive():
+        try:
+            while chunk := archive.stream.read(1024 * 1024):
+                yield chunk
+        finally:
+            archive.stream.close()
+
+    return StreamingResponse(
+        stream_archive(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{archive.filename}"',
+            "Content-Length": str(archive.size_bytes),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/invitation-codes")

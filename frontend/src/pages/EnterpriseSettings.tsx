@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -7,14 +7,13 @@ import { enterpriseApi } from '../api/domains/enterprise';
 import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
 import { requestAppConfirm, showAppToast } from '../components/AppDialogs';
-import FileBrowser from '../components/FileBrowser';
-import type { FileBrowserApi } from '../components/FileBrowser';
 import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import WorkspaceApprovalsSection from './workspace/WorkspaceApprovalsSection';
 import WorkspaceAuditSection from './workspace/WorkspaceAuditSection';
 import WorkspaceDigitalEmployeesSection from './workspace/WorkspaceDigitalEmployeesSection';
 import WorkspaceInfoSection from './workspace/WorkspaceInfoSection';
+import LegacyCompanyFilesExportCard from './workspace/LegacyCompanyFilesExportCard';
 import WorkspaceInvitesSection from './workspace/WorkspaceInvitesSection';
 import WorkspaceLlmSection from './workspace/WorkspaceLlmSection';
 import WorkspaceOrgSection from './workspace/WorkspaceOrgSection';
@@ -143,21 +142,6 @@ function ThemeColorPicker() {
             </div>
         </div>
     );
-}
-
-// ─── Main Component ────────────────────────────────
-// ─── Enterprise KB Browser ─────────────────────────
-function EnterpriseKBBrowser({ onRefresh }: { onRefresh: () => void; refreshKey: number }) {
-    // Memoize adapter to keep the reference stable across renders —
-    // otherwise FileBrowser's useEffect(reload, [reload]) fires infinitely.
-    const kbAdapter: FileBrowserApi = useMemo(() => ({
-        list: (path) => enterpriseApi.kbFiles(path),
-        read: (path) => enterpriseApi.kbRead(path),
-        write: (path, content) => enterpriseApi.kbWrite(path, content),
-        delete: (path) => enterpriseApi.kbDelete(path),
-        upload: (file, path) => enterpriseApi.kbUpload(file, path),
-    }), []);
-    return <FileBrowser api={kbAdapter} features={{ upload: true, newFolder: true, edit: true, delete: true, directoryNavigation: true }} onRefresh={onRefresh} />;
 }
 
 // ─── Company Name Editor ───────────────────────────
@@ -367,6 +351,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
     const [companyIntro, setCompanyIntro] = useState('');
     const [companyIntroSaving, setCompanyIntroSaving] = useState(false);
     const [companyIntroSaved, setCompanyIntroSaved] = useState(false);
+    const [legacyCompanyFilesExporting, setLegacyCompanyFilesExporting] = useState(false);
 
     // Company intro key: always per-tenant scoped
     const companyIntroKey = selectedTenantId ? `company_intro_${selectedTenantId}` : 'company_intro';
@@ -395,7 +380,30 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
         } catch (e: unknown) { console.error('[EnterpriseSettings] company intro save failed:', e); }
         setCompanyIntroSaving(false);
     };
-    const [infoRefresh, setInfoRefresh] = useState(0);
+    const { data: legacyCompanyFilesStatus } = useQuery({
+        queryKey: ['legacy-company-files', selectedTenantId],
+        queryFn: () => enterpriseApi.getLegacyCompanyFilesStatus(selectedTenantId || undefined),
+        enabled: activeTab === 'info' && Boolean(selectedTenantId),
+    });
+
+    const exportLegacyCompanyFiles = async () => {
+        setLegacyCompanyFilesExporting(true);
+        try {
+            const archive = await enterpriseApi.exportLegacyCompanyFiles(selectedTenantId || undefined);
+            const url = URL.createObjectURL(archive);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `hive-legacy-company-files-${selectedTenantId}.zip`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(url);
+        } catch (error: any) {
+            showAppToast(error?.message || t('enterprise.legacyCompanyFiles.exportFailed', 'Export failed'), 'error');
+        } finally {
+            setLegacyCompanyFilesExporting(false);
+        }
+    };
     // ─── Stats (scoped to selected tenant)
     const { data: stats } = useQuery({
         queryKey: ['enterprise-stats', selectedTenantId],
@@ -726,7 +734,13 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                         onSaveCompanyIntro={saveCompanyIntro}
                         companyIntroSaving={companyIntroSaving}
                         companyIntroSaved={companyIntroSaved}
-                        kbBrowser={<EnterpriseKBBrowser onRefresh={() => setInfoRefresh((v: number) => v + 1)} refreshKey={infoRefresh} />}
+                        legacyCompanyFilesCard={(
+                            <LegacyCompanyFilesExportCard
+                                status={legacyCompanyFilesStatus}
+                                exporting={legacyCompanyFilesExporting}
+                                onExport={exportLegacyCompanyFiles}
+                            />
+                        )}
                         themeColorPicker={<ThemeColorPicker />}
                         broadcastSection={<BroadcastSection />}
                         onDeleteCompany={handleDeleteCompany}

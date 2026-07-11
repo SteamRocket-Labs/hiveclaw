@@ -71,6 +71,39 @@ describe('request cleanup adapters', () => {
     expect(result).toBe(blob);
   });
 
+  it('exposes only read-only legacy company file export, not a fake company KB API', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+        getBlob: vi.fn(),
+      };
+    });
+    const { enterpriseApi } = await import('./domains/enterprise');
+    const { get, getBlob } = await import('./core/request');
+    vi.mocked(get).mockResolvedValue({
+      available: true,
+      file_count: 2,
+      total_bytes: 42,
+      excluded_symlink_count: 0,
+      read_only: true,
+      retired: true,
+    });
+    vi.mocked(getBlob).mockResolvedValue(new Blob(['zip'], { type: 'application/zip' }));
+
+    await enterpriseApi.getLegacyCompanyFilesStatus('tenant-1');
+    await enterpriseApi.exportLegacyCompanyFiles('tenant-1');
+
+    expect(get).toHaveBeenCalledWith('/enterprise/legacy-company-files/status?tenant_id=tenant-1');
+    expect(getBlob).toHaveBeenCalledWith('/enterprise/legacy-company-files/export?tenant_id=tenant-1');
+    expect('kbFiles' in enterpriseApi).toBe(false);
+    expect('kbRead' in enterpriseApi).toBe(false);
+    expect('kbWrite' in enterpriseApi).toBe(false);
+    expect('kbDelete' in enterpriseApi).toBe(false);
+    expect('kbUpload' in enterpriseApi).toBe(false);
+  });
+
   it('routes enterprise memory config through enterpriseApi', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

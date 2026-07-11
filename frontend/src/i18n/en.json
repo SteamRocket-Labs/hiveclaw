@@ -2625,24 +2625,16 @@
     },
     "companyIntro": {
       "title": "Company Introduction",
-      "description": "Describe your company's mission, products, and culture. This is saved to the knowledge base and accessible to all digital employees.",
-      "hint": "This content is written to the knowledge base and readable by all employees"
+      "description": "Describe your company's mission, products, and culture. This governed company context is included in agent conversations.",
+      "hint": "This content appears in every agent's system prompt"
     },
-    "kb": {
-      "title": "Company Knowledge Base",
-      "description": "Shared files accessible to all employees via the enterprise_info/ directory.",
-      "rootDir": "Root",
-      "uploadFile": "Upload File",
-      "newFolder": "New Folder",
-      "folderName": "Folder name",
-      "noFiles": "No files yet. Upload documents that your employees can reference.",
-      "dragOrClick": "Drag or click to upload",
-      "delete": "Delete",
-      "save": "Save",
-      "edit": "Edit",
-      "cancel": "Cancel",
-      "viewFile": "View File",
-      "confirmDelete": "Confirm Delete"
+    "legacyCompanyFiles": {
+      "title": "Retired shared files",
+      "description": "These files came from the retired shared-folder feature. Agents cannot access them. Export the read-only archive before removing the legacy data.",
+      "summary": "{{count}} files · {{size}}",
+      "export": "Export read-only archive",
+      "exporting": "Preparing archive…",
+      "exportFailed": "Export failed"
     },
     "audit": {
       "title": "Audit Log",

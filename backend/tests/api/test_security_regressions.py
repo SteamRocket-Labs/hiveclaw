@@ -429,54 +429,6 @@ async def test_agent_files_upload_rejects_sibling_prefix_escape(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_enterprise_kb_paths_reject_sibling_prefix_escape(monkeypatch, tmp_path):
-    import app.api.files as files_api
-
-    tenant_id = uuid.UUID("22222222-2222-2222-2222-222222222222")
-    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
-    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=tenant_id, role="org_admin")
-
-    info_dir = tmp_path / f"enterprise_info_{tenant_id}"
-    info_dir.mkdir()
-    sibling = tmp_path / f"enterprise_info_{tenant_id}-evil"
-    sibling.mkdir()
-    (sibling / "secret.txt").write_text("secret token\n", encoding="utf-8")
-    escaped_dir = f"../enterprise_info_{tenant_id}-evil"
-    escaped_file = f"{escaped_dir}/secret.txt"
-
-    with pytest.raises(HTTPException) as list_exc:
-        await files_api.list_enterprise_kb_files(path=escaped_dir, current_user=current_user)
-    assert list_exc.value.status_code == 403
-
-    with pytest.raises(HTTPException) as read_exc:
-        await files_api.read_enterprise_file(path=escaped_file, current_user=current_user)
-    assert read_exc.value.status_code == 403
-
-    with pytest.raises(HTTPException) as write_exc:
-        await files_api.write_enterprise_file(
-            path=f"{escaped_dir}/pwn.txt",
-            data=files_api.FileWrite(content="bad"),
-            current_user=current_user,
-        )
-    assert write_exc.value.status_code == 403
-
-    with pytest.raises(HTTPException) as delete_exc:
-        await files_api.delete_enterprise_file(path=escaped_file, current_user=current_user)
-    assert delete_exc.value.status_code == 403
-
-    with pytest.raises(HTTPException) as upload_exc:
-        await files_api.upload_enterprise_kb_file(
-            file=UploadFile(io.BytesIO(b"bad"), filename="pwn.txt"),
-            sub_path=escaped_dir,
-            current_user=current_user,
-        )
-    assert upload_exc.value.status_code == 403
-
-    assert not (sibling / "pwn.txt").exists()
-    assert (sibling / "secret.txt").read_text(encoding="utf-8") == "secret token\n"
-
-
-@pytest.mark.asyncio
 async def test_agent_import_skill_cannot_escape_skill_folder(monkeypatch, tmp_path):
     import app.api.files as files_api
     import app.api.skills as skills_api

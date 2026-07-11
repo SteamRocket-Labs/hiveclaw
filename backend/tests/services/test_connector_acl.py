@@ -239,78 +239,44 @@ def test_post_generation_permission_check_blocks_protected_snippet_without_sourc
     assert check.forbidden_sources == [hidden_source]
 
 
-@pytest.mark.asyncio
-async def test_truth_search_prompt_context_applies_connector_acl_mirror(monkeypatch) -> None:
-    from app.services.truth_search_service import TruthSearchService
+def test_viking_scheme_without_authoritative_acl_fails_closed() -> None:
+    from app.services.connector_acl import connector_item_visible, validate_generated_source_permissions
 
-    tenant_id = uuid4()
-    user_id = uuid4()
-    agent_id = uuid4()
+    source = "viking://enterprise/knowledge_base/policy.md"
+    item = {"source": source, "content": "legacy policy without ACL"}
 
-    monkeypatch.setattr("app.services.truth_search_service.viking_client.is_configured", lambda: True)
-
-    async def fake_find(*_args, **_kwargs):
-        return [
-            {
-                "source": "feishu://doc/allowed",
-                "content": "visible content",
-                "acl": {"tenant_ids": [str(tenant_id)], "user_ids": [str(user_id)]},
-            },
-            {
-                "source": "feishu://doc/hidden",
-                "content": "hidden payroll content",
-                "acl": {"tenant_ids": [str(tenant_id)], "user_ids": [str(uuid4())]},
-            },
-        ]
-
-    monkeypatch.setattr("app.services.truth_search_service.viking_client.find", fake_find)
-
-    service = TruthSearchService()
-    packs = await service.search(
-        "payroll",
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        current_user_id=user_id,
+    assert (
+        connector_item_visible(
+            item,
+            tenant_id="tenant-1",
+            current_user_id="user-1",
+            agent_id="agent-1",
+        )
+        is False
     )
-    block = service.render_prompt_context(packs)
 
-    assert "visible content" in block
-    assert "hidden payroll content" not in block
+    check = validate_generated_source_permissions(
+        f"Citing {source}",
+        source_items=[item],
+        tenant_id="tenant-1",
+        current_user_id="user-1",
+        agent_id="agent-1",
+    )
+    assert check.allowed is False
+    assert check.forbidden_sources == [source]
+    assert check.authorization_decision_entry["result"] == "blocked"
 
 
 @pytest.mark.asyncio
-async def test_memory_retriever_does_not_inject_connector_sources(monkeypatch, tmp_path) -> None:
+async def test_memory_retriever_does_not_inject_connector_sources(tmp_path) -> None:
     from app.memory.activation import ActivationContext
     from app.memory.retriever import MemoryRetriever
     from app.memory.types import MemoryKind
     from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
-    from app.services import viking_client
 
     tenant_id = uuid4()
     user_id = uuid4()
     agent_id = uuid4()
-
-    monkeypatch.setattr(viking_client, "is_configured", lambda: True)
-
-    captured = {"calls": 0}
-
-    async def fake_find(*_args, **kwargs):
-        captured["calls"] += 1
-        captured.update(kwargs)
-        return [
-            {
-                "source": "feishu://doc/allowed",
-                "content": "visible source content",
-                "acl": {"tenant_ids": [str(tenant_id)], "user_ids": [str(user_id)]},
-            },
-            {
-                "source": "feishu://doc/hidden",
-                "content": "hidden payroll content",
-                "acl": {"tenant_ids": [str(tenant_id)], "user_ids": [str(uuid4())]},
-            },
-        ]
-
-    monkeypatch.setattr(viking_client, "find", fake_find)
     context = ActivationContext(
         query="policy",
         principal_stack=PrincipalStack(
@@ -329,40 +295,3 @@ async def test_memory_retriever_does_not_inject_connector_sources(monkeypatch, t
 
     external = [item for item in items if item.kind == MemoryKind.EXTERNAL]
     assert external == []
-    assert captured["calls"] == 0
-
-
-@pytest.mark.asyncio
-async def test_viking_add_resource_sends_acl_metadata(monkeypatch) -> None:
-    from app.services import viking_client
-
-    requests = []
-
-    class _Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"ok": True}
-
-    class _Client:
-        async def post(self, url, *, json, headers):
-            requests.append({"url": url, "json": json, "headers": headers})
-            return _Response()
-
-    monkeypatch.setattr(viking_client, "_get_client", lambda: _Client())
-
-    result = await viking_client.add_resource(
-        content="policy",
-        to="viking://enterprise/knowledge_base/policy.md",
-        tenant_id="tenant-1",
-        agent_id="agent-1",
-        user_id="user-1",
-        acl={"tenant_ids": ["tenant-1"], "user_ids": ["user-1"]},
-        metadata={"source_type": "feishu"},
-    )
-
-    assert result == {"ok": True}
-    assert requests[0]["json"]["acl"] == {"tenant_ids": ["tenant-1"], "user_ids": ["user-1"]}
-    assert requests[0]["json"]["metadata"] == {"source_type": "feishu"}
-    assert requests[0]["headers"]["X-OpenViking-User"] == "user-1"

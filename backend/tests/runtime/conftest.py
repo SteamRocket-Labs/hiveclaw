@@ -52,9 +52,7 @@ def _default_runtime_config(monkeypatch, request):
 
     async def _stub_agent_runtime_context(*_args, **_kwargs):
         # The real builder calls get_agent_timezone which queries the Agent
-        # table — return empty so _resolve_retrieval_context keeps running
-        # (so tests that mock fetch_relevant_knowledge / build_memory_context
-        # individually still see their stubs flow through).
+        # table — return empty so runtime tests stay independent from Agent rows.
         return ""
 
     monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", _stub_runtime_config)

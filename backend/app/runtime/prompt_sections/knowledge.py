@@ -7,7 +7,7 @@ def build_knowledge_section(retrieval_context: str = "", *, budget_chars: int = 
     """Build the knowledge retrieval section.
 
     Args:
-        retrieval_context: Pre-fetched knowledge text from fetch_relevant_knowledge().
+        retrieval_context: Explicitly supplied, already-governed evidence text.
         budget_chars: Max chars for the knowledge section.
     """
     if not retrieval_context or not retrieval_context.strip():

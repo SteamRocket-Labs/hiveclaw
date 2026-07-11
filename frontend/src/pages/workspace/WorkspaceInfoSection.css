@@ -45,6 +45,31 @@
   margin-left: auto;
 }
 
+.ws-info-legacy-export {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border-color: var(--border-warning, var(--border));
+}
+
+.ws-info-legacy-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-body);
+}
+
+.ws-info-legacy-meta {
+  color: var(--text-secondary);
+  font-size: var(--text-meta);
+}
+
+@media (max-width: 720px) {
+  .ws-info-legacy-export {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 /* ── Danger zone —— error 描边容器 + 描边按钮 ──────── */
 
 .ws-info-danger {

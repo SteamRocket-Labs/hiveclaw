@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**20 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**21 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-02 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -104,7 +104,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | HN-06 | Skill provisional 只有负向回滚，无正向转正 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-07 | AI 资产用量投影只覆盖部分实际消费 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-01 | Agent use 与 Session/Resource ownership 混用 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| GOV-02 | 企业知识库“语义缺失、产品已上线” | P0 | 断点 | ✓ | △ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| GOV-02 | 企业知识库“语义缺失、产品已上线” | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-03 | Workflow promotion 需要 manager 又要求原会话 owner | P1 | 断点 | ✓ | ✗ | △ | △ | △ | ✗ | △ |
 | GOV-04 | Budget 状态通知声称有 outbox，实际不存在 | P1 | 断点 | ✓ | ✓ | △ | ✓ | ✗ | ✗ | △ |
 | UX-01 | 普通用户直接看到运行时/治理原始字段 | P1 | 局部闭环 | ✓ | △ | ✓ | ✓ | ✓ | ✗ | △ |
@@ -342,15 +342,19 @@ Workspace 内容事实仍在文件系统，新增 manifest 只保存 authority m
 
 ### GOV-02：企业知识库是“幽灵能力” — P0
 
-用户已经明确企业知识库尚未建设，但代码把它作为完整产品公开：`backend/app/api/files.py:591-810` 挂载 `/enterprise/knowledge-base`，以 `enterprise_info_<tenant>` 文件夹为事实源；前端 `frontend/src/pages/workspace/WorkspaceInfoSection.tsx:67-73` 宣称是所有 Agent 可访问的共享文件。
+**修复状态（2026-07-11）**：**闭环**。本轮没有把第二部分的 Company KB 伪装成已实现，而是完整退役旧文件树产品面：`/enterprise/knowledge-base/*` CRUD/status router、前端 FileBrowser/API adapter、OpenViking client/config、普通 Agent turn 自动 retrieval、Tool preflight 自动 truth search 均已删除。默认 retrieval-context seam 保留给已经获得治理证据的显式 specialized runtime，但 Hive 默认 invoker 返回空，不搜索 Personal/Company KB；Personal KB 继续只通过 `search_personal_kb/read_personal_kb` 工具读取。
+
+`enterprise_info_<tenant>` 不再创建 `knowledge_base/`，Agent filesystem 只可列出/读取生成的 `company_profile.md` 与 `org_structure.md`；任意旧 root upload、`knowledge_base/**`、目录或文档读取均 fail closed。已有 legacy 文件不删除、不猜 owner、不自动迁移：公司管理员在显式 tenant scope 下只能查看数量并导出 deterministic read-only ZIP；每个文件以 path/size/sha256 写入 manifest，symlink 排除，导出期间漂移返回 409，成功导出写 tenant audit。前端仅在确有 legacy 文件时显示“已退役共享文件”的恢复卡，不再提供 Upload/Edit/Delete 或“公司知识库”文案。
+
+**修复前事实**：用户已经明确企业知识库尚未建设，但代码把它作为完整产品公开：`backend/app/api/files.py:591-810` 挂载 `/enterprise/knowledge-base`，以 `enterprise_info_<tenant>` 文件夹为事实源；前端 `frontend/src/pages/workspace/WorkspaceInfoSection.tsx:67-73` 宣称是所有 Agent 可访问的共享文件。
 
 Upload 在 `files.py:696-726` 用 fire-and-forget `asyncio.create_task` 写 OpenViking，无 durable index job/receipt；PUT edit 与 DELETE 完全不更新/删除向量索引。没有 document version、grant、sensitivity、citation、promotion、rollback 或 DB canonical truth。
 
 还有一个更隐蔽的 ACL fail-open：`backend/app/services/connector_acl.py:23-36` 只把 `openviking://` 列为 governed source，OpenViking client 与 upload 使用的却是 `viking://`；`connector_item_visible` 在 `540-556` 对无 ACL metadata 的非 governed scheme 直接放行。因此只要 provider search result 没有回传 ACL，Hive 本地 mirror 就会把它当 legacy internal item 注入 prompt。现有 tests 也没有 `viking://` 缺 ACL 必须拒绝的契约。
 
-**断链**：文件内容与检索索引必然分裂；UI/Agent 认为这是企业知识，而实际上只是共享目录加最佳努力向量副本。
+**修复前断链**：文件内容与检索索引必然分裂；UI/Agent 认为这是企业知识，而实际上只是共享目录加最佳努力向量副本。
 
-**本轮正确关闭方式**：既然 Company KB 是后续第二部分，本轮应隐藏/退役这组 route、UI 和自动 OpenViking retrieval，保留 Company Intro 与 org structure；把现存文件只读导出/隔离。未来 Company KB 必须建立在 KnowledgeDocument/Grant/IndexJob 的 company scope 上，而不是扩写 legacy folder。
+**落地结果**：Company KB 继续作为第二部分的明确“已知缺失”；旧 route/UI/自动检索已退役，Company Intro 与 org structure保留为治理/组织上下文，现存文件已从 Agent 与普通产品面隔离并有管理员只读导出。未来 Company KB 必须建立在 KnowledgeDocument/Grant/IndexJob 的 company scope 上，不能扩写 legacy folder或重新接回默认 context assembly。
 
 ### GOV-03：Workflow promotion 的两种权威相互否定 — P1
 
@@ -1960,3 +1964,77 @@ npm run build
 ```
 
 结果：`101 test files / 588 tests passed`；TypeScript + Vite production build exit 0，`7072 modules transformed`。
+
+### GOV-02 — 退役伪 Company KB，隔离并只读导出 legacy 文件
+
+状态：**闭环**。提交主题：`fix(GOV-02): retire the ghost company knowledge surface`。
+
+七原子证据：
+
+1. **输入**：Company Intro与组织结构继续由既有受信 admin/config同步入口维护；Agent只通过明确的`enterprise_info/company_profile.md`或`org_structure.md`读取生成上下文。legacy恢复入口只接受authenticated admin与显式tenant selector，不接受任意文件path；Personal KB输入仍只进入知识工具。
+2. **权威**：legacy status/export先执行`_require_tenant_admin()`与`resolve_and_pin_tenant_scope()`，org admin不能切tenant，platform admin必须显式指定目标tenant。Agent filesystem使用`company_context_path_allowed()`白名单；未知root文件、旧`knowledge_base/**`和symlink均不可见。`viking://`与`openviking://`都被connector ACL识别为governed source，缺权威ACL时fail closed。
+3. **执行**：旧`/enterprise/knowledge-base` CRUD/OpenViking status、frontend FileBrowser、`viking_client.py`、`truth_search_service.py`、invoker自动检索与Tool preflight自动搜索均删除。默认`_resolve_retrieval_context()`只返回空；generic prompt/kernel retrieval seam仍可消费specialized runtime显式提供的已治理证据，但不负责知识发现。Company/Personal知识搜索不能绕过Tool Runtime。
+4. **证据**：legacy原文件保持原地且只读；每次导出生成`hive.legacy_company_files_export.v1` manifest，固化tenant、相对path、size、sha256、retired surface和排除symlink计数。成功导出写tenant-scoped `legacy_company_files_exported` AuditLog；ZIP本身携带manifest，不依赖旧向量索引。
+5. **恢复**：status/export可重复调用且不修改源文件；ZIP entry时间与顺序确定。scan到archive窗口文件消失、size/hash变化时返回409，禁止输出自相矛盾证据；symlink永不跟随。归档使用8MB阈值`SpooledTemporaryFile`，大包自动落临时盘并以1MB chunk流式返回，成功、异常或消费结束都会关闭资源。无legacy文件返回404且UI不展示卡片；没有破坏性自动迁移或删除步骤。
+6. **消费**：公司后台仅在`available=true`时呈现“已退役共享文件”恢复卡，只有read-only export动作；普通用户与Agent没有该产品面。tool schema不再示例`enterprise_info/knowledge_base`，Company Intro文案明确为系统上下文而非知识库。Personal KB工具链未被合并或静态注入。
+7. **验收**：覆盖旧route/provider/source静态退役、admin/tenant authority、文件分类、canonical context白名单、symlink、hash manifest、只读性、audit、409 drift契约、`viking://`无ACL阻断、默认no-prefetch、Tool preflight不搜索KB、前端无CRUD adapter、恢复卡空/非空状态、Ruff、前端全量/build与backend全量。
+
+KISS/奥卡姆证据：本轮净删除一整套router、provider client、自动retrieval service与FileBrowser适配器；只新增一个无数据库依赖的scanner/exporter和两个admin GET。没有预造Company KB schema、vector job、proposal壳或第二权限系统；真正Company KB仍严格留在第二部分建设。
+
+RED证据：
+
+```text
+Backend GOV-02契约：8 failed
+- 旧enterprise_kb_router、OpenViking provider与自动retrieval仍存在
+- legacy scanner/exporter和admin recovery API不存在
+- viking://无ACL仍返回visible
+- Agent仍可列出/读取enterprise_info/knowledge_base与任意旧root文件
+- fresh workspace仍创建伪enterprise knowledge_base目录
+
+Frontend GOV-02契约：2 failed, 24 passed
+- enterpriseApi缺legacy只读恢复入口且仍暴露kbFiles/kbRead/kbWrite/kbDelete/kbUpload
+- WorkspaceInfo仍渲染Company KB/FileBrowser产品面
+```
+
+GREEN证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q \
+  tests/architecture/test_company_knowledge_retirement.py \
+  tests/api/test_legacy_company_files_api.py \
+  tests/api/test_security_regressions.py \
+  tests/services/test_legacy_company_files.py \
+  tests/services/test_connector_acl.py \
+  tests/services/test_action_preflight.py \
+  tests/runtime/test_memory_query_routing.py \
+  tests/runtime/test_invoker.py \
+  tests/runtime/test_prompt_builder.py \
+  tests/runtime/test_prompt_sections.py \
+  tests/tools/test_workspace.py \
+  tests/tools/test_service.py \
+  tests/tools/test_tool_runtime_preflight.py \
+  tests/e2e/test_tool_call_recovery_closure.py \
+  tests/test_startup_background_config.py
+```
+
+结果：相关面 `296 passed, 4 warnings in 8.41s`。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`102 test files / 591 tests passed`；TypeScript + Vite production build exit 0，`7073 modules transformed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <GOV-02当前变更Python文件>
+ruff format --check <GOV-02当前变更Python文件>
+pytest tests -q
+```
+
+结果：Ruff lint/format全绿；最终backend全量 `6425 passed, 1 skipped, 5 warnings in 151.64s`，零失败。

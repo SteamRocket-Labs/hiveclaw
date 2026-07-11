@@ -323,7 +323,6 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
     else:
         enterprise_dir = WORKSPACE_ROOT / "enterprise_info"
     enterprise_dir.mkdir(parents=True, exist_ok=True)
-    (enterprise_dir / "knowledge_base").mkdir(exist_ok=True)
 
     profile_path = enterprise_dir / "company_profile.md"
     if not profile_path.exists():

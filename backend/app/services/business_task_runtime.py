@@ -158,6 +158,10 @@ async def stage_business_task_runtime(
         prompt=task.description,
         trace_id=f"business_task:{runtime_task_id.hex}",
         parent_session_id=str(root_session_id) if root_session_id else None,
+        root_user_id=requester_user_id,
+        root_session_id=str(root_session_id) if root_session_id else None,
+        root_runtime_task_id=runtime_task_id,
+        delegation_chain_json=[f"agent:{task.agent_id}", f"business-task:{task.id}"],
         depth=1,
         root_idempotency_key=business_task_runtime_root_key(task_id=task.id, request_id=request_id),
         metadata_json={

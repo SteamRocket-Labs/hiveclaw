@@ -57,8 +57,14 @@ def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
         "trace_id": task.trace_id,
         "parent_session_id": task.parent_session_id,
         "child_session_id": task.child_session_id,
+        "root_user_id": str(getattr(task, "root_user_id", None)) if getattr(task, "root_user_id", None) else None,
+        "root_session_id": getattr(task, "root_session_id", None),
+        "delegation_chain": list(getattr(task, "delegation_chain_json", None) or []),
         "depth": task.depth,
         "budget_run_id": str(task.budget_run_id) if task.budget_run_id else None,
+        "root_runtime_task_id": str(getattr(task, "root_runtime_task_id", None))
+        if getattr(task, "root_runtime_task_id", None)
+        else None,
         "budget_reservation_key": task.budget_reservation_key,
         "budget_admission_status": task.budget_admission_status,
         "budget_terminal_reason": task.budget_terminal_reason,
@@ -381,6 +387,10 @@ async def create_runtime_task_record(
     budget_reservation_key: str | None = None,
     budget_admission_status: str | None = None,
     budget_terminal_reason: str | None = None,
+    root_user_id: uuid.UUID | None = None,
+    root_session_id: str | None = None,
+    root_runtime_task_id: uuid.UUID | str | None = None,
+    delegation_chain: list[str] | tuple[str, ...] | None = None,
     root_idempotency_key: str | None = None,
     config_snapshot_hash: str | None = None,
     policy_snapshot_hash: str | None = None,
@@ -424,6 +434,12 @@ async def create_runtime_task_record(
                     trace_id=trace_id,
                     parent_session_id=parent_session_id,
                     child_session_id=child_session_id,
+                    root_user_id=root_user_id,
+                    root_session_id=str(root_session_id or "").strip() or None,
+                    root_runtime_task_id=_coerce_task_id(root_runtime_task_id)
+                    if root_runtime_task_id is not None
+                    else None,
+                    delegation_chain_json=[str(item) for item in (delegation_chain or []) if str(item).strip()],
                     depth=depth,
                     metadata_json=metadata_json,
                     started_at=started_at,
@@ -550,6 +566,8 @@ async def get_runtime_task_record(task_id: str) -> dict[str, Any] | None:
 async def list_runtime_task_records(
     *,
     parent_agent_id: uuid.UUID | None = None,
+    root_user_id: uuid.UUID | None = None,
+    root_session_id: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     # Listing a single agent's runtime tasks → scope to that agent's tenant.
@@ -562,6 +580,10 @@ async def list_runtime_task_records(
             stmt = select(RuntimeTask).order_by(RuntimeTask.created_at.desc()).limit(limit)
             if parent_agent_id is not None:
                 stmt = stmt.where(RuntimeTask.parent_agent_id == parent_agent_id)
+            if root_user_id is not None:
+                stmt = stmt.where(RuntimeTask.root_user_id == root_user_id)
+            if root_session_id is not None:
+                stmt = stmt.where(RuntimeTask.root_session_id == str(root_session_id))
             result = await db.execute(stmt)
             tasks = result.scalars().all()
         except Exception:

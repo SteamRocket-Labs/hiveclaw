@@ -365,13 +365,22 @@ async def test_create_runtime_task_record_persists_runtime_budget_metadata(monke
     fake_session = _CreateSession()
     _route_runtime_accessors(monkeypatch, fake_session, tenant_id=uuid4())
     budget_run_id = uuid4()
+    root_user_id = uuid4()
+    root_session_id = str(uuid4())
+    root_runtime_task_id = uuid4()
+    parent_agent_id = uuid4()
 
     task_id = await create_runtime_task_record(
         task_id=uuid4().hex,
         task_type="subagent",
+        parent_agent_id=parent_agent_id,
         budget_run_id=budget_run_id,
         budget_reservation_key="subagent:child-1",
         budget_admission_status="reserved",
+        root_user_id=root_user_id,
+        root_session_id=root_session_id,
+        root_runtime_task_id=root_runtime_task_id,
+        delegation_chain=[f"agent:{parent_agent_id}", "subagent:scout"],
     )
 
     assert task_id
@@ -379,6 +388,10 @@ async def test_create_runtime_task_record_persists_runtime_budget_metadata(monke
     assert task.budget_run_id == budget_run_id
     assert task.budget_reservation_key == "subagent:child-1"
     assert task.budget_admission_status == "reserved"
+    assert task.root_user_id == root_user_id
+    assert task.root_session_id == root_session_id
+    assert task.root_runtime_task_id == root_runtime_task_id
+    assert task.delegation_chain_json == [f"agent:{parent_agent_id}", "subagent:scout"]
 
 
 @pytest.mark.asyncio

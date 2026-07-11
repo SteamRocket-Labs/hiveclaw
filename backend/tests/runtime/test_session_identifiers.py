@@ -16,6 +16,22 @@ def test_agent_pair_ids_are_canonical():
     assert build_agent_pair_session_id(a, b) == build_agent_pair_session_id(b, a)
 
 
+def test_agent_pair_session_ids_are_isolated_by_root_owner_and_session():
+    from app.session_identifiers import build_agent_pair_session_id
+
+    a = uuid4()
+    b = uuid4()
+    owner_a = uuid4()
+    owner_b = uuid4()
+    session_a = uuid4()
+    session_b = uuid4()
+
+    first = build_agent_pair_session_id(a, b, owner_user_id=owner_a, root_session_id=session_a)
+    assert first == build_agent_pair_session_id(b, a, owner_user_id=owner_a, root_session_id=session_a)
+    assert first != build_agent_pair_session_id(a, b, owner_user_id=owner_b, root_session_id=session_a)
+    assert first != build_agent_pair_session_id(a, b, owner_user_id=owner_a, root_session_id=session_b)
+
+
 def test_feishu_lookup_ids_prefer_user_id_and_keep_open_id_legacy_alias():
     from app.session_identifiers import build_feishu_session_lookup_ids
 

@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.runtime_task import RuntimeTask
 from app.models.trigger import AgentTrigger
+from app.core.execution_context import ExecutionPrincipal
+from app.services.runtime_task_authority import authorize_runtime_task_record
 
 EVENT_WAIT_TRIGGER_TYPES = {"poll", "on_message", "webhook"}
 SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
@@ -325,6 +327,7 @@ async def build_agent_autonomy_overview(
     agent: Any,
     lookback_hours: int = 24,
     include_diagnostics: bool = False,
+    principal: ExecutionPrincipal | None = None,
 ) -> dict[str, Any]:
     agent_id = getattr(agent, "id")
     trigger_result = await db.execute(
@@ -332,6 +335,26 @@ async def build_agent_autonomy_overview(
     )
     triggers = list(trigger_result.scalars().all())
     attempts = await _query_agent_runtime_tasks(db, agent_id=agent_id, lookback_hours=lookback_hours, limit=100)
+    if principal is not None:
+        attempts = [
+            task
+            for task in attempts
+            if authorize_runtime_task_record(
+                {
+                    "task_id": task.id.hex,
+                    "task_type": task.task_type,
+                    "tenant_id": str(task.tenant_id) if task.tenant_id else None,
+                    "parent_agent_id": str(task.parent_agent_id) if task.parent_agent_id else None,
+                    "root_user_id": str(task.root_user_id) if task.root_user_id else None,
+                    "root_session_id": task.root_session_id,
+                    "delegation_chain": list(task.delegation_chain_json or []),
+                    "metadata": task.metadata_json or {},
+                },
+                principal=principal,
+                action="api_overview",
+                require_root_session=False,
+            ).allowed
+        ]
     findings = build_agent_findings(triggers, attempts)
     return {
         "agent_id": str(agent_id),
@@ -365,6 +388,10 @@ async def list_agent_runtime_task_views(
     status: str | None = None,
     limit: int = 50,
     include_diagnostics: bool = False,
+    principal: ExecutionPrincipal,
+    allow_operator_override: bool = False,
+    operator_user_id: uuid.UUID | None = None,
+    operator_reason: str | None = None,
 ) -> list[dict[str, Any]]:
     tasks = await _query_agent_runtime_tasks(
         db,
@@ -376,6 +403,27 @@ async def list_agent_runtime_task_views(
     )
     filtered: list[Any] = []
     for task in tasks:
+        record = {
+            "task_id": task.id.hex,
+            "task_type": task.task_type,
+            "tenant_id": str(task.tenant_id) if task.tenant_id else None,
+            "parent_agent_id": str(task.parent_agent_id) if task.parent_agent_id else None,
+            "root_user_id": str(task.root_user_id) if task.root_user_id else None,
+            "root_session_id": task.root_session_id,
+            "delegation_chain": list(task.delegation_chain_json or []),
+            "metadata": task.metadata_json or {},
+        }
+        authority = authorize_runtime_task_record(
+            record,
+            principal=principal,
+            action="api_list",
+            allow_operator_override=allow_operator_override,
+            operator_user_id=operator_user_id,
+            operator_reason=operator_reason,
+            require_root_session=principal.root_session_id is not None,
+        )
+        if not authority.allowed:
+            continue
         metadata = _attempt_metadata(task)
         if trigger_id and trigger_id not in {str(item) for item in metadata.get("trigger_ids", [])}:
             continue

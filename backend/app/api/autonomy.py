@@ -9,9 +9,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
+from app.core.execution_context import ExecutionPrincipal
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.chat_session import ChatSession
+from app.models.audit import AuditLog
 from app.models.user import User
 from app.services.autonomy_overview import (
     build_agent_autonomy_overview,
@@ -71,6 +73,12 @@ async def get_agent_autonomy_overview(
         agent=agent,
         lookback_hours=lookback_hours,
         include_diagnostics=False,
+        principal=ExecutionPrincipal(
+            tenant_id=agent.tenant_id,
+            source_agent_id=agent.id,
+            requester_user_id=current_user.id,
+            origin="rest",
+        ),
     )
 
 
@@ -88,6 +96,12 @@ async def get_agent_autonomy_diagnostics(
         agent=agent,
         lookback_hours=lookback_hours,
         include_diagnostics=True,
+        principal=ExecutionPrincipal(
+            tenant_id=agent.tenant_id,
+            source_agent_id=agent.id,
+            requester_user_id=current_user.id,
+            origin="rest",
+        ),
     )
 
 
@@ -99,11 +113,40 @@ async def list_agent_runtime_tasks(
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     diagnostics: bool = Query(default=False),
+    root_session_id: uuid.UUID | None = Query(default=None),
+    operator_override: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List display-safe RuntimeTask attempts for one accessible agent."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    reason = str(operator_reason or "").strip()
+    if operator_override:
+        if access_level != "manage":
+            raise HTTPException(status_code=403, detail="RuntimeTask operator override requires manage access")
+        if not reason:
+            raise HTTPException(status_code=422, detail="operator_reason is required for RuntimeTask override")
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                agent_id=agent_id,
+                tenant_id=agent.tenant_id,
+                action="runtime_task:operator_list_override",
+                details={
+                    "operator_reason": reason,
+                    "root_session_filter": str(root_session_id) if root_session_id else None,
+                },
+            )
+        )
+        await db.flush()
+    principal = ExecutionPrincipal(
+        tenant_id=agent.tenant_id,
+        source_agent_id=agent.id,
+        requester_user_id=current_user.id,
+        root_session_id=str(root_session_id) if root_session_id else None,
+        origin="rest",
+    )
     return await list_agent_runtime_task_views(
         db=db,
         agent_id=agent_id,
@@ -112,6 +155,10 @@ async def list_agent_runtime_tasks(
         status=status,
         limit=limit,
         include_diagnostics=diagnostics,
+        principal=principal,
+        allow_operator_override=operator_override,
+        operator_user_id=current_user.id if operator_override else None,
+        operator_reason=reason if operator_override else None,
     )
 
 

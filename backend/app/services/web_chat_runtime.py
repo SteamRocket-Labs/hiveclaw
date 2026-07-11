@@ -1807,6 +1807,11 @@ async def start_web_chat_run(
         trace_id=f"{runtime_task_type}:{run_uuid.hex}",
         parent_session_id=str(session.id),
         child_session_id=str(session.id),
+        root_user_id=user.id,
+        root_session_id=str(getattr(session, "root_session_id", None) or session.id),
+        root_runtime_task_id=_uuid_or_none(supplied_metadata.get("root_runtime_task_id")) or run_uuid,
+        delegation_chain_json=list(supplied_metadata.get("delegation_chain") or [])
+        or [f"agent:{agent.id}", f"session:{session.id}"],
         depth=1,
         tenant_id=getattr(agent, "tenant_id", None),
         budget_run_id=budget_run_id,
@@ -2149,6 +2154,11 @@ async def start_channel_chat_run_from_saved_turn(
         trace_id=f"{source_channel}-chat:{run_uuid.hex}",
         parent_session_id=str(session.id),
         child_session_id=str(session.id),
+        root_user_id=user.id,
+        root_session_id=str(getattr(session, "root_session_id", None) or session.id),
+        root_runtime_task_id=_uuid_or_none(metadata.get("root_runtime_task_id")) or run_uuid,
+        delegation_chain_json=list(metadata.get("delegation_chain") or [])
+        or [f"agent:{agent.id}", f"session:{session.id}"],
         depth=1,
         tenant_id=getattr(agent, "tenant_id", None),
         budget_run_id=budget_run_id,

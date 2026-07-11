@@ -789,7 +789,7 @@ async def test_delegate_to_agent_async_threads_permission_profile(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_list_async_tasks_filters_in_memory_fallback(monkeypatch):
+async def test_list_async_tasks_fails_closed_when_authority_db_is_unavailable(monkeypatch):
     from app.agents.orchestrator import check_async_delegation, delegate_async
     from app.services.agent_tool_domains.messaging import _list_async_tasks
 
@@ -827,10 +827,18 @@ async def test_list_async_tasks_filters_in_memory_fallback(monkeypatch):
         parent_agent_id=owner_b,
     )
 
-    payload = json.loads(await _list_async_tasks(owner_a))
-    task_ids = {task["task_id"] for task in payload}
-    assert handle_a.task_id in task_ids
-    assert handle_b.task_id not in task_ids
+    from app.core.execution_context import ExecutionPrincipal
+
+    result = await _list_async_tasks(
+        owner_a,
+        principal=ExecutionPrincipal(
+            tenant_id=uuid4(),
+            source_agent_id=owner_a,
+            requester_user_id=uuid4(),
+            root_session_id="root-session-a",
+        ),
+    )
+    assert "authority evidence is unavailable" in result
 
     never_finish.set()
     await check_async_delegation(handle_a.task_id)
@@ -868,8 +876,19 @@ async def test_check_async_task_rejects_other_agent_when_db_lookup_unavailable(m
         parent_agent_id=owner_a,
     )
 
-    result = await _check_async_task(owner_b, {"task_id": handle.task_id})
-    assert "does not belong" in result
+    from app.core.execution_context import ExecutionPrincipal
+
+    result = await _check_async_task(
+        owner_b,
+        {"task_id": handle.task_id},
+        principal=ExecutionPrincipal(
+            tenant_id=uuid4(),
+            source_agent_id=owner_b,
+            requester_user_id=uuid4(),
+            root_session_id="root-session-b",
+        ),
+    )
+    assert "authority evidence is unavailable" in result
 
     never_finish.set()
     await check_async_delegation(handle.task_id)
@@ -906,8 +925,19 @@ async def test_cancel_async_task_rejects_other_agent_when_db_lookup_unavailable(
         parent_agent_id=owner_a,
     )
 
-    result = await _cancel_async_task(owner_b, {"task_id": handle.task_id})
-    assert "does not belong" in result
+    from app.core.execution_context import ExecutionPrincipal
+
+    result = await _cancel_async_task(
+        owner_b,
+        {"task_id": handle.task_id},
+        principal=ExecutionPrincipal(
+            tenant_id=uuid4(),
+            source_agent_id=owner_b,
+            requester_user_id=uuid4(),
+            root_session_id="root-session-b",
+        ),
+    )
+    assert "authority evidence is unavailable" in result
 
     never_finish.set()
     await check_async_delegation(handle.task_id)

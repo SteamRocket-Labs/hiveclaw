@@ -1144,6 +1144,7 @@ async def _send_message_to_agent_outcome(
                 source_agent_name=source_name,
                 target_agent_name=target.name,
                 source_participant_id=src_participant_id,
+                root_session_id=principal.root_session_id if principal else None,
             )
             session_id = str(chat_session.id)
             session_agent_id = chat_session.agent_id
@@ -1704,7 +1705,12 @@ async def _delegate_to_local_agent_channel(
         raise
 
 
-async def _check_async_task(from_agent_id: uuid.UUID, args: dict) -> str:
+async def _check_async_task(
+    from_agent_id: uuid.UUID,
+    args: dict,
+    *,
+    principal: ExecutionPrincipal | None = None,
+) -> str:
     """Check a previously spawned async task."""
     task_id = (args.get("task_id") or "").strip()
     if not task_id:
@@ -1712,14 +1718,20 @@ async def _check_async_task(from_agent_id: uuid.UUID, args: dict) -> str:
 
     try:
         from app.agents.orchestrator import check_async_delegation
+        from app.services.runtime_task_authority import authorize_runtime_task_record
         from app.services.runtime_task_service import get_runtime_task_record
 
         try:
             record = await get_runtime_task_record(task_id)
-        except Exception:
-            record = None
-        if record and record.get("parent_agent_id") not in {None, str(from_agent_id)}:
-            return "❌ This task does not belong to the current agent"
+        except Exception as exc:
+            return f"❌ RuntimeTask authority evidence is unavailable: {exc}"
+        if record is None:
+            return "❌ RuntimeTask not found"
+        if principal is None:
+            return "❌ RuntimeTask root authority is required"
+        decision = authorize_runtime_task_record(record, principal=principal, action="read")
+        if not decision.allowed:
+            return f"❌ RuntimeTask access denied: {decision.reason}"
 
         status = await check_async_delegation(task_id, parent_agent_id=from_agent_id)
         if status.get("status") == "forbidden":
@@ -1730,7 +1742,12 @@ async def _check_async_task(from_agent_id: uuid.UUID, args: dict) -> str:
         return f"❌ Error checking async task: {e}"
 
 
-async def _cancel_async_task(from_agent_id: uuid.UUID, args: dict) -> str:
+async def _cancel_async_task(
+    from_agent_id: uuid.UUID,
+    args: dict,
+    *,
+    principal: ExecutionPrincipal | None = None,
+) -> str:
     """Cancel a previously spawned async task if it belongs to the current agent."""
     task_id = (args.get("task_id") or "").strip()
     if not task_id:
@@ -1738,14 +1755,20 @@ async def _cancel_async_task(from_agent_id: uuid.UUID, args: dict) -> str:
 
     try:
         from app.agents.orchestrator import ASYNC_DELEGATION_CANCEL_GRACE_SECONDS, cancel_async_delegation
+        from app.services.runtime_task_authority import authorize_runtime_task_record
         from app.services.runtime_task_service import get_runtime_task_record
 
         try:
             record = await get_runtime_task_record(task_id)
-        except Exception:
-            record = None
-        if record and record.get("parent_agent_id") not in {None, str(from_agent_id)}:
-            return "❌ This task does not belong to the current agent"
+        except Exception as exc:
+            return f"❌ RuntimeTask authority evidence is unavailable: {exc}"
+        if record is None:
+            return "❌ RuntimeTask not found"
+        if principal is None:
+            return "❌ RuntimeTask root authority is required"
+        decision = authorize_runtime_task_record(record, principal=principal, action="cancel")
+        if not decision.allowed:
+            return f"❌ RuntimeTask access denied: {decision.reason}"
 
         min_runtime_seconds, timeout_error = _parse_timeout_seconds_arg(
             args.get("min_runtime_seconds"),
@@ -1770,19 +1793,31 @@ async def _cancel_async_task(from_agent_id: uuid.UUID, args: dict) -> str:
         return f"❌ Error cancelling async task: {e}"
 
 
-async def _list_async_tasks(from_agent_id: uuid.UUID) -> str:
+async def _list_async_tasks(
+    from_agent_id: uuid.UUID,
+    *,
+    principal: ExecutionPrincipal | None = None,
+) -> str:
     """List recent async runtime tasks created by the current agent."""
     try:
-        from app.agents.orchestrator import list_async_delegations
+        from app.services.runtime_task_authority import authorize_runtime_task_record
         from app.services.runtime_task_service import list_runtime_task_records
 
+        if principal is None or principal.requester_user_id is None or principal.root_session_id is None:
+            return "❌ RuntimeTask root authority is required"
         try:
-            tasks = await list_runtime_task_records(parent_agent_id=from_agent_id, limit=20)
-        except Exception:
-            tasks = []
-        if not tasks:
-            tasks = list_async_delegations(parent_agent_id=from_agent_id)
-        return json.dumps(tasks, ensure_ascii=False)
+            tasks = await list_runtime_task_records(
+                parent_agent_id=from_agent_id,
+                root_user_id=principal.requester_user_id,
+                root_session_id=principal.root_session_id,
+                limit=20,
+            )
+        except Exception as exc:
+            return f"❌ RuntimeTask authority evidence is unavailable: {exc}"
+        authorized = [
+            task for task in tasks if authorize_runtime_task_record(task, principal=principal, action="list").allowed
+        ]
+        return json.dumps(authorized, ensure_ascii=False)
     except Exception as e:
         logger.error("list_async_tasks failed: %s", e, exc_info=True)
         return f"❌ Error listing async tasks: {e}"

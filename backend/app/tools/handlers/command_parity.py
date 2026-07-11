@@ -27,6 +27,10 @@ from app.services.agent_work_ledger import read_agent_work_ledger_view, upsert_a
 from app.services.command_escalation_service import request_command_escalation
 from app.services.plan_verification_service import verify_plan_artifact
 from app.services.runtime_task_service import get_runtime_task_record, update_runtime_task_record
+from app.services.runtime_task_authority import (
+    authorize_runtime_task_record,
+    execution_principal_from_tool_context,
+)
 from app.services.session_goal_service import (
     get_session_goal_from_tool,
     persist_session_goal_from_tool,
@@ -43,13 +47,6 @@ def _json(payload: dict[str, Any]) -> str:
 
 def _session_id(request: ToolExecutionRequest) -> str | None:
     return str(request.context.session_id).strip() if request.context.session_id else None
-
-
-def _can_access_runtime_task(record: dict[str, Any] | None, request: ToolExecutionRequest) -> bool:
-    if not record:
-        return False
-    parent_agent_id = record.get("parent_agent_id")
-    return parent_agent_id in {None, str(request.context.agent_id)}
 
 
 @tool(
@@ -212,8 +209,20 @@ async def task_output(request: ToolExecutionRequest) -> str:
     record = await get_runtime_task_record(plan.runtime_task_id or "")
     if record is None:
         return _json({"ok": False, "runtime_task_id": plan.runtime_task_id, "error": "RuntimeTask not found."})
-    if not _can_access_runtime_task(record, request):
-        return _json({"ok": False, "runtime_task_id": plan.runtime_task_id, "error": "forbidden"})
+    authority = authorize_runtime_task_record(
+        record,
+        principal=execution_principal_from_tool_context(request.context),
+        action="read_output",
+    )
+    if not authority.allowed:
+        return _json(
+            {
+                "ok": False,
+                "runtime_task_id": plan.runtime_task_id,
+                "error": "forbidden",
+                "reason": authority.reason,
+            }
+        )
     return _json({"ok": True, "runtime_task_id": plan.runtime_task_id, "task": record})
 
 
@@ -238,8 +247,20 @@ async def task_stop(request: ToolExecutionRequest) -> str:
     record = await get_runtime_task_record(plan.runtime_task_id or "")
     if record is None:
         return _json({"ok": False, "runtime_task_id": plan.runtime_task_id, "error": "RuntimeTask not found."})
-    if not _can_access_runtime_task(record, request):
-        return _json({"ok": False, "runtime_task_id": plan.runtime_task_id, "error": "forbidden"})
+    authority = authorize_runtime_task_record(
+        record,
+        principal=execution_principal_from_tool_context(request.context),
+        action="stop",
+    )
+    if not authority.allowed:
+        return _json(
+            {
+                "ok": False,
+                "runtime_task_id": plan.runtime_task_id,
+                "error": "forbidden",
+                "reason": authority.reason,
+            }
+        )
     if str(record.get("status") or "") in {"completed", "failed", "killed", "skipped", "needs_reconciliation"}:
         return _json(
             {

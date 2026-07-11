@@ -16,6 +16,15 @@ from app.session_identifiers import (
 )
 
 
+def _uuid_or_none(value: uuid.UUID | str | None) -> uuid.UUID | None:
+    if value is None:
+        return None
+    try:
+        return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+    except ValueError:
+        return None
+
+
 def session_conversation_id(session: ChatSession) -> str:
     """Return the canonical conversation id used by transcript ledgers."""
     return str(session.id)
@@ -31,12 +40,14 @@ def _normalize_agent_pair_session_contract(
     source_agent_name: str,
     target_agent_name: str,
     source_participant_id: uuid.UUID | None = None,
+    root_session_id: uuid.UUID | str | None = None,
 ) -> None:
     """Repair any existing pair session into the canonical A2A read-model shape."""
     source_uuid = uuid.UUID(str(source_agent_id))
     target_uuid = uuid.UUID(str(target_agent_id))
     tenant_uuid = uuid.UUID(str(tenant_id)) if tenant_id else None
     owner_uuid = uuid.UUID(str(owner_user_id))
+    root_session_uuid = _uuid_or_none(root_session_id)
     session_agent_id, peer_agent_id = canonicalize_agent_pair_ids(source_uuid, target_uuid)
 
     session.agent_id = session_agent_id
@@ -44,6 +55,8 @@ def _normalize_agent_pair_session_contract(
     if tenant_uuid is not None:
         session.tenant_id = tenant_uuid
     session.user_id = owner_uuid
+    session.parent_session_id = root_session_uuid
+    session.root_session_id = root_session_uuid
     if not getattr(session, "title", None):
         session.title = f"{source_agent_name} ↔ {target_agent_name}"
     session.source_channel = "agent"
@@ -65,6 +78,8 @@ def _normalize_agent_pair_session_contract(
             "to_agent_id": str(target_uuid),
             "from_agent_name": source_agent_name,
             "to_agent_name": target_agent_name,
+            "root_session_id": str(root_session_id) if root_session_id else None,
+            "root_user_id": str(owner_uuid),
         }
     )
     session.transcript_metadata_json = metadata
@@ -112,13 +127,20 @@ async def find_or_create_agent_pair_session(
     source_agent_name: str,
     target_agent_name: str,
     source_participant_id: uuid.UUID | None = None,
+    root_session_id: uuid.UUID | str | None = None,
 ) -> ChatSession:
     """Find or create the durable ChatSession for an agent pair."""
     source_uuid = uuid.UUID(str(source_agent_id))
     target_uuid = uuid.UUID(str(target_agent_id))
     tenant_uuid = uuid.UUID(str(tenant_id)) if tenant_id else None
     owner_uuid = uuid.UUID(str(owner_user_id))
-    session_uuid = build_agent_pair_session_id(source_uuid, target_uuid)
+    root_session_uuid = _uuid_or_none(root_session_id)
+    session_uuid = build_agent_pair_session_id(
+        source_uuid,
+        target_uuid,
+        owner_user_id=owner_uuid,
+        root_session_id=root_session_id,
+    )
     session_agent_id, peer_agent_id = canonicalize_agent_pair_ids(source_uuid, target_uuid)
 
     result = await db.execute(select(ChatSession).where(ChatSession.id == session_uuid))
@@ -129,6 +151,8 @@ async def find_or_create_agent_pair_session(
                 ChatSession.source_channel == "agent",
                 ChatSession.agent_id == session_agent_id,
                 ChatSession.peer_agent_id == peer_agent_id,
+                ChatSession.user_id == owner_uuid,
+                ChatSession.root_session_id == root_session_uuid,
             )
         )
         session = result.scalar_one_or_none()
@@ -163,5 +187,6 @@ async def find_or_create_agent_pair_session(
         source_agent_name=source_agent_name,
         target_agent_name=target_agent_name,
         source_participant_id=source_participant_id,
+        root_session_id=root_session_id,
     )
     return session

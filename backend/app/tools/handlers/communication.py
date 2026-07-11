@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.runtime.prompts.delegation import DELEGATION_BRIEF_CONTRACT
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
+from app.tools.runtime import ToolExecutionRequest
 
 
 # -- send_feishu_message ------------------------------------------------------
@@ -342,14 +343,22 @@ async def delegate_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
         icon="\U0001f50e",
         read_only=True,
         parallel_safe=True,
-        adapter="agent_args",
+        adapter="request",
     )
 )
-async def check_async_task(agent_id: uuid.UUID, arguments: dict) -> str:
+async def check_async_task(request: ToolExecutionRequest) -> str:
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result
     from app.services.agent_tools import _check_async_task
+    from app.services.runtime_task_authority import execution_principal_from_tool_context
 
-    return _normalize_messaging_result("check_async_task", await _check_async_task(agent_id, arguments))
+    return _normalize_messaging_result(
+        "check_async_task",
+        await _check_async_task(
+            request.context.agent_id,
+            request.arguments,
+            principal=execution_principal_from_tool_context(request.context),
+        ),
+    )
 
 
 # -- cancel_async_task -------------------------------------------------------
@@ -387,14 +396,22 @@ async def check_async_task(agent_id: uuid.UUID, arguments: dict) -> str:
         category="communication",
         display_name="Cancel Async Task",
         icon="\u23f9",
-        adapter="agent_args",
+        adapter="request",
     )
 )
-async def cancel_async_task(agent_id: uuid.UUID, arguments: dict) -> str:
+async def cancel_async_task(request: ToolExecutionRequest) -> str:
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result
     from app.services.agent_tools import _cancel_async_task
+    from app.services.runtime_task_authority import execution_principal_from_tool_context
 
-    return _normalize_messaging_result("cancel_async_task", await _cancel_async_task(agent_id, arguments))
+    return _normalize_messaging_result(
+        "cancel_async_task",
+        await _cancel_async_task(
+            request.context.agent_id,
+            request.arguments,
+            principal=execution_principal_from_tool_context(request.context),
+        ),
+    )
 
 
 # -- list_async_tasks --------------------------------------------------------
@@ -414,14 +431,21 @@ async def cancel_async_task(agent_id: uuid.UUID, arguments: dict) -> str:
         icon="\U0001f4cb",
         read_only=True,
         parallel_safe=True,
-        adapter="agent_only",
+        adapter="request",
     )
 )
-async def list_async_tasks(agent_id: uuid.UUID) -> str:
+async def list_async_tasks(request: ToolExecutionRequest) -> str:
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result
     from app.services.agent_tools import _list_async_tasks
+    from app.services.runtime_task_authority import execution_principal_from_tool_context
 
-    return _normalize_messaging_result("list_async_tasks", await _list_async_tasks(agent_id))
+    return _normalize_messaging_result(
+        "list_async_tasks",
+        await _list_async_tasks(
+            request.context.agent_id,
+            principal=execution_principal_from_tool_context(request.context),
+        ),
+    )
 
 
 # -- get_current_time --------------------------------------------------------

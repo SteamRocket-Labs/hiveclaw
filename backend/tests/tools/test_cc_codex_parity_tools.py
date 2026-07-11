@@ -180,6 +180,7 @@ async def test_task_output_reads_runtime_task_record(tmp_path, monkeypatch):
     from app.tools.handlers import command_parity
 
     runtime_task_id = str(uuid4())
+    request = _request("task_output", {"runtime_task_id": runtime_task_id}, tmp_path)
 
     async def fake_get_runtime_task_record(task_id: str):
         assert task_id == runtime_task_id
@@ -189,12 +190,16 @@ async def test_task_output_reads_runtime_task_record(tmp_path, monkeypatch):
             "status": "completed",
             "result": "member summary",
             "metadata": {"artifact_paths": ["team/member.md"]},
-            "parent_agent_id": None,
+            "tenant_id": request.context.tenant_id,
+            "parent_agent_id": str(request.context.agent_id),
+            "root_user_id": str(request.context.user_id),
+            "root_session_id": request.context.session_id,
+            "delegation_chain": [f"agent:{request.context.agent_id}", "team-member:one"],
         }
 
     monkeypatch.setattr(command_parity, "get_runtime_task_record", fake_get_runtime_task_record)
 
-    result = await command_parity.task_output(_request("task_output", {"runtime_task_id": runtime_task_id}, tmp_path))
+    result = await command_parity.task_output(request)
 
     payload = json.loads(result)
     assert payload["ok"] is True
@@ -209,6 +214,11 @@ async def test_task_stop_cancels_runtime_task_record(tmp_path, monkeypatch):
 
     runtime_task_id = str(uuid4())
     calls: list[tuple[str, dict]] = []
+    request = _request(
+        "task_stop",
+        {"runtime_task_id": runtime_task_id, "reason": "no longer needed"},
+        tmp_path,
+    )
 
     async def fake_get_runtime_task_record(task_id: str):
         assert task_id == runtime_task_id
@@ -216,7 +226,11 @@ async def test_task_stop_cancels_runtime_task_record(tmp_path, monkeypatch):
             "task_id": runtime_task_id,
             "task_type": "goal_continuation",
             "status": "running",
-            "parent_agent_id": None,
+            "tenant_id": request.context.tenant_id,
+            "parent_agent_id": str(request.context.agent_id),
+            "root_user_id": str(request.context.user_id),
+            "root_session_id": request.context.session_id,
+            "delegation_chain": [f"agent:{request.context.agent_id}", "goal:continuation"],
         }
 
     async def fake_update_runtime_task_record(task_id: str, **fields):
@@ -226,9 +240,7 @@ async def test_task_stop_cancels_runtime_task_record(tmp_path, monkeypatch):
     monkeypatch.setattr(command_parity, "get_runtime_task_record", fake_get_runtime_task_record)
     monkeypatch.setattr(command_parity, "update_runtime_task_record", fake_update_runtime_task_record)
 
-    result = await command_parity.task_stop(
-        _request("task_stop", {"runtime_task_id": runtime_task_id, "reason": "no longer needed"}, tmp_path)
-    )
+    result = await command_parity.task_stop(request)
 
     payload = json.loads(result)
     assert payload["ok"] is True
@@ -252,6 +264,12 @@ async def test_task_stop_publishes_subagent_cancel(tmp_path, monkeypatch):
     runtime_task_id = str(uuid4())
     parent_agent_id = uuid4()
     published: list[dict] = []
+    request = _request(
+        "task_stop",
+        {"runtime_task_id": runtime_task_id, "reason": "stop subagent"},
+        tmp_path,
+        agent_id=parent_agent_id,
+    )
 
     async def fake_get_runtime_task_record(task_id: str):
         assert task_id == runtime_task_id
@@ -259,7 +277,11 @@ async def test_task_stop_publishes_subagent_cancel(tmp_path, monkeypatch):
             "task_id": runtime_task_id,
             "task_type": "subagent",
             "status": "running",
+            "tenant_id": request.context.tenant_id,
             "parent_agent_id": str(parent_agent_id),
+            "root_user_id": str(request.context.user_id),
+            "root_session_id": request.context.session_id,
+            "delegation_chain": [f"agent:{parent_agent_id}", "subagent:scout"],
         }
 
     async def fake_update_runtime_task_record(_task_id: str, **_fields):
@@ -272,14 +294,7 @@ async def test_task_stop_publishes_subagent_cancel(tmp_path, monkeypatch):
     monkeypatch.setattr(command_parity, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr("app.services.runtime_control_bus.publish_subagent_cancel", fake_publish_subagent_cancel)
 
-    result = await command_parity.task_stop(
-        _request(
-            "task_stop",
-            {"runtime_task_id": runtime_task_id, "reason": "stop subagent"},
-            tmp_path,
-            agent_id=parent_agent_id,
-        )
-    )
+    result = await command_parity.task_stop(request)
 
     payload = json.loads(result)
     assert payload["ok"] is True

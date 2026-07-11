@@ -50,6 +50,13 @@ class RuntimeTask(Base):
         ),
         UniqueConstraint("root_idempotency_key", name="uq_runtime_tasks_root_idempotency_key"),
         Index(
+            "ix_runtime_tasks_root_authority",
+            "tenant_id",
+            "parent_agent_id",
+            "root_user_id",
+            "root_session_id",
+        ),
+        Index(
             "uq_runtime_tasks_active_web_chat_session",
             "parent_agent_id",
             "parent_session_id",
@@ -109,6 +116,9 @@ class RuntimeTask(Base):
     trace_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
     parent_session_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     child_session_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    root_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    root_session_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    delegation_chain_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default=text("'[]'"))
     depth: Mapped[int] = mapped_column(default=1)
 
     # Timestamps
@@ -164,6 +174,9 @@ def _set_runtime_task_root_idempotency_key(_mapper, _connection, target: Runtime
             "child_agent_id": str(target.child_agent_id) if target.child_agent_id else None,
             "parent_session_id": target.parent_session_id,
             "child_session_id": target.child_session_id,
+            "root_user_id": str(target.root_user_id) if target.root_user_id else None,
+            "root_session_id": target.root_session_id,
+            "delegation_chain": target.delegation_chain_json,
             "depth": target.depth,
             "prompt": target.prompt,
             "source": metadata.get("source"),
@@ -179,6 +192,9 @@ def _set_runtime_task_root_idempotency_key(_mapper, _connection, target: Runtime
             "permission_mode": metadata.get("permission_mode"),
             "permission_profile": metadata.get("permission_profile"),
             "budget_run_id": str(target.budget_run_id) if target.budget_run_id else None,
+            "root_user_id": str(target.root_user_id) if target.root_user_id else None,
+            "root_session_id": target.root_session_id,
+            "delegation_chain": target.delegation_chain_json,
             "budget_snapshot": target.budget_snapshot_json,
             "guard_policy": metadata.get("guard_policy"),
         }

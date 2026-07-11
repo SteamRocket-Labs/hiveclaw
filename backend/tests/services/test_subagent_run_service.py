@@ -29,21 +29,36 @@ async def test_start_subagent_run_queues_subagent_task_and_wakes_worker(monkeypa
     async def _fake_notify(**kwargs):
         captured["notify"] = kwargs
 
+    async def _fake_child_session(**kwargs):
+        captured["child_session"] = kwargs
+        return "child-session-1"
+
     monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    monkeypatch.setattr(svc, "create_subagent_child_session", _fake_child_session)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", _fake_notify)
     parent = uuid.uuid4()
+    parent_user = uuid.uuid4()
+    parent_session = str(uuid.uuid4())
+    root_runtime_task = uuid.uuid4()
     started = await svc.start_subagent_run(
         parent_agent_id=parent,
+        parent_user_id=parent_user,
         spec_name="scout",
         spec_type=SUBAGENT_TYPE_WORKER,
         task="do x",
+        parent_session_id=parent_session,
+        root_runtime_task_id=root_runtime_task,
         context_window_tokens=1_000_000,
     )
     assert started.run_id == captured["task_id"]
-    assert started.child_session_id is None
+    assert started.child_session_id == "child-session-1"
     assert captured["task_type"] == svc.SUBAGENT_RUN_TASK_TYPE == "subagent"
     assert captured["status"] == "pending"
     assert captured["parent_agent_id"] == parent
+    assert captured["root_user_id"] == parent_user
+    assert captured["root_session_id"] == parent_session
+    assert captured["root_runtime_task_id"] == root_runtime_task
+    assert captured["delegation_chain"] == [f"agent:{parent}", f"subagent:{started.run_id}:scout"]
     assert captured["child_agent_name"] == "scout"
     assert captured["metadata_json"]["subagent_type"] == SUBAGENT_TYPE_WORKER
     assert captured["metadata_json"]["execution_backend"] == "runtime_task_worker"
@@ -847,26 +862,69 @@ async def test_subagent_parent_completion_uses_durable_outbox(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_subagent_run_is_ownership_scoped(monkeypatch):
+    from app.core.execution_context import ExecutionPrincipal
+
     owner = uuid.uuid4()
     other = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
 
     async def _fake_get(_run_id):
-        return {"task_type": "subagent", "parent_agent_id": str(owner), "status": "completed", "result": "r"}
+        return {
+            "task_type": "subagent",
+            "tenant_id": str(tenant_id),
+            "parent_agent_id": str(owner),
+            "root_user_id": str(user_id),
+            "root_session_id": str(session_id),
+            "delegation_chain": [f"agent:{owner}", "subagent:rid:scout"],
+            "status": "completed",
+            "result": "r",
+        }
 
     monkeypatch.setattr(svc, "get_runtime_task_record", _fake_get)
-    assert await svc.get_subagent_run("rid", owner) is not None
-    assert await svc.get_subagent_run("rid", other) is None  # another agent cannot read it
+    owner_principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=owner,
+        requester_user_id=user_id,
+        root_session_id=str(session_id),
+    )
+    other_principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=other,
+        requester_user_id=user_id,
+        root_session_id=str(session_id),
+    )
+    assert await svc.get_subagent_run("rid", owner, principal=owner_principal) is not None
+    assert await svc.get_subagent_run("rid", other, principal=other_principal) is None
 
 
 @pytest.mark.asyncio
 async def test_get_subagent_run_rejects_non_subagent_task(monkeypatch):
+    from app.core.execution_context import ExecutionPrincipal
+
     owner = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
 
     async def _fake_get(_run_id):
         return {"task_type": "web_chat_turn", "parent_agent_id": str(owner), "status": "running"}
 
     monkeypatch.setattr(svc, "get_runtime_task_record", _fake_get)
-    assert await svc.get_subagent_run("rid", owner) is None
+    assert (
+        await svc.get_subagent_run(
+            "rid",
+            owner,
+            principal=ExecutionPrincipal(
+                tenant_id=tenant_id,
+                source_agent_id=owner,
+                requester_user_id=user_id,
+                root_session_id=str(session_id),
+            ),
+        )
+        is None
+    )
 
 
 def test_spawn_schema_exposes_run_in_background_and_check_tool_registered():

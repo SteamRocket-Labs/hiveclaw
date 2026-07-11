@@ -15,6 +15,18 @@ class _FakeDB:
     pass
 
 
+class _AuditDB:
+    def __init__(self):
+        self.added = []
+        self.flushed = False
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def flush(self):
+        self.flushed = True
+
+
 class _ScalarOneResult:
     def __init__(self, value):
         self.value = value
@@ -60,10 +72,11 @@ def test_agent_autonomy_overview_is_agent_scoped_and_readable_by_member(monkeypa
     agent_id = uuid4()
     captured = {}
 
-    async def fake_overview(*, db, agent, lookback_hours, include_diagnostics):
+    async def fake_overview(*, db, agent, lookback_hours, include_diagnostics, principal):
         captured["agent"] = agent
         captured["lookback_hours"] = lookback_hours
         captured["include_diagnostics"] = include_diagnostics
+        captured["principal"] = principal
         return {
             "agent_id": str(agent.id),
             "lookback_hours": lookback_hours,
@@ -84,14 +97,16 @@ def test_agent_autonomy_overview_is_agent_scoped_and_readable_by_member(monkeypa
     assert payload["triggers"][0]["display_kind"] == "scheduled_job"
     assert captured["lookback_hours"] == 6
     assert captured["include_diagnostics"] is False
+    assert captured["principal"].requester_user_id == _user.id
 
 
 def test_agent_autonomy_diagnostics_explicitly_includes_diagnostics(monkeypatch):
     agent_id = uuid4()
     captured = {}
 
-    async def fake_overview(*, db, agent, lookback_hours, include_diagnostics):
+    async def fake_overview(*, db, agent, lookback_hours, include_diagnostics, principal):
         captured["include_diagnostics"] = include_diagnostics
+        captured["principal"] = principal
         return {
             "agent_id": str(agent.id),
             "lookback_hours": lookback_hours,
@@ -123,7 +138,9 @@ def test_agent_runtime_tasks_endpoint_passes_filters(monkeypatch):
     agent_id = uuid4()
     captured = {}
 
-    async def fake_runtime_tasks(*, db, agent_id, task_type, trigger_id, status, limit, include_diagnostics):
+    async def fake_runtime_tasks(
+        *, db, agent_id, task_type, trigger_id, status, limit, include_diagnostics, **authority
+    ):
         captured.update(
             {
                 "agent_id": agent_id,
@@ -132,6 +149,7 @@ def test_agent_runtime_tasks_endpoint_passes_filters(monkeypatch):
                 "status": status,
                 "limit": limit,
                 "include_diagnostics": include_diagnostics,
+                **authority,
             }
         )
         return [{"task_id": "task-1", "status": "skipped", "attention_reason": "No model is configured."}]
@@ -151,6 +169,45 @@ def test_agent_runtime_tasks_endpoint_passes_filters(monkeypatch):
     assert captured["status"] == "skipped"
     assert captured["limit"] == 5
     assert captured["include_diagnostics"] is True
+    assert captured["principal"].requester_user_id == _user.id
+    assert captured["allow_operator_override"] is False
+
+
+def test_runtime_task_operator_override_requires_manage_reason_and_audit(monkeypatch):
+    agent_id = uuid4()
+
+    async def fake_runtime_tasks(**_kwargs):
+        return []
+
+    monkeypatch.setattr(autonomy_api, "list_agent_runtime_task_views", fake_runtime_tasks)
+
+    member_client, _ = _client(monkeypatch, access_level="use")
+    denied = member_client.get(
+        f"/agents/{agent_id}/runtime-tasks",
+        params={"operator_override": "true", "operator_reason": "incident"},
+    )
+    assert denied.status_code == 403
+
+    manager_client, _ = _client(monkeypatch, access_level="manage")
+    missing_reason = manager_client.get(
+        f"/agents/{agent_id}/runtime-tasks",
+        params={"operator_override": "true"},
+    )
+    assert missing_reason.status_code == 422
+
+    audit_db = _AuditDB()
+    manager_client, manager = _client(monkeypatch, db=audit_db, access_level="manage")
+    allowed = manager_client.get(
+        f"/agents/{agent_id}/runtime-tasks",
+        params={"operator_override": "true", "operator_reason": "incident investigation INC-42"},
+    )
+    assert allowed.status_code == 200
+    assert audit_db.flushed is True
+    assert len(audit_db.added) == 1
+    audit = audit_db.added[0]
+    assert audit.user_id == manager.id
+    assert audit.action == "runtime_task:operator_list_override"
+    assert audit.details["operator_reason"] == "incident investigation INC-42"
 
 
 def test_agent_runtime_artifact_endpoint_returns_display_payload(monkeypatch):

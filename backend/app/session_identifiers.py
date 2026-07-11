@@ -18,9 +18,15 @@ def canonicalize_agent_pair_ids(
 def build_agent_pair_session_id(
     source_agent_id: uuid.UUID | str,
     target_agent_id: uuid.UUID | str,
+    *,
+    owner_user_id: uuid.UUID | str | None = None,
+    root_session_id: uuid.UUID | str | None = None,
 ) -> uuid.UUID:
     first, second = canonicalize_agent_pair_ids(source_agent_id, target_agent_id)
-    return uuid.uuid5(_AGENT_PAIR_NAMESPACE, f"{first}_{second}")
+    authority_suffix = ""
+    if owner_user_id is not None or root_session_id is not None:
+        authority_suffix = f"|owner:{owner_user_id or ''}|root:{root_session_id or ''}"
+    return uuid.uuid5(_AGENT_PAIR_NAMESPACE, f"{first}_{second}{authority_suffix}")
 
 
 def build_feishu_p2p_conv_id(provider_user_id: str | None = None, provider_open_id: str | None = None) -> str | None:

@@ -99,7 +99,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | HN-01 | Personal KB 浏览器继承 Agent owner 权威 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-02 | Memory/Skill 原生资产缺统一事务锁 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-03 | A2A REST 丢 requester 且 consult 假成功 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| HN-04 | Subagent/async 查询取消只按 parent Agent | P0 | 断点 | ✓ | ✗ | △ | △ | ✗ | ✗ | △ |
+| HN-04 | Subagent/async 查询取消只按 parent Agent | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-05 | HR provisioning 恢复会假完成 | P0 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
 | HN-06 | Skill provisional 只有负向回滚，无正向转正 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
 | HN-07 | AI 资产用量投影只覆盖部分实际消费 | P1 | 局部闭环 | ✓ | △ | △ | △ | △ | ✗ | △ |
@@ -290,6 +290,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 **一次性关闭**：统一 `ExecutionPrincipal` 贯穿 REST/tool/A2A；返回 typed `A2AOutcome`，禁止 emoji/string 判断终态；A2A RuntimeTask、child session、audit、budget 都绑定 root requester/session。
 
 ### HN-04：Subagent/async control 只认 parent Agent，不认 root user/session — P0
+
+**修复状态（2026-07-11）**：**闭环**。`RuntimeTask` 现有 canonical `root_user_id`、`root_session_id`、`root_runtime_task_id` 与 `delegation_chain_json`；async delegation、background subagent、Agent Team/web chat continuation、Business Task 与 Workflow 的用户发起路径均写入该 authority。`check/cancel/list_async_tasks`、`check_subagent`、`task_output/task_stop`、child session continuation 与 autonomy task read model共用一个 root-authority kernel；数据库事实不可用时 fail closed，不再回退到仅含 parent Agent 的进程内列表。
 
 `backend/app/services/agent_tool_domains/messaging.py:1530-1610` 的 check/cancel/list 只传 parent_agent_id；`backend/app/services/subagent_run_service.py:1560-1583` 明确把 ownership 定义为 parent Agent。共享使用同一 Agent 的两个用户可看见或取消彼此的 child work。
 
@@ -1609,3 +1611,71 @@ pytest tests -q
 ```
 
 结果：Ruff lint/format全绿；Alembic 单 head `channel_delivery_outbox_0711 (head)`；全量 backend `6345 passed, 1 skipped, 5 warnings in 147.87s`，零失败。HN-03 不新增数据库 schema migration。
+
+### HN-04 — RuntimeTask root authority 与 delegation chain
+
+状态：**闭环**。提交主题：`fix(HN-04): bind child runtime control to root owners`。
+
+七原子证据：
+
+1. **输入**：所有模型侧 RuntimeTask read/cancel/list/continue工具改为 `ToolExecutionRequest` 或显式 principal参数，从受信 `ToolExecutionContext` 提取 tenant、Agent、user、root session与 root RuntimeTask；模型参数不能提交或覆盖 owner。REST autonomy列表从认证 user构造同一 principal，manager override必须显式 query flag + reason。
+2. **权威**：`authorize_runtime_task_record()` 同时校验 tenant、parent Agent、root user、root session与非空 delegation chain。共享 Agent 的另一个用户、同一用户的另一个 session、另一个 Agent、跨 tenant或缺少历史 root证据均 fail closed。manager只有 manage access、显式 override和非空原因同时成立才可越权，且普通路径永不自动继承 manage身份。
+3. **执行**：async check/cancel/list、subagent check/list、通用 task output/stop、child session mailbox continuation与 autonomy overview/list共用唯一 authority kernel。数据库不可用时不再调用 `list_async_delegations(parent_agent_id=...)`；不安全的内存降级已退出生产控制路径。A2A pair session id现在按 Agent pair + root owner + root session隔离，两个共享用户不会复用同一 transcript。
+4. **证据**：RuntimeTask列保存 `root_user_id/root_session_id/root_runtime_task_id/delegation_chain_json`；authority decision输出 versioned evidence。Subagent/A2A metadata、budget reservation、ChatSession root、pair transcript与 RuntimeTask机械字段相互指向。manager列表越权写 `AuditLog(action='runtime_task:operator_list_override')`，保存 operator、reason和可选 session filter。
+5. **恢复**：restart hydration 的 `_task_to_dict`恢复全部 root字段；async delegation request rebuild保留 ExecutionPrincipal；subagent restart继续读取同一 RuntimeTask。迁移按 ExecutionPrincipal → explicit metadata → RuntimeBudgetRun → parent ChatSession → parent_session_id的强弱顺序回填，不可信的历史 `owner_id/creator_id`不用于伪造 requester。无法恢复 root证据的旧任务只允许显式 operator处理。
+6. **消费**：background subagent、A2A delegation、web chat/Agent Team continuation、Business Task与用户 Workflow在创建时写 canonical root authority；tool control、session mailbox、autonomy overview/runtime list真实消费这些列。普通用户只看到自己的 child work；manager通过独立显式操作查看公司范围。
+7. **验收**：覆盖 user/session/Agent/tenant矩阵、缺证据、manager reason/audit、数据库故障 fail-closed、async/subagent/task/continuation/autonomy所有入口、pair session跨 owner/root隔离、restart hydration、Business/Workflow/WebChat兼容、真实 Alembic upgrade/backfill依赖与既有 external-principal downgrade→upgrade链。
+
+KISS/奥卡姆证据：只新增三个 RuntimeTask authority列、一个 JSON chain和一个纯判定 service；没有为 subagent、A2A、Agent Team各建一套 ACL。删掉 parent-Agent-only helper和内存fallback，所有入口复用相同 decision object。delegation chain是可审计的线性引用，不引入图数据库。
+
+RED 证据：
+
+```text
+HN-04 初始契约收集：1 error
+- runtime_task_authority 模块不存在
+- RuntimeTask 无 root_user_id/root_session_id/delegation_chain_json
+- 5 类控制面仍只比较 parent_agent_id
+
+第一次全量回归：6353 passed, 2 failed
+- 新迁移对 legacy JSON metadata 使用了 JSONB-only函数
+- 单 head回归契约仍固定旧 head
+```
+
+两项全量失败分别通过显式 `metadata_json::jsonb`兼容转换与更新 single-head contract关闭；未绕过 migration或降低 authority要求。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q \
+  tests/services/test_runtime_task_authority.py \
+  tests/architecture/test_runtime_task_root_authority_wiring.py \
+  tests/migrations/test_runtime_task_root_authority_migration.py \
+  tests/services/test_agent_message_runtime.py \
+  tests/services/test_subagent_run_service.py \
+  tests/agents/test_subagent_spawn_tool.py \
+  tests/tools/test_cc_codex_parity_tools.py \
+  tests/services/test_autonomy_overview.py \
+  tests/api/test_agent_autonomy_api.py \
+  tests/services/test_agent_pair_session.py \
+  tests/runtime/test_session_identifiers.py \
+  tests/agents/test_orchestrator.py \
+  tests/services/test_runtime_task_service.py \
+  tests/services/test_business_task_runtime.py \
+  tests/services/test_workflow_runtime_service.py \
+  tests/services/test_web_chat_runtime.py
+```
+
+连同迁移兼容目标共 `322 passed, 5 warnings in 26.61s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <HN-04 当前变更 Python 文件>
+ruff format --check <HN-04 当前变更 Python 文件>
+alembic heads
+pytest tests -q
+```
+
+结果：Ruff lint/format全绿；Alembic 单 head `runtime_task_root_authority_0711 (head)`；全量 backend `6355 passed, 1 skipped, 5 warnings in 148.99s`，零失败。

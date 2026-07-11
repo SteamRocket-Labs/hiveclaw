@@ -947,10 +947,15 @@ async def test_check_subagent_returns_child_session_refs_and_fallback_language(m
     from app.services import subagent_run_service as run_svc
 
     owner = uuid.uuid4()
+    user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    root_session_id = uuid.uuid4()
 
-    async def fake_get(run_id, parent_agent_id):
+    async def fake_get(run_id, parent_agent_id, *, principal):
         assert run_id == "run-1"
         assert parent_agent_id == owner
+        assert principal.requester_user_id == user_id
+        assert principal.root_session_id == str(root_session_id)
         return {
             "task_type": "subagent",
             "parent_agent_id": str(owner),
@@ -972,7 +977,19 @@ async def test_check_subagent_returns_child_session_refs_and_fallback_language(m
 
     monkeypatch.setattr(run_svc, "get_subagent_run", fake_get)
 
-    out = await handler_mod.check_subagent(owner, {"run_id": "run-1"})
+    out = await handler_mod.check_subagent(
+        ToolExecutionRequest(
+            tool_name="check_subagent",
+            arguments={"run_id": "run-1"},
+            context=ToolExecutionContext(
+                agent_id=owner,
+                user_id=user_id,
+                tenant_id=str(tenant_id),
+                workspace=Path("/tmp"),
+                session_id=str(root_session_id),
+            ),
+        )
+    )
     data = json.loads(out)
 
     assert data["ok"] is True
@@ -1093,13 +1110,14 @@ async def test_send_agent_session_message_budget_denial_does_not_append_mailbox(
     tenant_id = uuid.uuid4()
     child_session_id = uuid.uuid4()
     budget_run_id = uuid.uuid4()
+    root_session_id = uuid.uuid4()
     fake_session = SimpleNamespace(
         id=child_session_id,
         agent_id=agent_id,
         tenant_id=tenant_id,
         user_id=user_id,
-        parent_session_id=uuid.uuid4(),
-        root_session_id=uuid.uuid4(),
+        parent_session_id=root_session_id,
+        root_session_id=root_session_id,
         visibility_scope="team",
         listed_surface="parent",
         transcript_metadata_json={"budget_run_id": str(budget_run_id)},
@@ -1126,7 +1144,7 @@ async def test_send_agent_session_message_budget_denial_does_not_append_mailbox(
             user_id=user_id,
             tenant_id=str(tenant_id),
             workspace=Path("/tmp"),
-            session_id=str(uuid.uuid4()),
+            session_id=str(root_session_id),
             budget_run_id=str(budget_run_id),
         ),
     )

@@ -24,6 +24,7 @@ from app.agents.subagent import (
     subagent_spec_to_snapshot,
 )
 from app.agents.subagent_definition import SCOPE_AGENT
+from app.core.execution_context import ExecutionPrincipal
 from app.agents.subagent_memory import make_llm_how_distiller, memory_store_for_agent, memory_store_for_tenant
 from app.database import async_session, tenant_scoped_session
 from app.models.agent import Agent
@@ -54,6 +55,7 @@ from app.services.runtime_budget_service import (
     RuntimeBudgetSettlement,
     estimate_reservation_tokens,
 )
+from app.services.runtime_task_authority import authorize_runtime_task_record
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 SUBAGENT_RUN_TASK_TYPE = "subagent"
@@ -276,6 +278,7 @@ async def start_subagent_run(
     definition_scope: str | None = None,
     ledger_todo_id: str | None = None,
     context_window_tokens: int | None = None,
+    root_runtime_task_id: uuid.UUID | str | None = None,
     budget_run_id: uuid.UUID | str | None = None,
     budget_service: RuntimeBudgetService | None = None,
 ) -> SubagentRunStart:
@@ -307,6 +310,9 @@ async def start_subagent_run(
                     "subagent_name": spec_name,
                     "subagent_type": spec_type,
                     "parent_session_id": parent_session_id,
+                    "root_user_id": str(parent_user_id) if parent_user_id else None,
+                    "root_session_id": parent_session_id,
+                    "root_runtime_task_id": str(root_runtime_task_id) if root_runtime_task_id else None,
                 },
             )
         )
@@ -340,6 +346,13 @@ async def start_subagent_run(
         "subagent_name": spec_name,
         "child_session_id": child_session_id,
         "parent_session_id": parent_session_id,
+        "root_user_id": str(parent_user_id) if parent_user_id else None,
+        "root_session_id": parent_session_id,
+        "root_runtime_task_id": str(root_runtime_task_id) if root_runtime_task_id else None,
+        "delegation_chain": [
+            f"agent:{parent_agent_id}",
+            f"subagent:{run_id}:{spec_name}",
+        ],
         "return_contract": return_contract["return_contract"],
         "subagent_return_contract": return_contract,
         "context_mode": context_mode,
@@ -419,6 +432,10 @@ async def start_subagent_run(
             budget_terminal_reason=(
                 "runtime_budget_approval_required" if admission_status == "waiting_budget_approval" else None
             ),
+            root_user_id=parent_user_id,
+            root_session_id=parent_session_id,
+            root_runtime_task_id=root_runtime_task_id,
+            delegation_chain=metadata["delegation_chain"],
         )
     except Exception:
         if (
@@ -1557,7 +1574,12 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
     return resumed
 
 
-async def get_subagent_run(run_id: str, parent_agent_id: uuid.UUID) -> dict[str, Any] | None:
+async def get_subagent_run(
+    run_id: str,
+    parent_agent_id: uuid.UUID,
+    *,
+    principal: ExecutionPrincipal,
+) -> dict[str, Any] | None:
     """Read one background subagent run by id (terminal status + result).
 
     Ownership-scoped: returns None unless the run belongs to ``parent_agent_id``
@@ -1568,10 +1590,17 @@ async def get_subagent_run(run_id: str, parent_agent_id: uuid.UUID) -> dict[str,
         return None
     if record.get("parent_agent_id") != str(parent_agent_id):
         return None
+    if not authorize_runtime_task_record(record, principal=principal, action="read").allowed:
+        return None
     return record
 
 
-async def list_subagent_runs(parent_agent_id: uuid.UUID, *, limit: int = 20) -> list[dict[str, Any]]:
+async def list_subagent_runs(
+    parent_agent_id: uuid.UUID,
+    *,
+    principal: ExecutionPrincipal,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
     """Recent background subagent runs spawned by this agent (newest first)."""
     tenant_id = await resolve_tenant_for_agent(parent_agent_id)
     async with tenant_scoped_session(tenant_id) as db:
@@ -1582,6 +1611,8 @@ async def list_subagent_runs(parent_agent_id: uuid.UUID, *, limit: int = 20) -> 
                     .where(
                         RuntimeTask.parent_agent_id == parent_agent_id,
                         RuntimeTask.task_type == SUBAGENT_RUN_TASK_TYPE,
+                        RuntimeTask.root_user_id == principal.requester_user_id,
+                        RuntimeTask.root_session_id == principal.root_session_id,
                     )
                     .order_by(RuntimeTask.created_at.desc())
                     .limit(limit)
@@ -1592,6 +1623,18 @@ async def list_subagent_runs(parent_agent_id: uuid.UUID, *, limit: int = 20) -> 
         )
     payloads: list[dict[str, Any]] = []
     for r in rows:
+        record = {
+            "task_id": r.id.hex,
+            "task_type": r.task_type,
+            "tenant_id": str(r.tenant_id) if r.tenant_id else None,
+            "parent_agent_id": str(r.parent_agent_id) if r.parent_agent_id else None,
+            "root_user_id": str(r.root_user_id) if r.root_user_id else None,
+            "root_session_id": r.root_session_id,
+            "delegation_chain": list(r.delegation_chain_json or []),
+            "metadata": r.metadata_json or {},
+        }
+        if not authorize_runtime_task_record(record, principal=principal, action="list").allowed:
+            continue
         metadata = r.metadata_json or {}
         child_session_id = r.child_session_id or metadata.get("child_session_id")
         return_contract = subagent_return_contract_from_metadata(

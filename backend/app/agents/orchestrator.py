@@ -653,6 +653,18 @@ def _delegation_result_refs(request: AgentDelegationRequest, *, task_id: str) ->
     return list(dict.fromkeys(refs))
 
 
+def _delegation_chain(request: AgentDelegationRequest) -> list[str]:
+    principal = request.execution_principal if isinstance(request.execution_principal, dict) else {}
+    raw_chain = principal.get("delegation_chain")
+    chain = [str(item).strip() for item in raw_chain] if isinstance(raw_chain, list) else []
+    parent_ref = f"agent:{request.parent_agent_id or request.owner_id}"
+    target_ref = f"agent:{getattr(request.target, 'id', getattr(request.target, 'name', 'unknown'))}"
+    for ref in (parent_ref, target_ref):
+        if ref and (not chain or chain[-1] != ref):
+            chain.append(ref)
+    return chain
+
+
 def _build_delegation_execution_receipt(
     request: AgentDelegationRequest,
     *,
@@ -1005,6 +1017,12 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
         metadata["execution_identity"] = execution_identity
     if request.execution_principal:
         metadata["execution_principal"] = dict(request.execution_principal)
+    metadata["root_user_id"] = str(request.owner_id)
+    metadata["root_session_id"] = (
+        str((request.execution_principal or {}).get("root_session_id") or request.parent_session_id or "").strip()
+        or None
+    )
+    metadata["delegation_chain"] = _delegation_chain(request)
     if request.root_runtime_task_id:
         metadata["root_runtime_task_id"] = request.root_runtime_task_id
     replay_safe = _delegation_profile_restart_replay_safe(request.policy.tool_profile)
@@ -2669,6 +2687,13 @@ async def delegate_async(
             budget_terminal_reason=(
                 "runtime_budget_approval_required" if budget_admission_status == "waiting_budget_approval" else None
             ),
+            root_user_id=owner_id,
+            root_session_id=str(
+                (request.execution_principal or {}).get("root_session_id") or parent_session_id or ""
+            ).strip()
+            or None,
+            root_runtime_task_id=request.root_runtime_task_id,
+            delegation_chain=_delegation_chain(request),
         )
     except Exception as exc:
         if (

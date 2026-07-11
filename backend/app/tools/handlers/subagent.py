@@ -49,6 +49,11 @@ from app.services.runtime_budget_service import (
     RuntimeBudgetService,
     estimate_reservation_tokens,
 )
+from app.services.runtime_task_authority import (
+    authorize_runtime_task_record,
+    execution_principal_from_tool_context,
+)
+from app.services.runtime_task_service import get_runtime_task_record
 from app.services.agent_team_runtime_service import (
     active_agent_team_contract_from_tool_request,
     send_agent_team_message_from_tool_request,
@@ -723,6 +728,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             definition_scope=definition_scope,
             ledger_todo_id=ledger_todo_id,
             context_window_tokens=getattr(model, "max_input_tokens", None),
+            root_runtime_task_id=request.context.runtime_task_id,
             budget_run_id=request.context.budget_run_id,
         )
         run_id = started.run_id
@@ -950,15 +956,18 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         read_only=True,
         parallel_safe=True,
         governance="safe",
-        adapter="agent_args",
+        adapter="request",
     )
 )
-async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
+async def check_subagent(request: ToolExecutionRequest) -> str:
     from app.services.subagent_run_service import get_subagent_run, list_subagent_runs
+    from app.services.runtime_task_authority import execution_principal_from_tool_context
 
-    run_id = str(arguments.get("run_id") or "").strip()
+    agent_id = request.context.agent_id
+    principal = execution_principal_from_tool_context(request.context)
+    run_id = str(request.arguments.get("run_id") or "").strip()
     if run_id:
-        record = await get_subagent_run(run_id, agent_id)
+        record = await get_subagent_run(run_id, agent_id, principal=principal)
         if record is None:
             return _json({"ok": False, "error": f"no background subagent run {run_id!r} for this agent"})
         metadata = record.get("metadata") or {}
@@ -1021,7 +1030,7 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
                 "orphaned_by_restart": bool(metadata.get("orphaned_by_restart")),
             }
         )
-    return _json({"ok": True, "runs": await list_subagent_runs(agent_id)})
+    return _json({"ok": True, "runs": await list_subagent_runs(agent_id, principal=principal)})
 
 
 @tool(
@@ -1138,8 +1147,40 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
         if session is None:
             return _json({"ok": False, "error": "child agent session not found for this agent"})
 
+        principal = execution_principal_from_tool_context(request.context)
+        session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
+        run_id = str(
+            getattr(session, "runtime_task_id", None)
+            or session_metadata.get("run_id")
+            or session_metadata.get("runtime_task_id")
+            or ""
+        ).strip()
+        if run_id:
+            runtime_record = await get_runtime_task_record(run_id)
+            if runtime_record is None:
+                return _json({"ok": False, "error": "child RuntimeTask authority record not found"})
+            authority = authorize_runtime_task_record(
+                runtime_record,
+                principal=principal,
+                action="continue",
+            )
+            if not authority.allowed:
+                return _json({"ok": False, "error": "forbidden", "reason": authority.reason})
+        else:
+            session_user_id = str(getattr(session, "user_id", None) or "")
+            session_root_id = str(
+                getattr(session, "root_session_id", None)
+                or getattr(session, "parent_session_id", None)
+                or session_metadata.get("root_session_id")
+                or ""
+            )
+            if session_user_id != str(principal.requester_user_id) or session_root_id != str(
+                principal.root_session_id or ""
+            ):
+                return _json({"ok": False, "error": "forbidden", "reason": "root_session_mismatch"})
+
         agent = (await db.execute(select(Agent).where(Agent.id == session.agent_id))).scalar_one_or_none()
-        user_id = _uuid_or_none(getattr(session, "user_id", None)) or _uuid_or_none(request.context.user_id)
+        user_id = _uuid_or_none(request.context.user_id)
         user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none() if user_id else None
         if agent is None or user is None:
             return _json({"ok": False, "error": "child agent session continuation principal could not be loaded"})

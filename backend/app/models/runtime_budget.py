@@ -92,6 +92,12 @@ class RuntimeBudgetRun(Base):
     root_session_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
     root_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     root_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    root_external_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("external_principals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     source: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     profile: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
 
@@ -180,3 +186,6 @@ class RuntimeBudgetEvent(Base):
     metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     runtime_task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+from app.models.external_principal import ExternalPrincipal as _ExternalPrincipal  # noqa: E402, F401

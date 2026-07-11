@@ -989,6 +989,77 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
 
 
 @pytest.mark.asyncio
+async def test_execute_approved_restores_external_execution_identity(monkeypatch):
+    from app.core.execution_context import ExecutionIdentity
+    from app.services.approval_ticket import ApprovalExecutionTicket
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    agent_id = uuid4()
+    requested_by = uuid4()
+    approved_by = uuid4()
+    approval_id = uuid4()
+    external_principal_id = uuid4()
+    request_context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=requested_by,
+        tenant_id=str(uuid4()),
+        workspace=Path("/tmp/external-approved"),
+        execution_identity=ExecutionIdentity(
+            identity_type="external_principal_bound",
+            identity_id=external_principal_id,
+            label="Slack guest via slack",
+        ),
+    )
+    arguments = {"path": "workspace/external.md", "content": "done"}
+
+    async def consume_ticket(**_kwargs):
+        return ApprovalExecutionTicket(
+            approval_id=approval_id,
+            agent_id=agent_id,
+            requested_by_user_id=requested_by,
+            approved_by_user_id=approved_by,
+            policy_snapshot_hash="policy-hash",
+            idempotency_key=f"approval:{approval_id}",
+            decision_id="external-decision",
+            **_approved_ticket_runtime_fields(request_context, tool_name="write_file", arguments=arguments),
+        )
+
+    captured = {}
+
+    async def complete_ticket(**_kwargs):
+        return None
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(request_context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=_FakeRegistry("unused"),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        approval_ticket_consumer=consume_ticket,
+        approval_ticket_completer=complete_ticket,
+    )
+
+    async def capture_execute(*_args, **kwargs):
+        captured.update(kwargs)
+        return "APPROVED"
+
+    monkeypatch.setattr(ToolRuntimeService, "execute", capture_execute)
+    result = await service.execute_approved(
+        approval_id=approval_id,
+        expected_agent_id=agent_id,
+        approved_by_user_id=approved_by,
+    )
+
+    assert result == "APPROVED"
+    assert captured["execution_identity"].identity_type == "external_principal_bound"
+    assert captured["execution_identity"].identity_id == external_principal_id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("hook_behavior", "error_code"),
     [

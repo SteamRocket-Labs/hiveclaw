@@ -104,3 +104,30 @@ async def test_start_new_channel_session_archives_active_external_conversation()
     assert new_session.delivery_target_json["session_id"] == str(new_session.id)
     assert db.added == [new_session]
     assert db.flush_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_external_channel_session_never_falls_back_to_platform_user():
+    from app.services.channel_session import find_or_create_channel_session
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    external_principal_id = uuid4()
+    db = _FakeDB([None])
+
+    session = await find_or_create_channel_session(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=None,
+        external_principal_id=external_principal_id,
+        external_conv_id=f"slack_channel_sender_{external_principal_id}",
+        source_channel="slack",
+        first_message_title="hello",
+        delivery_target={"channel": "slack"},
+    )
+
+    assert session.user_id is None
+    assert session.external_principal_id == external_principal_id
+    assert session.actor_type == "external_principal"
+    assert db.added == [session]

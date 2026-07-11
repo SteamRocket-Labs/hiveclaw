@@ -26,7 +26,6 @@ from app.schemas.schemas import ChannelConfigOut
 from app.services.channel_agent_runtime import call_agent_llm
 from app.services.channel_session import find_or_create_channel_session
 from app.services.agent_tools import channel_file_sender as _cfs_s
-from app.core.security import hash_password as _hp
 from pathlib import Path as _Path
 
 settings = get_settings()
@@ -374,7 +373,7 @@ async def delete_teams_channel(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete Microsoft Teams channel configuration for an agent."""
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -384,6 +383,15 @@ async def delete_teams_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="Microsoft Teams not configured")
+    from app.services.external_principal_service import revoke_channel_config_external_principals
+
+    await revoke_channel_config_external_principals(
+        db,
+        tenant_id=agent.tenant_id,
+        config=config,
+        actor_user_id=current_user.id,
+        reason="Microsoft Teams channel configuration deleted",
+    )
     await db.delete(config)
     await db.commit()
 
@@ -487,7 +495,7 @@ async def teams_event_webhook(
                 db,
                 tenant_id=agent_tenant_id,
                 agent_id=agent_id,
-                provider="microsoft_teams",
+                provider="teams",
                 installation_ref=channel_installation_ref(config, fallback=f"teams:{agent_id}"),
                 provider_event_id=str(activity_id or ""),
                 handler_key="teams.activity",
@@ -498,28 +506,22 @@ async def teams_event_webhook(
 
         logger.info(f"Teams: Message from={sender_id}, conversation={conversation_id}: {user_text[:80]}")
 
-        # Find-or-create platform user for this Teams sender
-        from app.models.user import User as _User
+        from app.services.channel_ingress_inbox import channel_installation_ref
+        from app.services.external_principal_service import resolve_or_create_external_principal
 
-        _teams_username = f"teams_{sender_id}"
-        _u_r = await db.execute(select(_User).where(_User.username == _teams_username))
-        _platform_user = _u_r.scalar_one_or_none()
-
-        if not _platform_user:
-            _platform_user = _User(
-                username=_teams_username,
-                email=f"{_teams_username}@teams.local",
-                password_hash=_hp(uuid.uuid4().hex),
-                display_name=sender_name,
-                role="member",
-                tenant_id=agent_tenant_id,
-            )
-            db.add(_platform_user)
-            await db.flush()
-        elif _platform_user.display_name.startswith("Teams User ") and sender_name != _platform_user.display_name:
-            _platform_user.display_name = sender_name
-            await db.flush()
-        platform_user_id = _platform_user.id
+        principal_resolution = await resolve_or_create_external_principal(
+            db,
+            tenant_id=agent_tenant_id,
+            provider="teams",
+            installation_ref=channel_installation_ref(config, fallback=f"teams:{agent_id}"),
+            channel_config_id=getattr(config, "id", None),
+            subject_id=sender_id,
+            display_name=sender_name,
+            profile={"conversation_id": conversation_id},
+        )
+        runtime_actor = principal_resolution.actor
+        platform_user_id = runtime_actor.id
+        external_principal_id = principal_resolution.principal.id
         bot_channel_account = activity.get("recipient", {}) or {}
         if not bot_channel_account.get("id") and config.app_id:
             bot_channel_account = {"id": config.app_id}
@@ -532,7 +534,8 @@ async def teams_event_webhook(
             "recipient_id": user_account.get("id") or sender_id,
             "recipient_name": user_account.get("name") or sender_name,
             "bot_id": bot_channel_account.get("id") or config.app_id,
-            "user_label": _platform_user.display_name or sender_name,
+            "user_label": runtime_actor.display_name or sender_name,
+            "external_principal_id": str(external_principal_id),
         }
 
         # Find-or-create session for this Teams conversation
@@ -541,7 +544,8 @@ async def teams_event_webhook(
             agent_id=agent_id,
             tenant_id=agent_tenant_id,
             user_id=platform_user_id,
-            external_conv_id=conversation_id,
+            external_principal_id=external_principal_id,
+            external_conv_id=f"teams_{conversation_id}_{sender_id}",
             source_channel="microsoft_teams",
             first_message_title=user_text,
             delivery_target=delivery_target,
@@ -569,6 +573,7 @@ async def teams_event_webhook(
                 agent_id=agent_id,
                 tenant_id=agent_tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="user",
                 content=user_text,
                 conversation_id=session_conv_id,
@@ -612,7 +617,7 @@ async def teams_event_webhook(
                 allow_bare_plan_confirmation=True,
                 durable_run=True,
                 durable_session=sess,
-                durable_user=_platform_user,
+                durable_user=runtime_actor,
             )
             logger.info(f"Teams: LLM reply generated: {reply_text[:80]}")
         except Exception as e:
@@ -629,6 +634,7 @@ async def teams_event_webhook(
                     agent_id=agent_id,
                     tenant_id=agent_tenant_id,
                     user_id=platform_user_id,
+                    external_principal_id=external_principal_id,
                     role="assistant",
                     content=reply_text,
                     conversation_id=session_conv_id,

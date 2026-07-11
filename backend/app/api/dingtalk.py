@@ -102,7 +102,7 @@ async def delete_dingtalk_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -112,6 +112,15 @@ async def delete_dingtalk_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="DingTalk not configured")
+    from app.services.external_principal_service import revoke_channel_config_external_principals
+
+    await revoke_channel_config_external_principals(
+        db,
+        tenant_id=agent.tenant_id,
+        config=config,
+        actor_user_id=current_user.id,
+        reason="DingTalk channel configuration deleted",
+    )
     await db.delete(config)
 
     # Stop Stream client
@@ -140,8 +149,7 @@ async def process_dingtalk_message(
     from app.services.tenant_resolver import resolve_tenant_for_agent
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
-    from app.models.user import User as UserModel
-    from app.core.security import hash_password
+    from app.models.channel_config import ChannelConfig
     from app.services.channel_agent_runtime import call_agent_llm
     from app.services.channel_session import find_or_create_channel_session
 
@@ -162,7 +170,7 @@ async def process_dingtalk_message(
         # Determine conv_id for session isolation
         if conversation_type == "2":
             # Group chat
-            conv_id = f"dingtalk_group_{conversation_id}"
+            conv_id = f"dingtalk_group_{conversation_id}_{sender_staff_id}"
         else:
             # P2P / single chat
             conv_id = f"dingtalk_p2p_{sender_staff_id}"
@@ -175,24 +183,37 @@ async def process_dingtalk_message(
             "sender_staff_id": sender_staff_id,
         }
 
-        # Find or create platform user
-        dt_username = f"dingtalk_{sender_staff_id}"
-        u_r = await db.execute(_select(UserModel).where(UserModel.username == dt_username))
-        platform_user = u_r.scalar_one_or_none()
-        if not platform_user:
-            import uuid as _uuid
-
-            platform_user = UserModel(
-                username=dt_username,
-                email=f"{dt_username}@dingtalk.local",
-                password_hash=hash_password(_uuid.uuid4().hex),
-                display_name=f"DingTalk {sender_staff_id[:8]}",
-                role="member",
-                tenant_id=agent_obj.tenant_id if agent_obj else None,
+        config = (
+            await db.execute(
+                _select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "dingtalk",
+                )
             )
-            db.add(platform_user)
-            await db.flush()
-        platform_user_id = platform_user.id
+        ).scalar_one_or_none()
+        from app.services.channel_ingress_context import current_channel_ingress_context
+        from app.services.external_principal_service import resolve_or_create_external_principal
+
+        ingress = current_channel_ingress_context()
+        installation_ref = (
+            ingress.installation_ref
+            if ingress is not None and ingress.provider == "dingtalk" and ingress.installation_ref
+            else str(getattr(config, "id", None) or f"dingtalk:{agent_id}")
+        )
+        principal_resolution = await resolve_or_create_external_principal(
+            db,
+            tenant_id=agent_obj.tenant_id,
+            provider="dingtalk",
+            installation_ref=installation_ref,
+            channel_config_id=getattr(config, "id", None),
+            subject_id=sender_staff_id,
+            display_name=f"DingTalk {sender_staff_id[:8]}",
+            profile={"conversation_id": conversation_id, "conversation_type": conversation_type},
+        )
+        runtime_actor = principal_resolution.actor
+        platform_user_id = runtime_actor.id
+        external_principal_id = principal_resolution.principal.id
+        delivery_target["external_principal_id"] = str(external_principal_id)
 
         # Find or create session
         sess = await find_or_create_channel_session(
@@ -200,6 +221,7 @@ async def process_dingtalk_message(
             agent_id=agent_id,
             tenant_id=agent_obj.tenant_id if agent_obj else None,
             user_id=platform_user_id,
+            external_principal_id=external_principal_id,
             external_conv_id=conv_id,
             source_channel="dingtalk",
             first_message_title=user_text,
@@ -224,6 +246,7 @@ async def process_dingtalk_message(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="user",
                 content=user_text,
                 conversation_id=session_conv_id,
@@ -249,7 +272,7 @@ async def process_dingtalk_message(
                 allow_bare_plan_confirmation=True,
                 durable_run=True,
                 durable_session=sess,
-                durable_user=platform_user,
+                durable_user=runtime_actor,
             )
         finally:
             _cdt.reset(_cdt_token)
@@ -289,6 +312,7 @@ async def process_dingtalk_message(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="assistant",
                 content=reply_text,
                 conversation_id=session_conv_id,

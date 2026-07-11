@@ -229,6 +229,8 @@ async def dispatch_channel_ingress_event(item: ClaimedChannelIngressEvent) -> di
         event_id=item.id,
         tenant_id=item.tenant_id,
         agent_id=item.agent_id,
+        provider=item.provider,
+        installation_ref=item.installation_ref,
     ) as context:
         async with tenant_scoped_session(
             item.tenant_id,
@@ -243,6 +245,11 @@ async def dispatch_channel_ingress_event(item: ClaimedChannelIngressEvent) -> di
                 **result,
                 "runtime_task_id": str(context.runtime_task_id),
                 "session_id": str(context.session_id) if context.session_id else None,
+            }
+        if context.external_principal_id is not None:
+            result = {
+                **result,
+                "external_principal_id": str(context.external_principal_id),
             }
         return result
 

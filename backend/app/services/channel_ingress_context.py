@@ -14,6 +14,9 @@ class ChannelIngressExecutionContext:
     event_id: uuid.UUID
     tenant_id: uuid.UUID
     agent_id: uuid.UUID
+    provider: str = ""
+    installation_ref: str = ""
+    external_principal_id: uuid.UUID | None = None
     runtime_task_id: uuid.UUID | None = None
     session_id: uuid.UUID | None = None
 
@@ -34,11 +37,15 @@ def use_channel_ingress_context(
     event_id: uuid.UUID,
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
+    provider: str = "",
+    installation_ref: str = "",
 ) -> Iterator[ChannelIngressExecutionContext]:
     context = ChannelIngressExecutionContext(
         event_id=event_id,
         tenant_id=tenant_id,
         agent_id=agent_id,
+        provider=str(provider or "").strip().lower(),
+        installation_ref=str(installation_ref or "").strip(),
     )
     token = _current_channel_ingress.set(context)
     try:
@@ -59,9 +66,17 @@ def bind_channel_ingress_runtime_result(
     context.session_id = uuid.UUID(str(session_id))
 
 
+def bind_channel_ingress_external_principal(external_principal_id: uuid.UUID | str) -> None:
+    context = current_channel_ingress_context()
+    if context is None:
+        return
+    context.external_principal_id = uuid.UUID(str(external_principal_id))
+
+
 __all__ = [
     "ChannelIngressExecutionContext",
     "bind_channel_ingress_runtime_result",
+    "bind_channel_ingress_external_principal",
     "current_channel_ingress_context",
     "use_channel_ingress_context",
 ]

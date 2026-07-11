@@ -24,7 +24,15 @@ class ChatSession(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), index=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
+    )
+    external_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("external_principals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="New Session")
     source_channel: Mapped[str] = mapped_column(String(20), nullable=False, default="web")
     external_conv_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -57,3 +65,4 @@ class ChatSession(Base):
 
 # Keep isolated ChatSession imports mapper-safe for runtime_task_id flushes.
 from app.models.runtime_task import RuntimeTask  # noqa: E402, F401
+from app.models.external_principal import ExternalPrincipal  # noqa: E402, F401

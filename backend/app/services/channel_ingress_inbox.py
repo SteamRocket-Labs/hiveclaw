@@ -354,6 +354,7 @@ class ChannelIngressInboxService:
             row.processing_receipt_json = dict(receipt)
             row.result_runtime_task_id = _optional_uuid(receipt.get("runtime_task_id"))
             row.result_session_id = _optional_uuid(receipt.get("session_id"))
+            row.external_principal_id = _optional_uuid(receipt.get("external_principal_id"))
             row.last_error = None
             row.locked_by = None
             row.locked_at = None

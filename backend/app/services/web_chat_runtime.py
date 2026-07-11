@@ -87,6 +87,27 @@ _SESSION_CONTEXT_RUNTIME_EVENT_TYPES = {
 }
 
 
+def _runtime_actor_user_id(user: Any) -> uuid.UUID | None:
+    value = getattr(user, "id", None)
+    if value in (None, ""):
+        return None
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def _runtime_actor_external_principal_id(user: Any) -> uuid.UUID | None:
+    value = getattr(user, "external_principal_id", None)
+    if value in (None, ""):
+        return None
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def _runtime_actor_authority_bound(user: Any) -> bool:
+    external_principal_id = _runtime_actor_external_principal_id(user)
+    if external_principal_id is None:
+        return _runtime_actor_user_id(user) is not None
+    return bool(getattr(user, "authority_bound", False) and _runtime_actor_user_id(user) is not None)
+
+
 async def _lock_session_runtime_mutation(db: AsyncSession, *, session_id: uuid.UUID) -> None:
     """Serialize run admission with transcript mutations such as Rewind.
 
@@ -134,6 +155,7 @@ async def _create_runtime_budget_root_run_for_chat(
                 root_session_id=str(getattr(session, "id", "")),
                 root_agent_id=getattr(agent, "id", None),
                 root_user_id=getattr(user, "id", None),
+                root_external_principal_id=getattr(user, "external_principal_id", None),
                 enforcement_mode=str(getattr(policy, "enforcement_mode", None) or "enforce"),
                 fail_mode=str(getattr(policy, "fail_mode", None) or "fail_closed"),
                 max_tokens=getattr(policy, "max_tokens", None),
@@ -1026,6 +1048,7 @@ async def _materialize_pending_mid_run_user_message(
         event_type="user_message" if role == "user" else "agent_session_message",
         role=role,
         user_id=item.get("user_id"),
+        external_principal_id=item.get("external_principal_id"),
         content=content,
         message_id=item.get("id"),
         parts=item.get("parts") or None,
@@ -1055,6 +1078,7 @@ async def _persist_stream_step_event(
     event_type: str,
     content: str,
     part: dict[str, Any] | None,
+    external_principal_id: uuid.UUID | str | None = None,
 ) -> Any | None:
     if not content:
         return None
@@ -1069,6 +1093,7 @@ async def _persist_stream_step_event(
                 event_type=event_type,
                 role="assistant",
                 user_id=user_id,
+                external_principal_id=external_principal_id,
                 run_id=run_uuid,
                 runtime_task_id=run_uuid,
                 content=content,
@@ -1923,7 +1948,10 @@ async def _queue_saved_mid_run_user_message(
         "display_content": display_content if display_content else saved_content,
         "role": queued_role,
         "source": source_channel,
-        "user_id": str(user.id),
+        "user_id": str(_runtime_actor_user_id(user)) if _runtime_actor_user_id(user) else None,
+        "external_principal_id": (
+            str(_runtime_actor_external_principal_id(user)) if _runtime_actor_external_principal_id(user) else None
+        ),
         "file_name": file_name,
         "attachments": attachments or [],
         "parts": parts or [],
@@ -2042,8 +2070,13 @@ async def start_channel_chat_run_from_saved_turn(
     permission_mode = normalize_permission_mode(
         session_metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value
     ).value
+    actor_user_id = _runtime_actor_user_id(user)
+    external_principal_id = _runtime_actor_external_principal_id(user)
+    external_authority_bound = _runtime_actor_authority_bound(user)
     metadata = {
-        "user_id": str(user.id),
+        "user_id": str(actor_user_id) if actor_user_id else None,
+        "external_principal_id": str(external_principal_id) if external_principal_id else None,
+        "external_authority_bound": external_authority_bound if external_principal_id else None,
         "session_id": str(session.id),
         "runtime_task_id": run_uuid.hex,
         "request_id": str(run_uuid),
@@ -2067,6 +2100,9 @@ async def start_channel_chat_run_from_saved_turn(
         **({"channel_ingress_event_id": str(ingress.event_id)} if ingress else {}),
         **(extra_metadata or {}),
     }
+    if external_principal_id is not None and not external_authority_bound:
+        metadata["disable_tools"] = True
+        metadata["tool_policy"] = "disabled_for_unbound_external_principal"
     inherited_budget_run_id = _uuid_or_none(metadata.get("budget_run_id"))
     if inherited_budget_run_id is not None:
         budget_run_id = inherited_budget_run_id
@@ -2334,11 +2370,12 @@ async def _claim_pending_reply_suffix_for_session(
 async def _persist_assistant_message(
     *,
     agent_id: uuid.UUID,
-    user_id: uuid.UUID,
+    user_id: uuid.UUID | None,
     session_id: str,
     content: str,
     thinking: str | None,
     thinking_signature: str | None = None,
+    external_principal_id: uuid.UUID | None = None,
 ) -> None:
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
@@ -2353,6 +2390,7 @@ async def _persist_assistant_message(
             event_type="assistant_message",
             role="assistant",
             user_id=user_id,
+            external_principal_id=external_principal_id,
             content=content,
             thinking=thinking,
             thinking_signature=thinking_signature,
@@ -2479,7 +2517,7 @@ async def _finalize_web_chat_run_with_assistant(
     *,
     run_uuid: uuid.UUID,
     agent_id: uuid.UUID,
-    user_id: uuid.UUID,
+    user_id: uuid.UUID | None,
     session_id: str,
     content: str,
     thinking: str | None,
@@ -2511,6 +2549,7 @@ async def _finalize_web_chat_run_with_assistant(
         if task is None:
             logger.warning("[WebChatRun] Finalization skipped; runtime task {} not found", run_uuid.hex)
             return False
+        external_principal_id = _uuid_or_none((getattr(task, "metadata_json", None) or {}).get("external_principal_id"))
         if task.status not in _ACTIVE_STATUSES:
             logger.info(
                 "[WebChatRun] Duplicate finalization skipped for run {} with status {}",
@@ -2660,6 +2699,8 @@ async def _finalize_web_chat_run_with_assistant(
                 actor_type="assistant",
                 event_type="assistant_message",
                 role="assistant",
+                user_id=user_id,
+                external_principal_id=external_principal_id,
                 content=content,
                 message_id=getattr(kernel_persisted_message, "id", None),
                 source="web_chat_runtime",
@@ -2716,6 +2757,7 @@ async def _finalize_web_chat_run_with_assistant(
                 agent_id=agent_id,
                 tenant_id=tenant_id,
                 user_id=user_id,
+                external_principal_id=external_principal_id,
                 role="assistant",
                 content=content,
                 conversation_id=session_id,
@@ -2765,6 +2807,7 @@ async def _finalize_web_chat_run_with_assistant(
             event_type="assistant_message",
             role="assistant",
             user_id=user_id,
+            external_principal_id=external_principal_id,
             content=content,
             message_id=assistant_message_id,
             source="web_chat_runtime",
@@ -2953,9 +2996,10 @@ async def _emit_terminal_turn_hook(
 async def _persist_tool_call(
     *,
     agent_id: uuid.UUID,
-    user_id: uuid.UUID,
+    user_id: uuid.UUID | None,
     session_id: str,
     data: dict[str, Any],
+    external_principal_id: uuid.UUID | None = None,
 ) -> Any:
     data = _tool_step_contract(data)
     status = str(data.get("status") or "done")
@@ -3065,6 +3109,7 @@ async def _persist_tool_call(
             role="tool_call",
             t0_role="tool",
             user_id=user_id,
+            external_principal_id=external_principal_id,
             content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
             message_id=message_id,
             source="web_chat_runtime",
@@ -3095,9 +3140,10 @@ async def _persist_tool_call(
 async def _persist_runtime_event(
     *,
     agent_id: uuid.UUID,
-    user_id: uuid.UUID,
+    user_id: uuid.UUID | None,
     session_id: str,
     data: dict[str, Any],
+    external_principal_id: uuid.UUID | None = None,
 ) -> None:
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
@@ -3121,6 +3167,7 @@ async def _persist_runtime_event(
             event_type=event_type,
             role="system",
             user_id=user_id,
+            external_principal_id=external_principal_id,
             content=json.dumps(data, ensure_ascii=False),
             source="web_chat_runtime",
             parts=event_parts,
@@ -3520,7 +3567,8 @@ async def _materialize_initial_user_turn_for_worker(
         actor_type="user",
         event_type="user_message",
         role="user",
-        user_id=user.id,
+        user_id=_runtime_actor_user_id(user),
+        external_principal_id=_runtime_actor_external_principal_id(user),
         content=content,
         message_id=message_id,
         parts=payload.get("parts") or None,
@@ -3656,11 +3704,28 @@ async def _load_runtime_context(
             raise RuntimeError(f"Agent {runtime_task.parent_agent_id} is not active")
 
         metadata = dict(runtime_task.metadata_json or {})
-        user_id = uuid.UUID(str(metadata.get("user_id")))
-        user_result = await db.execute(select(User).where(User.id == user_id))
-        user = user_result.scalar_one_or_none()
-        if user is None:
-            raise RuntimeError(f"User {user_id} not found")
+        user_id = _uuid_or_none(metadata.get("user_id"))
+        external_principal_id = _uuid_or_none(metadata.get("external_principal_id"))
+        if external_principal_id is not None:
+            from app.services.external_principal_service import load_external_runtime_actor
+
+            user = await load_external_runtime_actor(
+                db,
+                tenant_id=tenant_id,
+                principal_id=external_principal_id,
+                expected_user_id=user_id,
+            )
+            metadata["external_authority_bound"] = bool(user.authority_bound)
+            if not user.authority_bound:
+                metadata["disable_tools"] = True
+                metadata["tool_policy"] = "disabled_for_unbound_external_principal"
+        else:
+            if user_id is None:
+                raise RuntimeError(f"RuntimeTask {run_uuid.hex} has no actor authority")
+            user_result = await db.execute(select(User).where(User.id == user_id))
+            user = user_result.scalar_one_or_none()
+            if user is None:
+                raise RuntimeError(f"User {user_id} not found")
 
         boundary_updates = _enforce_runtime_context_tenant_boundary(
             runtime_task=runtime_task,
@@ -3863,6 +3928,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     phase_emitter: RunPhaseEmitter | None = None
     terminal_phase_hint: RuntimePhase | None = None
     runtime_session_context: Any | None = None
+    actor_user_id: uuid.UUID | None = None
+    actor_external_principal_id: uuid.UUID | None = None
 
     try:
         loaded_context = await _load_runtime_context(run_uuid)
@@ -3892,6 +3959,12 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             runtime_metadata=runtime_task.metadata_json if isinstance(runtime_task.metadata_json, dict) else {},
             session_metadata=getattr(session, "transcript_metadata_json", None) if session is not None else None,
         )
+        actor_user_id = _runtime_actor_user_id(user)
+        actor_external_principal_id = _runtime_actor_external_principal_id(user)
+        actor_authority_bound = _runtime_actor_authority_bound(user)
+        if actor_external_principal_id is not None and not actor_authority_bound:
+            metadata["disable_tools"] = True
+            metadata["tool_policy"] = "disabled_for_unbound_external_principal"
         terminal_runtime_metadata = metadata
         runtime_mailbox_role = str(metadata.get("runtime_mailbox_role") or "").strip().lower()
         internal_runtime_context_turn = bool(metadata.get("task_notification")) or runtime_mailbox_role == "system"
@@ -3961,7 +4034,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             finalized = await _finalize_web_chat_run_with_assistant(
                 run_uuid=run_uuid,
                 agent_id=agent.id,
-                user_id=user.id,
+                user_id=actor_user_id,
                 session_id=session_id,
                 content=plan_mode_response,
                 thinking=None,
@@ -3987,7 +4060,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             finalized = await _finalize_web_chat_run_with_assistant(
                 run_uuid=run_uuid,
                 agent_id=agent.id,
-                user_id=user.id,
+                user_id=actor_user_id,
                 session_id=session_id,
                 content=assistant_response,
                 thinking=None,
@@ -4016,7 +4089,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 persisted_event = await _persist_stream_step_event(
                     agent_id=agent.id,
                     tenant_id=agent.tenant_id,
-                    user_id=user.id,
+                    user_id=actor_user_id,
+                    external_principal_id=actor_external_principal_id,
                     session_id=session_id,
                     run_uuid=run_uuid,
                     event_type=kind,
@@ -4080,7 +4154,13 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             await stream_batcher.flush()
             await broadcast_web_chat_event(agent.id, session_id, event_payload)
             if _should_persist_runtime_event(data):
-                await _persist_runtime_event(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
+                await _persist_runtime_event(
+                    agent_id=agent.id,
+                    user_id=actor_user_id,
+                    external_principal_id=actor_external_principal_id,
+                    session_id=session_id,
+                    data=data,
+                )
 
         pending_reply_suffix = ""
         try:
@@ -4120,7 +4200,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 messages=history_messages,
                 explicit=bool(metadata.get("plan_mode_requested")),
             )
-        if trusted_decline:
+        if trusted_decline and actor_user_id is None:
+            trusted_decline = None
+        if trusted_decline and actor_user_id is not None:
             try:
                 from app.services.plan_mode_recommendation_service import decline_latest_recommendation_for_user
 
@@ -4128,7 +4210,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     recommendation = await decline_latest_recommendation_for_user(
                         recommendation_db,
                         agent_id=agent.id,
-                        user_id=user.id,
+                        user_id=actor_user_id,
                         session_id=session_id,
                     )
                     if recommendation is None:
@@ -4243,7 +4325,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             data = _tool_step_contract(data, fallback_run_id=run_uuid)
             if data.get("status") != "done":
                 persisted_event = await _persist_tool_call(
-                    agent_id=agent.id, user_id=user.id, session_id=session_id, data=data
+                    agent_id=agent.id,
+                    user_id=actor_user_id,
+                    external_principal_id=actor_external_principal_id,
+                    session_id=session_id,
+                    data=data,
                 )
                 ws_event = build_tool_call_event(data)
                 if persisted_event:
@@ -4265,7 +4351,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 return
 
             persisted_event = await _persist_tool_call(
-                agent_id=agent.id, user_id=user.id, session_id=session_id, data=data
+                agent_id=agent.id,
+                user_id=actor_user_id,
+                external_principal_id=actor_external_principal_id,
+                session_id=session_id,
+                data=data,
             )
             ws_event = build_tool_call_event(data)
             if persisted_event:
@@ -4288,7 +4378,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             if runtime_action_event:
                 await _persist_runtime_event(
                     agent_id=agent.id,
-                    user_id=user.id,
+                    user_id=actor_user_id,
+                    external_principal_id=actor_external_principal_id,
                     session_id=session_id,
                     data=runtime_action_event,
                 )
@@ -4334,10 +4425,18 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                         agent_name=agent.name,
                         role_description=agent.role_description or "",
                         agent_id=agent.id,
-                        user_id=user.id,
+                        user_id=actor_user_id,
                         execution_identity=ExecutionIdentityRef(
-                            identity_type="delegated_user",
-                            identity_id=user.id,
+                            identity_type=(
+                                "external_principal_bound"
+                                if actor_external_principal_id is not None and actor_authority_bound
+                                else (
+                                    "external_principal"
+                                    if actor_external_principal_id is not None
+                                    else "delegated_user"
+                                )
+                            ),
+                            identity_id=actor_external_principal_id or actor_user_id,
                             label=f"{user.display_name or user.username} via {runtime_session_context.channel or 'web'}",
                         ),
                         on_chunk=stream_to_ws,
@@ -4482,7 +4581,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             finalized = await _finalize_web_chat_run_with_assistant(
                 run_uuid=run_uuid,
                 agent_id=agent.id,
-                user_id=user.id,
+                user_id=actor_user_id,
                 session_id=session_id,
                 content=assistant_response,
                 thinking=thinking,
@@ -4555,6 +4654,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             if stream_batcher is not None:
                 await stream_batcher.flush()
             runtime_task, agent, user, *_rest = await _load_runtime_context(run_uuid)
+            failed_actor_user_id = _runtime_actor_user_id(user)
             session_id = str(runtime_task.parent_session_id)
             failed_turn_change_paths = (
                 _terminal_file_change_paths_for_turn(runtime_session_context)
@@ -4573,7 +4673,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             finalized = await _finalize_web_chat_run_with_assistant(
                 run_uuid=run_uuid,
                 agent_id=agent.id,
-                user_id=user.id,
+                user_id=failed_actor_user_id,
                 session_id=session_id,
                 content=_USER_VISIBLE_WEB_CHAT_ERROR,
                 thinking=None,

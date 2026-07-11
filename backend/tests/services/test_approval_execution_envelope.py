@@ -9,6 +9,7 @@ import pytest
 
 def test_approval_execution_envelope_round_trips_every_runtime_authority() -> None:
     from app.agents.delegation_token import DelegationToken
+    from app.core.execution_context import ExecutionIdentity
     from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1, SandboxProfile
     from app.services.approval_ticket import (
         build_approval_execution_envelope,
@@ -21,11 +22,17 @@ def test_approval_execution_envelope_round_trips_every_runtime_authority() -> No
     agent_id = uuid.uuid4()
     requester_id = uuid.uuid4()
     parent_id = uuid.uuid4()
+    external_principal_id = uuid.uuid4()
     context = ToolExecutionContext(
         agent_id=agent_id,
         user_id=requester_id,
         tenant_id=str(tenant_id),
         workspace=Path("/tmp/hive-approved-workspace"),
+        execution_identity=ExecutionIdentity(
+            identity_type="external_principal_bound",
+            identity_id=external_principal_id,
+            label="Slack guest via slack",
+        ),
         session_id="session-42",
         permission_profile=PermissionProfileV1(
             mode=PermissionMode.ACCEPT_EDITS,
@@ -64,6 +71,10 @@ def test_approval_execution_envelope_round_trips_every_runtime_authority() -> No
     assert restored.tenant_id == tenant_id
     assert restored.agent_id == agent_id
     assert restored.requester_user_id == requester_id
+    assert restored.execution_identity is not None
+    assert restored.execution_identity.identity_type == "external_principal_bound"
+    assert restored.execution_identity.identity_id == external_principal_id
+    assert restored.execution_identity.label == "Slack guest via slack"
     assert restored.session_id == "session-42"
     assert restored.tool_call_id == "tool-call-7"
     assert restored.turn_id == "turn-9"

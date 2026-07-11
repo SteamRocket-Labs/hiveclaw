@@ -20,7 +20,7 @@ def _archived_external_conv_id(external_conv_id: str, session_id: _uuid.UUID) ->
 
 def _apply_channel_session_contract(session: ChatSession) -> None:
     session.session_kind = "human_chat"
-    session.actor_type = "user"
+    session.actor_type = "external_principal" if getattr(session, "external_principal_id", None) else "user"
     session.runtime_source = "channel_chat"
     session.visibility_scope = "direct_user"
     session.listed_surface = "chat"
@@ -29,10 +29,11 @@ def _apply_channel_session_contract(session: ChatSession) -> None:
 async def find_or_create_channel_session(
     db: AsyncSession,
     agent_id: _uuid.UUID,
-    user_id: _uuid.UUID,
+    user_id: _uuid.UUID | None,
     external_conv_id: str,
     source_channel: str,
     first_message_title: str,
+    external_principal_id: _uuid.UUID | None = None,
     tenant_id: _uuid.UUID | None = None,
     legacy_external_conv_ids: list[str] | None = None,
     delivery_target: dict | None = None,
@@ -50,6 +51,11 @@ async def find_or_create_channel_session(
     session = result.scalar_one_or_none()
     if session is not None and tenant_id and session.tenant_id is None:
         session.tenant_id = tenant_id
+    if session is not None and external_principal_id is not None:
+        existing_principal_id = getattr(session, "external_principal_id", None)
+        if existing_principal_id not in (None, external_principal_id):
+            raise ValueError("channel conversation is already bound to a different external principal")
+        session.external_principal_id = external_principal_id
 
     if session is not None and legacy_external_conv_ids:
         for legacy_conv_id in legacy_external_conv_ids:
@@ -66,7 +72,12 @@ async def find_or_create_channel_session(
             await db.execute(
                 update(ChatMessage)
                 .where(ChatMessage.conversation_id == str(legacy_session.id))
-                .values(conversation_id=str(session.id), user_id=user_id, tenant_id=tenant_id)
+                .values(
+                    conversation_id=str(session.id),
+                    user_id=user_id,
+                    external_principal_id=external_principal_id,
+                    tenant_id=tenant_id,
+                )
             )
             if legacy_session.last_message_at and (
                 session.last_message_at is None or legacy_session.last_message_at > session.last_message_at
@@ -90,6 +101,7 @@ async def find_or_create_channel_session(
                 if legacy_session:
                     legacy_session.external_conv_id = external_conv_id
                     legacy_session.user_id = user_id
+                    legacy_session.external_principal_id = external_principal_id
                     if tenant_id and legacy_session.tenant_id is None:
                         legacy_session.tenant_id = tenant_id
                     if not legacy_session.title or legacy_session.title == "New Session":
@@ -105,6 +117,7 @@ async def find_or_create_channel_session(
             agent_id=agent_id,
             tenant_id=tenant_id,
             user_id=user_id,
+            external_principal_id=external_principal_id,
             title=first_message_title[:40],
             source_channel=source_channel,
             session_kind="human_chat",
@@ -122,6 +135,8 @@ async def find_or_create_channel_session(
         # Re-attribute old sessions that were stored under creator_id / wrong user
         if session.user_id != user_id:
             session.user_id = user_id
+        if external_principal_id is not None:
+            session.external_principal_id = external_principal_id
         if delivery_target:
             session.delivery_target_json = delivery_target
 
@@ -132,10 +147,11 @@ async def find_or_create_channel_session(
 async def start_new_channel_session(
     db: AsyncSession,
     agent_id: _uuid.UUID,
-    user_id: _uuid.UUID,
+    user_id: _uuid.UUID | None,
     external_conv_id: str,
     source_channel: str,
     title: str = "New Session",
+    external_principal_id: _uuid.UUID | None = None,
     tenant_id: _uuid.UUID | None = None,
     legacy_external_conv_ids: list[str] | None = None,
     delivery_target: dict | None = None,
@@ -160,6 +176,7 @@ async def start_new_channel_session(
         agent_id=agent_id,
         tenant_id=tenant_id,
         user_id=user_id,
+        external_principal_id=external_principal_id,
         title=(title or "New Session")[:40],
         source_channel=source_channel,
         session_kind="human_chat",

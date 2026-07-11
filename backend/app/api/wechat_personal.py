@@ -139,6 +139,7 @@ async def connect(
         account_id=creds["account_id"],
         user_id=creds["user_id"],
         tenant_id=agent.tenant_id,
+        actor_user_id=current_user.id,
     )
 
     config = await connect_channel(
@@ -149,6 +150,7 @@ async def connect(
         base_url=creds["base_url"],
         user_id=creds["user_id"],
         tenant_id=agent.tenant_id,
+        actor_user_id=current_user.id,
     )
     await db.commit()
 
@@ -204,7 +206,7 @@ async def disconnect(
     db: AsyncSession = Depends(get_db),
 ):
     """Disconnect personal WeChat channel and stop message stream."""
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     # Stop the streaming client first
     try:
@@ -214,7 +216,12 @@ async def disconnect(
     except Exception as e:
         logger.warning(f"[WeChatPersonal] Failed to stop stream on disconnect: {e}")
 
-    removed = await disconnect_channel(db, agent_id)
+    removed = await disconnect_channel(
+        db,
+        agent_id,
+        tenant_id=agent.tenant_id,
+        actor_user_id=current_user.id,
+    )
     await db.commit()
 
     if not removed:

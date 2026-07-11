@@ -85,23 +85,40 @@ async def test_process_wecom_text_sets_delivery_target_session_and_execution_ide
     agent_id = uuid4()
     tenant_id = uuid4()
     platform_user_id = uuid4()
+    external_principal_id = uuid4()
     session_id = uuid4()
     config = SimpleNamespace(
+        id=uuid4(),
         agent_id=agent_id,
         app_id="corp-id",
         app_secret="corp-secret",
         extra_config={"wecom_agent_id": "1000002"},
     )
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
-    platform_user = SimpleNamespace(id=platform_user_id, username="wecom_zhangsan", display_name="张三")
     captured: dict[str, object] = {}
     db = _SequenceSession(
         [
             _ScalarResult(agent),
-            _ScalarResult(platform_user),
             _RowsResult([]),
         ]
     )
+
+    async def fake_resolve_external_principal(*_args, **kwargs):
+        captured["principal_kwargs"] = kwargs
+        return SimpleNamespace(
+            principal=SimpleNamespace(id=external_principal_id),
+            actor=SimpleNamespace(
+                id=platform_user_id,
+                external_principal_id=external_principal_id,
+                tenant_id=tenant_id,
+                username="wecom_zhangsan",
+                display_name="张三",
+                role="member",
+                department_id=None,
+                authority_bound=True,
+                is_active=True,
+            ),
+        )
 
     async def fake_find_or_create_channel_session(*, delivery_target=None, external_conv_id=None, **_kwargs):
         captured["external_conv_id"] = external_conv_id
@@ -134,6 +151,10 @@ async def test_process_wecom_text_sets_delivery_target_session_and_execution_ide
     monkeypatch.setattr(
         "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
     )
+    monkeypatch.setattr(
+        "app.services.external_principal_service.resolve_or_create_external_principal",
+        fake_resolve_external_principal,
+    )
     monkeypatch.setattr("app.services.channel_agent_runtime.call_agent_llm", fake_call_agent_llm)
     monkeypatch.setattr(wecom_api, "_send_wecom_text_message", fake_send_wecom_text_message)
     monkeypatch.setattr("httpx.AsyncClient", lambda timeout=5: _FakeHttpClient())
@@ -146,13 +167,16 @@ async def test_process_wecom_text_sets_delivery_target_session_and_execution_ide
         "channel": "wecom",
         "user_id": "zhangsan",
         "user_label": "张三",
+        "external_principal_id": str(external_principal_id),
     }
     assert captured["runtime_delivery_target"] == {
         "channel": "wecom",
         "user_id": "zhangsan",
         "user_label": "张三",
+        "external_principal_id": str(external_principal_id),
         "session_id": str(session_id),
     }
+    assert captured["principal_kwargs"]["installation_ref"] == str(config.id)
     assert captured["llm_kwargs"]["session_id"] == str(session_id)
     assert captured["llm_kwargs"]["session_source"] == "wecom"
     assert captured["llm_kwargs"]["session_channel"] == "wecom"

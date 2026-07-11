@@ -836,6 +836,7 @@ class ToolRuntimeService:
         *,
         agent_id: uuid.UUID,
         user_id: uuid.UUID,
+        execution_identity: Any | None = None,
         tool_call_id: str | None = None,
         event_callback: EventCallback | None = None,
         delegation_token: Any | None = None,
@@ -937,6 +938,8 @@ class ToolRuntimeService:
             t0_refs=t0_refs,
         )
         runtime_context.delegation_token = delegation_token
+        if execution_identity is not None:
+            runtime_context.execution_identity = execution_identity
         runtime_context.approval_decision = _approval_decision
         runtime_context.emit_runtime_hooks = emit_runtime_hooks
         runtime_context.plan_mode_interactive_available = plan_mode_interactive_available
@@ -1529,6 +1532,7 @@ class ToolRuntimeService:
                 ticket.arguments,
                 agent_id=ticket.agent_id,
                 user_id=ticket.requested_by_user_id,
+                execution_identity=envelope.execution_identity,
                 tool_call_id=envelope.tool_call_id,
                 delegation_token=envelope.delegation_token,
                 session_id=envelope.session_id,
@@ -2118,7 +2122,7 @@ def _build_tool_preflight_input(
     execution_policy = tool_execution_policy(tool_name)
     explicit_user_authorized = bool(
         execution_policy.delegated_user_authorized
-        and getattr(execution_identity, "identity_type", None) == "delegated_user"
+        and getattr(execution_identity, "identity_type", None) in {"delegated_user", "external_principal_bound"}
     )
 
     if execution_policy.external_visible:

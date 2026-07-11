@@ -187,6 +187,7 @@ class RuntimeBudgetRunCreate:
     root_session_id: str | None = None
     root_agent_id: uuid.UUID | None = None
     root_user_id: uuid.UUID | None = None
+    root_external_principal_id: uuid.UUID | None = None
     enforcement_mode: str = "enforce"
     fail_mode: str = "fail_closed"
     max_tokens: int | None = None
@@ -514,6 +515,7 @@ class RuntimeBudgetService:
                 root_session_id=payload.root_session_id,
                 root_agent_id=payload.root_agent_id,
                 root_user_id=payload.root_user_id,
+                root_external_principal_id=payload.root_external_principal_id,
                 source=payload.source,
                 profile=payload.profile,
                 enforcement_mode=payload.enforcement_mode,

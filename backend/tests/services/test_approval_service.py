@@ -25,6 +25,9 @@ class _FakeResult:
     def scalars(self):
         return _FakeScalarRows(self._rows)
 
+    def scalar_one_or_none(self):
+        return self._rows[0] if self._rows else None
+
 
 class _FakeDb:
     def __init__(self, rows):
@@ -92,6 +95,117 @@ async def test_request_approval_persists_immutable_execution_envelope() -> None:
     assert approval.execution_envelope == envelope
     assert approval.execution_envelope_hash == hash_approval_execution_envelope(envelope)
     assert approval.requested_by == requester_id
+
+
+@pytest.mark.asyncio
+async def test_bound_external_approval_persists_principal_in_ticket_and_audit() -> None:
+    from app.core.execution_context import ExecutionIdentity
+    from app.models.audit import ApprovalRequest, AuditLog
+    from app.services.approval_service import ApprovalService
+    from app.services.approval_ticket import build_approval_execution_envelope
+    from app.tools.runtime import ToolExecutionContext
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    requester_id = uuid4()
+    external_principal_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, name="External Approval Agent")
+    principal = SimpleNamespace(
+        id=external_principal_id,
+        tenant_id=tenant_id,
+        linked_user_id=requester_id,
+        status="active",
+    )
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=requester_id,
+        tenant_id=str(tenant_id),
+        workspace=Path("/tmp/external-approval-workspace"),
+        execution_identity=ExecutionIdentity(
+            identity_type="external_principal_bound",
+            identity_id=external_principal_id,
+            label="Slack guest via slack",
+        ),
+        session_id="slack:approval",
+        origin_channel="slack",
+    )
+    envelope = build_approval_execution_envelope(
+        context=context,
+        tool_call_id="external-approval-call",
+        emit_runtime_hooks=True,
+    )
+    db = _FakeDb([principal])
+
+    class _Service(ApprovalService):
+        async def _notify_pending_approval(self, *_args, **_kwargs):
+            return None
+
+    await _Service().request_approval(
+        db,  # type: ignore[arg-type]
+        agent,  # type: ignore[arg-type]
+        action_type="workspace.file.write",
+        details={
+            "tool": "write_file",
+            "args": {"path": "workspace/external.md", "content": "approved"},
+            "requested_by": str(requester_id),
+            "execution_envelope": envelope,
+            "policy_snapshot": {"schema": "test-policy"},
+        },
+    )
+
+    approval = next(item for item in db.added if isinstance(item, ApprovalRequest))
+    audit = next(item for item in db.added if isinstance(item, AuditLog))
+    assert approval.requested_by_external_principal_id == external_principal_id
+    assert audit.external_principal_id == external_principal_id
+
+
+@pytest.mark.asyncio
+async def test_bound_external_approval_rejects_stale_or_cross_tenant_binding() -> None:
+    from app.core.execution_context import ExecutionIdentity
+    from app.services.approval_service import ApprovalService
+    from app.services.approval_ticket import ApprovalTicketError, build_approval_execution_envelope
+    from app.tools.runtime import ToolExecutionContext
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    requester_id = uuid4()
+    external_principal_id = uuid4()
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=requester_id,
+        tenant_id=str(tenant_id),
+        workspace=Path("/tmp/external-approval-stale"),
+        execution_identity=ExecutionIdentity(
+            identity_type="external_principal_bound",
+            identity_id=external_principal_id,
+            label="stale binding",
+        ),
+    )
+    envelope = build_approval_execution_envelope(
+        context=context,
+        tool_call_id="stale-external-approval",
+        emit_runtime_hooks=True,
+    )
+    # The tenant + linked-user predicate returns no row for a stale/cross-tenant binding.
+    db = _FakeDb([])
+
+    class _Service(ApprovalService):
+        async def _notify_pending_approval(self, *_args, **_kwargs):
+            return None
+
+    with pytest.raises(ApprovalTicketError, match="external principal binding mismatch"):
+        await _Service().request_approval(
+            db,  # type: ignore[arg-type]
+            SimpleNamespace(id=agent_id, tenant_id=tenant_id, name="Stale Agent"),  # type: ignore[arg-type]
+            action_type="workspace.file.write",
+            details={
+                "tool": "write_file",
+                "args": {"path": "workspace/stale.md", "content": "blocked"},
+                "requested_by": str(requester_id),
+                "execution_envelope": envelope,
+                "policy_snapshot": {"schema": "test-policy"},
+            },
+        )
 
 
 class _FakeOneResult:

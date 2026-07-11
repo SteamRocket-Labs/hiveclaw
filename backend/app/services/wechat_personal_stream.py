@@ -523,15 +523,12 @@ async def _process_wechat_message(
     """Process a WeChat message through the LLM pipeline and return the reply text."""
     from datetime import datetime, timezone
 
-    import uuid as _uuid
     from sqlalchemy import select as _select
-    from sqlalchemy.exc import IntegrityError
 
     from app.services.channel_agent_runtime import call_agent_llm
-    from app.core.security import hash_password
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
-    from app.models.user import User as UserModel
+    from app.models.channel_config import ChannelConfig
     from app.services.channel_session import find_or_create_channel_session
 
     tid = await resolve_tenant_for_agent(agent_id)
@@ -550,31 +547,51 @@ async def _process_wechat_message(
         # Conversation ID
         conv_id = f"wechat_p2p_{sender_id}"
 
-        wc_username = f"wechat_{sender_id[:32]}"
-        u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
-        platform_user = u_r.scalar_one_or_none()
-        if not platform_user:
-            try:
-                platform_user = UserModel(
-                    username=wc_username,
-                    email=f"{wc_username}@wechat.local",
-                    password_hash=hash_password(_uuid.uuid4().hex),
-                    display_name=f"WeChat {sender_id[:8]}",
-                    role="member",
-                    tenant_id=agent_obj.tenant_id,
+        config = (
+            await db.execute(
+                _select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "wechat_personal",
                 )
-                db.add(platform_user)
-                await db.flush()
-            except IntegrityError:
-                await db.rollback()
-                u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
-                platform_user = u_r.scalar_one()
-        platform_user_id = platform_user.id
-        user_label = platform_user.display_name or f"WeChat {sender_id[:8]}"
+            )
+        ).scalar_one_or_none()
+        from app.services.channel_ingress_context import current_channel_ingress_context
+        from app.services.external_principal_service import resolve_or_create_external_principal
+
+        ingress = current_channel_ingress_context()
+        installation_ref = (
+            ingress.installation_ref
+            if ingress is not None and ingress.provider == "wechat_personal" and ingress.installation_ref
+            else str(getattr(config, "id", None) or f"wechat_personal:{agent_id}")
+        )
+        principal_resolution = await resolve_or_create_external_principal(
+            db,
+            tenant_id=agent_obj.tenant_id,
+            provider="wechat_personal",
+            installation_ref=installation_ref,
+            channel_config_id=getattr(config, "id", None),
+            subject_id=sender_id,
+            display_name=f"WeChat {sender_id[:8]}",
+            profile={},
+        )
+        runtime_actor = principal_resolution.actor
+        platform_user_id = runtime_actor.id
+        external_principal_id = principal_resolution.principal.id
+        user_label = runtime_actor.display_name or f"WeChat {sender_id[:8]}"
 
         from app.core.execution_context import set_delegated_user_identity
 
-        set_delegated_user_identity(platform_user_id, user_label, channel="wechat_personal")
+        if platform_user_id is not None:
+            set_delegated_user_identity(platform_user_id, user_label, channel="wechat_personal")
+
+        delivery_target = dict(
+            delivery_target
+            or {
+                "channel": "wechat_personal",
+                "to_user_id": sender_id,
+            }
+        )
+        delivery_target["external_principal_id"] = str(external_principal_id)
 
         # Find or create session
         sess = await find_or_create_channel_session(
@@ -582,16 +599,16 @@ async def _process_wechat_message(
             agent_id=agent_id,
             tenant_id=agent_obj.tenant_id,
             user_id=platform_user_id,
+            external_principal_id=external_principal_id,
             external_conv_id=conv_id,
             source_channel="wechat_personal",
             first_message_title=user_text,
             delivery_target=delivery_target,
         )
         session_conv_id = str(sess.id)
-        if delivery_target is not None:
-            delivery_target["user_label"] = delivery_target.get("user_label") or user_label
-            delivery_target["session_id"] = session_conv_id
-            sess.delivery_target_json = delivery_target
+        delivery_target["user_label"] = delivery_target.get("user_label") or user_label
+        delivery_target["session_id"] = session_conv_id
+        sess.delivery_target_json = delivery_target
 
         # Load history
         history_r = await db.execute(
@@ -608,6 +625,7 @@ async def _process_wechat_message(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="user",
                 content=user_text,
                 conversation_id=session_conv_id,
@@ -633,7 +651,7 @@ async def _process_wechat_message(
                 allow_bare_plan_confirmation=True,
                 durable_run=True,
                 durable_session=sess,
-                durable_user=platform_user,
+                durable_user=runtime_actor,
             )
         finally:
             _cdt.reset(_cdt_token)
@@ -645,6 +663,7 @@ async def _process_wechat_message(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="assistant",
                 content=reply_text,
                 conversation_id=session_conv_id,

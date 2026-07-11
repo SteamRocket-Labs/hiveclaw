@@ -437,8 +437,10 @@ async def call_agent_llm(
     if is_agent_expired(agent):
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
 
-    effective_user_id = user_id or agent_id
-    channel_audit_user = durable_user
+    external_principal_id = getattr(durable_user, "external_principal_id", None)
+    external_authority_bound = bool(getattr(durable_user, "authority_bound", False))
+    effective_user_id = user_id if external_principal_id is not None else (user_id or agent_id)
+    channel_audit_user = durable_user if external_principal_id is None or external_authority_bound else None
     if channel_audit_user is None and user_id is not None:
         channel_audit_user = SimpleNamespace(id=user_id, username=str(user_id), display_name=str(user_id))
     permission_mode_reply = await try_handle_channel_permission_mode_command(

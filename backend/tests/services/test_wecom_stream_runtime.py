@@ -61,17 +61,35 @@ async def test_process_wecom_stream_message_binds_group_sender_context(monkeypat
     agent_id = uuid4()
     tenant_id = uuid4()
     platform_user_id = uuid4()
+    external_principal_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
-    platform_user = SimpleNamespace(id=platform_user_id, username="wecom_zhangsan", display_name="张三")
+    config = SimpleNamespace(id=uuid4())
     captured: dict[str, object] = {}
     db = _SequenceSession(
         [
             _ScalarResult(agent),
-            _ScalarResult(platform_user),
+            _ScalarResult(config),
             _RowsResult([]),
         ]
     )
+
+    async def fake_resolve_external_principal(*_args, **kwargs):
+        captured["principal_kwargs"] = kwargs
+        return SimpleNamespace(
+            principal=SimpleNamespace(id=external_principal_id),
+            actor=SimpleNamespace(
+                id=platform_user_id,
+                external_principal_id=external_principal_id,
+                tenant_id=tenant_id,
+                username="wecom_zhangsan",
+                display_name="张三",
+                role="member",
+                department_id=None,
+                authority_bound=True,
+                is_active=True,
+            ),
+        )
 
     async def fake_find_or_create_channel_session(*, delivery_target=None, external_conv_id=None, **_kwargs):
         captured["external_conv_id"] = external_conv_id
@@ -101,6 +119,10 @@ async def test_process_wecom_stream_message_binds_group_sender_context(monkeypat
     monkeypatch.setattr(
         "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
     )
+    monkeypatch.setattr(
+        "app.services.external_principal_service.resolve_or_create_external_principal",
+        fake_resolve_external_principal,
+    )
     monkeypatch.setattr("app.services.channel_agent_runtime.call_agent_llm", fake_call_agent_llm)
 
     clear_execution_identity()
@@ -119,14 +141,17 @@ async def test_process_wecom_stream_message_binds_group_sender_context(monkeypat
         "user_id": "zhangsan",
         "chat_id": "sales-room",
         "user_label": "张三",
+        "external_principal_id": str(external_principal_id),
     }
     assert captured["runtime_delivery_target"] == {
         "channel": "wecom",
         "user_id": "zhangsan",
         "chat_id": "sales-room",
         "user_label": "张三",
+        "external_principal_id": str(external_principal_id),
         "session_id": str(session_id),
     }
+    assert captured["principal_kwargs"]["installation_ref"] == str(config.id)
     assert captured["llm_kwargs"]["session_id"] == str(session_id)
     assert captured["llm_kwargs"]["session_source"] == "wecom"
     assert captured["llm_kwargs"]["session_channel"] == "wecom"

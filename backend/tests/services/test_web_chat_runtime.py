@@ -2718,6 +2718,80 @@ async def test_execute_web_chat_run_disables_tools_for_side_question(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_execute_web_chat_run_keeps_unbound_external_principal_read_only(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    external_principal_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="external question",
+        metadata_json={
+            "user_id": None,
+            "external_principal_id": str(external_principal_id),
+            "external_authority_bound": False,
+            "session_id": session_id,
+            "source": "slack",
+            "channel": "slack",
+        },
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="External Support",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    actor = SimpleNamespace(
+        id=None,
+        external_principal_id=external_principal_id,
+        authority_bound=False,
+        display_name="Slack guest",
+        username="slack:U1",
+    )
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    captured = {}
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, actor, llm_model, None, []
+
+    async def fake_invoke(request):
+        captured["request"] = request
+        return SimpleNamespace(content="read-only answer", reasoning_signature=None)
+
+    async def fake_finalize(**_kwargs):
+        return False
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fake_finalize)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    request = captured["request"]
+    assert request.user_id is None
+    assert request.disable_tools is True
+    assert request.execution_identity.identity_type == "external_principal"
+    assert request.execution_identity.identity_id == external_principal_id
+
+
+@pytest.mark.asyncio
 async def test_execute_web_chat_run_finalizes_blocking_clarification_without_empty_assistant(monkeypatch):
     import json
 

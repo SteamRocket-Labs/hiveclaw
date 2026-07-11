@@ -26,3 +26,4 @@ export { ccParityApi } from './ccParity';
 export { runtimeBudgetApi } from './runtimeBudgets';
 export { aiAssetsApi } from './aiAssets';
 export { hrCreationApi } from './hrCreation';
+export { externalPrincipalsApi } from './externalPrincipals';

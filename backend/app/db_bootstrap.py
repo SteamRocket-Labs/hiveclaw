@@ -144,6 +144,8 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "workflow_preview_artifacts",
     "runtime_notification_outbox",
     "channel_ingress_events",
+    "external_principals",
+    "external_principal_binding_events",
 )
 
 # Non-null tenant-owned tables must never inherit the legacy nullable-tenant
@@ -177,6 +179,8 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "workflow_preview_artifacts",
     "runtime_notification_outbox",
     "channel_ingress_events",
+    "external_principals",
+    "external_principal_binding_events",
 )
 
 REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent import Agent
 from app.models.audit import ApprovalRequest, AuditLog, ChatMessage
 from app.models.channel_config import ChannelConfig
+from app.models.external_principal import ExternalPrincipal
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.services.channel_user_service import channel_user_service
@@ -57,15 +58,6 @@ class ApprovalService:
         details: dict,
     ) -> dict:
         """Create a pending approval request and notify the responsible user."""
-        db.add(
-            AuditLog(
-                agent_id=agent.id,
-                tenant_id=agent.tenant_id,
-                action=f"approval_request:{action_type}",
-                details=details,
-            )
-        )
-
         approval_id = uuid.uuid4()
         tool_name = str(details.get("tool") or "").strip() or None
         arguments = normalize_tool_arguments(details.get("args")) if tool_name else None
@@ -86,6 +78,7 @@ class ApprovalService:
         )
         execution_envelope = details.get("execution_envelope")
         execution_envelope_hash = None
+        requested_by_external_principal_id = None
         if tool_name:
             if not isinstance(execution_envelope, dict):
                 raise ApprovalTicketError("tool approval requires an immutable execution envelope")
@@ -98,6 +91,30 @@ class ApprovalService:
                 raise ApprovalTicketError("approval execution envelope agent or tenant mismatch")
             if requested_by is None or restored_envelope.requester_user_id != requested_by:
                 raise ApprovalTicketError("approval execution envelope requester mismatch")
+            execution_identity = restored_envelope.execution_identity
+            if execution_identity is not None and execution_identity.identity_type == "external_principal_bound":
+                requested_by_external_principal_id = execution_identity.identity_id
+                principal = (
+                    await db.execute(
+                        select(ExternalPrincipal).where(
+                            ExternalPrincipal.id == requested_by_external_principal_id,
+                            ExternalPrincipal.tenant_id == agent.tenant_id,
+                            ExternalPrincipal.linked_user_id == requested_by,
+                            ExternalPrincipal.status == "active",
+                        )
+                    )
+                ).scalar_one_or_none()
+                if principal is None:
+                    raise ApprovalTicketError("external principal binding mismatch")
+        db.add(
+            AuditLog(
+                agent_id=agent.id,
+                tenant_id=agent.tenant_id,
+                external_principal_id=requested_by_external_principal_id,
+                action=f"approval_request:{action_type}",
+                details=details,
+            )
+        )
         approval = ApprovalRequest(
             id=approval_id,
             agent_id=agent.id,
@@ -105,6 +122,7 @@ class ApprovalService:
             action_type=action_type,
             details=details,
             requested_by=requested_by,
+            requested_by_external_principal_id=requested_by_external_principal_id,
             decision_id=str(details.get("decision_id") or f"approval:{approval_id}"),
             tool_name=tool_name,
             normalized_arguments=arguments,

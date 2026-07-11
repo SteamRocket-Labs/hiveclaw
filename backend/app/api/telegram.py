@@ -349,7 +349,7 @@ async def delete_telegram_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -365,6 +365,15 @@ async def delete_telegram_channel(
                 await client.post(f"{TG_API}/bot{config.app_secret}/deleteWebhook")
         except Exception as e:
             logger.warning("[Telegram] Failed to delete webhook: %s", e)
+    from app.services.external_principal_service import revoke_channel_config_external_principals
+
+    await revoke_channel_config_external_principals(
+        db,
+        tenant_id=agent.tenant_id,
+        config=config,
+        actor_user_id=current_user.id,
+        reason="Telegram channel configuration deleted",
+    )
     await db.delete(config)
 
 
@@ -482,41 +491,38 @@ async def telegram_webhook(
 
     conv_id = f"tg_{chat_id}_{sender_id}"
 
-    # Find-or-create platform user
-    from app.core.security import hash_password
     from app.models.agent import Agent as AgentModel
-    from app.models.user import User as UserModel
 
-    tg_username = f"tg_{sender_id}"
-    user_result = await db.execute(select(UserModel).where(UserModel.username == tg_username))
-    platform_user = user_result.scalar_one_or_none()
-    if not platform_user:
-        agent_result = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-        agent_obj = agent_result.scalar_one_or_none()
-        if not agent_obj:
-            logger.error("[Telegram] Agent %s not found during user creation", agent_id)
-            return Response(status_code=404)
-        platform_user = UserModel(
-            username=tg_username,
-            email=f"{tg_username}@telegram.local",
-            password_hash=hash_password(uuid.uuid4().hex),
-            display_name=sender_name,
-            tenant_id=agent_obj.tenant_id,
-            role="member",
-        )
-        db.add(platform_user)
-        await db.flush()
-    elif sender_name and platform_user.display_name != sender_name:
-        platform_user.display_name = sender_name
-        await db.flush()
+    agent_result = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    agent_obj = agent_result.scalar_one_or_none()
+    if not agent_obj:
+        logger.error("[Telegram] Agent %s not found during principal resolution", agent_id)
+        return Response(status_code=404)
+
+    from app.services.channel_ingress_inbox import channel_installation_ref
+    from app.services.external_principal_service import resolve_or_create_external_principal
+
+    principal_resolution = await resolve_or_create_external_principal(
+        db,
+        tenant_id=agent_obj.tenant_id,
+        provider="telegram",
+        installation_ref=channel_installation_ref(config, fallback=f"telegram:{agent_id}"),
+        channel_config_id=getattr(config, "id", None),
+        subject_id=sender_id,
+        display_name=sender_name,
+        profile={"chat_id": str(chat_id)},
+    )
+    runtime_actor = principal_resolution.actor
+    external_principal_id = principal_resolution.principal.id
 
     from app.core.execution_context import set_delegated_user_identity
 
-    set_delegated_user_identity(
-        platform_user.id,
-        sender_name or platform_user.display_name or platform_user.username,
-        channel="telegram",
-    )
+    if runtime_actor.id is not None:
+        set_delegated_user_identity(
+            runtime_actor.id,
+            sender_name or runtime_actor.display_name or runtime_actor.username,
+            channel="telegram",
+        )
 
     # Find or create chat session
     from app.models.audit import ChatMessage
@@ -527,13 +533,15 @@ async def telegram_webhook(
         "chat_id": chat_id,
         "sender_id": sender_id,
         "user_label": sender_name,
+        "external_principal_id": str(external_principal_id),
     }
 
     session = await find_or_create_channel_session(
         db=db,
         agent_id=agent_id,
         tenant_id=agent_obj.tenant_id,
-        user_id=platform_user.id,
+        user_id=runtime_actor.id,
+        external_principal_id=external_principal_id,
         external_conv_id=conv_id,
         source_channel="telegram",
         first_message_title=f"Telegram: {sender_name}",
@@ -550,7 +558,8 @@ async def telegram_webhook(
             conversation_id=str(session.id),
             role="user",
             content=user_text,
-            user_id=platform_user.id,
+            user_id=runtime_actor.id,
+            external_principal_id=external_principal_id,
         )
     )
     await db.commit()
@@ -584,14 +593,14 @@ async def telegram_webhook(
             agent_id,
             user_text,
             history=history,
-            user_id=platform_user.id,
+            user_id=runtime_actor.id,
             session_id=str(session.id),
             session_source="telegram",
             session_channel="telegram",
             allow_bare_plan_confirmation=True,
             durable_run=True,
             durable_session=session,
-            durable_user=platform_user,
+            durable_user=runtime_actor,
         )
     except Exception as e:
         logger.error("[Telegram] LLM error for %s: %s", agent_id, e)
@@ -608,7 +617,8 @@ async def telegram_webhook(
             conversation_id=str(session.id),
             role="assistant",
             content=reply,
-            user_id=platform_user.id,
+            user_id=runtime_actor.id,
+            external_principal_id=external_principal_id,
         )
     )
     session.last_message_at = datetime.now(timezone.utc)

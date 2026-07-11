@@ -111,7 +111,7 @@ async def delete_slack_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -121,6 +121,15 @@ async def delete_slack_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="Slack not configured")
+    from app.services.external_principal_service import revoke_channel_config_external_principals
+
+    await revoke_channel_config_external_principals(
+        db,
+        tenant_id=agent.tenant_id,
+        config=config,
+        actor_user_id=current_user.id,
+        reason="Slack channel configuration deleted",
+    )
     await db.delete(config)
 
 
@@ -243,15 +252,6 @@ async def slack_event_webhook(
 
     _hist_limit = await compute_history_limit_for_agent(agent_id)
 
-    # Find-or-create platform user for this Slack sender
-    from app.models.user import User as _User
-    from app.core.security import hash_password as _hp
-    import uuid as _uuid2
-
-    _slack_username = f"slack_{sender_id}"
-    _u_r = await db.execute(select(_User).where(_User.username == _slack_username))
-    _platform_user = _u_r.scalar_one_or_none()
-
     # Resolve real display name from Slack API
     _bot_token_for_info = config.app_secret or ""
     _slack_real_name = ""
@@ -277,28 +277,29 @@ async def slack_event_webhook(
         except Exception as _e_info:
             logger.error(f"[Slack] Failed to fetch user info for {sender_id}: {_e_info}")
 
-    if not _platform_user:
-        _platform_user = _User(
-            username=_slack_username,
-            email=f"{_slack_username}@slack.local",
-            password_hash=_hp(_uuid2.uuid4().hex),
-            display_name=_slack_real_name or f"Slack User {sender_id[:8]}",
-            role="member",
-            tenant_id=agent_obj.tenant_id if agent_obj else None,
-        )
-        db.add(_platform_user)
-        await db.flush()
-    elif _slack_real_name and _platform_user.display_name.startswith("Slack User "):
-        # Update display_name if we now have the real name
-        _platform_user.display_name = _slack_real_name
-        await db.flush()
-    platform_user_id = _platform_user.id
-    user_label = _platform_user.display_name or _slack_real_name or f"Slack User {sender_id[:8]}"
+    from app.services.channel_ingress_inbox import channel_installation_ref
+    from app.services.external_principal_service import resolve_or_create_external_principal
+
+    principal_resolution = await resolve_or_create_external_principal(
+        db,
+        tenant_id=agent_obj.tenant_id,
+        provider="slack",
+        installation_ref=channel_installation_ref(config, fallback=f"slack:{agent_id}"),
+        channel_config_id=getattr(config, "id", None),
+        subject_id=sender_id,
+        display_name=_slack_real_name or f"Slack User {sender_id[:8]}",
+        profile={"channel_id": channel_id},
+    )
+    runtime_actor = principal_resolution.actor
+    platform_user_id = runtime_actor.id
+    external_principal_id = principal_resolution.principal.id
+    user_label = runtime_actor.display_name or _slack_real_name or f"Slack User {sender_id[:8]}"
     delivery_target = {
         "channel": "slack",
         "channel_id": channel_id,
         "sender_id": sender_id,
         "user_label": user_label,
+        "external_principal_id": str(external_principal_id),
     }
 
     # Find-or-create session for this Slack conversation
@@ -307,6 +308,7 @@ async def slack_event_webhook(
         agent_id=agent_id,
         tenant_id=agent_obj.tenant_id if agent_obj else None,
         user_id=platform_user_id,
+        external_principal_id=external_principal_id,
         external_conv_id=conv_id,
         source_channel="slack",
         first_message_title=user_text,
@@ -368,6 +370,7 @@ async def slack_event_webhook(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="assistant",
                 content=_ack,
                 conversation_id=session_conv_id,
@@ -387,6 +390,7 @@ async def slack_event_webhook(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="user",
                 content=_file_content,
                 conversation_id=session_conv_id,
@@ -399,6 +403,7 @@ async def slack_event_webhook(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="assistant",
                 content=_ack,
                 conversation_id=session_conv_id,
@@ -420,6 +425,7 @@ async def slack_event_webhook(
             agent_id=agent_id,
             tenant_id=agent_obj.tenant_id,
             user_id=platform_user_id,
+            external_principal_id=external_principal_id,
             role="user",
             content=user_text,
             conversation_id=session_conv_id,
@@ -477,7 +483,7 @@ async def slack_event_webhook(
             allow_bare_plan_confirmation=True,
             durable_run=True,
             durable_session=sess,
-            durable_user=_platform_user,
+            durable_user=runtime_actor,
         )
     finally:
         _cdt_s.reset(_cdt_s_token)
@@ -490,6 +496,7 @@ async def slack_event_webhook(
             agent_id=agent_id,
             tenant_id=agent_obj.tenant_id,
             user_id=platform_user_id,
+            external_principal_id=external_principal_id,
             role="assistant",
             content=reply_text,
             conversation_id=session_conv_id,

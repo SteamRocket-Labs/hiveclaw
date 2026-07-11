@@ -30,12 +30,31 @@ class AuditLog(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    external_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("external_principals.id", ondelete="SET NULL"), index=True
+    )
     agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"))
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), index=True)
     action: Mapped[str] = mapped_column(String(100), nullable=False)
     details: Mapped[dict] = mapped_column(JSON, default={})
     ip_address: Mapped[str | None] = mapped_column(String(50))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+@event.listens_for(AuditLog, "before_insert")
+def _bind_audit_log_external_execution_identity(_mapper, _connection, target: AuditLog) -> None:
+    if target.external_principal_id is not None:
+        return
+    from app.core.execution_context import get_execution_identity
+
+    identity = get_execution_identity()
+    if identity is None or identity.identity_type not in {
+        "external_principal",
+        "external_principal_bound",
+    }:
+        return
+    if identity.identity_id is not None:
+        target.external_principal_id = identity.identity_id
 
 
 class ApprovalRequest(Base):
@@ -68,6 +87,9 @@ class ApprovalRequest(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     requested_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    requested_by_external_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("external_principals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     decision_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     tool_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     normalized_arguments: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -101,7 +123,13 @@ class ChatMessage(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), index=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    external_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("external_principals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     role: Mapped[str] = mapped_column(
         Enum("user", "assistant", "system", "tool_call", name="chat_role_enum"),
         nullable=False,
@@ -156,3 +184,8 @@ class EnterpriseInfo(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+# Keep isolated model imports mapper-safe for external/channel evidence FKs.
+from app.models.channel_ingress_event import ChannelIngressEvent as _ChannelIngressEvent  # noqa: E402, F401
+from app.models.external_principal import ExternalPrincipal as _ExternalPrincipal  # noqa: E402, F401

@@ -121,7 +121,7 @@ async def delete_discord_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -131,6 +131,15 @@ async def delete_discord_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="Discord not configured")
+    from app.services.external_principal_service import revoke_channel_config_external_principals
+
+    await revoke_channel_config_external_principals(
+        db,
+        tenant_id=agent.tenant_id,
+        config=config,
+        actor_user_id=current_user.id,
+        reason="Discord channel configuration deleted",
+    )
     await db.delete(config)
 
 
@@ -301,36 +310,35 @@ async def discord_interaction_webhook(
 
                 _hist_limit = await compute_history_limit_for_agent(agent_id)
 
-                # Find-or-create platform user for this Discord sender
-                from app.models.user import User as _User
-                from app.core.security import hash_password as _hp
-                import uuid as _uuid
+                if agent_obj is None:
+                    raise RuntimeError("Discord Agent not found during principal resolution")
+                _discord_username = body.get("member", {}).get("user", {}).get("username") or body.get("user", {}).get(
+                    "username", ""
+                )
+                _display = _discord_username or f"Discord User {sender_id[:8]}"
+                from app.services.channel_ingress_inbox import channel_installation_ref
+                from app.services.external_principal_service import resolve_or_create_external_principal
 
-                _username = f"discord_{sender_id}"
-                _u_r = await bg_db.execute(select(_User).where(_User.username == _username))
-                _platform_user = _u_r.scalar_one_or_none()
-                if not _platform_user:
-                    _discord_username = body.get("member", {}).get("user", {}).get("username") or body.get(
-                        "user", {}
-                    ).get("username", "")
-                    _display = _discord_username or f"Discord User {sender_id[:8]}"
-                    _platform_user = _User(
-                        username=_username,
-                        email=f"{_username}@discord.local",
-                        password_hash=_hp(_uuid.uuid4().hex),
-                        display_name=_display,
-                        role="member",
-                        tenant_id=agent_obj.tenant_id if agent_obj else None,
-                    )
-                    bg_db.add(_platform_user)
-                    await bg_db.flush()
-                platform_user_id = _platform_user.id
+                principal_resolution = await resolve_or_create_external_principal(
+                    bg_db,
+                    tenant_id=agent_obj.tenant_id,
+                    provider="discord",
+                    installation_ref=channel_installation_ref(config, fallback=f"discord:{agent_id}"),
+                    channel_config_id=getattr(config, "id", None),
+                    subject_id=sender_id,
+                    display_name=_display,
+                    profile={"channel_id": channel_id},
+                )
+                runtime_actor = principal_resolution.actor
+                platform_user_id = runtime_actor.id
+                external_principal_id = principal_resolution.principal.id
                 delivery_target = {
                     "channel": "discord",
                     "interaction_token": interaction_token,
                     "channel_id": channel_id,
                     "sender_id": sender_id,
-                    "user_label": _platform_user.display_name or f"Discord User {sender_id[:8]}",
+                    "user_label": runtime_actor.display_name or f"Discord User {sender_id[:8]}",
+                    "external_principal_id": str(external_principal_id),
                 }
 
                 # Find-or-create ChatSession for this Discord conversation
@@ -339,6 +347,7 @@ async def discord_interaction_webhook(
                     agent_id=agent_id,
                     tenant_id=agent_obj.tenant_id if agent_obj else None,
                     user_id=platform_user_id,
+                    external_principal_id=external_principal_id,
                     external_conv_id=conv_id,
                     source_channel="discord",
                     first_message_title=user_text,
@@ -363,6 +372,7 @@ async def discord_interaction_webhook(
                         agent_id=agent_id,
                         tenant_id=agent_obj.tenant_id,
                         user_id=platform_user_id,
+                        external_principal_id=external_principal_id,
                         role="user",
                         content=user_text,
                         conversation_id=session_conv_id,
@@ -388,7 +398,7 @@ async def discord_interaction_webhook(
                         allow_bare_plan_confirmation=True,
                         durable_run=True,
                         durable_session=sess,
-                        durable_user=_platform_user,
+                        durable_user=runtime_actor,
                     )
                 finally:
                     _cdt.reset(_cdt_token)
@@ -400,6 +410,7 @@ async def discord_interaction_webhook(
                         agent_id=agent_id,
                         tenant_id=agent_obj.tenant_id,
                         user_id=platform_user_id,
+                        external_principal_id=external_principal_id,
                         role="assistant",
                         content=reply_text,
                         conversation_id=session_conv_id,

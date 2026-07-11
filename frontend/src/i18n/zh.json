@@ -2743,7 +2743,20 @@
     "period_permanent": "永不重置",
     "period_daily": "每天",
     "period_weekly": "每周",
-    "period_monthly": "每月"
+    "period_monthly": "每月",
+    "externalPrincipalsTitle": "外部渠道身份",
+    "externalPrincipalsDescription": "外部发送者默认不占用成员席位；只有管理员将其显式绑定到已受邀账号后，才继承该成员权限。",
+    "externalPrincipalsEmpty": "尚无外部渠道身份。",
+    "externalPrincipalRevoked": "渠道访问已撤销",
+    "externalPrincipalBoundTo": "已绑定至",
+    "externalPrincipalMember": "已受邀成员",
+    "externalPrincipalChooseMember": "选择已受邀成员",
+    "externalPrincipalBind": "绑定到已受邀成员",
+    "externalPrincipalUnlink": "解除绑定",
+    "externalPrincipalUnlinkTitle": "解除外部身份绑定",
+    "externalPrincipalUnlinkConfirm": "外部发送者将立即失去所绑定成员的权限。是否继续？",
+    "externalPrincipalLinked": "外部身份已绑定",
+    "externalPrincipalUnlinked": "外部身份已解除绑定"
   },
   "account": {
     "title": "账户设置",

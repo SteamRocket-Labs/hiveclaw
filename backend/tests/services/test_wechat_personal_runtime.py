@@ -67,16 +67,27 @@ class _SingleExecuteSession:
     def __init__(self, result):
         self.result = result
         self.flushes = 0
+        self.added: list = []
+        self.deleted: list = []
 
     async def execute(self, _stmt):
         return self.result
 
     async def flush(self):
         self.flushes += 1
+        for value in self.added:
+            if getattr(value, "id", None) is None:
+                value.id = uuid4()
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def delete(self, value):
+        self.deleted.append(value)
 
 
 @pytest.mark.asyncio
-async def test_disconnect_duplicate_wechat_account_bindings_keeps_only_target_agent_connected():
+async def test_disconnect_duplicate_wechat_account_bindings_keeps_only_target_agent_connected(monkeypatch):
     from app.services.wechat_personal_service import disconnect_duplicate_account_bindings
 
     tenant_id = uuid4()
@@ -86,36 +97,57 @@ async def test_disconnect_duplicate_wechat_account_bindings_keeps_only_target_ag
     unrelated_agent_id = uuid4()
 
     stale = SimpleNamespace(
+        id=uuid4(),
         agent_id=stale_agent_id,
         tenant_id=tenant_id,
+        channel_type="wechat_personal",
         is_connected=True,
         extra_config={"ilink_bot_id": "bot-1", "ilink_user_id": "wx-owner"},
     )
     legacy_null_tenant = SimpleNamespace(
+        id=uuid4(),
         agent_id=uuid4(),
         tenant_id=None,
+        channel_type="wechat_personal",
         is_connected=True,
         extra_config={"ilink_bot_id": "bot-1", "ilink_user_id": "wx-owner"},
     )
     current = SimpleNamespace(
+        id=uuid4(),
         agent_id=target_agent_id,
         tenant_id=tenant_id,
+        channel_type="wechat_personal",
         is_connected=True,
         extra_config={"ilink_bot_id": "bot-1", "ilink_user_id": "wx-owner"},
     )
     other_tenant = SimpleNamespace(
+        id=uuid4(),
         agent_id=other_tenant_agent_id,
         tenant_id=uuid4(),
+        channel_type="wechat_personal",
         is_connected=True,
         extra_config={"ilink_bot_id": "bot-1", "ilink_user_id": "wx-owner"},
     )
     unrelated = SimpleNamespace(
+        id=uuid4(),
         agent_id=unrelated_agent_id,
         tenant_id=tenant_id,
+        channel_type="wechat_personal",
         is_connected=True,
         extra_config={"ilink_bot_id": "bot-2", "ilink_user_id": "wx-other"},
     )
     db = _SingleExecuteSession(_AllRowsResult([stale, legacy_null_tenant, current, other_tenant, unrelated]))
+    actor_user_id = uuid4()
+    revoked: list[object] = []
+
+    async def fake_revoke(_db, **kwargs):
+        revoked.append(kwargs["config"])
+        return 1
+
+    monkeypatch.setattr(
+        "app.services.external_principal_service.revoke_channel_config_external_principals",
+        fake_revoke,
+    )
 
     stale_agent_ids = await disconnect_duplicate_account_bindings(
         db=db,
@@ -123,17 +155,107 @@ async def test_disconnect_duplicate_wechat_account_bindings_keeps_only_target_ag
         account_id="bot-1",
         user_id="wx-owner",
         tenant_id=tenant_id,
+        actor_user_id=actor_user_id,
     )
 
     assert stale_agent_ids == [stale_agent_id, legacy_null_tenant.agent_id]
-    assert stale.is_connected is False
-    assert stale.extra_config == {}
-    assert legacy_null_tenant.is_connected is False
-    assert legacy_null_tenant.extra_config == {}
+    assert revoked == [stale, legacy_null_tenant]
+    assert db.deleted == [stale, legacy_null_tenant]
     assert current.is_connected is True
     assert other_tenant.is_connected is True
     assert unrelated.is_connected is True
     assert db.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_connect_channel_rotates_reused_installation_identity(monkeypatch):
+    from app.services.wechat_personal_service import connect_channel
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    actor_user_id = uuid4()
+    old_config = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        channel_type="wechat_personal",
+        is_connected=False,
+        extra_config={},
+    )
+    db = _SingleExecuteSession(_ScalarResult(old_config))
+    revoked: list[object] = []
+
+    async def fake_revoke(_db, **kwargs):
+        revoked.append(kwargs["config"])
+        return 1
+
+    monkeypatch.setattr(
+        "app.services.external_principal_service.revoke_channel_config_external_principals",
+        fake_revoke,
+    )
+    monkeypatch.setattr("app.services.wechat_personal_service._encrypt", lambda value: f"encrypted:{value}")
+
+    config = await connect_channel(
+        db,
+        agent_id,
+        account_id="bot-new",
+        bot_token="token-new",
+        tenant_id=tenant_id,
+        actor_user_id=actor_user_id,
+    )
+
+    assert revoked == [old_config]
+    assert db.deleted == [old_config]
+    assert config is not old_config
+    assert config.id != old_config.id
+    assert config.is_connected is True
+    assert db.added == [config]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_channel_revokes_and_deletes_installation(monkeypatch):
+    from app.services.wechat_personal_service import disconnect_channel
+
+    tenant_id = uuid4()
+    actor_user_id = uuid4()
+    config = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        tenant_id=tenant_id,
+        channel_type="wechat_personal",
+        is_connected=True,
+        extra_config={"ilink_bot_id": "bot-old"},
+    )
+    db = _SingleExecuteSession(_ScalarResult(config))
+    revoked: list[object] = []
+
+    async def fake_revoke(_db, **kwargs):
+        revoked.append(kwargs["config"])
+        return 1
+
+    class _Redis:
+        async def delete(self, _key):
+            return 1
+
+    async def fake_get_redis():
+        return _Redis()
+
+    monkeypatch.setattr(
+        "app.services.external_principal_service.revoke_channel_config_external_principals",
+        fake_revoke,
+    )
+    monkeypatch.setattr("app.services.wechat_personal_service._get_redis", fake_get_redis)
+
+    removed = await disconnect_channel(
+        db,
+        config.agent_id,
+        tenant_id=tenant_id,
+        actor_user_id=actor_user_id,
+    )
+
+    assert removed is True
+    assert revoked == [config]
+    assert db.deleted == [config]
 
 
 @pytest.mark.asyncio
@@ -195,10 +317,11 @@ async def test_connect_wechat_replaces_stale_account_streams(monkeypatch):
     )
     monkeypatch.setattr(stream_mod, "wechat_personal_stream_manager", _StreamManager())
 
+    current_user_id = uuid4()
     result = await wechat_api.connect(
         agent_id=agent_id,
         body=wechat_api.ConnectRequest(session_key="session-1"),
-        current_user=SimpleNamespace(id=uuid4()),
+        current_user=SimpleNamespace(id=current_user_id),
         db=_CommitDB(),
     )
 
@@ -207,7 +330,9 @@ async def test_connect_wechat_replaces_stale_account_streams(monkeypatch):
     assert captured["duplicate_kwargs"]["account_id"] == "bot-1"
     assert captured["duplicate_kwargs"]["user_id"] == "wx-owner"
     assert captured["duplicate_kwargs"]["tenant_id"] == tenant_id
+    assert captured["duplicate_kwargs"]["actor_user_id"] == current_user_id
     assert captured["connect_kwargs"]["tenant_id"] == tenant_id
+    assert captured["connect_kwargs"]["actor_user_id"] == current_user_id
     assert calls == [
         ("commit",),
         ("stop", stale_agent_id),
@@ -224,19 +349,36 @@ async def test_process_wechat_message_sets_sender_scoped_identity_and_session_co
     agent_id = uuid4()
     tenant_id = uuid4()
     platform_user_id = uuid4()
+    external_principal_id = uuid4()
     creator_id = uuid4()
     session_id = uuid4()
+    config = SimpleNamespace(id=uuid4())
     captured: dict[str, object] = {}
 
     db = _SequenceSession(
         [
             _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=creator_id)),
-            _ScalarResult(
-                SimpleNamespace(id=platform_user_id, username="wechat_wxid_abc", display_name="WeChat wxid_abc")
-            ),
+            _ScalarResult(config),
             _RowsResult([]),
         ]
     )
+
+    async def fake_resolve_external_principal(*_args, **kwargs):
+        captured["principal_kwargs"] = kwargs
+        return SimpleNamespace(
+            principal=SimpleNamespace(id=external_principal_id),
+            actor=SimpleNamespace(
+                id=platform_user_id,
+                external_principal_id=external_principal_id,
+                tenant_id=tenant_id,
+                username="wechat_wxid_abc",
+                display_name="WeChat wxid_abc",
+                role="member",
+                department_id=None,
+                authority_bound=True,
+                is_active=True,
+            ),
+        )
 
     async def fake_find_or_create_channel_session(*, delivery_target=None, external_conv_id=None, **_kwargs):
         captured["external_conv_id"] = external_conv_id
@@ -265,6 +407,10 @@ async def test_process_wechat_message_sets_sender_scoped_identity_and_session_co
     )
     monkeypatch.setattr(
         "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
+    )
+    monkeypatch.setattr(
+        "app.services.external_principal_service.resolve_or_create_external_principal",
+        fake_resolve_external_principal,
     )
     monkeypatch.setattr("app.services.channel_agent_runtime.call_agent_llm", fake_call_agent_llm)
 
@@ -299,14 +445,17 @@ async def test_process_wechat_message_sets_sender_scoped_identity_and_session_co
         "to_user_id": "wxid_abc",
         "context_token": "ctx-1",
         "user_label": "WeChat wxid_abc",
+        "external_principal_id": str(external_principal_id),
     }
     assert captured["runtime_delivery_target"] == {
         "channel": "wechat_personal",
         "to_user_id": "wxid_abc",
         "context_token": "ctx-1",
         "user_label": "WeChat wxid_abc",
+        "external_principal_id": str(external_principal_id),
         "session_id": str(session_id),
     }
+    assert captured["principal_kwargs"]["installation_ref"] == str(config.id)
     assert captured["llm_kwargs"]["session_id"] == str(session_id)
     assert captured["llm_kwargs"]["session_source"] == "wechat_personal"
     assert captured["llm_kwargs"]["session_channel"] == "wechat_personal"

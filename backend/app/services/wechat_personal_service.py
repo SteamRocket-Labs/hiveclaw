@@ -312,6 +312,7 @@ async def connect_channel(
     base_url: str | None = None,
     user_id: str | None = None,
     tenant_id: uuid.UUID | None = None,
+    actor_user_id: uuid.UUID | None = None,
 ) -> ChannelConfig:
     """Persist WeChat credentials to ChannelConfig after successful QR login.
 
@@ -333,22 +334,31 @@ async def connect_channel(
         "bot_type": "3",
     }
 
-    if config is None:
-        config = ChannelConfig(
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            channel_type="wechat_personal",
-            is_configured=True,
-            is_connected=True,
-            extra_config=extra,
+    if config is not None:
+        from app.services.external_principal_service import revoke_channel_config_external_principals
+
+        installation_tenant_id = tenant_id or config.tenant_id
+        if installation_tenant_id is None:
+            raise ValueError("WeChat reconnect requires tenant authority")
+        await revoke_channel_config_external_principals(
+            db,
+            tenant_id=installation_tenant_id,
+            config=config,
+            actor_user_id=actor_user_id,
+            reason="WeChat Personal channel reconnected with a new installation",
         )
-        db.add(config)
-    else:
-        if tenant_id is not None:
-            config.tenant_id = tenant_id
-        config.extra_config = extra
-        config.is_configured = True
-        config.is_connected = True
+        await db.delete(config)
+        await db.flush()
+
+    config = ChannelConfig(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        channel_type="wechat_personal",
+        is_configured=True,
+        is_connected=True,
+        extra_config=extra,
+    )
+    db.add(config)
 
     await db.flush()
     logger.info(f"[WeChatPersonal] Channel connected for agent {agent_id}")
@@ -361,6 +371,7 @@ async def disconnect_duplicate_account_bindings(
     account_id: str,
     user_id: str | None = None,
     tenant_id: uuid.UUID | None = None,
+    actor_user_id: uuid.UUID | None = None,
 ) -> list[uuid.UUID]:
     """Disconnect stale personal-WeChat bindings for the same iLink account.
 
@@ -395,9 +406,19 @@ async def disconnect_duplicate_account_bindings(
         if not (same_account or same_user):
             continue
 
-        config.is_connected = False
-        config.is_configured = False
-        config.extra_config = {}
+        installation_tenant_id = config_tenant_id or tenant_id
+        if installation_tenant_id is None:
+            raise ValueError("stale WeChat installation has no tenant authority")
+        from app.services.external_principal_service import revoke_channel_config_external_principals
+
+        await revoke_channel_config_external_principals(
+            db,
+            tenant_id=installation_tenant_id,
+            config=config,
+            actor_user_id=actor_user_id,
+            reason="WeChat account moved to another agent installation",
+        )
+        await db.delete(config)
         if config_agent_id:
             stale_agent_ids.append(config_agent_id)
 
@@ -415,6 +436,9 @@ async def disconnect_duplicate_account_bindings(
 async def disconnect_channel(
     db: AsyncSession,
     agent_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
 ) -> bool:
     """Disconnect and remove wechat_personal config for an agent."""
     result = await db.execute(
@@ -427,8 +451,17 @@ async def disconnect_channel(
     if config is None:
         return False
 
-    config.is_connected = False
-    config.extra_config = {}
+    from app.services.external_principal_service import revoke_channel_config_external_principals
+
+    await revoke_channel_config_external_principals(
+        db,
+        tenant_id=tenant_id,
+        config=config,
+        actor_user_id=actor_user_id,
+        reason="WeChat Personal channel disconnected",
+    )
+
+    await db.delete(config)
     await db.flush()
 
     # Clean up Redis state

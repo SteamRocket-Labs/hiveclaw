@@ -36,6 +36,7 @@ class ApprovalExecutionEnvelope:
     tenant_id: uuid.UUID
     agent_id: uuid.UUID
     requester_user_id: uuid.UUID
+    execution_identity: Any | None
     workspace: Path
     tool_call_id: str
     session_id: str | None
@@ -130,11 +131,23 @@ def build_approval_execution_envelope(
     workspace = str(Path(context.workspace))
     permission_profile = _json_safe(context.permission_profile) if context.permission_profile is not None else {}
     delegation_token = _json_safe(context.delegation_token) if context.delegation_token is not None else None
+    execution_identity = getattr(context, "execution_identity", None)
+    execution_identity_payload = _json_safe(execution_identity) if execution_identity is not None else None
+    if isinstance(execution_identity_payload, dict):
+        identity_type = str(execution_identity_payload.get("identity_type") or "").strip()
+        identity_id = execution_identity_payload.get("identity_id")
+        if identity_type == "external_principal":
+            raise ApprovalTicketError("unbound external principal cannot request tool approval")
+        if identity_type == "external_principal_bound" and not identity_id:
+            raise ApprovalTicketError("bound external principal approval requires principal identity")
+        if identity_type == "delegated_user" and str(identity_id or "") != str(requester_user_id):
+            raise ApprovalTicketError("delegated approval identity does not match requester")
     return {
         "schema": _APPROVAL_EXECUTION_ENVELOPE_SCHEMA,
         "tenant_id": str(tenant_id),
         "agent_id": str(agent_id),
         "requester_user_id": str(requester_user_id),
+        "execution_identity": execution_identity_payload,
         "workspace": workspace,
         "tool_call_id": clean_tool_call_id,
         "session_id": str(context.session_id) if context.session_id is not None else None,
@@ -164,6 +177,7 @@ def restore_approval_execution_envelope(
     """Verify and restore a persisted envelope without trusting its values."""
 
     from app.agents.delegation_token import DelegationToken
+    from app.core.execution_context import ExecutionIdentity
     from app.runtime.ccplus_contracts import SandboxProfile, build_permission_profile
 
     if not isinstance(envelope, dict):
@@ -183,6 +197,37 @@ def restore_approval_execution_envelope(
     workspace_text = str(envelope.get("workspace") or "").strip()
     if not tool_call_id or not workspace_text:
         raise ApprovalTicketError("approval execution envelope recovery fields are incomplete")
+
+    execution_identity = None
+    raw_execution_identity = envelope.get("execution_identity")
+    if raw_execution_identity is not None:
+        if not isinstance(raw_execution_identity, dict):
+            raise ApprovalTicketError("approval execution identity is invalid")
+        identity_type = str(raw_execution_identity.get("identity_type") or "").strip()
+        identity_label = str(raw_execution_identity.get("label") or "").strip()
+        raw_identity_id = raw_execution_identity.get("identity_id")
+        if identity_type not in {
+            "agent_bot",
+            "delegated_user",
+            "external_principal",
+            "external_principal_bound",
+        }:
+            raise ApprovalTicketError("approval execution identity type is invalid")
+        try:
+            identity_id = uuid.UUID(str(raw_identity_id)) if raw_identity_id else None
+        except (TypeError, ValueError) as exc:
+            raise ApprovalTicketError("approval execution identity id is invalid") from exc
+        if identity_type == "external_principal":
+            raise ApprovalTicketError("unbound external principal cannot hold tool approval")
+        if identity_type in {"delegated_user", "external_principal_bound"} and identity_id is None:
+            raise ApprovalTicketError("approval execution identity is incomplete")
+        if identity_type == "delegated_user" and identity_id != requester_user_id:
+            raise ApprovalTicketError("approval execution delegated identity mismatch")
+        execution_identity = ExecutionIdentity(
+            identity_type=identity_type,
+            identity_id=identity_id,
+            label=identity_label,
+        )
 
     raw_profile = dict(envelope.get("permission_profile") or {})
     sequence_fields = (
@@ -232,6 +277,7 @@ def restore_approval_execution_envelope(
         tenant_id=tenant_id,
         agent_id=agent_id,
         requester_user_id=requester_user_id,
+        execution_identity=execution_identity,
         workspace=Path(workspace_text),
         tool_call_id=tool_call_id,
         session_id=str(envelope["session_id"]) if envelope.get("session_id") is not None else None,
@@ -322,8 +368,24 @@ async def validate_approval_execution_authority(
 
     from app.agents.delegation_token import validate_delegation_token
     from app.models.chat_session import ChatSession
+    from app.models.external_principal import ExternalPrincipal
     from app.models.runtime_budget import RuntimeBudgetRun
     from app.models.runtime_task import RuntimeTask
+
+    identity = envelope.execution_identity
+    if identity is not None and identity.identity_type == "external_principal_bound":
+        principal = (
+            await db.execute(
+                select(ExternalPrincipal).where(
+                    ExternalPrincipal.id == identity.identity_id,
+                    ExternalPrincipal.tenant_id == envelope.tenant_id,
+                    ExternalPrincipal.linked_user_id == envelope.requester_user_id,
+                    ExternalPrincipal.status == "active",
+                )
+            )
+        ).scalar_one_or_none()
+        if principal is None:
+            raise ApprovalTicketError("approval external principal binding is no longer valid")
 
     if envelope.delegation_token is not None:
         token_result = validate_delegation_token(

@@ -2716,7 +2716,20 @@
     "period_permanent": "Never resets",
     "period_daily": "Daily",
     "period_weekly": "Weekly",
-    "period_monthly": "Monthly"
+    "period_monthly": "Monthly",
+    "externalPrincipalsTitle": "External channel identities",
+    "externalPrincipalsDescription": "External senders stay separate from licensed members until an admin explicitly binds an invited account.",
+    "externalPrincipalsEmpty": "No external channel identities yet.",
+    "externalPrincipalRevoked": "Provider access revoked",
+    "externalPrincipalBoundTo": "Bound to",
+    "externalPrincipalMember": "Invited member",
+    "externalPrincipalChooseMember": "Choose invited member",
+    "externalPrincipalBind": "Bind to invited member",
+    "externalPrincipalUnlink": "Unlink",
+    "externalPrincipalUnlinkTitle": "Unlink external identity",
+    "externalPrincipalUnlinkConfirm": "The external sender will immediately lose the linked member authority. Continue?",
+    "externalPrincipalLinked": "External identity linked",
+    "externalPrincipalUnlinked": "External identity unlinked"
   },
   "account": {
     "title": "Account Settings",

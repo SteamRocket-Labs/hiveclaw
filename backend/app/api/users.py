@@ -13,6 +13,7 @@ from app.core.permissions import agent_owned_by_clause
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.user import User
+from app.services.external_principal_service import platform_member_user_predicate
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -59,7 +60,14 @@ async def list_users(
     tid = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     # Filter users by tenant — platform_admins only shown in their own tenant
-    result = await db.execute(select(User).where(User.tenant_id == tid).order_by(User.created_at.asc()))
+    result = await db.execute(
+        select(User)
+        .where(
+            User.tenant_id == tid,
+            platform_member_user_predicate(User.email),
+        )
+        .order_by(User.created_at.asc())
+    )
     users = result.scalars().all()
 
     out = []

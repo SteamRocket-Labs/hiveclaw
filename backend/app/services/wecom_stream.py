@@ -324,12 +324,9 @@ async def _process_wecom_stream_message(
     from sqlalchemy import select as _select
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
-    from app.models.user import User as UserModel
-    from app.core.security import hash_password
     from app.services.channel_session import find_or_create_channel_session
     from app.services.channel_delivery_service import channel_delivery_target as _cdt
     from app.services.channel_agent_runtime import call_agent_llm
-    import uuid as _uuid
 
     tid = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tid) as db:
@@ -349,33 +346,48 @@ async def _process_wecom_stream_message(
         else:
             conv_id = f"wecom_p2p_{sender_id}"
 
-        # Find or create platform user
-        wc_username = f"wecom_{sender_id}"
-        u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
-        platform_user = u_r.scalar_one_or_none()
-
-        if not platform_user:
-            platform_user = UserModel(
-                username=wc_username,
-                email=f"{wc_username}@wecom.local",
-                password_hash=hash_password(_uuid.uuid4().hex),
-                display_name=f"WeCom {sender_id[:8]}",
-                role="member",
-                tenant_id=agent_obj.tenant_id if agent_obj else None,
+        config = (
+            await db.execute(
+                _select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "wecom",
+                )
             )
-            db.add(platform_user)
-            await db.flush()
-        platform_user_id = platform_user.id
-        user_label = platform_user.display_name or f"WeCom {sender_id[:8]}"
+        ).scalar_one_or_none()
+        from app.services.channel_ingress_context import current_channel_ingress_context
+        from app.services.external_principal_service import resolve_or_create_external_principal
+
+        ingress = current_channel_ingress_context()
+        installation_ref = (
+            ingress.installation_ref
+            if ingress is not None and ingress.provider == "wecom" and ingress.installation_ref
+            else str(getattr(config, "id", None) or f"wecom:{agent_id}")
+        )
+        principal_resolution = await resolve_or_create_external_principal(
+            db,
+            tenant_id=agent_obj.tenant_id,
+            provider="wecom",
+            installation_ref=installation_ref,
+            channel_config_id=getattr(config, "id", None),
+            subject_id=sender_id,
+            display_name=f"WeCom {sender_id[:8]}",
+            profile={"chat_id": chat_id, "chat_type": chat_type},
+        )
+        runtime_actor = principal_resolution.actor
+        platform_user_id = runtime_actor.id
+        external_principal_id = principal_resolution.principal.id
+        user_label = runtime_actor.display_name or f"WeCom {sender_id[:8]}"
 
         from app.core.execution_context import set_delegated_user_identity
 
-        set_delegated_user_identity(platform_user_id, user_label, channel="wecom")
+        if platform_user_id is not None:
+            set_delegated_user_identity(platform_user_id, user_label, channel="wecom")
 
         delivery_target = {
             "channel": "wecom",
             "user_id": sender_id,
             "user_label": user_label,
+            "external_principal_id": str(external_principal_id),
         }
         if chat_type == "group" and chat_id:
             delivery_target["chat_id"] = chat_id
@@ -386,6 +398,7 @@ async def _process_wecom_stream_message(
             agent_id=agent_id,
             tenant_id=agent_obj.tenant_id,
             user_id=platform_user_id,
+            external_principal_id=external_principal_id,
             external_conv_id=conv_id,
             source_channel="wecom",
             first_message_title=user_text,
@@ -410,6 +423,7 @@ async def _process_wecom_stream_message(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="user",
                 content=user_text,
                 conversation_id=session_conv_id,
@@ -433,7 +447,7 @@ async def _process_wecom_stream_message(
                 allow_bare_plan_confirmation=True,
                 durable_run=True,
                 durable_session=sess,
-                durable_user=platform_user,
+                durable_user=runtime_actor,
             )
         finally:
             _cdt.reset(_cdt_token)
@@ -445,6 +459,7 @@ async def _process_wecom_stream_message(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="assistant",
                 content=reply_text,
                 conversation_id=session_conv_id,

@@ -148,6 +148,7 @@ async def append_session_event(
     role: str | None = None,
     t0_role: str | None = None,
     user_id: uuid.UUID | str | None = None,
+    external_principal_id: uuid.UUID | str | None = None,
     participant_id: uuid.UUID | str | None = None,
     run_id: uuid.UUID | str | None = None,
     runtime_task_id: uuid.UUID | str | None = None,
@@ -178,6 +179,7 @@ async def append_session_event(
     session_uuid = _uuid_or_none(session_id)
     run_uuid = _uuid_or_none(run_id) or _uuid_or_none(runtime_task_id)
     user_uuid = _uuid_or_none(user_id)
+    external_principal_uuid = _uuid_or_none(external_principal_id)
     participant_uuid = _uuid_or_none(participant_id)
     message_uuid = _uuid_or_none(message_id)
     event_id = uuid.uuid4()
@@ -195,11 +197,13 @@ async def append_session_event(
     if materialize_chat_message and role in CHAT_MESSAGE_ROLES:
         if message_uuid is None:
             message_uuid = uuid.uuid4()
+        materialized_user_id = user_uuid if user_uuid is not None else (None if external_principal_uuid else agent_uuid)
         chat_message = ChatMessage(
             id=message_uuid,
             agent_id=agent_uuid,
             tenant_id=tenant_uuid,
-            user_id=user_uuid or agent_uuid,
+            user_id=materialized_user_id,
+            external_principal_id=external_principal_uuid,
             participant_id=participant_uuid,
             role=role,
             content=content_text,
@@ -225,6 +229,10 @@ async def append_session_event(
         listed_surface=listed_surface,
         source=source,
     )
+    if user_uuid is not None:
+        event_metadata["actor_user_id"] = str(user_uuid)
+    if external_principal_uuid is not None:
+        event_metadata["external_principal_id"] = str(external_principal_uuid)
     transcript_event = ChatTranscriptEvent(
         id=event_id,
         sequence=sequence,

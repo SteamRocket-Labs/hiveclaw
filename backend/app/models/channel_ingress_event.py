@@ -64,6 +64,12 @@ class ChannelIngressEvent(Base):
     result_session_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    external_principal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("external_principals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     processing_receipt_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

@@ -105,6 +105,17 @@ async def test_platform_admin_list_users_pins_selected_tenant():
     assert result[0].id == target_user.id
     assert result[0].agents_count == 3
     assert any(f"SET LOCAL app.current_tenant_id = '{target_tenant_id}'" in str(stmt) for stmt in db.statements)
+    user_query = str(_first_business_statement(db).compile(compile_kwargs={"literal_binds": True}))
+    for suffix in (
+        "@slack.local",
+        "@telegram.local",
+        "@discord.local",
+        "@teams.local",
+        "@wecom.local",
+        "@wechat.local",
+        "@dingtalk.local",
+    ):
+        assert suffix in user_query
 
 
 @pytest.mark.asyncio

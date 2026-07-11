@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**5 / 28**（SA-01 至 SA-05 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**6 / 28**（SA-01 至 SA-06 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -89,7 +89,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-03 | Business Task 双状态机与错误终态 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-04 | Workspace Rewind 操作 Agent 共享目录 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-05 | Channel ingress 无 durable inbox | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-06 | 外部通道身份被建成全局 User | P0 | 断点 | △ | ✗ | △ | ✗ | ✗ | ✗ | △ |
+| SA-06 | 外部通道身份被建成全局 User | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-07 | 最终通道交付无 durable outbox | P0 | 断点 | ✓ | ✓ | △ | ✗ | ✗ | ✗ | △ |
 | SA-08 | CC Hook surface 有 no-op/planned 壳 | P1 | 缺失/局部闭环 | ✓ | ✓ | ✗ | △ | △ | ✗ | △ |
 | SA-09 | Frozen prompt cache 依赖签名不完整 | P1 | 局部闭环 | ✓ | △ | △ | △ | △ | △ | △ |
@@ -182,6 +182,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 **验收**：跨 worker 并发重复、ack 后 crash、处理前 crash、处理后 ack 丢失、Redis/DB 短暂失败、事件晚于一小时重投。
 
 ### SA-06：Slack/Telegram/Discord 外部联系人被伪造成平台 User — P0
+
+**修复状态（2026-07-11）**：**闭环**。Slack、Telegram、Discord、Teams、WeCom HTTP/stream、DingTalk 与 WeChat Personal 现在统一解析为 tenant/provider/installation/subject 四维 `ExternalPrincipal`；外部主体默认没有平台 User 权限，也不进入成员/license 表面。只有公司管理员把该主体显式绑定到同租户、已受邀且 active 的 User 后，运行时才获得该 User 的代理权限；解绑、渠道删除、worker 恢复和 approval replay 都会重新校验绑定，失效即 fail closed。Feishu 保留已有 tenant-scoped `ExternalIdentity` 正确路径，不被错误降级为新模型。
 
 **机械事实**：User 的 username/email 全局唯一；Slack 在 `backend/app/api/slack.py:245-287` 建 `slack_<sender>` active member，Telegram 在 `telegram.py:485-508`、Discord 在 `discord_bot.py:289-300` 同样处理。它们没有 tenant/installation/account 维度。Feishu 已有 `ExternalIdentity` 路径，说明项目内已有更正确的邻近实现。
 
@@ -945,3 +947,79 @@ alembic heads
 ```
 
 结果：Ruff `All checks passed!`，34 个文件格式通过；Alembic 单 head：`channel_ingress_inbox_0711 (head)`。
+
+### SA-06 — ExternalPrincipal 外部渠道身份闭环
+
+状态：**闭环**。提交主题：`fix(SA-06): model external channel senders as governed principals`。
+
+七原子证据：
+
+1. **输入**：Slack、Telegram、Discord、Teams、WeCom HTTP/stream、DingTalk 与 WeChat Personal 的 sender 统一进入 `resolve_or_create_external_principal()`；canonical identity 固定为 tenant、provider、installation/config、subject 四元组，显示名和 provider profile 只作为可更新属性。相同 sender 跨 tenant 或跨 installation 得到不同 deterministic UUID；Feishu 继续使用已有 tenant-scoped `ExternalIdentity`，没有重复事实源。
+2. **权威**：外部主体默认 `user_id=None`、`authority_bound=false`、tools disabled；公司管理员只能通过 tenant-scoped `/enterprise/external-principals/{id}/link|unlink` 把主体绑定到同租户 active User，link/unlink 都写 append-only binding event。worker reload 使用任务中 immutable expected user snapshot，当前绑定漂移即降为无权限。Approval envelope 保存 `external_principal_bound` identity，并在请求和消费时重新校验 tenant、active status 与 linked User；解绑或撤销后旧 approval 不能执行。
+3. **执行**：八个渠道不再调用 `hash_password` 或创建 `@*.local` User，唯一身份入口是 ExternalPrincipal service；ChatSession、ChatMessage、RuntimeBudget、Audit、Approval 和 ChannelIngress 都接收 external principal。渠道配置删除/WeChat disconnect 先调用 `revoke_channel_config_external_principals()`，再移除或清空 provider config；数据库 trigger 是升级部署旧 caller 的第二道 fail-closed safety net，不是第二业务入口。
+4. **证据**：`external_principals` 是当前绑定状态，`external_principal_binding_events` 是 linked/unlinked/revoked 的 append-only 机械账本；session/message/transcript、ingress receipt、runtime budget、approval ticket 和 general AuditLog 均保存 external principal FK。Invocation/approval execution identity 同时保留 external principal 与已绑定 User，不再把 Agent ID 或 synthetic User 当 actor。
+5. **恢复**：identity 使用 deterministic UUID + PostgreSQL conflict-safe insert，重复 webhook/worker restart 幂等；相同 identity 的 config drift、revoked installation、stale binding 均 fail closed。WeChat disconnect、reconnect 和账号迁移会撤销并删除旧 config，使新扫码获得新的 installation identity，不会复用 revoked config。migration 对 legacy synthetic users 做非破坏回填：session/message/ingress/budget/audit/approval 投影改指 ExternalPrincipal，active runtime 进入 reconciliation，旧 User 仅 deactive 供历史兼容；历史 pending/approved approval 进入 `needs_reapproval`，downgrade 精确恢复原 User、session/message、approval status/execution/details。真实 parent→head→parent 故障注入覆盖 RLS bypass、enum/text、JSON/JSONB、asyncpg 单语句和 bootstrap-generated FK name。
+6. **消费**：Web Chat Runtime 实际把 unbound external request 以 `execution_identity=external_principal` 且 `disable_tools=true` 交给模型；绑定后同时消费 external actor 与 User authority。公司成员后台新增独立“外部渠道身份”模块，可选择已受邀 active member 绑定/解绑，且不显示内部 installation/config UUID。成员列表排除 legacy synthetic external users，企业统计只计 active Users，因此不会污染成员或 license 语义。
+7. **验收**：覆盖同 sender 跨 tenant/installation、幂等创建、显式绑定/解绑、RLS、config 删除撤销、worker restart、read-only invoke、session/transcript/audit/approval/budget/ingress 投影、历史 backfill/downgrade、八渠道 AST 边界、管理员 API/UI、成员过滤、前端全量、生产 build、后端全量与 Alembic 单 head。
+
+RED 证据（修复前由新增回归测试稳定复现）：
+
+- ExternalPrincipal service/migration 首次收集报 `ModuleNotFoundError: app.models.external_principal`；八渠道边界测试显示 handler 仍制造 synthetic User。
+- unbound external runtime 把 `None` 字符串化为 `"None"`，worker restart 尝试 `UUID("None")`；session API 也拒绝 nullable User + external principal。
+- 管理 API/UI 首次测试分别报模块不存在；删除渠道没有 installation authority 撤销消费路径。
+- approval round-trip、ticket/audit 与 approved replay 目标测试为 `4 failed`：不可变 envelope 丢失 external identity，binding drift 不会阻止执行。
+- parent→head 真实迁移回填测试连续暴露并固定五类生产错误：FORCE RLS 下回填看不到旧行、enum 与 text 不能直接比较、JSON/JSONB 不能 COALESCE、asyncpg prepared statement 拒绝多 SQL、bootstrap FK name 使 downgrade 失败。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_external_principal_service.py \
+  tests/services/test_external_principal_runtime.py \
+  tests/api/test_external_principals.py \
+  tests/architecture/test_external_channel_principal_boundaries.py \
+  tests/migrations/test_external_principal_migration.py \
+  tests/services/test_channel_session.py \
+  tests/services/test_approval_service.py \
+  tests/services/test_approval_execution_envelope.py \
+  tests/tools/test_service.py \
+  tests/services/test_web_chat_runtime.py \
+  tests/api/test_telegram_channel.py \
+  tests/api/test_wecom_channel_runtime.py \
+  tests/services/test_wecom_stream_runtime.py \
+  tests/services/test_wechat_personal_runtime.py \
+  tests/api/test_channel_ingress_webhooks.py \
+  tests/services/test_channel_ingress_dispatcher.py \
+  tests/api/test_selected_tenant_scope_api.py \
+  tests/services/test_audit_rls_coverage.py \
+  tests/migrations/test_workflow_migration.py -q
+```
+
+结果：`261 passed, 5 warnings in 19.83s`。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`100 test files / 584 tests passed`；TypeScript + Vite production build exit 0，`7071 modules transformed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q
+```
+
+结果：`6274 passed, 1 skipped, 6 warnings in 142.99s`，零失败。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check app tests
+alembic heads
+```
+
+结果：Ruff `All checks passed!`；Alembic 单 head：`external_principals_0711 (head)`。

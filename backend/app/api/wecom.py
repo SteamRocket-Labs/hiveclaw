@@ -260,7 +260,7 @@ async def delete_wecom_channel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -270,6 +270,15 @@ async def delete_wecom_channel(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="WeCom not configured")
+    from app.services.external_principal_service import revoke_channel_config_external_principals
+
+    await revoke_channel_config_external_principals(
+        db,
+        tenant_id=agent.tenant_id,
+        config=config,
+        actor_user_id=current_user.id,
+        reason="WeCom channel configuration deleted",
+    )
     await db.delete(config)
 
 
@@ -405,8 +414,6 @@ async def _process_wecom_text(
     from app.services.tenant_resolver import resolve_tenant_for_agent
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
-    from app.models.user import User as UserModel
-    from app.core.security import hash_password
     from app.services.channel_agent_runtime import call_agent_llm
     from app.services.channel_session import find_or_create_channel_session
     from app.services.channel_delivery_service import channel_delivery_target as _cdt
@@ -426,11 +433,6 @@ async def _process_wecom_text(
         _hist_limit = await compute_history_limit_for_agent(agent_id)
 
         conv_id = f"wecom_p2p_{from_user}"
-
-        # Find or create platform user
-        wc_username = f"wecom_{from_user}"
-        u_r = await db.execute(_select(UserModel).where(UserModel.username == wc_username))
-        platform_user = u_r.scalar_one_or_none()
 
         # Try to resolve display name from WeCom API
         display_name = f"WeCom {from_user[:8]}"
@@ -452,30 +454,34 @@ async def _process_wecom_text(
         except Exception as e:
             logger.error(f"[WeCom] Failed to resolve user info: {e}")
 
-        if not platform_user:
-            import uuid as _uuid
+        from app.services.channel_ingress_inbox import channel_installation_ref
+        from app.services.external_principal_service import resolve_or_create_external_principal
 
-            platform_user = UserModel(
-                username=wc_username,
-                email=f"{wc_username}@wecom.local",
-                password_hash=hash_password(_uuid.uuid4().hex),
-                display_name=display_name,
-                role="member",
-                tenant_id=agent_obj.tenant_id if agent_obj else None,
-            )
-            db.add(platform_user)
-            await db.flush()
-        platform_user_id = platform_user.id
-        user_label = platform_user.display_name or display_name or wc_username
+        principal_resolution = await resolve_or_create_external_principal(
+            db,
+            tenant_id=agent_obj.tenant_id,
+            provider="wecom",
+            installation_ref=channel_installation_ref(config, fallback=f"wecom:{agent_id}"),
+            channel_config_id=getattr(config, "id", None),
+            subject_id=from_user,
+            display_name=display_name,
+            profile={},
+        )
+        runtime_actor = principal_resolution.actor
+        platform_user_id = runtime_actor.id
+        external_principal_id = principal_resolution.principal.id
+        user_label = runtime_actor.display_name or display_name or f"WeCom {from_user[:8]}"
 
         from app.core.execution_context import set_delegated_user_identity
 
-        set_delegated_user_identity(platform_user_id, user_label, channel="wecom")
+        if platform_user_id is not None:
+            set_delegated_user_identity(platform_user_id, user_label, channel="wecom")
 
         delivery_target = {
             "channel": "wecom",
             "user_id": from_user,
             "user_label": user_label,
+            "external_principal_id": str(external_principal_id),
         }
 
         # Find or create session
@@ -484,6 +490,7 @@ async def _process_wecom_text(
             agent_id=agent_id,
             tenant_id=agent_obj.tenant_id if agent_obj else None,
             user_id=platform_user_id,
+            external_principal_id=external_principal_id,
             external_conv_id=conv_id,
             source_channel="wecom",
             first_message_title=user_text,
@@ -508,6 +515,7 @@ async def _process_wecom_text(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="user",
                 content=user_text,
                 conversation_id=session_conv_id,
@@ -531,7 +539,7 @@ async def _process_wecom_text(
                 allow_bare_plan_confirmation=True,
                 durable_run=True,
                 durable_session=sess,
-                durable_user=platform_user,
+                durable_user=runtime_actor,
             )
         finally:
             _cdt.reset(_cdt_token)
@@ -543,6 +551,7 @@ async def _process_wecom_text(
                 agent_id=agent_id,
                 tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="assistant",
                 content=reply_text,
                 conversation_id=session_conv_id,

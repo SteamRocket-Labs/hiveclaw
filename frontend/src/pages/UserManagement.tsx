@@ -4,8 +4,10 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { usersApi } from '../api/domains/users';
+import { externalPrincipalsApi, type ExternalPrincipal } from '../api/domains/externalPrincipals';
 import { requestAppConfirm } from '../components/AppDialogs';
 import { useAuthStore } from '../stores';
+import ExternalPrincipalBindingsPanel from './ExternalPrincipalBindingsPanel';
 import './UserManagement.css';
 
 interface UserInfo {
@@ -50,6 +52,9 @@ export default function UserManagement() {
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState('');
     const [changingRoleUserId, setChangingRoleUserId] = useState<string | null>(null);
+    const [externalPrincipals, setExternalPrincipals] = useState<ExternalPrincipal[]>([]);
+    const [externalPrincipalsLoading, setExternalPrincipalsLoading] = useState(true);
+    const [busyExternalPrincipalId, setBusyExternalPrincipalId] = useState<string | null>(null);
 
     // Search, sort & pagination
     const [searchQuery, setSearchQuery] = useState('');
@@ -68,7 +73,69 @@ export default function UserManagement() {
         setLoading(false);
     };
 
-    useEffect(() => { loadUsers(); }, []);
+    const selectedTenantId = () => localStorage.getItem('current_tenant_id') || '';
+
+    const loadExternalPrincipals = async () => {
+        setExternalPrincipalsLoading(true);
+        try {
+            const data = await externalPrincipalsApi.list({ tenantId: selectedTenantId() });
+            setExternalPrincipals(data);
+        } catch (e) {
+            console.error('Failed to load external principals', e);
+        }
+        setExternalPrincipalsLoading(false);
+    };
+
+    useEffect(() => {
+        void loadUsers();
+        void loadExternalPrincipals();
+    }, []);
+
+    const handleExternalPrincipalLink = async (principalId: string, userId: string) => {
+        setBusyExternalPrincipalId(principalId);
+        try {
+            await externalPrincipalsApi.link(
+                principalId,
+                userId,
+                'Explicit tenant-admin binding to an invited member',
+                selectedTenantId(),
+            );
+            setToast(`✅ ${t('userManagement.externalPrincipalLinked', 'External identity linked')}`);
+            await loadExternalPrincipals();
+        } catch (e: any) {
+            setToast(`❌ ${e.message}`);
+        } finally {
+            setBusyExternalPrincipalId(null);
+            setTimeout(() => setToast(''), 3000);
+        }
+    };
+
+    const handleExternalPrincipalUnlink = async (principalId: string) => {
+        const confirmed = await requestAppConfirm({
+            title: t('userManagement.externalPrincipalUnlinkTitle', 'Unlink external identity'),
+            message: t(
+                'userManagement.externalPrincipalUnlinkConfirm',
+                'The external sender will immediately lose the linked member authority. Continue?',
+            ),
+            confirmLabel: t('userManagement.externalPrincipalUnlink', 'Unlink'),
+        });
+        if (!confirmed) return;
+        setBusyExternalPrincipalId(principalId);
+        try {
+            await externalPrincipalsApi.unlink(
+                principalId,
+                'Explicit tenant-admin unlink from user management',
+                selectedTenantId(),
+            );
+            setToast(`✅ ${t('userManagement.externalPrincipalUnlinked', 'External identity unlinked')}`);
+            await loadExternalPrincipals();
+        } catch (e: any) {
+            setToast(`❌ ${e.message}`);
+        } finally {
+            setBusyExternalPrincipalId(null);
+            setTimeout(() => setToast(''), 3000);
+        }
+    };
 
     const startEdit = (user: UserInfo) => {
         setEditingUserId(user.id);
@@ -178,6 +245,17 @@ export default function UserManagement() {
                 >
                     {toast}
                 </div>
+            )}
+
+            {currentUser?.role && ['platform_admin', 'org_admin'].includes(currentUser.role) && (
+                <ExternalPrincipalBindingsPanel
+                    principals={externalPrincipals}
+                    users={users}
+                    loading={externalPrincipalsLoading}
+                    busyPrincipalId={busyExternalPrincipalId}
+                    onLink={handleExternalPrincipalLink}
+                    onUnlink={handleExternalPrincipalUnlink}
+                />
             )}
 
             {loading ? (

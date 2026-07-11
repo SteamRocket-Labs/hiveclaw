@@ -530,12 +530,13 @@ class TestTelegramChannelFileSender:
 
         config = _make_config()
         agent = SimpleNamespace(id=config.agent_id, name="Web3研究员", tenant_id=uuid4())
+        platform_user_id = uuid4()
+        external_principal_id = uuid4()
         session = SimpleNamespace(id=uuid4(), last_message_at=None)
         db = _SequenceDB(
             [
                 _ScalarResult(config),  # ChannelConfig
-                _ScalarResult(None),  # User lookup by tg username
-                _ScalarResult(agent),  # Agent lookup for user creation
+                _ScalarResult(agent),  # Agent lookup for principal tenant
                 _RowsResult([]),  # History lookup
             ]
         )
@@ -556,7 +557,25 @@ class TestTelegramChannelFileSender:
         report.write_text("# report", encoding="utf-8")
         captured: dict = {}
 
+        async def fake_resolve_external_principal(*_args, **kwargs):
+            captured["principal_kwargs"] = kwargs
+            return SimpleNamespace(
+                principal=SimpleNamespace(id=external_principal_id),
+                actor=SimpleNamespace(
+                    id=platform_user_id,
+                    external_principal_id=external_principal_id,
+                    tenant_id=agent.tenant_id,
+                    username="telegram_42",
+                    display_name="Rocky",
+                    role="member",
+                    department_id=None,
+                    authority_bound=True,
+                    is_active=True,
+                ),
+            )
+
         async def fake_find_or_create_channel_session(*_args, **_kwargs):
+            captured["session_kwargs"] = _kwargs
             return session
 
         async def fake_compute_history_limit_for_agent(_agent_id):
@@ -584,6 +603,10 @@ class TestTelegramChannelFileSender:
             "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
         )
         monkeypatch.setattr(
+            "app.services.external_principal_service.resolve_or_create_external_principal",
+            fake_resolve_external_principal,
+        )
+        monkeypatch.setattr(
             "app.services.memory_service.compute_history_limit_for_agent", fake_compute_history_limit_for_agent
         )
         monkeypatch.setattr("app.services.channel_agent_runtime.call_agent_llm", fake_call_llm)
@@ -601,8 +624,12 @@ class TestTelegramChannelFileSender:
             "chat_id": 12345,
             "sender_id": "42",
             "user_label": "Rocky",
+            "external_principal_id": str(external_principal_id),
             "session_id": str(session.id),
         }
+        assert captured["principal_kwargs"]["installation_ref"] == str(config.id)
+        assert captured["session_kwargs"]["user_id"] == platform_user_id
+        assert captured["session_kwargs"]["external_principal_id"] == external_principal_id
         assert captured["llm_kwargs"]["session_id"] == str(session.id)
         assert captured["llm_kwargs"]["session_source"] == "telegram"
         assert captured["llm_kwargs"]["session_channel"] == "telegram"

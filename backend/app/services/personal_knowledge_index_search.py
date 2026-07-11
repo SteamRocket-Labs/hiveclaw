@@ -13,6 +13,7 @@ from sqlalchemy import desc, func, or_, select
 
 from app.models.knowledge import KnowledgeDocument, KnowledgeSegment
 from app.services.personal_knowledge_access import (
+    PersonalKnowledgePrincipal,
     personal_knowledge_access_predicate,
     personal_knowledge_agent_visibility_predicate,
 )
@@ -75,8 +76,7 @@ def build_personal_knowledge_search_statement(
     tenant_id: uuid.UUID,
     owner_user_id: uuid.UUID,
     query: str,
-    current_user_id: uuid.UUID | None,
-    agent_id: uuid.UUID | None,
+    principal: PersonalKnowledgePrincipal,
     limit: int,
 ):
     clean_query = _WHITESPACE_RE.sub(" ", str(query or "").strip())
@@ -100,8 +100,7 @@ def build_personal_knowledge_search_statement(
             KnowledgeDocument.scope_id == owner_user_id,
             KnowledgeDocument.status.in_(("ready", "degraded")),
             personal_knowledge_agent_visibility_predicate(
-                owner_user_id=owner_user_id,
-                current_user_id=current_user_id,
+                principal=principal,
             ),
             KnowledgeSegment.tenant_id == tenant_id,
             KnowledgeSegment.scope_type == "person",
@@ -110,8 +109,7 @@ def build_personal_knowledge_search_statement(
             personal_knowledge_access_predicate(
                 tenant_id=tenant_id,
                 owner_user_id=owner_user_id,
-                current_user_id=current_user_id,
-                agent_id=agent_id,
+                principal=principal,
             ),
         )
         .order_by(desc(score), KnowledgeDocument.updated_at.desc(), KnowledgeSegment.position.asc())

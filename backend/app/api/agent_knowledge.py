@@ -24,6 +24,7 @@ from app.core.security import get_current_user
 from app.database import get_db, tenant_scoped_session
 from app.models.agent import Agent
 from app.models.user import User
+from app.services.personal_knowledge_access import HumanBrowserPrincipal
 from app.services.personal_knowledge_service import PersonalKnowledgeService
 from app.services.personal_knowledge_proposals import PersonalKnowledgeProposalService
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
@@ -204,8 +205,7 @@ async def list_current_user_personal_documents(
         db,
         tenant_id=_tenant_id_for_user(current_user),
         owner_user_id=uuid.UUID(str(current_user.id)),
-        current_user_id=uuid.UUID(str(current_user.id)),
-        agent_id=None,
+        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
         limit=limit,
     )
     return {"documents": [_dataclass_payload(document) for document in documents]}
@@ -422,8 +422,7 @@ async def search_current_user_personal_documents(
         tenant_id=_tenant_id_for_user(current_user),
         owner_user_id=uuid.UUID(str(current_user.id)),
         query=q,
-        current_user_id=uuid.UUID(str(current_user.id)),
-        agent_id=None,
+        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
         limit=limit,
     )
     return {"results": [_dataclass_payload(result) for result in results]}
@@ -546,8 +545,7 @@ async def get_current_user_personal_document(
         tenant_id=_tenant_id_for_user(current_user),
         owner_user_id=uuid.UUID(str(current_user.id)),
         document_id=document_id,
-        current_user_id=uuid.UUID(str(current_user.id)),
-        agent_id=None,
+        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
     )
     if document is None:
         raise HTTPException(status_code=404, detail="Personal knowledge document not found")
@@ -566,8 +564,7 @@ async def get_current_user_personal_document_source_preview(
         tenant_id=_tenant_id_for_user(current_user),
         owner_user_id=uuid.UUID(str(current_user.id)),
         document_id=document_id,
-        current_user_id=uuid.UUID(str(current_user.id)),
-        agent_id=None,
+        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
     )
     if preview is None:
         raise HTTPException(status_code=404, detail="Personal knowledge source preview not found")
@@ -632,8 +629,7 @@ async def list_personal_documents(
         db,
         tenant_id=_tenant_id_for_agent(agent, current_user),
         owner_user_id=_owner_user_id_for_personal_kb(agent),
-        current_user_id=current_user.id,
-        agent_id=agent_id,
+        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
         limit=limit,
     )
     return {"documents": [_dataclass_payload(document) for document in documents]}
@@ -686,8 +682,7 @@ async def search_personal_documents(
         tenant_id=_tenant_id_for_agent(agent, current_user),
         owner_user_id=_owner_user_id_for_personal_kb(agent),
         query=q,
-        current_user_id=current_user.id,
-        agent_id=agent_id,
+        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
         limit=limit,
     )
     return {"results": [_dataclass_payload(result) for result in results]}
@@ -707,8 +702,7 @@ async def get_personal_document(
         tenant_id=_tenant_id_for_agent(agent, current_user),
         owner_user_id=_owner_user_id_for_personal_kb(agent),
         document_id=document_id,
-        current_user_id=current_user.id,
-        agent_id=agent_id,
+        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
     )
     if document is None:
         raise HTTPException(status_code=404, detail="Personal knowledge document not found")
@@ -729,8 +723,7 @@ async def get_personal_document_source_preview(
         tenant_id=_tenant_id_for_agent(agent, current_user),
         owner_user_id=_owner_user_id_for_personal_kb(agent),
         document_id=document_id,
-        current_user_id=current_user.id,
-        agent_id=agent_id,
+        principal=HumanBrowserPrincipal(user_id=uuid.UUID(str(current_user.id))),
     )
     if preview is None:
         raise HTTPException(status_code=404, detail="Personal knowledge source preview not found")

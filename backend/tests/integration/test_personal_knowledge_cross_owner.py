@@ -5,8 +5,8 @@ The SQL-structure test
 only pins that the access predicate *emits* the agent owner-chain + tenant
 clauses. This file proves the predicate *behaves*, against real PostgreSQL:
 
-* an agent that belongs to the scope owner reads the owner's KB in the
-  autonomous path (``current_user_id=None``) with NO explicit grant — spec D3
+* an agent that belongs to the scope owner reads the owner's KB through an
+  explicit ``AgentRuntimePrincipal`` with NO explicit grant — spec D3
   "owner's agents can search the full library";
 * an agent that belongs to a DIFFERENT owner sees nothing in owner A's scope —
   the security boundary of B4's grant-free allow branch (no cross-owner leak).
@@ -24,14 +24,16 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.database import Base
 from app.models.agent import Agent
-from app.models.knowledge import KnowledgeDocument, KnowledgeSegment
+from app.models.knowledge import KnowledgeDocument, KnowledgeGrant, KnowledgeSegment
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services.personal_knowledge_access import AgentRuntimePrincipal, HumanBrowserPrincipal
 from app.services.personal_knowledge_service import build_personal_knowledge_document_list_statement
 
 
@@ -112,8 +114,18 @@ async def _visible_doc_ids(owner_sessionmaker, *, tenant_id, owner_user_id, agen
         statement = build_personal_knowledge_document_list_statement(
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
-            current_user_id=None,
-            agent_id=agent_id,
+            principal=AgentRuntimePrincipal(agent_id=agent_id, requester_user_id=None),
+            limit=25,
+        )
+        return [row[0].id for row in (await session.execute(statement)).all()]
+
+
+async def _human_visible_doc_ids(owner_sessionmaker, *, tenant_id, owner_user_id, user_id) -> list[uuid.UUID]:
+    async with owner_sessionmaker() as session:
+        statement = build_personal_knowledge_document_list_statement(
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            principal=HumanBrowserPrincipal(user_id=user_id),
             limit=25,
         )
         return [row[0].id for row in (await session.execute(statement)).all()]
@@ -141,5 +153,69 @@ async def test_cross_owner_agent_cannot_read_kb(complete_schema, owner_sessionma
         tenant_id=ids["tenant"],
         owner_user_id=ids["ownerA"],
         agent_id=ids["agentB"],
+    )
+    assert visible == []
+
+
+async def test_human_browser_requires_explicit_live_user_grant(complete_schema, owner_sessionmaker):
+    ids = await _seed_two_owners(owner_sessionmaker)
+
+    before = await _human_visible_doc_ids(
+        owner_sessionmaker,
+        tenant_id=ids["tenant"],
+        owner_user_id=ids["ownerA"],
+        user_id=ids["ownerB"],
+    )
+    assert before == []
+
+    async with owner_sessionmaker() as session:
+        session.add(
+            KnowledgeGrant(
+                tenant_id=ids["tenant"],
+                scope_type="person",
+                scope_id=ids["ownerA"],
+                resource_type="scope",
+                resource_id=ids["ownerA"],
+                grantee_type="user",
+                grantee_id=ids["ownerB"],
+                permission="read",
+                created_by_user_id=ids["ownerA"],
+            )
+        )
+        await session.commit()
+
+    after = await _human_visible_doc_ids(
+        owner_sessionmaker,
+        tenant_id=ids["tenant"],
+        owner_user_id=ids["ownerA"],
+        user_id=ids["ownerB"],
+    )
+    assert after == [ids["docA"]]
+
+
+async def test_human_browser_rejects_expired_user_grant(complete_schema, owner_sessionmaker):
+    ids = await _seed_two_owners(owner_sessionmaker)
+    async with owner_sessionmaker() as session:
+        session.add(
+            KnowledgeGrant(
+                tenant_id=ids["tenant"],
+                scope_type="person",
+                scope_id=ids["ownerA"],
+                resource_type="scope",
+                resource_id=ids["ownerA"],
+                grantee_type="user",
+                grantee_id=ids["ownerB"],
+                permission="read",
+                created_by_user_id=ids["ownerA"],
+                expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            )
+        )
+        await session.commit()
+
+    visible = await _human_visible_doc_ids(
+        owner_sessionmaker,
+        tenant_id=ids["tenant"],
+        owner_user_id=ids["ownerA"],
+        user_id=ids["ownerB"],
     )
     assert visible == []

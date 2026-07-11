@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**12 / 28**（单 Agent SA-01 至 SA-12 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**13 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -96,7 +96,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-10 | 智能上下文机械截断无恢复指针 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-11 | Local Bridge receipt 文件并发丢写 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-12 | 全量测试入口不 hermetic | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| HN-01 | Personal KB 浏览器继承 Agent owner 权威 | P0 | 断点 | ✓ | ✗ | △ | △ | △ | ✗ | △ |
+| HN-01 | Personal KB 浏览器继承 Agent owner 权威 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-02 | Memory/Skill 原生资产缺统一事务锁 | P0 | 断点 | ✓ | ✓ | ✗ | △ | ✗ | △ | △ |
 | HN-03 | A2A REST 丢 requester 且 consult 假成功 | P0 | 断点 | △ | ✗ | △ | ✗ | △ | ✗ | △ |
 | HN-04 | Subagent/async 查询取消只按 parent Agent | P0 | 断点 | ✓ | ✗ | △ | △ | ✗ | ✗ | △ |
@@ -256,6 +256,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 这个结论只对当前代码成立。后续 Company Knowledge Core 必须使用不同 scope/provider，不得把 person scope 混入统一 `viking://resources/` 自动检索。并且现有 ACL mirror 只把 `openviking://` 识别为 governed prefix，而 OpenViking client/Enterprise upload 实际使用 `viking://`；在任何新知识进入该 provider 前，必须先修正这个 scheme contract 并对无 ACL metadata 的 provider result fail closed。
 
 ### HN-01：Personal KB 的浏览器 API 错把 Agent 权威借给当前人 — P0
+
+**修复状态（2026-07-11）**：**闭环**。Personal KB 读取现在必须携带互斥的 `HumanBrowserPrincipal` 或 `AgentRuntimePrincipal`。浏览器路由即使从 Agent-scoped URL 进入，也只能使用当前人的 owner/user grant，不能再把 Agent ID 或 owner-agent relation 带入 SQL；只有 tool runtime 可以使用 Agent grant/owner-agent relation，并把 requester、session、delegation 写入 principal evidence。
 
 `backend/app/services/personal_knowledge_access.py:22-63` 只要传入的 agent 是 owner agent，`owner_agent_predicate` 就允许访问，和当前浏览用户是不是 owner 无关。Agent-scoped browser routes 在 `backend/app/api/agent_knowledge.py:622-737` 只做 generic Agent access，然后同时传 current_user_id 和 agent_id。
 
@@ -1418,3 +1420,59 @@ alembic heads
 ```
 
 结果：Ruff lint/format 全绿；Alembic 单 head：`channel_delivery_outbox_0711 (head)`。SA-12 不新增 schema migration。
+
+### HN-01 — Personal KB 人类浏览与 Agent runtime 权威隔离
+
+状态：**闭环**。提交主题：`fix(HN-01): separate human and agent knowledge authority`。
+
+七原子证据：
+
+1. **输入**：Personal KB 读取不再接收可任意混搭的 `current_user_id + agent_id`。浏览器只能构造 `HumanBrowserPrincipal(user_id)`；tool runtime 只能构造 `AgentRuntimePrincipal(agent_id, requester_user_id, session_id, delegation_id)`。
+2. **权威**：human principal 只允许 scope owner 或未过期的 explicit user grant；generic Agent access、manager 身份和 owner-agent relation 都不能扩大人类正文浏览权。Agent runtime 才可消费 owner-agent relation、agent grant或 requester user grant，并且所有 Agent 读取一律受 `agent_searchable=true` 约束。
+3. **执行**：`personal_knowledge_access_predicate` 和 `personal_knowledge_agent_visibility_predicate` 是 list/search/detail/source-preview 与 text/entity/graph/vector ACL post-filter 的共同唯一入口；API/tool 不能再通过是否传 `agent_id` 隐式切换权威。
+4. **证据**：runtime principal 的 `evidence()` 固定输出 principal type、Agent、requester、session、delegation；既有 Tool Runtime lifecycle/audit 继续记录本次 tool call。human SQL 没有 `agents` owner 子查询，agent SQL则明确包含 tenant/deleted/owner chain 和 `agent_searchable`。
+5. **恢复**：grant 的有效性在每次 list/search/read 都重新按数据库当前时间判定，过期 grant fail closed；重试或 delegated run 不缓存 ACL 判定，只重建同一 evidence-bound principal。
+6. **消费**：当前用户 Personal KB API与 legacy Agent-scoped browser API都消费 human principal；`search_personal_kb` / `read_personal_kb` 消费 runtime principal。Personal KB 仍保持 tool-only，不进入原始 prompt context。
+7. **验收**：覆盖 owner、shared Agent user/manager等价无 grant、explicit user grant、expired grant、owner Agent、cross-owner Agent、delegated runtime evidence、API/service/tool与真实 PostgreSQL行为矩阵；全量 backend 零失败。
+
+KISS/奥卡姆证据：只引入两个不可变 dataclass 和一个 union，删除模糊参数组合；没有新权限表、第二 ACL engine或浏览器专用复制 service。知识正文仍由既有 SQL事实源和 grant 表裁决。
+
+RED 证据：
+
+```text
+3 failed
+- HumanBrowserPrincipal 不存在
+- AgentRuntimePrincipal 不存在
+- shared Agent user browser route 仍把 agent_id 传给 PersonalKnowledgeService
+```
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/api/test_agent_personal_knowledge_api.py \
+  tests/services/test_personal_knowledge_service.py \
+  tests/tools/test_personal_knowledge_tool.py \
+  tests/integration/test_personal_knowledge_cross_owner.py -q
+```
+
+结果：`65 passed, 4 warnings in 6.63s`。其中 PostgreSQL integration 证明 explicit live user grant 可见、过期 grant不可见、owner Agent 可见、cross-owner Agent不可见。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check \
+  app/services/personal_knowledge_access.py \
+  app/services/personal_knowledge_index_search.py \
+  app/services/personal_knowledge_service.py \
+  app/api/agent_knowledge.py app/tools/handlers/knowledge.py \
+  tests/api/test_agent_personal_knowledge_api.py \
+  tests/services/test_personal_knowledge_service.py \
+  tests/tools/test_personal_knowledge_tool.py \
+  tests/integration/test_personal_knowledge_cross_owner.py
+pytest tests -q
+```
+
+结果：Ruff `All checks passed!`；全量 backend `6328 passed, 1 skipped, 5 warnings in 147.35s`，零失败。HN-01 不新增 schema migration。

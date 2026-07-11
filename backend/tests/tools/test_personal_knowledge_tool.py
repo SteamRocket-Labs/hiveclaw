@@ -187,6 +187,7 @@ async def test_search_personal_kb_tool_uses_agent_owner_and_returns_json(monkeyp
     service = _FakeSearchService(hit)
     agent = SimpleNamespace(id=agent_id, owner_user_id=owner_id, sponsor_user_id=None, creator_id=user_id)
     session_context = _SessionContext(agent)
+    delegation_token = SimpleNamespace(delegation_id="delegation-search-1")
 
     monkeypatch.setattr(knowledge_handler, "tenant_scoped_session", lambda _tenant_id: session_context)
     monkeypatch.setattr(knowledge_handler, "PersonalKnowledgeService", lambda: service)
@@ -200,6 +201,8 @@ async def test_search_personal_kb_tool_uses_agent_owner_and_returns_json(monkeyp
                 user_id=user_id,
                 tenant_id=str(tenant_id),
                 workspace=Path("/tmp/workspace"),
+                session_id="session-search-1",
+                delegation_token=delegation_token,
             ),
         )
     )
@@ -210,7 +213,13 @@ async def test_search_personal_kb_tool_uses_agent_owner_and_returns_json(monkeyp
     assert payload["results"][0]["source_ref"] == hit.source_ref
     assert payload["results"][0]["score_trace"]["channels"]["text"]["rank"] == 1
     assert service.calls[0]["owner_user_id"] == owner_id
-    assert service.calls[0]["agent_id"] == agent_id
+    assert service.calls[0]["principal"].evidence() == {
+        "principal_type": "agent_runtime",
+        "agent_id": str(agent_id),
+        "requester_user_id": str(user_id),
+        "session_id": "session-search-1",
+        "delegation_id": "delegation-search-1",
+    }
 
 
 @pytest.mark.asyncio
@@ -347,5 +356,6 @@ async def test_read_personal_kb_tool_uses_same_owner_acl_and_bounds_segments(mon
     ]
     assert payload["truncated"] is True
     assert service.calls[0]["owner_user_id"] == owner_id
-    assert service.calls[0]["current_user_id"] == owner_id
-    assert service.calls[0]["agent_id"] == agent_id
+    assert service.calls[0]["principal"].principal_type == "agent_runtime"
+    assert service.calls[0]["principal"].requester_user_id == owner_id
+    assert service.calls[0]["principal"].agent_id == agent_id

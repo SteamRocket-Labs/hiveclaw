@@ -25,6 +25,7 @@ from app.models.knowledge import (
     KnowledgeSegment,
 )
 from app.services.personal_knowledge_access import (
+    PersonalKnowledgePrincipal,
     _personal_knowledge_access_predicate,
     _personal_knowledge_agent_visibility_predicate,
     build_personal_knowledge_document_list_statement,
@@ -310,15 +311,13 @@ class PersonalKnowledgeService:
         *,
         tenant_id: uuid.UUID,
         owner_user_id: uuid.UUID,
-        current_user_id: uuid.UUID | None,
-        agent_id: uuid.UUID | None = None,
+        principal: PersonalKnowledgePrincipal,
         limit: int = 50,
     ) -> list[PersonalKnowledgeDocumentSummary]:
         statement = build_personal_knowledge_document_list_statement(
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
-            current_user_id=current_user_id,
-            agent_id=agent_id,
+            principal=principal,
             limit=limit,
         )
         rows = (await session.execute(statement)).all()
@@ -333,14 +332,12 @@ class PersonalKnowledgeService:
         tenant_id: uuid.UUID,
         owner_user_id: uuid.UUID,
         document_id: uuid.UUID,
-        current_user_id: uuid.UUID | None,
-        agent_id: uuid.UUID | None = None,
+        principal: PersonalKnowledgePrincipal,
     ) -> PersonalKnowledgeDocumentDetail | None:
         statement = build_personal_knowledge_document_list_statement(
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
-            current_user_id=current_user_id,
-            agent_id=agent_id,
+            principal=principal,
             limit=1,
             document_id=document_id,
         )
@@ -409,14 +406,12 @@ class PersonalKnowledgeService:
         tenant_id: uuid.UUID,
         owner_user_id: uuid.UUID,
         document_id: uuid.UUID,
-        current_user_id: uuid.UUID | None,
-        agent_id: uuid.UUID | None = None,
+        principal: PersonalKnowledgePrincipal,
     ) -> PersonalKnowledgeSourcePreview | None:
         statement = build_personal_knowledge_document_list_statement(
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
-            current_user_id=current_user_id,
-            agent_id=agent_id,
+            principal=principal,
             limit=1,
             document_id=document_id,
         )
@@ -2426,8 +2421,7 @@ class PersonalKnowledgeService:
         tenant_id: uuid.UUID,
         owner_user_id: uuid.UUID,
         query: str,
-        current_user_id: uuid.UUID | None,
-        agent_id: uuid.UUID | None = None,
+        principal: PersonalKnowledgePrincipal,
         limit: int = 5,
     ) -> list[KnowledgeSearchHit]:
         clean_query = _WHITESPACE_RE.sub(" ", str(query or "").strip())
@@ -2475,8 +2469,7 @@ class PersonalKnowledgeService:
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
             query=clean_query,
-            current_user_id=current_user_id,
-            agent_id=agent_id,
+            principal=principal,
             limit=candidate_limit,
         )
         text_rows = (await session.execute(text_statement)).all()
@@ -2527,8 +2520,7 @@ class PersonalKnowledgeService:
                     owner_user_id=owner_user_id,
                     query=clean_query,
                     limit=candidate_limit,
-                    current_user_id=current_user_id,
-                    agent_id=agent_id,
+                    principal=principal.evidence(),
                 )
                 vector_hits = await call if inspect.isawaitable(call) else call
                 for hit in list(vector_hits or []):
@@ -2671,8 +2663,7 @@ class PersonalKnowledgeService:
                         KnowledgeDocument.scope_id == owner_user_id,
                         KnowledgeDocument.status.in_(("ready", "degraded")),
                         _personal_knowledge_agent_visibility_predicate(
-                            owner_user_id=owner_user_id,
-                            current_user_id=current_user_id,
+                            principal=principal,
                         ),
                         KnowledgeSegment.tenant_id == tenant_id,
                         KnowledgeSegment.scope_type == "person",
@@ -2681,8 +2672,7 @@ class PersonalKnowledgeService:
                         _personal_knowledge_access_predicate(
                             tenant_id=tenant_id,
                             owner_user_id=owner_user_id,
-                            current_user_id=current_user_id,
-                            agent_id=agent_id,
+                            principal=principal,
                         ),
                     )
                 )

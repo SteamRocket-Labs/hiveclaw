@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
+from app.services.personal_knowledge_access import AgentRuntimePrincipal
 from app.services.personal_knowledge_service import PersonalKnowledgeService
 from app.services.personal_knowledge_proposals import (
     PersonalKnowledgeProposalRejected,
@@ -74,6 +75,16 @@ def _proposal_idempotency_key(request: ToolExecutionRequest) -> str:
         ).encode("utf-8")
     ).hexdigest()
     return f"personal-kb:{anchor}:{digest[:32]}"[:200]
+
+
+def _personal_kb_runtime_principal(request: ToolExecutionRequest) -> AgentRuntimePrincipal:
+    delegation_id = getattr(request.context.delegation_token, "delegation_id", None)
+    return AgentRuntimePrincipal(
+        agent_id=request.context.agent_id,
+        requester_user_id=_coerce_uuid(request.context.user_id),
+        session_id=str(request.context.session_id) if request.context.session_id else None,
+        delegation_id=str(delegation_id) if delegation_id else None,
+    )
 
 
 @tool(
@@ -275,8 +286,7 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
             query=query,
-            current_user_id=request.context.user_id,
-            agent_id=request.context.agent_id,
+            principal=_personal_kb_runtime_principal(request),
             limit=limit,
         )
 
@@ -381,8 +391,7 @@ async def read_personal_kb(request: ToolExecutionRequest) -> str:
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
             document_id=document_id,
-            current_user_id=request.context.user_id,
-            agent_id=request.context.agent_id,
+            principal=_personal_kb_runtime_principal(request),
         )
 
     if detail is None:

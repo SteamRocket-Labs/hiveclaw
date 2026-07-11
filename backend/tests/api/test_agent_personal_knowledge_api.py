@@ -157,8 +157,8 @@ def test_current_user_personal_knowledge_routes_use_owner_scope_without_agent(mo
     for _name, kwargs in captured:
         assert kwargs["tenant_id"] == user.tenant_id
         assert kwargs["owner_user_id"] == owner_id
-        assert kwargs["current_user_id"] == owner_id
-        assert kwargs["agent_id"] is None
+        assert kwargs["principal"].principal_type == "human_browser"
+        assert kwargs["principal"].user_id == owner_id
 
 
 def test_current_user_personal_knowledge_ingest_never_accepts_browser_owner_id(monkeypatch):
@@ -416,15 +416,12 @@ def test_current_user_personal_knowledge_source_preview_streams_owner_image(monk
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/png")
     assert response.content == b"\x89PNG\r\nsource"
-    assert captured == [
-        {
-            "tenant_id": user.tenant_id,
-            "owner_user_id": owner_id,
-            "document_id": document_id,
-            "current_user_id": owner_id,
-            "agent_id": None,
-        }
-    ]
+    assert len(captured) == 1
+    assert captured[0]["tenant_id"] == user.tenant_id
+    assert captured[0]["owner_user_id"] == owner_id
+    assert captured[0]["document_id"] == document_id
+    assert captured[0]["principal"].principal_type == "human_browser"
+    assert captured[0]["principal"].user_id == owner_id
 
 
 def test_current_user_personal_knowledge_grant_routes_use_owner_scope(monkeypatch):
@@ -855,5 +852,38 @@ def test_personal_knowledge_list_search_and_detail_use_owner_scope(monkeypatch):
     for _name, kwargs in captured:
         assert kwargs["tenant_id"] == user.tenant_id
         assert kwargs["owner_user_id"] == owner_id
-        assert kwargs["current_user_id"] == owner_id
-        assert kwargs["agent_id"] == agent_id
+        assert kwargs["principal"].principal_type == "human_browser"
+        assert kwargs["principal"].user_id == owner_id
+        assert not hasattr(kwargs["principal"], "agent_id")
+
+
+def test_shared_agent_user_browser_read_does_not_borrow_agent_runtime_authority(monkeypatch):
+    owner_id = uuid4()
+    shared_user_id = uuid4()
+    agent_id = uuid4()
+    user = SimpleNamespace(id=shared_user_id, role="member", tenant_id=uuid4(), is_active=True)
+    agent = SimpleNamespace(
+        id=agent_id,
+        tenant_id=user.tenant_id,
+        owner_user_id=owner_id,
+        sponsor_user_id=owner_id,
+        creator_id=owner_id,
+    )
+    captured = {}
+
+    class _FakeService:
+        async def search_personal(self, session, **kwargs):
+            captured.update(kwargs)
+            return []
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, _db, _user, _agent = _client(monkeypatch, user=user, agent=agent)
+
+    response = client.get(f"/agents/{agent_id}/knowledge/personal/search", params={"q": "owner secret"})
+
+    assert response.status_code == 200
+    assert response.json() == {"results": []}
+    assert captured["owner_user_id"] == owner_id
+    assert captured["principal"].principal_type == "human_browser"
+    assert captured["principal"].user_id == shared_user_id
+    assert not hasattr(captured["principal"], "agent_id")

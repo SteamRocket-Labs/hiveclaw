@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.dialects import postgresql
+
+from app.services.personal_knowledge_access import AgentRuntimePrincipal, HumanBrowserPrincipal
 from sqlalchemy.sql.dml import Delete, Update
 from sqlalchemy.sql.selectable import Select
 
@@ -319,8 +321,7 @@ async def test_get_personal_document_source_preview_reads_queued_image(tmp_path:
         tenant_id=tenant_id,
         owner_user_id=owner_id,
         document_id=document.id,
-        current_user_id=owner_id,
-        agent_id=None,
+        principal=HumanBrowserPrincipal(user_id=owner_id),
     )
 
     assert preview is not None
@@ -353,8 +354,7 @@ async def test_get_personal_document_source_preview_rejects_path_escape(tmp_path
         tenant_id=tenant_id,
         owner_user_id=owner_id,
         document_id=document.id,
-        current_user_id=owner_id,
-        agent_id=None,
+        principal=HumanBrowserPrincipal(user_id=owner_id),
     )
 
     assert preview is None
@@ -844,8 +844,7 @@ def test_owner_search_statement_uses_person_scope_without_grant_requirement() ->
         tenant_id=tenant_id,
         owner_user_id=owner_id,
         query="source refs",
-        current_user_id=owner_id,
-        agent_id=uuid.uuid4(),
+        principal=HumanBrowserPrincipal(user_id=owner_id),
         limit=5,
     )
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
@@ -864,8 +863,7 @@ def test_external_search_statement_requires_matching_user_or_agent_grant() -> No
         tenant_id=uuid.uuid4(),
         owner_user_id=uuid.uuid4(),
         query="source refs",
-        current_user_id=uuid.uuid4(),
-        agent_id=uuid.uuid4(),
+        principal=AgentRuntimePrincipal(agent_id=uuid.uuid4(), requester_user_id=uuid.uuid4()),
         limit=5,
     )
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
@@ -884,8 +882,7 @@ def test_owner_agent_search_statement_uses_agent_owner_chain_without_trusting_ag
         tenant_id=uuid.uuid4(),
         owner_user_id=uuid.uuid4(),
         query="source refs",
-        current_user_id=None,
-        agent_id=uuid.uuid4(),
+        principal=AgentRuntimePrincipal(agent_id=uuid.uuid4(), requester_user_id=None),
         limit=5,
     )
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
@@ -906,8 +903,7 @@ def test_personal_document_list_statement_requires_grant_for_non_owner() -> None
     statement = build_personal_knowledge_document_list_statement(
         tenant_id=uuid.uuid4(),
         owner_user_id=uuid.uuid4(),
-        current_user_id=uuid.uuid4(),
-        agent_id=uuid.uuid4(),
+        principal=AgentRuntimePrincipal(agent_id=uuid.uuid4(), requester_user_id=uuid.uuid4()),
         limit=25,
     )
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
@@ -925,8 +921,7 @@ def test_agent_document_detail_statement_requires_agent_searchable_for_non_owner
     statement = build_personal_knowledge_document_list_statement(
         tenant_id=uuid.uuid4(),
         owner_user_id=uuid.uuid4(),
-        current_user_id=None,
-        agent_id=uuid.uuid4(),
+        principal=AgentRuntimePrincipal(agent_id=uuid.uuid4(), requester_user_id=None),
         limit=1,
         document_id=uuid.uuid4(),
     )
@@ -944,8 +939,7 @@ def test_personal_document_list_statement_does_not_require_grant_for_owner() -> 
     statement = build_personal_knowledge_document_list_statement(
         tenant_id=uuid.uuid4(),
         owner_user_id=owner_id,
-        current_user_id=owner_id,
-        agent_id=uuid.uuid4(),
+        principal=HumanBrowserPrincipal(user_id=owner_id),
         limit=25,
     )
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
@@ -981,8 +975,7 @@ async def test_list_personal_documents_maps_document_summary_rows(tmp_path: Path
         session,
         tenant_id=tenant_id,
         owner_user_id=owner_id,
-        current_user_id=owner_id,
-        agent_id=uuid.uuid4(),
+        principal=HumanBrowserPrincipal(user_id=owner_id),
         limit=10,
     )
 
@@ -1029,8 +1022,7 @@ async def test_get_personal_document_maps_segments_under_same_acl(tmp_path: Path
         tenant_id=tenant_id,
         owner_user_id=owner_id,
         document_id=document_id,
-        current_user_id=owner_id,
-        agent_id=uuid.uuid4(),
+        principal=HumanBrowserPrincipal(user_id=owner_id),
     )
 
     assert detail is not None
@@ -1066,8 +1058,7 @@ async def test_search_personal_maps_rows_to_source_ref_hits(tmp_path: Path) -> N
         tenant_id=tenant_id,
         owner_user_id=owner_id,
         query="source refs",
-        current_user_id=owner_id,
-        agent_id=uuid.uuid4(),
+        principal=HumanBrowserPrincipal(user_id=owner_id),
         limit=3,
     )
 
@@ -1128,8 +1119,7 @@ async def test_search_personal_fuses_entity_and_graph_channels_with_score_trace(
         tenant_id=tenant_id,
         owner_user_id=owner_id,
         query="CryptoAI MEV",
-        current_user_id=owner_id,
-        agent_id=uuid.uuid4(),
+        principal=HumanBrowserPrincipal(user_id=owner_id),
         limit=5,
     )
 
@@ -1201,8 +1191,7 @@ async def test_search_personal_graph_channel_uses_multihop_ppr_scores(tmp_path: 
         tenant_id=tenant_id,
         owner_user_id=owner_id,
         query="OpenNotebook",
-        current_user_id=owner_id,
-        agent_id=uuid.uuid4(),
+        principal=HumanBrowserPrincipal(user_id=owner_id),
         limit=5,
     )
 
@@ -1252,8 +1241,7 @@ async def test_search_personal_fuses_optional_vector_provider_after_acl_fetch(tm
         tenant_id=tenant_id,
         owner_user_id=owner_id,
         query="notebook source grounded imports",
-        current_user_id=owner_id,
-        agent_id=uuid.uuid4(),
+        principal=HumanBrowserPrincipal(user_id=owner_id),
         limit=3,
     )
 
@@ -1633,14 +1621,65 @@ def test_personal_knowledge_access_predicate_filters_expired_grants() -> None:
         tenant_id=uuid.uuid4(),
         owner_user_id=uuid.uuid4(),
         query="source refs",
-        current_user_id=uuid.uuid4(),
-        agent_id=uuid.uuid4(),
+        principal=AgentRuntimePrincipal(agent_id=uuid.uuid4(), requester_user_id=uuid.uuid4()),
         limit=5,
     )
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
 
     assert "knowledge_grants.expires_at IS NULL" in compiled
     assert "knowledge_grants.expires_at > now()" in compiled
+
+
+def test_human_browser_principal_never_inherits_agent_owner_authority() -> None:
+    from app.services.personal_knowledge_access import HumanBrowserPrincipal
+    from app.services.personal_knowledge_service import build_personal_knowledge_search_statement
+
+    statement = build_personal_knowledge_search_statement(
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        query="owner secret",
+        principal=HumanBrowserPrincipal(user_id=uuid.uuid4()),
+        limit=5,
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
+
+    assert "knowledge_grants" in compiled
+    assert "knowledge_grants.grantee_type" in compiled
+    assert "agents.id" not in compiled
+    assert "AND knowledge_documents.agent_searchable IS true" not in compiled
+
+
+def test_agent_runtime_principal_is_agent_searchable_and_delegation_bound() -> None:
+    from app.services.personal_knowledge_access import AgentRuntimePrincipal
+    from app.services.personal_knowledge_service import build_personal_knowledge_search_statement
+
+    requester_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    principal = AgentRuntimePrincipal(
+        agent_id=agent_id,
+        requester_user_id=requester_id,
+        session_id="session-42",
+        delegation_id="delegation-42",
+    )
+    statement = build_personal_knowledge_search_statement(
+        tenant_id=uuid.uuid4(),
+        owner_user_id=uuid.uuid4(),
+        query="delegated owner note",
+        principal=principal,
+        limit=5,
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
+
+    assert principal.evidence() == {
+        "principal_type": "agent_runtime",
+        "agent_id": str(agent_id),
+        "requester_user_id": str(requester_id),
+        "session_id": "session-42",
+        "delegation_id": "delegation-42",
+    }
+    assert "agents.id" in compiled
+    assert "knowledge_documents.agent_searchable IS true" in compiled
+    assert "knowledge_grants" in compiled
 
 
 def test_personal_import_job_claim_statement_uses_skip_locked_and_time_guards() -> None:
